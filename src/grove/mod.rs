@@ -1,5 +1,4 @@
 pub mod inner;
-pub mod dense;
 
 use std::collections::{ HashMap, HashSet };
 
