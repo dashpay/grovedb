@@ -60,12 +60,12 @@ impl TreeNode {
     }
   }
 
-  fn get_right(&mut self) -> Option<&mut Box<TreeNode>> {
+  fn get_right(&mut self) -> Result<Option<&mut Box<TreeNode>>, &'static str> {
     match self {
-      TreeNode::LeafNode(_) => None,
+      TreeNode::LeafNode(_) => Err("can not call `right` method on LeadNode"),
       TreeNode::InnerNode(inner) => match inner.right {
-        Some(ref mut right) => Some(right),
-        None => None
+        Some(ref mut right) => Ok(Some(right)),
+        None => Ok(None)
       }
     }
   }
@@ -156,29 +156,30 @@ impl MerkleTree {
     }
   }
 
-  fn find_incomplete(&mut self) -> Option<&mut Box<TreeNode>> {
-    if self.root_node.get_right().is_none() {
+  fn find_incomplete<'a>(&'a mut self) -> Option<&'a mut Box<TreeNode>> {
+    if self.root_node.get_right().unwrap().is_none() {
       return Some(&mut self.root_node)
     }
 
-    return None;
+    fn find(node_option: Option<&mut Box<TreeNode>>) -> Option<&mut Box<TreeNode>> {
+      if node_option.is_none() {
+        return None;
+      }
 
-    // TODO: figure out what to do here
+      let node = node_option.unwrap();
 
-    // fn find<'a>(mut node_option: &'a Option<&mut Box<TreeNode>>) -> Option<&'a mut Box<TreeNode>> {
-    //   match node_option {
-    //     Some(ref mut node) => match node.as_mut() {
-    //       TreeNode::InnerNode(InnerNode { left: _, right }) => match right {
-    //         Some(ref mut r) => find(&Some(r)),
-    //         None => *node_option,
-    //       },
-    //       TreeNode::LeafNode { .. } => None
-    //     },
-    //     None => None
-    //   }
-    // }
+      if node.get_right().is_err() {
+        return None;
+      }
 
-    // find(&self.root_node.get_right())
+      if node.get_right().unwrap().is_none() {
+        return Some(node);
+      }
+
+      find(node.get_right().unwrap())
+    }
+
+    find(self.root_node.get_right().unwrap())
   }
 
   pub fn insert(&mut self, key: Vec<u8>, value: Data) -> Result<(), &'static str> {
@@ -201,7 +202,10 @@ impl MerkleTree {
         },
         _ => Ok(())
       }
-      None => Ok(()),
+      None => {
+        // TODO: implement adding another layer here
+        Ok(())
+      },
     }
   }
 }
@@ -217,7 +221,7 @@ fn t1() {
   let mut b = MerkleTree::new(vec!(
     (vec!(1, 2, 3), Data::ValueData(vec!(4, 5, 6))),
     (vec!(10, 20, 30), Data::TreeData(Box::new(a))),
-    // (vec!(100, 200, 201), Data::SecondaryIndexData([1; 32])),
+    (vec!(100, 200, 201), Data::SecondaryIndexData([1; 32])),
   ));
 
   println!("\nincomplete inner node : {:?}\n", b.find_incomplete());
