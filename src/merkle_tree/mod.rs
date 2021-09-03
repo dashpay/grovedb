@@ -8,9 +8,99 @@ pub struct LeafNode {
 }
 
 #[derive(Debug, Default)]
-pub struct InnerNode {
+pub struct CommitedInnerNode {
   left: Option<Box<TreeNode>>,
   right: Option<Box<TreeNode>>
+}
+
+#[derive(Debug, Default)]
+pub struct UncommitedInnerNode {
+  old: Box<CommitedInnerNode>,
+  new: Box<CommitedInnerNode>,
+}
+
+impl UncommitedInnerNode {
+  fn get_left(&self) -> Option<&Box<TreeNode>> {
+    self.new.left.as_ref()
+  }
+
+  fn get_left_mut(&mut self) -> Option<&mut Box<TreeNode>> {
+    self.new.left.as_mut()
+  }
+
+  fn set_left(&mut self, node: TreeNode) {
+    self.new.left = Some(Box::new(node));
+  }
+
+  fn get_right(&self) -> Option<&Box<TreeNode>> {
+    self.new.right.as_ref()
+  }
+
+  fn get_right_mut(&mut self) -> Option<&mut Box<TreeNode>> {
+    self.new.right.as_mut()
+  }
+
+  fn set_right(&mut self, node: TreeNode) {
+    self.new.right = Some(Box::new(node));
+  }
+}
+
+#[derive(Debug, Default)]
+pub enum InnerNode {
+  CommitedInnerNode(CommitedInnerNode),
+  UncommitedInnerNode(UncommitedInnerNode),
+  #[default]
+  None,
+}
+
+impl InnerNode {
+  fn get_left(&self) -> Option<&Box<TreeNode>> {
+    match self {
+      InnerNode::CommitedInnerNode(inner) => inner.left.as_ref(),
+      InnerNode::UncommitedInnerNode(inner) => inner.get_left(),
+      InnerNode::None => None
+    }
+  }
+
+  fn get_left_mut(&mut self) -> Option<&mut Box<TreeNode>> {
+    match self {
+      InnerNode::CommitedInnerNode(inner) => inner.left.as_mut(),
+      InnerNode::UncommitedInnerNode(inner) => inner.get_left_mut(),
+      InnerNode::None => None
+    }
+  }
+
+  fn set_left(&mut self, node: TreeNode) {
+    match self {
+      InnerNode::CommitedInnerNode(inner) => inner.left = Some(Box::new(node)),
+      InnerNode::UncommitedInnerNode(inner) => inner.set_left(node),
+      InnerNode::None => ()
+    }
+  }
+
+  fn get_right(&self) -> Option<&Box<TreeNode>> {
+    match self {
+      InnerNode::CommitedInnerNode(inner) => inner.right.as_ref(),
+      InnerNode::UncommitedInnerNode(inner) => inner.get_right(),
+      InnerNode::None => None
+    }
+  }
+
+  fn get_right_mut(&mut self) -> Option<&mut Box<TreeNode>> {
+    match self {
+      InnerNode::CommitedInnerNode(inner) => inner.right.as_mut(),
+      InnerNode::UncommitedInnerNode(inner) => inner.get_right_mut(),
+      InnerNode::None => None
+    }
+  }
+
+  fn set_right(&mut self, node: TreeNode) {
+    match self {
+      InnerNode::CommitedInnerNode(inner) => inner.right = Some(Box::new(node)),
+      InnerNode::UncommitedInnerNode(inner) => inner.set_right(node),
+      InnerNode::None => ()
+    }
+  }
 }
 
 #[derive(Debug, Default)]
@@ -56,13 +146,13 @@ impl TreeNode {
         hasher.update(value_hash);
       },
       TreeNode::InnerNode(inner) => {
-        match &inner.right {
+        match inner.get_right() {
           Some(right) => {
-            hasher.update(&inner.left.as_ref().unwrap().hash());
+            hasher.update(&inner.get_left().unwrap().hash());
             hasher.update(&right.hash());
           },
           None => {
-            hasher.update(&inner.left.as_ref().unwrap().hash());
+            hasher.update(&inner.get_left().unwrap().hash());
           }
         }
       },
@@ -77,7 +167,7 @@ impl TreeNode {
   fn get_left(&self) -> Option<&Box<TreeNode>> {
     match self {
       TreeNode::LeafNode(_) => None,
-      TreeNode::InnerNode(inner) => inner.left.as_ref(),
+      TreeNode::InnerNode(inner) => inner.get_left(),
       TreeNode::None => None,
     }
   }
@@ -85,7 +175,7 @@ impl TreeNode {
   fn get_left_mut(&mut self) -> Option<&mut Box<TreeNode>> {
     match self {
       TreeNode::LeafNode(_) => None,
-      TreeNode::InnerNode(inner) => inner.left.as_mut(),
+      TreeNode::InnerNode(inner) => inner.get_left_mut(),
       TreeNode::None => None,
     }
   }
@@ -93,7 +183,7 @@ impl TreeNode {
   fn set_left(&mut self, node: TreeNode) {
     match self {
       TreeNode::LeafNode(_) => (),
-      TreeNode::InnerNode(inner) => inner.left = Some(Box::new(node)),
+      TreeNode::InnerNode(inner) => inner.set_left(node),
       TreeNode::None => (),
     }
   }
@@ -101,7 +191,7 @@ impl TreeNode {
   fn get_right(&self) -> Option<&Box<TreeNode>> {
     match self {
       TreeNode::LeafNode(_) => None,
-      TreeNode::InnerNode(inner) => inner.right.as_ref(),
+      TreeNode::InnerNode(inner) => inner.get_right(),
       TreeNode::None => None,
     }
   }
@@ -109,7 +199,7 @@ impl TreeNode {
   fn get_right_mut(&mut self) -> Option<&mut Box<TreeNode>> {
     match self {
       TreeNode::LeafNode(_) => None,
-      TreeNode::InnerNode(inner) => inner.right.as_mut(),
+      TreeNode::InnerNode(inner) => inner.get_right_mut(),
       TreeNode::None =>  None,
     }
   }
@@ -189,10 +279,10 @@ impl MerkleTree {
       let left_node: TreeNode = nodes.pop().unwrap();
 
       let node = TreeNode::InnerNode(
-        InnerNode {
+        InnerNode::CommitedInnerNode(CommitedInnerNode {
           left: Some(Box::new(left_node)),
           right: nodes.pop().map(|leaf_node| Box::new(leaf_node)),
-        }
+        })
       );
 
       result_nodes.push(node);
@@ -263,7 +353,7 @@ impl MerkleTree {
             }
           );
 
-          inner.right = Some(Box::new(new_node));
+          inner.set_right(new_node);
 
           Ok(())
         },
@@ -271,8 +361,6 @@ impl MerkleTree {
       }
       None => {
         let tree_height = self.get_height();
-
-        println!("the height is : {:?}", tree_height);
 
         let leaf_node = TreeNode::LeafNode(LeafNode {
           key,
@@ -287,26 +375,35 @@ impl MerkleTree {
             return inner_node;
           }
 
-          let top = TreeNode::InnerNode(InnerNode {
+          let top = TreeNode::InnerNode(InnerNode::CommitedInnerNode(CommitedInnerNode {
             left: Some(Box::new(inner_node)),
             right: None,
-          });
+          }));
 
           construct_new_chain(top, counter - 1)
         }
 
-        let mut new_right = construct_new_chain(TreeNode::InnerNode(InnerNode { left: None, right: None }), tree_height);
+        let mut new_right = construct_new_chain(
+          TreeNode::InnerNode(InnerNode::CommitedInnerNode(CommitedInnerNode { left: None, right: None })),
+          tree_height
+        );
 
         new_right.set_left(leaf_node);
 
-        self.root_node = Box::new(TreeNode::InnerNode(InnerNode {
+        self.root_node = Box::new(TreeNode::InnerNode(InnerNode::CommitedInnerNode(CommitedInnerNode {
           left: Some(old_root),
           right: Some(Box::new(new_right)),
-        }));
+        })));
 
         Ok(())
       },
     }
+  }
+
+  pub fn insert_tx(&mut self, key: Vec<u8>, value: Data) {
+    let result = self.find_incomplete();
+
+    // TODO: create chains and change some of inner nodes to Uncommited
   }
 }
 
