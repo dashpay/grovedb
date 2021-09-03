@@ -1,22 +1,24 @@
 extern crate blake3;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct LeafNode {
   key: Vec<u8>,
   value_hash: [u8; 32],
   value: Option<Data>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct InnerNode {
-  left: Box<TreeNode>,
+  left: Option<Box<TreeNode>>,
   right: Option<Box<TreeNode>>
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum TreeNode {
   LeafNode(LeafNode),
   InnerNode(InnerNode),
+  #[default]
+  None,
 }
 
 #[derive(Debug)]
@@ -24,6 +26,24 @@ pub enum Data {
   ValueData(Vec<u8>),
   TreeData(Box<MerkleTree>),
   SecondaryIndexData([u8; 32])
+}
+
+impl Data {
+  fn hash(&self) -> [u8; 32] {
+    match self {
+      Data::ValueData(value_data) => {
+        let mut result = [0; 32];
+        result.clone_from_slice(blake3::hash(&value_data).as_bytes());
+        result
+      },
+      Data::TreeData(tree) => tree.root_node.hash(),
+      Data::SecondaryIndexData(index_data) => {
+        let mut result = [0; 32];
+        result.clone_from_slice(index_data);
+        result
+      },
+    }
+  }
 }
 
 impl TreeNode {
@@ -35,17 +55,18 @@ impl TreeNode {
         hasher.update(&key);
         hasher.update(value_hash);
       },
-      TreeNode::InnerNode(InnerNode { left, right }) => {
-        match right {
+      TreeNode::InnerNode(inner) => {
+        match &inner.right {
           Some(right) => {
-            hasher.update(&left.hash());
+            hasher.update(&inner.left.as_ref().unwrap().hash());
             hasher.update(&right.hash());
           },
           None => {
-            hasher.update(&left.hash());
+            hasher.update(&inner.left.as_ref().unwrap().hash());
           }
         }
       },
+      TreeNode::None => ()
     };
 
     let mut result = [0; 32];
@@ -56,37 +77,79 @@ impl TreeNode {
   fn get_left(&self) -> Option<&Box<TreeNode>> {
     match self {
       TreeNode::LeafNode(_) => None,
-      TreeNode::InnerNode(InnerNode { left, .. }) => Some(left),
+      TreeNode::InnerNode(inner) => inner.left.as_ref(),
+      TreeNode::None => None,
     }
   }
 
-  fn get_right(&mut self) -> Result<Option<&mut Box<TreeNode>>, &'static str> {
+  fn get_left_mut(&mut self) -> Option<&mut Box<TreeNode>> {
     match self {
-      TreeNode::LeafNode(_) => Err("can not call `right` method on LeadNode"),
-      TreeNode::InnerNode(inner) => match inner.right {
-        Some(ref mut right) => Ok(Some(right)),
-        None => Ok(None)
-      }
+      TreeNode::LeafNode(_) => None,
+      TreeNode::InnerNode(inner) => inner.left.as_mut(),
+      TreeNode::None => None,
     }
   }
 
-  fn set_right(self, value: TreeNode) {
+  fn set_left(&mut self, node: TreeNode) {
     match self {
-      TreeNode::InnerNode(mut node) => {
-        node.right = Some(Box::new(value))
-      },
-      TreeNode::LeafNode { .. } => ()
+      TreeNode::LeafNode(_) => (),
+      TreeNode::InnerNode(inner) => inner.left = Some(Box::new(node)),
+      TreeNode::None => (),
+    }
+  }
+
+  fn get_right(&self) -> Option<&Box<TreeNode>> {
+    match self {
+      TreeNode::LeafNode(_) => None,
+      TreeNode::InnerNode(inner) => inner.right.as_ref(),
+      TreeNode::None => None,
+    }
+  }
+
+  fn get_right_mut(&mut self) -> Option<&mut Box<TreeNode>> {
+    match self {
+      TreeNode::LeafNode(_) => None,
+      TreeNode::InnerNode(inner) => inner.right.as_mut(),
+      TreeNode::None =>  None,
     }
   }
 
   fn get_value(&self) -> Option<&Data> {
     match self {
-      TreeNode::LeafNode(LeafNode { key: _, value_hash: _, value }) => match value {
-        Some(data) => Some(data),
-        None => None,
-      },
+      TreeNode::LeafNode(LeafNode { key: _, value_hash: _, value }) => value.as_ref(),
       TreeNode::InnerNode { .. } => None,
+      TreeNode::None => None,
     }
+  }
+
+  fn is_leaf_node(&self) -> bool {
+    match self {
+      TreeNode::LeafNode(_) => true,
+      TreeNode::InnerNode(_) => false,
+      TreeNode::None => false,
+    }
+  }
+
+  fn get_height(&self) -> u64 {
+    if self.get_left().is_none() {
+      return 0;
+    }
+
+    fn find_bottom(node_option: Option<&Box<TreeNode>>, counter: u64) -> (Option<&Box<TreeNode>>, u64) {
+      if node_option.is_none() {
+        return (None, counter)
+      }
+
+      let node = node_option.unwrap();
+
+      if node.is_leaf_node() {
+        return (node_option, counter);
+      }
+
+      find_bottom(node.get_left(), counter + 1)
+    }
+
+    find_bottom(self.get_left(), 1).1
   }
 }
 
@@ -102,25 +165,11 @@ impl MerkleTree {
     }
 
     let leaf_nodes: Vec<TreeNode> = key_values.drain(0..).map(|(key, value)| {
-      let value_hash = match &value {
-        Data::ValueData(value_data) => {
-          let mut result = [0; 32];
-          result.clone_from_slice(blake3::hash(&value_data).as_bytes());
-          result
-        },
-        Data::TreeData(tree) => tree.root_node.hash(),
-        Data::SecondaryIndexData(index_data) => {
-          let mut result = [0; 32];
-          result.clone_from_slice(index_data);
-          result
-        },
-      };
-
       TreeNode::LeafNode(
         LeafNode {
           key: key.to_vec(),
+          value_hash: value.hash(),
           value: Some(value),
-          value_hash,
         }
       )
     }).collect();
@@ -141,7 +190,7 @@ impl MerkleTree {
 
       let node = TreeNode::InnerNode(
         InnerNode {
-          left: Box::new(left_node),
+          left: Some(Box::new(left_node)),
           right: nodes.pop().map(|leaf_node| Box::new(leaf_node)),
         }
       );
@@ -157,7 +206,7 @@ impl MerkleTree {
   }
 
   fn find_incomplete<'a>(&'a mut self) -> Option<&'a mut Box<TreeNode>> {
-    if self.root_node.get_right().unwrap().is_none() {
+    if self.root_node.get_right().is_none() {
       return Some(&mut self.root_node)
     }
 
@@ -168,18 +217,36 @@ impl MerkleTree {
 
       let node = node_option.unwrap();
 
-      if node.get_right().is_err() {
+      if node.is_leaf_node() {
         return None;
       }
 
-      if node.get_right().unwrap().is_none() {
+      if node.get_right().is_none() {
         return Some(node);
       }
 
-      find(node.get_right().unwrap())
+      find(node.get_right_mut())
     }
 
-    find(self.root_node.get_right().unwrap())
+    find(self.root_node.get_right_mut())
+  }
+
+  pub fn get_height(&self) -> u64 {
+    fn find_bottom(node_option: Option<&Box<TreeNode>>, counter: u64) -> (Option<&Box<TreeNode>>, u64) {
+      if node_option.is_none() {
+        return (None, counter)
+      }
+
+      let node = node_option.unwrap();
+
+      if node.is_leaf_node() {
+        return (node_option, counter);
+      }
+
+      find_bottom(node.get_left(), counter + 1)
+    }
+
+    find_bottom(Some(&self.root_node), 0).1
   }
 
   pub fn insert(&mut self, key: Vec<u8>, value: Data) -> Result<(), &'static str> {
@@ -203,7 +270,40 @@ impl MerkleTree {
         _ => Ok(())
       }
       None => {
-        // TODO: implement adding another layer here
+        let tree_height = self.get_height();
+
+        println!("the height is : {:?}", tree_height);
+
+        let leaf_node = TreeNode::LeafNode(LeafNode {
+          key,
+          value_hash: value.hash(),
+          value: Some(value),
+        });
+
+        let old_root = std::mem::take(&mut self.root_node);
+
+        fn construct_new_chain(inner_node: TreeNode, counter: u64) -> TreeNode {
+          if counter == 0 {
+            return inner_node;
+          }
+
+          let top = TreeNode::InnerNode(InnerNode {
+            left: Some(Box::new(inner_node)),
+            right: None,
+          });
+
+          construct_new_chain(top, counter - 1)
+        }
+
+        let mut new_right = construct_new_chain(TreeNode::InnerNode(InnerNode { left: None, right: None }), tree_height);
+
+        new_right.set_left(leaf_node);
+
+        self.root_node = Box::new(TreeNode::InnerNode(InnerNode {
+          left: Some(old_root),
+          right: Some(Box::new(new_right)),
+        }));
+
         Ok(())
       },
     }
@@ -212,30 +312,20 @@ impl MerkleTree {
 
 #[test]
 fn t1() {
-  let a = MerkleTree::new(vec!(
+  let mut imbalanced_tree = MerkleTree::new(vec!(
     (vec!(1, 2, 3), Data::ValueData(vec!(4, 5, 6))),
     (vec!(10, 20, 30), Data::ValueData(vec!(40, 50, 60))),
-    (vec!(100, 200, 201), Data::ValueData(vec!(202, 203, 204))),
+    (vec!(100, 200, 201), Data::SecondaryIndexData([0; 32])),
   ));
 
-  let mut b = MerkleTree::new(vec!(
-    (vec!(1, 2, 3), Data::ValueData(vec!(4, 5, 6))),
-    (vec!(10, 20, 30), Data::TreeData(Box::new(a))),
-    (vec!(100, 200, 201), Data::SecondaryIndexData([1; 32])),
-  ));
+  // checking we have nothing to the right
+  assert_eq!(imbalanced_tree.root_node.get_right().unwrap().get_right().is_none(), true);
 
-  println!("\nincomplete inner node : {:?}\n", b.find_incomplete());
+  imbalanced_tree.insert(vec!(0, 0, 0), Data::ValueData(vec!(0, 0, 0))).unwrap();
 
-  b.insert(vec!(0, 0, 0), Data::ValueData(vec!())).unwrap();
+  assert_eq!(imbalanced_tree.root_node.get_right().unwrap().get_right().is_none(), false);
 
-  println!("\nb after insert: {:?}\n", b);
+  let node = imbalanced_tree.root_node.get_right().unwrap().get_right().unwrap();
 
-  // let leaf = b.root_node.left().unwrap().right().unwrap();
-
-  // match leaf.value().unwrap() {
-  //   Data::TreeData(t) => {
-  //     println!("testing inner: {:?}", t.root_node.left().unwrap().right().unwrap())
-  //   }
-  //   _ => ()
-  // }
+  assert!(matches!(node.get_value().unwrap(), Data::ValueData(_)));
 }
