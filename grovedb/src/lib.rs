@@ -11,7 +11,7 @@ pub enum Error {
     #[error("unable to open Merk db")]
     MerkError(merk::Error),
     #[error("invalid path")]
-    InvalidPath,
+    InvalidPath(&'static str),
     #[error("unable to decode")]
     EdError(#[from] ed::Error),
 }
