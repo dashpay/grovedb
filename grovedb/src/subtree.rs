@@ -29,14 +29,21 @@ impl Element {
     }
 
     /// Recursively follow `Element::Reference`
-    fn follow_reference(self, merk: &Merk) -> Result<Element, Error> {
+    fn follow_reference(self, merk: &Merk, paths: &mut Vec<Vec<u8>>) -> Result<Element, Error> {
         if let Element::Reference(reference_merk_key) = self {
+            // Check if the reference merk key has been visited before
+            // if it has then we have a cycle <return an error>
+            if paths.contains(&reference_merk_key) {
+                return Err(Error::CyclicReferencePath);
+            }
             let element = Element::decode(
                 merk.get(reference_merk_key.as_slice())?
                     .ok_or(Error::InvalidPath("key not found in Merk"))?
                     .as_slice(),
             )?;
-            element.follow_reference(merk)
+
+            paths.push(reference_merk_key);
+            element.follow_reference(merk, paths)
         } else {
             Ok(self)
         }
