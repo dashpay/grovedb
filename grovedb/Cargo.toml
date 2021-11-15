@@ -1,0 +1,9 @@
+[package]
+name = "grovedb"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rs_merkle = "1.1.0"
+merk = { path = "../merk" }
+thiserror = "1.0.30"
