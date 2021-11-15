@@ -1,7 +1,5 @@
-use rs_merkle::{algorithms::Sha256, MerkleTree};
 use merk::{self, Merk};
-
-
+use rs_merkle::{algorithms::Sha256, MerkleTree};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -30,10 +28,7 @@ impl GroveDb {
             Merk::open("./test5.db")?,
             Merk::open("./test6.db")?,
         ];
-        let leaves: Vec<[u8; 32]> = subtrees
-            .iter()
-            .map(|x| x.root_hash())
-            .collect();
+        let leaves: Vec<[u8; 32]> = subtrees.iter().map(|x| x.root_hash()).collect();
         Ok(GroveDb {
             root_tree: MerkleTree::<Sha256>::from_leaves(&leaves),
             subtrees,
