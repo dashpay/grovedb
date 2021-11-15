@@ -30,6 +30,8 @@ pub enum Error {
     InvalidPath(&'static str),
     #[error("unable to decode")]
     EdError(#[from] ed::Error),
+    #[error("cyclic reference path")]
+    CyclicReferencePath,
 }
 
 impl From<merk::Error> for Error {
