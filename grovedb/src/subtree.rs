@@ -150,4 +150,25 @@ mod tests {
             Element::Item(b"value".to_vec()),
         );
     }
+
+    #[test]
+    fn test_circular_references() {
+        let tmp_dir = TempDir::new("db").unwrap();
+        let mut merk = Merk::open(tmp_dir.path()).unwrap();
+
+        Element::Tree
+            .insert(&mut merk, &[], b"tree-key")
+            .expect("expected successful insertion");
+        // Create reference-1 that points to reference-2
+        // TODO: Look into preventing invalid reference (references must point to
+        // something that exists)
+        Element::new_reference(&[b"tree-key"], b"reference-2")
+            .insert(&mut merk, &[b"tree-key"], b"reference-1")
+            .expect("expected successful reference insertion");
+        Element::new_reference(&[b"tree-key"], b"reference-1")
+            .insert(&mut merk, &[b"tree-key"], b"reference-2")
+            .expect("expected successful reference insertion");
+
+        assert!(Element::get(&merk, &[b"tree-key"], b"reference-1").is_err());
+    }
 }
