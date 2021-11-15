@@ -1,11 +1,11 @@
 #![feature(trivial_bounds)]
+use std::path::Path;
+
 use ed::Encode;
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, Hasher, MerkleTree};
 use subtree::Element;
 mod subtree;
-
-const MERK_DIR: &str = "./grove.db";
 
 // Root tree has hardcoded leafs; each of them is `pub` to be easily used in
 // `path` arg
@@ -46,23 +46,21 @@ pub struct GroveDb {
 }
 
 impl GroveDb {
-    pub fn new() -> Result<Self, Error> {
-        let mut subtrees_merk = Merk::open(MERK_DIR)?;
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        let mut subtrees_merk = Merk::open(path)?;
         let mut leaves = Vec::with_capacity(SUBTREES.len());
         // Populate Merk with root tree's leafs if no previous Merk data found
         for subtree_key in SUBTREES {
-            let element = match Element::get(&subtrees_merk, &[], subtree_key) {
-                Err(Error::InvalidPath(_)) => {
-                    // no leaf for a subtree in a root tree, will create a record
-                    let element = Element::Tree;
-                    element.insert(&mut subtrees_merk, &[], subtree_key)?;
-                    element
-                }
-                Ok(element) => element,
-                e => e?,
+            let node_hash = if let Some(hash) = subtrees_merk.get_hash(subtree_key)? {
+                hash
+            } else {
+                let element = Element::Tree;
+                element.insert(&mut subtrees_merk, &[], subtree_key)?;
+                subtrees_merk
+                    .get_hash(subtree_key)?
+                    .expect("was inserted previously")
             };
-            // TODO
-            leaves.push(todo!("need to insert node hash"));
+            leaves.push(node_hash);
         }
         Ok(GroveDb {
             root_tree: MerkleTree::<Sha256>::from_leaves(&leaves),
@@ -90,10 +88,13 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
+    use tempdir::TempDir;
+
     use super::*;
 
     #[test]
     fn test_init() {
-        GroveDb::new().expect("empty tree is ok");
+        let tmp_dir = TempDir::new("db").unwrap();
+        GroveDb::open(tmp_dir).expect("empty tree is ok");
     }
 }
