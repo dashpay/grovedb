@@ -159,9 +159,8 @@ mod tests {
         Element::Tree
             .insert(&mut merk, &[], b"tree-key")
             .expect("expected successful insertion");
-        // Create reference-1 that points to reference-2
-        // TODO: Look into preventing invalid reference (references must point to
-        // something that exists)
+
+        // r1 points to r2 and r2 points to r1 (cycle!)
         Element::new_reference(&[b"tree-key"], b"reference-2")
             .insert(&mut merk, &[b"tree-key"], b"reference-1")
             .expect("expected successful reference insertion");
