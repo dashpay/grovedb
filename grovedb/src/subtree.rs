@@ -30,16 +30,32 @@ impl Element {
 
     /// Recursively follow `Element::Reference`
     fn follow_reference(self, merk: &Merk) -> Result<Element, Error> {
-        if let Element::Reference(reference_merk_key) = self {
-            let element = Element::decode(
-                merk.get(reference_merk_key.as_slice())?
-                    .ok_or(Error::InvalidPath("key not found in Merk"))?
-                    .as_slice(),
-            )?;
-            element.follow_reference(merk)
-        } else {
-            Ok(self)
+        fn follow_reference_with_path(
+            element: Element,
+            merk: &Merk,
+            paths: &mut Vec<Vec<u8>>,
+        ) -> Result<Element, Error> {
+            if let Element::Reference(reference_merk_key) = element {
+                // Check if the reference merk key has been visited before
+                // if it has then we have a cycle <return an error>
+                if paths.contains(&reference_merk_key) {
+                    return Err(Error::CyclicReferencePath);
+                }
+                let element = Element::decode(
+                    merk.get(reference_merk_key.as_slice())?
+                        .ok_or(Error::InvalidPath("key not found in Merk"))?
+                        .as_slice(),
+                )?;
+
+                paths.push(reference_merk_key);
+                follow_reference_with_path(element, merk, paths)
+            } else {
+                Ok(element)
+            }
         }
+
+        let mut reference_paths: Vec<Vec<u8>> = Vec::new();
+        follow_reference_with_path(self, merk, &mut reference_paths)
     }
 
     /// A helper method to build Merk keys (and RocksDB as well) out of path +
@@ -72,6 +88,7 @@ impl Element {
                 .ok_or(Error::InvalidPath("key not found in Merk"))?
                 .as_slice(),
         )?;
+
         element.follow_reference(&merk)
     }
 
@@ -140,5 +157,25 @@ mod tests {
                 .expect("expected successful get"),
             Element::Item(b"value".to_vec()),
         );
+    }
+
+    #[test]
+    fn test_circular_references() {
+        let tmp_dir = TempDir::new("db").unwrap();
+        let mut merk = Merk::open(tmp_dir.path()).unwrap();
+
+        Element::Tree
+            .insert(&mut merk, &[], b"tree-key")
+            .expect("expected successful insertion");
+
+        // r1 points to r2 and r2 points to r1 (cycle!)
+        Element::new_reference(&[b"tree-key"], b"reference-2")
+            .insert(&mut merk, &[b"tree-key"], b"reference-1")
+            .expect("expected successful reference insertion");
+        Element::new_reference(&[b"tree-key"], b"reference-1")
+            .insert(&mut merk, &[b"tree-key"], b"reference-2")
+            .expect("expected successful reference insertion");
+
+        assert!(Element::get(&merk, &[b"tree-key"], b"reference-1").is_err());
     }
 }
