@@ -1,10 +1,26 @@
 #![feature(trivial_bounds)]
+use ed::Encode;
 use merk::{self, Merk};
-use rs_merkle::{algorithms::Sha256, MerkleTree};
+use rs_merkle::{algorithms::Sha256, Hasher, MerkleTree};
+use subtree::Element;
 mod subtree;
-use std::path::Path;
 
-const SUBTREES_DIR: &str = "./subtrees";
+const MERK_DIR: &str = "./grove.db";
+
+// Root tree has hardcoded leafs; each of them is `pub` to be easily used in
+// `path` arg
+pub const COMMON_TREE_KEY: &[u8] = b"common";
+pub const IDENTITIES_TREE_KEY: &[u8] = b"identities";
+pub const PUBLIC_KEYS_TO_IDENTITY_IDS_TREE_KEY: &[u8] = b"publicKeysToIdentityIDs";
+pub const DATA_CONTRACTS_TREE_KEY: &[u8] = b"dataContracts";
+pub const SPENT_ASSET_LOCK_TRANSACTIONS_TREE_KEY: &[u8] = b"spentAssetLockTransactions";
+const SUBTREES: [&[u8]; 5] = [
+    COMMON_TREE_KEY,
+    IDENTITIES_TREE_KEY,
+    PUBLIC_KEYS_TO_IDENTITY_IDS_TREE_KEY,
+    DATA_CONTRACTS_TREE_KEY,
+    SPENT_ASSET_LOCK_TRANSACTIONS_TREE_KEY,
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -24,36 +40,44 @@ impl From<merk::Error> for Error {
 
 pub struct GroveDb {
     root_tree: MerkleTree<Sha256>,
-    subtrees: Vec<Merk>,
+    subtrees_merk: Merk,
 }
 
 impl GroveDb {
     pub fn new() -> Result<Self, Error> {
-        let subtrees = vec![
-            Merk::open(Path::new(SUBTREES_DIR).join("test1.db"))?,
-            Merk::open(Path::new(SUBTREES_DIR).join("test2.db"))?,
-            Merk::open(Path::new(SUBTREES_DIR).join("test3.db"))?,
-            Merk::open(Path::new(SUBTREES_DIR).join("test4.db"))?,
-            Merk::open(Path::new(SUBTREES_DIR).join("test5.db"))?,
-            Merk::open(Path::new(SUBTREES_DIR).join("test6.db"))?,
-        ];
-        let leaves: Vec<[u8; 32]> = subtrees.iter().map(|x| x.root_hash()).collect();
+        let mut subtrees_merk = Merk::open(MERK_DIR)?;
+        let mut leaves = Vec::with_capacity(SUBTREES.len());
+        // Populate Merk with root tree's leafs if no previous Merk data found
+        for subtree_key in SUBTREES {
+            let element = match Element::get(&subtrees_merk, &[], subtree_key) {
+                Err(Error::InvalidPath(_)) => {
+                    // no leaf for a subtree in a root tree, will create a record
+                    let element = Element::Tree;
+                    element.insert(&mut subtrees_merk, &[], subtree_key)?;
+                    element
+                }
+                Ok(element) => element,
+                e => e?,
+            };
+            // TODO
+            leaves.push(todo!("need to insert node hash"));
+        }
         Ok(GroveDb {
             root_tree: MerkleTree::<Sha256>::from_leaves(&leaves),
-            subtrees,
+            subtrees_merk,
         })
     }
 
-    // TODO: as root tree structure is known in advance it may be reasonable to have
-    // separate methods for each root tree leaf or other way to dispatch (like enum
-    // arg); Let's have only one of these methods for now
-    // TODO: autocreate option
-    pub fn insert_test1(&mut self, path: &[&[u8]], key: &[u8], element: subtree::Element) -> ! {
+    pub fn insert(
+        &mut self,
+        path: &[&[u8]],
+        key: &[u8],
+        element: subtree::Element,
+    ) -> Result<(), Error> {
         todo!()
     }
 
-    pub fn get_test1(&self, path: &[&[u8]], key: &[u8]) -> Option<subtree::Element> {
-        // A merk tree is a leaf of root tree and
+    pub fn get(&self, path: &[&[u8]], key: &[u8]) -> Result<subtree::Element, Error> {
         todo!()
     }
 
