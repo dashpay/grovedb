@@ -29,24 +29,33 @@ impl Element {
     }
 
     /// Recursively follow `Element::Reference`
-    fn follow_reference(self, merk: &Merk, paths: &mut Vec<Vec<u8>>) -> Result<Element, Error> {
-        if let Element::Reference(reference_merk_key) = self {
-            // Check if the reference merk key has been visited before
-            // if it has then we have a cycle <return an error>
-            if paths.contains(&reference_merk_key) {
-                return Err(Error::CyclicReferencePath);
-            }
-            let element = Element::decode(
-                merk.get(reference_merk_key.as_slice())?
-                    .ok_or(Error::InvalidPath("key not found in Merk"))?
-                    .as_slice(),
-            )?;
+    fn follow_reference(self, merk: &Merk) -> Result<Element, Error> {
+        fn follow_reference_with_path(
+            element: Element,
+            merk: &Merk,
+            paths: &mut Vec<Vec<u8>>,
+        ) -> Result<Element, Error> {
+            if let Element::Reference(reference_merk_key) = element {
+                // Check if the reference merk key has been visited before
+                // if it has then we have a cycle <return an error>
+                if paths.contains(&reference_merk_key) {
+                    return Err(Error::CyclicReferencePath);
+                }
+                let element = Element::decode(
+                    merk.get(reference_merk_key.as_slice())?
+                        .ok_or(Error::InvalidPath("key not found in Merk"))?
+                        .as_slice(),
+                )?;
 
-            paths.push(reference_merk_key);
-            element.follow_reference(merk, paths)
-        } else {
-            Ok(self)
+                paths.push(reference_merk_key);
+                follow_reference_with_path(element, merk, paths)
+            } else {
+                Ok(element)
+            }
         }
+
+        let mut reference_paths: Vec<Vec<u8>> = Vec::new();
+        follow_reference_with_path(self, merk, &mut reference_paths)
     }
 
     /// A helper method to build Merk keys (and RocksDB as well) out of path +
@@ -80,8 +89,7 @@ impl Element {
                 .as_slice(),
         )?;
 
-        let mut reference_paths: Vec<Vec<u8>> = Vec::new();
-        element.follow_reference(&merk, &mut reference_paths)
+        element.follow_reference(&merk)
     }
 
     pub fn insert(&self, merk: &mut Merk, path: &[&[u8]], key: &[u8]) -> Result<(), Error> {
