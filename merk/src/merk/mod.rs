@@ -1,17 +1,21 @@
 pub mod chunks;
 pub mod restore;
 
-use std::cell::Cell;
-use std::cmp::Ordering;
-use std::collections::LinkedList;
-use std::path::{Path, PathBuf};
+use std::{
+    cell::Cell,
+    cmp::Ordering,
+    collections::LinkedList,
+    path::{Path, PathBuf},
+};
 
 use failure::bail;
 use rocksdb::{checkpoint::Checkpoint, ColumnFamilyDescriptor, WriteBatch};
 
-use crate::error::Result;
-use crate::proofs::{encode_into, query::QueryItem, Query};
-use crate::tree::{Batch, Commit, Fetch, Hash, Link, Op, RefWalker, Tree, Walker, NULL_HASH};
+use crate::{
+    error::Result,
+    proofs::{encode_into, query::QueryItem, Query},
+    tree::{Batch, Commit, Fetch, Hash, Link, Op, RefWalker, Tree, Walker, NULL_HASH},
+};
 
 const ROOT_KEY_KEY: &[u8] = b"root";
 const AUX_CF_NAME: &str = "aux";
@@ -87,7 +91,21 @@ impl Merk {
     /// Note that this is essentially the same as a normal RocksDB `get`, so
     /// should be a fast operation and has almost no tree overhead.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        self.use_tree(|maybe_tree| {
+        self.get_node_fn(key, |node| node.value().to_vec())
+    }
+
+    /// Gets a hash of a node by a given key, `None` is returned in case
+    /// when node not found by the key.
+    pub fn get_hash(&self, key: &[u8]) -> Result<Option<[u8; 32]>> {
+        self.get_node_fn(key, |node| node.hash())
+    }
+
+    /// Generic way to get a node's field
+    fn get_node_fn<T, F>(&self, key: &[u8], f: F) -> Result<Option<T>>
+    where
+        F: FnOnce(&Tree) -> T,
+    {
+        self.use_tree(move |maybe_tree| {
             let mut cursor = match maybe_tree {
                 None => return Ok(None), // empty tree
                 Some(tree) => tree,
@@ -95,7 +113,7 @@ impl Merk {
 
             loop {
                 if key == cursor.key() {
-                    return Ok(Some(cursor.value().to_vec()));
+                    return Ok(Some(f(cursor)));
                 }
 
                 let left = key < cursor.key();
@@ -106,13 +124,14 @@ impl Merk {
 
                 let maybe_child = link.tree();
                 match maybe_child {
-                    None => break,                 // value is pruned, fall back to fetching from disk
+                    None => {
+                        // fetch from RocksDB
+                        break fetch_node(&self.db, key)
+                            .map(|maybe_node| maybe_node.map(|node| f(&node)));
+                    }
                     Some(child) => cursor = child, // traverse to child
                 }
             }
-
-            // TODO: ignore other fields when reading from node bytes
-            fetch_node(&self.db, key).map(|maybe_node| maybe_node.map(|node| node.value().to_vec()))
         })
     }
 
@@ -139,7 +158,7 @@ impl Merk {
     ///
     /// let batch = &[
     ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key [1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete) // deletes key [4,5,6]
+    ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
     /// store.apply(batch, &[]).unwrap();
     /// ```
@@ -177,7 +196,7 @@ impl Merk {
     ///
     /// let batch = &[
     ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key [1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete) // deletes key [4,5,6]
+    ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
     /// unsafe { store.apply_unchecked(batch, &[]).unwrap() };
     /// ```
@@ -331,7 +350,7 @@ impl Merk {
         MerkSource { db: &self.db }
     }
 
-    fn use_tree<T>(&self, mut f: impl FnMut(Option<&Tree>) -> T) -> T {
+    fn use_tree<T>(&self, f: impl FnOnce(Option<&Tree>) -> T) -> T {
         let tree = self.tree.take();
         let res = f(tree.as_ref());
         self.tree.set(tree);
@@ -436,10 +455,10 @@ fn fetch_existing_node(db: &rocksdb::DB, key: &[u8]) -> Result<Tree> {
 
 #[cfg(test)]
 mod test {
-    use super::{Merk, MerkSource, RefWalker};
-    use crate::test_utils::*;
-    use crate::Op;
     use std::thread;
+
+    use super::{Merk, MerkSource, RefWalker};
+    use crate::{test_utils::*, Op};
 
     // TODO: Close and then reopen test
 
