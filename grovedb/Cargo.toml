@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 rs_merkle = "1.1.0"
-merk = { path = "../merk" }
+merk = { path = "../merk", features = ["full"] }
 thiserror = "1.0.30"
 ed = "0.2.2"
 tempdir = "0.3.7"

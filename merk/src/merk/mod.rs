@@ -1,12 +1,8 @@
 pub mod chunks;
-pub mod restore;
+// TODO
+//pub mod restore;
 
-use std::{
-    cell::Cell,
-    cmp::Ordering,
-    collections::LinkedList,
-    path::{Path, PathBuf},
-};
+use std::{cell::Cell, cmp::Ordering, collections::LinkedList, path::{Path, PathBuf}, rc::Rc};
 
 use failure::bail;
 use rocksdb::{checkpoint::Checkpoint, ColumnFamilyDescriptor, WriteBatch};
@@ -21,7 +17,7 @@ const ROOT_KEY_KEY: &[u8] = b"root";
 const AUX_CF_NAME: &str = "aux";
 const INTERNAL_CF_NAME: &str = "internal";
 
-fn column_families() -> Vec<ColumnFamilyDescriptor> {
+pub fn column_families() -> Vec<ColumnFamilyDescriptor> {
     vec![
         // TODO: clone opts or take args
         ColumnFamilyDescriptor::new(AUX_CF_NAME, Merk::default_db_opts()),
@@ -32,39 +28,42 @@ fn column_families() -> Vec<ColumnFamilyDescriptor> {
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk {
     pub(crate) tree: Cell<Option<Tree>>,
-    pub(crate) db: rocksdb::DB,
-    pub(crate) path: PathBuf,
+    pub(crate) db: Rc<rocksdb::DB>,
 }
 
 pub type UseTreeMutResult = Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>;
 
 impl Merk {
-    /// Opens a store with the specified file path. If no store exists at that
-    /// path, one will be created.
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Merk> {
-        let db_opts = Merk::default_db_opts();
-        Merk::open_opt(path, db_opts)
-    }
-
-    /// Opens a store with the specified file path and the given options. If no
-    /// store exists at that path, one will be created.
-    pub fn open_opt<P>(path: P, db_opts: rocksdb::Options) -> Result<Merk>
-    where
-        P: AsRef<Path>,
-    {
-        let mut path_buf = PathBuf::new();
-        path_buf.push(path);
-        let db = rocksdb::DB::open_cf_descriptors(&db_opts, &path_buf, column_families())?;
-
+    pub fn open(db: Rc<rocksdb::DB>, prefix: &[u8]) -> Result<Merk> {
         let mut merk = Merk {
             tree: Cell::new(None),
             db,
-            path: path_buf,
         };
         merk.load_root()?;
 
         Ok(merk)
     }
+
+    // /// Opens a store with the specified file path and the given options. If no
+    // /// store exists at that path, one will be created.
+    // pub fn open_opt<P>(path: P, prefix: &[u8], db_opts: rocksdb::Options) ->
+    // Result<Merk> where
+    //     P: AsRef<Path>,
+    // {
+    //     let mut path_buf = PathBuf::new();
+    //     path_buf.push(path);
+    //     let db = rocksdb::DB::open_cf_descriptors(&db_opts, &path_buf,
+    // column_families())?;
+
+    //     let mut merk = Merk {
+    //         tree: Cell::new(None),
+    //         db,
+    //         path: path_buf,
+    //     };
+    //     merk.load_root()?;
+
+    //     Ok(merk)
+    // }
 
     pub fn default_db_opts() -> rocksdb::Options {
         let mut opts = rocksdb::Options::default();
@@ -214,14 +213,14 @@ impl Merk {
         self.commit(deleted_keys, aux)
     }
 
-    /// Closes the store and deletes all data from disk.
-    pub fn destroy(self) -> Result<()> {
-        let opts = Merk::default_db_opts();
-        let path = self.path.clone();
-        drop(self);
-        rocksdb::DB::destroy(&opts, path)?;
-        Ok(())
-    }
+    // /// Closes the store and deletes all data from disk.
+    // pub fn destroy(self) -> Result<()> {
+    //     let opts = Merk::default_db_opts();
+    //     let path = self.path.clone();
+    //     drop(self);
+    //     rocksdb::DB::destroy(&opts, path)?;
+    //     Ok(())
+    // }
 
     /// Creates a Merkle proof for the list of queried keys. For each key in the
     /// query, if the key is found in the store then the value will be proven to
@@ -341,10 +340,10 @@ impl Merk {
         self.db.raw_iterator()
     }
 
-    pub fn checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<Merk> {
-        Checkpoint::new(&self.db)?.create_checkpoint(&path)?;
-        Merk::open(path)
-    }
+    // pub fn checkpoint<P: AsRef<Path>>(&self, path: P, prefix: &[u8]) -> Result<Merk> {
+    //     Checkpoint::new(&self.db)?.create_checkpoint(&path)?;
+    //     Merk::open(path, prefix)
+    // }
 
     fn source(&self) -> MerkSource {
         MerkSource { db: &self.db }

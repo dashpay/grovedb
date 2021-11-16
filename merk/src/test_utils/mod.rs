@@ -1,5 +1,5 @@
-mod crash_merk;
-mod temp_merk;
+// mod crash_merk;
+// mod temp_merk;
 
 use crate::tree::{Batch, BatchEntry, NoopCommit, Op, PanicSource, Tree, Walker};
 use byteorder::{BigEndian, WriteBytesExt};
@@ -7,8 +7,8 @@ use rand::prelude::*;
 use std::convert::TryInto;
 use std::ops::Range;
 
-pub use crash_merk::CrashMerk;
-pub use temp_merk::TempMerk;
+// pub use crash_merk::CrashMerk;
+// pub use temp_merk::TempMerk;
 
 pub fn assert_tree_invariants(tree: &Tree) {
     assert!(tree.balance_factor().abs() < 2);

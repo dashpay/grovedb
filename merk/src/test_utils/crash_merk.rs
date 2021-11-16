@@ -6,20 +6,22 @@ use std::path::Path;
 
 /// Wraps a Merk instance and drops it without flushing once it goes out of
 /// scope.
-pub struct CrashMerk {
-    inner: Option<ManuallyDrop<Merk>>,
+pub struct CrashMerk<'a> {
+    inner: Option<ManuallyDrop<Merk<'a>>>,
     path: Box<Path>,
+    prefix: Vec<u8>,
 }
 
-impl CrashMerk {
+impl<'a> CrashMerk<'a> {
     /// Opens a `CrashMerk` at the given file path, creating a new one if it does
     /// not exist.
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<CrashMerk> {
-        let merk = Merk::open(&path)?;
+    pub fn open(db: &rocksdb::DB, prefix: Vec<u8>) -> Result<CrashMerk<'a>> {
+        let merk = Merk::open(db, &prefix)?;
         let inner = Some(ManuallyDrop::new(merk));
         Ok(CrashMerk {
             inner,
             path: path.as_ref().into(),
+            prefix
         })
     }
 
@@ -35,13 +37,13 @@ impl CrashMerk {
         let new_path = self.path.with_file_name(file_name);
         fs::rename(&self.path, &new_path)?;
 
-        let mut new_merk = CrashMerk::open(&new_path)?;
+        let mut new_merk = CrashMerk::open(&new_path, self.prefix.clone())?;
         self.inner = new_merk.inner.take();
         self.path = new_merk.path;
         Ok(())
     }
 
-    pub fn into_inner(self) -> Merk {
+    pub fn into_inner(self) -> Merk<'a> {
         ManuallyDrop::into_inner(self.inner.unwrap())
     }
 
@@ -50,15 +52,15 @@ impl CrashMerk {
     }
 }
 
-impl Deref for CrashMerk {
-    type Target = Merk;
+impl<'a> Deref for CrashMerk<'a> {
+    type Target = Merk<'a>;
 
     fn deref(&self) -> &Merk {
         self.inner.as_ref().unwrap()
     }
 }
 
-impl DerefMut for CrashMerk {
+impl<'a> DerefMut for CrashMerk<'a> {
     fn deref_mut(&mut self) -> &mut Merk {
         self.inner.as_mut().unwrap()
     }

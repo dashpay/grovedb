@@ -12,6 +12,7 @@ mod error;
 /// The top-level store API.
 #[cfg(feature = "full")]
 mod merk;
+pub use merk::column_families;
 /// Provides a container type that allows temporarily taking ownership of a value.
 // TODO: move this into its own crate
 pub mod owner;
@@ -25,7 +26,8 @@ pub mod test_utils;
 pub mod tree;
 
 #[cfg(feature = "full")]
-pub use crate::merk::{chunks, restore, Merk};
+//pub use crate::merk::{chunks, restore, Merk};
+pub use crate::merk::{chunks, Merk};
 
 pub use error::{Error, Result};
 pub use tree::{Batch, BatchEntry, Hash, Op, PanicSource, HASH_LENGTH};

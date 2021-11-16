@@ -20,14 +20,6 @@ impl Element {
         Element::Reference(Self::build_merk_key(path.iter().map(|x| *x), key))
     }
 
-    /// Helper method to short-circuit out in case a tree is expected
-    fn is_tree(&self) -> Result<(), Error> {
-        match self {
-            Element::Tree => Ok(()),
-            _ => Err(Error::InvalidPath("tree expected")),
-        }
-    }
-
     /// Recursively follow `Element::Reference`
     fn follow_reference(self, merk: &Merk) -> Result<Element, Error> {
         fn follow_reference_with_path(
@@ -69,45 +61,23 @@ impl Element {
         merk_key
     }
 
-    pub fn get(merk: &Merk, path: &[&[u8]], key: &[u8]) -> Result<Element, Error> {
-        // We'll iterate over path accumulating RocksDB key to retrieve the data,
-        // validating the path while doing so
-        let mut merk_key = Vec::new();
-        for p in path {
-            merk_key.extend(p.into_iter());
-            let element = Element::decode(
-                merk.get(&merk_key)?
-                    .ok_or(Error::InvalidPath("key not found in Merk"))?
-                    .as_slice(),
-            )?;
-            element.is_tree()?;
-        }
-        merk_key.extend(key);
+    /// Get an element from Merk under a key; path should be resolved and proper
+    /// Merk should be loaded by this moment
+    pub fn get(merk: &Merk, key: &[u8]) -> Result<Element, Error> {
         let element = Element::decode(
-            merk.get(&merk_key)?
+            merk.get(&key)?
                 .ok_or(Error::InvalidPath("key not found in Merk"))?
                 .as_slice(),
         )?;
-
-        element.follow_reference(&merk)
+        // TODO: fix `follow_reference` as now it is possible to jump between multiple merks
+        // element.follow_reference(&merk)
+        todo!()
     }
 
-    pub fn insert(&self, merk: &mut Merk, path: &[&[u8]], key: &[u8]) -> Result<(), Error> {
-        // check if a tree was inserted by the path
-        if let Some((tree_key, tree_path)) = path.split_last() {
-            Element::get(merk, tree_path, tree_key)?.is_tree()?;
-        }
-        if path.len() == 1 {
-            Element::get(
-                merk,
-                &[],
-                path.first().expect("expected the path of length of 1"),
-            )?
-            .is_tree()?;
-        }
-
-        let merk_key: Vec<u8> = Self::build_merk_key(path.iter().map(|x| *x), key);
-        let batch = [(merk_key, Op::Put(Element::encode(self)?))];
+    /// Insert an element in Merk under a key; path should be resolved and
+    /// proper Merk should be loaded by this moment
+    pub fn insert(&self, merk: &mut Merk, key: Vec<u8>) -> Result<(), Error> {
+        let batch = [(key, Op::Put(Element::encode(self)?))];
         merk.apply(&batch, &[]).map_err(|e| e.into())
     }
 }

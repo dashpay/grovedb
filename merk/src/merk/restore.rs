@@ -20,16 +20,16 @@ use std::{path::Path, u8};
 /// A `Restorer` handles decoding, verifying, and storing chunk proofs to
 /// replicate an entire Merk tree. It expects the chunks to be processed in
 /// order, retrying the last chunk if verification fails.
-pub struct Restorer {
+pub struct Restorer<'a> {
     leaf_hashes: Option<Peekable<std::vec::IntoIter<Hash>>>,
     parent_keys: Option<Peekable<std::vec::IntoIter<Vec<u8>>>>,
     trunk_height: Option<usize>,
-    merk: Merk,
+    merk: Merk<'a>,
     expected_root_hash: Hash,
     stated_length: usize,
 }
 
-impl Restorer {
+impl<'a> Restorer<'a> {
     /// Creates a new `Restorer`, which will initialize a new Merk at the given
     /// file path. The first chunk (the "trunk") will be compared against
     /// `expected_root_hash`, then each subsequent chunk will be compared
@@ -42,6 +42,7 @@ impl Restorer {
     /// length.
     pub fn new<P: AsRef<Path>>(
         db_path: P,
+        prefix: &[u8],
         expected_root_hash: Hash,
         stated_length: usize,
     ) -> Result<Self> {
@@ -53,7 +54,7 @@ impl Restorer {
             expected_root_hash,
             stated_length,
             trunk_height: None,
-            merk: Merk::open(db_path)?,
+            merk: Merk::open(db_path, prefix)?,
             leaf_hashes: None,
             parent_keys: None,
         })
@@ -78,7 +79,7 @@ impl Restorer {
     /// Merk instance. This method will return an error if called before
     /// processing all chunks (e.g. `restorer.remaining_chunks()` is not equal
     /// to 0).
-    pub fn finalize(mut self) -> Result<Merk> {
+    pub fn finalize(mut self) -> Result<Merk<'a>> {
         if self.remaining_chunks().is_none() || self.remaining_chunks().unwrap() != 0 {
             bail!("Called finalize before all chunks were processed");
         }
@@ -299,10 +300,11 @@ impl Merk {
     /// verified during the restoration process.
     pub fn restore<P: AsRef<Path>>(
         path: P,
+        prefix: &[u8],
         expected_root_hash: Hash,
         stated_length: usize,
     ) -> Result<Restorer> {
-        Restorer::new(path, expected_root_hash, stated_length)
+        Restorer::new(path, prefix, expected_root_hash, stated_length)
     }
 }
 
