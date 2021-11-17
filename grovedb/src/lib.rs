@@ -45,14 +45,6 @@ pub struct GroveDb {
 
 impl GroveDb {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        // 1. We should open a rocksdb connection
-        // 2. from rocksdb by a special key we need to take array of path to every
-        // possible merk 3. create for each path a new Merk (with prefix =
-        // concat path) insance using rocksdb from 1. 4. put into `subtrees`
-        // hashmap path -> Merk object 5. get(path, key) :
-        // grovedb.subtrees[concat_path] (Merk) m, m.get(key) 6. insert(value,
-        // path, key) : grovedb.subtrees[concat_path] (create if no entry) (Merk).apply
-
         let db = Rc::new(rocksdb::DB::open_cf_descriptors(
             &Merk::default_db_opts(),
             path,
@@ -60,13 +52,15 @@ impl GroveDb {
         )?);
         let mut subtrees = HashMap::new();
         let mut leaf_hashes = Vec::new();
+        // TODO: this will work only for a fresh RocksDB and it cannot restore any
+        // other subtree than these constants at any level!
         for subtree_path in [
             COMMON_TREE_KEY,
             IDENTITIES_TREE_KEY,
             PUBLIC_KEYS_TO_IDENTITY_IDS_TREE_KEY,
             DATA_CONTRACTS_TREE_KEY,
         ] {
-            let subtree_merk = Merk::open(db.clone(), subtree_path)?;
+            let subtree_merk = Merk::open(db.clone(), subtree_path.to_vec())?;
             leaf_hashes.push(subtree_merk.root_hash());
             subtrees.insert(subtree_path.to_vec(), subtree_merk);
         }
@@ -92,7 +86,7 @@ impl GroveDb {
                     let compressed_path_subtree = Self::compress_path(path, Some(&key));
                     Ok((
                         compressed_path_subtree.clone(),
-                        Merk::open(self.db.clone(), &compressed_path_subtree)?,
+                        Merk::open(self.db.clone(), compressed_path_subtree)?,
                     ))
                 };
                 if path.is_empty() {

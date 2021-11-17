@@ -29,15 +29,17 @@ pub fn column_families() -> Vec<ColumnFamilyDescriptor> {
 pub struct Merk {
     pub(crate) tree: Cell<Option<Tree>>,
     pub(crate) db: Rc<rocksdb::DB>,
+    pub(crate) prefix: Vec<u8>,
 }
 
 pub type UseTreeMutResult = Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>;
 
 impl Merk {
-    pub fn open(db: Rc<rocksdb::DB>, prefix: &[u8]) -> Result<Merk> {
+    pub fn open(db: Rc<rocksdb::DB>, prefix: Vec<u8>) -> Result<Merk> {
         let mut merk = Merk {
             tree: Cell::new(None),
             db,
+            prefix,
         };
         merk.load_root()?;
 
@@ -125,7 +127,7 @@ impl Merk {
                 match maybe_child {
                     None => {
                         // fetch from RocksDB
-                        break fetch_node(&self.db, key)
+                        break fetch_node(&self.db, &self.prefix, key)
                             .map(|maybe_node| maybe_node.map(|node| f(&node)));
                     }
                     Some(child) => cursor = child, // traverse to child
@@ -288,13 +290,16 @@ impl Merk {
                 let mut committer = MerkCommitter::new(tree.height(), 100);
                 tree.commit(&mut committer)?;
 
+                let mut prefixed_key = self.prefix.clone();
+                prefixed_key.extend_from_slice(tree.key());
                 // update pointer to root node
-                batch.put_cf(internal_cf, ROOT_KEY_KEY, tree.key());
+                batch.put_cf(internal_cf, ROOT_KEY_KEY, prefixed_key);
 
                 Ok(committer.batch)
             } else {
                 // empty tree, delete pointer to root
-                batch.delete_cf(internal_cf, ROOT_KEY_KEY);
+                //batch.delete_cf(internal_cf, ROOT_KEY_KEY);
+                todo!("deletion of root pointer");
 
                 Ok(vec![])
             }
@@ -306,17 +311,21 @@ impl Merk {
         }
         to_batch.sort_by(|a, b| a.0.cmp(&b.0));
         for (key, maybe_value) in to_batch {
+            let mut prefixed_key = self.prefix.clone();
+            prefixed_key.extend_from_slice(&key);
             if let Some(value) = maybe_value {
-                batch.put(key, value);
+                batch.put(prefixed_key, value);
             } else {
-                batch.delete(key);
+                batch.delete(prefixed_key);
             }
         }
 
         for (key, value) in aux {
+            let mut prefixed_key = self.prefix.clone();
+            prefixed_key.extend_from_slice(&key);
             match value {
-                Op::Put(value) => batch.put_cf(aux_cf, key, value),
-                Op::Delete => batch.delete_cf(aux_cf, key),
+                Op::Put(value) => batch.put_cf(aux_cf, prefixed_key, value),
+                Op::Delete => batch.delete_cf(aux_cf, prefixed_key),
             };
         }
 
@@ -346,7 +355,7 @@ impl Merk {
     // }
 
     fn source(&self) -> MerkSource {
-        MerkSource { db: &self.db }
+        MerkSource { db: &self.db, prefix: &self.prefix }
     }
 
     fn use_tree<T>(&self, f: impl FnOnce(Option<&Tree>) -> T) -> T {
@@ -379,7 +388,7 @@ impl Merk {
     }
 
     pub(crate) fn fetch_node(&self, key: &[u8]) -> Result<Option<Tree>> {
-        fetch_node(&self.db, key)
+        fetch_node(&self.db, &self.prefix, key)
     }
 
     pub(crate) fn load_root(&mut self) -> Result<()> {
@@ -387,7 +396,7 @@ impl Merk {
         let tree = self
             .db
             .get_pinned_cf(internal_cf, ROOT_KEY_KEY)?
-            .map(|root_key| fetch_existing_node(&self.db, &root_key))
+            .map(|root_key| fetch_existing_node(&self.db, &self.prefix, &root_key))
             .transpose()?;
         self.tree = Cell::new(tree);
         Ok(())
@@ -397,11 +406,12 @@ impl Merk {
 #[derive(Clone)]
 pub struct MerkSource<'a> {
     db: &'a rocksdb::DB,
+    prefix: &'a [u8]
 }
 
 impl<'a> Fetch for MerkSource<'a> {
     fn fetch(&self, link: &Link) -> Result<Tree> {
-        fetch_existing_node(self.db, link.key())
+        fetch_existing_node(self.db, self.prefix, link.key())
     }
 }
 
@@ -436,7 +446,7 @@ impl Commit for MerkCommitter {
     }
 }
 
-fn fetch_node(db: &rocksdb::DB, key: &[u8]) -> Result<Option<Tree>> {
+fn fetch_node(db: &rocksdb::DB, prefix: &[u8], key: &[u8]) -> Result<Option<Tree>> {
     let bytes = db.get_pinned(key)?;
     if let Some(bytes) = bytes {
         Ok(Some(Tree::decode(key.to_vec(), &bytes)))
@@ -445,8 +455,8 @@ fn fetch_node(db: &rocksdb::DB, key: &[u8]) -> Result<Option<Tree>> {
     }
 }
 
-fn fetch_existing_node(db: &rocksdb::DB, key: &[u8]) -> Result<Tree> {
-    match fetch_node(db, key)? {
+fn fetch_existing_node(db: &rocksdb::DB, prefix: &[u8], key: &[u8]) -> Result<Tree> {
+    match fetch_node(db, prefix, key)? {
         None => bail!("key not found: {:?}", key),
         Some(node) => Ok(node),
     }
