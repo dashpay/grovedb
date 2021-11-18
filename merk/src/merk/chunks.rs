@@ -1,13 +1,15 @@
 //! Provides `ChunkProducer`, which creates chunk proofs for full replication of
 //! a Merk.
 
-use super::Merk;
-use crate::proofs::{chunk::get_next_chunk, Node, Op};
-
-use crate::Result;
 use ed::Encode;
 use failure::bail;
 use rocksdb::DBRawIterator;
+
+use super::Merk;
+use crate::{
+    proofs::{chunk::get_next_chunk, Node, Op},
+    Result,
+};
 
 /// A `ChunkProducer` allows the creation of chunk proofs, used for trustlessly
 /// replicating entire Merk trees. Chunks can be generated on the fly in a
@@ -52,8 +54,8 @@ impl<'a> ChunkProducer<'a> {
     }
 
     /// Gets the chunk with the given index. Errors if the index is out of
-    /// bounds or the tree is empty - the number of chunks can be checked by calling
-    /// `producer.len()`.
+    /// bounds or the tree is empty - the number of chunks can be checked by
+    /// calling `producer.len()`.
     pub fn chunk(&mut self, index: usize) -> Result<Vec<u8>> {
         if index >= self.len() {
             bail!("Chunk index out-of-bounds");

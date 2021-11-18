@@ -1,8 +1,14 @@
 pub mod chunks;
 // TODO
-//pub mod restore;
+// pub mod restore;
 
-use std::{cell::Cell, cmp::Ordering, collections::LinkedList, path::{Path, PathBuf}, rc::Rc};
+use std::{
+    cell::Cell,
+    cmp::Ordering,
+    collections::LinkedList,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use failure::bail;
 use rocksdb::{checkpoint::Checkpoint, ColumnFamilyDescriptor, WriteBatch};
@@ -298,7 +304,7 @@ impl Merk {
                 Ok(committer.batch)
             } else {
                 // empty tree, delete pointer to root
-                //batch.delete_cf(internal_cf, ROOT_KEY_KEY);
+                // batch.delete_cf(internal_cf, ROOT_KEY_KEY);
                 todo!("deletion of root pointer");
 
                 Ok(vec![])
@@ -349,13 +355,16 @@ impl Merk {
         self.db.raw_iterator()
     }
 
-    // pub fn checkpoint<P: AsRef<Path>>(&self, path: P, prefix: &[u8]) -> Result<Merk> {
-    //     Checkpoint::new(&self.db)?.create_checkpoint(&path)?;
+    // pub fn checkpoint<P: AsRef<Path>>(&self, path: P, prefix: &[u8]) ->
+    // Result<Merk> {     Checkpoint::new(&self.db)?.create_checkpoint(&path)?;
     //     Merk::open(path, prefix)
     // }
 
     fn source(&self) -> MerkSource {
-        MerkSource { db: &self.db, prefix: &self.prefix }
+        MerkSource {
+            db: &self.db,
+            prefix: &self.prefix,
+        }
     }
 
     fn use_tree<T>(&self, f: impl FnOnce(Option<&Tree>) -> T) -> T {
@@ -406,7 +415,7 @@ impl Merk {
 #[derive(Clone)]
 pub struct MerkSource<'a> {
     db: &'a rocksdb::DB,
-    prefix: &'a [u8]
+    prefix: &'a [u8],
 }
 
 impl<'a> Fetch for MerkSource<'a> {

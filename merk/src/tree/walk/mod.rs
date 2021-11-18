@@ -1,11 +1,11 @@
 mod fetch;
 mod ref_walker;
 
-use super::{Link, Tree};
-use crate::error::Result;
-use crate::owner::Owner;
 pub use fetch::Fetch;
 pub use ref_walker::RefWalker;
+
+use super::{Link, Tree};
+use crate::{error::Result, owner::Owner};
 
 /// Allows traversal of a `Tree`, fetching from the given source when traversing
 /// to a pruned node, detaching children as they are traversed.
@@ -30,7 +30,8 @@ where
     }
 
     /// Similar to `Tree#detach`, but yields a `Walker` which fetches from the
-    /// same source as `self`. Returned tuple is `(updated_self, maybe_child_walker)`.
+    /// same source as `self`. Returned tuple is `(updated_self,
+    /// maybe_child_walker)`.
     pub fn detach(mut self, left: bool) -> Result<(Self, Option<Self>)> {
         let link = match self.tree.link(left) {
             None => return Ok((self, None)),
@@ -56,7 +57,8 @@ where
     }
 
     /// Similar to `Tree#detach_expect`, but yields a `Walker` which fetches
-    /// from the same source as `self`. Returned tuple is `(updated_self, child_walker)`.
+    /// from the same source as `self`. Returned tuple is `(updated_self,
+    /// child_walker)`.
     pub fn detach_expect(self, left: bool) -> Result<(Self, Self)> {
         let (walker, maybe_child) = self.detach(left)?;
         if let Some(child) = maybe_child {
@@ -145,8 +147,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use super::super::NoopCommit;
-    use super::*;
+    use super::{super::NoopCommit, *};
     use crate::tree::Tree;
 
     #[derive(Clone)]

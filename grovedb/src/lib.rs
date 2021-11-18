@@ -1,9 +1,8 @@
 #![feature(trivial_bounds)]
 use std::{collections::HashMap, path::Path, rc::Rc};
 
-use ed::Encode;
-use merk::{self, column_families, rocksdb, Merk};
-use rs_merkle::{algorithms::Sha256, Hasher, MerkleTree};
+use merk::{self, rocksdb, Merk};
+use rs_merkle::{algorithms::Sha256, MerkleTree};
 use subtree::Element;
 mod subtree;
 
@@ -51,7 +50,6 @@ impl GroveDb {
             merk::column_families(),
         )?);
         let mut subtrees = HashMap::new();
-        let mut leaf_hashes = Vec::new();
         // TODO: this will work only for a fresh RocksDB and it cannot restore any
         // other subtree than these constants at any level!
         for subtree_path in [
@@ -61,26 +59,42 @@ impl GroveDb {
             DATA_CONTRACTS_TREE_KEY,
         ] {
             let subtree_merk = Merk::open(db.clone(), subtree_path.to_vec())?;
-            leaf_hashes.push(subtree_merk.root_hash());
             subtrees.insert(subtree_path.to_vec(), subtree_merk);
         }
 
         Ok(GroveDb {
-            root_tree: MerkleTree::<Sha256>::from_leaves(&leaf_hashes),
+            root_tree: Self::build_root_tree(&subtrees),
             db: db.clone(),
             subtrees,
         })
+    }
+
+    // TODO: evntually there should be no hardcoded root tree structure
+    fn build_root_tree(subtrees: &HashMap<Vec<u8>, Merk>) -> MerkleTree<Sha256> {
+        let mut leaf_hashes = Vec::new();
+        for subtree_path in [
+            COMMON_TREE_KEY,
+            IDENTITIES_TREE_KEY,
+            PUBLIC_KEYS_TO_IDENTITY_IDS_TREE_KEY,
+            DATA_CONTRACTS_TREE_KEY,
+        ] {
+            let subtree_merk = subtrees
+                .get(subtree_path)
+                .expect("root tree structure is hardcoded");
+            leaf_hashes.push(subtree_merk.root_hash());
+        }
+        MerkleTree::<Sha256>::from_leaves(&leaf_hashes)
     }
 
     pub fn insert(
         &mut self,
         path: &[&[u8]],
         key: Vec<u8>,
-        element: subtree::Element,
+        mut element: subtree::Element,
     ) -> Result<(), Error> {
         let compressed_path = Self::compress_path(path, None);
-        match element {
-            Element::Tree => {
+        match &mut element {
+            Element::Tree(subtree_root_hash) => {
                 // Helper closure to create a new subtree under path + key
                 let create_subtree_merk = || -> Result<(Vec<u8>, Merk), Error> {
                     let compressed_path_subtree = Self::compress_path(path, Some(&key));
@@ -93,8 +107,7 @@ impl GroveDb {
                     // Add subtree to the root tree
                     let (compressed_path_subtree, subtree_merk) = create_subtree_merk()?;
                     self.subtrees.insert(compressed_path_subtree, subtree_merk);
-                    Ok(())
-                    // TODO: update root tree hashes
+                    self.propagate_changes(&[&key])?;
                 } else {
                     // Add subtree to another subtree.
                     // First, check if a subtree exists to create a new subtree under it
@@ -102,6 +115,8 @@ impl GroveDb {
                         .get(&compressed_path)
                         .ok_or(Error::InvalidPath("no subtree found under that path"))?;
                     let (compressed_path_subtree, subtree_merk) = create_subtree_merk()?;
+                    // Set tree value as a a subtree root hash
+                    *subtree_root_hash = subtree_merk.root_hash();
                     self.subtrees.insert(compressed_path_subtree, subtree_merk);
                     // Had to take merk from `subtrees` once again to solve multiple &mut s
                     let mut merk = self
@@ -109,8 +124,8 @@ impl GroveDb {
                         .get_mut(&compressed_path)
                         .expect("merk object must exist in `subtrees`");
                     // need to mark key as taken in the upper tree
-                    element.insert(&mut merk, key)
-                    // TODO: propagate updated hashses to upper trees
+                    element.insert(&mut merk, key)?;
+                    self.propagate_changes(path)?;
                 }
             }
             _ => {
@@ -126,10 +141,11 @@ impl GroveDb {
                     .subtrees
                     .get_mut(&compressed_path)
                     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                element.insert(&mut merk, key)
-                // TODO: propagate updated hashes to upper trees
+                element.insert(&mut merk, key)?;
+                self.propagate_changes(path)?;
             }
         }
+        Ok(())
     }
 
     pub fn get(&self, path: &[&[u8]], key: &[u8]) -> Result<subtree::Element, Error> {
@@ -142,6 +158,29 @@ impl GroveDb {
 
     pub fn proof(&self) -> ! {
         todo!()
+    }
+
+    /// Method to propagate updated subtree root hashes up to GroveDB root
+    fn propagate_changes(&mut self, path: &[&[u8]]) -> Result<(), Error> {
+        let mut split_path = path.split_last();
+        // Go up until only one element in path, which means a key of a root tree
+        while let Some((key, path_slice)) = split_path {
+            let compressed_path_upper_tree = Self::compress_path(path_slice, None);
+            let compressed_path_subtree = Self::compress_path(path_slice, Some(key));
+            let subtree = self
+                .subtrees
+                .get(&compressed_path_subtree)
+                .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+            let element = Element::Tree(subtree.root_hash());
+            let upper_tree = self
+                .subtrees
+                .get_mut(&compressed_path_upper_tree)
+                .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+            element.insert(upper_tree, key.to_vec())?;
+            split_path = path_slice.split_last();
+        }
+        self.root_tree = Self::build_root_tree(&self.subtrees);
+        Ok(())
     }
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree

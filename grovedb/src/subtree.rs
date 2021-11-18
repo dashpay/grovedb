@@ -4,18 +4,23 @@ use merk::Op;
 
 use crate::{Error, Merk};
 
-/// Variants of an insertable entity
+/// Variants of GroveDB stored entities
 #[derive(Debug, Decode, Encode, PartialEq)]
 pub enum Element {
     /// An ordinary value
     Item(Vec<u8>),
     /// A reference to an object by its path
     Reference(Vec<u8>),
-    /// A subtree
-    Tree,
+    /// A subtree, contains a root hash of the underlying Merk
+    Tree([u8; 32]),
 }
 
 impl Element {
+    // TODO: improve API to prevent creation of Tree elements with uncertain state
+    pub fn empty_tree() -> Element {
+        Element::Tree(Default::default())
+    }
+
     pub fn new_reference(path: &[&[u8]], key: &[u8]) -> Self {
         Element::Reference(Self::build_merk_key(path.iter().map(|x| *x), key))
     }
@@ -69,8 +74,8 @@ impl Element {
                 .ok_or(Error::InvalidPath("key not found in Merk"))?
                 .as_slice(),
         )?;
-        // TODO: fix `follow_reference` as now it is possible to jump between multiple merks
-        // element.follow_reference(&merk)
+        // TODO: fix `follow_reference` as now it is possible to jump between multiple
+        // merks element.follow_reference(&merk)
         todo!()
     }
 

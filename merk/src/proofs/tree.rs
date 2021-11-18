@@ -1,7 +1,10 @@
-use super::{Node, Op};
-use crate::error::Result;
-use crate::tree::{kv_hash, node_hash, Hash, NULL_HASH};
 use failure::bail;
+
+use super::{Node, Op};
+use crate::{
+    error::Result,
+    tree::{kv_hash, node_hash, Hash, NULL_HASH},
+};
 
 /// Contains a tree's child node and its hash. The hash can always be assumed to
 /// be up-to-date.
@@ -168,7 +171,8 @@ impl<'a> LayerIter<'a> {
         iter
     }
 
-    /// Builds up the stack by traversing through left children to the desired depth.
+    /// Builds up the stack by traversing through left children to the desired
+    /// depth.
     fn traverse_to_start(&mut self, tree: &'a Tree, remaining_depth: usize) {
         self.stack.push(tree);
 
@@ -285,9 +289,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use super::super::*;
-    use super::Tree as ProofTree;
-    use super::*;
+    use super::{super::*, Tree as ProofTree, *};
 
     fn make_7_node_prooftree() -> ProofTree {
         let make_node = |i| -> super::super::tree::Tree { Node::KV(vec![i], vec![]).into() };

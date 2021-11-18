@@ -1,18 +1,21 @@
 mod map;
 
+use std::{
+    cmp::{max, min, Ordering},
+    collections::BTreeSet,
+    ops::{Range, RangeInclusive},
+};
+
+use failure::bail;
+pub use map::*;
 #[cfg(feature = "full")]
 use {super::Op, std::collections::LinkedList};
 
-use super::tree::execute;
-use super::{Decoder, Node};
-use crate::error::Result;
-use crate::tree::{Fetch, Hash, Link, RefWalker};
-use failure::bail;
-use std::cmp::{max, min, Ordering};
-use std::collections::BTreeSet;
-use std::ops::{Range, RangeInclusive};
-
-pub use map::*;
+use super::{tree::execute, Decoder, Node};
+use crate::{
+    error::Result,
+    tree::{Fetch, Hash, Link, RefWalker},
+};
 
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all of the requested values.
@@ -100,8 +103,8 @@ impl From<Query> for Vec<QueryItem> {
 }
 
 impl IntoIterator for Query {
-    type Item = QueryItem;
     type IntoIter = <BTreeSet<QueryItem> as IntoIterator>::IntoIter;
+    type Item = QueryItem;
 
     fn into_iter(self) -> Self::IntoIter {
         self.items.into_iter()
@@ -411,7 +414,7 @@ pub fn verify_query(
 
                         // lower bound is proven - the preceding tree node
                         // is lower than the bound
-                        Some(Node::KV(_, _)) => {}
+                        Some(Node::KV(..)) => {}
 
                         // cannot verify lower bound - we have an abridged
                         // tree so we cannot tell what the preceding key was
@@ -461,7 +464,7 @@ pub fn verify_query(
     if query.peek().is_some() {
         match last_push {
             // last node in tree was less than queried item
-            Some(Node::KV(_, _)) => {}
+            Some(Node::KV(..)) => {}
 
             // proof contains abridged data so we cannot verify absence of
             // remaining query items
@@ -483,11 +486,14 @@ pub fn verify_query(
 #[allow(deprecated)]
 #[cfg(test)]
 mod test {
-    use super::super::encoding::encode_into;
-    use super::super::*;
-    use super::*;
-    use crate::test_utils::make_tree_seq;
-    use crate::tree::{NoopCommit, PanicSource, RefWalker, Tree};
+    use super::{
+        super::{encoding::encode_into, *},
+        *,
+    };
+    use crate::{
+        test_utils::make_tree_seq,
+        tree::{NoopCommit, PanicSource, RefWalker, Tree},
+    };
 
     fn make_3_node_tree() -> Tree {
         let mut tree = Tree::new(vec![5], vec![5])

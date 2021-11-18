@@ -2,12 +2,12 @@
 
 extern crate test;
 
-use merk::proofs::encode_into as encode_proof_into;
-use merk::restore::Restorer;
-use merk::test_utils::*;
-use merk::{Merk, Result};
-use rand::prelude::*;
 use std::thread;
+
+use merk::{
+    proofs::encode_into as encode_proof_into, restore::Restorer, test_utils::*, Merk, Result,
+};
+use rand::prelude::*;
 use test::Bencher;
 
 #[bench]
