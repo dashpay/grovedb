@@ -12,7 +12,7 @@ mod error;
 /// The top-level store API.
 #[cfg(feature = "full")]
 mod merk;
-pub use merk::column_families;
+pub use crate::merk::column_families;
 /// Provides a container type that allows temporarily taking ownership of a
 /// value.
 // TODO: move this into its own crate
@@ -21,7 +21,6 @@ pub mod owner;
 pub mod proofs;
 
 /// Various helpers useful for tests or benchmarks.
-#[cfg(feature = "full")]
 pub mod test_utils;
 /// The core tree data structure.
 pub mod tree;
