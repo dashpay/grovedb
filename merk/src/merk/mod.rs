@@ -298,8 +298,10 @@ impl Merk {
 
                 let mut prefixed_key = self.prefix.clone();
                 prefixed_key.extend_from_slice(tree.key());
+                let mut prefixed_root = self.prefix.clone();
+                prefixed_root.extend_from_slice(ROOT_KEY_KEY);
                 // update pointer to root node
-                batch.put_cf(internal_cf, ROOT_KEY_KEY, prefixed_key);
+                batch.put_cf(internal_cf, prefixed_root, prefixed_key);
 
                 Ok(committer.batch)
             } else {
@@ -456,8 +458,8 @@ impl Commit for MerkCommitter {
 }
 
 fn fetch_node(db: &rocksdb::DB, prefix: &[u8], key: &[u8]) -> Result<Option<Tree>> {
-    let mut prefixed_key = key.to_vec();
-    prefixed_key.extend_from_slice(prefix);
+    let mut prefixed_key = prefix.to_vec();
+    prefixed_key.extend_from_slice(key);
     let bytes = db.get_pinned(&prefixed_key)?;
     if let Some(bytes) = bytes {
         Ok(Some(Tree::decode(prefixed_key, &bytes)))

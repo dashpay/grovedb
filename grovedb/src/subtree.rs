@@ -7,7 +7,7 @@ use merk::Op;
 use crate::{Error, Merk};
 
 /// Variants of GroveDB stored entities
-#[derive(Debug, Decode, Encode, PartialEq)]
+#[derive(Debug, Clone, Decode, Encode, PartialEq)]
 pub enum Element {
     /// An ordinary value
     Item(Vec<u8>),

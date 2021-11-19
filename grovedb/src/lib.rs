@@ -165,21 +165,26 @@ impl GroveDb {
         let mut split_path = path.split_last();
         // Go up until only one element in path, which means a key of a root tree
         while let Some((key, path_slice)) = split_path {
-            let compressed_path_upper_tree = Self::compress_path(path_slice, None);
-            let compressed_path_subtree = Self::compress_path(path_slice, Some(key));
-            let subtree = self
-                .subtrees
-                .get(&compressed_path_subtree)
-                .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-            let element = Element::Tree(subtree.root_hash());
-            let upper_tree = self
-                .subtrees
-                .get_mut(&compressed_path_upper_tree)
-                .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-            element.insert(upper_tree, key.to_vec())?;
-            split_path = path_slice.split_last();
+            if path_slice.is_empty() {
+                // Hit the root tree
+                self.root_tree = Self::build_root_tree(&self.subtrees);
+                break;
+            } else {
+                let compressed_path_upper_tree = Self::compress_path(path_slice, None);
+                let compressed_path_subtree = Self::compress_path(path_slice, Some(key));
+                let subtree = self
+                    .subtrees
+                    .get(&compressed_path_subtree)
+                    .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                let element = Element::Tree(subtree.root_hash());
+                let upper_tree = self
+                    .subtrees
+                    .get_mut(&compressed_path_upper_tree)
+                    .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                element.insert(upper_tree, key.to_vec())?;
+                split_path = path_slice.split_last();
+            }
         }
-        self.root_tree = Self::build_root_tree(&self.subtrees);
         Ok(())
     }
 
@@ -207,5 +212,72 @@ mod tests {
     fn test_init() {
         let tmp_dir = TempDir::new("db").unwrap();
         GroveDb::open(tmp_dir).expect("empty tree is ok");
+    }
+
+    #[test]
+    fn test_insert_value_to_merk() {
+        let tmp_dir = TempDir::new("db").unwrap();
+        let mut db = GroveDb::open(tmp_dir).unwrap();
+        let element = Element::Item(b"ayy".to_vec());
+        db.insert(&[COMMON_TREE_KEY], b"key".to_vec(), element.clone())
+            .expect("successful insert");
+        assert_eq!(
+            db.get(&[COMMON_TREE_KEY], b"key").expect("succesful get"),
+            element
+        );
+    }
+
+    #[test]
+    fn test_insert_value_to_subtree() {
+        let tmp_dir = TempDir::new("db").unwrap();
+        let mut db = GroveDb::open(tmp_dir).unwrap();
+        let element = Element::Item(b"ayy".to_vec());
+
+        // Insert a subtree first
+        db.insert(&[COMMON_TREE_KEY], b"key1".to_vec(), Element::empty_tree())
+            .expect("successful subtree insert");
+        // Insert an element into subtree
+        db.insert(
+            &[COMMON_TREE_KEY, b"key1"],
+            b"key2".to_vec(),
+            element.clone(),
+        )
+        .expect("successful value insert");
+        assert_eq!(
+            db.get(&[COMMON_TREE_KEY, b"key1"], b"key2")
+                .expect("succesful get"),
+            element
+        );
+    }
+
+    #[test]
+    fn test_changes_propagated() {
+        let tmp_dir = TempDir::new("db").unwrap();
+        let mut db = GroveDb::open(tmp_dir).unwrap();
+        let old_hash = db.root_tree.root();
+        let element = Element::Item(b"ayy".to_vec());
+
+        // Insert some nested subtrees
+        db.insert(&[COMMON_TREE_KEY], b"key1".to_vec(), Element::empty_tree())
+            .expect("successful subtree 1 insert");
+        db.insert(
+            &[COMMON_TREE_KEY, b"key1"],
+            b"key2".to_vec(),
+            Element::empty_tree(),
+        )
+        .expect("successful subtree 2 insert");
+        // Insert an element into subtree
+        db.insert(
+            &[COMMON_TREE_KEY, b"key1", b"key2"],
+            b"key3".to_vec(),
+            element.clone(),
+        )
+        .expect("successful value insert");
+        assert_eq!(
+            db.get(&[COMMON_TREE_KEY, b"key1", b"key2"], b"key3")
+                .expect("succesful get"),
+            element
+        );
+        assert_ne!(old_hash, db.root_tree.root());
     }
 }
