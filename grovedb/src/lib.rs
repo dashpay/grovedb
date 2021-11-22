@@ -1,10 +1,16 @@
 #![feature(trivial_bounds)]
-use std::{collections::HashMap, path::Path, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    rc::Rc,
+};
 
 use merk::{self, rocksdb, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 use subtree::Element;
 mod subtree;
+
+const MAX_REFERENCE_HOPS: usize = 10;
 
 // Root tree has hardcoded leafs; each of them is `pub` to be easily used in
 // `path` arg
@@ -25,9 +31,11 @@ pub enum Error {
     #[error("invalid path")]
     InvalidPath(&'static str),
     #[error("unable to decode")]
-    EdError(#[from] ed::Error),
+    BincodeError(#[from] bincode::Error),
     #[error("cyclic reference path")]
-    CyclicReferencePath,
+    CyclicReference,
+    #[error("reference hops limit exceeded")]
+    ReferenceLimit,
 }
 
 impl From<merk::Error> for Error {
@@ -149,11 +157,50 @@ impl GroveDb {
     }
 
     pub fn get(&self, path: &[&[u8]], key: &[u8]) -> Result<subtree::Element, Error> {
+        match self.get_raw(path, key)? {
+            Element::Reference(reference_path) => self.follow_reference(reference_path),
+            other => Ok(other),
+        }
+    }
+
+    /// Get tree item without following references
+    fn get_raw(&self, path: &[&[u8]], key: &[u8]) -> Result<subtree::Element, Error> {
         let merk = self
             .subtrees
             .get(&Self::compress_path(path, None))
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
         Element::get(&merk, key)
+    }
+
+    fn follow_reference<'a>(&self, mut path: Vec<Vec<u8>>) -> Result<subtree::Element, Error> {
+        let mut hops_left = MAX_REFERENCE_HOPS;
+        let mut current_element;
+        let mut visited = HashSet::new();
+
+        while hops_left > 0 {
+            if visited.contains(&path) {
+                return Err(Error::CyclicReference);
+            }
+            if let Some((key, path_slice)) = path.split_last() {
+                current_element = self.get_raw(
+                    path_slice
+                        .iter()
+                        .map(|x| x.as_slice())
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                    key,
+                )?;
+            } else {
+                return Err(Error::InvalidPath("empty path"));
+            }
+            visited.insert(path);
+            match current_element {
+                Element::Reference(reference_path) => path = reference_path,
+                other => return Ok(other),
+            }
+            hops_left -= 1;
+        }
+        Err(Error::ReferenceLimit)
     }
 
     pub fn proof(&self) -> ! {
@@ -279,5 +326,94 @@ mod tests {
             element
         );
         assert_ne!(old_hash, db.root_tree.root());
+    }
+
+    #[test]
+    fn test_follow_references() {
+        let tmp_dir = TempDir::new("db").unwrap();
+        let mut db = GroveDb::open(tmp_dir).unwrap();
+        let element = Element::Item(b"ayy".to_vec());
+
+        // Insert a reference
+        db.insert(
+            &[COMMON_TREE_KEY],
+            b"reference_key".to_vec(),
+            Element::Reference(vec![
+                COMMON_TREE_KEY.to_vec(),
+                b"key2".to_vec(),
+                b"key3".to_vec(),
+            ]),
+        )
+        .expect("successful reference insert");
+
+        // Insert an item to refer to
+        db.insert(&[COMMON_TREE_KEY], b"key2".to_vec(), Element::empty_tree())
+            .expect("successful subtree 1 insert");
+        db.insert(
+            &[COMMON_TREE_KEY, b"key2"],
+            b"key3".to_vec(),
+            element.clone(),
+        )
+        .expect("successful value insert");
+        assert_eq!(
+            db.get(&[COMMON_TREE_KEY], b"reference_key")
+                .expect("succesful get"),
+            element
+        );
+    }
+
+    #[test]
+    fn test_cyclic_references() {
+        let tmp_dir = TempDir::new("db").unwrap();
+        let mut db = GroveDb::open(tmp_dir).unwrap();
+
+        db.insert(
+            &[COMMON_TREE_KEY],
+            b"reference_key_1".to_vec(),
+            Element::Reference(vec![COMMON_TREE_KEY.to_vec(), b"reference_key_2".to_vec()]),
+        )
+        .expect("successful reference 1 insert");
+
+        db.insert(
+            &[COMMON_TREE_KEY],
+            b"reference_key_2".to_vec(),
+            Element::Reference(vec![COMMON_TREE_KEY.to_vec(), b"reference_key_1".to_vec()]),
+        )
+        .expect("successful reference 2 insert");
+
+        assert!(matches!(
+            db.get(&[COMMON_TREE_KEY], b"reference_key_1").unwrap_err(),
+            Error::CyclicReference
+        ));
+    }
+
+    #[test]
+    fn test_too_many_indirections() {
+        let tmp_dir = TempDir::new("db").unwrap();
+        let mut db = GroveDb::open(tmp_dir).unwrap();
+
+        let keygen = |idx| format!("key{}", idx).bytes().collect::<Vec<u8>>();
+
+        db.insert(
+            &[COMMON_TREE_KEY],
+            b"key0".to_vec(),
+            Element::Item(b"oops".to_vec()),
+        )
+        .expect("successful item insert");
+
+        for i in 1..=(MAX_REFERENCE_HOPS + 1) {
+            db.insert(
+                &[COMMON_TREE_KEY],
+                keygen(i),
+                Element::Reference(vec![COMMON_TREE_KEY.to_vec(), keygen(i - 1)]),
+            )
+            .expect("successful reference insert");
+        }
+
+        assert!(matches!(
+            db.get(&[COMMON_TREE_KEY], &keygen(MAX_REFERENCE_HOPS + 1))
+                .unwrap_err(),
+            Error::ReferenceLimit
+        ));
     }
 }
