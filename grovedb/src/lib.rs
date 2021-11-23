@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use merk::{self, rocksdb, Merk};
+use merk::{self, proofs::Query, rocksdb, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 use subtree::Element;
 mod subtree;
@@ -203,8 +203,21 @@ impl GroveDb {
         Err(Error::ReferenceLimit)
     }
 
-    pub fn proof(&self) -> ! {
-        todo!()
+    pub fn proof(&self, path: &[&[u8]], key: &[u8]) -> Result<Vec<u8>, Error> {
+        let compressed_path = Self::compress_path(path, None);
+        let merk = self
+            .subtrees
+            .get(&Self::compress_path(path, None))
+            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+
+        // Generate a proof of this merk with the given key
+        let mut proof_query = Query::new();
+        proof_query.insert_key(key.to_vec());
+
+        let proof_result = merk
+            .prove(proof_query)
+            .expect("should prove both inclusion and abscence");
+        Ok(proof_result)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
