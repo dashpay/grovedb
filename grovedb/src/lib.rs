@@ -6,7 +6,7 @@ use std::{
 };
 
 use merk::{self, proofs::Query, rocksdb, Merk};
-use rs_merkle::{algorithms::Sha256, MerkleTree};
+use rs_merkle::{algorithms::Sha256, MerkleProof, MerkleTree};
 use subtree::Element;
 mod subtree;
 
@@ -203,21 +203,43 @@ impl GroveDb {
         Err(Error::ReferenceLimit)
     }
 
-    pub fn proof(&self, path: &[&[u8]], key: &[u8]) -> Result<Vec<u8>, Error> {
-        let compressed_path = Self::compress_path(path, None);
-        let merk = self
-            .subtrees
-            .get(&Self::compress_path(path, None))
-            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+    pub fn proof(
+        &self,
+        path: &[&[u8]],
+        key: &[u8],
+    ) -> Result<(MerkleProof<Sha256>, Vec<Vec<u8>>), Error> {
+        // Grab the merk at a given path, create proof on merk for that key
+        // Continuously split path and generate proof
+        // if path is empty, then generate proof for root with given key
+        let mut split_path = path.split_last();
+        let mut proofs: Vec<Vec<u8>> = Vec::new();
+        let mut root_proof: MerkleProof<Sha256>;
 
-        // Generate a proof of this merk with the given key
-        let mut proof_query = Query::new();
-        proof_query.insert_key(key.to_vec());
+        while let Some((key, path_slice)) = split_path {
+            if path_slice.is_empty() {
+                // We have hit the root key
+                // Need to generate proof for this based on the index
+                // TODO: Use the correct index for the path name
+                root_proof = self.root_tree.proof(&vec![0]);
+            }
+            let merk = self
+                .subtrees
+                .get(&Self::compress_path(path, None))
+                .ok_or(Error::InvalidPath("no subtree found under that path"))?;
 
-        let proof_result = merk
-            .prove(proof_query)
-            .expect("should prove both inclusion and abscence");
-        Ok(proof_result)
+            // Generate a proof of this merk with the given key
+            let mut proof_query = Query::new();
+            proof_query.insert_key(key.to_vec());
+
+            let proof_result = merk
+                .prove(proof_query)
+                .expect("should prove both inclusion and absence");
+
+            proofs.push(proof_result);
+            split_path = path_slice.split_last();
+        }
+
+        Ok((root_proof, proofs))
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
