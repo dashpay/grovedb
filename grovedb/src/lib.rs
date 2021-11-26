@@ -207,20 +207,20 @@ impl GroveDb {
         &self,
         path: &[&[u8]],
         key: &[u8],
-    ) -> Result<(MerkleProof<Sha256>, Vec<Vec<u8>>), Error> {
+    ) -> Result<(Option<MerkleProof<Sha256>>, Vec<Vec<u8>>), Error> {
         // Grab the merk at a given path, create proof on merk for that key
         // Continuously split path and generate proof
         // if path is empty, then generate proof for root with given key
         let mut split_path = path.split_last();
         let mut proofs: Vec<Vec<u8>> = Vec::new();
-        let mut root_proof: MerkleProof<Sha256>;
+        let mut root_proof: Option<MerkleProof<Sha256>> = None;
 
         while let Some((key, path_slice)) = split_path {
             if path_slice.is_empty() {
                 // We have hit the root key
                 // Need to generate proof for this based on the index
                 // TODO: Use the correct index for the path name
-                root_proof = self.root_tree.proof(&vec![0]);
+                root_proof = Some(self.root_tree.proof(&vec![0]));
             }
             let merk = self
                 .subtrees
