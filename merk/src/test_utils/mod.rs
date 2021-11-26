@@ -6,7 +6,7 @@ use std::{convert::TryInto, ops::Range};
 use byteorder::{BigEndian, WriteBytesExt};
 use rand::prelude::*;
 // pub use crash_merk::CrashMerk;
-pub use temp_merk::TempMerk;
+pub use temp_merk::{default_rocksdb, TempMerk};
 
 use crate::tree::{Batch, BatchEntry, NoopCommit, Op, PanicSource, Tree, Walker};
 
