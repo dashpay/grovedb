@@ -15,7 +15,8 @@ use subtree::Element;
 
 /// Limit of possible indirections
 const MAX_REFERENCE_HOPS: usize = 10;
-/// A key to store serialized data about subtree prefixes to restore HADS structure
+/// A key to store serialized data about subtree prefixes to restore HADS
+/// structure
 const SUBTRESS_SERIALIZED_KEY: &[u8] = b"subtreesSerialized";
 /// A key to store serialized data about root tree leafs keys and order
 const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
@@ -44,7 +45,7 @@ impl From<merk::Error> for Error {
 
 pub struct GroveDb {
     root_tree: MerkleTree<Sha256>,
-    root_leaf_keys: Vec<Vec<u8>>,
+    root_leaf_keys: HashMap<Vec<u8>, usize>,
     subtrees: HashMap<Vec<u8>, Merk>,
     db: Rc<rocksdb::DB>,
 }
@@ -68,11 +69,12 @@ impl GroveDb {
         }
 
         // TODO: owned `get` is not required for deserialization
-        let root_leaf_keys: Vec<Vec<u8>> = if let Some(root_leaf_keys_serialized) = db.get(ROOT_LEAFS_SERIALIZED_KEY)? {
-            bincode::deserialize(&root_leaf_keys_serialized)?
-        } else {
-            Vec::new()
-        };
+        let root_leaf_keys: HashMap<Vec<u8>, usize> =
+            if let Some(root_leaf_keys_serialized) = db.get(ROOT_LEAFS_SERIALIZED_KEY)? {
+                bincode::deserialize(&root_leaf_keys_serialized)?
+            } else {
+                HashMap::new()
+            };
 
         Ok(GroveDb {
             root_tree: Self::build_root_tree(&subtrees, &root_leaf_keys),
@@ -82,25 +84,34 @@ impl GroveDb {
         })
     }
 
-    fn store_subtrees_prefixes(
-        subtrees: &HashMap<Vec<u8>, Merk>,
-        db: &rocksdb::DB,
-    ) -> Result<(), Error> {
-        let prefixes: Vec<Vec<u8>> = subtrees.keys().map(|x| x.clone()).collect();
-        Ok(db.put(SUBTRESS_SERIALIZED_KEY, bincode::serialize(&prefixes)?)?)
+    fn store_subtrees_keys_data(&self) -> Result<(), Error> {
+        let prefixes: Vec<Vec<u8>> = self.subtrees.keys().map(|x| x.clone()).collect();
+        self.db
+            .put(SUBTRESS_SERIALIZED_KEY, bincode::serialize(&prefixes)?)?;
+        self.db.put(
+            ROOT_LEAFS_SERIALIZED_KEY,
+            bincode::serialize(&self.root_leaf_keys)?,
+        )?;
+        Ok(())
     }
 
-    fn build_root_tree(subtrees: &HashMap<Vec<u8>, Merk>, root_leaf_keys: &Vec<Vec<u8>>) -> MerkleTree<Sha256> {
-        let mut leaf_hashes = Vec::new();
-        for subtree_path in root_leaf_keys {
+    fn build_root_tree(
+        subtrees: &HashMap<Vec<u8>, Merk>,
+        root_leaf_keys: &HashMap<Vec<u8>, usize>,
+    ) -> MerkleTree<Sha256> {
+        // let mut leaf_hashes = Vec::with_capacity(root_leaf_keys.len());
+        let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
+        for (subtree_path, root_leaf_idx) in root_leaf_keys {
             let subtree_merk = subtrees
                 .get(subtree_path)
-                .expect("root tree structure is hardcoded");
-            leaf_hashes.push(subtree_merk.root_hash());
+                .expect("`root_leaf_keys` must be in sync with `subtrees`");
+            leaf_hashes[*root_leaf_idx] = subtree_merk.root_hash();
         }
-        MerkleTree::<Sha256>::from_leaves(&leaf_hashes)
+        let res = MerkleTree::<Sha256>::from_leaves(&leaf_hashes);
+        res
     }
 
+    // TODO: split the function into smaller ones
     pub fn insert(
         &mut self,
         path: &[&[u8]],
@@ -120,11 +131,17 @@ impl GroveDb {
                 };
                 if path.is_empty() {
                     // Add subtree to the root tree
+
+                    // Open Merk and put handle into `subtrees` dictionary accessible by its
+                    // compressed path
                     let (compressed_path_subtree, subtree_merk) = create_subtree_merk()?;
-                    self.subtrees.insert(compressed_path_subtree.clone(), subtree_merk);
-                    // TODO: fine for now, not fine after
-                    if !self.root_leaf_keys.contains(&compressed_path_subtree) {
-                        self.root_leaf_keys.push(compressed_path_subtree);
+                    self.subtrees
+                        .insert(compressed_path_subtree.clone(), subtree_merk);
+
+                    // Update root leafs index to persist rs-merkle structure later
+                    if self.root_leaf_keys.get(&compressed_path_subtree).is_none() {
+                        self.root_leaf_keys
+                            .insert(compressed_path_subtree, self.root_tree.leaves_len());
                     }
                     self.propagate_changes(&[&key])?;
                 } else {
@@ -146,7 +163,7 @@ impl GroveDb {
                     element.insert(&mut merk, key)?;
                     self.propagate_changes(path)?;
                 }
-                Self::store_subtrees_prefixes(&self.subtrees, &self.db)?;
+                self.store_subtrees_keys_data()?;
             }
             _ => {
                 // If path is empty that means there is an attempt to insert something into a
