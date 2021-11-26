@@ -15,7 +15,8 @@ use subtree::Element;
 
 /// Limit of possible indirections
 const MAX_REFERENCE_HOPS: usize = 10;
-/// A key to store serialized data about subtree prefixes to restore HADS structure
+/// A key to store serialized data about subtree prefixes to restore HADS
+/// structure
 const SUBTRESS_SERIALIZED_KEY: &[u8] = b"subtreesSerialized";
 /// A key to store serialized data about root tree leafs keys and order
 const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
@@ -68,11 +69,12 @@ impl GroveDb {
         }
 
         // TODO: owned `get` is not required for deserialization
-        let root_leaf_keys: Vec<Vec<u8>> = if let Some(root_leaf_keys_serialized) = db.get(ROOT_LEAFS_SERIALIZED_KEY)? {
-            bincode::deserialize(&root_leaf_keys_serialized)?
-        } else {
-            Vec::new()
-        };
+        let root_leaf_keys: Vec<Vec<u8>> =
+            if let Some(root_leaf_keys_serialized) = db.get(ROOT_LEAFS_SERIALIZED_KEY)? {
+                bincode::deserialize(&root_leaf_keys_serialized)?
+            } else {
+                Vec::new()
+            };
 
         Ok(GroveDb {
             root_tree: Self::build_root_tree(&subtrees, &root_leaf_keys),
@@ -90,7 +92,10 @@ impl GroveDb {
         Ok(db.put(SUBTRESS_SERIALIZED_KEY, bincode::serialize(&prefixes)?)?)
     }
 
-    fn build_root_tree(subtrees: &HashMap<Vec<u8>, Merk>, root_leaf_keys: &Vec<Vec<u8>>) -> MerkleTree<Sha256> {
+    fn build_root_tree(
+        subtrees: &HashMap<Vec<u8>, Merk>,
+        root_leaf_keys: &Vec<Vec<u8>>,
+    ) -> MerkleTree<Sha256> {
         let mut leaf_hashes = Vec::new();
         for subtree_path in root_leaf_keys {
             let subtree_merk = subtrees
@@ -121,7 +126,8 @@ impl GroveDb {
                 if path.is_empty() {
                     // Add subtree to the root tree
                     let (compressed_path_subtree, subtree_merk) = create_subtree_merk()?;
-                    self.subtrees.insert(compressed_path_subtree.clone(), subtree_merk);
+                    self.subtrees
+                        .insert(compressed_path_subtree.clone(), subtree_merk);
                     // TODO: fine for now, not fine after
                     if !self.root_leaf_keys.contains(&compressed_path_subtree) {
                         self.root_leaf_keys.push(compressed_path_subtree);
@@ -232,6 +238,12 @@ impl GroveDb {
                 // We have hit the root key
                 // Need to generate proof for this based on the index
                 // TODO: Use the correct index for the path name
+
+                // let root_key_index = self
+                //     .root_leaf_keys
+                //     .iter()
+                //     .position(|&leaf| leaf.as_slice() == *key)
+                //     .expect("Root key should exist");
                 root_proof = Some(self.root_tree.proof(&vec![0]));
             }
             let merk = self
