@@ -233,6 +233,34 @@ fn test_tree_structure_is_presistent() {
 #[test]
 fn test_root_tree_leafs_are_noted() {
     let db = make_grovedb();
-    assert_eq!(db.root_leaf_keys, vec![TEST_LEAF, ANOTHER_TEST_LEAF]);
+    let mut hm = HashMap::new();
+    hm.insert(TEST_LEAF.to_vec(), 0);
+    hm.insert(ANOTHER_TEST_LEAF.to_vec(), 1);
+    assert_eq!(db.root_leaf_keys, hm);
     assert_eq!(db.root_tree.leaves_len(), 2);
+}
+
+#[test]
+fn test_proof_construction() {
+    // Create temp db
+    // Add another subtree to one of the test leafs
+    // Insert a couple key value pairs to the inner subtree
+    // Generate the proof
+    // Assert that it generated the right amount of proofs
+    let mut temp_db = make_grovedb();
+    temp_db
+        .insert(&[TEST_LEAF], b"innertree".to_vec(), Element::empty_tree())
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            &[TEST_LEAF, b"innertree"],
+            b"key1".to_vec(),
+            Element::Item(b"value1".to_vec()),
+        )
+        .expect("successful item insert");
+    let (root_proof, ads_proofs) = temp_db
+        .proof(&[TEST_LEAF, b"innertree"], b"key1")
+        .expect("Successful proof generation");
+    // dbg!(root_proof);
+    // dbg!(ads_proofs);
 }
