@@ -281,11 +281,11 @@ fn test_proof_construction() {
 
     let mut proof_query = Query::new();
     proof_query.insert_key(b"key1".to_vec());
-    assert_eq!(ads_proofs[0], inner_tree_merk.prove(proof_query).unwrap(),);
+    assert_eq!(ads_proofs[0], inner_tree_merk.prove(proof_query).unwrap());
 
     let mut proof_query = Query::new();
     proof_query.insert_key(b"innertree".to_vec());
-    assert_eq!(ads_proofs[1], test_leaf_merk.prove(proof_query).unwrap(),);
+    assert_eq!(ads_proofs[1], test_leaf_merk.prove(proof_query).unwrap());
 
-    assert_eq!(ads_proofs[2], root_tree.proof(&vec![0]).to_bytes(),);
+    assert_eq!(ads_proofs[2], root_tree.proof(&vec![0]).to_bytes());
 }
