@@ -13,7 +13,9 @@ pub enum Element {
     Item(Vec<u8>),
     /// A reference to an object by its path
     Reference(Vec<Vec<u8>>),
-    /// A subtree, contains a root hash of the underlying Merk
+    /// A subtree, contains a root hash of the underlying Merk.
+    /// Hash is stored to make Merk become different when its subtrees have
+    /// changed, otherwise changes won't be reflected in parent trees.
     Tree([u8; 32]),
 }
 
@@ -50,7 +52,7 @@ mod tests {
 
     #[test]
     fn test_success_insert() {
-        let mut merk = TempMerk::new().unwrap();
+        let mut merk = TempMerk::new();
         Element::empty_tree()
             .insert(&mut merk, b"mykey".to_vec())
             .expect("expected successful insertion");

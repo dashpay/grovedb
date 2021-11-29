@@ -99,7 +99,6 @@ impl GroveDb {
         subtrees: &HashMap<Vec<u8>, Merk>,
         root_leaf_keys: &HashMap<Vec<u8>, usize>,
     ) -> MerkleTree<Sha256> {
-        // let mut leaf_hashes = Vec::with_capacity(root_leaf_keys.len());
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
         for (subtree_path, root_leaf_idx) in root_leaf_keys {
             let subtree_merk = subtrees

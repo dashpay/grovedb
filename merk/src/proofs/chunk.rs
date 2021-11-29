@@ -403,61 +403,61 @@ mod tests {
         assert_eq!(counts.kvhash, 0);
     }
 
-    // #[test]
-    // fn leaf_chunk_roundtrip() {
-    //     let mut merk = TempMerk::new().unwrap();
-    //     let batch = make_batch_seq(0..31);
-    //     merk.apply(batch.as_slice(), &[]).unwrap();
+    #[test]
+    fn leaf_chunk_roundtrip() {
+        let mut merk = TempMerk::new();
+        let batch = make_batch_seq(0..31);
+        merk.apply(batch.as_slice(), &[]).unwrap();
 
-    //     let root_node = merk.tree.take();
-    //     let root_key = root_node.as_ref().unwrap().key().to_vec();
-    //     merk.tree.set(root_node);
+        let root_node = merk.tree.take();
+        let root_key = root_node.as_ref().unwrap().key().to_vec();
+        merk.tree.set(root_node);
 
-    //     // whole tree as 1 leaf
-    //     let mut iter = merk.db.raw_iterator();
-    //     iter.seek_to_first();
-    //     let chunk = get_next_chunk(&mut iter, None).unwrap();
-    //     let ops = chunk.into_iter().map(|op| Ok(op));
-    //     let chunk = verify_leaf(ops, merk.root_hash()).unwrap();
-    //     let counts = count_node_types(chunk);
-    //     assert_eq!(counts.kv, 31);
-    //     assert_eq!(counts.hash, 0);
-    //     assert_eq!(counts.kvhash, 0);
-    //     drop(iter);
+        // whole tree as 1 leaf
+        let mut iter = merk.db.raw_iterator();
+        iter.seek_to_first();
+        let chunk = get_next_chunk(&mut iter, None).unwrap();
+        let ops = chunk.into_iter().map(|op| Ok(op));
+        let chunk = verify_leaf(ops, merk.root_hash()).unwrap();
+        let counts = count_node_types(chunk);
+        assert_eq!(counts.kv, 31);
+        assert_eq!(counts.hash, 0);
+        assert_eq!(counts.kvhash, 0);
+        drop(iter);
 
-    //     let mut iter = merk.db.raw_iterator();
-    //     iter.seek_to_first();
+        let mut iter = merk.db.raw_iterator();
+        iter.seek_to_first();
 
-    //     // left leaf
-    //     let chunk = get_next_chunk(&mut iter,
-    // Some(root_key.as_slice())).unwrap();     let ops =
-    // chunk.into_iter().map(|op| Ok(op));     let chunk = verify_leaf(
-    //         ops,
-    //         [
-    //             34, 133, 104, 181, 253, 249, 189, 168, 15, 209, 70, 164, 224,
-    // 192, 18, 36, 1, 74,             79, 9, 158, 188, 98, 47, 53, 32, 109,
-    // 14, 151, 13, 49, 74,         ],
-    //     )
-    //     .unwrap();
-    //     let counts = count_node_types(chunk);
-    //     assert_eq!(counts.kv, 15);
-    //     assert_eq!(counts.hash, 0);
-    //     assert_eq!(counts.kvhash, 0);
+        // left leaf
+        let chunk = get_next_chunk(&mut iter, Some(root_key.as_slice())).unwrap();
+        let ops = chunk.into_iter().map(|op| Ok(op));
+        let chunk = verify_leaf(
+            ops,
+            [
+                34, 133, 104, 181, 253, 249, 189, 168, 15, 209, 70, 164, 224, 192, 18, 36, 1, 74,
+                79, 9, 158, 188, 98, 47, 53, 32, 109, 14, 151, 13, 49, 74,
+            ],
+        )
+        .unwrap();
+        let counts = count_node_types(chunk);
+        assert_eq!(counts.kv, 15);
+        assert_eq!(counts.hash, 0);
+        assert_eq!(counts.kvhash, 0);
 
-    //     // right leaf
-    //     let chunk = get_next_chunk(&mut iter, None).unwrap();
-    //     let ops = chunk.into_iter().map(|op| Ok(op));
-    //     let chunk = verify_leaf(
-    //         ops,
-    //         [
-    //             164, 29, 123, 213, 6, 25, 247, 238, 127, 53, 5, 70, 255, 87,
-    // 87, 204, 188, 169,             181, 4, 185, 180, 74, 52, 244, 134,
-    // 75, 47, 105, 129, 209, 112,         ],
-    //     )
-    //     .unwrap();
-    //     let counts = count_node_types(chunk);
-    //     assert_eq!(counts.kv, 15);
-    //     assert_eq!(counts.hash, 0);
-    //     assert_eq!(counts.kvhash, 0);
-    // }
+        // right leaf
+        let chunk = get_next_chunk(&mut iter, None).unwrap();
+        let ops = chunk.into_iter().map(|op| Ok(op));
+        let chunk = verify_leaf(
+            ops,
+            [
+                164, 29, 123, 213, 6, 25, 247, 238, 127, 53, 5, 70, 255, 87, 87, 204, 188, 169,
+                181, 4, 185, 180, 74, 52, 244, 134, 75, 47, 105, 129, 209, 112,
+            ],
+        )
+        .unwrap();
+        let counts = count_node_types(chunk);
+        assert_eq!(counts.kv, 15);
+        assert_eq!(counts.hash, 0);
+        assert_eq!(counts.kvhash, 0);
+    }
 }
