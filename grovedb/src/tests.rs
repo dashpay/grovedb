@@ -288,6 +288,4 @@ fn test_proof_construction() {
     assert_eq!(ads_proofs[1], test_leaf_merk.prove(proof_query).unwrap(),);
 
     assert_eq!(ads_proofs[2], root_tree.proof(&vec![0]).to_bytes(),);
-    // dbg!(root_proof);
-    dbg!(ads_proofs);
 }
