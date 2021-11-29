@@ -242,7 +242,7 @@ impl GroveDb {
                     .root_leaf_keys
                     .get(*key)
                     .ok_or(Error::InvalidPath("root key not found"))?;
-                proofs.push(self.root_tree.proof(&vec![*root_key_index]).to_bytes());
+                proofs.push(self.root_tree.proof(&[*root_key_index]).to_bytes());
             } else {
                 let merk = self
                     .subtrees
