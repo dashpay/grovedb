@@ -91,8 +91,6 @@ impl Merk {
     where
         F: FnOnce(&Tree) -> T,
     {
-        // let mut key = self.prefix.clone();
-        // key.extend_from_slice(raw_key);
         self.use_tree(move |maybe_tree| {
             let mut cursor = match maybe_tree {
                 None => return Ok(None), // empty tree
