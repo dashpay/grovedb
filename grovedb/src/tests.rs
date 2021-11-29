@@ -256,15 +256,15 @@ fn test_proof_construction() {
         .expect("successful item insert");
 
     // Manually build the ads structures
-    let mut inner_tree_merk = TempMerk::new().unwrap();
+    let mut inner_tree_merk = TempMerk::new();
     let value_element = Element::Item(b"value1".to_vec());
     value_element.insert(&mut inner_tree_merk, b"key1".to_vec());
 
-    let mut test_leaf_merk = TempMerk::new().unwrap();
+    let mut test_leaf_merk = TempMerk::new();
     let inner_tree_root_element = Element::Tree(inner_tree_merk.root_hash());
     inner_tree_root_element.insert(&mut test_leaf_merk, b"innertree".to_vec());
 
-    let another_test_leaf_merk = TempMerk::new().unwrap();
+    let another_test_leaf_merk = TempMerk::new();
 
     let leaves = [
         test_leaf_merk.root_hash(),
@@ -273,19 +273,19 @@ fn test_proof_construction() {
     let root_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
 
     // Generate groove db proof
-    let ads_proofs = temp_db
+    let proof = temp_db
         .proof(&[TEST_LEAF, b"innertree"], b"key1")
         .expect("Successful proof generation");
 
-    assert_eq!(ads_proofs.len(), 3);
+    assert_eq!(proof.len(), 3);
 
     let mut proof_query = Query::new();
     proof_query.insert_key(b"key1".to_vec());
-    assert_eq!(ads_proofs[0], inner_tree_merk.prove(proof_query).unwrap());
+    assert_eq!(proof[0], inner_tree_merk.prove(proof_query).unwrap());
 
     let mut proof_query = Query::new();
     proof_query.insert_key(b"innertree".to_vec());
-    assert_eq!(ads_proofs[1], test_leaf_merk.prove(proof_query).unwrap());
+    assert_eq!(proof[1], test_leaf_merk.prove(proof_query).unwrap());
 
-    assert_eq!(ads_proofs[2], root_tree.proof(&vec![0]).to_bytes());
+    assert_eq!(proof[2], root_tree.proof(&vec![0]).to_bytes());
 }
