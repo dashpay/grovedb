@@ -10,7 +10,7 @@ use std::{
 };
 
 use merk::{self, proofs::Query, rocksdb, Merk};
-use rs_merkle::{algorithms::Sha256, MerkleProof, MerkleTree};
+use rs_merkle::{algorithms::Sha256, MerkleTree};
 use subtree::Element;
 
 /// Limit of possible indirections
@@ -232,14 +232,9 @@ impl GroveDb {
         Err(Error::ReferenceLimit)
     }
 
-    pub fn proof(
-        &self,
-        path: &[&[u8]],
-        key: &[u8],
-    ) -> Result<(MerkleProof<Sha256>, Vec<Vec<u8>>), Error> {
+    pub fn proof(&self, path: &[&[u8]], key: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
         let mut split_path = Some((&key, path));
         let mut proofs: Vec<Vec<u8>> = Vec::new();
-        let mut root_proof: Option<MerkleProof<Sha256>> = None;
 
         while let Some((key, path_slice)) = split_path {
             if path_slice.is_empty() {
@@ -248,7 +243,7 @@ impl GroveDb {
                     .root_leaf_keys
                     .get(*key)
                     .ok_or(Error::InvalidPath("root key not found"))?;
-                root_proof = Some(self.root_tree.proof(&vec![*root_key_index]));
+                proofs.push(self.root_tree.proof(&vec![*root_key_index]).to_bytes());
             } else {
                 let merk = self
                     .subtrees
@@ -268,7 +263,7 @@ impl GroveDb {
             split_path = path_slice.split_last();
         }
 
-        Ok((root_proof.expect("must have root proof"), proofs))
+        Ok(proofs)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root

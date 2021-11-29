@@ -1,5 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
+use merk::test_utils::TempMerk;
 use tempdir::TempDir;
 
 use super::*;
@@ -242,11 +243,6 @@ fn test_root_tree_leafs_are_noted() {
 
 #[test]
 fn test_proof_construction() {
-    // Create temp db
-    // Add another subtree to one of the test leafs
-    // Insert a couple key value pairs to the inner subtree
-    // Generate the proof
-    // Assert that it generated the right amount of proofs
     let mut temp_db = make_grovedb();
     temp_db
         .insert(&[TEST_LEAF], b"innertree".to_vec(), Element::empty_tree())
@@ -258,9 +254,40 @@ fn test_proof_construction() {
             Element::Item(b"value1".to_vec()),
         )
         .expect("successful item insert");
-    let (root_proof, ads_proofs) = temp_db
+
+    // Manually build the ads structures
+    let mut inner_tree_merk = TempMerk::new().unwrap();
+    let value_element = Element::Item(b"value1".to_vec());
+    value_element.insert(&mut inner_tree_merk, b"key1".to_vec());
+
+    let mut test_leaf_merk = TempMerk::new().unwrap();
+    let inner_tree_root_element = Element::Tree(inner_tree_merk.root_hash());
+    inner_tree_root_element.insert(&mut test_leaf_merk, b"innertree".to_vec());
+
+    let another_test_leaf_merk = TempMerk::new().unwrap();
+
+    let leaves = [
+        test_leaf_merk.root_hash(),
+        another_test_leaf_merk.root_hash(),
+    ];
+    let root_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+
+    // Generate groove db proof
+    let ads_proofs = temp_db
         .proof(&[TEST_LEAF, b"innertree"], b"key1")
         .expect("Successful proof generation");
+
+    assert_eq!(ads_proofs.len(), 3);
+
+    let mut proof_query = Query::new();
+    proof_query.insert_key(b"key1".to_vec());
+    assert_eq!(ads_proofs[0], inner_tree_merk.prove(proof_query).unwrap(),);
+
+    let mut proof_query = Query::new();
+    proof_query.insert_key(b"innertree".to_vec());
+    assert_eq!(ads_proofs[1], test_leaf_merk.prove(proof_query).unwrap(),);
+
+    assert_eq!(ads_proofs[2], root_tree.proof(&vec![0]).to_bytes(),);
     // dbg!(root_proof);
-    // dbg!(ads_proofs);
+    dbg!(ads_proofs);
 }
