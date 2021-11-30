@@ -10,11 +10,11 @@ use std::{
 
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
-pub use subtree::Element;
 use storage::{
     rocksdb_storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError},
     Storage,
 };
+pub use subtree::Element;
 
 /// Limit of possible indirections
 const MAX_REFERENCE_HOPS: usize = 10;
