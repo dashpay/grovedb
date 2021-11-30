@@ -8,6 +8,10 @@ license = "MIT"
 
 [dependencies]
 tempdir = "0.3.7"
+storage = { path = "../storage" }
+thiserror = "1.0.30"
+failure = "0.1.8"
+rocksdb = "0.17.0"
 
 [dependencies.time]
 version = "0.1.42"
@@ -29,10 +33,6 @@ optional = true
 version = "1.3.2" 
 optional = true
 
-[dependencies.failure]
-version = "0.1.6"
-optional = true
-
 [dependencies.ed]
 version = "0.1.6"
 optional = true
@@ -46,13 +46,6 @@ version = "0.8.3"
 features = ["small_rng"]
 optional = true
 
-[dependencies.rocksdb]
-git = "https://github.com/rust-rocksdb/rust-rocksdb"
-version = "0.16.0"
-rev = "v0.16.0"
-default-features = false
-optional = true
-
 [dependencies.jemallocator]
 version = "0.3.2"
 features = ["disable_initial_exec_tls"]
@@ -61,18 +54,15 @@ optional = true
 [features]
 default = ["full", "verify"]
 full = ["rand", 
-        "rocksdb", 
-        "time", 
+        "time",
         "hex", 
         "colored",
         "num_cpus",
         "byteorder",
-        "failure",
         "ed",
         "blake3",
         "jemallocator"
 ]
 verify = ["ed",
-          "failure",
           "blake3"
 ]
