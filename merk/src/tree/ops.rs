@@ -1,8 +1,9 @@
+use std::{collections::LinkedList, fmt};
+
+use Op::*;
+
 use super::{Fetch, Link, Tree, Walker};
 use crate::error::Result;
-use std::collections::LinkedList;
-use std::fmt;
-use Op::*;
 
 /// An operation to be applied to a key in the store.
 pub enum Op {
@@ -294,10 +295,10 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::test_utils::{
-        apply_memonly, assert_tree_invariants, del_entry, make_tree_seq, seq_key,
+    use crate::{
+        test_utils::{apply_memonly, assert_tree_invariants, del_entry, make_tree_seq, seq_key},
+        tree::*,
     };
-    use crate::tree::*;
 
     #[test]
     fn simple_insert() {

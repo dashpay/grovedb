@@ -1,5 +1,6 @@
-use super::Tree;
 use ed::{Decode, Encode};
+
+use super::Tree;
 
 impl Tree {
     #[inline]
@@ -38,8 +39,7 @@ impl Tree {
 
 #[cfg(test)]
 mod tests {
-    use super::super::Link;
-    use super::*;
+    use super::{super::Link, *};
 
     #[test]
     fn encode_leaf_tree() {

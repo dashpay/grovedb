@@ -7,6 +7,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
+tempdir = "0.3.7"
 
 [dependencies.time]
 version = "0.1.42"

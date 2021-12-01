@@ -1,14 +1,14 @@
 mod crash_merk;
 mod temp_merk;
 
-use crate::tree::{Batch, BatchEntry, NoopCommit, Op, PanicSource, Tree, Walker};
-use byteorder::{BigEndian, WriteBytesExt};
-use rand::prelude::*;
-use std::convert::TryInto;
-use std::ops::Range;
+use std::{convert::TryInto, ops::Range};
 
+use byteorder::{BigEndian, WriteBytesExt};
 pub use crash_merk::CrashMerk;
-pub use temp_merk::TempMerk;
+use rand::prelude::*;
+pub use temp_merk::{default_rocksdb, TempMerk};
+
+use crate::tree::{Batch, BatchEntry, NoopCommit, Op, PanicSource, Tree, Walker};
 
 pub fn assert_tree_invariants(tree: &Tree) {
     assert!(tree.balance_factor().abs() < 2);

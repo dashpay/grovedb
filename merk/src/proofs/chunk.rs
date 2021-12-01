@@ -8,8 +8,10 @@ use {
 };
 
 use super::{Node, Op};
-use crate::error::Result;
-use crate::tree::{Fetch, RefWalker};
+use crate::{
+    error::Result,
+    tree::{Fetch, RefWalker},
+};
 
 /// The minimum number of layers the trunk will be guaranteed to have before
 /// splitting into multiple chunks. If the tree's height is less than double
@@ -178,7 +180,7 @@ pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op>>>(
     expected_hash: Hash,
 ) -> Result<ProofTree> {
     let tree = execute(ops, false, |node| match node {
-        Node::KV(_, _) => Ok(()),
+        Node::KV(..) => Ok(()),
         _ => bail!("Leaf chunks must contain full subtree"),
     })?;
 
@@ -221,7 +223,7 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(ops: I) -> Result<(Pr
 
         if remaining_depth > 0 {
             match tree.node {
-                Node::KV(_, _) => {}
+                Node::KV(..) => {}
                 _ => bail!("Expected trunk inner nodes to contain keys and values"),
             }
             recurse(true, leftmost)?;
@@ -263,10 +265,11 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(ops: I) -> Result<(Pr
 mod tests {
     use std::usize;
 
-    use super::super::tree::Tree;
-    use super::*;
-    use crate::test_utils::*;
-    use crate::tree::{NoopCommit, PanicSource, Tree as BaseTree};
+    use super::{super::tree::Tree, *};
+    use crate::{
+        test_utils::*,
+        tree::{NoopCommit, PanicSource, Tree as BaseTree},
+    };
 
     #[derive(Default)]
     struct NodeCounts {
@@ -282,7 +285,7 @@ mod tests {
             match node {
                 Node::Hash(_) => counts.hash += 1,
                 Node::KVHash(_) => counts.kvhash += 1,
-                Node::KV(_, _) => counts.kv += 1,
+                Node::KV(..) => counts.kv += 1,
             };
         });
 
@@ -402,7 +405,7 @@ mod tests {
 
     #[test]
     fn leaf_chunk_roundtrip() {
-        let mut merk = TempMerk::new().unwrap();
+        let mut merk = TempMerk::new();
         let batch = make_batch_seq(0..31);
         merk.apply(batch.as_slice(), &[]).unwrap();
 

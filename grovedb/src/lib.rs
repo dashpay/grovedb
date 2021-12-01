@@ -1,37 +1,40 @@
 #![feature(trivial_bounds)]
-use std::path::Path;
-
-use ed::Encode;
-use merk::{self, Merk};
-use rs_merkle::{algorithms::Sha256, Hasher, MerkleTree};
-use subtree::Element;
 mod subtree;
+#[cfg(test)]
+mod tests;
 
-// Root tree has hardcoded leafs; each of them is `pub` to be easily used in
-// `path` arg
-pub const COMMON_TREE_KEY: &[u8] = b"common";
-pub const IDENTITIES_TREE_KEY: &[u8] = b"identities";
-pub const PUBLIC_KEYS_TO_IDENTITY_IDS_TREE_KEY: &[u8] = b"publicKeysToIdentityIDs";
-pub const DATA_CONTRACTS_TREE_KEY: &[u8] = b"dataContracts";
-pub const SPENT_ASSET_LOCK_TRANSACTIONS_TREE_KEY: &[u8] = b"spentAssetLockTransactions";
-const SUBTREES: [&[u8]; 5] = [
-    COMMON_TREE_KEY,
-    IDENTITIES_TREE_KEY,
-    PUBLIC_KEYS_TO_IDENTITY_IDS_TREE_KEY,
-    DATA_CONTRACTS_TREE_KEY,
-    SPENT_ASSET_LOCK_TRANSACTIONS_TREE_KEY,
-];
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    rc::Rc,
+};
+
+use merk::{self, rocksdb, Merk};
+use rs_merkle::{algorithms::Sha256, MerkleTree};
+use subtree::Element;
+
+/// Limit of possible indirections
+const MAX_REFERENCE_HOPS: usize = 10;
+/// A key to store serialized data about subtree prefixes to restore HADS
+/// structure
+const SUBTRESS_SERIALIZED_KEY: &[u8] = b"subtreesSerialized";
+/// A key to store serialized data about root tree leafs keys and order
+const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("rocksdb error")]
+    RocksDBError(#[from] merk::rocksdb::Error),
     #[error("unable to open Merk db")]
     MerkError(merk::Error),
     #[error("invalid path")]
     InvalidPath(&'static str),
     #[error("unable to decode")]
-    EdError(#[from] ed::Error),
+    BincodeError(#[from] bincode::Error),
     #[error("cyclic reference path")]
-    CyclicReferencePath,
+    CyclicReference,
+    #[error("reference hops limit exceeded")]
+    ReferenceLimit,
 }
 
 impl From<merk::Error> for Error {
@@ -42,59 +45,234 @@ impl From<merk::Error> for Error {
 
 pub struct GroveDb {
     root_tree: MerkleTree<Sha256>,
-    subtrees_merk: Merk,
+    root_leaf_keys: HashMap<Vec<u8>, usize>,
+    subtrees: HashMap<Vec<u8>, Merk>,
+    db: Rc<rocksdb::DB>,
 }
 
 impl GroveDb {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let mut subtrees_merk = Merk::open(path)?;
-        let mut leaves = Vec::with_capacity(SUBTREES.len());
-        // Populate Merk with root tree's leafs if no previous Merk data found
-        for subtree_key in SUBTREES {
-            let node_hash = if let Some(hash) = subtrees_merk.get_hash(subtree_key)? {
-                hash
-            } else {
-                let element = Element::Tree;
-                element.insert(&mut subtrees_merk, &[], subtree_key)?;
-                subtrees_merk
-                    .get_hash(subtree_key)?
-                    .expect("was inserted previously")
-            };
-            leaves.push(node_hash);
+        let db = Rc::new(rocksdb::DB::open_cf_descriptors(
+            &Merk::default_db_opts(),
+            path,
+            merk::column_families(),
+        )?);
+
+        let mut subtrees = HashMap::new();
+        // TODO: owned `get` is not required for deserialization
+        if let Some(prefixes_serialized) = db.get(SUBTRESS_SERIALIZED_KEY)? {
+            let subtrees_prefixes: Vec<Vec<u8>> = bincode::deserialize(&prefixes_serialized)?;
+            for prefix in subtrees_prefixes {
+                let subtree_merk = Merk::open(db.clone(), prefix.to_vec())?;
+                subtrees.insert(prefix.to_vec(), subtree_merk);
+            }
         }
+
+        // TODO: owned `get` is not required for deserialization
+        let root_leaf_keys: HashMap<Vec<u8>, usize> =
+            if let Some(root_leaf_keys_serialized) = db.get(ROOT_LEAFS_SERIALIZED_KEY)? {
+                bincode::deserialize(&root_leaf_keys_serialized)?
+            } else {
+                HashMap::new()
+            };
+
         Ok(GroveDb {
-            root_tree: MerkleTree::<Sha256>::from_leaves(&leaves),
-            subtrees_merk,
+            root_tree: Self::build_root_tree(&subtrees, &root_leaf_keys),
+            db: db.clone(),
+            subtrees,
+            root_leaf_keys,
         })
     }
 
+    fn store_subtrees_keys_data(&self) -> Result<(), Error> {
+        let prefixes: Vec<Vec<u8>> = self.subtrees.keys().map(|x| x.clone()).collect();
+        self.db
+            .put(SUBTRESS_SERIALIZED_KEY, bincode::serialize(&prefixes)?)?;
+        self.db.put(
+            ROOT_LEAFS_SERIALIZED_KEY,
+            bincode::serialize(&self.root_leaf_keys)?,
+        )?;
+        Ok(())
+    }
+
+    fn build_root_tree(
+        subtrees: &HashMap<Vec<u8>, Merk>,
+        root_leaf_keys: &HashMap<Vec<u8>, usize>,
+    ) -> MerkleTree<Sha256> {
+        let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
+        for (subtree_path, root_leaf_idx) in root_leaf_keys {
+            let subtree_merk = subtrees
+                .get(subtree_path)
+                .expect("`root_leaf_keys` must be in sync with `subtrees`");
+            leaf_hashes[*root_leaf_idx] = subtree_merk.root_hash();
+        }
+        let res = MerkleTree::<Sha256>::from_leaves(&leaf_hashes);
+        res
+    }
+
+    // TODO: split the function into smaller ones
     pub fn insert(
         &mut self,
         path: &[&[u8]],
-        key: &[u8],
-        element: subtree::Element,
+        key: Vec<u8>,
+        mut element: subtree::Element,
     ) -> Result<(), Error> {
-        todo!()
+        let compressed_path = Self::compress_path(path, None);
+        match &mut element {
+            Element::Tree(subtree_root_hash) => {
+                // Helper closure to create a new subtree under path + key
+                let create_subtree_merk = || -> Result<(Vec<u8>, Merk), Error> {
+                    let compressed_path_subtree = Self::compress_path(path, Some(&key));
+                    Ok((
+                        compressed_path_subtree.clone(),
+                        Merk::open(self.db.clone(), compressed_path_subtree)?,
+                    ))
+                };
+                if path.is_empty() {
+                    // Add subtree to the root tree
+
+                    // Open Merk and put handle into `subtrees` dictionary accessible by its
+                    // compressed path
+                    let (compressed_path_subtree, subtree_merk) = create_subtree_merk()?;
+                    self.subtrees
+                        .insert(compressed_path_subtree.clone(), subtree_merk);
+
+                    // Update root leafs index to persist rs-merkle structure later
+                    if self.root_leaf_keys.get(&compressed_path_subtree).is_none() {
+                        self.root_leaf_keys
+                            .insert(compressed_path_subtree, self.root_tree.leaves_len());
+                    }
+                    self.propagate_changes(&[&key])?;
+                } else {
+                    // Add subtree to another subtree.
+                    // First, check if a subtree exists to create a new subtree under it
+                    self.subtrees
+                        .get(&compressed_path)
+                        .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                    let (compressed_path_subtree, subtree_merk) = create_subtree_merk()?;
+                    // Set tree value as a a subtree root hash
+                    *subtree_root_hash = subtree_merk.root_hash();
+                    self.subtrees.insert(compressed_path_subtree, subtree_merk);
+                    // Had to take merk from `subtrees` once again to solve multiple &mut s
+                    let mut merk = self
+                        .subtrees
+                        .get_mut(&compressed_path)
+                        .expect("merk object must exist in `subtrees`");
+                    // need to mark key as taken in the upper tree
+                    element.insert(&mut merk, key)?;
+                    self.propagate_changes(path)?;
+                }
+                self.store_subtrees_keys_data()?;
+            }
+            _ => {
+                // If path is empty that means there is an attempt to insert something into a
+                // root tree and this branch is for anything but trees
+                if path.is_empty() {
+                    return Err(Error::InvalidPath(
+                        "only subtrees are allowed as root tree's leafs",
+                    ));
+                }
+                // Get a Merk by a path
+                let mut merk = self
+                    .subtrees
+                    .get_mut(&compressed_path)
+                    .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                element.insert(&mut merk, key)?;
+                self.propagate_changes(path)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn get(&self, path: &[&[u8]], key: &[u8]) -> Result<subtree::Element, Error> {
-        todo!()
+        match self.get_raw(path, key)? {
+            Element::Reference(reference_path) => self.follow_reference(reference_path),
+            other => Ok(other),
+        }
+    }
+
+    /// Get tree item without following references
+    fn get_raw(&self, path: &[&[u8]], key: &[u8]) -> Result<subtree::Element, Error> {
+        let merk = self
+            .subtrees
+            .get(&Self::compress_path(path, None))
+            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+        Element::get(&merk, key)
+    }
+
+    fn follow_reference<'a>(&self, mut path: Vec<Vec<u8>>) -> Result<subtree::Element, Error> {
+        let mut hops_left = MAX_REFERENCE_HOPS;
+        let mut current_element;
+        let mut visited = HashSet::new();
+
+        while hops_left > 0 {
+            if visited.contains(&path) {
+                return Err(Error::CyclicReference);
+            }
+            if let Some((key, path_slice)) = path.split_last() {
+                current_element = self.get_raw(
+                    path_slice
+                        .iter()
+                        .map(|x| x.as_slice())
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                    key,
+                )?;
+            } else {
+                return Err(Error::InvalidPath("empty path"));
+            }
+            visited.insert(path);
+            match current_element {
+                Element::Reference(reference_path) => path = reference_path,
+                other => return Ok(other),
+            }
+            hops_left -= 1;
+        }
+        Err(Error::ReferenceLimit)
     }
 
     pub fn proof(&self) -> ! {
         todo!()
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use tempdir::TempDir;
+    /// Method to propagate updated subtree root hashes up to GroveDB root
+    fn propagate_changes(&mut self, path: &[&[u8]]) -> Result<(), Error> {
+        let mut split_path = path.split_last();
+        // Go up until only one element in path, which means a key of a root tree
+        while let Some((key, path_slice)) = split_path {
+            if path_slice.is_empty() {
+                // Hit the root tree
+                self.root_tree = Self::build_root_tree(&self.subtrees, &self.root_leaf_keys);
+                break;
+            } else {
+                let compressed_path_upper_tree = Self::compress_path(path_slice, None);
+                let compressed_path_subtree = Self::compress_path(path_slice, Some(key));
+                let subtree = self
+                    .subtrees
+                    .get(&compressed_path_subtree)
+                    .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                let element = Element::Tree(subtree.root_hash());
+                let upper_tree = self
+                    .subtrees
+                    .get_mut(&compressed_path_upper_tree)
+                    .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                element.insert(upper_tree, key.to_vec())?;
+                split_path = path_slice.split_last();
+            }
+        }
+        Ok(())
+    }
 
-    use super::*;
-
-    #[test]
-    fn test_init() {
-        let tmp_dir = TempDir::new("db").unwrap();
-        GroveDb::open(tmp_dir).expect("empty tree is ok");
+    /// A helper method to build a prefix to rocksdb keys or identify a subtree
+    /// in `subtrees` map by tree path;
+    fn compress_path(path: &[&[u8]], key: Option<&[u8]>) -> Vec<u8> {
+        let mut res = path.iter().fold(Vec::<u8>::new(), |mut acc, p| {
+            acc.extend(p.into_iter());
+            acc
+        });
+        if let Some(k) = key {
+            res.extend_from_slice(k);
+        }
+        res
     }
 }

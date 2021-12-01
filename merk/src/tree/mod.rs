@@ -12,15 +12,15 @@ mod walk;
 
 use std::cmp::max;
 
-use ed::{Decode, Encode};
-
-use super::error::Result;
 pub use commit::{Commit, NoopCommit};
+use ed::{Decode, Encode};
 pub use hash::{kv_hash, node_hash, Hash, HASH_LENGTH, NULL_HASH};
 use kv::KV;
 pub use link::Link;
 pub use ops::{Batch, BatchEntry, Op, PanicSource};
 pub use walk::{Fetch, RefWalker, Walker};
+
+use super::error::Result;
 
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
@@ -376,8 +376,8 @@ impl Tree {
     }
 
     /// Fetches the child on the given side using the given data source, and
-    /// places it in the child slot (upgrading the link from `Link::Reference` to
-    /// `Link::Loaded`).
+    /// places it in the child slot (upgrading the link from `Link::Reference`
+    /// to `Link::Loaded`).
     #[inline]
     pub fn load<S: Fetch>(&mut self, left: bool, source: &S) -> Result<()> {
         // TODO: return Err instead of panic?
@@ -413,9 +413,7 @@ pub fn side_to_str(left: bool) -> &'static str {
 
 #[cfg(test)]
 mod test {
-    use super::commit::NoopCommit;
-    use super::hash::NULL_HASH;
-    use super::Tree;
+    use super::{commit::NoopCommit, hash::NULL_HASH, Tree};
 
     #[test]
     fn build_tree() {

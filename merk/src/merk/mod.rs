@@ -1,11 +1,13 @@
 pub mod chunks;
-pub mod restore;
+// TODO
+// pub mod restore;
 
 use std::{
     cell::Cell,
     cmp::Ordering,
     collections::LinkedList,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 use failure::bail;
@@ -21,7 +23,7 @@ const ROOT_KEY_KEY: &[u8] = b"root";
 const AUX_CF_NAME: &str = "aux";
 const INTERNAL_CF_NAME: &str = "internal";
 
-fn column_families() -> Vec<ColumnFamilyDescriptor> {
+pub fn column_families() -> Vec<ColumnFamilyDescriptor> {
     vec![
         // TODO: clone opts or take args
         ColumnFamilyDescriptor::new(AUX_CF_NAME, Merk::default_db_opts()),
@@ -32,34 +34,18 @@ fn column_families() -> Vec<ColumnFamilyDescriptor> {
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk {
     pub(crate) tree: Cell<Option<Tree>>,
-    pub(crate) db: rocksdb::DB,
-    pub(crate) path: PathBuf,
+    pub(crate) db: Rc<rocksdb::DB>,
+    pub(crate) prefix: Vec<u8>,
 }
 
 pub type UseTreeMutResult = Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>;
 
 impl Merk {
-    /// Opens a store with the specified file path. If no store exists at that
-    /// path, one will be created.
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Merk> {
-        let db_opts = Merk::default_db_opts();
-        Merk::open_opt(path, db_opts)
-    }
-
-    /// Opens a store with the specified file path and the given options. If no
-    /// store exists at that path, one will be created.
-    pub fn open_opt<P>(path: P, db_opts: rocksdb::Options) -> Result<Merk>
-    where
-        P: AsRef<Path>,
-    {
-        let mut path_buf = PathBuf::new();
-        path_buf.push(path);
-        let db = rocksdb::DB::open_cf_descriptors(&db_opts, &path_buf, column_families())?;
-
+    pub fn open(db: Rc<rocksdb::DB>, prefix: Vec<u8>) -> Result<Merk> {
         let mut merk = Merk {
             tree: Cell::new(None),
             db,
-            path: path_buf,
+            prefix,
         };
         merk.load_root()?;
 
@@ -126,7 +112,7 @@ impl Merk {
                 match maybe_child {
                     None => {
                         // fetch from RocksDB
-                        break fetch_node(&self.db, key)
+                        break fetch_node(&self.db, &self.prefix, &key)
                             .map(|maybe_node| maybe_node.map(|node| f(&node)));
                     }
                     Some(child) => cursor = child, // traverse to child
@@ -151,7 +137,7 @@ impl Merk {
     ///
     /// # Example
     /// ```
-    /// # let mut store = merk::test_utils::TempMerk::new().unwrap();
+    /// # let mut store = merk::test_utils::TempMerk::new();
     /// # store.apply(&[(vec![4,5,6], Op::Put(vec![0]))], &[]).unwrap();
     ///
     /// use merk::Op;
@@ -189,7 +175,7 @@ impl Merk {
     ///
     /// # Example
     /// ```
-    /// # let mut store = merk::test_utils::TempMerk::new().unwrap();
+    /// # let mut store = merk::test_utils::TempMerk::new();
     /// # store.apply(&[(vec![4,5,6], Op::Put(vec![0]))], &[]).unwrap();
     ///
     /// use merk::Op;
@@ -212,15 +198,6 @@ impl Merk {
 
         // commit changes to db
         self.commit(deleted_keys, aux)
-    }
-
-    /// Closes the store and deletes all data from disk.
-    pub fn destroy(self) -> Result<()> {
-        let opts = Merk::default_db_opts();
-        let path = self.path.clone();
-        drop(self);
-        rocksdb::DB::destroy(&opts, path)?;
-        Ok(())
     }
 
     /// Creates a Merkle proof for the list of queried keys. For each key in the
@@ -284,19 +261,21 @@ impl Merk {
         let mut batch = rocksdb::WriteBatch::default();
         let mut to_batch = self.use_tree_mut(|maybe_tree| -> UseTreeMutResult {
             // TODO: concurrent commit
+            //
+            let mut prefixed_root = self.prefix.clone();
+            prefixed_root.extend_from_slice(ROOT_KEY_KEY);
             if let Some(tree) = maybe_tree {
                 // TODO: configurable committer
                 let mut committer = MerkCommitter::new(tree.height(), 100);
                 tree.commit(&mut committer)?;
 
                 // update pointer to root node
-                batch.put_cf(internal_cf, ROOT_KEY_KEY, tree.key());
+                batch.put_cf(internal_cf, prefixed_root, tree.key());
 
                 Ok(committer.batch)
             } else {
                 // empty tree, delete pointer to root
-                batch.delete_cf(internal_cf, ROOT_KEY_KEY);
-
+                batch.delete_cf(internal_cf, prefixed_root);
                 Ok(vec![])
             }
         })?;
@@ -307,17 +286,21 @@ impl Merk {
         }
         to_batch.sort_by(|a, b| a.0.cmp(&b.0));
         for (key, maybe_value) in to_batch {
+            let mut prefixed_key = self.prefix.clone();
+            prefixed_key.extend_from_slice(&key);
             if let Some(value) = maybe_value {
-                batch.put(key, value);
+                batch.put(prefixed_key, value);
             } else {
-                batch.delete(key);
+                batch.delete(prefixed_key);
             }
         }
 
         for (key, value) in aux {
+            let mut prefixed_key = self.prefix.clone();
+            prefixed_key.extend_from_slice(&key);
             match value {
-                Op::Put(value) => batch.put_cf(aux_cf, key, value),
-                Op::Delete => batch.delete_cf(aux_cf, key),
+                Op::Put(value) => batch.put_cf(aux_cf, prefixed_key, value),
+                Op::Delete => batch.delete_cf(aux_cf, prefixed_key),
             };
         }
 
@@ -341,13 +324,16 @@ impl Merk {
         self.db.raw_iterator()
     }
 
-    pub fn checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<Merk> {
-        Checkpoint::new(&self.db)?.create_checkpoint(&path)?;
-        Merk::open(path)
-    }
+    // pub fn checkpoint<P: AsRef<Path>>(&self, path: P, prefix: &[u8]) ->
+    // Result<Merk> {     Checkpoint::new(&self.db)?.create_checkpoint(&path)?;
+    //     Merk::open(path, prefix)
+    // }
 
     fn source(&self) -> MerkSource {
-        MerkSource { db: &self.db }
+        MerkSource {
+            db: &self.db,
+            prefix: &self.prefix,
+        }
     }
 
     fn use_tree<T>(&self, f: impl FnOnce(Option<&Tree>) -> T) -> T {
@@ -375,20 +361,24 @@ impl Merk {
     pub(crate) fn set_root_key(&mut self, key: Vec<u8>) -> Result<()> {
         let internal_cf = self.db.cf_handle(INTERNAL_CF_NAME).unwrap();
         let mut batch = WriteBatch::default();
-        batch.put_cf(internal_cf, ROOT_KEY_KEY, key);
+        let mut prefixed_root_key = self.prefix.clone();
+        prefixed_root_key.extend_from_slice(ROOT_KEY_KEY);
+        batch.put_cf(internal_cf, prefixed_root_key, key);
         self.write(batch)
     }
 
-    pub(crate) fn fetch_node(&self, key: &[u8]) -> Result<Option<Tree>> {
-        fetch_node(&self.db, key)
+    pub(crate) fn fetch_node(&self, prefix: &[u8], key: &[u8]) -> Result<Option<Tree>> {
+        fetch_node(&self.db, prefix, key)
     }
 
     pub(crate) fn load_root(&mut self) -> Result<()> {
         let internal_cf = self.db.cf_handle(INTERNAL_CF_NAME).unwrap();
+        let mut prefixed_root_key = self.prefix.clone();
+        prefixed_root_key.extend_from_slice(ROOT_KEY_KEY);
         let tree = self
             .db
-            .get_pinned_cf(internal_cf, ROOT_KEY_KEY)?
-            .map(|root_key| fetch_existing_node(&self.db, &root_key))
+            .get_pinned_cf(internal_cf, &prefixed_root_key)?
+            .map(|root_key| fetch_existing_node(&self.db, &self.prefix, &root_key))
             .transpose()?;
         self.tree = Cell::new(tree);
         Ok(())
@@ -398,11 +388,12 @@ impl Merk {
 #[derive(Clone)]
 pub struct MerkSource<'a> {
     db: &'a rocksdb::DB,
+    prefix: &'a [u8],
 }
 
 impl<'a> Fetch for MerkSource<'a> {
     fn fetch(&self, link: &Link) -> Result<Tree> {
-        fetch_existing_node(self.db, link.key())
+        fetch_existing_node(self.db, &self.prefix, link.key())
     }
 }
 
@@ -437,8 +428,10 @@ impl Commit for MerkCommitter {
     }
 }
 
-fn fetch_node(db: &rocksdb::DB, key: &[u8]) -> Result<Option<Tree>> {
-    let bytes = db.get_pinned(key)?;
+fn fetch_node(db: &rocksdb::DB, prefix: &[u8], key: &[u8]) -> Result<Option<Tree>> {
+    let mut prefixed_key = prefix.to_vec();
+    prefixed_key.extend_from_slice(key);
+    let bytes = db.get_pinned(&prefixed_key)?;
     if let Some(bytes) = bytes {
         Ok(Some(Tree::decode(key.to_vec(), &bytes)))
     } else {
@@ -446,8 +439,8 @@ fn fetch_node(db: &rocksdb::DB, key: &[u8]) -> Result<Option<Tree>> {
     }
 }
 
-fn fetch_existing_node(db: &rocksdb::DB, key: &[u8]) -> Result<Tree> {
-    match fetch_node(db, key)? {
+fn fetch_existing_node(db: &rocksdb::DB, prefix: &[u8], key: &[u8]) -> Result<Tree> {
+    match fetch_node(db, prefix, key)? {
         None => bail!("key not found: {:?}", key),
         Some(node) => Ok(node),
     }
@@ -455,7 +448,7 @@ fn fetch_existing_node(db: &rocksdb::DB, key: &[u8]) -> Result<Tree> {
 
 #[cfg(test)]
 mod test {
-    use std::thread;
+    use tempdir::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};
     use crate::{test_utils::*, Op};
@@ -472,10 +465,7 @@ mod test {
     #[test]
     fn simple_insert_apply() {
         let batch_size = 20;
-
-        let path = thread::current().name().unwrap().to_owned();
-        let mut merk = TempMerk::open(path).expect("failed to open merk");
-
+        let mut merk = TempMerk::new();
         let batch = make_batch_seq(0..batch_size);
         merk.apply(&batch, &[]).expect("apply failed");
 
@@ -492,9 +482,7 @@ mod test {
     #[test]
     fn insert_uncached() {
         let batch_size = 20;
-
-        let path = thread::current().name().unwrap().to_owned();
-        let mut merk = TempMerk::open(path).expect("failed to open merk");
+        let mut merk = TempMerk::new();
 
         let batch = make_batch_seq(0..batch_size);
         merk.apply(&batch, &[]).expect("apply failed");
@@ -509,9 +497,7 @@ mod test {
     fn insert_rand() {
         let tree_size = 40;
         let batch_size = 4;
-
-        let path = thread::current().name().unwrap().to_owned();
-        let mut merk = TempMerk::open(path).expect("failed to open merk");
+        let mut merk = TempMerk::new();
 
         for i in 0..(tree_size / batch_size) {
             println!("i:{}", i);
@@ -522,8 +508,7 @@ mod test {
 
     #[test]
     fn actual_deletes() {
-        let path = thread::current().name().unwrap().to_owned();
-        let mut merk = TempMerk::open(path).expect("failed to open merk");
+        let mut merk = TempMerk::new();
 
         let batch = make_batch_rand(10, 1);
         merk.apply(&batch, &[]).expect("apply failed");
@@ -537,8 +522,7 @@ mod test {
 
     #[test]
     fn aux_data() {
-        let path = thread::current().name().unwrap().to_owned();
-        let mut merk = TempMerk::open(path).expect("failed to open merk");
+        let mut merk = TempMerk::new();
         merk.apply(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))])
             .expect("apply failed");
         let val = merk.get_aux(&[1, 2, 3]).unwrap();
@@ -547,8 +531,7 @@ mod test {
 
     #[test]
     fn simulated_crash() {
-        let path = thread::current().name().unwrap().to_owned();
-        let mut merk = CrashMerk::open(path).expect("failed to open merk");
+        let mut merk = CrashMerk::open().expect("failed to open merk");
 
         merk.apply(
             &[(vec![0], Op::Put(vec![1]))],
@@ -561,19 +544,14 @@ mod test {
             merk.apply(&make_batch_seq(i * 2_000..(i + 1) * 2_000), &[])
                 .expect("apply failed");
         }
-
-        unsafe {
-            merk.crash().unwrap();
-        }
+        merk.crash();
 
         assert_eq!(merk.get_aux(&[2]).unwrap(), Some(vec![3]));
-        merk.destroy().unwrap();
     }
 
     #[test]
     fn get_not_found() {
-        let path = thread::current().name().unwrap().to_owned();
-        let mut merk = TempMerk::open(path).expect("failed to open merk");
+        let mut merk = TempMerk::new();
 
         // no root
         assert!(merk.get(&[1, 2, 3]).unwrap().is_none());
@@ -604,14 +582,11 @@ mod test {
             node.walk(false).unwrap().map(|c| collect(c, nodes));
         }
 
-        let time = std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = format!("merk_reopen_{}.db", time);
+        let tmp_dir = TempDir::new("test_reopen").expect("cannot open tempdir");
 
         let original_nodes = {
-            let mut merk = Merk::open(&path).unwrap();
+            let db = default_rocksdb(tmp_dir.path());
+            let mut merk = Merk::open(db, Vec::new()).unwrap();
             let batch = make_batch_seq(1..10_000);
             merk.apply(batch.as_slice(), &[]).unwrap();
             let mut tree = merk.tree.take().unwrap();
@@ -622,7 +597,8 @@ mod test {
             nodes
         };
 
-        let merk = TempMerk::open(&path).unwrap();
+        let db = default_rocksdb(tmp_dir.path());
+        let merk = Merk::open(db, Vec::new()).unwrap();
         let mut tree = merk.tree.take().unwrap();
         let walker = RefWalker::new(&mut tree, merk.source());
 
@@ -640,15 +616,11 @@ mod test {
                 iter.next();
             }
         }
-
-        let time = std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = format!("merk_reopen_{}.db", time);
+        let tmp_dir = TempDir::new("reopen_iter_test").expect("cannot open tempdir");
 
         let original_nodes = {
-            let mut merk = Merk::open(&path).unwrap();
+            let db = default_rocksdb(tmp_dir.path());
+            let mut merk = Merk::open(db, Vec::new()).unwrap();
             let batch = make_batch_seq(1..10_000);
             merk.apply(batch.as_slice(), &[]).unwrap();
 
@@ -656,8 +628,8 @@ mod test {
             collect(&mut merk.raw_iter(), &mut nodes);
             nodes
         };
-
-        let merk = TempMerk::open(&path).unwrap();
+        let db = default_rocksdb(tmp_dir.path());
+        let mut merk = Merk::open(db, Vec::new()).unwrap();
 
         let mut reopen_nodes = vec![];
         collect(&mut merk.raw_iter(), &mut reopen_nodes);
@@ -665,75 +637,75 @@ mod test {
         assert_eq!(reopen_nodes, original_nodes);
     }
 
-    #[test]
-    fn checkpoint() {
-        let path = thread::current().name().unwrap().to_owned();
-        let mut merk = TempMerk::open(&path).expect("failed to open merk");
+    // #[test]
+    // fn checkpoint() {
+    //     let mut merk = TempMerk::new();
 
-        merk.apply(&[(vec![1], Op::Put(vec![0]))], &[])
-            .expect("apply failed");
+    //     merk.apply(&[(vec![1], Op::Put(vec![0]))], &[])
+    //         .expect("apply failed");
 
-        let mut checkpoint = merk.checkpoint(path + ".checkpoint").unwrap();
+    //     let mut checkpoint =
+    // merk.inner.checkpoint(merk.path.path().join("checkpoint")).unwrap();
 
-        assert_eq!(merk.get(&[1]).unwrap(), Some(vec![0]));
-        assert_eq!(checkpoint.get(&[1]).unwrap(), Some(vec![0]));
+    //     assert_eq!(merk.get(&[1]).unwrap(), Some(vec![0]));
+    //     assert_eq!(checkpoint.get(&[1]).unwrap(), Some(vec![0]));
 
-        merk.apply(
-            &[(vec![1], Op::Put(vec![1])), (vec![2], Op::Put(vec![0]))],
-            &[],
-        )
-        .expect("apply failed");
+    //     merk.apply(
+    //         &[(vec![1], Op::Put(vec![1])), (vec![2], Op::Put(vec![0]))],
+    //         &[],
+    //     )
+    //     .expect("apply failed");
 
-        assert_eq!(merk.get(&[1]).unwrap(), Some(vec![1]));
-        assert_eq!(merk.get(&[2]).unwrap(), Some(vec![0]));
-        assert_eq!(checkpoint.get(&[1]).unwrap(), Some(vec![0]));
-        assert_eq!(checkpoint.get(&[2]).unwrap(), None);
+    //     assert_eq!(merk.get(&[1]).unwrap(), Some(vec![1]));
+    //     assert_eq!(merk.get(&[2]).unwrap(), Some(vec![0]));
+    //     assert_eq!(checkpoint.get(&[1]).unwrap(), Some(vec![0]));
+    //     assert_eq!(checkpoint.get(&[2]).unwrap(), None);
 
-        checkpoint
-            .apply(&[(vec![2], Op::Put(vec![123]))], &[])
-            .expect("apply failed");
+    //     checkpoint
+    //         .apply(&[(vec![2], Op::Put(vec![123]))], &[])
+    //         .expect("apply failed");
 
-        assert_eq!(merk.get(&[1]).unwrap(), Some(vec![1]));
-        assert_eq!(merk.get(&[2]).unwrap(), Some(vec![0]));
-        assert_eq!(checkpoint.get(&[1]).unwrap(), Some(vec![0]));
-        assert_eq!(checkpoint.get(&[2]).unwrap(), Some(vec![123]));
+    //     assert_eq!(merk.get(&[1]).unwrap(), Some(vec![1]));
+    //     assert_eq!(merk.get(&[2]).unwrap(), Some(vec![0]));
+    //     assert_eq!(checkpoint.get(&[1]).unwrap(), Some(vec![0]));
+    //     assert_eq!(checkpoint.get(&[2]).unwrap(), Some(vec![123]));
 
-        checkpoint.destroy().unwrap();
+    //     checkpoint.destroy().unwrap();
 
-        assert_eq!(merk.get(&[1]).unwrap(), Some(vec![1]));
-        assert_eq!(merk.get(&[2]).unwrap(), Some(vec![0]));
-    }
+    //     assert_eq!(merk.get(&[1]).unwrap(), Some(vec![1]));
+    //     assert_eq!(merk.get(&[2]).unwrap(), Some(vec![0]));
+    // }
 
-    #[test]
-    fn checkpoint_iterator() {
-        let path = thread::current().name().unwrap().to_owned();
-        let mut merk = TempMerk::open(&path).expect("failed to open merk");
+    // #[test]
+    // fn checkpoint_iterator() {
+    //     let path = thread::current().name().unwrap().to_owned();
+    //     let mut merk = TempMerk::open(&path).expect("failed to open merk");
 
-        merk.apply(&make_batch_seq(1..100), &[])
-            .expect("apply failed");
+    //     merk.apply(&make_batch_seq(1..100), &[])
+    //         .expect("apply failed");
 
-        let path: std::path::PathBuf = (path + ".checkpoint").into();
-        if path.exists() {
-            std::fs::remove_dir_all(&path).unwrap();
-        }
-        let checkpoint = merk.checkpoint(&path).unwrap();
+    //     let path: std::path::PathBuf = (path + ".checkpoint").into();
+    //     if path.exists() {
+    //         std::fs::remove_dir_all(&path).unwrap();
+    //     }
+    //     let checkpoint = merk.checkpoint(&path).unwrap();
 
-        let mut merk_iter = merk.raw_iter();
-        let mut checkpoint_iter = checkpoint.raw_iter();
+    //     let mut merk_iter = merk.raw_iter();
+    //     let mut checkpoint_iter = checkpoint.raw_iter();
 
-        loop {
-            assert_eq!(merk_iter.valid(), checkpoint_iter.valid());
-            if !merk_iter.valid() {
-                break;
-            }
+    //     loop {
+    //         assert_eq!(merk_iter.valid(), checkpoint_iter.valid());
+    //         if !merk_iter.valid() {
+    //             break;
+    //         }
 
-            assert_eq!(merk_iter.key(), checkpoint_iter.key());
-            assert_eq!(merk_iter.value(), checkpoint_iter.value());
+    //         assert_eq!(merk_iter.key(), checkpoint_iter.key());
+    //         assert_eq!(merk_iter.value(), checkpoint_iter.value());
 
-            merk_iter.next();
-            checkpoint_iter.next();
-        }
+    //         merk_iter.next();
+    //         checkpoint_iter.next();
+    //     }
 
-        std::fs::remove_dir_all(&path).unwrap();
-    }
+    //     std::fs::remove_dir_all(&path).unwrap();
+    // }
 }

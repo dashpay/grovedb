@@ -1,10 +1,11 @@
-use std::cmp::max;
-use std::io::{Read, Write};
+use std::{
+    cmp::max,
+    io::{Read, Write},
+};
 
 use ed::{Decode, Encode, Result, Terminated};
 
-use super::hash::Hash;
-use super::Tree;
+use super::{hash::Hash, Tree};
 
 // TODO: optimize memory footprint
 
@@ -154,8 +155,8 @@ impl Link {
         right_height as i8 - left_height as i8
     }
 
-    /// Consumes the link and converts to variant `Link::Reference`. Panics if the
-    /// link is of variant `Link::Modified` or `Link::Uncommitted`.
+    /// Consumes the link and converts to variant `Link::Reference`. Panics if
+    /// the link is of variant `Link::Modified` or `Link::Uncommitted`.
     #[inline]
     pub fn into_reference(self) -> Self {
         match self {
@@ -307,9 +308,10 @@ fn read_u8<R: Read>(mut input: R) -> Result<u8> {
 
 #[cfg(test)]
 mod test {
-    use super::super::hash::NULL_HASH;
-    use super::super::Tree;
-    use super::*;
+    use super::{
+        super::{hash::NULL_HASH, Tree},
+        *,
+    };
 
     #[test]
     fn from_modified_tree() {

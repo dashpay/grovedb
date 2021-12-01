@@ -1,6 +1,8 @@
-use super::{Link, Tree};
-use colored::Colorize;
 use std::fmt::{Debug, Formatter, Result};
+
+use colored::Colorize;
+
+use super::{Link, Tree};
 
 impl Debug for Tree {
     // TODO: unwraps should be results that bubble up

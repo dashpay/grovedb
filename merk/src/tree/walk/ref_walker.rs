@@ -1,5 +1,7 @@
-use super::super::{Link, Tree};
-use super::Fetch;
+use super::{
+    super::{Link, Tree},
+    Fetch,
+};
 use crate::error::Result;
 
 /// Allows read-only traversal of a `Tree`, fetching from the given source when

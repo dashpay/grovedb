@@ -1,10 +1,12 @@
+use std::{
+    collections::{btree_map, btree_map::Iter, BTreeMap},
+    ops::{Bound, RangeBounds},
+};
+
+use failure::{bail, ensure, format_err};
+
 use super::super::Node;
 use crate::Result;
-use failure::{bail, ensure, format_err};
-use std::collections::btree_map;
-use std::collections::btree_map::Iter;
-use std::collections::BTreeMap;
-use std::ops::{Bound, RangeBounds};
 
 /// `MapBuilder` allows a consumer to construct a `Map` by inserting the nodes
 /// contained in a proof, in key-order.

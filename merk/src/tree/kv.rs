@@ -1,6 +1,8 @@
-use super::hash::{kv_hash, Hash, HASH_LENGTH, NULL_HASH};
-use ed::{Decode, Encode, Result};
 use std::io::{Read, Write};
+
+use ed::{Decode, Encode, Result};
+
+use super::hash::{kv_hash, Hash, HASH_LENGTH, NULL_HASH};
 
 // TODO: maybe use something similar to Vec but without capacity field,
 //       (should save 16 bytes per entry). also, maybe a shorter length

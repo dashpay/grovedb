@@ -4,8 +4,7 @@ use ed::{Decode, Encode, Terminated};
 use failure::bail;
 
 use super::{Node, Op};
-use crate::error::Result;
-use crate::tree::HASH_LENGTH;
+use crate::{error::Result, tree::HASH_LENGTH};
 
 impl Encode for Op {
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {

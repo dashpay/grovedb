@@ -1,181 +1,68 @@
 //! Module for subtrees handling.
-use ed::{Decode, Encode};
+//! Subtrees handling is isolated so basically this module is about adapting
+//! Merk API to GroveDB needs.
 use merk::Op;
+use serde::{Deserialize, Serialize};
 
 use crate::{Error, Merk};
 
-/// Variants of an insertable entity
-#[derive(Debug, Decode, Encode, PartialEq)]
+/// Variants of GroveDB stored entities
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Element {
     /// An ordinary value
     Item(Vec<u8>),
     /// A reference to an object by its path
-    Reference(Vec<u8>),
-    /// A subtree
-    Tree,
+    Reference(Vec<Vec<u8>>),
+    /// A subtree, contains a root hash of the underlying Merk.
+    /// Hash is stored to make Merk become different when its subtrees have
+    /// changed, otherwise changes won't be reflected in parent trees.
+    Tree([u8; 32]),
 }
 
 impl Element {
-    pub fn new_reference(path: &[&[u8]], key: &[u8]) -> Self {
-        Element::Reference(Self::build_merk_key(path.iter().map(|x| *x), key))
+    // TODO: improve API to avoid creation of Tree elements with uncertain state
+    pub fn empty_tree() -> Element {
+        Element::Tree(Default::default())
     }
 
-    /// Helper method to short-circuit out in case a tree is expected
-    fn is_tree(&self) -> Result<(), Error> {
-        match self {
-            Element::Tree => Ok(()),
-            _ => Err(Error::InvalidPath("tree expected")),
-        }
-    }
-
-    /// Recursively follow `Element::Reference`
-    fn follow_reference(self, merk: &Merk) -> Result<Element, Error> {
-        fn follow_reference_with_path(
-            element: Element,
-            merk: &Merk,
-            paths: &mut Vec<Vec<u8>>,
-        ) -> Result<Element, Error> {
-            if let Element::Reference(reference_merk_key) = element {
-                // Check if the reference merk key has been visited before
-                // if it has then we have a cycle <return an error>
-                if paths.contains(&reference_merk_key) {
-                    return Err(Error::CyclicReferencePath);
-                }
-                let element = Element::decode(
-                    merk.get(reference_merk_key.as_slice())?
-                        .ok_or(Error::InvalidPath("key not found in Merk"))?
-                        .as_slice(),
-                )?;
-
-                paths.push(reference_merk_key);
-                follow_reference_with_path(element, merk, paths)
-            } else {
-                Ok(element)
-            }
-        }
-
-        let mut reference_paths: Vec<Vec<u8>> = Vec::new();
-        follow_reference_with_path(self, merk, &mut reference_paths)
-    }
-
-    /// A helper method to build Merk keys (and RocksDB as well) out of path +
-    /// key
-    fn build_merk_key<'a>(path: impl Iterator<Item = &'a [u8]>, key: &'a [u8]) -> Vec<u8> {
-        let mut merk_key = path.fold(Vec::<u8>::new(), |mut acc, p| {
-            acc.extend(p.into_iter());
-            acc
-        });
-        merk_key.extend(key);
-        merk_key
-    }
-
-    pub fn get(merk: &Merk, path: &[&[u8]], key: &[u8]) -> Result<Element, Error> {
-        // We'll iterate over path accumulating RocksDB key to retrieve the data,
-        // validating the path while doing so
-        let mut merk_key = Vec::new();
-        for p in path {
-            merk_key.extend(p.into_iter());
-            let element = Element::decode(
-                merk.get(&merk_key)?
-                    .ok_or(Error::InvalidPath("key not found in Merk"))?
-                    .as_slice(),
-            )?;
-            element.is_tree()?;
-        }
-        merk_key.extend(key);
-        let element = Element::decode(
-            merk.get(&merk_key)?
+    /// Get an element from Merk under a key; path should be resolved and proper
+    /// Merk should be loaded by this moment
+    pub fn get(merk: &Merk, key: &[u8]) -> Result<Element, Error> {
+        let element = bincode::deserialize(
+            merk.get(&key)?
                 .ok_or(Error::InvalidPath("key not found in Merk"))?
                 .as_slice(),
         )?;
-
-        element.follow_reference(&merk)
+        Ok(element)
     }
 
-    pub fn insert(&self, merk: &mut Merk, path: &[&[u8]], key: &[u8]) -> Result<(), Error> {
-        // check if a tree was inserted by the path
-        if let Some((tree_key, tree_path)) = path.split_last() {
-            Element::get(merk, tree_path, tree_key)?.is_tree()?;
-        }
-        if path.len() == 1 {
-            Element::get(
-                merk,
-                &[],
-                path.first().expect("expected the path of length of 1"),
-            )?
-            .is_tree()?;
-        }
-
-        let merk_key: Vec<u8> = Self::build_merk_key(path.iter().map(|x| *x), key);
-        let batch = [(merk_key, Op::Put(Element::encode(self)?))];
+    /// Insert an element in Merk under a key; path should be resolved and
+    /// proper Merk should be loaded by this moment
+    pub fn insert(&self, merk: &mut Merk, key: Vec<u8>) -> Result<(), Error> {
+        let batch = [(key, Op::Put(bincode::serialize(self)?))];
         merk.apply(&batch, &[]).map_err(|e| e.into())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use tempdir::TempDir;
+    use merk::test_utils::TempMerk;
 
     use super::*;
 
     #[test]
     fn test_success_insert() {
-        let tmp_dir = TempDir::new("db").unwrap();
-        let mut merk = Merk::open(tmp_dir.path()).unwrap();
-        Element::Tree
-            .insert(&mut merk, &[], b"mykey")
+        let mut merk = TempMerk::new();
+        Element::empty_tree()
+            .insert(&mut merk, b"mykey".to_vec())
             .expect("expected successful insertion");
         Element::Item(b"value".to_vec())
-            .insert(&mut merk, &[b"mykey"], b"another-key")
+            .insert(&mut merk, b"another-key".to_vec())
             .expect("expected successful insertion 2");
 
         assert_eq!(
-            Element::get(&merk, &[b"mykey"], b"another-key").expect("expected successful get"),
+            Element::get(&merk, b"another-key").expect("expected successful get"),
             Element::Item(b"value".to_vec()),
         );
-    }
-
-    #[test]
-    fn test_follow_references() {
-        let tmp_dir = TempDir::new("db").unwrap();
-        let mut merk = Merk::open(tmp_dir.path()).unwrap();
-        Element::Tree
-            .insert(&mut merk, &[], b"mykey")
-            .expect("expected successful insertion");
-        Element::Item(b"value".to_vec())
-            .insert(&mut merk, &[b"mykey"], b"another-key")
-            .expect("expected successful insertion 2");
-        Element::new_reference(&[b"mykey"], b"another-key")
-            .insert(&mut merk, &[b"mykey"], b"reference")
-            .expect("expected successful reference insertion");
-        Element::new_reference(&[b"mykey"], b"reference")
-            .insert(&mut merk, &[b"mykey"], b"another-reference")
-            .expect("expected successful reference insertion 2");
-
-        assert_eq!(
-            Element::get(&merk, &[b"mykey"], b"another-reference")
-                .expect("expected successful get"),
-            Element::Item(b"value".to_vec()),
-        );
-    }
-
-    #[test]
-    fn test_circular_references() {
-        let tmp_dir = TempDir::new("db").unwrap();
-        let mut merk = Merk::open(tmp_dir.path()).unwrap();
-
-        Element::Tree
-            .insert(&mut merk, &[], b"tree-key")
-            .expect("expected successful insertion");
-
-        // r1 points to r2 and r2 points to r1 (cycle!)
-        Element::new_reference(&[b"tree-key"], b"reference-2")
-            .insert(&mut merk, &[b"tree-key"], b"reference-1")
-            .expect("expected successful reference insertion");
-        Element::new_reference(&[b"tree-key"], b"reference-1")
-            .insert(&mut merk, &[b"tree-key"], b"reference-2")
-            .expect("expected successful reference insertion");
-
-        assert!(Element::get(&merk, &[b"tree-key"], b"reference-1").is_err());
     }
 }
