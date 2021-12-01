@@ -1,11 +1,11 @@
-// mod crash_merk;
+mod crash_merk;
 mod temp_merk;
 
 use std::{convert::TryInto, ops::Range};
 
 use byteorder::{BigEndian, WriteBytesExt};
+pub use crash_merk::CrashMerk;
 use rand::prelude::*;
-// pub use crash_merk::CrashMerk;
 pub use temp_merk::{default_rocksdb, TempMerk};
 
 use crate::tree::{Batch, BatchEntry, NoopCommit, Op, PanicSource, Tree, Walker};

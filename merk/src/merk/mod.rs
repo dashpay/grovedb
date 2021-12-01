@@ -529,30 +529,25 @@ mod test {
         assert_eq!(val, Some(vec![4, 5, 6]));
     }
 
-    // #[test]
-    // fn simulated_crash() {
-    //     let path = thread::current().name().unwrap().to_owned();
-    //     let mut merk = CrashMerk::open(path).expect("failed to open merk");
+    #[test]
+    fn simulated_crash() {
+        let mut merk = CrashMerk::open().expect("failed to open merk");
 
-    //     merk.apply(
-    //         &[(vec![0], Op::Put(vec![1]))],
-    //         &[(vec![2], Op::Put(vec![3]))],
-    //     )
-    //     .expect("apply failed");
+        merk.apply(
+            &[(vec![0], Op::Put(vec![1]))],
+            &[(vec![2], Op::Put(vec![3]))],
+        )
+        .expect("apply failed");
 
-    //     // make enough changes so that main column family gets auto-flushed
-    //     for i in 0..250 {
-    //         merk.apply(&make_batch_seq(i * 2_000..(i + 1) * 2_000), &[])
-    //             .expect("apply failed");
-    //     }
+        // make enough changes so that main column family gets auto-flushed
+        for i in 0..250 {
+            merk.apply(&make_batch_seq(i * 2_000..(i + 1) * 2_000), &[])
+                .expect("apply failed");
+        }
+        merk.crash();
 
-    //     unsafe {
-    //         merk.crash().unwrap();
-    //     }
-
-    //     assert_eq!(merk.get_aux(&[2]).unwrap(), Some(vec![3]));
-    //     merk.destroy().unwrap();
-    // }
+        assert_eq!(merk.get_aux(&[2]).unwrap(), Some(vec![3]));
+    }
 
     #[test]
     fn get_not_found() {
