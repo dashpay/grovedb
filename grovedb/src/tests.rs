@@ -272,7 +272,7 @@ fn test_proof_construction() {
     ];
     let root_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
 
-    // Generate groove db proof
+    // Generate grove db proof
     let proof = temp_db
         .proof(&[TEST_LEAF, b"innertree"], b"key1")
         .expect("Successful proof generation");
