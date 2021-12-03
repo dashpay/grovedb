@@ -240,7 +240,6 @@ impl GroveDb {
 
         // Next prove the query path
         let mut split_path = path.split_last();
-
         while let Some((key, path_slice)) = split_path {
             if path_slice.is_empty() {
                 // Get proof for root tree at current key
