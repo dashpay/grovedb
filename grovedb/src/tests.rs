@@ -274,7 +274,7 @@ fn test_proof_construction() {
 
     // Generate grove db proof
     let proof = temp_db
-        .proof(&[TEST_LEAF, b"innertree"], b"key1")
+        .proof(&[TEST_LEAF, b"innertree"], QueryItem::Key(b"key1".to_vec()))
         .expect("Successful proof generation");
 
     assert_eq!(proof.len(), 3);
