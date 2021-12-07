@@ -10,3 +10,6 @@ num_cpus = "1.13.0"
 rocksdb = "0.17.0"
 tempdir = "0.3.7"
 thiserror = "1.0.30"
+
+[dev-dependencies]
+tempdir = "0.3.7"
