@@ -4,7 +4,7 @@ use std::{
     rc::Rc,
 };
 
-use storage::rocksdb_storage::{column_families, default_db_opts, PrefixedRocksDbStorage};
+use storage::rocksdb_storage::{default_rocksdb, PrefixedRocksDbStorage};
 use tempdir::TempDir;
 
 use crate::Merk;
@@ -29,13 +29,6 @@ impl TempMerk {
             _db: db,
         }
     }
-}
-
-pub fn default_rocksdb(path: &Path) -> Rc<rocksdb::DB> {
-    Rc::new(
-        rocksdb::DB::open_cf_descriptors(&default_db_opts(), &path, column_families())
-            .expect("cannot create rocksdb"),
-    )
 }
 
 impl Deref for TempMerk {

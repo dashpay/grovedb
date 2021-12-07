@@ -378,7 +378,7 @@ impl Commit for MerkCommitter {
 
 #[cfg(test)]
 mod test {
-    use storage::rocksdb_storage::PrefixedRocksDbStorage;
+    use storage::rocksdb_storage::{default_rocksdb, PrefixedRocksDbStorage};
     use tempdir::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};

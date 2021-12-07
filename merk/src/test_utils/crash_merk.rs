@@ -3,7 +3,7 @@ use std::{
     rc::Rc,
 };
 
-use storage::rocksdb_storage::PrefixedRocksDbStorage;
+use storage::rocksdb_storage::{default_rocksdb, PrefixedRocksDbStorage};
 use tempdir::TempDir;
 
 use crate::{Merk, Result};
@@ -21,7 +21,7 @@ impl CrashMerk {
     /// does not exist.
     pub fn open() -> Result<CrashMerk> {
         let path = TempDir::new("db").expect("cannot create tempdir");
-        let db = super::default_rocksdb(path.path());
+        let db = default_rocksdb(path.path());
         let merk = Merk::open(PrefixedRocksDbStorage::new(db.clone(), Vec::new()).unwrap())?;
         Ok(CrashMerk {
             merk,
