@@ -308,9 +308,10 @@ fn test_proof_verification() {
     let proof = temp_db.proof(&[TEST_LEAF, b"innertree"], QueryItem::Key(b"key1".to_vec())).unwrap();
 
     let result_map = GroveDb::verify_proof(&[TEST_LEAF, b"innertree"], proof).unwrap();
+    let elem: Element = bincode::deserialize(result_map.get(b"key1").unwrap().unwrap()).unwrap();
 
     assert_eq!(
-        result_map.get(b"key1").unwrap().unwrap(),
-        b"value1"
+        elem,
+        Element::Item(b"value1".to_vec())
     );
 }

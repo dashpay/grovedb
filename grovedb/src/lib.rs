@@ -14,6 +14,7 @@ use merk::{self, proofs::Query, rocksdb, Merk, execute_proof};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 use merk::proofs::query::Map;
 use subtree::Element;
+use crate::Error::InvalidProof;
 
 /// Limit of possible indirections
 const MAX_REFERENCE_HOPS: usize = 10;
@@ -293,9 +294,16 @@ impl GroveDb {
 
         let compressed_path = Self::compress_path(path, None);
 
+        // Should it really be 2 or more??
+        if proofs.len() < 2 {
+            return Err(Error::InvalidProof("Proof length should be 2 or more"));
+        }
 
-        todo!()
+        // I need to track result and subsequent root hashes
+        // We return the leaf result map
+        let (last_root_hash, leaf_result_map) = execute_proof(&proofs[0][..]).unwrap();
 
+        Ok(leaf_result_map)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
