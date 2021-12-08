@@ -1,8 +1,9 @@
+use anyhow::Result;
+
 use super::{
     super::{Link, Tree},
     Fetch,
 };
-use crate::error::Result;
 
 /// Allows read-only traversal of a `Tree`, fetching from the given source when
 /// traversing to a pruned node. The fetched nodes are then retained in memory

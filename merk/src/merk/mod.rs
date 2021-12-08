@@ -1,14 +1,12 @@
 pub mod chunks;
 // TODO
 // pub mod restore;
-
 use std::{cell::Cell, cmp::Ordering, collections::LinkedList};
 
-use failure::format_err;
+use anyhow::{anyhow, bail, Result};
 use storage::{self, Batch, Storage, Store};
 
 use crate::{
-    error::Result,
     proofs::{encode_into, query::QueryItem, Query},
     tree::{Commit, Fetch, Hash, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
 };
@@ -19,7 +17,7 @@ const ROOT_KEY_KEY: &[u8] = b"root";
 pub struct Merk<S>
 where
     S: Storage,
-    crate::error::Error: From<S::Error>,
+    // crate::error::Error: From<S::Error>,
 {
     pub(crate) tree: Cell<Option<Tree>>,
     pub(crate) storage: S,
@@ -29,7 +27,7 @@ pub type UseTreeMutResult = Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>;
 
 impl<S: Storage> Merk<S>
 where
-    crate::error::Error: From<<S as Storage>::Error>,
+    // crate::error::Error: From<<S as Storage>::Error>,
     <S as Storage>::Error: std::error::Error,
 {
     pub fn open(storage: S) -> Result<Merk<S>> {
@@ -130,8 +128,8 @@ where
         for (key, _) in batch.iter() {
             if let Some(prev_key) = maybe_prev_key {
                 match prev_key.cmp(key) {
-                    Ordering::Greater => return Err(format_err!("Keys in batch must be sorted")),
-                    Ordering::Equal => return Err(format_err!("Keys in batch must be unique")),
+                    Ordering::Greater => bail!("Keys in batch must be sorted"),
+                    Ordering::Equal => bail!("Keys in batch must be unique"),
                     _ => (),
                 }
             }
@@ -212,7 +210,7 @@ where
         let query_vec: Vec<QueryItem> = query.into_iter().map(Into::into).collect();
 
         self.use_tree_mut(|maybe_tree| {
-            let tree = maybe_tree.ok_or(format_err!("Cannot create proof for empty tree"))?;
+            let tree = maybe_tree.ok_or(anyhow!("Cannot create proof for empty tree"))?;
 
             let mut ref_walker = RefWalker::new(tree, self.source());
             let (proof, _) = ref_walker.create_proof(query_vec.as_slice())?;
@@ -279,14 +277,9 @@ where
         res
     }
 
-    pub fn raw_iter<'a>(&'a self) -> S::RawIterator<'a> {
+    pub fn raw_iter(&self) -> S::RawIterator<'_> {
         self.storage.raw_iter()
     }
-
-    // // pub fn checkpoint<P: AsRef<Path>>(&self, path: P, prefix: &[u8]) ->
-    // // Result<Merk> {     Checkpoint::new(&self.db)?.create_checkpoint(&path)?;
-    // //     Merk::open(path, prefix)
-    // // }
 
     fn source(&self) -> MerkSource<S> {
         MerkSource {
@@ -308,9 +301,9 @@ where
         res
     }
 
-    pub(crate) fn set_root_key(&mut self, key: &[u8]) -> Result<()> {
-        Ok(self.storage.put_root(ROOT_KEY_KEY, key)?)
-    }
+    // pub(crate) fn set_root_key(&mut self, key: &[u8]) -> Result<()> {
+    //     Ok(self.storage.put_root(ROOT_KEY_KEY, key)?)
+    // }
 
     pub(crate) fn load_root(&mut self) -> Result<()> {
         if let Some(tree_root_key) = self.storage.get_root(ROOT_KEY_KEY)? {
@@ -337,11 +330,12 @@ impl<'a, S: Storage> Clone for MerkSource<'a, S> {
 
 impl<'a, S: Storage> Fetch for MerkSource<'a, S>
 where
-    crate::error::Error: From<<S as Storage>::Error>,
+    //    crate::error::Error: From<<S as
+    // Storage>::Error>,
     <S as Storage>::Error: std::error::Error,
 {
     fn fetch(&self, link: &Link) -> Result<Tree> {
-        Ok(Tree::get(&self.storage, link.key())?.ok_or(format_err!("Key not found"))?)
+        Tree::get(&self.storage, link.key())?.ok_or(anyhow!("Key not found"))
     }
 }
 
@@ -572,76 +566,4 @@ mod test {
 
         assert_eq!(reopen_nodes, original_nodes);
     }
-
-    // #[test]
-    // fn checkpoint() {
-    //     let mut merk = TempMerk::new();
-
-    //     merk.apply(&[(vec![1], Op::Put(vec![0]))], &[])
-    //         .expect("apply failed");
-
-    //     let mut checkpoint =
-    // merk.inner.checkpoint(merk.path.path().join("checkpoint")).unwrap();
-
-    //     assert_eq!(merk.get(&[1]).unwrap(), Some(vec![0]));
-    //     assert_eq!(checkpoint.get(&[1]).unwrap(), Some(vec![0]));
-
-    //     merk.apply(
-    //         &[(vec![1], Op::Put(vec![1])), (vec![2], Op::Put(vec![0]))],
-    //         &[],
-    //     )
-    //     .expect("apply failed");
-
-    //     assert_eq!(merk.get(&[1]).unwrap(), Some(vec![1]));
-    //     assert_eq!(merk.get(&[2]).unwrap(), Some(vec![0]));
-    //     assert_eq!(checkpoint.get(&[1]).unwrap(), Some(vec![0]));
-    //     assert_eq!(checkpoint.get(&[2]).unwrap(), None);
-
-    //     checkpoint
-    //         .apply(&[(vec![2], Op::Put(vec![123]))], &[])
-    //         .expect("apply failed");
-
-    //     assert_eq!(merk.get(&[1]).unwrap(), Some(vec![1]));
-    //     assert_eq!(merk.get(&[2]).unwrap(), Some(vec![0]));
-    //     assert_eq!(checkpoint.get(&[1]).unwrap(), Some(vec![0]));
-    //     assert_eq!(checkpoint.get(&[2]).unwrap(), Some(vec![123]));
-
-    //     checkpoint.destroy().unwrap();
-
-    //     assert_eq!(merk.get(&[1]).unwrap(), Some(vec![1]));
-    //     assert_eq!(merk.get(&[2]).unwrap(), Some(vec![0]));
-    // }
-
-    // #[test]
-    // fn checkpoint_iterator() {
-    //     let path = thread::current().name().unwrap().to_owned();
-    //     let mut merk = TempMerk::open(&path).expect("failed to open merk");
-
-    //     merk.apply(&make_batch_seq(1..100), &[])
-    //         .expect("apply failed");
-
-    //     let path: std::path::PathBuf = (path + ".checkpoint").into();
-    //     if path.exists() {
-    //         std::fs::remove_dir_all(&path).unwrap();
-    //     }
-    //     let checkpoint = merk.checkpoint(&path).unwrap();
-
-    //     let mut merk_iter = merk.raw_iter();
-    //     let mut checkpoint_iter = checkpoint.raw_iter();
-
-    //     loop {
-    //         assert_eq!(merk_iter.valid(), checkpoint_iter.valid());
-    //         if !merk_iter.valid() {
-    //             break;
-    //         }
-
-    //         assert_eq!(merk_iter.key(), checkpoint_iter.key());
-    //         assert_eq!(merk_iter.value(), checkpoint_iter.value());
-
-    //         merk_iter.next();
-    //         checkpoint_iter.next();
-    //     }
-
-    //     std::fs::remove_dir_all(&path).unwrap();
-    // }
 }

@@ -1,15 +1,18 @@
-use grovedb::{Element};
-use neon::{prelude::*, borrow::Borrow};
+use grovedb::Element;
+use neon::{borrow::Borrow, prelude::*};
 
 fn element_to_string(element: Element) -> String {
     match element {
-        Element::Item(_) => { "item".to_string() }
-        Element::Reference(_) => { "reference".to_string() }
-        Element::Tree(_) => { "tree".to_string() }
+        Element::Item(_) => "item".to_string(),
+        Element::Reference(_) => "reference".to_string(),
+        Element::Tree(_) => "tree".to_string(),
     }
 }
 
-pub fn js_object_to_element<'a, C: Context<'a>>(js_object: Handle<JsObject>, cx: &mut C) -> NeonResult<Element> {
+pub fn js_object_to_element<'a, C: Context<'a>>(
+    js_object: Handle<JsObject>,
+    cx: &mut C,
+) -> NeonResult<Element> {
     let js_element_string = js_object.get(cx, "type")?.to_string(cx)?;
     let value = js_object.get(cx, "value")?;
 
@@ -20,32 +23,32 @@ pub fn js_object_to_element<'a, C: Context<'a>>(js_object: Handle<JsObject>, cx:
             let js_buffer = value.downcast_or_throw::<JsBuffer, _>(cx)?;
             let item = js_buffer_to_vec_u8(js_buffer, cx);
             Ok(Element::Item(item))
-        },
+        }
         "reference" => {
             let js_array = value.downcast_or_throw::<JsArray, _>(cx)?;
             let reference = js_array_of_buffers_to_vec(js_array, cx)?;
             Ok(Element::Reference(reference))
-        },
+        }
         "tree" => {
             let js_buffer = value.downcast_or_throw::<JsBuffer, _>(cx)?;
             let tree_vec = js_buffer_to_vec_u8(js_buffer, cx);
-            Ok(Element::Tree(
-                tree_vec
-                    .try_into()
-                    .or_else(|v: Vec<u8>| {
-                        cx.throw_error(
-                            format!("Tree buffer is expected to be 32 bytes long, but got {}", v.len())
-                        )
-                    })?
-            ))
+            Ok(Element::Tree(tree_vec.try_into().or_else(
+                |v: Vec<u8>| {
+                    cx.throw_error(format!(
+                        "Tree buffer is expected to be 32 bytes long, but got {}",
+                        v.len()
+                    ))
+                },
+            )?))
         }
-        _ => {
-            cx.throw_error(format!("Unexpected element type {}", element_string))
-        }
+        _ => cx.throw_error(format!("Unexpected element type {}", element_string)),
     }
 }
 
-pub fn element_to_js_object<'a, C: Context<'a>>(element: Element, cx: &mut C) -> NeonResult<Handle<'a, JsValue>> {
+pub fn element_to_js_object<'a, C: Context<'a>>(
+    element: Element,
+    cx: &mut C,
+) -> NeonResult<Handle<'a, JsValue>> {
     let js_object = cx.empty_object();
     let js_type_string = cx.string(element_to_string(element.clone()));
     js_object.set(cx, "type", js_type_string)?;
@@ -84,7 +87,10 @@ pub fn js_buffer_to_vec_u8<'a, C: Context<'a>>(js_buffer: Handle<JsBuffer>, cx: 
     key_slice.to_vec()
 }
 
-pub fn js_array_of_buffers_to_vec<'a, C: Context<'a>>(js_array: Handle<JsArray>, cx: &mut C) -> NeonResult<Vec<Vec<u8>>> {
+pub fn js_array_of_buffers_to_vec<'a, C: Context<'a>>(
+    js_array: Handle<JsArray>,
+    cx: &mut C,
+) -> NeonResult<Vec<Vec<u8>>> {
     let buf_vec = js_array.to_vec(cx)?;
     let mut vec: Vec<Vec<u8>> = Vec::new();
 

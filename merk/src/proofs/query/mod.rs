@@ -6,16 +6,13 @@ use std::{
     ops::{Range, RangeInclusive},
 };
 
-use failure::bail;
+use anyhow::{bail, Result};
 pub use map::*;
 #[cfg(feature = "full")]
 use {super::Op, std::collections::LinkedList};
 
 use super::{tree::execute, Decoder, Node};
-use crate::{
-    error::Result,
-    tree::{Fetch, Hash, Link, RefWalker},
-};
+use crate::tree::{Fetch, Hash, Link, RefWalker};
 
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all of the requested values.

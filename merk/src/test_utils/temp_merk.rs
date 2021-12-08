@@ -1,6 +1,5 @@
 use std::{
     ops::{Deref, DerefMut},
-    path::Path,
     rc::Rc,
 };
 
@@ -28,6 +27,12 @@ impl TempMerk {
             path,
             _db: db,
         }
+    }
+}
+
+impl Default for TempMerk {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

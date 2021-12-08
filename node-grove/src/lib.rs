@@ -1,10 +1,8 @@
 mod converter;
 
-use std::path::Path;
-use std::sync::mpsc;
-use std::thread;
+use std::{path::Path, sync::mpsc, thread};
 
-use grovedb::{GroveDb};
+use grovedb::GroveDb;
 use neon::prelude::*;
 
 type DbCallback = Box<dyn FnOnce(&mut GroveDb, &Channel) + Send>;
@@ -22,18 +20,17 @@ struct GroveDbWrapper {
     tx: mpsc::Sender<DbMessage>,
 }
 
-// Internal wrapper logic. Needed to avoid issues with passing threads to node.js.
-// Avoiding thread conflicts by having a dedicated thread for the groveDB instance
-// and uses events to communicate with it
+// Internal wrapper logic. Needed to avoid issues with passing threads to
+// node.js. Avoiding thread conflicts by having a dedicated thread for the
+// groveDB instance and uses events to communicate with it
 impl GroveDbWrapper {
     // Creates a new instance of `GroveDbWrapper`
     //
     // 1. Creates a connection and a channel
     // 2. Spawns a thread and moves the channel receiver and connection to it
-    // 3. On a separate thread, read closures off the channel and execute with access
-    //    to the connection.
-    fn new(cx: &mut FunctionContext) -> NeonResult<Self>
-    {
+    // 3. On a separate thread, read closures off the channel and execute with
+    // access    to the connection.
+    fn new(cx: &mut FunctionContext) -> NeonResult<Self> {
         let path_string = cx.argument::<JsString>(0)?.value(cx);
 
         // Channel for sending callbacks to execute on the GroveDb connection thread
@@ -79,7 +76,8 @@ impl GroveDbWrapper {
     }
 
     // Idiomatic rust would take an owned `self` to prevent use after close
-    // However, it's not possible to prevent JavaScript from continuing to hold a closed database
+    // However, it's not possible to prevent JavaScript from continuing to hold a
+    // closed database
     fn close(
         &self,
         callback: impl FnOnce(&Channel) + Send + 'static,
@@ -95,8 +93,8 @@ impl GroveDbWrapper {
     }
 }
 
-// Ensures that GroveDbWrapper is properly disposed when the corresponding JS object
-// gets garbage collected
+// Ensures that GroveDbWrapper is properly disposed when the corresponding JS
+// object gets garbage collected
 impl Finalize for GroveDbWrapper {}
 
 // External wrapper logic
@@ -135,14 +133,12 @@ impl GroveDbWrapper {
                         // First parameter of JS callbacks is error, which is null in this case
                         vec![
                             task_context.null().upcast(),
-                            converter::element_to_js_object(element, &mut task_context)?
+                            converter::element_to_js_object(element, &mut task_context)?,
                         ]
-                    },
+                    }
 
                     // Convert the error to a JavaScript exception on failure
-                    Err(err) => vec![
-                        task_context.error(err.to_string())?.upcast()
-                    ],
+                    Err(err) => vec![task_context.error(err.to_string())?.upcast()],
                 };
 
                 callback.call(&mut task_context, this, callback_arguments)?;
@@ -187,7 +183,7 @@ impl GroveDbWrapper {
                 Ok(())
             });
         })
-            .or_else(|err| cx.throw_error(err.to_string()))?;
+        .or_else(|err| cx.throw_error(err.to_string()))?;
 
         Ok(cx.undefined())
     }
@@ -211,15 +207,14 @@ impl GroveDbWrapper {
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);
                 let this = task_context.undefined();
-                let callback_arguments: Vec<Handle<JsValue>> = vec![
-                    task_context.null().upcast(),
-                ];
+                let callback_arguments: Vec<Handle<JsValue>> = vec![task_context.null().upcast()];
 
                 callback.call(&mut task_context, this, callback_arguments)?;
 
                 Ok(())
             });
-        }).or_else(|err| cx.throw_error(err.to_string()))?;
+        })
+        .or_else(|err| cx.throw_error(err.to_string()))?;
 
         Ok(cx.undefined())
     }

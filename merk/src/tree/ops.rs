@@ -1,9 +1,9 @@
 use std::{collections::LinkedList, fmt};
 
+use anyhow::Result;
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};
-use crate::error::Result;
 
 /// An operation to be applied to a key in the store.
 pub enum Op {

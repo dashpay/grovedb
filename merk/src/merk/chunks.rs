@@ -1,17 +1,13 @@
 //! Provides `ChunkProducer`, which creates chunk proofs for full replication of
 //! a Merk.
+use std::error::Error;
 
-use std::marker::PhantomData;
-
+use anyhow::{anyhow, bail, Result};
 use ed::Encode;
-use failure::bail;
 use storage::{RawIterator, Storage};
 
 use super::Merk;
-use crate::{
-    proofs::{chunk::get_next_chunk, Node, Op},
-    Result,
-};
+use crate::proofs::{chunk::get_next_chunk, Node, Op};
 
 /// A `ChunkProducer` allows the creation of chunk proofs, used for trustlessly
 /// replicating entire Merk trees. Chunks can be generated on the fly in a
@@ -19,8 +15,7 @@ use crate::{
 pub struct ChunkProducer<'a, S: Storage + 'a>
 where
     S: Storage,
-    //    crate::error::Error: From<S::Error>,
-    <S as Storage>::Error: std::error::Error + Sync + Send + 'static,
+    <S as Storage>::Error: Error + Sync + Send + 'static,
 {
     trunk: Vec<Op>,
     chunk_boundaries: Vec<Vec<u8>>,
@@ -31,8 +26,7 @@ where
 impl<'a, S> ChunkProducer<'a, S>
 where
     S: Storage,
-    //    crate::error::Error: From<S::Error>,
-    <S as Storage>::Error: std::error::Error + Sync + Send + 'static,
+    <S as Storage>::Error: Error + Sync + Send + 'static,
 {
     /// Creates a new `ChunkProducer` for the given `Merk` instance. In the
     /// constructor, the first chunk (the "trunk") will be created.
@@ -106,7 +100,10 @@ where
                 bail!("Attempted to fetch chunk on empty tree");
             }
             self.index += 1;
-            return self.trunk.encode();
+            return self
+                .trunk
+                .encode()
+                .map_err(|e| anyhow!("cannot get next chunk: {}", e));
         }
 
         if self.index >= self.len() {
@@ -119,15 +116,16 @@ where
         self.index += 1;
 
         let chunk = get_next_chunk(&mut self.raw_iter, end_key_slice)?;
-        chunk.encode()
+        chunk
+            .encode()
+            .map_err(|e| anyhow!("cannot get next chunk: {}", e))
     }
 }
 
 impl<'a, S> IntoIterator for ChunkProducer<'a, S>
 where
     S: Storage,
-    //    crate::error::Error: From<S::Error>,
-    <S as Storage>::Error: std::error::Error + Sync + Send + 'static,
+    <S as Storage>::Error: Error + Sync + Send + 'static,
 {
     type IntoIter = ChunkIter<'a, S>;
     type Item = <ChunkIter<'a, S> as Iterator>::Item;
@@ -143,14 +141,12 @@ where
 pub struct ChunkIter<'a, S>(ChunkProducer<'a, S>)
 where
     S: Storage,
-    //    crate::error::Error: From<S::Error>,
-    <S as Storage>::Error: std::error::Error + Sync + Send + 'static;
+    <S as Storage>::Error: Error + Sync + Send + 'static;
 
 impl<'a, S> Iterator for ChunkIter<'a, S>
 where
     S: Storage,
-    //    crate::error::Error: From<S::Error>,
-    <S as Storage>::Error: std::error::Error + Sync + Send + 'static,
+    <S as Storage>::Error: Error + Sync + Send + 'static,
 {
     type Item = Result<Vec<u8>>;
 
@@ -170,8 +166,7 @@ where
 impl<S> Merk<S>
 where
     S: Storage,
-    //    crate::error::Error: From<S::Error>,
-    <S as Storage>::Error: std::error::Error + Sync + Send + 'static,
+    <S as Storage>::Error: Error + Sync + Send + 'static,
 {
     /// Creates a `ChunkProducer` which can return chunk proofs for replicating
     /// the entire Merk tree.

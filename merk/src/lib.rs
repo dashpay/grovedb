@@ -1,7 +1,5 @@
 #![feature(map_first_last)]
 
-/// Error and Result types.
-mod error;
 /// The top-level store API.
 #[cfg(feature = "full")]
 mod merk;
@@ -18,7 +16,6 @@ pub mod test_utils;
 /// The core tree data structure.
 pub mod tree;
 
-pub use error::{Error, Result};
 #[allow(deprecated)]
 pub use proofs::query::verify_query;
 pub use proofs::query::{execute_proof, verify};

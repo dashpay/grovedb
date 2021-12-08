@@ -30,10 +30,12 @@ impl Element {
     /// Merk should be loaded by this moment
     pub fn get(merk: &Merk<PrefixedRocksDbStorage>, key: &[u8]) -> Result<Element, Error> {
         let element = bincode::deserialize(
-            merk.get(&key)?
+            merk.get(&key)
+                .map_err(|e| Error::CorruptedData(e.to_string()))?
                 .ok_or(Error::InvalidPath("key not found in Merk"))?
                 .as_slice(),
-        )?;
+        )
+        .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
         Ok(element)
     }
 
@@ -44,8 +46,15 @@ impl Element {
         merk: &mut Merk<PrefixedRocksDbStorage>,
         key: Vec<u8>,
     ) -> Result<(), Error> {
-        let batch = [(key, Op::Put(bincode::serialize(self)?))];
-        merk.apply(&batch, &[]).map_err(|e| e.into())
+        let batch =
+            [(
+                key,
+                Op::Put(bincode::serialize(self).map_err(|_| {
+                    Error::CorruptedData(String::from("unable to serialize element"))
+                })?),
+            )];
+        merk.apply(&batch, &[])
+            .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 }
 
