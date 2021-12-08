@@ -2,10 +2,10 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
-use grovedb::GroveDb;
+use grovedb::{GroveDb, Error};
 use neon::prelude::*;
 
-type DbCallback = Box<dyn FnOnce(&mut Connection, &Channel) + Send>;
+type DbCallback = Box<dyn FnOnce(&mut GroveDb, &Channel) + Send>;
 
 // Wraps a SQLite connection a channel, allowing concurrent access
 struct Database {
@@ -32,12 +32,11 @@ impl GroveDbWrapper {
     // 2. Spawns a thread and moves the channel receiver and connection to it
     // 3. On a separate thread, read closures off the channel and execute with access
     //    to the connection.
-    fn new<'a, C>(cx: &mut C) -> rusqlite::Result<Self>
-    where
-        C: Context<'a>,
+    fn new(cx: &mut FunctionContext) -> Result<Self, Error>
     {
-        let path = cx.argument::<JsString>(0)?.value();
-        let path = Path::new(&path);
+        // TODO: error handling
+        let pathString = cx.argument::<JsString>(0)?.value(cx);
+        let path = Path::new(&pathString);
 
         // Channel for sending callbacks to execute on the GroveDb connection thread
         let (tx, rx) = mpsc::channel::<DbMessage>();
@@ -84,7 +83,7 @@ impl GroveDbWrapper {
 
     fn send(
         &self,
-        callback: impl FnOnce(&mut Connection, &Channel) + Send + 'static,
+        callback: impl FnOnce(&mut GroveDb, &Channel) + Send + 'static,
     ) -> Result<(), mpsc::SendError<DbMessage>> {
         self.tx.send(DbMessage::Callback(Box::new(callback)))
     }
@@ -127,11 +126,12 @@ impl GroveDbWrapper {
                     // Convert the name to a `JsString` on success and upcast to a `JsValue`
                     Ok(name) => vec![cx.null().upcast(), cx.string(name).upcast()],
 
-                    // If the row was not found, return `undefined` as a success instead
-                    // of throwing an exception
-                    Err(rusqlite::Error::QueryReturnedNoRows) => {
-                        vec![cx.null().upcast(), cx.undefined().upcast()]
-                    }
+                    // TODO: figure out what to do for the empty result
+                    // // If the row was not found, return `undefined` as a success instead
+                    // // of throwing an exception
+                    // Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    //     vec![cx.null().upcast(), cx.undefined().upcast()]
+                    // }
 
                     // Convert the error to a JavaScript exception on failure
                     Err(err) => vec![cx.error(err.to_string())?.upcast()],
