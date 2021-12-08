@@ -289,3 +289,28 @@ fn test_proof_construction() {
 
     assert_eq!(proof[2], root_tree.proof(&vec![0]).to_bytes());
 }
+
+#[test]
+fn test_proof_verification() {
+    let mut temp_db = make_grovedb();
+    temp_db
+        .insert(&[TEST_LEAF], b"innertree".to_vec(), Element::empty_tree())
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            &[TEST_LEAF, b"innertree"],
+            b"key1".to_vec(),
+            Element::Item(b"value1".to_vec()),
+        )
+        .expect("successful item insert");
+
+    dbg!(temp_db.root_tree.root().unwrap());
+    let proof = temp_db.proof(&[TEST_LEAF, b"innertree"], QueryItem::Key(b"key1".to_vec())).unwrap();
+
+    let result_map = GroveDb::verify_proof(&[TEST_LEAF, b"innertree"], proof).unwrap();
+
+    assert_eq!(
+        result_map.get(b"key1").unwrap().unwrap(),
+        b"value1"
+    );
+}

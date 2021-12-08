@@ -10,8 +10,9 @@ use std::{
 };
 
 pub use merk::proofs::query::QueryItem;
-use merk::{self, proofs::Query, rocksdb, Merk};
+use merk::{self, proofs::Query, rocksdb, Merk, execute_proof};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
+use merk::proofs::query::Map;
 use subtree::Element;
 
 /// Limit of possible indirections
@@ -36,6 +37,8 @@ pub enum Error {
     CyclicReference,
     #[error("reference hops limit exceeded")]
     ReferenceLimit,
+    #[error("incalid proof")]
+    InvalidProof(&'static str),
 }
 
 impl From<merk::Error> for Error {
@@ -272,6 +275,27 @@ impl GroveDb {
             .expect("should prove both inclusion and absence");
 
         Ok(proof_result)
+    }
+
+    pub fn verify_proof(path: &[&[u8]], proofs: Vec<Vec<u8>>) -> Result<Map, Error> {
+        // Should proof verification require the expected root hash?? I believe so.
+
+        // Make sure that the length of the path is the same as the length of the proofs
+        // What kind of error should I return
+
+        // Need to have more than one proof
+        // if proofs.len() < 2 {
+        //     // Can create an invalid proof type
+        //     Err("Not enough proofs");
+        // }
+        //
+        // let resulter = execute_proof(proofs[0].as_bytes()).unwrap();
+
+        let compressed_path = Self::compress_path(path, None);
+
+
+        todo!()
+
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
