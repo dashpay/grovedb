@@ -288,31 +288,38 @@ impl GroveDb {
         proofs: Vec<Vec<u8>>,
         expected_root_hash: [u8; 32],
     ) -> Result<Map, Error> {
-        let compressed_path = Self::compress_path(path, None);
-
         // Should it really be 2 or more??
         if proofs.len() < 2 {
             return Err(Error::InvalidProof("Proof length should be 2 or more"));
         }
 
         let (mut last_root_hash, mut last_result_map) = execute_proof(&proofs[0][..]).unwrap();
-        println!("Last root hash first {:?}", last_root_hash);
 
-        for i in 1..proofs.len() - 1 {
-            last_root_hash = execute_proof(&proofs[i][..]).unwrap().0;
-            println!("Last root hash loop {:?}", last_root_hash);
+        for i in 1..proofs.len() {
+            if i == proofs.len() - 1 {
+                // Prove the root
+                let root_proof = MerkleProof::<Sha256>::try_from(&proofs[i][..]).unwrap();
+                let a: [u8; 32] = last_root_hash;
+                if root_proof.verify(expected_root_hash, &vec![0], &[a], 2) {
+                    break;
+                } else {
+                    return Err(Error::InvalidProof("Root hashes didn't match"));
+                }
+            } else {
+                let proof_result = execute_proof(&proofs[i][..]).unwrap();
+                last_root_hash = proof_result.0;
+                let result_map = proof_result.1;
+
+                // Error if proof does not include the data and no absence proof
+                // None if absence proof
+                // We want must no error and not absent
+                result_map
+                    .get(path[i])?
+                    .ok_or(Error::InvalidProof("Bad path"));
+            }
         }
 
-        // Root tree proof
-        // Need to know the indices and how many leaves are in the root!
-        let root_proof = MerkleProof::<Sha256>::try_from(&proofs[proofs.len() - 1][..]).unwrap();
-        println!("Last root hash {:?}", last_root_hash);
-        let a: [u8; 32] = last_root_hash;
-        if root_proof.verify(expected_root_hash, &vec![0], &[a], 2) {
-            Ok(last_result_map)
-        } else {
-            return Err(Error::InvalidProof("Root hashes didn't match"));
-        }
+        Ok(last_result_map)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
