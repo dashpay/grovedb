@@ -305,13 +305,17 @@ fn test_proof_verification() {
         .expect("successful item insert");
 
     dbg!(temp_db.root_tree.root().unwrap());
-    let proof = temp_db.proof(&[TEST_LEAF, b"innertree"], QueryItem::Key(b"key1".to_vec())).unwrap();
+    let proof = temp_db
+        .proof(&[TEST_LEAF, b"innertree"], QueryItem::Key(b"key1".to_vec()))
+        .unwrap();
 
-    let result_map = GroveDb::verify_proof(&[TEST_LEAF, b"innertree"], proof).unwrap();
+    let result_map = GroveDb::verify_proof(
+        &[TEST_LEAF, b"innertree"],
+        proof,
+        temp_db.root_tree.root().unwrap(),
+    )
+    .unwrap();
     let elem: Element = bincode::deserialize(result_map.get(b"key1").unwrap().unwrap()).unwrap();
 
-    assert_eq!(
-        elem,
-        Element::Item(b"value1".to_vec())
-    );
+    assert_eq!(elem, Element::Item(b"value1".to_vec()));
 }

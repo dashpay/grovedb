@@ -10,10 +10,14 @@ use std::{
 };
 
 pub use merk::proofs::query::QueryItem;
-use merk::{self, proofs::Query, rocksdb, Merk, execute_proof};
-use rs_merkle::{algorithms::Sha256, MerkleTree};
-use merk::proofs::query::Map;
+use merk::{
+    self, execute_proof,
+    proofs::{query::Map, Query},
+    rocksdb, Merk,
+};
+use rs_merkle::{algorithms::Sha256, MerkleProof, MerkleTree};
 use subtree::Element;
+
 use crate::Error::InvalidProof;
 
 /// Limit of possible indirections
@@ -251,6 +255,7 @@ impl GroveDb {
                     .root_leaf_keys
                     .get(*key)
                     .ok_or(Error::InvalidPath("root key not found"))?;
+                println!("Key index {}", root_key_index);
                 proofs.push(self.root_tree.proof(&[*root_key_index]).to_bytes());
             } else {
                 proofs.push(self.prove_item(path_slice, QueryItem::Key(key.to_vec()))?);
@@ -278,20 +283,11 @@ impl GroveDb {
         Ok(proof_result)
     }
 
-    pub fn verify_proof(path: &[&[u8]], proofs: Vec<Vec<u8>>) -> Result<Map, Error> {
-        // Should proof verification require the expected root hash?? I believe so.
-
-        // Make sure that the length of the path is the same as the length of the proofs
-        // What kind of error should I return
-
-        // Need to have more than one proof
-        // if proofs.len() < 2 {
-        //     // Can create an invalid proof type
-        //     Err("Not enough proofs");
-        // }
-        //
-        // let resulter = execute_proof(proofs[0].as_bytes()).unwrap();
-
+    pub fn verify_proof(
+        path: &[&[u8]],
+        proofs: Vec<Vec<u8>>,
+        expected_root_hash: [u8; 32],
+    ) -> Result<Map, Error> {
         let compressed_path = Self::compress_path(path, None);
 
         // Should it really be 2 or more??
@@ -299,11 +295,24 @@ impl GroveDb {
             return Err(Error::InvalidProof("Proof length should be 2 or more"));
         }
 
-        // I need to track result and subsequent root hashes
-        // We return the leaf result map
-        let (last_root_hash, leaf_result_map) = execute_proof(&proofs[0][..]).unwrap();
+        let (mut last_root_hash, mut last_result_map) = execute_proof(&proofs[0][..]).unwrap();
+        println!("Last root hash first {:?}", last_root_hash);
 
-        Ok(leaf_result_map)
+        for i in 1..proofs.len() - 1 {
+            last_root_hash = execute_proof(&proofs[i][..]).unwrap().0;
+            println!("Last root hash loop {:?}", last_root_hash);
+        }
+
+        // Root tree proof
+        // Need to know the indices and how many leaves are in the root!
+        let root_proof = MerkleProof::<Sha256>::try_from(&proofs[proofs.len() - 1][..]).unwrap();
+        println!("Last root hash {:?}", last_root_hash);
+        let a: [u8; 32] = last_root_hash;
+        if root_proof.verify(expected_root_hash, &vec![0], &[a], 2) {
+            Ok(last_result_map)
+        } else {
+            return Err(Error::InvalidProof("Root hashes didn't match"));
+        }
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
