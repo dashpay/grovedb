@@ -339,7 +339,7 @@ fn test_malicious_proof_verification() {
     // construct a malicious proof
 
     // 4 trees, merk_one, merk_two, merk_three, root
-    // root references m3, m3 references some random root, m2 references m1
+    // root references m3, m3 references m1 (instead of m2), m2 references m1
     // m3 breaks the chain and as such the proof should not be considered valid
 
     let mut proofs: Vec<Vec<u8>> = Vec::new();
@@ -359,7 +359,7 @@ fn test_malicious_proof_verification() {
     merk_two_element.insert(&mut merk_two, b"innertree-2".to_vec());
 
     let mut proof_query = Query::new();
-    proof_query.insert_key(b"key1".to_vec());
+    proof_query.insert_key(b"innertree-2".to_vec());
     proofs.push(merk_two.prove(proof_query).unwrap());
 
     // Merk Three
@@ -368,7 +368,7 @@ fn test_malicious_proof_verification() {
     merk_three_element.insert(&mut merk_three, b"innertree".to_vec());
 
     let mut proof_query = Query::new();
-    proof_query.insert_key(b"key1".to_vec());
+    proof_query.insert_key(b"innertree".to_vec());
     proofs.push(merk_three.prove(proof_query).unwrap());
 
     let another_test_leaf_merk = TempMerk::new();
