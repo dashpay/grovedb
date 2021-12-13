@@ -291,7 +291,9 @@ impl GroveDb {
         }
 
         if proofs.len() - 1 != path.len() {
-            return Err(Error::InvalidProof("Proof length should be one greater than path"));
+            return Err(Error::InvalidProof(
+                "Proof length should be one greater than path",
+            ));
         }
 
         let (mut last_root_hash, leaf_result_map) = execute_proof(&proofs[0][..]).unwrap();
