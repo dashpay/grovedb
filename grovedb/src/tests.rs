@@ -297,10 +297,20 @@ fn test_proof_verification() {
         .insert(&[TEST_LEAF], b"innertree".to_vec(), Element::empty_tree())
         .expect("successful subtree insert");
     temp_db
+        .insert(&[TEST_LEAF], b"innertree2".to_vec(), Element::empty_tree())
+        .expect("successful subtree insert");
+    temp_db
         .insert(
             &[TEST_LEAF, b"innertree"],
             b"key1".to_vec(),
             Element::Item(b"value1".to_vec()),
+        )
+        .expect("successful item insert");
+    temp_db
+        .insert(
+            &[TEST_LEAF, b"innertree2"],
+            b"key1".to_vec(),
+            Element::Item(b"value2".to_vec()),
         )
         .expect("successful item insert");
 
@@ -311,7 +321,7 @@ fn test_proof_verification() {
 
     let result_map = GroveDb::verify_proof(
         &[TEST_LEAF, b"innertree"],
-        proof,
+        &proof,
         temp_db.root_tree.root().unwrap(),
     )
     .unwrap();

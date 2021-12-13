@@ -18,8 +18,6 @@ use merk::{
 use rs_merkle::{algorithms::Sha256, MerkleProof, MerkleTree};
 use subtree::Element;
 
-use crate::Error::InvalidProof;
-
 /// Limit of possible indirections
 const MAX_REFERENCE_HOPS: usize = 10;
 /// A key to store serialized data about subtree prefixes to restore HADS
@@ -42,7 +40,7 @@ pub enum Error {
     CyclicReference,
     #[error("reference hops limit exceeded")]
     ReferenceLimit,
-    #[error("incalid proof")]
+    #[error("invalid proof")]
     InvalidProof(&'static str),
 }
 
@@ -285,10 +283,9 @@ impl GroveDb {
 
     pub fn verify_proof(
         path: &[&[u8]],
-        proofs: Vec<Vec<u8>>,
+        proofs: &Vec<Vec<u8>>, // Generic into_iterator (trait) u8
         expected_root_hash: [u8; 32],
     ) -> Result<Map, Error> {
-        // Should it really be 2 or more??
         if proofs.len() < 2 {
             return Err(Error::InvalidProof("Proof length should be 2 or more"));
         }
@@ -297,7 +294,7 @@ impl GroveDb {
             return Err(Error::InvalidProof("Proof length should be one greater than path"));
         }
 
-        let (mut last_root_hash, mut last_result_map) = execute_proof(&proofs[0][..]).unwrap();
+        let (mut last_root_hash, leaf_result_map) = execute_proof(&proofs[0][..]).unwrap();
 
         for i in 1..proofs.len() {
             if i == proofs.len() - 1 {
@@ -311,7 +308,7 @@ impl GroveDb {
                 }
             } else {
                 // Merk proof, validate that the proof is valid and
-                // the result map contains the last hash i.e the previous
+                // the result map contains the last root hash i.e the previous
                 // merk was a child of this merk
                 let proof_result = execute_proof(&proofs[i][..]).unwrap();
                 last_root_hash = proof_result.0;
@@ -323,7 +320,7 @@ impl GroveDb {
             }
         }
 
-        Ok(last_result_map)
+        Ok(leaf_result_map)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
