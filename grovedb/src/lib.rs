@@ -313,12 +313,23 @@ impl GroveDb {
                 // the result map contains the last root hash i.e the previous
                 // merk was a child of this merk
                 let proof_result = execute_proof(&proofs[i][..]).unwrap();
-                last_root_hash = proof_result.0;
                 let result_map = proof_result.1;
 
-                result_map
-                    .get(path[i])?
-                    .ok_or(Error::InvalidProof("Bad path"));
+                // let elem: Element = bincode::deserialize(result_map
+                //     .get(path[i])?
+                //     .ok_or(Error::InvalidProof("Bad path"))kkk);
+                let elem: Element =
+                    bincode::deserialize(result_map.get(path[i]).unwrap().unwrap()).unwrap();
+                let merk_root_hash = match elem {
+                    Element::Tree(hash) => hash,
+                    _ => panic!("Intermidiate proofs should be for trees"),
+                };
+
+                if merk_root_hash != last_root_hash {
+                    return Err(Error::InvalidProof("Bad path"));
+                }
+
+                last_root_hash = proof_result.0;
             }
         }
 
