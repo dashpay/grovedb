@@ -1,10 +1,13 @@
-use std::borrow::Borrow;
+mod converter;
+
+use std::ops::Deref;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
-use grovedb::{GroveDb, Error};
+use grovedb::{GroveDb, Error, Element};
 use neon::prelude::*;
+use neon::borrow::Borrow;
 
 type DbCallback = Box<dyn FnOnce(&mut GroveDb, &Channel) + Send>;
 
@@ -30,7 +33,7 @@ impl GroveDbWrapper {
     // 2. Spawns a thread and moves the channel receiver and connection to it
     // 3. On a separate thread, read closures off the channel and execute with access
     //    to the connection.
-    fn new(cx: &mut FunctionContext) -> Result<Self, Error>
+    fn new(cx: &mut FunctionContext) -> NeonResult<Self>
     {
         // TODO: error handling
         let path_string = cx.argument::<JsString>(0)?.value(cx);
@@ -40,7 +43,17 @@ impl GroveDbWrapper {
         let (tx, rx) = mpsc::channel::<DbMessage>();
 
         // Open a connection to groveDb, this will be moved to a separate thread
+        // TODO: Convert grovedb error to neon error here
+
+
+        // match GroveDb::open(path) {
+        //     Ok(grove_db) => {}
+        //     Err(grove_db_error) => {
+        //         return cx.error(grove_db_error.to_string()))
+        //     }
+        // }
         let mut grove_db = GroveDb::open(path)?;
+
 
         // Create an `Channel` for calling back to JavaScript. It is more efficient
         // to create a single channel and re-use it for all database callbacks.
@@ -103,7 +116,6 @@ impl GroveDbWrapper {
     }
 
     fn js_get(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-
         let path_js_array_of_buffers = cx.argument::<JsArray>(0)?;
         let buf_vec = path_js_array_of_buffers.to_vec(&mut cx)?;
         let mut path_slices: Vec<&[u8]> = Vec::new();
@@ -111,19 +123,21 @@ impl GroveDbWrapper {
         let guard = cx.lock();
 
         for buf in buf_vec {
-            let js_buf = buf.downcast_or_throw::<JsBuffer, _>(&mut cx)?;
-            let buf_handle = key_buffer.borrow(&guard);
-            let buf_slice = buf_handle.as_slice::<u8>();
+            let js_buffer_handle = buf.downcast_or_throw::<JsBuffer, _>(&mut cx)?;
+            let js_buffer = js_buffer_handle.deref();
+            let path_fragment_memory_view = js_buffer.borrow(&guard);
+            let buf_slice = path_fragment_memory_view.as_slice::<u8>();
             path_slices.push(buf_slice);
         }
 
         // Converting JS key buffer to
-        let key_buffer = cx.argument::<JsBuffer>(1)?;
-        let key_handle = key_buffer.borrow(&guard);
-        let key_slice = key_handle.as_slice::<u8>();
+        let key_buffer_handle = cx.argument::<JsBuffer>(1)?;
+        let key_buffer = key_buffer_handle.deref();
+        let key_memory_view = key_buffer.borrow(&guard);
+        let key_slice = key_memory_view.as_slice::<u8>();
 
-        // Get the second argument as a `JsFunction`
-        let callback = cx.argument::<JsFunction>(1)?.root(&mut cx);
+        // Get the JS callback as a `JsFunction`
+        let callback = cx.argument::<JsFunction>(2)?.root(&mut cx);
 
         // Get the `this` value as a `JsBox<Database>`
         let db = cx
@@ -138,17 +152,18 @@ impl GroveDbWrapper {
                 let this = cx.undefined();
                 let args: Vec<Handle<JsValue>> = match result {
                     // Convert the name to a `JsString` on success and upcast to a `JsValue`
-                    Ok(element) => vec![cx.null().upcast(), cx.string(element).upcast()],
-
-                    // TODO: figure out what to do for the empty result
-                    // // If the row was not found, return `undefined` as a success instead
-                    // // of throwing an exception
-                    // Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    //     vec![cx.null().upcast(), cx.undefined().upcast()]
-                    // }
+                    Ok(element) => {
+                        // First parameter of JS callbacks is error, which is null in this case
+                        vec![
+                            cx.null().upcast(),
+                            converter::element_to_js_value(element, &mut cx)?
+                        ]
+                    },
 
                     // Convert the error to a JavaScript exception on failure
-                    Err(err) => vec![cx.error(err.to_string())?.upcast()],
+                    Err(err) => vec![
+                        cx.error(err.to_string())?.upcast()
+                    ],
                 };
 
                 callback.call(&mut cx, this, args)?;
@@ -163,7 +178,7 @@ impl GroveDbWrapper {
     }
 
     fn js_insert(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-
+        Ok(cx.undefined())
     }
 
     fn js_proof(mut cx: FunctionContext) -> JsResult<JsUndefined> {

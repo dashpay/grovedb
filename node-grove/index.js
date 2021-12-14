@@ -6,6 +6,9 @@ const { groveDbOpen, groveDbGet, groveDbInsert, groveDbProof } = require("./inde
 
 // Convert the DB methods from using callbacks to returning promises
 const groveDbGetAsync = promisify(groveDbGet);
+const groveDbInsertAsync = promisify(groveDbInsert);
+const groveDbOpenAsync = promisify(groveDbOpen);
+const groveDbProofAsync = promisify(groveDbProof);
 
 // Wrapper class for the boxed `Database` for idiomatic JavaScript usage
 class GroveDB {
@@ -13,8 +16,8 @@ class GroveDB {
         this.db = db;
     }
 
-    static open(path) {
-        const db = groveDbOpen(path);
+    static async open(path) {
+        const db = await groveDbOpenAsync(path);
         return new GroveDB(db);
     }
 
@@ -24,13 +27,17 @@ class GroveDB {
      * @param {Buffer} key
      * @returns {*}
      */
-    get(path, key) {
+    async get(path, key) {
         return groveDbGetAsync.call(this.db, path, key);
     }
 
-    insert() {}
+    async insert() {
+        return groveDbInsertAsync.call(this.db);
+    }
 
-    proof() {}
+    async proof() {
+        return groveDbProofAsync.call(this.db);
+    }
 }
 
 module.exports = GroveDB;
