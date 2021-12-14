@@ -2,7 +2,7 @@
 
 const { promisify } = require("util");
 
-const { groveDbOpen, groveDbGet } = require("./index.node");
+const { groveDbOpen, groveDbGet, groveDbInsert, groveDbProof } = require("./index.node");
 
 // Convert the DB methods from using callbacks to returning promises
 const groveDbGetAsync = promisify(groveDbGet);
@@ -18,12 +18,19 @@ class GroveDB {
         return new GroveDB(db);
     }
 
-    // Wrap each method with a delegate to `this.db`
-    // This could be node in several other ways, for example binding assignment
-    // in the constructor
-    get(name) {
-        return groveDbGetAsync.call(this.db, name);
+    /**
+     *
+     * @param {Buffer[]} path
+     * @param {Buffer} key
+     * @returns {*}
+     */
+    get(path, key) {
+        return groveDbGetAsync.call(this.db, path, key);
     }
+
+    insert() {}
+
+    proof() {}
 }
 
 module.exports = GroveDB;

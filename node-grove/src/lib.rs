@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
@@ -6,11 +7,6 @@ use grovedb::{GroveDb, Error};
 use neon::prelude::*;
 
 type DbCallback = Box<dyn FnOnce(&mut GroveDb, &Channel) + Send>;
-
-// Wraps a SQLite connection a channel, allowing concurrent access
-struct Database {
-    tx: mpsc::Sender<DbMessage>,
-}
 
 // Messages sent on the database channel
 enum DbMessage {
@@ -24,9 +20,11 @@ struct GroveDbWrapper {
     tx: mpsc::Sender<DbMessage>,
 }
 
-// Internal wrapper logic
+// Internal wrapper logic. Needed to avoid issues with passing threads to node.js.
+// Avoid thread conflicts bu having a dedicated thread thread for the groveDB
+// and uses event to communicate with it
 impl GroveDbWrapper {
-    // Creates a new instance of `Database`
+    // Creates a new instance of `GroveDbWrapper`
     //
     // 1. Creates a connection and a channel
     // 2. Spawns a thread and moves the channel receiver and connection to it
@@ -35,8 +33,8 @@ impl GroveDbWrapper {
     fn new(cx: &mut FunctionContext) -> Result<Self, Error>
     {
         // TODO: error handling
-        let pathString = cx.argument::<JsString>(0)?.value(cx);
-        let path = Path::new(&pathString);
+        let path_string = cx.argument::<JsString>(0)?.value(cx);
+        let path = Path::new(&path_string);
 
         // Channel for sending callbacks to execute on the GroveDb connection thread
         let (tx, rx) = mpsc::channel::<DbMessage>();
@@ -105,8 +103,24 @@ impl GroveDbWrapper {
     }
 
     fn js_get(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-        // Get the first argument as a `JsNumber` and convert to an `f64`
-        let id = cx.argument::<JsNumber>(0)?.value(&mut cx);
+
+        let path_js_array_of_buffers = cx.argument::<JsArray>(0)?;
+        let buf_vec = path_js_array_of_buffers.to_vec(&mut cx)?;
+        let mut path_slices: Vec<&[u8]> = Vec::new();
+
+        let guard = cx.lock();
+
+        for buf in buf_vec {
+            let js_buf = buf.downcast_or_throw::<JsBuffer, _>(&mut cx)?;
+            let buf_handle = key_buffer.borrow(&guard);
+            let buf_slice = buf_handle.as_slice::<u8>();
+            path_slices.push(buf_slice);
+        }
+
+        // Converting JS key buffer to
+        let key_buffer = cx.argument::<JsBuffer>(1)?;
+        let key_handle = key_buffer.borrow(&guard);
+        let key_slice = key_handle.as_slice::<u8>();
 
         // Get the second argument as a `JsFunction`
         let callback = cx.argument::<JsFunction>(1)?.root(&mut cx);
@@ -117,14 +131,14 @@ impl GroveDbWrapper {
             .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
 
         db.send(move |grove_db: &mut GroveDb, channel| {
-            let result: Result<String, _> = grove_db.get();
+            let result = grove_db.get(&path_slices, key_slice);
 
             channel.send(move |mut cx| {
                 let callback = callback.into_inner(&mut cx);
                 let this = cx.undefined();
                 let args: Vec<Handle<JsValue>> = match result {
                     // Convert the name to a `JsString` on success and upcast to a `JsValue`
-                    Ok(name) => vec![cx.null().upcast(), cx.string(name).upcast()],
+                    Ok(element) => vec![cx.null().upcast(), cx.string(element).upcast()],
 
                     // TODO: figure out what to do for the empty result
                     // // If the row was not found, return `undefined` as a success instead
@@ -147,12 +161,22 @@ impl GroveDbWrapper {
         // This function does not have a return value
         Ok(cx.undefined())
     }
+
+    fn js_insert(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+
+    }
+
+    fn js_proof(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+        Ok(cx.undefined())
+    }
 }
 
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("groveDbOpen", GroveDbWrapper::js_open)?;
+    cx.export_function("groveDbInsert", GroveDbWrapper::js_insert)?;
     cx.export_function("groveDbGet", GroveDbWrapper::js_get)?;
+    cx.export_function("groveDbProof", GroveDbWrapper::js_proof)?;
 
     Ok(())
 }
