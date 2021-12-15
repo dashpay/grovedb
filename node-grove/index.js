@@ -2,13 +2,15 @@
 
 const { promisify } = require("util");
 
-const { groveDbOpen, groveDbGet, groveDbInsert, groveDbProof } = require("./index.node");
+// This file is crated when run `npm run build`. The actual source file that
+// exports those functions is ./src/lib.rs
+const { groveDbOpen, groveDbGet, groveDbInsert, groveDbProof, groveDbClose } = require("./index.node");
 
 // Convert the DB methods from using callbacks to returning promises
 const groveDbGetAsync = promisify(groveDbGet);
 const groveDbInsertAsync = promisify(groveDbInsert);
-const groveDbOpenAsync = promisify(groveDbOpen);
 const groveDbProofAsync = promisify(groveDbProof);
+const groveDbCloseAsync = promisify(groveDbClose);
 
 // Wrapper class for the boxed `Database` for idiomatic JavaScript usage
 class GroveDB {
@@ -16,8 +18,8 @@ class GroveDB {
         this.db = db;
     }
 
-    static async open(path) {
-        const db = await groveDbOpenAsync(path);
+    static open(path) {
+        const db = groveDbOpen(path);
         return new GroveDB(db);
     }
 
@@ -31,12 +33,33 @@ class GroveDB {
         return groveDbGetAsync.call(this.db, path, key);
     }
 
-    async insert() {
-        return groveDbInsertAsync.call(this.db);
+    /**
+     *
+     * @param {Buffer[]} path
+     * @param {Buffer} key
+     * @param {Buffer} value
+     * @returns {Promise<*>}
+     */
+    async insert(path, key, value) {
+        return groveDbInsertAsync.call(this.db, path, key, value);
     }
 
+    /**
+     * Not implemented in GroveDB yet
+     *
+     * @returns {Promise<*>}
+     */
     async proof() {
         return groveDbProofAsync.call(this.db);
+    }
+
+    /**
+     * Closes connection to the DB
+     *
+     * @returns {Promise<void>}
+     */
+    async close() {
+        return groveDbCloseAsync.call(this.db);
     }
 }
 
