@@ -1,15 +1,11 @@
 mod converter;
 
-use std::fs::create_dir;
-use std::ops::Deref;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
-use grovedb::{GroveDb, Error, Element};
+use grovedb::{GroveDb};
 use neon::prelude::*;
-use neon::borrow::Borrow;
-use neon::result::Throw;
 
 type DbCallback = Box<dyn FnOnce(&mut GroveDb, &Channel) + Send>;
 
@@ -102,10 +98,10 @@ impl GroveDbWrapper {
     // Create a new instance of `Database` and place it inside a `JsBox`
     // JavaScript can hold a reference to a `JsBox`, but the contents are opaque
     fn js_open(mut cx: FunctionContext) -> JsResult<JsBox<GroveDbWrapper>> {
-        let dbWrapper =
+        let grove_db_wrapper =
             GroveDbWrapper::new(&mut cx).or_else(|err| cx.throw_error(err.to_string()))?;
 
-        Ok(cx.boxed(dbWrapper))
+        Ok(cx.boxed(grove_db_wrapper))
     }
 
     fn js_get(mut cx: FunctionContext) -> JsResult<JsUndefined> {

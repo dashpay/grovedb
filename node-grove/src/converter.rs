@@ -1,4 +1,4 @@
-use grovedb::{Element, Error};
+use grovedb::{Element};
 use neon::prelude::*;
 use neon::borrow::Borrow;
 
