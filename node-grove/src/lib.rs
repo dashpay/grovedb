@@ -1,5 +1,6 @@
 mod converter;
 
+use std::fs::create_dir;
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::mpsc;
@@ -8,6 +9,7 @@ use std::thread;
 use grovedb::{GroveDb, Error, Element};
 use neon::prelude::*;
 use neon::borrow::Borrow;
+use neon::result::Throw;
 
 type DbCallback = Box<dyn FnOnce(&mut GroveDb, &Channel) + Send>;
 
@@ -37,23 +39,9 @@ impl GroveDbWrapper {
     {
         // TODO: error handling
         let path_string = cx.argument::<JsString>(0)?.value(cx);
-        let path = Path::new(&path_string);
 
         // Channel for sending callbacks to execute on the GroveDb connection thread
         let (tx, rx) = mpsc::channel::<DbMessage>();
-
-        // Open a connection to groveDb, this will be moved to a separate thread
-        // TODO: Convert grovedb error to neon error here
-
-
-        // match GroveDb::open(path) {
-        //     Ok(grove_db) => {}
-        //     Err(grove_db_error) => {
-        //         return cx.error(grove_db_error.to_string()))
-        //     }
-        // }
-        let mut grove_db = GroveDb::open(path)?;
-
 
         // Create an `Channel` for calling back to JavaScript. It is more efficient
         // to create a single channel and re-use it for all database callbacks.
@@ -65,6 +53,11 @@ impl GroveDbWrapper {
         // This will not block the JavaScript main thread and will continue executing
         // concurrently.
         thread::spawn(move || {
+            let path = Path::new(&path_string);
+            // Open a connection to groveDb, this will be moved to a separate thread
+            // TODO: think how to pass this error to JS
+            let mut grove_db = GroveDb::open(path).unwrap();
+
             // Blocks until a callback is available
             // When the instance of `Database` is dropped, the channel will be closed
             // and `rx.recv()` will return an `Err`, ending the loop and terminating
@@ -92,7 +85,7 @@ impl GroveDbWrapper {
         self.tx.send(DbMessage::Close)
     }
 
-    fn send(
+    fn send_to_db_thread(
         &self,
         callback: impl FnOnce(&mut GroveDb, &Channel) + Send + 'static,
     ) -> Result<(), mpsc::SendError<DbMessage>> {
@@ -116,64 +109,49 @@ impl GroveDbWrapper {
     }
 
     fn js_get(mut cx: FunctionContext) -> JsResult<JsUndefined> {
-        let path_js_array_of_buffers = cx.argument::<JsArray>(0)?;
-        let buf_vec = path_js_array_of_buffers.to_vec(&mut cx)?;
-        let mut path_slices: Vec<&[u8]> = Vec::new();
+        let js_path = cx.argument::<JsArray>(0)?;
+        let js_key = cx.argument::<JsBuffer>(1)?;
+        let js_callback = cx.argument::<JsFunction>(2)?.root(&mut cx);
 
-        let guard = cx.lock();
-
-        for buf in buf_vec {
-            let js_buffer_handle = buf.downcast_or_throw::<JsBuffer, _>(&mut cx)?;
-            let js_buffer = js_buffer_handle.deref();
-            let path_fragment_memory_view = js_buffer.borrow(&guard);
-            let buf_slice = path_fragment_memory_view.as_slice::<u8>();
-            path_slices.push(buf_slice);
-        }
-
-        // Converting JS key buffer to
-        let key_buffer_handle = cx.argument::<JsBuffer>(1)?;
-        let key_buffer = key_buffer_handle.deref();
-        let key_memory_view = key_buffer.borrow(&guard);
-        let key_slice = key_memory_view.as_slice::<u8>();
-
-        // Get the JS callback as a `JsFunction`
-        let callback = cx.argument::<JsFunction>(2)?.root(&mut cx);
+        let path = converter::js_array_of_buffers_to_vec(js_path, &mut cx)?;
+        let key = converter::js_buffer_to_vec_u8(js_key, &mut cx);
 
         // Get the `this` value as a `JsBox<Database>`
         let db = cx
             .this()
             .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
 
-        db.send(move |grove_db: &mut GroveDb, channel| {
-            let result = grove_db.get(&path_slices, key_slice);
+        db.send_to_db_thread(move |grove_db: &mut GroveDb, channel| {
+            let path_slice: Vec<&[u8]> = path.iter().map(|fragment| fragment.as_slice()).collect();
+            let result = grove_db.get(&path_slice, &key);
 
-            channel.send(move |mut cx| {
-                let callback = callback.into_inner(&mut cx);
-                let this = cx.undefined();
-                let args: Vec<Handle<JsValue>> = match result {
+            channel.send(move |mut task_context| {
+                let callback = js_callback.into_inner(&mut task_context);
+                let this = task_context.undefined();
+                let callback_arguments: Vec<Handle<JsValue>> = match result {
                     // Convert the name to a `JsString` on success and upcast to a `JsValue`
                     Ok(element) => {
                         // First parameter of JS callbacks is error, which is null in this case
                         vec![
-                            cx.null().upcast(),
-                            converter::element_to_js_value(element, &mut cx)?
+                            task_context.null().upcast(),
+                            converter::element_to_js_value(element, &mut task_context)?
                         ]
                     },
 
                     // Convert the error to a JavaScript exception on failure
                     Err(err) => vec![
-                        cx.error(err.to_string())?.upcast()
+                        task_context.error(err.to_string())?.upcast()
                     ],
                 };
 
-                callback.call(&mut cx, this, args)?;
+                callback.call(&mut task_context, this, callback_arguments)?;
 
                 Ok(())
             });
         })
         .or_else(|err| cx.throw_error(err.to_string()))?;
 
-        // This function does not have a return value
+        // The result is returned through the callback, not through direct return
         Ok(cx.undefined())
     }
 
