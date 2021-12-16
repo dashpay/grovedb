@@ -297,15 +297,25 @@ fn test_successful_proof_verification() {
         .insert(&[TEST_LEAF], b"innertree".to_vec(), Element::empty_tree())
         .expect("successful subtree insert");
     temp_db
-        .insert(&[TEST_LEAF], b"innertree2".to_vec(), Element::empty_tree())
-        .expect("successful subtree insert");
-    temp_db
         .insert(
             &[TEST_LEAF, b"innertree"],
+            b"innertree1.1".to_vec(),
+            Element::empty_tree(),
+        )
+        .expect("successful subtree insert");
+
+    temp_db
+        .insert(&[TEST_LEAF], b"innertree2".to_vec(), Element::empty_tree())
+        .expect("successful subtree insert");
+
+    temp_db
+        .insert(
+            &[TEST_LEAF, b"innertree", b"innertree1.1"],
             b"key1".to_vec(),
             Element::Item(b"value1".to_vec()),
         )
         .expect("successful item insert");
+
     temp_db
         .insert(
             &[TEST_LEAF, b"innertree2"],
@@ -316,11 +326,14 @@ fn test_successful_proof_verification() {
 
     dbg!(temp_db.root_tree.root().unwrap());
     let proof = temp_db
-        .proof(&[TEST_LEAF, b"innertree"], QueryItem::Key(b"key1".to_vec()))
+        .proof(
+            &[TEST_LEAF, b"innertree", b"innertree1.1"],
+            QueryItem::Key(b"key1".to_vec()),
+        )
         .unwrap();
 
     let result_map = GroveDb::verify_proof(
-        &[TEST_LEAF, b"innertree"],
+        &[TEST_LEAF, b"innertree", b"innertree1.1"],
         &proof,
         temp_db.root_tree.root().unwrap(),
     )

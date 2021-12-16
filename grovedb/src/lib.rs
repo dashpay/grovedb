@@ -296,30 +296,27 @@ impl GroveDb {
             ));
         }
 
-        let (mut last_root_hash, leaf_result_map) = execute_proof(&proofs[0][..]).unwrap();
+        let mut proof_iterator = proofs.iter();
+        let reverse_path_iterator = path.iter().rev();
 
-        for i in 1..proofs.len() {
-            if i == proofs.len() - 1 {
-                // Last proof (root proof)
-                let root_proof = MerkleProof::<Sha256>::try_from(&proofs[i][..]).unwrap();
-                let a: [u8; 32] = last_root_hash;
-                if root_proof.verify(expected_root_hash, &vec![0], &[a], 2) {
-                    break;
-                } else {
-                    return Err(Error::InvalidProof("Root hashes didn't match"));
-                }
-            } else {
+        let leaf_proof = proof_iterator
+            .next()
+            .expect("Constraint checks above enforces leaf proof must exist");
+
+        let (mut last_root_hash, leaf_result_map) = execute_proof(&leaf_proof[..])?;
+
+        let mut proof_path_zip = proof_iterator.zip(path.iter().rev()).peekable();
+
+        while let Some((proof, key)) = proof_path_zip.next() {
+            if proof_path_zip.peek().is_some() {
                 // Merk proof, validate that the proof is valid and
                 // the result map contains the last root hash i.e the previous
                 // merk was a child of this merk
-                let proof_result = execute_proof(&proofs[i][..]).unwrap();
+                let proof_result = execute_proof(&proof[..]).unwrap();
                 let result_map = proof_result.1;
 
-                // let elem: Element = bincode::deserialize(result_map
-                //     .get(path[i])?
-                //     .ok_or(Error::InvalidProof("Bad path"))kkk);
                 let elem: Element =
-                    bincode::deserialize(result_map.get(path[i]).unwrap().unwrap()).unwrap();
+                    bincode::deserialize(result_map.get(key).unwrap().unwrap()).unwrap();
                 let merk_root_hash = match elem {
                     Element::Tree(hash) => hash,
                     _ => panic!("Intermidiate proofs should be for trees"),
@@ -330,6 +327,15 @@ impl GroveDb {
                 }
 
                 last_root_hash = proof_result.0;
+            } else {
+                // Last proof (root proof)
+                let root_proof = MerkleProof::<Sha256>::try_from(&proof[..]).unwrap();
+                let a: [u8; 32] = last_root_hash;
+                if root_proof.verify(expected_root_hash, &vec![0], &[a], 2) {
+                    break;
+                } else {
+                    return Err(Error::InvalidProof("Root hashes didn't match"));
+                }
             }
         }
 
