@@ -1,16 +1,14 @@
 # node-grove
 
-[![Rayon crate](https://img.shields.io/crates/v/rs_merkle.svg)](https://crates.io/crates/rs_merkle)
-[![Rayon documentation](https://docs.rs/rs_merkle/badge.svg)](https://docs.rs/rs_merkle)
-[![Build and test](https://github.com/antouhou/rs-merkle/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/antouhou/rs-merkle/actions)
+[![GroveDB npm package](https://img.shields.io/npm/v/@dashevo/node-grove.svg)](https://www.npmjs.com/package/@dashevo/node-grove)
 
-`node-grove` is a groveDB binding for node.js
+`node-grove` is a GroveDB binding for node.js
 
-`node-grove` is [available on npm](https://npmjs.org/node-grove)
+`node-grove` is [available on npm](https://www.npmjs.com/package/@dashevo/node-grove)
 
 ## Usage
 
-Add the module to your project with `npm install node-grove`.
+Add the module to your project with `npm install @dashevo/node-grove`.
 
 ## Example
 

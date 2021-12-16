@@ -1,6 +1,6 @@
 {
   "name": "@dashevo/node-grove",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "Neon binding for GroveDb",
   "main": "node-grove/index.js",
   "readme": "node-grove/README.md",
