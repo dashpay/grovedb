@@ -277,7 +277,7 @@ fn test_proof_construction() {
         .proof(&[TEST_LEAF, b"innertree"], QueryItem::Key(b"key1".to_vec()))
         .expect("Successful proof generation");
 
-    assert_eq!(proof.len(), 3);
+    assert_eq!(proof.len(), 4);
 
     let mut proof_query = Query::new();
     proof_query.insert_key(b"key1".to_vec());
@@ -288,6 +288,12 @@ fn test_proof_construction() {
     assert_eq!(proof[1], test_leaf_merk.prove(proof_query).unwrap());
 
     assert_eq!(proof[2], root_tree.proof(&vec![0]).to_bytes());
+
+    let root_leaf_keys: HashMap<Vec<u8>, usize> = bincode::deserialize(&proof[3][..]).unwrap();
+    assert_eq!(root_leaf_keys.len(), temp_db.root_leaf_keys.len());
+    for (key, index) in &root_leaf_keys {
+        assert_eq!(root_leaf_keys[key], temp_db.root_leaf_keys[key]);
+    }
 }
 
 #[test]
