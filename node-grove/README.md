@@ -20,9 +20,32 @@ const GroveDB = require('node-grove');
 async function main() {
     const groveDb = GroveDB.open('./test.db');
     
-    await groveDb.insert(path, key, value);
+    const tree_key = Buffer.from("test_tree");
     
-    const result = await groveDb.get(path, key);
+    const item_key = Buffer.from("test_key");
+    const item_value = Buffer.from("very nice test value");
+
+    const root_tree_path = [];
+    const item_tree_path = [tree_key];
+    
+    // Making a subtree to insert items into
+    await groveDb.insert(
+        root_tree_path, 
+        tree_key, 
+        { type: "tree", value: Buffer.alloc(32) 
+    });
+    
+    // Inserting an item into the subtree
+    await groveDb.insert(
+        item_tree_path, 
+        item_key, 
+        { type: "item", value: item_value }
+    );
+
+    const result = await groveDb.get(item_tree_path, item_key);
+
+    // -> "very nice test value"
+    console.log(result.toString());
     
     // Don't forget to close connection when you no longer need it
     await groveDb.close();

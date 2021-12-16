@@ -161,11 +161,12 @@ impl GroveDbWrapper {
     fn js_insert(mut cx: FunctionContext) -> JsResult<JsUndefined> {
         let js_path = cx.argument::<JsArray>(0)?;
         let js_key = cx.argument::<JsBuffer>(1)?;
-        let js_element = cx.argument::<JsBuffer>(2)?;
+        let js_element = cx.argument::<JsObject>(2)?;
         let js_callback = cx.argument::<JsFunction>(3)?.root(&mut cx);
 
         let path = converter::js_array_of_buffers_to_vec(js_path, &mut cx)?;
         let key = converter::js_buffer_to_vec_u8(js_key, &mut cx);
+        let element = converter::js_object_to_element(js_element, &mut cx)?;
 
         // Get the `this` value as a `JsBox<Database>`
         let db = cx
@@ -174,29 +175,17 @@ impl GroveDbWrapper {
 
         db.send_to_db_thread(move |grove_db: &mut GroveDb, channel| {
             let path_slice: Vec<&[u8]> = path.iter().map(|fragment| fragment.as_slice()).collect();
-            let result = grove_db.get(&path_slice, &key);
+            let result = grove_db.insert(&path_slice, key, element);
 
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);
                 let this = task_context.undefined();
                 let callback_arguments: Vec<Handle<JsValue>> = match result {
-                    // Convert the name to a `JsString` on success and upcast to a `JsValue`
-                    Ok(element) => {
-                        // First parameter of JS callbacks is error, which is null in this case
-                        vec![
-                            task_context.null().upcast(),
-                            converter::element_to_js_value(element, &mut task_context)?
-                        ]
-                    },
-
-                    // Convert the error to a JavaScript exception on failure
-                    Err(err) => vec![
-                        task_context.error(err.to_string())?.upcast()
-                    ],
+                    Ok(_) => vec![task_context.null().upcast()],
+                    Err(err) => vec![task_context.error(err.to_string())?.upcast()],
                 };
 
                 callback.call(&mut task_context, this, callback_arguments)?;
-
                 Ok(())
             });
         })
@@ -205,10 +194,14 @@ impl GroveDbWrapper {
         Ok(cx.undefined())
     }
 
+    /// Not implemented
     fn js_proof(mut cx: FunctionContext) -> JsResult<JsUndefined> {
         Ok(cx.undefined())
     }
 
+    /// Sends a message to the DB thread to stop the thread and dispose the
+    /// groveDb instance owned by it, then calls js callback passed as a first
+    /// argument to the function
     fn js_close(mut cx: FunctionContext) -> JsResult<JsUndefined> {
         let js_callback = cx.argument::<JsFunction>(0)?.root(&mut cx);
 

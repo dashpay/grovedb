@@ -27,7 +27,7 @@ pub enum Error {
     RocksDBError(#[from] merk::rocksdb::Error),
     #[error("unable to open Merk db")]
     MerkError(merk::Error),
-    #[error("invalid path")]
+    #[error("invalid path: {0}")]
     InvalidPath(&'static str),
     #[error("unable to decode")]
     BincodeError(#[from] bincode::Error),

@@ -27,7 +27,7 @@ class GroveDB {
      *
      * @param {Buffer[]} path
      * @param {Buffer} key
-     * @returns {*}
+     * @returns {Promise<Element>}
      */
     async get(path, key) {
         return groveDbGetAsync.call(this.db, path, key);
@@ -37,7 +37,7 @@ class GroveDB {
      *
      * @param {Buffer[]} path
      * @param {Buffer} key
-     * @param {Buffer} value
+     * @param {Element} value
      * @returns {Promise<*>}
      */
     async insert(path, key, value) {
@@ -62,5 +62,11 @@ class GroveDB {
         return groveDbCloseAsync.call(this.db);
     }
 }
+
+/**
+ * @typedef Element
+ * @property {string} type - element type. Can be "item", "reference" or "tree"
+ * @property {Buffer|Buffer[]} value - element value
+ */
 
 module.exports = GroveDB;
