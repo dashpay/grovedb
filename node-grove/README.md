@@ -15,37 +15,39 @@ Add the module to your project with `npm install node-grove`.
 ## Example
 
 ```javascript
-const GroveDB = require('node-grove');
+const GroveDB = require('@dashevo/node-grove');
 
 async function main() {
     const groveDb = GroveDB.open('./test.db');
-    
+
     const tree_key = Buffer.from("test_tree");
-    
+
     const item_key = Buffer.from("test_key");
     const item_value = Buffer.from("very nice test value");
 
     const root_tree_path = [];
     const item_tree_path = [tree_key];
-    
+
     // Making a subtree to insert items into
     await groveDb.insert(
-        root_tree_path, 
-        tree_key, 
-        { type: "tree", value: Buffer.alloc(32) 
-    });
-    
+        root_tree_path,
+        tree_key,
+        { type: "tree", value: Buffer.alloc(32)
+        });
+
     // Inserting an item into the subtree
     await groveDb.insert(
-        item_tree_path, 
-        item_key, 
+        item_tree_path,
+        item_key,
         { type: "item", value: item_value }
     );
 
-    const result = await groveDb.get(item_tree_path, item_key);
+    const element = await groveDb.get(item_tree_path, item_key);
 
+    // -> "item"
+    console.log(element.type);
     // -> "very nice test value"
-    console.log(result.toString());
+    console.log(element.value.toString());
     
     // Don't forget to close connection when you no longer need it
     await groveDb.close();

@@ -50,10 +50,14 @@ pub fn element_to_js_object<'a, C: Context<'a>>(element: Element, cx: &mut C) ->
 }
 
 pub fn element_to_js_value<'a, C: Context<'a>>(element: Element, cx: &mut C) -> NeonResult<Handle<'a, JsValue>> {
-    let js_value = match element {
+    let js_object = cx.empty_object();
+    let js_type_string = cx.string(element_to_string(element.clone()));
+    js_object.set(cx, "type", js_type_string);
+
+    let js_value: Handle<JsValue> = match element {
         Element::Item(item) => {
-            let js_element = JsBuffer::external(cx, item.clone());
-            js_element.upcast()
+            let js_buffer = JsBuffer::external(cx, item.clone());
+            js_buffer.upcast()
         }
         Element::Reference(reference) => {
             let js_array: Handle<JsArray> = cx.empty_array();
@@ -67,12 +71,13 @@ pub fn element_to_js_value<'a, C: Context<'a>>(element: Element, cx: &mut C) -> 
             js_array.upcast()
         }
         Element::Tree(tree) => {
-            let js_element = JsBuffer::external(cx, tree.clone());
-            js_element.upcast()
+            let js_buffer = JsBuffer::external(cx, tree.clone());
+            js_buffer.upcast()
         }
     };
 
-    NeonResult::Ok(js_value)
+    js_object.set(cx, "value", js_value);
+    NeonResult::Ok(js_object.upcast())
 }
 
 pub fn js_buffer_to_vec_u8<'a, C: Context<'a>>(js_buffer: Handle<JsBuffer>, cx: &mut C) -> Vec<u8> {

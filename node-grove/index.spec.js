@@ -41,9 +41,10 @@ describe('GroveDB', () => {
             { type: "item", value: item_value }
         );
 
-        const result = await groveDb.get(item_tree_path, item_key);
+        const element = await groveDb.get(item_tree_path, item_key);
 
-        expect(result.toString()).to.be.equal("very nice test value");
+        expect(element.type).to.be.equal("item");
+        expect(element.value.toString()).to.be.equal("very nice test value");
     });
 
     describe('#insert', () => {
