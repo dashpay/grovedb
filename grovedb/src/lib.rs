@@ -316,9 +316,9 @@ impl GroveDb {
 
         while let Some((proof, key)) = proof_path_zip.next() {
             if proof_path_zip.peek().is_some() {
-                // Merk proof, validate that the proof is valid and
-                // the result map contains the last root hash i.e the previous
-                // merk was a child of this merk
+                // Non root proof, validate that the proof is valid and
+                // the result map contains the last subtree root hash i.e the previous
+                // subtree is a child of this tree
                 let proof_result = execute_proof(&proof[..])?;
                 let result_map = proof_result.1;
 
