@@ -254,7 +254,7 @@ impl GroveDb {
             split_path = path_slice.split_last();
         }
 
-        // Append the leaf keys to the hash map for proof verification
+        // Append the root leaf keys hash map to proof to provide context when verifying proof
         let aux_data = bincode::serialize(&self.root_leaf_keys)?;
         proofs.push(aux_data);
 
