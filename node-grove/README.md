@@ -59,7 +59,7 @@ Run `npm run build` to build the package, `npm test` to test it.
 ## How it works
 
 The main file that is used form the node.js side is `index.js`. It contains
-class names `GroveDb`. The actual functions this class makes calls to are
+class named `GroveDb`. The actual functions this class makes calls to are
 stored in the `./src/lib.rs`. When building the project, it is compiled to 
 a file called `index.node`, that is imported into the `index.js` file.
 

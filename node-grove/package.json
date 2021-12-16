@@ -1,5 +1,5 @@
 {
-  "name": "node-grove",
+  "name": "@dashevo/node-grove",
   "version": "0.1.0",
   "description": "Neon binding for GroveDb",
   "main": "index.js",
