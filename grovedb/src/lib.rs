@@ -305,14 +305,14 @@ impl GroveDb {
 
         let (mut last_root_hash, leaf_result_map) = execute_proof(&leaf_proof[..])?;
 
-        let mut proof_path_zip = proof_iterator.zip(path.iter().rev()).peekable();
+        let mut proof_path_zip = proof_iterator.zip(reverse_path_iterator).peekable();
 
         while let Some((proof, key)) = proof_path_zip.next() {
             if proof_path_zip.peek().is_some() {
                 // Merk proof, validate that the proof is valid and
                 // the result map contains the last root hash i.e the previous
                 // merk was a child of this merk
-                let proof_result = execute_proof(&proof[..]).unwrap();
+                let proof_result = execute_proof(&proof[..])?;
                 let result_map = proof_result.1;
 
                 let elem: Element =
