@@ -1,17 +1,31 @@
 {
   "name": "@dashevo/node-grove",
-  "version": "0.1.0",
+  "version": "0.0.9",
   "description": "Neon binding for GroveDb",
-  "main": "index.js",
+  "main": "node-grove/index.js",
+  "readme": "node-grove/README.md",
   "scripts": {
     "build": "cargo-cp-artifact -nc index.node -- cargo +nightly build --message-format=json-render-diagnostics",
+    "prepare": "mv README.md README.md.old && cp node-grove/README.md README.md",
     "install": "npm run build",
     "clean": "cargo +nightly clean",
-    "test": "mocha index.spec.js"
+    "test": "mocha node-grove/index.spec.js",
+    "postpublish": "rm README.md && mv README.md.old README.md"
   },
+  "files": [
+    "node-grove/index.js",
+    "node-grove/src",
+    "node-grove/Cargo.toml",
+    "node-grove/README.md",
+    "grovedb/src",
+    "grovedb/Cargo.toml",
+    "merk/src",
+    "merk/Cargo.toml",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
   "license": "MIT",
   "devDependencies": {
-    "cargo-cp-artifact": "^0.1",
     "chai": "^4.3.4",
     "mocha": "^8.4.0",
     "rimraf": "^3.0.2"
@@ -28,5 +42,8 @@
   "bugs": {
     "url": "https://github.com/dashevo/grovedb/issues"
   },
-  "homepage": "https://github.com/dashevo/grovedb#readme"
+  "homepage": "https://github.com/dashevo/grovedb#readme",
+  "dependencies": {
+    "cargo-cp-artifact": "^0.1.6"
+  }
 }

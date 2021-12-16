@@ -17,7 +17,7 @@ Add the module to your project with `npm install node-grove`.
 ```javascript
 const GroveDB = require('@dashevo/node-grove');
 
-async function main() {
+(async function main() {
     const groveDb = GroveDB.open('./test.db');
 
     const tree_key = Buffer.from("test_tree");
@@ -48,10 +48,10 @@ async function main() {
     console.log(element.type);
     // -> "very nice test value"
     console.log(element.value.toString());
-    
+
     // Don't forget to close connection when you no longer need it
     await groveDb.close();
-}
+})().catch(console.error);
 ```
 
 ## Building and testing

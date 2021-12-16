@@ -4,7 +4,7 @@ const { promisify } = require("util");
 
 // This file is crated when run `npm run build`. The actual source file that
 // exports those functions is ./src/lib.rs
-const { groveDbOpen, groveDbGet, groveDbInsert, groveDbProof, groveDbClose } = require("./index.node");
+const { groveDbOpen, groveDbGet, groveDbInsert, groveDbProof, groveDbClose } = require("../index.node");
 
 // Convert the DB methods from using callbacks to returning promises
 const groveDbGetAsync = promisify(groveDbGet);

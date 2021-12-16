@@ -46,13 +46,9 @@ pub fn js_object_to_element<'a, C: Context<'a>>(js_object: Handle<JsObject>, cx:
 }
 
 pub fn element_to_js_object<'a, C: Context<'a>>(element: Element, cx: &mut C) -> NeonResult<Handle<'a, JsValue>> {
-    Ok(cx.string("Nothing to look at").upcast())
-}
-
-pub fn element_to_js_value<'a, C: Context<'a>>(element: Element, cx: &mut C) -> NeonResult<Handle<'a, JsValue>> {
     let js_object = cx.empty_object();
     let js_type_string = cx.string(element_to_string(element.clone()));
-    js_object.set(cx, "type", js_type_string);
+    js_object.set(cx, "type", js_type_string)?;
 
     let js_value: Handle<JsValue> = match element {
         Element::Item(item) => {
@@ -76,7 +72,7 @@ pub fn element_to_js_value<'a, C: Context<'a>>(element: Element, cx: &mut C) -> 
         }
     };
 
-    js_object.set(cx, "value", js_value);
+    js_object.set(cx, "value", js_value)?;
     NeonResult::Ok(js_object.upcast())
 }
 

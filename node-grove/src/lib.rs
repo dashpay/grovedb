@@ -137,7 +137,7 @@ impl GroveDbWrapper {
                         // First parameter of JS callbacks is error, which is null in this case
                         vec![
                             task_context.null().upcast(),
-                            converter::element_to_js_value(element, &mut task_context)?
+                            converter::element_to_js_object(element, &mut task_context)?
                         ]
                     },
 
