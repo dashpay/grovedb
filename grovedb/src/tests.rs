@@ -331,7 +331,7 @@ fn test_successful_proof_verification() {
         .expect("successful item insert");
 
     dbg!(temp_db.root_tree.root().unwrap());
-    let proof = temp_db
+    let mut proof = temp_db
         .proof(
             &[TEST_LEAF, b"innertree", b"innertree1.1"],
             QueryItem::Key(b"key1".to_vec()),
@@ -340,7 +340,7 @@ fn test_successful_proof_verification() {
 
     let result_map = GroveDb::verify_proof(
         &[TEST_LEAF, b"innertree", b"innertree1.1"],
-        &proof,
+        &mut proof,
         temp_db.root_tree.root().unwrap(),
     )
     .unwrap();
@@ -399,7 +399,7 @@ fn test_malicious_proof_verification() {
 
     let result_map = GroveDb::verify_proof(
         &[TEST_LEAF, b"innertree", b"innertree-2"],
-        &proofs,
+        &mut proofs,
         root_tree.root().unwrap(),
     )
     .unwrap();

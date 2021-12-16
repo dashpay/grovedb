@@ -287,18 +287,21 @@ impl GroveDb {
 
     pub fn verify_proof(
         path: &[&[u8]],
-        proofs: &Vec<Vec<u8>>, // Generic into_iterator (trait) u8
+        proofs: &mut Vec<Vec<u8>>, // Generic into_iterator (trait) u8
         expected_root_hash: [u8; 32],
     ) -> Result<Map, Error> {
         if proofs.len() < 2 {
             return Err(Error::InvalidProof("Proof length should be 2 or more"));
         }
 
-        if proofs.len() - 1 != path.len() {
+        if proofs.len() - 2 != path.len() {
             return Err(Error::InvalidProof(
-                "Proof length should be one greater than path",
+                "Proof length should be two greater than path",
             ));
         }
+
+        let root_leaf_keys: HashMap<Vec<u8>, usize> =
+            bincode::deserialize(&proofs.pop().unwrap()[..])?;
 
         let mut proof_iterator = proofs.iter();
         let reverse_path_iterator = path.iter().rev();
@@ -335,7 +338,12 @@ impl GroveDb {
                 // Last proof (root proof)
                 let root_proof = MerkleProof::<Sha256>::try_from(&proof[..]).unwrap();
                 let a: [u8; 32] = last_root_hash;
-                if root_proof.verify(expected_root_hash, &vec![0], &[a], 2) {
+                if root_proof.verify(
+                    expected_root_hash,
+                    &vec![root_leaf_keys[&key.to_vec()]],
+                    &[a],
+                    root_leaf_keys.len(),
+                ) {
                     break;
                 } else {
                     return Err(Error::InvalidProof("Root hashes didn't match"));
