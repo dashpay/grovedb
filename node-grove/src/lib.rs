@@ -23,8 +23,8 @@ struct GroveDbWrapper {
 }
 
 // Internal wrapper logic. Needed to avoid issues with passing threads to node.js.
-// Avoid thread conflicts bu having a dedicated thread thread for the groveDB
-// and uses event to communicate with it
+// Avoiding thread conflicts by having a dedicated thread for the groveDB instance
+// and uses events to communicate with it
 impl GroveDbWrapper {
     // Creates a new instance of `GroveDbWrapper`
     //
@@ -34,7 +34,6 @@ impl GroveDbWrapper {
     //    to the connection.
     fn new(cx: &mut FunctionContext) -> NeonResult<Self>
     {
-        // TODO: error handling
         let path_string = cx.argument::<JsString>(0)?.value(cx);
 
         // Channel for sending callbacks to execute on the GroveDb connection thread
@@ -132,7 +131,6 @@ impl GroveDbWrapper {
                 let callback = js_callback.into_inner(&mut task_context);
                 let this = task_context.undefined();
                 let callback_arguments: Vec<Handle<JsValue>> = match result {
-                    // Convert the name to a `JsString` on success and upcast to a `JsValue`
                     Ok(element) => {
                         // First parameter of JS callbacks is error, which is null in this case
                         vec![
