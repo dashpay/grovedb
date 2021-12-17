@@ -18,6 +18,8 @@ use merk::{
 use rs_merkle::{algorithms::Sha256, MerkleProof, MerkleTree};
 use subtree::Element;
 
+use crate::Error::InvalidProof;
+
 /// Limit of possible indirections
 const MAX_REFERENCE_HOPS: usize = 10;
 /// A key to store serialized data about subtree prefixes to restore HADS
@@ -261,7 +263,8 @@ impl GroveDb {
             split_path = path_slice.split_last();
         }
 
-        // Append the root leaf keys hash map to proof to provide context when verifying proof
+        // Append the root leaf keys hash map to proof to provide context when verifying
+        // proof
         let aux_data = bincode::serialize(&self.root_leaf_keys)?;
         proofs.push(aux_data);
 
@@ -310,7 +313,10 @@ impl GroveDb {
             .next()
             .expect("Constraint checks above enforces leaf proof must exist");
 
-        let (mut last_root_hash, leaf_result_map) = execute_proof(&leaf_proof[..])?;
+        let (mut last_root_hash, leaf_result_map) = match execute_proof(&leaf_proof[..]) {
+            Ok(result) => Ok(result),
+            Err(e) => Err(Error::InvalidProof("Invalid proof element")),
+        }?;
 
         let mut proof_path_zip = proof_iterator.zip(reverse_path_iterator).peekable();
 
@@ -319,15 +325,20 @@ impl GroveDb {
                 // Non root proof, validate that the proof is valid and
                 // the result map contains the last subtree root hash i.e the previous
                 // subtree is a child of this tree
-                let proof_result = execute_proof(&proof[..])?;
+                let proof_result = match execute_proof(&proof[..]) {
+                    Ok(result) => Ok(result),
+                    Err(e) => Err(Error::InvalidProof("Invalid proof element")),
+                }?;
                 let result_map = proof_result.1;
 
                 let elem: Element =
                     bincode::deserialize(result_map.get(key).unwrap().unwrap()).unwrap();
                 let merk_root_hash = match elem {
-                    Element::Tree(hash) => hash,
-                    _ => panic!("Intermidiate proofs should be for trees"),
-                };
+                    Element::Tree(hash) => Ok(hash),
+                    _ => Err(Error::InvalidProof(
+                        "Intermediate proofs should be for trees",
+                    )),
+                }?;
 
                 if merk_root_hash != last_root_hash {
                     return Err(Error::InvalidProof("Bad path"));
@@ -336,7 +347,10 @@ impl GroveDb {
                 last_root_hash = proof_result.0;
             } else {
                 // Last proof (root proof)
-                let root_proof = MerkleProof::<Sha256>::try_from(&proof[..]).unwrap();
+                let root_proof = match MerkleProof::<Sha256>::try_from(&proof[..]) {
+                    Ok(root_proof) => Ok(root_proof),
+                    Err(e) => Err(Error::InvalidProof("Invalid proof element")),
+                }?;
                 let a: [u8; 32] = last_root_hash;
                 if root_proof.verify(
                     expected_root_hash,
