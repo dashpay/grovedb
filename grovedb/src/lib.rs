@@ -255,7 +255,6 @@ impl GroveDb {
                     .root_leaf_keys
                     .get(*key)
                     .ok_or(Error::InvalidPath("root key not found"))?;
-                println!("Key index {}", root_key_index);
                 proofs.push(self.root_tree.proof(&[*root_key_index]).to_bytes());
             } else {
                 proofs.push(self.prove_item(path_slice, QueryItem::Key(key.to_vec()))?);
