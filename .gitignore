@@ -1,5 +1,5 @@
 /target
 .idea
 Cargo.lock
-node-grove/node_modules
 index.node
+node_modules
