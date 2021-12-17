@@ -11,7 +11,7 @@ use std::{
 
 use merk::{self, rocksdb, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
-use subtree::Element;
+pub use subtree::Element;
 
 /// Limit of possible indirections
 const MAX_REFERENCE_HOPS: usize = 10;
@@ -27,7 +27,7 @@ pub enum Error {
     RocksDBError(#[from] merk::rocksdb::Error),
     #[error("unable to open Merk db")]
     MerkError(merk::Error),
-    #[error("invalid path")]
+    #[error("invalid path: {0}")]
     InvalidPath(&'static str),
     #[error("unable to decode")]
     BincodeError(#[from] bincode::Error),
