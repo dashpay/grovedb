@@ -42,7 +42,7 @@ pub enum Error {
     CyclicReference,
     #[error("reference hops limit exceeded")]
     ReferenceLimit,
-    #[error("invalid proof")]
+    #[error("invalid proof: {0}")]
     InvalidProof(&'static str),
 }
 
