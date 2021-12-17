@@ -353,7 +353,7 @@ impl GroveDb {
                 let a: [u8; 32] = last_root_hash;
                 if root_proof.verify(
                     expected_root_hash,
-                    &vec![root_leaf_keys[&key.to_vec()]],
+                    &[root_leaf_keys[*key]],
                     &[a],
                     root_leaf_keys.len(),
                 ) {
