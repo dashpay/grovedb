@@ -16,8 +16,6 @@ use storage::{
 };
 pub use subtree::Element;
 
-use crate::Error::ElementAtPath;
-
 /// Limit of possible indirections
 const MAX_REFERENCE_HOPS: usize = 10;
 /// A key to store serialized data about subtree prefixes to restore HADS
@@ -223,7 +221,7 @@ impl GroveDb {
         mut element: subtree::Element,
     ) -> Result<(), Error> {
         if self.get(path, &key).is_ok() {
-            return Err(ElementAtPath);
+            return Err(Error::ElementAtPath);
         }
         self.insert(path, key, element)
     }
