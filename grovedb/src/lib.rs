@@ -38,8 +38,6 @@ pub enum Error {
     StorageError(#[from] PrefixedRocksDbStorageError),
     #[error("data corruption error: {0}")]
     CorruptedData(String),
-    #[error("element exists at path")]
-    ElementAtPath,
 }
 
 pub struct GroveDb {
