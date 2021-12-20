@@ -341,11 +341,14 @@ fn test_successful_proof_verification() {
         )
         .expect("successful item insert");
 
-    dbg!(temp_db.root_tree.root().unwrap());
+    // dbg!(temp_db.root_tree.root().unwrap());
+
+    let mut proof_query = Query::new();
+    proof_query.insert_key(b"key1".to_vec());
     let mut proof = temp_db
         .proof(
             &[TEST_LEAF, b"innertree", b"innertree1.1"],
-            QueryItem::Key(b"key1".to_vec()),
+            proof_query,
         )
         .unwrap();
 
