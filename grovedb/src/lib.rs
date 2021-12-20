@@ -16,6 +16,8 @@ use storage::{
 };
 pub use subtree::Element;
 
+use crate::Error::ElementAtPath;
+
 /// Limit of possible indirections
 const MAX_REFERENCE_HOPS: usize = 10;
 /// A key to store serialized data about subtree prefixes to restore HADS
@@ -38,6 +40,8 @@ pub enum Error {
     StorageError(#[from] PrefixedRocksDbStorageError),
     #[error("data corruption error: {0}")]
     CorruptedData(String),
+    #[error("element exists at path")]
+    ElementAtPath,
 }
 
 pub struct GroveDb {
@@ -218,7 +222,10 @@ impl GroveDb {
         key: Vec<u8>,
         mut element: subtree::Element,
     ) -> Result<(), Error> {
-        Ok(())
+        if self.get(path, &key).is_ok() {
+            return Err(ElementAtPath);
+        }
+        self.insert(path, key, element)
     }
 
     pub fn get(&self, path: &[&[u8]], key: &[u8]) -> Result<subtree::Element, Error> {
