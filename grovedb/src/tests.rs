@@ -320,17 +320,24 @@ fn test_checkpoint() {
 fn test_insert_if_not_exists() {
     let mut db = make_grovedb();
 
-    // First insertion
-    let result = db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree());
-    match result {
-        Ok(_) => (),
-        Err(_e) => panic!("First insertion should be a success"),
-    }
+    // Insert twice at the same path
+    assert_eq!(
+        db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree())
+            .expect("Provided valid path"),
+        true
+    );
+    assert_eq!(
+        db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree())
+            .expect("Provided valid path"),
+        false
+    );
 
-    // Second insertion at same path
-    let result = db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree());
+    // Should propagate errors from insertion
+    let result = db.insert_if_not_exists(&[TEST_LEAF, b"unknown"], b"key1".to_vec(), Element::empty_tree());
     match result {
-        Ok(_) => panic!("Second insertion for same key should not work"),
-        Err(_e) => (),
+        Ok(_) => {
+            panic!("Should result in an error")
+        },
+        Err(_e) => {},
     }
 }

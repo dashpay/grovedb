@@ -218,12 +218,15 @@ impl GroveDb {
         &mut self,
         path: &[&[u8]],
         key: Vec<u8>,
-        mut element: subtree::Element,
-    ) -> Result<(), Error> {
+        element: subtree::Element,
+    ) -> Result<bool, Error> {
         if self.get(path, &key).is_ok() {
-            return Err(Error::ElementAtPath);
+            return Ok(false);
         }
-        self.insert(path, key, element)
+        match self.insert(path, key, element) {
+            Ok(_) => Ok(true),
+            Err(e) => Err(e),
+        }
     }
 
     pub fn get(&self, path: &[&[u8]], key: &[u8]) -> Result<subtree::Element, Error> {
