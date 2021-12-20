@@ -303,10 +303,6 @@ impl GroveDb {
             .get(&Self::compress_path(path, None))
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
 
-        // Generate a proof for this merk at the given key
-        // let mut proof_query = Query::new();
-        // proof_query.insert_item(item);
-
         let proof_result = merk
             .prove(proof_query)
             .expect("should prove both inclusion and absence");
