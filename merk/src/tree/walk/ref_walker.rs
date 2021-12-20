@@ -1,8 +1,9 @@
+use anyhow::Result;
+
 use super::{
     super::{Link, Tree},
     Fetch,
 };
-use crate::error::Result;
 
 /// Allows read-only traversal of a `Tree`, fetching from the given source when
 /// traversing to a pruned node. The fetched nodes are then retained in memory
@@ -12,7 +13,7 @@ use crate::error::Result;
 /// since the last update).
 pub struct RefWalker<'a, S>
 where
-    S: Fetch + Sized + Clone + Send,
+    S: Fetch + Sized + Clone,
 {
     tree: &'a mut Tree,
     source: S,
@@ -20,7 +21,7 @@ where
 
 impl<'a, S> RefWalker<'a, S>
 where
-    S: Fetch + Sized + Clone + Send,
+    S: Fetch + Sized + Clone,
 {
     /// Creates a `RefWalker` with the given tree and source.
     pub fn new(tree: &'a mut Tree, source: S) -> Self {

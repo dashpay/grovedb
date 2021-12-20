@@ -1,4 +1,3 @@
-#![feature(trivial_bounds)]
 mod subtree;
 #[cfg(test)]
 mod tests;
@@ -10,9 +9,13 @@ use std::{
 };
 
 pub use merk::proofs::{query::QueryItem, Query};
-use merk::{self, rocksdb, Merk};
+use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
-use subtree::Element;
+use storage::{
+    rocksdb_storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError},
+    Storage,
+};
+pub use subtree::Element;
 
 /// Limit of possible indirections
 const MAX_REFERENCE_HOPS: usize = 10;
@@ -24,80 +27,100 @@ const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("rocksdb error")]
-    RocksDBError(#[from] merk::rocksdb::Error),
-    #[error("unable to open Merk db")]
-    MerkError(merk::Error),
-    #[error("invalid path")]
-    InvalidPath(&'static str),
-    #[error("unable to decode")]
-    BincodeError(#[from] bincode::Error),
+    // Input data errors
     #[error("cyclic reference path")]
     CyclicReference,
     #[error("reference hops limit exceeded")]
     ReferenceLimit,
-}
-
-impl From<merk::Error> for Error {
-    fn from(e: merk::Error) -> Self {
-        Error::MerkError(e)
-    }
+    #[error("invalid path: {0}")]
+    InvalidPath(&'static str),
+    // Irrecoverable errors
+    #[error("storage error: {0}")]
+    StorageError(#[from] PrefixedRocksDbStorageError),
+    #[error("data corruption error: {0}")]
+    CorruptedData(String),
 }
 
 pub struct GroveDb {
     root_tree: MerkleTree<Sha256>,
     root_leaf_keys: HashMap<Vec<u8>, usize>,
-    subtrees: HashMap<Vec<u8>, Merk>,
-    db: Rc<rocksdb::DB>,
+    subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
+    meta_storage: PrefixedRocksDbStorage,
+    db: Rc<storage::rocksdb_storage::DB>,
 }
 
 impl GroveDb {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let db = Rc::new(rocksdb::DB::open_cf_descriptors(
-            &Merk::default_db_opts(),
-            path,
-            merk::column_families(),
-        )?);
+        let db = Rc::new(
+            storage::rocksdb_storage::DB::open_cf_descriptors(
+                &storage::rocksdb_storage::default_db_opts(),
+                path,
+                storage::rocksdb_storage::column_families(),
+            )
+            .map_err(Into::<PrefixedRocksDbStorageError>::into)?,
+        );
+        let meta_storage = PrefixedRocksDbStorage::new(db.clone(), Vec::new())?;
 
         let mut subtrees = HashMap::new();
         // TODO: owned `get` is not required for deserialization
-        if let Some(prefixes_serialized) = db.get(SUBTRESS_SERIALIZED_KEY)? {
-            let subtrees_prefixes: Vec<Vec<u8>> = bincode::deserialize(&prefixes_serialized)?;
+        if let Some(prefixes_serialized) = meta_storage.get_meta(SUBTRESS_SERIALIZED_KEY)? {
+            let subtrees_prefixes: Vec<Vec<u8>> = bincode::deserialize(&prefixes_serialized)
+                .map_err(|_| {
+                    Error::CorruptedData(String::from("unable to deserialize prefixes"))
+                })?;
             for prefix in subtrees_prefixes {
-                let subtree_merk = Merk::open(db.clone(), prefix.to_vec())?;
+                let subtree_merk =
+                    Merk::open(PrefixedRocksDbStorage::new(db.clone(), prefix.to_vec())?)
+                        .map_err(|e| Error::CorruptedData(e.to_string()))?;
                 subtrees.insert(prefix.to_vec(), subtree_merk);
             }
         }
 
         // TODO: owned `get` is not required for deserialization
-        let root_leaf_keys: HashMap<Vec<u8>, usize> =
-            if let Some(root_leaf_keys_serialized) = db.get(ROOT_LEAFS_SERIALIZED_KEY)? {
-                bincode::deserialize(&root_leaf_keys_serialized)?
-            } else {
-                HashMap::new()
-            };
+        let root_leaf_keys: HashMap<Vec<u8>, usize> = if let Some(root_leaf_keys_serialized) =
+            meta_storage.get_meta(ROOT_LEAFS_SERIALIZED_KEY)?
+        {
+            bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {
+                Error::CorruptedData(String::from("unable to deserialize root leafs"))
+            })?
+        } else {
+            HashMap::new()
+        };
 
         Ok(GroveDb {
             root_tree: Self::build_root_tree(&subtrees, &root_leaf_keys),
-            db: db.clone(),
+            db,
             subtrees,
             root_leaf_keys,
+            meta_storage,
         })
+    }
+
+    pub fn checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<GroveDb, Error> {
+        storage::rocksdb_storage::Checkpoint::new(&self.db)
+            .and_then(|x| x.create_checkpoint(&path))
+            .map_err(PrefixedRocksDbStorageError::RocksDbError)?;
+        GroveDb::open(path)
     }
 
     fn store_subtrees_keys_data(&self) -> Result<(), Error> {
         let prefixes: Vec<Vec<u8>> = self.subtrees.keys().map(|x| x.clone()).collect();
-        self.db
-            .put(SUBTRESS_SERIALIZED_KEY, bincode::serialize(&prefixes)?)?;
-        self.db.put(
+        self.meta_storage.put_meta(
+            SUBTRESS_SERIALIZED_KEY,
+            &bincode::serialize(&prefixes)
+                .map_err(|_| Error::CorruptedData(String::from("unable to serialize prefixes")))?,
+        )?;
+        self.meta_storage.put_meta(
             ROOT_LEAFS_SERIALIZED_KEY,
-            bincode::serialize(&self.root_leaf_keys)?,
+            &bincode::serialize(&self.root_leaf_keys).map_err(|_| {
+                Error::CorruptedData(String::from("unable to serialize root leafs"))
+            })?,
         )?;
         Ok(())
     }
 
     fn build_root_tree(
-        subtrees: &HashMap<Vec<u8>, Merk>,
+        subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
         root_leaf_keys: &HashMap<Vec<u8>, usize>,
     ) -> MerkleTree<Sha256> {
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
@@ -122,13 +145,18 @@ impl GroveDb {
         match &mut element {
             Element::Tree(subtree_root_hash) => {
                 // Helper closure to create a new subtree under path + key
-                let create_subtree_merk = || -> Result<(Vec<u8>, Merk), Error> {
-                    let compressed_path_subtree = Self::compress_path(path, Some(&key));
-                    Ok((
-                        compressed_path_subtree.clone(),
-                        Merk::open(self.db.clone(), compressed_path_subtree)?,
-                    ))
-                };
+                let create_subtree_merk =
+                    || -> Result<(Vec<u8>, Merk<PrefixedRocksDbStorage>), Error> {
+                        let compressed_path_subtree = Self::compress_path(path, Some(&key));
+                        Ok((
+                            compressed_path_subtree.clone(),
+                            Merk::open(PrefixedRocksDbStorage::new(
+                                self.db.clone(),
+                                compressed_path_subtree,
+                            )?)
+                            .map_err(|e| Error::CorruptedData(e.to_string()))?,
+                        ))
+                    };
                 if path.is_empty() {
                     // Add subtree to the root tree
 
@@ -201,7 +229,7 @@ impl GroveDb {
         Element::get(&merk, key)
     }
 
-    fn follow_reference<'a>(&self, mut path: Vec<Vec<u8>>) -> Result<subtree::Element, Error> {
+    fn follow_reference(&self, mut path: Vec<Vec<u8>>) -> Result<subtree::Element, Error> {
         let mut hops_left = MAX_REFERENCE_HOPS;
         let mut current_element;
         let mut visited = HashSet::new();
@@ -258,7 +286,8 @@ impl GroveDb {
 
         // Append the root leaf keys hash map to proof to provide context when verifying
         // proof
-        let aux_data = bincode::serialize(&self.root_leaf_keys)?;
+        let aux_data = bincode::serialize(&self.root_leaf_keys)
+            .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
         proofs.push(aux_data);
 
         Ok(proofs)

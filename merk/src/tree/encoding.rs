@@ -1,6 +1,35 @@
+use anyhow::{anyhow, Error};
 use ed::{Decode, Encode};
+use storage::{Storage, Store};
 
 use super::Tree;
+
+impl Store for Tree {
+    type Error = Error;
+
+    fn encode(&self) -> Vec<u8> {
+        self.encode()
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Decode::decode(bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
+    }
+
+    fn get<S>(storage: S, key: &[u8]) -> Result<Option<Self>, Self::Error>
+    where
+        S: Storage,
+        Self::Error: From<S::Error>,
+    {
+        let mut tree: Option<Tree> = storage
+            .get(key)?
+            .map(|x| <Self as Store>::decode(&x))
+            .transpose()?;
+        if let Some(ref mut t) = tree {
+            t.set_key(key.to_vec());
+        }
+        Ok(tree)
+    }
+}
 
 impl Tree {
     #[inline]
@@ -31,6 +60,7 @@ impl Tree {
     #[inline]
     pub fn decode(key: Vec<u8>, input: &[u8]) -> Tree {
         // operation is infallible so it's ok to unwrap
+        // TODO: how said that its infallible?
         let mut tree: Tree = Decode::decode(input).unwrap();
         tree.inner.kv.key = key;
         tree

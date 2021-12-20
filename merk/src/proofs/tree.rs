@@ -1,10 +1,7 @@
-use failure::bail;
+use anyhow::{bail, Result};
 
 use super::{Node, Op};
-use crate::{
-    error::Result,
-    tree::{kv_hash, node_hash, Hash, NULL_HASH},
-};
+use crate::tree::{kv_hash, node_hash, Hash, NULL_HASH};
 
 /// Contains a tree's child node and its hash. The hash can always be assumed to
 /// be up-to-date.
@@ -143,13 +140,13 @@ impl Tree {
         Node::Hash(self.hash()).into()
     }
 
-    #[cfg(feature = "full")]
-    pub(crate) fn key(&self) -> &[u8] {
-        match self.node {
-            Node::KV(ref key, _) => key,
-            _ => panic!("Expected node to be type KV"),
-        }
-    }
+    // #[cfg(feature = "full")]
+    // pub(crate) fn key(&self) -> &[u8] {
+    //     match self.node {
+    //         Node::KV(ref key, _) => key,
+    //         _ => panic!("Expected node to be type KV"),
+    //     }
+    // }
 }
 
 /// `LayerIter` iterates over the nodes in a `Tree` at a given depth. Nodes are

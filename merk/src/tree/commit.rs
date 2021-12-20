@@ -1,5 +1,6 @@
+use anyhow::Result;
+
 use super::Tree;
-use crate::error::Result;
 
 /// To be used when committing a tree (writing it to a store after applying the
 /// changes).

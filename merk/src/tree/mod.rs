@@ -12,15 +12,14 @@ mod walk;
 
 use std::cmp::max;
 
+use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
 use ed::{Decode, Encode};
 pub use hash::{kv_hash, node_hash, Hash, HASH_LENGTH, NULL_HASH};
 use kv::KV;
 pub use link::Link;
-pub use ops::{Batch, BatchEntry, Op, PanicSource};
+pub use ops::{BatchEntry, MerkBatch, Op, PanicSource};
 pub use walk::{Fetch, RefWalker, Walker};
-
-use super::error::Result;
 
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
@@ -79,6 +78,10 @@ impl Tree {
     #[inline]
     pub fn key(&self) -> &[u8] {
         self.inner.kv.key()
+    }
+
+    pub fn set_key(&mut self, key: Vec<u8>) {
+        self.inner.kv.key = key;
     }
 
     /// Consumes the tree and returns its root node's key, without having to

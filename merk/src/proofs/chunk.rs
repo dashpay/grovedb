@@ -1,17 +1,14 @@
+use anyhow::{bail, Result};
+use storage::RawIterator;
 #[cfg(feature = "full")]
 use {
     super::tree::{execute, Tree as ProofTree},
     crate::tree::Hash,
     crate::tree::Tree,
-    failure::bail,
-    rocksdb::DBRawIterator,
 };
 
 use super::{Node, Op};
-use crate::{
-    error::Result,
-    tree::{Fetch, RefWalker},
-};
+use crate::tree::{Fetch, RefWalker};
 
 /// The minimum number of layers the trunk will be guaranteed to have before
 /// splitting into multiple chunks. If the tree's height is less than double
@@ -20,7 +17,7 @@ pub const MIN_TRUNK_HEIGHT: usize = 5;
 
 impl<'a, S> RefWalker<'a, S>
 where
-    S: Fetch + Sized + Send + Clone,
+    S: Fetch + Sized + Clone,
 {
     /// Generates a trunk proof by traversing the tree.
     ///
@@ -125,7 +122,10 @@ where
 ///
 /// Advances the iterator for all nodes in the chunk and the `end_key` (if any).
 #[cfg(feature = "full")]
-pub(crate) fn get_next_chunk(iter: &mut DBRawIterator, end_key: Option<&[u8]>) -> Result<Vec<Op>> {
+pub(crate) fn get_next_chunk(
+    iter: &mut impl RawIterator,
+    end_key: Option<&[u8]>,
+) -> Result<Vec<Op>> {
     let mut chunk = Vec::with_capacity(512);
     let mut stack = Vec::with_capacity(32);
     let mut node = Tree::new(vec![], vec![]);
@@ -414,7 +414,7 @@ mod tests {
         merk.tree.set(root_node);
 
         // whole tree as 1 leaf
-        let mut iter = merk.db.raw_iterator();
+        let mut iter = merk.inner.raw_iter();
         iter.seek_to_first();
         let chunk = get_next_chunk(&mut iter, None).unwrap();
         let ops = chunk.into_iter().map(|op| Ok(op));
@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(counts.kvhash, 0);
         drop(iter);
 
-        let mut iter = merk.db.raw_iterator();
+        let mut iter = merk.inner.raw_iter();
         iter.seek_to_first();
 
         // left leaf

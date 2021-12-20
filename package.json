@@ -1,0 +1,49 @@
+{
+  "name": "@dashevo/node-grove",
+  "version": "0.0.10",
+  "description": "Neon binding for GroveDb",
+  "main": "node-grove/index.js",
+  "readme": "node-grove/README.md",
+  "scripts": {
+    "build": "cargo-cp-artifact -nc index.node -- cargo +nightly build --message-format=json-render-diagnostics",
+    "prepare": "mv README.md README.md.old && cp node-grove/README.md README.md",
+    "install": "npm run build",
+    "clean": "cargo +nightly clean",
+    "test": "mocha node-grove/index.spec.js",
+    "postpublish": "rm README.md && mv README.md.old README.md"
+  },
+  "files": [
+    "node-grove/index.js",
+    "node-grove/src",
+    "node-grove/Cargo.toml",
+    "node-grove/README.md",
+    "grovedb/src",
+    "grovedb/Cargo.toml",
+    "merk/src",
+    "merk/Cargo.toml",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "chai": "^4.3.4",
+    "mocha": "^8.4.0",
+    "rimraf": "^3.0.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dashevo/grovedb.git"
+  },
+  "keywords": [
+    "GroveDB",
+    "Database",
+    "Authenticated database"
+  ],
+  "bugs": {
+    "url": "https://github.com/dashevo/grovedb/issues"
+  },
+  "homepage": "https://github.com/dashevo/grovedb#readme",
+  "dependencies": {
+    "cargo-cp-artifact": "^0.1.6"
+  }
+}
