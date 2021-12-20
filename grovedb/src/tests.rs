@@ -297,4 +297,21 @@ fn test_checkpoint() {
             .expect("cannot get from GroveDB"),
         element3
     );
+
+    checkpoint
+        .insert(&[b"key1"], b"key5".to_vec(), element3.clone())
+        .expect("cannot insert into checkpoint");
+
+    db.insert(&[b"key1"], b"key6".to_vec(), element3.clone())
+        .expect("cannot insert into GroveDB");
+
+    assert!(matches!(
+        checkpoint.get(&[b"key1"], b"key6"),
+        Err(Error::InvalidPath(_))
+    ));
+
+    assert!(matches!(
+        db.get(&[b"key1"], b"key5"),
+        Err(Error::InvalidPath(_))
+    ));
 }
