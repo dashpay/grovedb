@@ -333,5 +333,10 @@ fn test_insert_if_not_exists() {
     );
 
     // Should propagate errors from insertion
-    let result = db.insert_if_not_exists(&[TEST_LEAF, b"unknown"], b"key1".to_vec(), Element::empty_tree());
+    let result = db.insert_if_not_exists(
+        &[TEST_LEAF, b"unknown"],
+        b"key1".to_vec(),
+        Element::empty_tree(),
+    );
     assert!(matches!(result, Err(Error::InvalidPath(_))));
+}
