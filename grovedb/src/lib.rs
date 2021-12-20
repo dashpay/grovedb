@@ -42,7 +42,7 @@ pub enum Error {
     CyclicReference,
     #[error("reference hops limit exceeded")]
     ReferenceLimit,
-    #[error("invalid proof")]
+    #[error("invalid proof: {0}")]
     InvalidProof(&'static str),
 }
 
@@ -255,7 +255,6 @@ impl GroveDb {
                     .root_leaf_keys
                     .get(*key)
                     .ok_or(Error::InvalidPath("root key not found"))?;
-                println!("Key index {}", root_key_index);
                 proofs.push(self.root_tree.proof(&[*root_key_index]).to_bytes());
             } else {
                 let mut path_query = Query::new();
@@ -356,7 +355,7 @@ impl GroveDb {
                 let a: [u8; 32] = last_root_hash;
                 if root_proof.verify(
                     expected_root_hash,
-                    &vec![root_leaf_keys[&key.to_vec()]],
+                    &[root_leaf_keys[*key]],
                     &[a],
                     root_leaf_keys.len(),
                 ) {
