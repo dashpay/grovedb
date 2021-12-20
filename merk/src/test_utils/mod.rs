@@ -6,9 +6,9 @@ use std::{convert::TryInto, ops::Range};
 use byteorder::{BigEndian, WriteBytesExt};
 pub use crash_merk::CrashMerk;
 use rand::prelude::*;
-pub use temp_merk::{default_rocksdb, TempMerk};
+pub use temp_merk::TempMerk;
 
-use crate::tree::{Batch, BatchEntry, NoopCommit, Op, PanicSource, Tree, Walker};
+use crate::tree::{BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker};
 
 pub fn assert_tree_invariants(tree: &Tree) {
     assert!(tree.balance_factor().abs() < 2);
@@ -33,7 +33,7 @@ pub fn assert_tree_invariants(tree: &Tree) {
     }
 }
 
-pub fn apply_memonly_unchecked(tree: Tree, batch: &Batch) -> Tree {
+pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch) -> Tree {
     let walker = Walker::<PanicSource>::new(tree, PanicSource {});
     let mut tree = Walker::<PanicSource>::apply_to(Some(walker), batch, PanicSource {})
         .expect("apply failed")
@@ -43,13 +43,13 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &Batch) -> Tree {
     tree
 }
 
-pub fn apply_memonly(tree: Tree, batch: &Batch) -> Tree {
+pub fn apply_memonly(tree: Tree, batch: &MerkBatch) -> Tree {
     let tree = apply_memonly_unchecked(tree, batch);
     assert_tree_invariants(&tree);
     tree
 }
 
-pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &Batch) -> Option<Tree> {
+pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch) -> Option<Tree> {
     let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
     Walker::<PanicSource>::apply_to(maybe_walker, batch, PanicSource {})
         .expect("apply failed")

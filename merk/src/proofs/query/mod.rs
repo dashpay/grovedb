@@ -231,7 +231,7 @@ impl Link {
 
 impl<'a, S> RefWalker<'a, S>
 where
-    S: Fetch + Sized + Send + Clone,
+    S: Fetch + Sized + Clone,
 {
     /// Creates a `Node::KV` from the key/value pair of the root node.
     pub(crate) fn to_kv_node(&self) -> Node {

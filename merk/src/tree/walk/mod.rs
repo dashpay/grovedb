@@ -11,7 +11,7 @@ use crate::{error::Result, owner::Owner};
 /// to a pruned node, detaching children as they are traversed.
 pub struct Walker<S>
 where
-    S: Fetch + Sized + Clone + Send,
+    S: Fetch + Sized + Clone,
 {
     tree: Owner<Tree>,
     source: S,
@@ -19,7 +19,7 @@ where
 
 impl<S> Walker<S>
 where
-    S: Fetch + Sized + Clone + Send,
+    S: Fetch + Sized + Clone,
 {
     /// Creates a `Walker` with the given tree and source.
     pub fn new(tree: Tree, source: S) -> Self {
@@ -138,7 +138,7 @@ where
 
 impl<S> From<Walker<S>> for Tree
 where
-    S: Fetch + Sized + Clone + Send,
+    S: Fetch + Sized + Clone,
 {
     fn from(walker: Walker<S>) -> Tree {
         walker.into_inner()

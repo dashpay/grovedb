@@ -2,73 +2,49 @@ pub mod chunks;
 // TODO
 // pub mod restore;
 
-use std::{
-    cell::Cell,
-    cmp::Ordering,
-    collections::LinkedList,
-    path::{Path, PathBuf},
-    rc::Rc,
-};
+use std::{cell::Cell, cmp::Ordering, collections::LinkedList};
 
-use failure::bail;
-use rocksdb::{checkpoint::Checkpoint, ColumnFamilyDescriptor, WriteBatch};
+use failure::format_err;
+use storage::{self, Batch, Storage, Store};
 
 use crate::{
     error::Result,
     proofs::{encode_into, query::QueryItem, Query},
-    tree::{Batch, Commit, Fetch, Hash, Link, Op, RefWalker, Tree, Walker, NULL_HASH},
+    tree::{Commit, Fetch, Hash, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
 };
 
 const ROOT_KEY_KEY: &[u8] = b"root";
-const AUX_CF_NAME: &str = "aux";
-const INTERNAL_CF_NAME: &str = "internal";
-
-pub fn column_families() -> Vec<ColumnFamilyDescriptor> {
-    vec![
-        // TODO: clone opts or take args
-        ColumnFamilyDescriptor::new(AUX_CF_NAME, Merk::default_db_opts()),
-        ColumnFamilyDescriptor::new(INTERNAL_CF_NAME, Merk::default_db_opts()),
-    ]
-}
 
 /// A handle to a Merkle key/value store backed by RocksDB.
-pub struct Merk {
+pub struct Merk<S>
+where
+    S: Storage,
+    crate::error::Error: From<S::Error>,
+{
     pub(crate) tree: Cell<Option<Tree>>,
-    pub(crate) db: Rc<rocksdb::DB>,
-    pub(crate) prefix: Vec<u8>,
+    pub(crate) storage: S,
 }
 
 pub type UseTreeMutResult = Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>;
 
-impl Merk {
-    pub fn open(db: Rc<rocksdb::DB>, prefix: Vec<u8>) -> Result<Merk> {
+impl<S: Storage> Merk<S>
+where
+    crate::error::Error: From<<S as Storage>::Error>,
+    <S as Storage>::Error: std::error::Error,
+{
+    pub fn open(storage: S) -> Result<Merk<S>> {
         let mut merk = Merk {
             tree: Cell::new(None),
-            db,
-            prefix,
+            storage,
         };
         merk.load_root()?;
 
         Ok(merk)
     }
 
-    pub fn default_db_opts() -> rocksdb::Options {
-        let mut opts = rocksdb::Options::default();
-        opts.create_if_missing(true);
-        opts.increase_parallelism(num_cpus::get() as i32);
-        // opts.set_advise_random_on_open(false);
-        opts.set_allow_mmap_writes(true);
-        opts.set_allow_mmap_reads(true);
-        opts.create_missing_column_families(true);
-        opts.set_atomic_flush(true);
-        // TODO: tune
-        opts
-    }
-
     /// Gets an auxiliary value.
     pub fn get_aux(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let aux_cf = self.db.cf_handle(AUX_CF_NAME);
-        Ok(self.db.get_cf(aux_cf.unwrap(), key)?)
+        Ok(self.storage.get_aux(key)?)
     }
 
     /// Gets a value for the given key. If the key is not found, `None` is
@@ -112,7 +88,7 @@ impl Merk {
                 match maybe_child {
                     None => {
                         // fetch from RocksDB
-                        break fetch_node(&self.db, &self.prefix, &key)
+                        break Tree::get(&self.storage, key)
                             .map(|maybe_node| maybe_node.map(|node| f(&node)));
                     }
                     Some(child) => cursor = child, // traverse to child
@@ -143,19 +119,19 @@ impl Merk {
     /// use merk::Op;
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key [1,2,3]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
     ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
     /// store.apply(batch, &[]).unwrap();
     /// ```
-    pub fn apply(&mut self, batch: &Batch, aux: &Batch) -> Result<()> {
+    pub fn apply(&mut self, batch: &MerkBatch, aux: &MerkBatch) -> Result<()> {
         // ensure keys in batch are sorted and unique
         let mut maybe_prev_key: Option<Vec<u8>> = None;
         for (key, _) in batch.iter() {
             if let Some(prev_key) = maybe_prev_key {
                 match prev_key.cmp(key) {
-                    Ordering::Greater => bail!("Keys in batch must be sorted"),
-                    Ordering::Equal => bail!("Keys in batch must be unique"),
+                    Ordering::Greater => return Err(format_err!("Keys in batch must be sorted")),
+                    Ordering::Equal => return Err(format_err!("Keys in batch must be unique")),
                     _ => (),
                 }
             }
@@ -186,7 +162,7 @@ impl Merk {
     /// ];
     /// unsafe { store.apply_unchecked(batch, &[]).unwrap() };
     /// ```
-    pub unsafe fn apply_unchecked(&mut self, batch: &Batch, aux: &Batch) -> Result<()> {
+    pub unsafe fn apply_unchecked(&mut self, batch: &MerkBatch, aux: &MerkBatch) -> Result<()> {
         let maybe_walker = self
             .tree
             .take()
@@ -216,18 +192,18 @@ impl Merk {
         self.prove_unchecked(query)
     }
 
-    /// Creates a Merkle proof for the list of queried keys. For each key in the
-    /// query, if the key is found in the store then the value will be proven to
-    /// be in the tree. For each key in the query that does not exist in the
-    /// tree, its absence will be proven by including boundary keys.
-    ///
+    /// Creates a Merkle proof for the list of queried keys. For each key in
+    /// the query, if the key is found in the store then the value will be
+    /// proven to be in the tree. For each key in the query that does not
+    /// exist in the tree, its absence will be proven by including
+    /// boundary keys.
     /// The proof returned is in an encoded format which can be verified with
     /// `merk::verify`.
     ///
     /// This is unsafe because the keys in `query` must be sorted and unique -
-    /// if they are not, there will be undefined behavior. For a safe version of
-    /// this method which checks to ensure the batch is sorted and unique, see
-    /// `prove`.
+    /// if they are not, there will be undefined behavior. For a safe version
+    /// of this method which checks to ensure the batch is sorted and
+    /// unique, see `prove`.
     pub fn prove_unchecked<Q, I>(&self, query: I) -> Result<Vec<u8>>
     where
         Q: Into<QueryItem>,
@@ -236,10 +212,7 @@ impl Merk {
         let query_vec: Vec<QueryItem> = query.into_iter().map(Into::into).collect();
 
         self.use_tree_mut(|maybe_tree| {
-            let tree = match maybe_tree {
-                None => bail!("Cannot create proof for empty tree"),
-                Some(tree) => tree,
-            };
+            let tree = maybe_tree.ok_or(format_err!("Cannot create proof for empty tree"))?;
 
             let mut ref_walker = RefWalker::new(tree, self.source());
             let (proof, _) = ref_walker.create_proof(query_vec.as_slice())?;
@@ -250,32 +223,22 @@ impl Merk {
         })
     }
 
-    pub fn flush(&self) -> Result<()> {
-        Ok(self.db.flush()?)
-    }
-
-    pub fn commit(&mut self, deleted_keys: LinkedList<Vec<u8>>, aux: &Batch) -> Result<()> {
-        let internal_cf = self.db.cf_handle(INTERNAL_CF_NAME).unwrap();
-        let aux_cf = self.db.cf_handle(AUX_CF_NAME).unwrap();
-
-        let mut batch = rocksdb::WriteBatch::default();
+    pub fn commit(&mut self, deleted_keys: LinkedList<Vec<u8>>, aux: &MerkBatch) -> Result<()> {
+        let mut batch = self.storage.new_batch()?;
         let mut to_batch = self.use_tree_mut(|maybe_tree| -> UseTreeMutResult {
             // TODO: concurrent commit
-            //
-            let mut prefixed_root = self.prefix.clone();
-            prefixed_root.extend_from_slice(ROOT_KEY_KEY);
             if let Some(tree) = maybe_tree {
                 // TODO: configurable committer
                 let mut committer = MerkCommitter::new(tree.height(), 100);
                 tree.commit(&mut committer)?;
 
                 // update pointer to root node
-                batch.put_cf(internal_cf, prefixed_root, tree.key());
+                batch.put_root(ROOT_KEY_KEY, tree.key());
 
                 Ok(committer.batch)
             } else {
                 // empty tree, delete pointer to root
-                batch.delete_cf(internal_cf, prefixed_root);
+                batch.delete_root(ROOT_KEY_KEY);
                 Ok(vec![])
             }
         })?;
@@ -286,31 +249,27 @@ impl Merk {
         }
         to_batch.sort_by(|a, b| a.0.cmp(&b.0));
         for (key, maybe_value) in to_batch {
-            let mut prefixed_key = self.prefix.clone();
-            prefixed_key.extend_from_slice(&key);
             if let Some(value) = maybe_value {
-                batch.put(prefixed_key, value);
+                batch.put(&key, &value);
             } else {
-                batch.delete(prefixed_key);
+                batch.delete(&key);
             }
         }
 
         for (key, value) in aux {
-            let mut prefixed_key = self.prefix.clone();
-            prefixed_key.extend_from_slice(&key);
             match value {
-                Op::Put(value) => batch.put_cf(aux_cf, prefixed_key, value),
-                Op::Delete => batch.delete_cf(aux_cf, prefixed_key),
+                Op::Put(value) => batch.put_aux(key, value),
+                Op::Delete => batch.delete_aux(key),
             };
         }
 
         // write to db
-        self.write(batch)?;
+        self.storage.commit_batch(batch)?;
 
         Ok(())
     }
 
-    pub fn walk<T>(&self, f: impl FnOnce(Option<RefWalker<MerkSource>>) -> T) -> T {
+    pub fn walk<T>(&self, f: impl FnOnce(Option<RefWalker<MerkSource<S>>>) -> T) -> T {
         let mut tree = self.tree.take();
         let maybe_walker = tree
             .as_mut()
@@ -320,19 +279,18 @@ impl Merk {
         res
     }
 
-    pub fn raw_iter(&self) -> rocksdb::DBRawIterator {
-        self.db.raw_iterator()
+    pub fn raw_iter<'a>(&'a self) -> S::RawIterator<'a> {
+        self.storage.raw_iter()
     }
 
-    // pub fn checkpoint<P: AsRef<Path>>(&self, path: P, prefix: &[u8]) ->
-    // Result<Merk> {     Checkpoint::new(&self.db)?.create_checkpoint(&path)?;
-    //     Merk::open(path, prefix)
-    // }
+    // // pub fn checkpoint<P: AsRef<Path>>(&self, path: P, prefix: &[u8]) ->
+    // // Result<Merk> {     Checkpoint::new(&self.db)?.create_checkpoint(&path)?;
+    // //     Merk::open(path, prefix)
+    // // }
 
-    fn source(&self) -> MerkSource {
+    fn source(&self) -> MerkSource<S> {
         MerkSource {
-            db: &self.db,
-            prefix: &self.prefix,
+            storage: &self.storage,
         }
     }
 
@@ -350,50 +308,40 @@ impl Merk {
         res
     }
 
-    pub(crate) fn write(&mut self, batch: WriteBatch) -> Result<()> {
-        let mut opts = rocksdb::WriteOptions::default();
-        opts.set_sync(false);
-        // TODO: disable WAL once we can ensure consistency with transactions
-        self.db.write_opt(batch, &opts)?;
-        Ok(())
-    }
-
-    pub(crate) fn set_root_key(&mut self, key: Vec<u8>) -> Result<()> {
-        let internal_cf = self.db.cf_handle(INTERNAL_CF_NAME).unwrap();
-        let mut batch = WriteBatch::default();
-        let mut prefixed_root_key = self.prefix.clone();
-        prefixed_root_key.extend_from_slice(ROOT_KEY_KEY);
-        batch.put_cf(internal_cf, prefixed_root_key, key);
-        self.write(batch)
-    }
-
-    pub(crate) fn fetch_node(&self, prefix: &[u8], key: &[u8]) -> Result<Option<Tree>> {
-        fetch_node(&self.db, prefix, key)
+    pub(crate) fn set_root_key(&mut self, key: &[u8]) -> Result<()> {
+        Ok(self.storage.put_root(ROOT_KEY_KEY, key)?)
     }
 
     pub(crate) fn load_root(&mut self) -> Result<()> {
-        let internal_cf = self.db.cf_handle(INTERNAL_CF_NAME).unwrap();
-        let mut prefixed_root_key = self.prefix.clone();
-        prefixed_root_key.extend_from_slice(ROOT_KEY_KEY);
-        let tree = self
-            .db
-            .get_pinned_cf(internal_cf, &prefixed_root_key)?
-            .map(|root_key| fetch_existing_node(&self.db, &self.prefix, &root_key))
-            .transpose()?;
-        self.tree = Cell::new(tree);
+        if let Some(tree_root_key) = self.storage.get_root(ROOT_KEY_KEY)? {
+            let tree = Tree::get(&self.storage, &tree_root_key)?;
+            self.tree = Cell::new(tree);
+        }
         Ok(())
     }
 }
 
-#[derive(Clone)]
-pub struct MerkSource<'a> {
-    db: &'a rocksdb::DB,
-    prefix: &'a [u8],
+// TODO: get rid of Fetch/source and use GroveDB storage abstraction
+#[derive(Debug)]
+pub struct MerkSource<'a, S: Storage> {
+    storage: &'a S,
 }
 
-impl<'a> Fetch for MerkSource<'a> {
+impl<'a, S: Storage> Clone for MerkSource<'a, S> {
+    fn clone(&self) -> Self {
+        MerkSource {
+            storage: self.storage,
+        }
+    }
+}
+
+impl<'a, S: Storage> Fetch for MerkSource<'a, S>
+where
+    crate::error::Error: From<<S as Storage>::Error>,
+    <S as Storage>::Error: std::error::Error,
+{
     fn fetch(&self, link: &Link) -> Result<Tree> {
-        fetch_existing_node(self.db, &self.prefix, link.key())
+        Ok(Tree::get(&self.storage, link.key())?.ok_or(format_err!("Key not found"))?)
     }
 }
 
@@ -428,26 +376,9 @@ impl Commit for MerkCommitter {
     }
 }
 
-fn fetch_node(db: &rocksdb::DB, prefix: &[u8], key: &[u8]) -> Result<Option<Tree>> {
-    let mut prefixed_key = prefix.to_vec();
-    prefixed_key.extend_from_slice(key);
-    let bytes = db.get_pinned(&prefixed_key)?;
-    if let Some(bytes) = bytes {
-        Ok(Some(Tree::decode(key.to_vec(), &bytes)))
-    } else {
-        Ok(None)
-    }
-}
-
-fn fetch_existing_node(db: &rocksdb::DB, prefix: &[u8], key: &[u8]) -> Result<Tree> {
-    match fetch_node(db, prefix, key)? {
-        None => bail!("key not found: {:?}", key),
-        Some(node) => Ok(node),
-    }
-}
-
 #[cfg(test)]
 mod test {
+    use storage::rocksdb_storage::{default_rocksdb, PrefixedRocksDbStorage};
     use tempdir::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};
@@ -516,7 +447,7 @@ mod test {
         let key = batch.first().unwrap().0.clone();
         merk.apply(&[(key.clone(), Op::Delete)], &[]).unwrap();
 
-        let value = merk.db.get(key.as_slice()).unwrap();
+        let value = merk.inner.get(key.as_slice()).unwrap();
         assert!(value.is_none());
     }
 
@@ -576,7 +507,10 @@ mod test {
 
     #[test]
     fn reopen() {
-        fn collect(mut node: RefWalker<MerkSource>, nodes: &mut Vec<Vec<u8>>) {
+        fn collect(
+            mut node: RefWalker<MerkSource<PrefixedRocksDbStorage>>,
+            nodes: &mut Vec<Vec<u8>>,
+        ) {
             nodes.push(node.tree().encode());
             node.walk(true).unwrap().map(|c| collect(c, nodes));
             node.walk(false).unwrap().map(|c| collect(c, nodes));
@@ -586,7 +520,8 @@ mod test {
 
         let original_nodes = {
             let db = default_rocksdb(tmp_dir.path());
-            let mut merk = Merk::open(db, Vec::new()).unwrap();
+            let mut merk =
+                Merk::open(PrefixedRocksDbStorage::new(db, Vec::new()).unwrap()).unwrap();
             let batch = make_batch_seq(1..10_000);
             merk.apply(batch.as_slice(), &[]).unwrap();
             let mut tree = merk.tree.take().unwrap();
@@ -598,7 +533,7 @@ mod test {
         };
 
         let db = default_rocksdb(tmp_dir.path());
-        let merk = Merk::open(db, Vec::new()).unwrap();
+        let merk = Merk::open(PrefixedRocksDbStorage::new(db, Vec::new()).unwrap()).unwrap();
         let mut tree = merk.tree.take().unwrap();
         let walker = RefWalker::new(&mut tree, merk.source());
 
@@ -620,7 +555,8 @@ mod test {
 
         let original_nodes = {
             let db = default_rocksdb(tmp_dir.path());
-            let mut merk = Merk::open(db, Vec::new()).unwrap();
+            let mut merk =
+                Merk::open(PrefixedRocksDbStorage::new(db, Vec::new()).unwrap()).unwrap();
             let batch = make_batch_seq(1..10_000);
             merk.apply(batch.as_slice(), &[]).unwrap();
 
@@ -629,7 +565,7 @@ mod test {
             nodes
         };
         let db = default_rocksdb(tmp_dir.path());
-        let mut merk = Merk::open(db, Vec::new()).unwrap();
+        let merk = Merk::open(PrefixedRocksDbStorage::new(db, Vec::new()).unwrap()).unwrap();
 
         let mut reopen_nodes = vec![];
         collect(&mut merk.raw_iter(), &mut reopen_nodes);

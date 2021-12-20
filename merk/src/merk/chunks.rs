@@ -1,9 +1,11 @@
 //! Provides `ChunkProducer`, which creates chunk proofs for full replication of
 //! a Merk.
 
+use std::marker::PhantomData;
+
 use ed::Encode;
 use failure::bail;
-use rocksdb::DBRawIterator;
+use storage::{RawIterator, Storage};
 
 use super::Merk;
 use crate::{
@@ -14,17 +16,27 @@ use crate::{
 /// A `ChunkProducer` allows the creation of chunk proofs, used for trustlessly
 /// replicating entire Merk trees. Chunks can be generated on the fly in a
 /// random order, or iterated in order for slightly better performance.
-pub struct ChunkProducer<'a> {
+pub struct ChunkProducer<'a, S: Storage + 'a>
+where
+    S: Storage,
+    //    crate::error::Error: From<S::Error>,
+    <S as Storage>::Error: std::error::Error + Sync + Send + 'static,
+{
     trunk: Vec<Op>,
     chunk_boundaries: Vec<Vec<u8>>,
-    raw_iter: DBRawIterator<'a>,
+    raw_iter: S::RawIterator<'a>,
     index: usize,
 }
 
-impl<'a> ChunkProducer<'a> {
+impl<'a, S> ChunkProducer<'a, S>
+where
+    S: Storage,
+    //    crate::error::Error: From<S::Error>,
+    <S as Storage>::Error: std::error::Error + Sync + Send + 'static,
+{
     /// Creates a new `ChunkProducer` for the given `Merk` instance. In the
     /// constructor, the first chunk (the "trunk") will be created.
-    pub fn new(merk: &'a Merk) -> Result<Self> {
+    pub fn new(merk: &'a Merk<S>) -> Result<Self> {
         let (trunk, has_more) = merk.walk(|maybe_walker| match maybe_walker {
             Some(mut walker) => walker.create_trunk_proof(),
             None => Ok((vec![], false)),
@@ -111,9 +123,14 @@ impl<'a> ChunkProducer<'a> {
     }
 }
 
-impl<'a> IntoIterator for ChunkProducer<'a> {
-    type IntoIter = ChunkIter<'a>;
-    type Item = <ChunkIter<'a> as Iterator>::Item;
+impl<'a, S> IntoIterator for ChunkProducer<'a, S>
+where
+    S: Storage,
+    //    crate::error::Error: From<S::Error>,
+    <S as Storage>::Error: std::error::Error + Sync + Send + 'static,
+{
+    type IntoIter = ChunkIter<'a, S>;
+    type Item = <ChunkIter<'a, S> as Iterator>::Item;
 
     fn into_iter(self) -> Self::IntoIter {
         ChunkIter(self)
@@ -123,9 +140,18 @@ impl<'a> IntoIterator for ChunkProducer<'a> {
 /// A `ChunkIter` iterates through all the chunks for the underlying `Merk`
 /// instance in order (the first chunk is the "trunk" chunk). Yields `None`
 /// after all chunks have been yielded.
-pub struct ChunkIter<'a>(ChunkProducer<'a>);
+pub struct ChunkIter<'a, S>(ChunkProducer<'a, S>)
+where
+    S: Storage,
+    //    crate::error::Error: From<S::Error>,
+    <S as Storage>::Error: std::error::Error + Sync + Send + 'static;
 
-impl<'a> Iterator for ChunkIter<'a> {
+impl<'a, S> Iterator for ChunkIter<'a, S>
+where
+    S: Storage,
+    //    crate::error::Error: From<S::Error>,
+    <S as Storage>::Error: std::error::Error + Sync + Send + 'static,
+{
     type Item = Result<Vec<u8>>;
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -141,16 +167,22 @@ impl<'a> Iterator for ChunkIter<'a> {
     }
 }
 
-impl Merk {
+impl<S> Merk<S>
+where
+    S: Storage,
+    //    crate::error::Error: From<S::Error>,
+    <S as Storage>::Error: std::error::Error + Sync + Send + 'static,
+{
     /// Creates a `ChunkProducer` which can return chunk proofs for replicating
     /// the entire Merk tree.
-    pub fn chunks(&self) -> Result<ChunkProducer> {
+    pub fn chunks(&self) -> Result<ChunkProducer<S>> {
         ChunkProducer::new(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use storage::rocksdb_storage::{default_rocksdb, PrefixedRocksDbStorage};
     use tempdir::TempDir;
 
     use super::*;
@@ -211,7 +243,8 @@ mod tests {
         let tmp_dir = TempDir::new("chunks_from_reopen").expect("cannot create tempdir");
         let original_chunks = {
             let db = default_rocksdb(tmp_dir.path());
-            let mut merk = Merk::open(db, Vec::new()).unwrap();
+            let mut merk =
+                Merk::open(PrefixedRocksDbStorage::new(db, Vec::new()).unwrap()).unwrap();
             let batch = make_batch_seq(1..10);
             merk.apply(batch.as_slice(), &[]).unwrap();
 
@@ -224,7 +257,7 @@ mod tests {
         };
 
         let db = default_rocksdb(tmp_dir.path());
-        let merk = Merk::open(db, Vec::new()).unwrap();
+        let merk = Merk::open(PrefixedRocksDbStorage::new(db, Vec::new()).unwrap()).unwrap();
         let reopen_chunks = merk.chunks().unwrap().into_iter().map(Result::unwrap);
 
         for (original, checkpoint) in original_chunks.zip(reopen_chunks) {

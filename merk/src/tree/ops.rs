@@ -28,7 +28,7 @@ impl fmt::Debug for Op {
 pub type BatchEntry = (Vec<u8>, Op);
 
 /// A mapping of keys and operations. Keys should be sorted and unique.
-pub type Batch = [BatchEntry];
+pub type MerkBatch = [BatchEntry];
 
 /// A source of data which panics when called. Useful when creating a store
 /// which always keeps the state in memory.
@@ -42,7 +42,7 @@ impl Fetch for PanicSource {
 
 impl<S> Walker<S>
 where
-    S: Fetch + Sized + Send + Clone,
+    S: Fetch + Sized + Clone,
 {
     /// Applies a batch of operations, possibly creating a new tree if
     /// `maybe_tree` is `None`. This is similar to `Walker<S>::apply`, but does
@@ -51,7 +51,7 @@ where
     /// Keys in batch must be sorted and unique.
     pub fn apply_to(
         maybe_tree: Option<Self>,
-        batch: &Batch,
+        batch: &MerkBatch,
         source: S,
     ) -> Result<(Option<Tree>, LinkedList<Vec<u8>>)> {
         let (maybe_walker, deleted_keys) = if batch.is_empty() {
@@ -70,7 +70,7 @@ where
     /// Builds a `Tree` from a batch of operations.
     ///
     /// Keys in batch must be sorted and unique.
-    fn build(batch: &Batch, source: S) -> Result<Option<Tree>> {
+    fn build(batch: &MerkBatch, source: S) -> Result<Option<Tree>> {
         if batch.is_empty() {
             return Ok(None);
         }
@@ -107,7 +107,7 @@ where
     /// `Walker<S>::apply`_to, but requires a populated tree.
     ///
     /// Keys in batch must be sorted and unique.
-    fn apply(self, batch: &Batch) -> Result<(Option<Self>, LinkedList<Vec<u8>>)> {
+    fn apply(self, batch: &MerkBatch) -> Result<(Option<Self>, LinkedList<Vec<u8>>)> {
         // binary search to see if this node's key is in the batch, and to split
         // into left and right batches
         let search = batch.binary_search_by(|(key, _op)| key.as_slice().cmp(self.tree().key()));
@@ -158,7 +158,7 @@ where
     /// will be dispatched to workers in other threads.
     fn recurse(
         self,
-        batch: &Batch,
+        batch: &MerkBatch,
         mid: usize,
         exclusive: bool,
     ) -> Result<(Option<Self>, LinkedList<Vec<u8>>)> {
