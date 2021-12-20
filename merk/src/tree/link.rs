@@ -175,28 +175,28 @@ impl Link {
         }
     }
 
-    #[inline]
-    #[cfg(feature = "full")]
-    pub(crate) fn child_heights_mut(&mut self) -> &mut (u8, u8) {
-        match self {
-            Link::Reference {
-                ref mut child_heights,
-                ..
-            } => child_heights,
-            Link::Modified {
-                ref mut child_heights,
-                ..
-            } => child_heights,
-            Link::Uncommitted {
-                ref mut child_heights,
-                ..
-            } => child_heights,
-            Link::Loaded {
-                ref mut child_heights,
-                ..
-            } => child_heights,
-        }
-    }
+    // #[inline]
+    // #[cfg(feature = "full")]
+    // pub(crate) fn child_heights_mut(&mut self) -> &mut (u8, u8) {
+    //     match self {
+    //         Link::Reference {
+    //             ref mut child_heights,
+    //             ..
+    //         } => child_heights,
+    //         Link::Modified {
+    //             ref mut child_heights,
+    //             ..
+    //         } => child_heights,
+    //         Link::Uncommitted {
+    //             ref mut child_heights,
+    //             ..
+    //         } => child_heights,
+    //         Link::Loaded {
+    //             ref mut child_heights,
+    //             ..
+    //         } => child_heights,
+    //     }
+    // }
 }
 
 impl Encode for Link {

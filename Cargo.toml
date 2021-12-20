@@ -2,4 +2,6 @@
 members = [
     "grovedb",
     "merk",
+    "node-grove",
+    "storage",
 ]

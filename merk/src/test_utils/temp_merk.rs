@@ -1,17 +1,18 @@
 use std::{
     ops::{Deref, DerefMut},
-    path::Path,
     rc::Rc,
 };
 
+use storage::rocksdb_storage::{default_rocksdb, PrefixedRocksDbStorage};
 use tempdir::TempDir;
 
 use crate::Merk;
 
 /// Wraps a Merk instance and deletes it from disk it once it goes out of scope.
 pub struct TempMerk {
-    pub inner: Merk,
+    pub inner: Merk<PrefixedRocksDbStorage>,
     pub path: TempDir,
+    _db: Rc<rocksdb::DB>,
 }
 
 impl TempMerk {
@@ -19,30 +20,32 @@ impl TempMerk {
     pub fn new() -> TempMerk {
         let path = TempDir::new("db").expect("cannot create tempdir");
         let db = default_rocksdb(path.path());
+        let inner = PrefixedRocksDbStorage::new(db.clone(), Vec::new())
+            .expect("cannot create prefixed storage");
         TempMerk {
-            inner: Merk::open(db, Vec::new()).expect("cannot open Merk"),
+            inner: Merk::open(inner).expect("cannot open Merk"),
             path,
+            _db: db,
         }
     }
 }
 
-pub fn default_rocksdb(path: &Path) -> Rc<rocksdb::DB> {
-    Rc::new(
-        rocksdb::DB::open_cf_descriptors(&Merk::default_db_opts(), &path, crate::column_families())
-            .expect("cannot create rocksdb"),
-    )
+impl Default for TempMerk {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Deref for TempMerk {
-    type Target = Merk;
+    type Target = Merk<PrefixedRocksDbStorage>;
 
-    fn deref(&self) -> &Merk {
+    fn deref(&self) -> &Merk<PrefixedRocksDbStorage> {
         &self.inner
     }
 }
 
 impl DerefMut for TempMerk {
-    fn deref_mut(&mut self) -> &mut Merk {
+    fn deref_mut(&mut self) -> &mut Merk<PrefixedRocksDbStorage> {
         &mut self.inner
     }
 }

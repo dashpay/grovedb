@@ -1,5 +1,6 @@
+use anyhow::Result;
+
 use super::super::{Link, Tree};
-use crate::error::Result;
 
 /// A source of data to be used by the tree when encountering a pruned node.
 /// This typcially means fetching the tree node from a backing store by its key,
