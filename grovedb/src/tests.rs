@@ -315,3 +315,21 @@ fn test_checkpoint() {
         Err(Error::InvalidPath(_))
     ));
 }
+
+#[test]
+fn test_insert_if_not_exists() {
+    let mut db = make_grovedb();
+
+    // First insertion
+    let result = db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree());
+    match result {
+        Ok(_) => (),
+        Err(_e) => panic!("First insertion should be a success")
+    }
+
+    db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree());
+    match result {
+        Ok(_) => panic!("Second insertion for same key should not work"),
+        Err(_e) => (),
+    }
+}
