@@ -1,11 +1,12 @@
 mod fetch;
 mod ref_walker;
 
+use anyhow::Result;
 pub use fetch::Fetch;
 pub use ref_walker::RefWalker;
 
 use super::{Link, Tree};
-use crate::{error::Result, owner::Owner};
+use crate::owner::Owner;
 
 /// Allows traversal of a `Tree`, fetching from the given source when traversing
 /// to a pruned node, detaching children as they are traversed.

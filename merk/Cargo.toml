@@ -10,8 +10,9 @@ license = "MIT"
 tempdir = "0.3.7"
 storage = { path = "../storage" }
 thiserror = "1.0.30"
-failure = "0.1.8"
 rocksdb = "0.17.0"
+anyhow = "1.0.51"
+failure = "0.1.8"
 
 [dependencies.time]
 version = "0.1.42"

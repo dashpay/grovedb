@@ -10,11 +10,11 @@ use std::{
 
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
-pub use subtree::Element;
 use storage::{
     rocksdb_storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError},
     Storage,
 };
+pub use subtree::Element;
 
 /// Limit of possible indirections
 const MAX_REFERENCE_HOPS: usize = 10;
@@ -26,24 +26,18 @@ const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("rocksdb error")]
-    RocksDBError(#[from] PrefixedRocksDbStorageError),
-    #[error("unable to open Merk db")]
-    MerkError(merk::Error),
-    #[error("invalid path: {0}")]
-    InvalidPath(&'static str),
-    #[error("unable to decode")]
-    BincodeError(#[from] bincode::Error),
+    // Input data errors
     #[error("cyclic reference path")]
     CyclicReference,
     #[error("reference hops limit exceeded")]
     ReferenceLimit,
-}
-
-impl From<merk::Error> for Error {
-    fn from(e: merk::Error) -> Self {
-        Error::MerkError(e)
-    }
+    #[error("invalid path: {0}")]
+    InvalidPath(&'static str),
+    // Irrecoverable errors
+    #[error("storage error: {0}")]
+    StorageError(#[from] PrefixedRocksDbStorageError),
+    #[error("data corruption error: {0}")]
+    CorruptedData(String),
 }
 
 pub struct GroveDb {
@@ -69,10 +63,14 @@ impl GroveDb {
         let mut subtrees = HashMap::new();
         // TODO: owned `get` is not required for deserialization
         if let Some(prefixes_serialized) = meta_storage.get_meta(SUBTRESS_SERIALIZED_KEY)? {
-            let subtrees_prefixes: Vec<Vec<u8>> = bincode::deserialize(&prefixes_serialized)?;
+            let subtrees_prefixes: Vec<Vec<u8>> = bincode::deserialize(&prefixes_serialized)
+                .map_err(|_| {
+                    Error::CorruptedData(String::from("unable to deserialize prefixes"))
+                })?;
             for prefix in subtrees_prefixes {
                 let subtree_merk =
-                    Merk::open(PrefixedRocksDbStorage::new(db.clone(), prefix.to_vec())?)?;
+                    Merk::open(PrefixedRocksDbStorage::new(db.clone(), prefix.to_vec())?)
+                        .map_err(|e| Error::CorruptedData(e.to_string()))?;
                 subtrees.insert(prefix.to_vec(), subtree_merk);
             }
         }
@@ -81,7 +79,9 @@ impl GroveDb {
         let root_leaf_keys: HashMap<Vec<u8>, usize> = if let Some(root_leaf_keys_serialized) =
             meta_storage.get_meta(ROOT_LEAFS_SERIALIZED_KEY)?
         {
-            bincode::deserialize(&root_leaf_keys_serialized)?
+            bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {
+                Error::CorruptedData(String::from("unable to deserialize root leafs"))
+            })?
         } else {
             HashMap::new()
         };
@@ -95,13 +95,25 @@ impl GroveDb {
         })
     }
 
+    pub fn checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<GroveDb, Error> {
+        storage::rocksdb_storage::Checkpoint::new(&self.db)
+            .and_then(|x| x.create_checkpoint(&path))
+            .map_err(PrefixedRocksDbStorageError::RocksDbError)?;
+        GroveDb::open(path)
+    }
+
     fn store_subtrees_keys_data(&self) -> Result<(), Error> {
         let prefixes: Vec<Vec<u8>> = self.subtrees.keys().map(|x| x.clone()).collect();
-        self.meta_storage
-            .put_meta(SUBTRESS_SERIALIZED_KEY, &bincode::serialize(&prefixes)?)?;
+        self.meta_storage.put_meta(
+            SUBTRESS_SERIALIZED_KEY,
+            &bincode::serialize(&prefixes)
+                .map_err(|_| Error::CorruptedData(String::from("unable to serialize prefixes")))?,
+        )?;
         self.meta_storage.put_meta(
             ROOT_LEAFS_SERIALIZED_KEY,
-            &bincode::serialize(&self.root_leaf_keys)?,
+            &bincode::serialize(&self.root_leaf_keys).map_err(|_| {
+                Error::CorruptedData(String::from("unable to serialize root leafs"))
+            })?,
         )?;
         Ok(())
     }
@@ -140,7 +152,8 @@ impl GroveDb {
                             Merk::open(PrefixedRocksDbStorage::new(
                                 self.db.clone(),
                                 compressed_path_subtree,
-                            )?)?,
+                            )?)
+                            .map_err(|e| Error::CorruptedData(e.to_string()))?,
                         ))
                     };
                 if path.is_empty() {

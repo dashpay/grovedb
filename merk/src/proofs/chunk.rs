@@ -1,18 +1,14 @@
+use anyhow::{bail, Result};
 use storage::RawIterator;
 #[cfg(feature = "full")]
 use {
     super::tree::{execute, Tree as ProofTree},
     crate::tree::Hash,
     crate::tree::Tree,
-    failure::bail,
-    rocksdb::DBRawIterator,
 };
 
 use super::{Node, Op};
-use crate::{
-    error::Result,
-    tree::{Fetch, RefWalker},
-};
+use crate::tree::{Fetch, RefWalker};
 
 /// The minimum number of layers the trunk will be guaranteed to have before
 /// splitting into multiple chunks. If the tree's height is less than double

@@ -3,10 +3,11 @@ use std::{
     rc::Rc,
 };
 
+use anyhow::Result;
 use storage::rocksdb_storage::{default_rocksdb, PrefixedRocksDbStorage};
 use tempdir::TempDir;
 
-use crate::{Merk, Result};
+use crate::Merk;
 
 /// Wraps a Merk instance and drops it without flushing once it goes out of
 /// scope.
@@ -31,7 +32,9 @@ impl CrashMerk {
     }
 
     pub fn crash(&mut self) {
-        self.path.take().map(|x| drop(x));
+        if let Some(a) = self.path.take() {
+            drop(a)
+        }
     }
 }
 

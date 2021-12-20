@@ -3,10 +3,9 @@ use std::{
     ops::{Bound, RangeBounds},
 };
 
-use failure::{bail, ensure, format_err};
+use anyhow::{anyhow, bail, ensure, Result};
 
 use super::super::Node;
-use crate::Result;
 
 /// `MapBuilder` allows a consumer to construct a `Map` by inserting the nodes
 /// contained in a proof, in key-order.
@@ -200,7 +199,7 @@ impl<'a> Iterator for Range<'a> {
         // if nodes weren't contiguous, we cannot verify that we have all values
         // in the desired range
         if !skip_exclusion_check && !contiguous {
-            return Some(Err(format_err!("Proof is missing data for query")));
+            return Some(Err(anyhow!("Proof is missing data for query")));
         }
 
         // passed checks, return entry

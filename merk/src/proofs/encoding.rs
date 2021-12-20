@@ -1,10 +1,10 @@
 use std::io::{Read, Write};
 
+use anyhow::{anyhow, Result};
 use ed::{Decode, Encode, Terminated};
-use failure::bail;
 
 use super::{Node, Op};
-use crate::{error::Result, tree::HASH_LENGTH};
+use crate::tree::HASH_LENGTH;
 
 impl Encode for Op {
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
@@ -71,7 +71,8 @@ impl Decode for Op {
             }
             0x10 => Op::Parent,
             0x11 => Op::Child,
-            _ => bail!("Proof has unexpected value"),
+            // TODO: get rid of `failure` with improvements to ed API (or removing dependency on ed)
+            _ => failure::bail!("Proof has unexpected value"),
         })
     }
 }
@@ -81,6 +82,7 @@ impl Terminated for Op {}
 impl Op {
     fn encode_into<W: Write>(&self, dest: &mut W) -> Result<()> {
         Encode::encode_into(self, dest)
+            .map_err(|e| anyhow!("failed to encode an proofs::Op structure ({})", e))
     }
 
     fn encoding_length(&self) -> usize {
@@ -89,6 +91,7 @@ impl Op {
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         Decode::decode(bytes)
+            .map_err(|e| anyhow!("failed to decode an proofs::Op structure ({})", e))
     }
 }
 

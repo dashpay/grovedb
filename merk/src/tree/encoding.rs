@@ -1,8 +1,8 @@
+use anyhow::{anyhow, Error};
 use ed::{Decode, Encode};
 use storage::{Storage, Store};
 
 use super::Tree;
-use crate::error::Error;
 
 impl Store for Tree {
     type Error = Error;
@@ -12,7 +12,7 @@ impl Store for Tree {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, Self::Error> {
-        Decode::decode(bytes)
+        Decode::decode(bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
     }
 
     fn get<S>(storage: S, key: &[u8]) -> Result<Option<Self>, Self::Error>
