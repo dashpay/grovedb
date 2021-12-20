@@ -282,8 +282,10 @@ fn test_proof_construction() {
     let root_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
 
     // Generate grove db proof
+    let mut proof_query = Query::new();
+    proof_query.insert_key(b"key1".to_vec());
     let proof = temp_db
-        .proof(&[TEST_LEAF, b"innertree"], QueryItem::Key(b"key1".to_vec()))
+        .proof(&[TEST_LEAF, b"innertree"], proof_query)
         .expect("Successful proof generation");
 
     assert_eq!(proof.len(), 4);
