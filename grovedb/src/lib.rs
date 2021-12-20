@@ -9,12 +9,8 @@ use std::{
     rc::Rc,
 };
 
-pub use merk::proofs::query::QueryItem;
-use merk::{
-    self, execute_proof,
-    proofs::{query::Map, Query},
-    rocksdb, Merk,
-};
+pub use merk::proofs::{query::QueryItem, Query};
+use merk::{self, execute_proof, proofs::query::Map, rocksdb, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleProof, MerkleTree};
 use subtree::Element;
 

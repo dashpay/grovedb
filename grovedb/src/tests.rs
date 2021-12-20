@@ -346,10 +346,7 @@ fn test_successful_proof_verification() {
     let mut proof_query = Query::new();
     proof_query.insert_key(b"key1".to_vec());
     let mut proof = temp_db
-        .proof(
-            &[TEST_LEAF, b"innertree", b"innertree1.1"],
-            proof_query,
-        )
+        .proof(&[TEST_LEAF, b"innertree", b"innertree1.1"], proof_query)
         .unwrap();
 
     let result_map = GroveDb::verify_proof(
