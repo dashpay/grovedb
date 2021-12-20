@@ -254,11 +254,20 @@ fn test_proof_construction() {
             Element::Item(b"value1".to_vec()),
         )
         .expect("successful item insert");
+    temp_db
+        .insert(
+            &[TEST_LEAF, b"innertree"],
+            b"key2".to_vec(),
+            Element::Item(b"value2".to_vec()),
+        )
+        .expect("successful item insert");
 
     // Manually build the ads structures
     let mut inner_tree_merk = TempMerk::new();
     let value_element = Element::Item(b"value1".to_vec());
     value_element.insert(&mut inner_tree_merk, b"key1".to_vec());
+    let value_element = Element::Item(b"value2".to_vec());
+    value_element.insert(&mut inner_tree_merk, b"key2".to_vec());
 
     let mut test_leaf_merk = TempMerk::new();
     let inner_tree_root_element = Element::Tree(inner_tree_merk.root_hash());
