@@ -213,6 +213,21 @@ impl GroveDb {
         Ok(())
     }
 
+    pub fn insert_if_not_exists(
+        &mut self,
+        path: &[&[u8]],
+        key: Vec<u8>,
+        element: subtree::Element,
+    ) -> Result<bool, Error> {
+        if self.get(path, &key).is_ok() {
+            return Ok(false);
+        }
+        match self.insert(path, key, element) {
+            Ok(_) => Ok(true),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn get(&self, path: &[&[u8]], key: &[u8]) -> Result<subtree::Element, Error> {
         match self.get_raw(path, key)? {
             Element::Reference(reference_path) => self.follow_reference(reference_path),
