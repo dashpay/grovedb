@@ -8,6 +8,7 @@ use std::{
     rc::Rc,
 };
 
+pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 use storage::{
@@ -259,8 +260,50 @@ impl GroveDb {
         Err(Error::ReferenceLimit)
     }
 
-    pub fn proof(&self) -> ! {
-        todo!()
+    pub fn proof(&self, path: &[&[u8]], proof_query: Query) -> Result<Vec<Vec<u8>>, Error> {
+        let mut proofs: Vec<Vec<u8>> = Vec::new();
+
+        // First prove the query
+        proofs.push(self.prove_item(path, proof_query)?);
+
+        // Next prove the query path
+        let mut split_path = path.split_last();
+        while let Some((key, path_slice)) = split_path {
+            if path_slice.is_empty() {
+                // Get proof for root tree at current key
+                let root_key_index = self
+                    .root_leaf_keys
+                    .get(*key)
+                    .ok_or(Error::InvalidPath("root key not found"))?;
+                proofs.push(self.root_tree.proof(&[*root_key_index]).to_bytes());
+            } else {
+                let mut path_query = Query::new();
+                path_query.insert_item(QueryItem::Key(key.to_vec()));
+                proofs.push(self.prove_item(path_slice, path_query)?);
+            }
+            split_path = path_slice.split_last();
+        }
+
+        // Append the root leaf keys hash map to proof to provide context when verifying
+        // proof
+        let aux_data = bincode::serialize(&self.root_leaf_keys)
+            .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
+        proofs.push(aux_data);
+
+        Ok(proofs)
+    }
+
+    fn prove_item(&self, path: &[&[u8]], proof_query: Query) -> Result<Vec<u8>, Error> {
+        let merk = self
+            .subtrees
+            .get(&Self::compress_path(path, None))
+            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+
+        let proof_result = merk
+            .prove(proof_query)
+            .expect("should prove both inclusion and absence");
+
+        Ok(proof_result)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
