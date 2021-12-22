@@ -407,3 +407,64 @@ fn test_insert_if_not_exists() {
     );
     assert!(matches!(result, Err(Error::InvalidPath(_))));
 }
+
+#[test]
+fn test_subtree_pairs_iterator() {
+    let mut db = make_grovedb();
+    let element = Element::Item(b"ayy".to_vec());
+    let element2 = Element::Item(b"lmao".to_vec());
+
+    // Insert some nested subtrees
+    db.insert(&[TEST_LEAF], b"subtree1".to_vec(), Element::empty_tree())
+        .expect("successful subtree 1 insert");
+    db.insert(
+        &[TEST_LEAF, b"subtree1"],
+        b"subtree11".to_vec(),
+        Element::empty_tree(),
+    )
+    .expect("successful subtree 2 insert");
+    // Insert an element into subtree
+    db.insert(
+        &[TEST_LEAF, b"subtree1", b"subtree11"],
+        b"key1".to_vec(),
+        element.clone(),
+    )
+    .expect("successful value insert");
+    assert_eq!(
+        db.get(&[TEST_LEAF, b"subtree1", b"subtree11"], b"key1")
+            .expect("succesful get 1"),
+        element
+    );
+    db.insert(
+        &[TEST_LEAF, b"subtree1", b"subtree11"],
+        b"key0".to_vec(),
+        element.clone(),
+    )
+    .expect("successful value insert");
+    db.insert(
+        &[TEST_LEAF, b"subtree1"],
+        b"subtree12".to_vec(),
+        Element::empty_tree(),
+    )
+    .expect("successful subtree 3 insert");
+    db.insert(&[TEST_LEAF, b"subtree1"], b"key1".to_vec(), element.clone())
+        .expect("succesful value insert");
+    db.insert(
+        &[TEST_LEAF, b"subtree1"],
+        b"key2".to_vec(),
+        element2.clone(),
+    )
+    .expect("succesful value insert");
+
+    // Iterate over subtree1 to see if keys of other subtrees messed up
+    let mut iter = db
+        .elements_iterator(&[TEST_LEAF, b"subtree1"])
+        .expect("cannot create iterator");
+    assert!(matches!(iter.next(), Ok(Some((b"key1", element1)))));
+    assert!(matches!(iter.next(), Ok(Some((b"key2", element2)))));
+    assert!(matches!(
+        iter.next(),
+        Ok(Some((b"subtree11", Element::Tree(_))))
+    ));
+    //    assert!(matches!(iter.next(), Ok(None)));
+}

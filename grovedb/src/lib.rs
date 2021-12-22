@@ -235,6 +235,14 @@ impl GroveDb {
         }
     }
 
+    pub fn elements_iterator(&self, path: &[&[u8]]) -> Result<subtree::ElementsIterator, Error> {
+        let merk = self
+            .subtrees
+            .get(&Self::compress_path(path, None))
+            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+        Ok(Element::iterator(merk.raw_iter()))
+    }
+
     /// Get tree item without following references
     fn get_raw(&self, path: &[&[u8]], key: &[u8]) -> Result<subtree::Element, Error> {
         let merk = self

@@ -1,9 +1,12 @@
 //! Module for subtrees handling.
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
-use merk::Op;
+use merk::{tree::Tree, Op};
 use serde::{Deserialize, Serialize};
-use storage::rocksdb_storage::PrefixedRocksDbStorage;
+use storage::{
+    rocksdb_storage::{PrefixedRocksDbStorage, RawPrefixedIterator},
+    RawIterator, Store,
+};
 
 use crate::{Error, Merk};
 
@@ -55,6 +58,35 @@ impl Element {
             )];
         merk.apply(&batch, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    pub fn iterator(mut raw_iter: RawPrefixedIterator) -> ElementsIterator {
+        raw_iter.seek_to_first();
+        ElementsIterator { raw_iter }
+    }
+}
+
+pub struct ElementsIterator<'a> {
+    raw_iter: RawPrefixedIterator<'a>,
+}
+
+impl<'a> ElementsIterator<'a> {
+    pub fn next(&mut self) -> Result<Option<(&[u8], Element)>, Error> {
+        Ok(if self.raw_iter.valid() {
+            self.raw_iter.next();
+            if let Some((key, value)) = self.raw_iter.key().zip(self.raw_iter.value()) {
+                let tree = <Tree as Store>::decode(value)
+                    .map_err(|e| Error::CorruptedData(e.to_string()))?;
+                let element: Element = bincode::deserialize(tree.value()).map_err(|_| {
+                    Error::CorruptedData(String::from("unable to deserialize element"))
+                })?;
+                Some((key, element))
+            } else {
+                None
+            }
+        } else {
+            None
+        })
     }
 }
 
