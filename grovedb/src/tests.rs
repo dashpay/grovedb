@@ -235,8 +235,8 @@ fn test_tree_structure_is_presistent() {
 fn test_root_tree_leafs_are_noted() {
     let db = make_grovedb();
     let mut hm = HashMap::new();
-    hm.insert(TEST_LEAF.to_vec(), 0);
-    hm.insert(ANOTHER_TEST_LEAF.to_vec(), 1);
+    hm.insert(GroveDb::compress_subtree_key(&[TEST_LEAF], None), 0);
+    hm.insert(GroveDb::compress_subtree_key(&[ANOTHER_TEST_LEAF], None), 1);
     assert_eq!(db.root_leaf_keys, hm);
     assert_eq!(db.root_tree.leaves_len(), 2);
 }
@@ -318,7 +318,6 @@ fn test_checkpoint() {
         .expect("cannot insert a subtree 2 into GroveDB");
     db.insert(&[b"key1", b"key2"], b"key3".to_vec(), element1.clone())
         .expect("cannot insert an item into GroveDB");
-
     assert_eq!(
         db.get(&[b"key1", b"key2"], b"key3")
             .expect("cannot get from grovedb"),
@@ -460,11 +459,27 @@ fn test_subtree_pairs_iterator() {
     let mut iter = db
         .elements_iterator(&[TEST_LEAF, b"subtree1"])
         .expect("cannot create iterator");
-    assert!(matches!(iter.next(), Ok(Some((b"key1", element1)))));
-    assert!(matches!(iter.next(), Ok(Some((b"key2", element2)))));
-    assert!(matches!(
-        iter.next(),
-        Ok(Some((b"subtree11", Element::Tree(_))))
-    ));
-    //    assert!(matches!(iter.next(), Ok(None)));
+    assert_eq!(iter.next().unwrap(), Some((b"key1".to_vec(), element)));
+    assert_eq!(iter.next().unwrap(), Some((b"key2".to_vec(), element2)));
+    let subtree_element = iter.next().unwrap().unwrap();
+    assert_eq!(subtree_element.0, b"subtree11".to_vec());
+    assert!(matches!(subtree_element.1, Element::Tree(_)));
+    let subtree_element = iter.next().unwrap().unwrap();
+    assert_eq!(subtree_element.0, b"subtree12".to_vec());
+    assert!(matches!(subtree_element.1, Element::Tree(_)));
+    assert!(matches!(iter.next(), Ok(None)));
+}
+
+#[test]
+fn test_compress_path_not_possible_collision() {
+    let path_a = [b"aa".as_ref(), b"b"];
+    let path_b = [b"a".as_ref(), b"ab"];
+    assert_ne!(
+        GroveDb::compress_subtree_key(&path_a, None),
+        GroveDb::compress_subtree_key(&path_b, None)
+    );
+    assert_eq!(
+        GroveDb::compress_subtree_key(&path_a, None),
+        GroveDb::compress_subtree_key(&path_a, None),
+    );
 }

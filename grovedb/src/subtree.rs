@@ -71,15 +71,16 @@ pub struct ElementsIterator<'a> {
 }
 
 impl<'a> ElementsIterator<'a> {
-    pub fn next(&mut self) -> Result<Option<(&[u8], Element)>, Error> {
+    pub fn next(&mut self) -> Result<Option<(Vec<u8>, Element)>, Error> {
         Ok(if self.raw_iter.valid() {
-            self.raw_iter.next();
             if let Some((key, value)) = self.raw_iter.key().zip(self.raw_iter.value()) {
                 let tree = <Tree as Store>::decode(value)
                     .map_err(|e| Error::CorruptedData(e.to_string()))?;
                 let element: Element = bincode::deserialize(tree.value()).map_err(|_| {
                     Error::CorruptedData(String::from("unable to deserialize element"))
                 })?;
+                let key = key.to_vec();
+                self.raw_iter.next();
                 Some((key, element))
             } else {
                 None

@@ -236,7 +236,6 @@ impl RawIterator for RawPrefixedIterator<'_> {
     }
 
     fn valid(&self) -> bool {
-        // TODO: things may break if we continue concat prefix and key just like that
         self.rocksdb_iterator
             .key()
             .map(|k| k.starts_with(self.prefix))

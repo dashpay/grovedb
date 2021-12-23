@@ -10,7 +10,7 @@ use std::{
 
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
-use rs_merkle::{algorithms::Sha256, MerkleTree};
+use rs_merkle::{algorithms::Sha256, Hasher, MerkleTree};
 use storage::{
     rocksdb_storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError},
     Storage,
@@ -141,13 +141,12 @@ impl GroveDb {
         key: Vec<u8>,
         mut element: subtree::Element,
     ) -> Result<(), Error> {
-        let compressed_path = Self::compress_path(path, None);
         match &mut element {
             Element::Tree(subtree_root_hash) => {
                 // Helper closure to create a new subtree under path + key
                 let create_subtree_merk =
                     || -> Result<(Vec<u8>, Merk<PrefixedRocksDbStorage>), Error> {
-                        let compressed_path_subtree = Self::compress_path(path, Some(&key));
+                        let compressed_path_subtree = Self::compress_subtree_key(&path, Some(&key));
                         Ok((
                             compressed_path_subtree.clone(),
                             Merk::open(PrefixedRocksDbStorage::new(
@@ -173,6 +172,7 @@ impl GroveDb {
                     }
                     self.propagate_changes(&[&key])?;
                 } else {
+                    let compressed_path = Self::compress_subtree_key(path, None);
                     // Add subtree to another subtree.
                     // First, check if a subtree exists to create a new subtree under it
                     self.subtrees
@@ -204,7 +204,7 @@ impl GroveDb {
                 // Get a Merk by a path
                 let mut merk = self
                     .subtrees
-                    .get_mut(&compressed_path)
+                    .get_mut(&Self::compress_subtree_key(path, None))
                     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
                 element.insert(&mut merk, key)?;
                 self.propagate_changes(path)?;
@@ -238,7 +238,7 @@ impl GroveDb {
     pub fn elements_iterator(&self, path: &[&[u8]]) -> Result<subtree::ElementsIterator, Error> {
         let merk = self
             .subtrees
-            .get(&Self::compress_path(path, None))
+            .get(&Self::compress_subtree_key(path, None))
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
         Ok(Element::iterator(merk.raw_iter()))
     }
@@ -247,7 +247,7 @@ impl GroveDb {
     fn get_raw(&self, path: &[&[u8]], key: &[u8]) -> Result<subtree::Element, Error> {
         let merk = self
             .subtrees
-            .get(&Self::compress_path(path, None))
+            .get(&Self::compress_subtree_key(path, None))
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
         Element::get(&merk, key)
     }
@@ -296,7 +296,7 @@ impl GroveDb {
                 // Get proof for root tree at current key
                 let root_key_index = self
                     .root_leaf_keys
-                    .get(*key)
+                    .get(&Self::compress_subtree_key(&[key], None))
                     .ok_or(Error::InvalidPath("root key not found"))?;
                 proofs.push(self.root_tree.proof(&[*root_key_index]).to_bytes());
             } else {
@@ -319,7 +319,7 @@ impl GroveDb {
     fn prove_item(&self, path: &[&[u8]], proof_query: Query) -> Result<Vec<u8>, Error> {
         let merk = self
             .subtrees
-            .get(&Self::compress_path(path, None))
+            .get(&Self::compress_subtree_key(path, None))
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
 
         let proof_result = merk
@@ -339,8 +339,8 @@ impl GroveDb {
                 self.root_tree = Self::build_root_tree(&self.subtrees, &self.root_leaf_keys);
                 break;
             } else {
-                let compressed_path_upper_tree = Self::compress_path(path_slice, None);
-                let compressed_path_subtree = Self::compress_path(path_slice, Some(key));
+                let compressed_path_upper_tree = Self::compress_subtree_key(path_slice, None);
+                let compressed_path_subtree = Self::compress_subtree_key(path_slice, Some(key));
                 let subtree = self
                     .subtrees
                     .get(&compressed_path_subtree)
@@ -359,14 +359,26 @@ impl GroveDb {
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
-    fn compress_path(path: &[&[u8]], key: Option<&[u8]>) -> Vec<u8> {
-        let mut res = path.iter().fold(Vec::<u8>::new(), |mut acc, p| {
+    fn compress_subtree_key(path: &[&[u8]], key: Option<&[u8]>) -> Vec<u8> {
+        let segments_iter = path.into_iter().map(|x| *x).chain(key.into_iter());
+        let mut segments_count = path.len();
+        if key.is_some() {
+            segments_count += 1;
+        }
+        let mut res = segments_iter.fold(Vec::<u8>::new(), |mut acc, p| {
             acc.extend(p.into_iter());
             acc
         });
-        if let Some(k) = key {
-            res.extend_from_slice(k);
-        }
+
+        res.extend(segments_count.to_ne_bytes());
+        path.into_iter()
+            .map(|x| *x)
+            .chain(key.into_iter())
+            .fold(&mut res, |acc, p| {
+                acc.extend(p.len().to_ne_bytes());
+                acc
+            });
+        res = Sha256::hash(&res).to_vec();
         res
     }
 }
