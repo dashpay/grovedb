@@ -15,6 +15,7 @@ use storage::{
     rocksdb_storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError},
     Storage,
 };
+use storage::rocksdb_storage::OptimisticTransactionDB;
 pub use subtree::Element;
 
 /// Limit of possible indirections
@@ -46,13 +47,13 @@ pub struct GroveDb {
     root_leaf_keys: HashMap<Vec<u8>, usize>,
     subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     meta_storage: PrefixedRocksDbStorage,
-    db: Rc<storage::rocksdb_storage::DB>,
+    db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
 }
 
 impl GroveDb {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = Rc::new(
-            storage::rocksdb_storage::DB::open_cf_descriptors(
+            storage::rocksdb_storage::OptimisticTransactionDB::open_cf_descriptors(
                 &storage::rocksdb_storage::default_db_opts(),
                 path,
                 storage::rocksdb_storage::column_families(),
@@ -96,12 +97,12 @@ impl GroveDb {
         })
     }
 
-    pub fn checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<GroveDb, Error> {
-        storage::rocksdb_storage::Checkpoint::new(&self.db)
-            .and_then(|x| x.create_checkpoint(&path))
-            .map_err(PrefixedRocksDbStorageError::RocksDbError)?;
-        GroveDb::open(path)
-    }
+    // pub fn checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<GroveDb, Error> {
+    //     storage::rocksdb_storage::Checkpoint::new(self.db.as_ref())
+    //         .and_then(|x| x.create_checkpoint(&path))
+    //         .map_err(PrefixedRocksDbStorageError::RocksDbError)?;
+    //     GroveDb::open(path)
+    // }
 
     fn store_subtrees_keys_data(&self) -> Result<(), Error> {
         let prefixes: Vec<Vec<u8>> = self.subtrees.keys().map(|x| x.clone()).collect();

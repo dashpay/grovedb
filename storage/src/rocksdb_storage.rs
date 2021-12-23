@@ -1,8 +1,8 @@
 //! Storage implementation using RocksDB
 use std::{path::Path, rc::Rc};
 
-pub use rocksdb::{checkpoint::Checkpoint, Error, DB};
-use rocksdb::{ColumnFamily, ColumnFamilyDescriptor, DBRawIterator, WriteBatch};
+pub use rocksdb::{checkpoint::Checkpoint, Error, OptimisticTransactionDB};
+use rocksdb::{ColumnFamily, ColumnFamilyDescriptor, DBRawIterator, WriteBatch, WriteBatchWithTransaction};
 
 use crate::{Batch, RawIterator, Storage};
 
@@ -32,9 +32,9 @@ pub fn column_families() -> Vec<ColumnFamilyDescriptor> {
 }
 
 /// Create RocksDB with default settings
-pub fn default_rocksdb(path: &Path) -> Rc<rocksdb::DB> {
+pub fn default_rocksdb(path: &Path) -> Rc<rocksdb::OptimisticTransactionDB> {
     Rc::new(
-        rocksdb::DB::open_cf_descriptors(&default_db_opts(), &path, column_families())
+        rocksdb::OptimisticTransactionDB::open_cf_descriptors(&default_db_opts(), &path, column_families())
             .expect("cannot create rocksdb"),
     )
 }
@@ -47,7 +47,7 @@ fn make_prefixed_key(prefix: Vec<u8>, key: &[u8]) -> Vec<u8> {
 
 /// RocksDB wrapper to store items with prefixes
 pub struct PrefixedRocksDbStorage {
-    db: Rc<rocksdb::DB>,
+    db: Rc<rocksdb::OptimisticTransactionDB>,
     prefix: Vec<u8>,
 }
 
@@ -61,7 +61,7 @@ pub enum PrefixedRocksDbStorageError {
 
 impl PrefixedRocksDbStorage {
     /// Wraps RocksDB to prepend prefixes to each operation
-    pub fn new(db: Rc<rocksdb::DB>, prefix: Vec<u8>) -> Result<Self, PrefixedRocksDbStorageError> {
+    pub fn new(db: Rc<rocksdb::OptimisticTransactionDB>, prefix: Vec<u8>) -> Result<Self, PrefixedRocksDbStorageError> {
         Ok(PrefixedRocksDbStorage { prefix, db })
     }
 
@@ -93,10 +93,38 @@ impl PrefixedRocksDbStorage {
     }
 }
 
+pub type DBRawTransactionIterator<'a> = rocksdb::DBRawIteratorWithThreadMode<'a, OptimisticTransactionDB>;
+
+impl RawIterator for DBRawTransactionIterator<'_> {
+    fn seek_to_first(&mut self) {
+        DBRawTransactionIterator::seek_to_first(self)
+    }
+
+    fn seek(&mut self, key: &[u8]) {
+        DBRawTransactionIterator::seek(self, key)
+    }
+
+    fn next(&mut self) {
+        DBRawTransactionIterator::next(self)
+    }
+
+    fn value(&self) -> Option<&[u8]> {
+        DBRawTransactionIterator::value(self)
+    }
+
+    fn key(&self) -> Option<&[u8]> {
+        DBRawTransactionIterator::key(self)
+    }
+
+    fn valid(&self) -> bool {
+        DBRawTransactionIterator::valid(self)
+    }
+}
+
 impl Storage for PrefixedRocksDbStorage {
     type Batch<'a> = PrefixedRocksDbBatch<'a>;
     type Error = PrefixedRocksDbStorageError;
-    type RawIterator<'a> = rocksdb::DBRawIterator<'a>;
+    type RawIterator<'a> = DBRawTransactionIterator<'a>;
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
         self.db
@@ -174,7 +202,7 @@ impl Storage for PrefixedRocksDbStorage {
     fn new_batch<'a>(&'a self) -> Result<Self::Batch<'a>, Self::Error> {
         Ok(PrefixedRocksDbBatch {
             prefix: self.prefix.clone(),
-            batch: WriteBatch::default(),
+            batch: WriteBatchWithTransaction::<true>::default(),
             cf_aux: self.cf_aux()?,
             cf_roots: self.cf_roots()?,
         })
@@ -224,7 +252,7 @@ impl RawIterator for rocksdb::DBRawIterator<'_> {
 /// Wrapper to RocksDB batch
 pub struct PrefixedRocksDbBatch<'a> {
     prefix: Vec<u8>,
-    batch: rocksdb::WriteBatch,
+    batch: rocksdb::WriteBatchWithTransaction<true>,
     cf_aux: &'a ColumnFamily,
     cf_roots: &'a ColumnFamily,
 }

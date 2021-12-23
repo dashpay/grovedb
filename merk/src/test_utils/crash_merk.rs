@@ -14,7 +14,7 @@ use crate::Merk;
 pub struct CrashMerk {
     merk: Merk<PrefixedRocksDbStorage>,
     path: Option<TempDir>,
-    _db: Rc<rocksdb::DB>,
+    _db: Rc<rocksdb::OptimisticTransactionDB>,
 }
 
 impl CrashMerk {
