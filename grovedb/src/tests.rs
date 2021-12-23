@@ -349,14 +349,14 @@ fn test_successful_proof_verification() {
         .proof(&[TEST_LEAF, b"innertree", b"innertree1.1"], proof_query)
         .unwrap();
 
-    let result_map = GroveDb::verify_proof(
-        &[TEST_LEAF, b"innertree", b"innertree1.1"],
-        &mut proof,
-        temp_db.root_tree.root().unwrap(),
-    )
-    .unwrap();
-    let elem: Element = bincode::deserialize(result_map.get(b"key1").unwrap().unwrap()).unwrap();
+    let (root_hash, result_map) =
+        GroveDb::execute_proof(&[TEST_LEAF, b"innertree", b"innertree1.1"], &mut proof).unwrap();
 
+    // Check that the root hash matches
+    assert_eq!(temp_db.root_tree.root().unwrap(), root_hash);
+
+    // Check that the result map is correct
+    let elem: Element = bincode::deserialize(result_map.get(b"key1").unwrap().unwrap()).unwrap();
     assert_eq!(elem, Element::Item(b"value1".to_vec()));
 }
 
@@ -408,14 +408,13 @@ fn test_malicious_proof_verification() {
     let root_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
     proofs.push(root_tree.proof(&vec![0]).to_bytes());
 
-    let result_map = GroveDb::verify_proof(
-        &[TEST_LEAF, b"innertree", b"innertree-2"],
-        &mut proofs,
-        root_tree.root().unwrap(),
-    )
-    .unwrap();
-    let elem: Element = bincode::deserialize(result_map.get(b"key1").unwrap().unwrap()).unwrap();
+    let (root_hash, result_map) =
+        GroveDb::execute_proof(&[TEST_LEAF, b"innertree", b"innertree-2"], &mut proofs).unwrap();
 
+    // Check that the root hash matches
+    assert_eq!(root_tree.root().unwrap(), root_hash);
+
+    let elem: Element = bincode::deserialize(result_map.get(b"key1").unwrap().unwrap()).unwrap();
     assert_eq!(elem, Element::Item(b"value1".to_vec()));
 }
 

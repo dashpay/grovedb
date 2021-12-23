@@ -9,15 +9,13 @@ use std::{
 };
 
 pub use merk::proofs::{query::QueryItem, Query};
-use merk::{self, execute_proof, proofs::query::Map, Merk};
+use merk::{self, proofs::query::Map, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleProof, MerkleTree};
 use storage::{
     rocksdb_storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError},
     Storage,
 };
 pub use subtree::Element;
-
-use crate::Error::InvalidProof;
 
 /// Limit of possible indirections
 const MAX_REFERENCE_HOPS: usize = 10;
@@ -325,11 +323,10 @@ impl GroveDb {
         Ok(proof_result)
     }
 
-    pub fn verify_proof(
+    pub fn execute_proof(
         path: &[&[u8]],
-        proofs: &mut Vec<Vec<u8>>, // Generic into_iterator (trait) u8
-        expected_root_hash: [u8; 32],
-    ) -> Result<Map, Error> {
+        proofs: &mut Vec<Vec<u8>>,
+    ) -> Result<([u8; 32], Map), Error> {
         if proofs.len() < 2 {
             return Err(Error::InvalidProof("Proof length should be 2 or more"));
         }
@@ -351,21 +348,22 @@ impl GroveDb {
             .next()
             .expect("Constraint checks above enforces leaf proof must exist");
 
-        let (mut last_root_hash, leaf_result_map) = match execute_proof(&leaf_proof[..]) {
+        let (mut last_root_hash, leaf_result_map) = match merk::execute_proof(&leaf_proof[..]) {
             Ok(result) => Ok(result),
-            Err(e) => Err(Error::InvalidProof("Invalid proof element")),
+            Err(_) => Err(Error::InvalidProof("Invalid proof element")),
         }?;
 
         let mut proof_path_zip = proof_iterator.zip(reverse_path_iterator).peekable();
+        let mut root_hash: Option<[u8; 32]> = None;
 
         while let Some((proof, key)) = proof_path_zip.next() {
             if proof_path_zip.peek().is_some() {
                 // Non root proof, validate that the proof is valid and
                 // the result map contains the last subtree root hash i.e the previous
                 // subtree is a child of this tree
-                let proof_result = match execute_proof(&proof[..]) {
+                let proof_result = match merk::execute_proof(&proof[..]) {
                     Ok(result) => Ok(result),
-                    Err(e) => Err(Error::InvalidProof("Invalid proof element")),
+                    Err(_) => Err(Error::InvalidProof("Invalid proof element")),
                 }?;
                 let result_map = proof_result.1;
 
@@ -387,23 +385,24 @@ impl GroveDb {
                 // Last proof (root proof)
                 let root_proof = match MerkleProof::<Sha256>::try_from(&proof[..]) {
                     Ok(root_proof) => Ok(root_proof),
-                    Err(e) => Err(Error::InvalidProof("Invalid proof element")),
+                    Err(_) => Err(Error::InvalidProof("Invalid proof element")),
                 }?;
                 let a: [u8; 32] = last_root_hash;
-                if root_proof.verify(
-                    expected_root_hash,
-                    &[root_leaf_keys[*key]],
-                    &[a],
-                    root_leaf_keys.len(),
-                ) {
-                    break;
-                } else {
-                    return Err(Error::InvalidProof("Root hashes didn't match"));
-                }
+                root_hash =
+                    Some(
+                        match root_proof.root(&[root_leaf_keys[*key]], &[a], root_leaf_keys.len()) {
+                            Ok(hash) => Ok(hash),
+                            Err(_) => Err(Error::InvalidProof("Invalid proof element")),
+                        }?,
+                    );
             }
         }
 
-        Ok(leaf_result_map)
+        if let Some(hash) = root_hash {
+            return Ok((hash, leaf_result_map));
+        } else {
+            return Err(Error::InvalidProof("Invalid proof element"));
+        }
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
