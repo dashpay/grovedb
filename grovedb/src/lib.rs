@@ -323,6 +323,8 @@ impl GroveDb {
         Ok(proof_result)
     }
 
+    // Validates proof structure and returns the root hash
+    // and query result
     pub fn execute_proof(
         path: &[&[u8]],
         proofs: &mut Vec<Vec<u8>>,
@@ -398,10 +400,10 @@ impl GroveDb {
             }
         }
 
-        if let Some(hash) = root_hash {
-            return Ok((hash, leaf_result_map));
+        return if let Some(hash) = root_hash {
+            Ok((hash, leaf_result_map))
         } else {
-            return Err(Error::InvalidProof("Invalid proof element"));
+            Err(Error::InvalidProof("Invalid proof element"))
         }
     }
 
