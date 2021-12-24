@@ -43,6 +43,11 @@ pub enum Error {
     CorruptedData(String),
 }
 
+pub struct ProofQuery<'a> {
+    path: &'a[&'a[u8]],
+    query: Query,
+}
+
 pub struct GroveDb {
     root_tree: MerkleTree<Sha256>,
     root_leaf_keys: HashMap<Vec<u8>, usize>,
@@ -277,38 +282,50 @@ impl GroveDb {
         Err(Error::ReferenceLimit)
     }
 
-    pub fn proof(&self, path: &[&[u8]], proof_query: Query) -> Result<Vec<Vec<u8>>, Error> {
-        let mut proofs: Vec<Vec<u8>> = Vec::new();
+    // Multi path proofs
+    // Want a list of paths and the keys or query they want to prove
+    // So I can store an hashmap with all the elements
+    // What about the proof for the root and the leaves
+    // Should it matter tho, the hashmap can be from path to query
+    // If a key is found at that path, we insert it to the query as a key
+    // At the start of each path iteration, there is a query I add that immediately
+    // When I split the path, I need to
+    // I need a data structure to keep track of the query and the path
 
-        // First prove the query
-        proofs.push(self.prove_item(path, proof_query)?);
 
-        // Next prove the query path
-        let mut split_path = path.split_last();
-        while let Some((key, path_slice)) = split_path {
-            if path_slice.is_empty() {
-                // Get proof for root tree at current key
-                let root_key_index = self
-                    .root_leaf_keys
-                    .get(*key)
-                    .ok_or(Error::InvalidPath("root key not found"))?;
-                proofs.push(self.root_tree.proof(&[*root_key_index]).to_bytes());
-            } else {
-                let mut path_query = Query::new();
-                path_query.insert_item(QueryItem::Key(key.to_vec()));
-                proofs.push(self.prove_item(path_slice, path_query)?);
-            }
-            split_path = path_slice.split_last();
-        }
 
-        // Append the root leaf keys hash map to proof to provide context when verifying
-        // proof
-        let aux_data = bincode::serialize(&self.root_leaf_keys)
-            .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
-        proofs.push(aux_data);
-
-        Ok(proofs)
-    }
+    // pub fn proof(&self, path: &[&[u8]], proof_query: Query) -> Result<Vec<Vec<u8>>, Error> {
+    //     let mut proofs: Vec<Vec<u8>> = Vec::new();
+    //
+    //     // First prove the query
+    //     proofs.push(self.prove_item(path, proof_query)?);
+    //
+    //     // Next prove the query path
+    //     let mut split_path = path.split_last();
+    //     while let Some((key, path_slice)) = split_path {
+    //         if path_slice.is_empty() {
+    //             // Get proof for root tree at current key
+    //             let root_key_index = self
+    //                 .root_leaf_keys
+    //                 .get(*key)
+    //                 .ok_or(Error::InvalidPath("root key not found"))?;
+    //             proofs.push(self.root_tree.proof(&[*root_key_index]).to_bytes());
+    //         } else {
+    //             let mut path_query = Query::new();
+    //             path_query.insert_item(QueryItem::Key(key.to_vec()));
+    //             proofs.push(self.prove_item(path_slice, path_query)?);
+    //         }
+    //         split_path = path_slice.split_last();
+    //     }
+    //
+    //     // Append the root leaf keys hash map to proof to provide context when verifying
+    //     // proof
+    //     let aux_data = bincode::serialize(&self.root_leaf_keys)
+    //         .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
+    //     proofs.push(aux_data);
+    //
+    //     Ok(proofs)
+    // }
 
     fn prove_item(&self, path: &[&[u8]], proof_query: Query) -> Result<Vec<u8>, Error> {
         let merk = self
