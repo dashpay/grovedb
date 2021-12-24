@@ -48,6 +48,13 @@ pub struct ProofQuery<'a> {
     query: Query,
 }
 
+pub struct Proof<'a> {
+    query_paths: Vec<&'a[&'a[u8]]>,
+    proofs: HashMap<&'a[&'a[u8]], Vec<u8>>,
+    root_proof: Vec<u8>,
+    root_leaf_keys: HashMap<Vec<u8>, usize>,
+}
+
 pub struct GroveDb {
     root_tree: MerkleTree<Sha256>,
     root_leaf_keys: HashMap<Vec<u8>, usize>,
@@ -292,7 +299,9 @@ impl GroveDb {
     // When I split the path, I need to
     // I need a data structure to keep track of the query and the path
 
+    pub fn proof(&self, proof_queries: Vec<ProofQuery>) -> Result<Proof, Error> {
 
+    }
 
     // pub fn proof(&self, path: &[&[u8]], proof_query: Query) -> Result<Vec<Vec<u8>>, Error> {
     //     let mut proofs: Vec<Vec<u8>> = Vec::new();
