@@ -97,8 +97,11 @@ impl GroveDb {
         })
     }
 
+    // TODO: Checkpoints are currently not implemented for the transactional DB
     // pub fn checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<GroveDb, Error> {
-    //     storage::rocksdb_storage::Checkpoint::new(self.db.as_ref())
+    //     // let snapshot = self.db.transaction().snapshot();
+    //
+    //     storage::rocksdb_storage::Checkpoint::new(&self.db)
     //         .and_then(|x| x.create_checkpoint(&path))
     //         .map_err(PrefixedRocksDbStorageError::RocksDbError)?;
     //     GroveDb::open(path)

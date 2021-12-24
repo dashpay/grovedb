@@ -1,5 +1,55 @@
 #![feature(generic_associated_types)]
+
+use rocksdb::OptimisticTransactionDB;
+
 pub mod rocksdb_storage;
+
+pub trait Transaction {
+    /// Storage error type
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Commit data from the transaction
+    fn commit(&self) -> Result<(), Self::Error>;
+
+    /// Rollback the transaction
+    fn rollback(&self) -> Result<(), Self::Error>;
+
+    /// Put `value` into data storage with `key`
+    fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error>;
+
+    /// Put `value` into auxiliary data storage with `key`
+    fn put_aux(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error>;
+
+    /// Put `value` into trees roots storage with `key`
+    fn put_root(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error>;
+
+    /// Put `value` into GroveDB metadata storage with `key`
+    fn put_meta(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error>;
+
+    /// Delete entry with `key` from data storage
+    fn delete(&self, key: &[u8]) -> Result<(), Self::Error>;
+
+    /// Delete entry with `key` from auxiliary data storage
+    fn delete_aux(&self, key: &[u8]) -> Result<(), Self::Error>;
+
+    /// Delete entry with `key` from trees roots storage
+    fn delete_root(&self, key: &[u8]) -> Result<(), Self::Error>;
+
+    /// Delete entry with `key` from GroveDB metadata storage
+    fn delete_meta(&self, key: &[u8]) -> Result<(), Self::Error>;
+
+    /// Get entry by `key` from data storage
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error>;
+
+    /// Get entry by `key` from auxiliary data storage
+    fn get_aux(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error>;
+
+    /// Get entry by `key` from trees roots storage
+    fn get_root(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error>;
+
+    /// Get entry by `key` from GroveDB metadata storage
+    fn get_meta(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error>;
+}
 
 /// `Storage` is able to store and retrieve arbitrary bytes by key
 pub trait Storage {
@@ -14,6 +64,8 @@ pub trait Storage {
     type RawIterator<'a>: RawIterator
     where
         Self: 'a;
+
+    type StorageTransaction: Transaction;
 
     /// Put `value` into data storage with `key`
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error>;
@@ -62,6 +114,9 @@ pub trait Storage {
 
     /// Get raw iterator over storage
     fn raw_iter<'a>(&'a self) -> Self::RawIterator<'a>;
+
+    /// Starts DB transaction
+    fn transaction(&self) -> Self::StorageTransaction;
 }
 
 impl<'b, S: Storage> Storage for &'b S {
@@ -74,6 +129,8 @@ impl<'b, S: Storage> Storage for &'b S {
     where
         'b: 'a,
     = S::RawIterator<'a>;
+
+    type StorageTransaction = ();
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
         (*self).put(key, value)
