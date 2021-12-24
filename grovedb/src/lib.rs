@@ -21,7 +21,7 @@ pub use subtree::Element;
 const MAX_REFERENCE_HOPS: usize = 10;
 /// A key to store serialized data about subtree prefixes to restore HADS
 /// structure
-const SUBTRESS_SERIALIZED_KEY: &[u8] = b"subtreesSerialized";
+const SUBTREES_SERIALIZED_KEY: &[u8] = b"subtreesSerialized";
 /// A key to store serialized data about root tree leafs keys and order
 const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
 
@@ -65,7 +65,7 @@ impl GroveDb {
 
         let mut subtrees = HashMap::new();
         // TODO: owned `get` is not required for deserialization
-        if let Some(prefixes_serialized) = meta_storage.get_meta(SUBTRESS_SERIALIZED_KEY)? {
+        if let Some(prefixes_serialized) = meta_storage.get_meta(SUBTREES_SERIALIZED_KEY)? {
             let subtrees_prefixes: Vec<Vec<u8>> = bincode::deserialize(&prefixes_serialized)
                 .map_err(|_| {
                     Error::CorruptedData(String::from("unable to deserialize prefixes"))
@@ -108,7 +108,7 @@ impl GroveDb {
     fn store_subtrees_keys_data(&self) -> Result<(), Error> {
         let prefixes: Vec<Vec<u8>> = self.subtrees.keys().map(|x| x.clone()).collect();
         self.meta_storage.put_meta(
-            SUBTRESS_SERIALIZED_KEY,
+            SUBTREES_SERIALIZED_KEY,
             &bincode::serialize(&prefixes)
                 .map_err(|_| Error::CorruptedData(String::from("unable to serialize prefixes")))?,
         )?;
