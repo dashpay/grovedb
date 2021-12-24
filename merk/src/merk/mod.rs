@@ -372,12 +372,14 @@ impl Commit for MerkCommitter {
 
 #[cfg(test)]
 mod test {
+    use rocksdb::{DBRawIteratorWithThreadMode, OptimisticTransactionDB};
     use storage::rocksdb_storage::{default_rocksdb, PrefixedRocksDbStorage};
     use tempdir::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};
     use crate::{test_utils::*, Op};
 
+    type OptimisticTransactionDBRawIterator<'a> = DBRawIteratorWithThreadMode<'a, OptimisticTransactionDB>;
     // TODO: Close and then reopen test
 
     fn assert_invariants(merk: &TempMerk) {
@@ -539,7 +541,7 @@ mod test {
 
     #[test]
     fn reopen_iter() {
-        fn collect(iter: &mut rocksdb::DBRawIterator, nodes: &mut Vec<(Vec<u8>, Vec<u8>)>) {
+        fn collect(iter: &mut OptimisticTransactionDBRawIterator, nodes: &mut Vec<(Vec<u8>, Vec<u8>)>) {
             while iter.valid() {
                 nodes.push((iter.key().unwrap().to_vec(), iter.value().unwrap().to_vec()));
                 iter.next();

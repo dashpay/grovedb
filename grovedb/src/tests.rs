@@ -265,13 +265,19 @@ fn test_proof_construction() {
     // Manually build the ads structures
     let mut inner_tree_merk = TempMerk::new();
     let value_element = Element::Item(b"value1".to_vec());
-    value_element.insert(&mut inner_tree_merk, b"key1".to_vec());
+    value_element
+        .insert(&mut inner_tree_merk, b"key1".to_vec())
+        .expect("Expected to insert value");
     let value_element = Element::Item(b"value2".to_vec());
-    value_element.insert(&mut inner_tree_merk, b"key2".to_vec());
+    value_element
+        .insert(&mut inner_tree_merk, b"key2".to_vec())
+        .expect("Expected to insert value");
 
     let mut test_leaf_merk = TempMerk::new();
     let inner_tree_root_element = Element::Tree(inner_tree_merk.root_hash());
-    inner_tree_root_element.insert(&mut test_leaf_merk, b"innertree".to_vec());
+    inner_tree_root_element
+        .insert(&mut test_leaf_merk, b"innertree".to_vec())
+        .expect("Expected to insert value");
 
     let another_test_leaf_merk = TempMerk::new();
 
@@ -302,86 +308,86 @@ fn test_proof_construction() {
 
     let root_leaf_keys: HashMap<Vec<u8>, usize> = bincode::deserialize(&proof[3][..]).unwrap();
     assert_eq!(root_leaf_keys.len(), temp_db.root_leaf_keys.len());
-    for (key, index) in &root_leaf_keys {
+    for (key, _index) in &root_leaf_keys {
         assert_eq!(root_leaf_keys[key], temp_db.root_leaf_keys[key]);
     }
 }
 
-#[test]
-fn test_checkpoint() {
-    let mut db = make_grovedb();
-    let element1 = Element::Item(b"ayy".to_vec());
-
-    db.insert(&[], b"key1".to_vec(), Element::empty_tree())
-        .expect("cannot insert a subtree 1 into GroveDB");
-    db.insert(&[b"key1"], b"key2".to_vec(), Element::empty_tree())
-        .expect("cannot insert a subtree 2 into GroveDB");
-    db.insert(&[b"key1", b"key2"], b"key3".to_vec(), element1.clone())
-        .expect("cannot insert an item into GroveDB");
-
-    assert_eq!(
-        db.get(&[b"key1", b"key2"], b"key3")
-            .expect("cannot get from grovedb"),
-        element1
-    );
-
-    let checkpoint_tempdir = TempDir::new("checkpoint").expect("cannot open tempdir");
-    let mut checkpoint = db
-        .checkpoint(checkpoint_tempdir.path().join("checkpoint"))
-        .expect("cannot create a checkpoint");
-
-    assert_eq!(
-        db.get(&[b"key1", b"key2"], b"key3")
-            .expect("cannot get from grovedb"),
-        element1
-    );
-    assert_eq!(
-        checkpoint
-            .get(&[b"key1", b"key2"], b"key3")
-            .expect("cannot get from checkpoint"),
-        element1
-    );
-
-    let element2 = Element::Item(b"ayy2".to_vec());
-    let element3 = Element::Item(b"ayy3".to_vec());
-
-    checkpoint
-        .insert(&[b"key1"], b"key4".to_vec(), element2.clone())
-        .expect("cannot insert into checkpoint");
-
-    db.insert(&[b"key1"], b"key4".to_vec(), element3.clone())
-        .expect("cannot insert into GroveDB");
-
-    assert_eq!(
-        checkpoint
-            .get(&[b"key1"], b"key4")
-            .expect("cannot get from checkpoint"),
-        element2,
-    );
-
-    assert_eq!(
-        db.get(&[b"key1"], b"key4")
-            .expect("cannot get from GroveDB"),
-        element3
-    );
-
-    checkpoint
-        .insert(&[b"key1"], b"key5".to_vec(), element3.clone())
-        .expect("cannot insert into checkpoint");
-
-    db.insert(&[b"key1"], b"key6".to_vec(), element3.clone())
-        .expect("cannot insert into GroveDB");
-
-    assert!(matches!(
-        checkpoint.get(&[b"key1"], b"key6"),
-        Err(Error::InvalidPath(_))
-    ));
-
-    assert!(matches!(
-        db.get(&[b"key1"], b"key5"),
-        Err(Error::InvalidPath(_))
-    ));
-}
+// #[test]
+// fn test_checkpoint() {
+//     let mut db = make_grovedb();
+//     let element1 = Element::Item(b"ayy".to_vec());
+//
+//     db.insert(&[], b"key1".to_vec(), Element::empty_tree())
+//         .expect("cannot insert a subtree 1 into GroveDB");
+//     db.insert(&[b"key1"], b"key2".to_vec(), Element::empty_tree())
+//         .expect("cannot insert a subtree 2 into GroveDB");
+//     db.insert(&[b"key1", b"key2"], b"key3".to_vec(), element1.clone())
+//         .expect("cannot insert an item into GroveDB");
+//
+//     assert_eq!(
+//         db.get(&[b"key1", b"key2"], b"key3")
+//             .expect("cannot get from grovedb"),
+//         element1
+//     );
+//
+//     let checkpoint_tempdir = TempDir::new("checkpoint").expect("cannot open
+// tempdir");     let mut checkpoint = db
+//         .checkpoint(checkpoint_tempdir.path().join("checkpoint"))
+//         .expect("cannot create a checkpoint");
+//
+//     assert_eq!(
+//         db.get(&[b"key1", b"key2"], b"key3")
+//             .expect("cannot get from grovedb"),
+//         element1
+//     );
+//     assert_eq!(
+//         checkpoint
+//             .get(&[b"key1", b"key2"], b"key3")
+//             .expect("cannot get from checkpoint"),
+//         element1
+//     );
+//
+//     let element2 = Element::Item(b"ayy2".to_vec());
+//     let element3 = Element::Item(b"ayy3".to_vec());
+//
+//     checkpoint
+//         .insert(&[b"key1"], b"key4".to_vec(), element2.clone())
+//         .expect("cannot insert into checkpoint");
+//
+//     db.insert(&[b"key1"], b"key4".to_vec(), element3.clone())
+//         .expect("cannot insert into GroveDB");
+//
+//     assert_eq!(
+//         checkpoint
+//             .get(&[b"key1"], b"key4")
+//             .expect("cannot get from checkpoint"),
+//         element2,
+//     );
+//
+//     assert_eq!(
+//         db.get(&[b"key1"], b"key4")
+//             .expect("cannot get from GroveDB"),
+//         element3
+//     );
+//
+//     checkpoint
+//         .insert(&[b"key1"], b"key5".to_vec(), element3.clone())
+//         .expect("cannot insert into checkpoint");
+//
+//     db.insert(&[b"key1"], b"key6".to_vec(), element3.clone())
+//         .expect("cannot insert into GroveDB");
+//
+//     assert!(matches!(
+//         checkpoint.get(&[b"key1"], b"key6"),
+//         Err(Error::InvalidPath(_))
+//     ));
+//
+//     assert!(matches!(
+//         db.get(&[b"key1"], b"key5"),
+//         Err(Error::InvalidPath(_))
+//     ));
+// }
 
 #[test]
 fn test_insert_if_not_exists() {

@@ -338,9 +338,15 @@ mod tests {
     #[test]
     fn transaction_commit_should_work() {
         let storage = TempPrefixedStorage::new();
-        let mut transaction = storage.transaction();
-        transaction.put(b"key1", b"value1");
-        transaction.put(b"key2", b"value2");
-        transaction.put_root(b"root", b"yeet");
+        let transaction = storage.transaction();
+        transaction
+            .put(b"key1", b"value1")
+            .expect("Expected to put value");
+        transaction
+            .put(b"key2", b"value2")
+            .expect("Expected to put value");
+        transaction
+            .put_root(b"root", b"yeet")
+            .expect("Expected to put root");
     }
 }

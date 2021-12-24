@@ -1,6 +1,7 @@
 mod subtree;
 #[cfg(test)]
 mod tests;
+mod transaction;
 
 use std::{
     collections::{HashMap, HashSet},
