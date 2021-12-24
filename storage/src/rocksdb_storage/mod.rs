@@ -1,8 +1,8 @@
 //! Storage implementation using RocksDB
 use std::{path::Path, rc::Rc};
 pub use rocksdb::{checkpoint::Checkpoint, Error, OptimisticTransactionDB};
-use rocksdb::{ColumnFamily, ColumnFamilyDescriptor, DBRawIterator, WriteBatch, WriteBatchWithTransaction};
-use crate::{Batch, RawIterator, Storage, Transaction};
+use rocksdb::{ColumnFamilyDescriptor, DBRawIterator};
+use crate::{RawIterator};
 
 mod transaction;
 mod batch;

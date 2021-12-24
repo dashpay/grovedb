@@ -1,28 +1,62 @@
-use rocksdb::{checkpoint::Checkpoint, Error, OptimisticTransactionDB};
+use rocksdb::{OptimisticTransactionDB};
 
 use crate::Transaction;
-use super::{PrefixedRocksDbStorageError, make_prefixed_key};
+use super::{
+    PrefixedRocksDbStorageError,
+    make_prefixed_key,
+    AUX_CF_NAME, ROOTS_CF_NAME, META_CF_NAME
+};
 
 pub struct PrefixedRocksDbTransaction<'a> {
     transaction: rocksdb::Transaction<'a, OptimisticTransactionDB>,
     prefix: Vec<u8>,
+    db: &'a OptimisticTransactionDB,
 }
 // TODO: Implement snapshots for transactions
-impl PrefixedRocksDbTransaction<'_> {
-    fn new(db: &OptimisticTransactionDB, prefix: Vec<u8>) -> Self {
-        Self { transaction: db.transaction(), prefix }
+impl<'a> PrefixedRocksDbTransaction<'a> {
+    pub(crate) fn new(transaction: rocksdb::Transaction<'a, OptimisticTransactionDB>, prefix: Vec<u8>, db: &'a OptimisticTransactionDB) -> Self {
+        Self { transaction, prefix, db }
+    }
+
+    /// Get auxiliary data column family
+    fn cf_aux(&self) -> Result<&rocksdb::ColumnFamily, PrefixedRocksDbStorageError> {
+        self.db
+            .cf_handle(AUX_CF_NAME)
+            .ok_or(PrefixedRocksDbStorageError::ColumnFamilyNotFound(
+                AUX_CF_NAME,
+            ))
+    }
+
+    /// Get trees roots data column family
+    fn cf_roots(&self) -> Result<&rocksdb::ColumnFamily, PrefixedRocksDbStorageError> {
+        self.db
+            .cf_handle(ROOTS_CF_NAME)
+            .ok_or(PrefixedRocksDbStorageError::ColumnFamilyNotFound(
+                ROOTS_CF_NAME,
+            ))
+    }
+
+    /// Get metadata column family
+    fn cf_meta(&self) -> Result<&rocksdb::ColumnFamily, PrefixedRocksDbStorageError> {
+        self.db
+            .cf_handle(META_CF_NAME)
+            .ok_or(PrefixedRocksDbStorageError::ColumnFamilyNotFound(
+                META_CF_NAME,
+            ))
     }
 }
 
 impl Transaction for PrefixedRocksDbTransaction<'_> {
     type Error = PrefixedRocksDbStorageError;
 
-    fn commit(&self) {
-        self.transaction.commit();
+    fn commit(self) -> Result<(), Self::Error> {
+        self.transaction.commit()?;
+        Ok(())
     }
 
-    fn rollback(&self) {
-        self.transaction.rollback();
+    fn rollback(&self) -> Result<(), Self::Error> {
+        self.transaction.rollback()?;
+        Ok(())
     }
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {

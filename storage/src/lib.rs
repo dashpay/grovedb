@@ -1,15 +1,12 @@
 #![feature(generic_associated_types)]
-
-use rocksdb::OptimisticTransactionDB;
-
 pub mod rocksdb_storage;
 
 pub trait Transaction {
     /// Storage error type
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Commit data from the transaction
-    fn commit(&self) -> Result<(), Self::Error>;
+    /// Commit data from the transaction. Consumes transaction
+    fn commit(self) -> Result<(), Self::Error>;
 
     /// Rollback the transaction
     fn rollback(&self) -> Result<(), Self::Error>;
@@ -65,7 +62,9 @@ pub trait Storage {
     where
         Self: 'a;
 
-    type StorageTransaction: Transaction;
+    type StorageTransaction<'a>: Transaction
+    where
+        Self: 'a;
 
     /// Put `value` into data storage with `key`
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error>;
@@ -116,7 +115,7 @@ pub trait Storage {
     fn raw_iter<'a>(&'a self) -> Self::RawIterator<'a>;
 
     /// Starts DB transaction
-    fn transaction(&self) -> Self::StorageTransaction;
+    fn transaction<'a>(&'a self) -> Self::StorageTransaction<'a>;
 }
 
 impl<'b, S: Storage> Storage for &'b S {
@@ -130,7 +129,10 @@ impl<'b, S: Storage> Storage for &'b S {
         'b: 'a,
     = S::RawIterator<'a>;
 
-    type StorageTransaction = ();
+    type StorageTransaction<'a>
+    where
+        'b: 'a,
+    = S::StorageTransaction<'a>;
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
         (*self).put(key, value)
@@ -194,6 +196,10 @@ impl<'b, S: Storage> Storage for &'b S {
 
     fn raw_iter<'a>(&'a self) -> Self::RawIterator<'a> {
         (*self).raw_iter()
+    }
+
+    fn transaction<'a>(&'a self) -> Self::StorageTransaction<'a> {
+        (*self).transaction()
     }
 }
 

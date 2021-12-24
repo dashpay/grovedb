@@ -15,7 +15,6 @@ use storage::{
     rocksdb_storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError},
     Storage,
 };
-use storage::rocksdb_storage::OptimisticTransactionDB;
 pub use subtree::Element;
 
 /// Limit of possible indirections

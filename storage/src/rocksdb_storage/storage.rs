@@ -1,4 +1,4 @@
-use std::{path::Path, rc::Rc};
+use std::rc::Rc;
 use rocksdb::WriteBatchWithTransaction;
 use crate::Storage;
 use super::{
@@ -155,5 +155,13 @@ impl Storage for PrefixedRocksDbStorage {
 
     fn raw_iter<'a>(&'a self) -> Self::RawIterator<'a> {
         self.db.raw_iterator()
+    }
+
+    fn transaction<'a>(&'a self) -> Self::StorageTransaction<'a> {
+        PrefixedRocksDbTransaction::new(
+            self.db.transaction(),
+            self.prefix.clone(),
+            &self.db
+        )
     }
 }
