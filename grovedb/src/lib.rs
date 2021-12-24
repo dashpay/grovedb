@@ -7,6 +7,7 @@ use std::{
     path::Path,
     rc::Rc,
 };
+use std::vec::IntoIter;
 
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, proofs::query::Map, Merk};
@@ -299,8 +300,8 @@ impl GroveDb {
     // When I split the path, I need to
     // I need a data structure to keep track of the query and the path
 
-    pub fn proof(&self, proof_queries: Vec<ProofQuery>) -> Result<Proof, Error> {
-
+    pub fn proof(&mut self, proof_queries: Vec<ProofQuery>) -> Result<Proof, Error> {
+        todo!()
     }
 
     // pub fn proof(&self, path: &[&[u8]], proof_query: Query) -> Result<Vec<Vec<u8>>, Error> {
