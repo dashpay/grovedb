@@ -1,6 +1,7 @@
 use rocksdb::ColumnFamily;
-use crate::Batch;
+
 use super::make_prefixed_key;
+use crate::Batch;
 
 /// Wrapper to RocksDB batch
 pub struct PrefixedRocksDbBatch<'a> {

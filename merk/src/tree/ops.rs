@@ -97,9 +97,11 @@ where
         // TODO: take from batch so we don't have to clone
         let mid_tree = Tree::new(mid_key.to_vec(), mid_value.to_vec());
         let mid_walker = Walker::new(mid_tree, PanicSource {});
+
+        // use walker, ignore deleted_keys since it should be empty
         Ok(mid_walker
             .recurse(batch, mid_index, true)?
-            .0 // use walker, ignore deleted_keys since it should be empty
+            .0
             .map(|w| w.into_inner()))
     }
 

@@ -1,11 +1,12 @@
 use std::rc::Rc;
+
 use rocksdb::WriteBatchWithTransaction;
-use crate::Storage;
+
 use super::{
-    AUX_CF_NAME, ROOTS_CF_NAME, META_CF_NAME,
-    DBRawTransactionIterator, PrefixedRocksDbBatch, PrefixedRocksDbTransaction,
-    make_prefixed_key
+    make_prefixed_key, DBRawTransactionIterator, PrefixedRocksDbBatch, PrefixedRocksDbTransaction,
+    AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME,
 };
+use crate::Storage;
 
 /// RocksDB wrapper to store items with prefixes
 pub struct PrefixedRocksDbStorage {
@@ -23,7 +24,10 @@ pub enum PrefixedRocksDbStorageError {
 
 impl PrefixedRocksDbStorage {
     /// Wraps RocksDB to prepend prefixes to each operation
-    pub fn new(db: Rc<rocksdb::OptimisticTransactionDB>, prefix: Vec<u8>) -> Result<Self, PrefixedRocksDbStorageError> {
+    pub fn new(
+        db: Rc<rocksdb::OptimisticTransactionDB>,
+        prefix: Vec<u8>,
+    ) -> Result<Self, PrefixedRocksDbStorageError> {
         Ok(PrefixedRocksDbStorage { prefix, db })
     }
 
@@ -158,10 +162,6 @@ impl Storage for PrefixedRocksDbStorage {
     }
 
     fn transaction<'a>(&'a self) -> Self::StorageTransaction<'a> {
-        PrefixedRocksDbTransaction::new(
-            self.db.transaction(),
-            self.prefix.clone(),
-            &self.db
-        )
+        PrefixedRocksDbTransaction::new(self.db.transaction(), self.prefix.clone(), &self.db)
     }
 }

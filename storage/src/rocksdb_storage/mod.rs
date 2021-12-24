@@ -1,16 +1,18 @@
 //! Storage implementation using RocksDB
 use std::{path::Path, rc::Rc};
+
 pub use rocksdb::{checkpoint::Checkpoint, Error, OptimisticTransactionDB};
 use rocksdb::{ColumnFamilyDescriptor, DBRawIterator};
-use crate::{RawIterator};
 
-mod transaction;
+use crate::RawIterator;
+
 mod batch;
 mod storage;
+mod transaction;
 
 pub use batch::PrefixedRocksDbBatch;
-pub use transaction::PrefixedRocksDbTransaction;
 pub use storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError};
+pub use transaction::PrefixedRocksDbTransaction;
 
 const AUX_CF_NAME: &str = "aux";
 const ROOTS_CF_NAME: &str = "roots";
@@ -40,8 +42,12 @@ pub fn column_families() -> Vec<ColumnFamilyDescriptor> {
 /// Create RocksDB with default settings
 pub fn default_rocksdb(path: &Path) -> Rc<rocksdb::OptimisticTransactionDB> {
     Rc::new(
-        rocksdb::OptimisticTransactionDB::open_cf_descriptors(&default_db_opts(), &path, column_families())
-            .expect("cannot create rocksdb"),
+        rocksdb::OptimisticTransactionDB::open_cf_descriptors(
+            &default_db_opts(),
+            &path,
+            column_families(),
+        )
+        .expect("cannot create rocksdb"),
     )
 }
 
@@ -51,7 +57,8 @@ fn make_prefixed_key(prefix: Vec<u8>, key: &[u8]) -> Vec<u8> {
     prefixed_key
 }
 
-pub type DBRawTransactionIterator<'a> = rocksdb::DBRawIteratorWithThreadMode<'a, OptimisticTransactionDB>;
+pub type DBRawTransactionIterator<'a> =
+    rocksdb::DBRawIteratorWithThreadMode<'a, OptimisticTransactionDB>;
 
 impl RawIterator for DBRawTransactionIterator<'_> {
     fn seek_to_first(&mut self) {
@@ -112,6 +119,7 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
+    use crate::{Batch, Storage, Transaction};
 
     struct TempPrefixedStorage {
         storage: PrefixedRocksDbStorage,
@@ -134,7 +142,7 @@ mod tests {
                     default_rocksdb(tmp_dir.path()),
                     b"test".to_vec(),
                 )
-                    .expect("cannot create prefixed rocksdb storage"),
+                .expect("cannot create prefixed rocksdb storage"),
                 _tmp_dir: tmp_dir,
             }
         }

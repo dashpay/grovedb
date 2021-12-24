@@ -5,7 +5,7 @@ pub trait Transaction {
     /// Storage error type
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Commit data from the transaction. Consumes transaction
+    /// Commit data from the transaction. Consumes the transaction
     fn commit(self) -> Result<(), Self::Error>;
 
     /// Rollback the transaction
@@ -128,7 +128,6 @@ impl<'b, S: Storage> Storage for &'b S {
     where
         'b: 'a,
     = S::RawIterator<'a>;
-
     type StorageTransaction<'a>
     where
         'b: 'a,
