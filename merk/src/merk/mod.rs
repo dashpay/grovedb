@@ -372,7 +372,10 @@ impl Commit for MerkCommitter {
 
 #[cfg(test)]
 mod test {
-    use storage::rocksdb_storage::{default_rocksdb, PrefixedRocksDbStorage};
+    use storage::{
+        rocksdb_storage::{default_rocksdb, PrefixedRocksDbStorage},
+        RawIterator,
+    };
     use tempdir::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};
@@ -539,7 +542,7 @@ mod test {
 
     #[test]
     fn reopen_iter() {
-        fn collect(iter: &mut rocksdb::DBRawIterator, nodes: &mut Vec<(Vec<u8>, Vec<u8>)>) {
+        fn collect(iter: &mut impl RawIterator, nodes: &mut Vec<(Vec<u8>, Vec<u8>)>) {
             while iter.valid() {
                 nodes.push((iter.key().unwrap().to_vec(), iter.value().unwrap().to_vec()));
                 iter.next();
