@@ -3,17 +3,17 @@ use rocksdb::OptimisticTransactionDB;
 use super::{
     make_prefixed_key, PrefixedRocksDbStorageError, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME,
 };
-use crate::Transaction;
+use crate::{Transaction};
 
 pub struct PrefixedRocksDbTransaction<'a> {
-    transaction: rocksdb::Transaction<'a, OptimisticTransactionDB>,
+    transaction: &'a rocksdb::Transaction<'a, OptimisticTransactionDB>,
     prefix: Vec<u8>,
-    db: &'a OptimisticTransactionDB,
+    pub(crate) db: &'a OptimisticTransactionDB,
 }
 // TODO: Implement snapshots for transactions
 impl<'a> PrefixedRocksDbTransaction<'a> {
-    pub(crate) fn new(
-        transaction: rocksdb::Transaction<'a, OptimisticTransactionDB>,
+    pub fn new(
+        transaction: &'a rocksdb::Transaction<'a, OptimisticTransactionDB>,
         prefix: Vec<u8>,
         db: &'a OptimisticTransactionDB,
     ) -> Self {
@@ -54,16 +54,6 @@ impl<'a> PrefixedRocksDbTransaction<'a> {
 
 impl Transaction for PrefixedRocksDbTransaction<'_> {
     type Error = PrefixedRocksDbStorageError;
-
-    fn commit(self) -> Result<(), Self::Error> {
-        self.transaction.commit()?;
-        Ok(())
-    }
-
-    fn rollback(&self) -> Result<(), Self::Error> {
-        self.transaction.rollback()?;
-        Ok(())
-    }
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
         self.transaction

@@ -4,7 +4,7 @@ use std::{path::Path, rc::Rc};
 pub use rocksdb::{checkpoint::Checkpoint, Error, OptimisticTransactionDB};
 use rocksdb::{ColumnFamilyDescriptor, DBRawIterator};
 
-use crate::RawIterator;
+use crate::{DBTransaction, RawIterator};
 
 mod batch;
 mod storage;
@@ -59,6 +59,11 @@ fn make_prefixed_key(prefix: Vec<u8>, key: &[u8]) -> Vec<u8> {
 
 pub type DBRawTransactionIterator<'a> =
     rocksdb::DBRawIteratorWithThreadMode<'a, OptimisticTransactionDB>;
+
+pub type OptimisticTransactionDBTransaction<'a> = rocksdb::Transaction<'a, OptimisticTransactionDB>;
+
+// Implement marker trait for internal DB transaction
+impl DBTransaction<'_> for OptimisticTransactionDBTransaction<'_> {}
 
 impl RawIterator for DBRawTransactionIterator<'_> {
     fn seek_to_first(&mut self) {

@@ -13,8 +13,11 @@ pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 use storage::{
-    rocksdb_storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError},
-    Storage,
+    rocksdb_storage::{
+        OptimisticTransactionDB, OptimisticTransactionDBTransaction, PrefixedRocksDbStorage,
+        PrefixedRocksDbStorageError, PrefixedRocksDbTransaction,
+    },
+    Storage, Transaction,
 };
 pub use subtree::Element;
 
@@ -364,5 +367,9 @@ impl GroveDb {
             res.extend_from_slice(k);
         }
         res
+    }
+
+    pub fn transaction(&self) -> OptimisticTransactionDBTransaction {
+        self.db.transaction()
     }
 }

@@ -1,6 +1,9 @@
 #![feature(generic_associated_types)]
 pub mod rocksdb_storage;
 
+// Marker trait for underlying DB transactions
+pub trait DBTransaction<'a> {}
+
 /// `Storage` is able to store and retrieve arbitrary bytes by key
 pub trait Storage {
     /// Storage error type
@@ -16,6 +19,9 @@ pub trait Storage {
         Self: 'a;
 
     type StorageTransaction<'a>: Transaction
+    where
+        Self: 'a;
+    type DBTransaction<'a>: DBTransaction<'a>
     where
         Self: 'a;
 
@@ -68,15 +74,15 @@ pub trait Storage {
     fn raw_iter<'a>(&'a self) -> Self::RawIterator<'a>;
 
     /// Starts DB transaction
-    fn transaction<'a>(&'a self) -> Self::StorageTransaction<'a>;
+    fn transaction<'a>(&'a self, tx: &'a Self::DBTransaction<'a>) -> Self::StorageTransaction<'a>;
 }
 
 impl<'b, S: Storage> Storage for &'b S {
+    type Error = S::Error;
     type Batch<'a>
     where
         'b: 'a,
     = S::Batch<'a>;
-    type Error = S::Error;
     type RawIterator<'a>
     where
         'b: 'a,
@@ -85,6 +91,10 @@ impl<'b, S: Storage> Storage for &'b S {
     where
         'b: 'a,
     = S::StorageTransaction<'a>;
+    type DBTransaction<'a>
+    where
+        'b: 'a,
+    = S::DBTransaction<'a>;
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
         (*self).put(key, value)
@@ -96,6 +106,10 @@ impl<'b, S: Storage> Storage for &'b S {
 
     fn put_root(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
         (*self).put_root(key, value)
+    }
+
+    fn put_meta(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+        (*self).put_meta(key, value)
     }
 
     fn delete(&self, key: &[u8]) -> Result<(), Self::Error> {
@@ -110,6 +124,10 @@ impl<'b, S: Storage> Storage for &'b S {
         (*self).delete_root(key)
     }
 
+    fn delete_meta(&self, key: &[u8]) -> Result<(), Self::Error> {
+        (*self).delete_meta(key)
+    }
+
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
         (*self).get(key)
     }
@@ -120,14 +138,6 @@ impl<'b, S: Storage> Storage for &'b S {
 
     fn get_root(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
         (*self).get_root(key)
-    }
-
-    fn put_meta(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
-        (*self).put_meta(key, value)
-    }
-
-    fn delete_meta(&self, key: &[u8]) -> Result<(), Self::Error> {
-        (*self).delete_meta(key)
     }
 
     fn get_meta(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
@@ -150,8 +160,11 @@ impl<'b, S: Storage> Storage for &'b S {
         (*self).raw_iter()
     }
 
-    fn transaction<'a>(&'a self) -> Self::StorageTransaction<'a> {
-        (*self).transaction()
+    fn transaction<'a>(
+        &'a self,
+        transaction: &'a Self::DBTransaction<'a>,
+    ) -> Self::StorageTransaction<'a> {
+        (*self).transaction(transaction)
     }
 }
 
@@ -183,15 +196,13 @@ pub trait RawIterator {
     fn valid(&self) -> bool;
 }
 
+/// Please note that the `Transaction` trait is used to access the underlying transaction
+/// through the storage, but many storages can share the same DB transaction. Thus, the
+/// storage itself can not commit the transaction, and transaction should be committed
+/// by its original opener - GroveDB instance in our case.
 pub trait Transaction {
     /// Storage error type
     type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Commit data from the transaction. Consumes the transaction
-    fn commit(self) -> Result<(), Self::Error>;
-
-    /// Rollback the transaction
-    fn rollback(&self) -> Result<(), Self::Error>;
 
     /// Put `value` into data storage with `key`
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error>;

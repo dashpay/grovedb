@@ -379,7 +379,8 @@ mod test {
     use super::{Merk, MerkSource, RefWalker};
     use crate::{test_utils::*, Op};
 
-    type OptimisticTransactionDBRawIterator<'a> = DBRawIteratorWithThreadMode<'a, OptimisticTransactionDB>;
+    type OptimisticTransactionDBRawIterator<'a> =
+        DBRawIteratorWithThreadMode<'a, OptimisticTransactionDB>;
     // TODO: Close and then reopen test
 
     fn assert_invariants(merk: &TempMerk) {
@@ -541,7 +542,10 @@ mod test {
 
     #[test]
     fn reopen_iter() {
-        fn collect(iter: &mut OptimisticTransactionDBRawIterator, nodes: &mut Vec<(Vec<u8>, Vec<u8>)>) {
+        fn collect(
+            iter: &mut OptimisticTransactionDBRawIterator,
+            nodes: &mut Vec<(Vec<u8>, Vec<u8>)>,
+        ) {
             while iter.valid() {
                 nodes.push((iter.key().unwrap().to_vec(), iter.value().unwrap().to_vec()));
                 iter.next();
