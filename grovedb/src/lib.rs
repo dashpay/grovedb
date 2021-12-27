@@ -52,7 +52,7 @@ pub struct Proof<'a> {
     query_paths: Vec<&'a [&'a [u8]]>,
     proofs: HashMap<Vec<u8>, Vec<u8>>,
     root_proof: Vec<u8>,
-    // root_leaf_keys: HashMap<Vec<u8>, usize>,
+    root_leaf_keys: HashMap<Vec<u8>, usize>,
 }
 
 pub struct GroveDb {
@@ -345,6 +345,7 @@ impl GroveDb {
             query_paths,
             proofs,
             root_proof,
+            root_leaf_keys: self.root_leaf_keys.clone(),
         })
     }
 

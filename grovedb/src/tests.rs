@@ -447,6 +447,11 @@ fn test_proof_construction() {
             ])
             .to_bytes()
     );
+
+    // Assert that we got the correct root leaf keys
+    assert_eq!(proof.root_leaf_keys.len(), 2);
+    assert_eq!(proof.root_leaf_keys[TEST_LEAF], 0);
+    assert_eq!(proof.root_leaf_keys[ANOTHER_TEST_LEAF], 1);
 }
 
 // #[test]
