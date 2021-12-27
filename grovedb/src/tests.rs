@@ -238,8 +238,8 @@ fn test_tree_structure_is_presistent() {
 fn test_root_tree_leafs_are_noted() {
     let db = make_grovedb();
     let mut hm = HashMap::new();
-    hm.insert(TEST_LEAF.to_vec(), 0);
-    hm.insert(ANOTHER_TEST_LEAF.to_vec(), 1);
+    hm.insert(GroveDb::compress_subtree_key(&[TEST_LEAF], None), 0);
+    hm.insert(GroveDb::compress_subtree_key(&[ANOTHER_TEST_LEAF], None), 1);
     assert_eq!(db.root_leaf_keys, hm);
     assert_eq!(db.root_tree.leaves_len(), 2);
 }
@@ -386,11 +386,11 @@ fn test_proof_construction() {
 
     // Check that all the subproofs were constructed correctly for each path and
     // subpath
-    let path_one_as_vec = GroveDb::compress_path(proof.query_paths[0], None);
-    let path_two_as_vec = GroveDb::compress_path(proof.query_paths[1], None);
-    let path_three_as_vec = GroveDb::compress_path(proof.query_paths[2], None);
-    let test_leaf_path_as_vec = GroveDb::compress_path(&[TEST_LEAF], None);
-    let another_test_leaf_path_as_vec = GroveDb::compress_path(&[ANOTHER_TEST_LEAF], None);
+    let path_one_as_vec = GroveDb::compress_subtree_key(proof.query_paths[0], None);
+    let path_two_as_vec = GroveDb::compress_subtree_key(proof.query_paths[1], None);
+    let path_three_as_vec = GroveDb::compress_subtree_key(proof.query_paths[2], None);
+    let test_leaf_path_as_vec = GroveDb::compress_subtree_key(&[TEST_LEAF], None);
+    let another_test_leaf_path_as_vec = GroveDb::compress_subtree_key(&[ANOTHER_TEST_LEAF], None);
 
     let proof_for_path_one = proof.proofs.get(&path_one_as_vec).unwrap();
     let proof_for_path_two = proof.proofs.get(&path_two_as_vec).unwrap();
@@ -438,20 +438,22 @@ fn test_proof_construction() {
 
     // Check that the root proof is valid
     // Root proof should contain proof for both test_leaf and another_test_leaf
+    let test_leaf_root_key = GroveDb::compress_subtree_key(&[], Some(TEST_LEAF));
+    let another_test_leaf_root_key = GroveDb::compress_subtree_key(&[], Some(ANOTHER_TEST_LEAF));
     assert_eq!(
         proof.root_proof,
         root_tree
             .proof(&[
-                temp_db.root_leaf_keys[TEST_LEAF],
-                temp_db.root_leaf_keys[ANOTHER_TEST_LEAF],
+                temp_db.root_leaf_keys[&test_leaf_root_key],
+                temp_db.root_leaf_keys[&another_test_leaf_root_key],
             ])
             .to_bytes()
     );
 
     // Assert that we got the correct root leaf keys
     assert_eq!(proof.root_leaf_keys.len(), 2);
-    assert_eq!(proof.root_leaf_keys[TEST_LEAF], 0);
-    assert_eq!(proof.root_leaf_keys[ANOTHER_TEST_LEAF], 1);
+    assert_eq!(proof.root_leaf_keys[&test_leaf_root_key], 0);
+    assert_eq!(proof.root_leaf_keys[&another_test_leaf_root_key], 1);
 }
 
 // #[test]
@@ -581,7 +583,6 @@ fn test_checkpoint() {
         .expect("cannot insert a subtree 2 into GroveDB");
     db.insert(&[b"key1", b"key2"], b"key3".to_vec(), element1.clone())
         .expect("cannot insert an item into GroveDB");
-
     assert_eq!(
         db.get(&[b"key1", b"key2"], b"key3")
             .expect("cannot get from grovedb"),
@@ -669,4 +670,81 @@ fn test_insert_if_not_exists() {
         Element::empty_tree(),
     );
     assert!(matches!(result, Err(Error::InvalidPath(_))));
+}
+
+#[test]
+fn test_subtree_pairs_iterator() {
+    let mut db = make_grovedb();
+    let element = Element::Item(b"ayy".to_vec());
+    let element2 = Element::Item(b"lmao".to_vec());
+
+    // Insert some nested subtrees
+    db.insert(&[TEST_LEAF], b"subtree1".to_vec(), Element::empty_tree())
+        .expect("successful subtree 1 insert");
+    db.insert(
+        &[TEST_LEAF, b"subtree1"],
+        b"subtree11".to_vec(),
+        Element::empty_tree(),
+    )
+    .expect("successful subtree 2 insert");
+    // Insert an element into subtree
+    db.insert(
+        &[TEST_LEAF, b"subtree1", b"subtree11"],
+        b"key1".to_vec(),
+        element.clone(),
+    )
+    .expect("successful value insert");
+    assert_eq!(
+        db.get(&[TEST_LEAF, b"subtree1", b"subtree11"], b"key1")
+            .expect("succesful get 1"),
+        element
+    );
+    db.insert(
+        &[TEST_LEAF, b"subtree1", b"subtree11"],
+        b"key0".to_vec(),
+        element.clone(),
+    )
+    .expect("successful value insert");
+    db.insert(
+        &[TEST_LEAF, b"subtree1"],
+        b"subtree12".to_vec(),
+        Element::empty_tree(),
+    )
+    .expect("successful subtree 3 insert");
+    db.insert(&[TEST_LEAF, b"subtree1"], b"key1".to_vec(), element.clone())
+        .expect("succesful value insert");
+    db.insert(
+        &[TEST_LEAF, b"subtree1"],
+        b"key2".to_vec(),
+        element2.clone(),
+    )
+    .expect("succesful value insert");
+
+    // Iterate over subtree1 to see if keys of other subtrees messed up
+    let mut iter = db
+        .elements_iterator(&[TEST_LEAF, b"subtree1"])
+        .expect("cannot create iterator");
+    assert_eq!(iter.next().unwrap(), Some((b"key1".to_vec(), element)));
+    assert_eq!(iter.next().unwrap(), Some((b"key2".to_vec(), element2)));
+    let subtree_element = iter.next().unwrap().unwrap();
+    assert_eq!(subtree_element.0, b"subtree11".to_vec());
+    assert!(matches!(subtree_element.1, Element::Tree(_)));
+    let subtree_element = iter.next().unwrap().unwrap();
+    assert_eq!(subtree_element.0, b"subtree12".to_vec());
+    assert!(matches!(subtree_element.1, Element::Tree(_)));
+    assert!(matches!(iter.next(), Ok(None)));
+}
+
+#[test]
+fn test_compress_path_not_possible_collision() {
+    let path_a = [b"aa".as_ref(), b"b"];
+    let path_b = [b"a".as_ref(), b"ab"];
+    assert_ne!(
+        GroveDb::compress_subtree_key(&path_a, None),
+        GroveDb::compress_subtree_key(&path_b, None)
+    );
+    assert_eq!(
+        GroveDb::compress_subtree_key(&path_a, None),
+        GroveDb::compress_subtree_key(&path_a, None),
+    );
 }

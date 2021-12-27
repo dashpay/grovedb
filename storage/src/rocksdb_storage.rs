@@ -96,7 +96,7 @@ impl PrefixedRocksDbStorage {
 impl Storage for PrefixedRocksDbStorage {
     type Batch<'a> = PrefixedRocksDbBatch<'a>;
     type Error = PrefixedRocksDbStorageError;
-    type RawIterator<'a> = rocksdb::DBRawIterator<'a>;
+    type RawIterator<'a> = RawPrefixedIterator<'a>;
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
         self.db
@@ -191,33 +191,55 @@ impl Storage for PrefixedRocksDbStorage {
     }
 
     fn raw_iter<'a>(&'a self) -> Self::RawIterator<'a> {
-        self.db.raw_iterator()
+        RawPrefixedIterator {
+            rocksdb_iterator: self.db.raw_iterator(),
+            prefix: &self.prefix,
+        }
     }
 }
 
-impl RawIterator for rocksdb::DBRawIterator<'_> {
+pub struct RawPrefixedIterator<'a> {
+    rocksdb_iterator: DBRawIterator<'a>,
+    prefix: &'a [u8],
+}
+
+impl RawIterator for RawPrefixedIterator<'_> {
     fn seek_to_first(&mut self) {
-        DBRawIterator::seek_to_first(self)
+        self.rocksdb_iterator.seek(self.prefix);
     }
 
     fn seek(&mut self, key: &[u8]) {
-        DBRawIterator::seek(self, key)
+        self.rocksdb_iterator
+            .seek(make_prefixed_key(self.prefix.to_vec(), key));
     }
 
     fn next(&mut self) {
-        DBRawIterator::next(self)
+        self.rocksdb_iterator.next();
     }
 
     fn value(&self) -> Option<&[u8]> {
-        DBRawIterator::value(self)
+        if self.valid() {
+            self.rocksdb_iterator.value()
+        } else {
+            None
+        }
     }
 
     fn key(&self) -> Option<&[u8]> {
-        DBRawIterator::key(self)
+        if self.valid() {
+            self.rocksdb_iterator
+                .key()
+                .map(|k| k.split_at(self.prefix.len()).1)
+        } else {
+            None
+        }
     }
 
     fn valid(&self) -> bool {
-        DBRawIterator::valid(self)
+        self.rocksdb_iterator
+            .key()
+            .map(|k| k.starts_with(self.prefix))
+            .unwrap_or(false)
     }
 }
 
@@ -487,5 +509,65 @@ mod tests {
                 .unwrap(),
             b"yeet"
         );
+    }
+
+    #[test]
+    fn test_raw_iterator() {
+        let tmp_dir = TempDir::new("test_raw_iterator").expect("unable to open a tempdir");
+        let db = default_rocksdb(tmp_dir.path());
+
+        let storage = PrefixedRocksDbStorage::new(db.clone(), b"someprefix".to_vec())
+            .expect("cannot create a prefixed storage");
+        storage
+            .put(b"key1", b"value1")
+            .expect("expected successful insertion");
+        storage
+            .put(b"key0", b"value0")
+            .expect("expected successful insertion");
+        storage
+            .put(b"key3", b"value3")
+            .expect("expected successful insertion");
+        storage
+            .put(b"key2", b"value2")
+            .expect("expected successful insertion");
+
+        // Other storages are required to put something into rocksdb with other prefix
+        // to see if there will be any conflicts and boundaries are met
+        let another_storage_before =
+            PrefixedRocksDbStorage::new(db.clone(), b"anothersomeprefix".to_vec())
+                .expect("cannot create a prefixed storage");
+        another_storage_before
+            .put(b"key1", b"value1")
+            .expect("expected successful insertion");
+        another_storage_before
+            .put(b"key5", b"value5")
+            .expect("expected successful insertion");
+        let another_storage_after = PrefixedRocksDbStorage::new(db, b"zanothersomeprefix".to_vec())
+            .expect("cannot create a prefixed storage");
+        another_storage_after
+            .put(b"key1", b"value1")
+            .expect("expected successful insertion");
+        another_storage_after
+            .put(b"key5", b"value5")
+            .expect("expected successful insertion");
+
+        let expected: [(&'static [u8], &'static [u8]); 4] = [
+            (b"key0", b"value0"),
+            (b"key1", b"value1"),
+            (b"key2", b"value2"),
+            (b"key3", b"value3"),
+        ];
+        let mut expected_iter = expected.into_iter();
+
+        let mut iter = storage.raw_iter();
+        iter.seek_to_first();
+        while iter.valid() {
+            assert_eq!(
+                (iter.key().unwrap(), iter.value().unwrap()),
+                expected_iter.next().unwrap()
+            );
+            iter.next();
+        }
+        assert!(expected_iter.next().is_none());
     }
 }
