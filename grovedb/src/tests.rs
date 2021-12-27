@@ -435,6 +435,18 @@ fn test_proof_construction() {
         *proof_for_another_test_leaf,
         another_test_leaf.prove(proof_query).unwrap()
     );
+
+    // Check that the root proof is valid
+    // Root proof should contain proof for both test_leaf and another_test_leaf
+    assert_eq!(
+        proof.root_proof,
+        root_tree
+            .proof(&[
+                temp_db.root_leaf_keys[TEST_LEAF],
+                temp_db.root_leaf_keys[ANOTHER_TEST_LEAF],
+            ])
+            .to_bytes()
+    );
 }
 
 // #[test]

@@ -330,10 +330,21 @@ impl GroveDb {
             proofs.insert(path, proof);
         }
 
+        // Construct the root proof
+        let mut root_index: Vec<usize> = Vec::new();
+        for key in root_keys {
+            let index = self
+                .root_leaf_keys
+                .get(&key)
+                .ok_or(Error::InvalidPath("root key not found"))?;
+            root_index.push(*index);
+        }
+        let root_proof = self.root_tree.proof(&root_index).to_bytes();
+
         Ok(Proof {
             query_paths,
             proofs,
-            root_proof: Vec::new(),
+            root_proof,
         })
     }
 
