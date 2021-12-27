@@ -321,7 +321,6 @@ impl GroveDb {
                 if path_slice.is_empty() {
                     // We have gotten to the root node
                     let compressed_path = GroveDb::compress_subtree_key(&[], Some(key));
-                    // root_keys.push(key.to_vec());
                     root_keys.push(compressed_path);
                 } else {
                     let compressed_path = GroveDb::compress_subtree_key(path_slice, None);
