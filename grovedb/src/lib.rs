@@ -374,6 +374,89 @@ impl GroveDb {
         Ok(proof_result)
     }
 
+    // Execute proof
+    // This should take the proof object
+    // Then verify each of the query paths, checking the structure
+    // At the root of the query path, we generate an hash
+    // We collect all this hashes and generate the root tree hash
+    // We return this root tree hash
+    // We will be able to catch any subtree that claims to be on a valid path
+    // We also want to return the result map as a hash map with key query map
+    pub fn execute_proof(proof: Proof) -> Result<([u8; 32], HashMap<Vec<u8>, Map>), Error> {
+        // To verify the root proof it needs the indicies
+        // also need the hashes that correspond to those indicies
+        // and how many elements are in the root
+        // How do I build this up
+        // There is only one proof for each node, so I can have another function
+        // verify query path that returns the index and the root hash of the path
+        // if the index is already in the output hash map then we skip
+        // else we add it
+
+        for path in proof.query_paths {
+            // Execute the path and return the path last key + the last hash
+        }
+        todo!();
+    }
+
+    fn execute_path(
+        path: &[&[u8]],
+        proofs: HashMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<(Vec<u8>, [u8; 32]), Error> {
+        let compressed_path = GroveDb::compress_subtree_key(path, None);
+        let proof = proofs
+            .get(&compressed_path)
+            .ok_or(Error::InvalidPath("Bad path"))?;
+        let (mut last_root_hash, result_map) = match merk::execute_proof(&proof[..]) {
+            Ok(result) => Ok(result),
+            Err(_) => Err(Error::InvalidPath("Invalid proof element")),
+        }?;
+
+        let mut last_proof: Option<&Vec<u8>> = None;
+
+        let mut split_path = path.split_last();
+        while let Some((key, path_slice)) = split_path {
+            if !path_slice.is_empty() {
+                let compressed_path = GroveDb::compress_subtree_key(path, None);
+                let proof = proofs
+                    .get(&compressed_path)
+                    .ok_or(Error::InvalidPath("Bad path"))?;
+
+                let proof_result = match merk::execute_proof(&proof[..]) {
+                    Ok(result) => Ok(result),
+                    Err(_) => Err(Error::InvalidPath("Invalid proof element")),
+                }?;
+
+                let result_map = proof_result.1;
+                // TODO: Handle the error better here
+                let elem: Element =
+                    bincode::deserialize(result_map.get(key).unwrap().unwrap()).unwrap();
+                let merk_root_hash = match elem {
+                    Element::Tree(hash) => Ok(hash),
+                    _ => Err(Error::InvalidProof(
+                        "Intermediate proofs should be for trees",
+                    )),
+                }?;
+
+                if merk_root_hash != last_root_hash {
+                    return Err(Error::InvalidProof("Bad path"));
+                }
+
+                last_root_hash = proof_result.0;
+                last_proof = Some(proof);
+            } else {
+                break;
+            }
+
+            split_path = path_slice.split_last();
+        }
+
+        return if let Some(proof) = last_proof {
+            Ok((proof.clone(), last_root_hash))
+        } else {
+            Err(Error::InvalidProof("Invalid proof element"))
+        };
+    }
+
     // Validates proof structure and returns the root hash
     // and query result
     // pub fn execute_proof(
