@@ -7,7 +7,6 @@ use std::{
     path::Path,
     rc::Rc,
 };
-use std::vec::IntoIter;
 
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, proofs::query::Map, Merk};
@@ -45,15 +44,15 @@ pub enum Error {
 }
 
 pub struct ProofQuery<'a> {
-    path: &'a[&'a[u8]],
+    path: &'a [&'a [u8]],
     query: Query,
 }
 
 pub struct Proof<'a> {
-    query_paths: Vec<&'a[&'a[u8]]>,
-    proofs: HashMap<&'a[&'a[u8]], Vec<u8>>,
+    query_paths: Vec<&'a [&'a [u8]]>,
+    proofs: HashMap<Vec<u8>, Vec<u8>>,
     root_proof: Vec<u8>,
-    root_leaf_keys: HashMap<Vec<u8>, usize>,
+    // root_leaf_keys: HashMap<Vec<u8>, usize>,
 }
 
 pub struct GroveDb {
@@ -290,22 +289,57 @@ impl GroveDb {
         Err(Error::ReferenceLimit)
     }
 
-    // Multi path proofs
-    // Want a list of paths and the keys or query they want to prove
-    // So I can store an hashmap with all the elements
-    // What about the proof for the root and the leaves
-    // Should it matter tho, the hashmap can be from path to query
-    // If a key is found at that path, we insert it to the query as a key
-    // At the start of each path iteration, there is a query I add that immediately
-    // When I split the path, I need to
-    // I need a data structure to keep track of the query and the path
+    pub fn proof<'a>(&mut self, proof_queries: Vec<ProofQuery<'a>>) -> Result<Proof<'a>, Error> {
+        // To prove a path we need to return a proof for each node on the path including
+        // the root With multiple paths, nodes can overlap i.e two or more paths
+        // sharing the same nodes. We should only have one proof for each node,
+        // if a node forks into multiple relevant paths then we should create a
+        // combined proof for that node with all the relevant keys
+        let mut query_paths = Vec::new();
+        let mut proof_spec: HashMap<Vec<u8>, Query> = HashMap::new();
+        let mut root_keys: Vec<Vec<u8>> = Vec::new();
+        let mut proofs: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
 
-    pub fn proof(&mut self, proof_queries: Vec<ProofQuery>) -> Result<Proof, Error> {
-        todo!()
+        for proof_query in proof_queries {
+            query_paths.push(proof_query.path);
+
+            let compressed_path = GroveDb::compress_path(proof_query.path, None);
+            proof_spec.insert(compressed_path, proof_query.query);
+
+            let mut split_path = proof_query.path.split_last();
+            while let Some((key, path_slice)) = split_path {
+                if path_slice.is_empty() {
+                    root_keys.push(key.to_vec());
+                } else {
+                    let compressed_path = GroveDb::compress_path(path_slice, None);
+                    if let Some(path_query) = proof_spec.get_mut(&compressed_path) {
+                        path_query.insert_key(key.to_vec());
+                    } else {
+                        let mut path_query = Query::new();
+                        path_query.insert_key(key.to_vec());
+                        proof_spec.insert(compressed_path, path_query);
+                    }
+                }
+                split_path = path_slice.split_last();
+            }
+        }
+
+        // Now we should construct the proofs
+        for (path, query) in proof_spec {
+            let proof = self.prove_item(&path, query)?;
+            proofs.insert(path, proof);
+        }
+
+        Ok(Proof {
+            query_paths,
+            proofs,
+            root_proof: Vec::new(),
+        })
     }
 
-    // pub fn proof(&self, path: &[&[u8]], proof_query: Query) -> Result<Vec<Vec<u8>>, Error> {
-    //     let mut proofs: Vec<Vec<u8>> = Vec::new();
+    // pub fn proof(&self, path: &[&[u8]], proof_query: Query) ->
+    // Result<Vec<Vec<u8>>, Error> {     let mut proofs: Vec<Vec<u8>> =
+    // Vec::new();
     //
     //     // First prove the query
     //     proofs.push(self.prove_item(path, proof_query)?);
@@ -328,19 +362,19 @@ impl GroveDb {
     //         split_path = path_slice.split_last();
     //     }
     //
-    //     // Append the root leaf keys hash map to proof to provide context when verifying
-    //     // proof
+    //     // Append the root leaf keys hash map to proof to provide context when
+    // verifying     // proof
     //     let aux_data = bincode::serialize(&self.root_leaf_keys)
-    //         .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
-    //     proofs.push(aux_data);
+    //         .map_err(|_| Error::CorruptedData(String::from("unable to deserialize
+    // element")))?;     proofs.push(aux_data);
     //
     //     Ok(proofs)
     // }
 
-    fn prove_item(&self, path: &[&[u8]], proof_query: Query) -> Result<Vec<u8>, Error> {
+    fn prove_item(&self, path: &Vec<u8>, proof_query: Query) -> Result<Vec<u8>, Error> {
         let merk = self
             .subtrees
-            .get(&Self::compress_path(path, None))
+            .get(path)
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
 
         let proof_result = merk
@@ -431,7 +465,7 @@ impl GroveDb {
             Ok((hash, leaf_result_map))
         } else {
             Err(Error::InvalidProof("Invalid proof element"))
-        }
+        };
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
