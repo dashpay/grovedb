@@ -384,24 +384,56 @@ fn test_proof_construction() {
     // proof.proofs contains all nodes except the root so we expect 5 sub proofs
     assert_eq!(proof.proofs.len(), 5);
 
+    // Check that all the subproofs were constructed correctly for each path and
+    // subpath
     let path_one_as_vec = GroveDb::compress_path(proof.query_paths[0], None);
     let path_two_as_vec = GroveDb::compress_path(proof.query_paths[1], None);
     let path_three_as_vec = GroveDb::compress_path(proof.query_paths[2], None);
+    let test_leaf_path_as_vec = GroveDb::compress_path(&[TEST_LEAF], None);
+    let another_test_leaf_path_as_vec = GroveDb::compress_path(&[ANOTHER_TEST_LEAF], None);
 
     let proof_for_path_one = proof.proofs.get(&path_one_as_vec).unwrap();
     let proof_for_path_two = proof.proofs.get(&path_two_as_vec).unwrap();
     let proof_for_path_three = proof.proofs.get(&path_three_as_vec).unwrap();
+    let proof_for_test_leaf = proof.proofs.get(&test_leaf_path_as_vec).unwrap();
+    let proof_for_another_test_leaf = proof.proofs.get(&another_test_leaf_path_as_vec).unwrap();
 
+    // Assert path 1 proof
     let mut proof_query = Query::new();
     proof_query.insert_key(b"key1".to_vec());
     proof_query.insert_key(b"key2".to_vec());
     assert_eq!(*proof_for_path_one, inner_tree.prove(proof_query).unwrap());
 
+    // Assert path 2 proof
     let mut proof_query = Query::new();
     proof_query.insert_key(b"key4".to_vec());
     assert_eq!(
         *proof_for_path_two,
         inner_tree_3.prove(proof_query).unwrap()
+    );
+
+    // Assert path 3 proof
+    let mut proof_query = Query::new();
+    proof_query.insert_key(b"key3".to_vec());
+    assert_eq!(
+        *proof_for_path_three,
+        inner_tree_2.prove(proof_query).unwrap()
+    );
+
+    // Assert test leaf proof
+    let mut proof_query = Query::new();
+    proof_query.insert_key(b"innertree".to_vec());
+    assert_eq!(*proof_for_test_leaf, test_leaf.prove(proof_query).unwrap());
+
+    // Assert another test leaf proof
+    // another test leaf appeared in two path,
+    // hence it should contain proofs for both keys
+    let mut proof_query = Query::new();
+    proof_query.insert_key(b"innertree2".to_vec());
+    proof_query.insert_key(b"innertree3".to_vec());
+    assert_eq!(
+        *proof_for_another_test_leaf,
+        another_test_leaf.prove(proof_query).unwrap()
     );
 }
 

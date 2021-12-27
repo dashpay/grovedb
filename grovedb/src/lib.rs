@@ -291,7 +291,7 @@ impl GroveDb {
 
     pub fn proof<'a>(&mut self, proof_queries: Vec<ProofQuery<'a>>) -> Result<Proof<'a>, Error> {
         // To prove a path we need to return a proof for each node on the path including
-        // the root With multiple paths, nodes can overlap i.e two or more paths
+        // the root. With multiple paths, nodes can overlap i.e two or more paths
         // sharing the same nodes. We should only have one proof for each node,
         // if a node forks into multiple relevant paths then we should create a
         // combined proof for that node with all the relevant keys
