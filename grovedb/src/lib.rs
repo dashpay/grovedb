@@ -142,11 +142,12 @@ impl GroveDb {
     }
 
     // TODO: split the function into smaller ones
-    pub fn insert(
-        &mut self,
+    pub fn insert<'a: 'b, 'b>(
+        &'a mut self,
         path: &[&[u8]],
         key: Vec<u8>,
         mut element: subtree::Element,
+        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>
     ) -> Result<(), Error> {
         let compressed_path = Self::compress_path(path, None);
         match &mut element {
@@ -178,7 +179,7 @@ impl GroveDb {
                         self.root_leaf_keys
                             .insert(compressed_path_subtree, self.root_tree.leaves_len());
                     }
-                    self.propagate_changes(&[&key])?;
+                    self.propagate_changes(&[&key], transaction)?;
                 } else {
                     // Add subtree to another subtree.
                     // First, check if a subtree exists to create a new subtree under it
@@ -195,8 +196,8 @@ impl GroveDb {
                         .get_mut(&compressed_path)
                         .expect("merk object must exist in `subtrees`");
                     // need to mark key as taken in the upper tree
-                    element.insert(&mut merk, key)?;
-                    self.propagate_changes(path)?;
+                    element.insert(&mut merk, key, transaction)?;
+                    self.propagate_changes(path, transaction)?;
                 }
                 self.store_subtrees_keys_data()?;
             }
@@ -213,23 +214,24 @@ impl GroveDb {
                     .subtrees
                     .get_mut(&compressed_path)
                     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                element.insert(&mut merk, key)?;
-                self.propagate_changes(path)?;
+                element.insert(&mut merk, key, transaction)?;
+                self.propagate_changes(path, transaction)?;
             }
         }
         Ok(())
     }
 
-    pub fn insert_if_not_exists(
+    pub fn insert_if_not_exists<'a: 'b, 'b>(
         &mut self,
         path: &[&[u8]],
         key: Vec<u8>,
         element: subtree::Element,
+        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>
     ) -> Result<bool, Error> {
         if self.get(path, &key).is_ok() {
             return Ok(false);
         }
-        match self.insert(path, key, element) {
+        match self.insert(path, key, element, transaction) {
             Ok(_) => Ok(true),
             Err(e) => Err(e),
         }
@@ -329,7 +331,7 @@ impl GroveDb {
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
-    fn propagate_changes(&mut self, path: &[&[u8]]) -> Result<(), Error> {
+    fn propagate_changes<'a: 'b, 'b>(&'a mut self, path: &[&[u8]], transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>) -> Result<(), Error> {
         let mut split_path = path.split_last();
         // Go up until only one element in path, which means a key of a root tree
         while let Some((key, path_slice)) = split_path {
@@ -349,7 +351,7 @@ impl GroveDb {
                     .subtrees
                     .get_mut(&compressed_path_upper_tree)
                     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                element.insert(upper_tree, key.to_vec())?;
+                element.insert(upper_tree, key.to_vec(), transaction)?;
                 split_path = path_slice.split_last();
             }
         }

@@ -3,7 +3,7 @@ use rocksdb::OptimisticTransactionDB;
 use super::{
     make_prefixed_key, PrefixedRocksDbStorageError, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME,
 };
-use crate::{Transaction};
+use crate::{Batch, Transaction};
 
 pub struct PrefixedRocksDbTransaction<'a> {
     transaction: &'a rocksdb::Transaction<'a, OptimisticTransactionDB>,

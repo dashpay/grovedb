@@ -62,7 +62,7 @@ pub trait Storage {
     fn get_meta(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error>;
 
     /// Initialize a new batch
-    fn new_batch<'a>(&'a self) -> Result<Self::Batch<'a>, Self::Error>;
+    fn new_batch<'a: 'b, 'b>(&'a self, transaction: Option<&'b Self::DBTransaction<'b>>) -> Result<Self::Batch<'b>, Self::Error>;
 
     /// Commits changes from batch into storage
     fn commit_batch<'a>(&'a self, batch: Self::Batch<'a>) -> Result<(), Self::Error>;
@@ -144,8 +144,8 @@ impl<'b, S: Storage> Storage for &'b S {
         (*self).get_meta(key)
     }
 
-    fn new_batch<'a>(&'a self) -> Result<Self::Batch<'a>, Self::Error> {
-        (*self).new_batch()
+    fn new_batch<'a: 'c, 'c>(&'a self, transaction: Option<&'c Self::DBTransaction<'c>>) -> Result<Self::Batch<'c>, Self::Error> {
+        (*self).new_batch(transaction)
     }
 
     fn commit_batch<'a>(&'a self, batch: Self::Batch<'a>) -> Result<(), Self::Error> {

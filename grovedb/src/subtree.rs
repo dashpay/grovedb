@@ -4,6 +4,7 @@
 use merk::Op;
 use serde::{Deserialize, Serialize};
 use storage::rocksdb_storage::PrefixedRocksDbStorage;
+use storage::Storage;
 
 use crate::{Error, Merk};
 
@@ -41,19 +42,23 @@ impl Element {
 
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment
-    pub fn insert(
-        &self,
+    /// If transaction is not passed, the batch will be written immediately.
+    /// If transaction is passed, the operation will be committed on the transaction
+    /// commit.
+    pub fn insert<'a: 'b, 'b>(
+        &'a self,
         merk: &mut Merk<PrefixedRocksDbStorage>,
         key: Vec<u8>,
+        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>
     ) -> Result<(), Error> {
-        let batch =
+        let batch_operations =
             [(
                 key,
                 Op::Put(bincode::serialize(self).map_err(|_| {
                     Error::CorruptedData(String::from("unable to serialize element"))
                 })?),
             )];
-        merk.apply(&batch, &[])
+        merk.apply(&batch_operations, &[], transaction)
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 }
