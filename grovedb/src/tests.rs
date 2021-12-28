@@ -456,61 +456,133 @@ fn test_proof_construction() {
     assert_eq!(proof.root_leaf_keys[&another_test_leaf_root_key], 1);
 }
 
-// #[test]
-// fn test_successful_proof_verification() {
-//     let mut temp_db = make_grovedb();
-//     temp_db
-//         .insert(&[TEST_LEAF], b"innertree".to_vec(), Element::empty_tree())
-//         .expect("successful subtree insert");
-//     temp_db
-//         .insert(
-//             &[TEST_LEAF, b"innertree"],
-//             b"innertree1.1".to_vec(),
-//             Element::empty_tree(),
-//         )
-//         .expect("successful subtree insert");
-//
-//     temp_db
-//         .insert(&[TEST_LEAF], b"innertree2".to_vec(), Element::empty_tree())
-//         .expect("successful subtree insert");
-//
-//     temp_db
-//         .insert(
-//             &[TEST_LEAF, b"innertree", b"innertree1.1"],
-//             b"key1".to_vec(),
-//             Element::Item(b"value1".to_vec()),
-//         )
-//         .expect("successful item insert");
-//
-//     temp_db
-//         .insert(
-//             &[TEST_LEAF, b"innertree2"],
-//             b"key1".to_vec(),
-//             Element::Item(b"value2".to_vec()),
-//         )
-//         .expect("successful item insert");
-//
-//     // dbg!(temp_db.root_tree.root().unwrap());
-//
-//     let mut proof_query = Query::new();
-//     proof_query.insert_key(b"key1".to_vec());
-//     let mut proof = temp_db
-//         .proof(&[TEST_LEAF, b"innertree", b"innertree1.1"], proof_query)
-//         .unwrap();
-//
-//     let (root_hash, result_map) =
-//         GroveDb::execute_proof(&[TEST_LEAF, b"innertree", b"innertree1.1"],
-// &mut proof).unwrap();
-//
-//     // Check that the root hash matches
-//     assert_eq!(temp_db.root_tree.root().unwrap(), root_hash);
-//
-//     // Check that the result map is correct
-//     let elem: Element =
-// bincode::deserialize(result_map.get(b"key1").unwrap().unwrap()).unwrap();
-//     assert_eq!(elem, Element::Item(b"value1".to_vec()));
-// }
-//
+#[test]
+fn test_successful_proof_verification() {
+    // Build a grovedb database
+    // Tree Structure
+    // root
+    //     test_leaf
+    //         innertree
+    //             k1,v1
+    //             k2,v2
+    //     another_test_leaf
+    //         innertree2
+    //             k3,v3
+    //         innertree3
+    //             k4,v4
+
+    // Insert elements into grovedb instance
+    let mut temp_db = make_grovedb();
+    // Insert level 1 nodes
+    temp_db
+        .insert(&[TEST_LEAF], b"innertree".to_vec(), Element::empty_tree())
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            &[ANOTHER_TEST_LEAF],
+            b"innertree2".to_vec(),
+            Element::empty_tree(),
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            &[ANOTHER_TEST_LEAF],
+            b"innertree3".to_vec(),
+            Element::empty_tree(),
+        )
+        .expect("successful subtree insert");
+    // Insert level 2 nodes
+    temp_db
+        .insert(
+            &[TEST_LEAF, b"innertree"],
+            b"key1".to_vec(),
+            Element::Item(b"value1".to_vec()),
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            &[TEST_LEAF, b"innertree"],
+            b"key2".to_vec(),
+            Element::Item(b"value2".to_vec()),
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            &[ANOTHER_TEST_LEAF, b"innertree2"],
+            b"key3".to_vec(),
+            Element::Item(b"value3".to_vec()),
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            &[ANOTHER_TEST_LEAF, b"innertree3"],
+            b"key4".to_vec(),
+            Element::Item(b"value4".to_vec()),
+        )
+        .expect("successful subtree insert");
+
+    // Single query proof verification
+    let mut path_one_query = Query::new();
+    path_one_query.insert_key(b"key1".to_vec());
+    path_one_query.insert_key(b"key2".to_vec());
+
+    let proof = temp_db
+        .proof(vec![ProofQuery {
+            path: &[TEST_LEAF, b"innertree"],
+            query: path_one_query,
+        }])
+        .unwrap();
+
+    // Assert correct root hash
+    let (root_hash, result_maps) = GroveDb::execute_proof(proof).unwrap();
+    assert_eq!(temp_db.root_tree.root().unwrap(), root_hash);
+
+    // Assert correct result object
+    // Proof query was for two keys key1 and key2
+    let path_as_vec = GroveDb::compress_subtree_key(&[TEST_LEAF, b"innertree"], None);
+    let result_map = result_maps.get(&path_as_vec).unwrap();
+    let elem_1: Element = bincode::deserialize(result_map.get(b"key1").unwrap().unwrap()).unwrap();
+    let elem_2: Element = bincode::deserialize(result_map.get(b"key2").unwrap().unwrap()).unwrap();
+    assert_eq!(elem_1, Element::Item(b"value1".to_vec()));
+    assert_eq!(elem_2, Element::Item(b"value2".to_vec()));
+
+    // Multi query proof verification
+    let mut path_two_query = Query::new();
+    path_two_query.insert_key(b"key4".to_vec());
+
+    let mut path_three_query = Query::new();
+    path_three_query.insert_key(b"key3".to_vec());
+
+    // Get grovedb proof
+    let proof = temp_db
+        .proof(vec![
+            ProofQuery {
+                path: &[ANOTHER_TEST_LEAF, b"innertree3"],
+                query: path_two_query,
+            },
+            ProofQuery {
+                path: &[ANOTHER_TEST_LEAF, b"innertree2"],
+                query: path_three_query,
+            },
+        ])
+        .unwrap();
+
+    // Assert correct root hash
+    let (root_hash, result_maps) = GroveDb::execute_proof(proof).unwrap();
+    assert_eq!(temp_db.root_tree.root().unwrap(), root_hash);
+
+    // Assert correct result object
+    let path_one_as_vec = GroveDb::compress_subtree_key(&[ANOTHER_TEST_LEAF, b"innertree3"], None);
+    let result_map = result_maps.get(&path_one_as_vec).unwrap();
+    let elem: Element = bincode::deserialize(result_map.get(b"key4").unwrap().unwrap()).unwrap();
+    assert_eq!(elem, Element::Item(b"value4".to_vec()));
+
+    let path_two_as_vec = GroveDb::compress_subtree_key(&[ANOTHER_TEST_LEAF, b"innertree2"], None);
+    let result_map = result_maps.get(&path_two_as_vec).unwrap();
+    let elem: Element = bincode::deserialize(result_map.get(b"key3").unwrap().unwrap()).unwrap();
+    assert_eq!(elem, Element::Item(b"value3".to_vec()));
+}
+
 // #[test]
 // #[should_panic]
 // fn test_malicious_proof_verification() {
