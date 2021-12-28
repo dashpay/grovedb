@@ -11,7 +11,7 @@ use std::{
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{
     self,
-    proofs::{query::Map, Node::Hash},
+    proofs::query::Map,
     Merk,
 };
 use rs_merkle::{algorithms::Sha256, Hasher, MerkleProof, MerkleTree};
