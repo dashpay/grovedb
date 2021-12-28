@@ -759,3 +759,89 @@ fn test_compress_path_not_possible_collision() {
         GroveDb::compress_subtree_key(&path_a, None),
     );
 }
+
+#[test]
+fn test_element_deletion() {
+    let mut db = make_grovedb();
+    let element = Element::Item(b"ayy".to_vec());
+    db.insert(&[TEST_LEAF], b"key".to_vec(), element.clone())
+        .expect("successful insert");
+    let root_hash = db.root_tree.root().unwrap();
+    assert!(db.delete(&[TEST_LEAF], b"key".to_vec()).is_ok(),);
+    assert!(matches!(
+        db.get(&[TEST_LEAF], b"key"),
+        Err(Error::InvalidPath(_))
+    ));
+    assert_ne!(root_hash, db.root_tree.root().unwrap());
+}
+
+#[test]
+fn test_find_subtrees() {
+    let element = Element::Item(b"ayy".to_vec());
+    let mut db = make_grovedb();
+    // Insert some nested subtrees
+    db.insert(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree())
+        .expect("successful subtree 1 insert");
+    db.insert(
+        &[TEST_LEAF, b"key1"],
+        b"key2".to_vec(),
+        Element::empty_tree(),
+    )
+    .expect("successful subtree 2 insert");
+    // Insert an element into subtree
+    db.insert(
+        &[TEST_LEAF, b"key1", b"key2"],
+        b"key3".to_vec(),
+        element.clone(),
+    )
+    .expect("successful value insert");
+    db.insert(&[TEST_LEAF], b"key4".to_vec(), Element::empty_tree())
+        .expect("successful subtree 3 insert");
+    let subtrees = db
+        .find_subtrees(vec![TEST_LEAF.to_vec()])
+        .expect("cannot get subtrees");
+    assert_eq!(
+        vec![
+            vec![TEST_LEAF.to_vec()],
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+            vec![TEST_LEAF.to_vec(), b"key4".to_vec()],
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"key2".to_vec()],
+        ],
+        subtrees
+    );
+}
+
+#[test]
+fn test_subtree_deletion() {
+    let element = Element::Item(b"ayy".to_vec());
+    let mut db = make_grovedb();
+    // Insert some nested subtrees
+    db.insert(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree())
+        .expect("successful subtree 1 insert");
+    db.insert(
+        &[TEST_LEAF, b"key1"],
+        b"key2".to_vec(),
+        Element::empty_tree(),
+    )
+    .expect("successful subtree 2 insert");
+    // Insert an element into subtree
+    db.insert(
+        &[TEST_LEAF, b"key1", b"key2"],
+        b"key3".to_vec(),
+        element.clone(),
+    )
+    .expect("successful value insert");
+    db.insert(&[TEST_LEAF], b"key4".to_vec(), Element::empty_tree())
+        .expect("successful subtree 3 insert");
+
+    let root_hash = db.root_tree.root().unwrap();
+    db.delete(&[TEST_LEAF], b"key1".to_vec())
+        .expect("unable to delete subtree");
+    assert!(matches!(
+        db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3"),
+        Err(Error::InvalidPath(_))
+    ));
+    assert_eq!(db.subtrees.len(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF and TEST_LEAF.key4 stay
+    assert!(db.get(&[TEST_LEAF], b"key4").is_ok());
+    assert_ne!(root_hash, db.root_tree.root().unwrap());
+}

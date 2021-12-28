@@ -217,6 +217,10 @@ impl RawIterator for RawPrefixedIterator<'_> {
         self.rocksdb_iterator.next();
     }
 
+    fn prev(&mut self) {
+        self.rocksdb_iterator.prev();
+    }
+
     fn value(&self) -> Option<&[u8]> {
         if self.valid() {
             self.rocksdb_iterator.value()

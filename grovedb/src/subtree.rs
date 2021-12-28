@@ -29,6 +29,14 @@ impl Element {
         Element::Tree(Default::default())
     }
 
+    /// Delete an element from Merk under a key
+    pub fn delete(merk: &mut Merk<PrefixedRocksDbStorage>, key: Vec<u8>) -> Result<(), Error> {
+        // TODO: delete references on this element
+        let batch = [(key, Op::Delete)];
+        merk.apply(&batch, &[])
+            .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
     pub fn get(merk: &Merk<PrefixedRocksDbStorage>, key: &[u8]) -> Result<Element, Error> {
