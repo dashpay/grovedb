@@ -583,68 +583,7 @@ fn test_successful_proof_verification() {
     assert_eq!(elem, Element::Item(b"value3".to_vec()));
 }
 
-// #[test]
-// #[should_panic]
-// fn test_malicious_proof_verification() {
-//     // Verification should detect when the proofs don't follow a valid path
-//     // i.e. root - leaf (with each individual merk connected to their parent
-// by     // their root hash) Grovedb enforces a valid path, so will manually
-//     // construct a malicious proof
-//
-//     // 4 trees, merk_one, merk_two, merk_three, root
-//     // root references m3, m3 references m1 (instead of m2), m2 references m1
-//     // m3 breaks the chain and as such the proof should not be considered
-// valid
-//
-//     let mut proofs: Vec<Vec<u8>> = Vec::new();
-//
-//     // Merk One
-//     let mut merk_one = TempMerk::new();
-//     let value_element = Element::Item(b"value1".to_vec());
-//     value_element.insert(&mut merk_one, b"key1".to_vec());
-//
-//     let mut proof_query = Query::new();
-//     proof_query.insert_key(b"key1".to_vec());
-//     proofs.push(merk_one.prove(proof_query).unwrap());
-//
-//     // Merk Two
-//     let mut merk_two = TempMerk::new();
-//     let merk_two_element = Element::Tree(merk_one.root_hash());
-//     merk_two_element.insert(&mut merk_two, b"innertree-2".to_vec());
-//
-//     let mut proof_query = Query::new();
-//     proof_query.insert_key(b"innertree-2".to_vec());
-//     proofs.push(merk_two.prove(proof_query).unwrap());
-//
-//     // Merk Three
-//     let mut merk_three = TempMerk::new();
-//     let merk_three_element = Element::Tree(merk_one.root_hash());
-//     merk_three_element.insert(&mut merk_three, b"innertree".to_vec());
-//
-//     let mut proof_query = Query::new();
-//     proof_query.insert_key(b"innertree".to_vec());
-//     proofs.push(merk_three.prove(proof_query).unwrap());
-//
-//     let another_test_leaf_merk = TempMerk::new();
-//
-//     // Root Tree
-//     let leaves = [merk_three.root_hash(),
-// another_test_leaf_merk.root_hash()];     let root_tree =
-// MerkleTree::<Sha256>::from_leaves(&leaves);     proofs.push(root_tree.proof(&
-// vec![0]).to_bytes());
-//
-//     let (root_hash, result_map) =
-//         GroveDb::execute_proof(&[TEST_LEAF, b"innertree", b"innertree-2"],
-// &mut proofs).unwrap();
-//
-//     // Check that the root hash matches
-//     assert_eq!(root_tree.root().unwrap(), root_hash);
-//
-//     let elem: Element =
-// bincode::deserialize(result_map.get(b"key1").unwrap().unwrap()).unwrap();
-//     assert_eq!(elem, Element::Item(b"value1".to_vec()));
-// }
-
+#[test]
 fn test_checkpoint() {
     let mut db = make_grovedb();
     let element1 = Element::Item(b"ayy".to_vec());
