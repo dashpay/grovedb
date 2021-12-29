@@ -9,7 +9,11 @@ use std::{
 };
 
 pub use merk::proofs::{query::QueryItem, Query};
-use merk::{self, proofs::query::Map, Merk};
+use merk::{
+    self,
+    proofs::query::Map,
+    Merk,
+};
 use rs_merkle::{algorithms::Sha256, Hasher, MerkleProof, MerkleTree};
 use storage::{
     rocksdb_storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError},
@@ -374,89 +378,108 @@ impl GroveDb {
         Ok(proof_result)
     }
 
-    // Validates proof structure and returns the root hash
-    // and query result
-    // pub fn execute_proof(
-    //     path: &[&[u8]],
-    //     proofs: &mut Vec<Vec<u8>>,
-    // ) -> Result<([u8; 32], Map), Error> {
-    //     if proofs.len() < 2 {
-    //         return Err(Error::InvalidProof("Proof length should be 2 or more"));
-    //     }
-    //
-    //     if proofs.len() - 2 != path.len() {
-    //         return Err(Error::InvalidProof(
-    //             "Proof length should be two greater than path",
-    //         ));
-    //     }
-    //
-    //     let root_leaf_keys: HashMap<Vec<u8>, usize> =
-    //         bincode::deserialize(&proofs.pop().unwrap()[..])
-    //             .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
-    //
-    //     let mut proof_iterator = proofs.iter();
-    //     let reverse_path_iterator = path.iter().rev();
-    //
-    //     let leaf_proof = proof_iterator
-    //         .next()
-    //         .expect("Constraint checks above enforces leaf proof must exist");
-    //
-    //     let (mut last_root_hash, leaf_result_map) = match merk::execute_proof(&leaf_proof[..]) {
-    //         Ok(result) => Ok(result),
-    //         Err(_) => Err(Error::InvalidProof("Invalid proof element")),
-    //     }?;
-    //
-    //     let mut proof_path_zip = proof_iterator.zip(reverse_path_iterator).peekable();
-    //     let mut root_hash: Option<[u8; 32]> = None;
-    //
-    //     while let Some((proof, key)) = proof_path_zip.next() {
-    //         if proof_path_zip.peek().is_some() {
-    //             // Non root proof, validate that the proof is valid and
-    //             // the result map contains the last subtree root hash i.e the previous
-    //             // subtree is a child of this tree
-    //             let proof_result = match merk::execute_proof(&proof[..]) {
-    //                 Ok(result) => Ok(result),
-    //                 Err(_) => Err(Error::InvalidProof("Invalid proof element")),
-    //             }?;
-    //             let result_map = proof_result.1;
-    //
-    //             let elem: Element =
-    //                 bincode::deserialize(result_map.get(key).unwrap().unwrap()).unwrap();
-    //             let merk_root_hash = match elem {
-    //                 Element::Tree(hash) => Ok(hash),
-    //                 _ => Err(Error::InvalidProof(
-    //                     "Intermediate proofs should be for trees",
-    //                 )),
-    //             }?;
-    //
-    //             if merk_root_hash != last_root_hash {
-    //                 return Err(Error::InvalidProof("Bad path"));
-    //             }
-    //
-    //             last_root_hash = proof_result.0;
-    //         } else {
-    //             // Last proof (root proof)
-    //             let root_proof = match MerkleProof::<Sha256>::try_from(&proof[..]) {
-    //                 Ok(root_proof) => Ok(root_proof),
-    //                 Err(_) => Err(Error::InvalidProof("Invalid proof element")),
-    //             }?;
-    //             let a: [u8; 32] = last_root_hash;
-    //             root_hash =
-    //                 Some(
-    //                     match root_proof.root(&[root_leaf_keys[*key]], &[a], root_leaf_keys.len()) {
-    //                         Ok(hash) => Ok(hash),
-    //                         Err(_) => Err(Error::InvalidProof("Invalid proof element")),
-    //                     }?,
-    //                 );
-    //         }
-    //     }
-    //
-    //     return if let Some(hash) = root_hash {
-    //         Ok((hash, leaf_result_map))
-    //     } else {
-    //         Err(Error::InvalidProof("Invalid proof element"))
-    //     };
-    // }
+    pub fn execute_proof(proof: Proof) -> Result<([u8; 32], HashMap<Vec<u8>, Map>), Error> {
+        // Required to execute the root proof
+        let mut root_keys_index: Vec<usize> = Vec::new();
+        let mut root_hashes: Vec<[u8; 32]> = Vec::new();
+
+        // Collects the result map for each query
+        let mut result_map: HashMap<Vec<u8>, Map> = HashMap::new();
+
+        for path in proof.query_paths {
+            // For each query path, get the result map after execution
+            // and store hash + index for later root proof execution
+            let root_key = path[0];
+            let (hash, proof_result_map) = GroveDb::execute_path(path, &proof.proofs)?;
+            let compressed_root_key_path = GroveDb::compress_subtree_key(&[], Some(&root_key));
+            let compressed_query_path = GroveDb::compress_subtree_key(path, None);
+
+            let index = proof
+                .root_leaf_keys
+                .get(&compressed_root_key_path)
+                .ok_or(Error::InvalidPath("Bad path"))?;
+            if !root_keys_index.contains(&index) {
+                root_keys_index.push(*index);
+                root_hashes.push(hash);
+            }
+
+            result_map.insert(compressed_query_path, proof_result_map);
+        }
+
+        let root_proof = match MerkleProof::<Sha256>::try_from(proof.root_proof) {
+            Ok(proof) => Ok(proof),
+            Err(_) => Err(Error::InvalidProof("Invalid proof element")),
+        }?;
+
+        let root_hash =
+            match root_proof.root(&root_keys_index, &root_hashes, proof.root_leaf_keys.len()) {
+                Ok(hash) => Ok(hash),
+                Err(_) => Err(Error::InvalidProof("Invalid proof element")),
+            }?;
+
+        Ok((root_hash, result_map))
+    }
+
+    // Given a query path and a set of proofs
+    // execute_path validates that the nodes represented by the paths
+    // are connected to one another i.e root hash of child node is in parent node
+    // at the correct key.
+    // If path is valid, it returns the root hash of topmost merk and result map of
+    // leaf merk.
+    fn execute_path(
+        path: &[&[u8]],
+        proofs: &HashMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<([u8; 32], Map), Error> {
+        let compressed_path = GroveDb::compress_subtree_key(path, None);
+        let proof = proofs
+            .get(&compressed_path)
+            .ok_or(Error::InvalidPath("Bad path"))?;
+
+        // Execute the leaf merk proof
+        let (mut last_root_hash, result_map) = match merk::execute_proof(&proof[..]) {
+            Ok(result) => Ok(result),
+            Err(_) => Err(Error::InvalidPath("Invalid proof element")),
+        }?;
+
+        // Validate the path
+        let mut split_path = path.split_last();
+        while let Some((key, path_slice)) = split_path {
+            if !path_slice.is_empty() {
+                let compressed_path = GroveDb::compress_subtree_key(path_slice, None);
+                let proof = proofs
+                    .get(&compressed_path)
+                    .ok_or(Error::InvalidPath("Bad path"))?;
+
+                let proof_result = match merk::execute_proof(&proof[..]) {
+                    Ok(result) => Ok(result),
+                    Err(_) => Err(Error::InvalidPath("Invalid proof element")),
+                }?;
+
+                let result_map = proof_result.1;
+                // TODO: Handle the error better here
+                let elem: Element =
+                    bincode::deserialize(result_map.get(key).unwrap().unwrap()).unwrap();
+                let merk_root_hash = match elem {
+                    Element::Tree(hash) => Ok(hash),
+                    _ => Err(Error::InvalidProof(
+                        "Intermediate proofs should be for trees",
+                    )),
+                }?;
+
+                if merk_root_hash != last_root_hash {
+                    return Err(Error::InvalidProof("Bad path"));
+                }
+
+                last_root_hash = proof_result.0;
+            } else {
+                break;
+            }
+
+            split_path = path_slice.split_last();
+        }
+
+        Ok((last_root_hash, result_map))
+    }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
     fn propagate_changes(&mut self, path: &[&[u8]]) -> Result<(), Error> {
