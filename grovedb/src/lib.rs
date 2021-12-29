@@ -51,7 +51,6 @@ pub struct PathQuery<'a> {
 
 #[derive(Serialize, Deserialize)]
 pub struct Proof {
-    // query_paths: Vec<&'a [&'a [u8]]>,
     query_paths: Vec<Vec<Vec<u8>>>,
     proofs: HashMap<Vec<u8>, Vec<u8>>,
     root_proof: Vec<u8>,
