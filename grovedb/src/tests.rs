@@ -356,15 +356,15 @@ fn test_proof_construction() {
     // Get grovedb proof
     let proof = temp_db
         .proof(vec![
-            ProofQuery {
+            PathQuery {
                 path: &[TEST_LEAF, b"innertree"],
                 query: path_one_query,
             },
-            ProofQuery {
+            PathQuery {
                 path: &[ANOTHER_TEST_LEAF, b"innertree3"],
                 query: path_two_query,
             },
-            ProofQuery {
+            PathQuery {
                 path: &[ANOTHER_TEST_LEAF, b"innertree2"],
                 query: path_three_query,
             },
@@ -527,7 +527,7 @@ fn test_successful_proof_verification() {
     path_one_query.insert_key(b"key2".to_vec());
 
     let proof = temp_db
-        .proof(vec![ProofQuery {
+        .proof(vec![PathQuery {
             path: &[TEST_LEAF, b"innertree"],
             query: path_one_query,
         }])
@@ -556,11 +556,11 @@ fn test_successful_proof_verification() {
     // Get grovedb proof
     let proof = temp_db
         .proof(vec![
-            ProofQuery {
+            PathQuery {
                 path: &[ANOTHER_TEST_LEAF, b"innertree3"],
                 query: path_two_query,
             },
-            ProofQuery {
+            PathQuery {
                 path: &[ANOTHER_TEST_LEAF, b"innertree2"],
                 query: path_three_query,
             },

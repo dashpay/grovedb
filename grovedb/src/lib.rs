@@ -9,11 +9,7 @@ use std::{
 };
 
 pub use merk::proofs::{query::QueryItem, Query};
-use merk::{
-    self,
-    proofs::query::Map,
-    Merk,
-};
+use merk::{self, proofs::query::Map, Merk};
 use rs_merkle::{algorithms::Sha256, Hasher, MerkleProof, MerkleTree};
 use storage::{
     rocksdb_storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError},
@@ -47,7 +43,7 @@ pub enum Error {
     CorruptedData(String),
 }
 
-pub struct ProofQuery<'a> {
+pub struct PathQuery<'a> {
     path: &'a [&'a [u8]],
     query: Query,
 }
@@ -301,7 +297,7 @@ impl GroveDb {
         Err(Error::ReferenceLimit)
     }
 
-    pub fn proof<'a>(&mut self, proof_queries: Vec<ProofQuery<'a>>) -> Result<Proof<'a>, Error> {
+    pub fn proof<'a>(&mut self, proof_queries: Vec<PathQuery<'a>>) -> Result<Proof<'a>, Error> {
         // To prove a path we need to return a proof for each node on the path including
         // the root. With multiple paths, nodes can overlap i.e two or more paths can
         // share the same nodes. We should only have one proof for each node,
