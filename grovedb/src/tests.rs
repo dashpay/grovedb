@@ -1,6 +1,5 @@
 use std::{
     ops::{Deref, DerefMut},
-    os::unix::fs::chroot,
 };
 
 use merk::test_utils::TempMerk;
@@ -585,6 +584,76 @@ fn test_successful_proof_verification() {
     let result_map = result_maps.get(&path_two_as_vec).unwrap();
     let elem: Element = bincode::deserialize(result_map.get(b"key3").unwrap().unwrap()).unwrap();
     assert_eq!(elem, Element::Item(b"value3".to_vec()));
+}
+
+#[test]
+fn test_range_proofs() {
+    let mut temp_db = make_grovedb();
+    temp_db
+        .insert(&[TEST_LEAF], b"innertree".to_vec(), Element::empty_tree())
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            &[TEST_LEAF, b"innertree"],
+            b"key1".to_vec(),
+            Element::Item(b"value1".to_vec()),
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            &[TEST_LEAF, b"innertree"],
+            b"key2".to_vec(),
+            Element::Item(b"value2".to_vec()),
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            &[TEST_LEAF, b"innertree"],
+            b"key3".to_vec(),
+            Element::Item(b"value3".to_vec()),
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            &[TEST_LEAF, b"innertree"],
+            b"key4".to_vec(),
+            Element::Item(b"value4".to_vec()),
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            &[TEST_LEAF, b"innertree"],
+            b"key5".to_vec(),
+            Element::Item(b"value5".to_vec()),
+        )
+        .expect("successful subtree insert");
+
+    let mut query = Query::new();
+    let start = b"key2".to_vec();
+    let end = b"key4".to_vec();
+    query.insert_range(start..end);
+
+    let proof = temp_db.proof(vec![
+        PathQuery{
+            path: &[TEST_LEAF, b"innertree"],
+            query,
+        },
+    ]).unwrap();
+
+    let (root_hash, result_maps) = GroveDb::execute_proof(proof).unwrap();
+    assert_eq!(temp_db.root_tree.root().unwrap(), root_hash);
+
+    let path_as_vec = GroveDb::compress_subtree_key(&[TEST_LEAF, b"innertree"], None);
+    let result_map = result_maps.get(&path_as_vec).unwrap();
+
+    // key1 should not be in result map
+    assert_eq!(result_map.get(b"key1").is_err(), true);
+    // key2 and key3 should exist in result map
+    // check that it exists and contains a value
+    assert_eq!(result_map.get(b"key2").unwrap().is_some(), true);
+    assert_eq!(result_map.get(b"key3").unwrap().is_some(), true);
+    // key4 should not exist in result map (didn't use range_inclusive)
+    assert_eq!(result_map.get(b"key4").unwrap().is_some(), false);
 }
 
 #[test]
