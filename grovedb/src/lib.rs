@@ -13,13 +13,11 @@ pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 use storage::{
-    rocksdb_storage::{
-        OptimisticTransactionDB, OptimisticTransactionDBTransaction, PrefixedRocksDbStorage,
-        PrefixedRocksDbStorageError, PrefixedRocksDbTransaction,
-    },
-    Storage, Transaction,
+    rocksdb_storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError},
+    Storage,
 };
 pub use subtree::Element;
+// pub use transaction::GroveDbTransaction;
 
 /// Limit of possible indirections
 const MAX_REFERENCE_HOPS: usize = 10;
@@ -50,7 +48,7 @@ pub struct GroveDb {
     root_leaf_keys: HashMap<Vec<u8>, usize>,
     subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     meta_storage: PrefixedRocksDbStorage,
-    db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
+    pub(crate) db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
 }
 
 impl GroveDb {
@@ -147,7 +145,7 @@ impl GroveDb {
         path: &[&[u8]],
         key: Vec<u8>,
         mut element: subtree::Element,
-        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>
+        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
         let compressed_path = Self::compress_path(path, None);
         match &mut element {
@@ -226,7 +224,7 @@ impl GroveDb {
         path: &[&[u8]],
         key: Vec<u8>,
         element: subtree::Element,
-        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>
+        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<bool, Error> {
         if self.get(path, &key).is_ok() {
             return Ok(false);
@@ -331,7 +329,11 @@ impl GroveDb {
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
-    fn propagate_changes<'a: 'b, 'b>(&'a mut self, path: &[&[u8]], transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>) -> Result<(), Error> {
+    fn propagate_changes<'a: 'b, 'b>(
+        &'a mut self,
+        path: &[&[u8]],
+        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
+    ) -> Result<(), Error> {
         let mut split_path = path.split_last();
         // Go up until only one element in path, which means a key of a root tree
         while let Some((key, path_slice)) = split_path {
@@ -371,7 +373,7 @@ impl GroveDb {
         res
     }
 
-    pub fn transaction(&self) -> OptimisticTransactionDBTransaction {
-        self.db.transaction()
+    pub fn storage(&self) -> Rc<storage::rocksdb_storage::OptimisticTransactionDB> {
+        self.db.clone()
     }
 }

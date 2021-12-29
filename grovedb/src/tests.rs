@@ -40,9 +40,9 @@ fn make_grovedb() -> TempGroveDb {
 }
 
 fn add_test_leafs(db: &mut GroveDb) {
-    db.insert(&[], TEST_LEAF.to_vec(), Element::empty_tree())
+    db.insert(&[], TEST_LEAF.to_vec(), Element::empty_tree(), None)
         .expect("successful root tree leaf insert");
-    db.insert(&[], ANOTHER_TEST_LEAF.to_vec(), Element::empty_tree())
+    db.insert(&[], ANOTHER_TEST_LEAF.to_vec(), Element::empty_tree(), None)
         .expect("successful root tree leaf 2 insert");
 }
 
@@ -56,7 +56,7 @@ fn test_init() {
 fn test_insert_value_to_merk() {
     let mut db = make_grovedb();
     let element = Element::Item(b"ayy".to_vec());
-    db.insert(&[TEST_LEAF], b"key".to_vec(), element.clone())
+    db.insert(&[TEST_LEAF], b"key".to_vec(), element.clone(), None)
         .expect("successful insert");
     assert_eq!(
         db.get(&[TEST_LEAF], b"key").expect("succesful get"),
@@ -70,11 +70,16 @@ fn test_insert_value_to_subtree() {
     let element = Element::Item(b"ayy".to_vec());
 
     // Insert a subtree first
-    db.insert(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree())
+    db.insert(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
         .expect("successful subtree insert");
     // Insert an element into subtree
-    db.insert(&[TEST_LEAF, b"key1"], b"key2".to_vec(), element.clone())
-        .expect("successful value insert");
+    db.insert(
+        &[TEST_LEAF, b"key1"],
+        b"key2".to_vec(),
+        element.clone(),
+        None,
+    )
+    .expect("successful value insert");
     assert_eq!(
         db.get(&[TEST_LEAF, b"key1"], b"key2")
             .expect("succesful get"),
@@ -89,12 +94,13 @@ fn test_changes_propagated() {
     let element = Element::Item(b"ayy".to_vec());
 
     // Insert some nested subtrees
-    db.insert(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree())
+    db.insert(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
         .expect("successful subtree 1 insert");
     db.insert(
         &[TEST_LEAF, b"key1"],
         b"key2".to_vec(),
         Element::empty_tree(),
+        None,
     )
     .expect("successful subtree 2 insert");
     // Insert an element into subtree
@@ -102,6 +108,7 @@ fn test_changes_propagated() {
         &[TEST_LEAF, b"key1", b"key2"],
         b"key3".to_vec(),
         element.clone(),
+        None,
     )
     .expect("successful value insert");
     assert_eq!(
@@ -122,14 +129,20 @@ fn test_follow_references() {
         &[TEST_LEAF],
         b"reference_key".to_vec(),
         Element::Reference(vec![TEST_LEAF.to_vec(), b"key2".to_vec(), b"key3".to_vec()]),
+        None,
     )
     .expect("successful reference insert");
 
     // Insert an item to refer to
-    db.insert(&[TEST_LEAF], b"key2".to_vec(), Element::empty_tree())
+    db.insert(&[TEST_LEAF], b"key2".to_vec(), Element::empty_tree(), None)
         .expect("successful subtree 1 insert");
-    db.insert(&[TEST_LEAF, b"key2"], b"key3".to_vec(), element.clone())
-        .expect("successful value insert");
+    db.insert(
+        &[TEST_LEAF, b"key2"],
+        b"key3".to_vec(),
+        element.clone(),
+        None,
+    )
+    .expect("successful value insert");
     assert_eq!(
         db.get(&[TEST_LEAF], b"reference_key")
             .expect("succesful get"),
@@ -145,6 +158,7 @@ fn test_cyclic_references() {
         &[TEST_LEAF],
         b"reference_key_1".to_vec(),
         Element::Reference(vec![TEST_LEAF.to_vec(), b"reference_key_2".to_vec()]),
+        None,
     )
     .expect("successful reference 1 insert");
 
@@ -152,6 +166,7 @@ fn test_cyclic_references() {
         &[TEST_LEAF],
         b"reference_key_2".to_vec(),
         Element::Reference(vec![TEST_LEAF.to_vec(), b"reference_key_1".to_vec()]),
+        None,
     )
     .expect("successful reference 2 insert");
 
@@ -171,6 +186,7 @@ fn test_too_many_indirections() {
         &[TEST_LEAF],
         b"key0".to_vec(),
         Element::Item(b"oops".to_vec()),
+        None,
     )
     .expect("successful item insert");
 
@@ -179,6 +195,7 @@ fn test_too_many_indirections() {
             &[TEST_LEAF],
             keygen(i),
             Element::Reference(vec![TEST_LEAF.to_vec(), keygen(i - 1)]),
+            None,
         )
         .expect("successful reference insert");
     }
@@ -200,12 +217,13 @@ fn test_tree_structure_is_presistent() {
         add_test_leafs(&mut db);
 
         // Insert some nested subtrees
-        db.insert(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree())
+        db.insert(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
             .expect("successful subtree 1 insert");
         db.insert(
             &[TEST_LEAF, b"key1"],
             b"key2".to_vec(),
             Element::empty_tree(),
+            None,
         )
         .expect("successful subtree 2 insert");
         // Insert an element into subtree
@@ -213,6 +231,7 @@ fn test_tree_structure_is_presistent() {
             &[TEST_LEAF, b"key1", b"key2"],
             b"key3".to_vec(),
             element.clone(),
+            None,
         )
         .expect("successful value insert");
         assert_eq!(
@@ -245,13 +264,19 @@ fn test_root_tree_leafs_are_noted() {
 fn test_proof_construction() {
     let mut temp_db = make_grovedb();
     temp_db
-        .insert(&[TEST_LEAF], b"innertree".to_vec(), Element::empty_tree())
+        .insert(
+            &[TEST_LEAF],
+            b"innertree".to_vec(),
+            Element::empty_tree(),
+            None,
+        )
         .expect("successful subtree insert");
     temp_db
         .insert(
             &[TEST_LEAF, b"innertree"],
             b"key1".to_vec(),
             Element::Item(b"value1".to_vec()),
+            None,
         )
         .expect("successful item insert");
     temp_db
@@ -259,6 +284,7 @@ fn test_proof_construction() {
             &[TEST_LEAF, b"innertree"],
             b"key2".to_vec(),
             Element::Item(b"value2".to_vec()),
+            None,
         )
         .expect("successful item insert");
 
@@ -266,17 +292,17 @@ fn test_proof_construction() {
     let mut inner_tree_merk = TempMerk::new();
     let value_element = Element::Item(b"value1".to_vec());
     value_element
-        .insert(&mut inner_tree_merk, b"key1".to_vec())
+        .insert(&mut inner_tree_merk, b"key1".to_vec(), None)
         .expect("Expected to insert value");
     let value_element = Element::Item(b"value2".to_vec());
     value_element
-        .insert(&mut inner_tree_merk, b"key2".to_vec())
+        .insert(&mut inner_tree_merk, b"key2".to_vec(), None)
         .expect("Expected to insert value");
 
     let mut test_leaf_merk = TempMerk::new();
     let inner_tree_root_element = Element::Tree(inner_tree_merk.root_hash());
     inner_tree_root_element
-        .insert(&mut test_leaf_merk, b"innertree".to_vec())
+        .insert(&mut test_leaf_merk, b"innertree".to_vec(), None)
         .expect("Expected to insert value");
 
     let another_test_leaf_merk = TempMerk::new();
@@ -395,12 +421,12 @@ fn test_insert_if_not_exists() {
 
     // Insert twice at the same path
     assert_eq!(
-        db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree())
+        db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
             .expect("Provided valid path"),
         true
     );
     assert_eq!(
-        db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree())
+        db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
             .expect("Provided valid path"),
         false
     );
@@ -410,6 +436,48 @@ fn test_insert_if_not_exists() {
         &[TEST_LEAF, b"unknown"],
         b"key1".to_vec(),
         Element::empty_tree(),
+        None,
     );
     assert!(matches!(result, Err(Error::InvalidPath(_))));
+}
+
+#[test]
+fn test_insert_with_transaction_should_use_transaction() {
+    let mut db = make_grovedb();
+    let storage = db.storage();
+    let transaction = storage.transaction();
+
+    // Insert twice at the same path
+    assert_eq!(
+        db.insert_if_not_exists(
+            &[TEST_LEAF],
+            b"key1".to_vec(),
+            Element::empty_tree(),
+            Some(&transaction)
+        )
+        .expect("Provided valid path"),
+        true
+    );
+    assert_eq!(
+        db.insert_if_not_exists(
+            &[TEST_LEAF],
+            b"key1".to_vec(),
+            Element::empty_tree(),
+            Some(&transaction)
+        )
+        .expect("Provided valid path"),
+        false
+    );
+
+    // Should propagate errors from insertion
+    let result = db.insert_if_not_exists(
+        &[TEST_LEAF, b"unknown"],
+        b"key1".to_vec(),
+        Element::empty_tree(),
+        Some(&transaction),
+    );
+    assert!(matches!(result, Err(Error::InvalidPath(_))));
+
+    // let key = b"key1".to_vec();
+    // let kekco = db.get(&[TEST_LEAF], b"key1".as_ref());
 }

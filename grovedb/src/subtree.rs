@@ -73,10 +73,10 @@ mod tests {
     fn test_success_insert() {
         let mut merk = TempMerk::new();
         Element::empty_tree()
-            .insert(&mut merk, b"mykey".to_vec())
+            .insert(&mut merk, b"mykey".to_vec(), None)
             .expect("expected successful insertion");
         Element::Item(b"value".to_vec())
-            .insert(&mut merk, b"another-key".to_vec())
+            .insert(&mut merk, b"another-key".to_vec(), None)
             .expect("expected successful insertion 2");
 
         assert_eq!(

@@ -6,8 +6,13 @@ use super::{
     make_prefixed_key, DBRawTransactionIterator, PrefixedRocksDbBatch, PrefixedRocksDbTransaction,
     AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME,
 };
-use crate::{rocksdb_storage::OptimisticTransactionDBTransaction, Storage, Transaction};
-use crate::rocksdb_storage::batch::{OrBatch, PrefixedTransactionalRocksDbBatch};
+use crate::{
+    rocksdb_storage::{
+        batch::{OrBatch, PrefixedTransactionalRocksDbBatch},
+        OptimisticTransactionDBTransaction,
+    },
+    Storage,
+};
 
 /// RocksDB wrapper to store items with prefixes
 pub struct PrefixedRocksDbStorage {
@@ -140,29 +145,34 @@ impl Storage for PrefixedRocksDbStorage {
         Ok(self.db.get_cf(self.cf_meta()?, key)?)
     }
 
-    fn new_batch<'a: 'b, 'b>(&'a self, transaction: Option<&'b OptimisticTransactionDBTransaction>) -> Result<Self::Batch<'b>, Self::Error> {
+    fn new_batch<'a: 'b, 'b>(
+        &'a self,
+        transaction: Option<&'b OptimisticTransactionDBTransaction>,
+    ) -> Result<Self::Batch<'b>, Self::Error> {
         match transaction {
-            Some(tx) => Ok(OrBatch::TransactionalBatch(PrefixedTransactionalRocksDbBatch {
-                prefix: self.prefix.clone(),
-                transaction: tx,
-                cf_aux: self.cf_aux()?,
-                cf_roots: self.cf_roots()?,
-            })),
+            Some(tx) => Ok(OrBatch::TransactionalBatch(
+                PrefixedTransactionalRocksDbBatch {
+                    prefix: self.prefix.clone(),
+                    transaction: tx,
+                    cf_aux: self.cf_aux()?,
+                    cf_roots: self.cf_roots()?,
+                },
+            )),
             None => Ok(OrBatch::Batch(PrefixedRocksDbBatch {
                 prefix: self.prefix.clone(),
                 batch: WriteBatchWithTransaction::<true>::default(),
                 cf_aux: self.cf_aux()?,
                 cf_roots: self.cf_roots()?,
-            }))
+            })),
         }
     }
 
     fn commit_batch<'a>(&'a self, batch: Self::Batch<'a>) -> Result<(), Self::Error> {
-        // Do nothing if transaction exists, as the transaction must be explicitly committed by
-        // its creator
+        // Do nothing if transaction exists, as the transaction must be explicitly
+        // committed by its creator
         match batch {
-            OrBatch::TransactionalBatch(_) => {},
-            OrBatch::Batch(batch) => self.db.write(batch.batch)?
+            OrBatch::TransactionalBatch(_) => {}
+            OrBatch::Batch(batch) => self.db.write(batch.batch)?,
         }
         Ok(())
     }
@@ -308,8 +318,8 @@ impl Storage for PrefixedRocksDbStorage {
 //         self.storage.new_batch()
 //     }
 //
-//     fn commit_batch<'a>(&'a self, batch: Self::Batch<'a>) -> Result<(), Self::Error> {
-//         self.storage.commit_batch(batch)
+//     fn commit_batch<'a>(&'a self, batch: Self::Batch<'a>) -> Result<(),
+// Self::Error> {         self.storage.commit_batch(batch)
 //     }
 //
 //     fn flush(&self) -> Result<(), Self::Error> {
@@ -320,7 +330,7 @@ impl Storage for PrefixedRocksDbStorage {
 //         self.storage.raw_iter()
 //     }
 //
-//     fn transaction<'a>(&'a self, tx: &'a Self::DBTransaction<'a>) -> Self::StorageTransaction<'a> {
-//         self.storage.transaction(tx)
+//     fn transaction<'a>(&'a self, tx: &'a Self::DBTransaction<'a>) ->
+// Self::StorageTransaction<'a> {         self.storage.transaction(tx)
 //     }
 // }
