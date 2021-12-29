@@ -356,20 +356,23 @@ fn test_proof_construction() {
     // Get grovedb proof
     let proof = temp_db
         .proof(vec![
-            ProofQuery {
+            PathQuery {
                 path: &[TEST_LEAF, b"innertree"],
                 query: path_one_query,
             },
-            ProofQuery {
+            PathQuery {
                 path: &[ANOTHER_TEST_LEAF, b"innertree3"],
                 query: path_two_query,
             },
-            ProofQuery {
+            PathQuery {
                 path: &[ANOTHER_TEST_LEAF, b"innertree2"],
                 query: path_three_query,
             },
         ])
         .unwrap();
+
+    // Deserialize the proof
+    let proof: Proof = bincode::deserialize(&proof).unwrap();
 
     // Perform assertions
     assert_eq!(proof.query_paths.len(), 3);
@@ -386,9 +389,10 @@ fn test_proof_construction() {
 
     // Check that all the subproofs were constructed correctly for each path and
     // subpath
-    let path_one_as_vec = GroveDb::compress_subtree_key(proof.query_paths[0], None);
-    let path_two_as_vec = GroveDb::compress_subtree_key(proof.query_paths[1], None);
-    let path_three_as_vec = GroveDb::compress_subtree_key(proof.query_paths[2], None);
+    let path_one_as_vec = GroveDb::compress_subtree_key(&[TEST_LEAF, b"innertree"], None);
+    let path_two_as_vec = GroveDb::compress_subtree_key(&[ANOTHER_TEST_LEAF, b"innertree3"], None);
+    let path_three_as_vec =
+        GroveDb::compress_subtree_key(&[ANOTHER_TEST_LEAF, b"innertree2"], None);
     let test_leaf_path_as_vec = GroveDb::compress_subtree_key(&[TEST_LEAF], None);
     let another_test_leaf_path_as_vec = GroveDb::compress_subtree_key(&[ANOTHER_TEST_LEAF], None);
 
@@ -527,7 +531,7 @@ fn test_successful_proof_verification() {
     path_one_query.insert_key(b"key2".to_vec());
 
     let proof = temp_db
-        .proof(vec![ProofQuery {
+        .proof(vec![PathQuery {
             path: &[TEST_LEAF, b"innertree"],
             query: path_one_query,
         }])
@@ -556,11 +560,11 @@ fn test_successful_proof_verification() {
     // Get grovedb proof
     let proof = temp_db
         .proof(vec![
-            ProofQuery {
+            PathQuery {
                 path: &[ANOTHER_TEST_LEAF, b"innertree3"],
                 query: path_two_query,
             },
-            ProofQuery {
+            PathQuery {
                 path: &[ANOTHER_TEST_LEAF, b"innertree2"],
                 query: path_three_query,
             },

@@ -9,12 +9,9 @@ use std::{
 };
 
 pub use merk::proofs::{query::QueryItem, Query};
-use merk::{
-    self,
-    proofs::query::Map,
-    Merk,
-};
+use merk::{self, proofs::query::Map, Merk};
 use rs_merkle::{algorithms::Sha256, Hasher, MerkleProof, MerkleTree};
+use serde::{Deserialize, Serialize};
 use storage::{
     rocksdb_storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError},
     Storage,
@@ -47,13 +44,14 @@ pub enum Error {
     CorruptedData(String),
 }
 
-pub struct ProofQuery<'a> {
+pub struct PathQuery<'a> {
     path: &'a [&'a [u8]],
     query: Query,
 }
 
-pub struct Proof<'a> {
-    query_paths: Vec<&'a [&'a [u8]]>,
+#[derive(Serialize, Deserialize)]
+pub struct Proof {
+    query_paths: Vec<Vec<Vec<u8>>>,
     proofs: HashMap<Vec<u8>, Vec<u8>>,
     root_proof: Vec<u8>,
     root_leaf_keys: HashMap<Vec<u8>, usize>,
@@ -301,7 +299,7 @@ impl GroveDb {
         Err(Error::ReferenceLimit)
     }
 
-    pub fn proof<'a>(&mut self, proof_queries: Vec<ProofQuery<'a>>) -> Result<Proof<'a>, Error> {
+    pub fn proof(&mut self, proof_queries: Vec<PathQuery>) -> Result<Vec<u8>, Error> {
         // To prove a path we need to return a proof for each node on the path including
         // the root. With multiple paths, nodes can overlap i.e two or more paths can
         // share the same nodes. We should only have one proof for each node,
@@ -315,7 +313,13 @@ impl GroveDb {
         // For each unique node including the root
         // determine what keys would need to be included in the proof
         for proof_query in proof_queries {
-            query_paths.push(proof_query.path);
+            query_paths.push(
+                proof_query
+                    .path
+                    .iter()
+                    .map(|x| x.to_vec())
+                    .collect::<Vec<_>>(),
+            );
 
             let compressed_path = GroveDb::compress_subtree_key(proof_query.path, None);
             proof_spec.insert(compressed_path, proof_query.query);
@@ -357,12 +361,17 @@ impl GroveDb {
         }
         let root_proof = self.root_tree.proof(&root_index).to_bytes();
 
-        Ok(Proof {
+        let proof = Proof {
             query_paths,
             proofs,
             root_proof,
             root_leaf_keys: self.root_leaf_keys.clone(),
-        })
+        };
+
+        let seralized_proof = bincode::serialize(&proof)
+            .map_err(|_| Error::CorruptedData(String::from("unable to serialize proof")))?;
+
+        Ok(seralized_proof)
     }
 
     fn prove_item(&self, path: &Vec<u8>, proof_query: Query) -> Result<Vec<u8>, Error> {
@@ -378,7 +387,11 @@ impl GroveDb {
         Ok(proof_result)
     }
 
-    pub fn execute_proof(proof: Proof) -> Result<([u8; 32], HashMap<Vec<u8>, Map>), Error> {
+    pub fn execute_proof(proof: Vec<u8>) -> Result<([u8; 32], HashMap<Vec<u8>, Map>), Error> {
+        // Deserialize the proof
+        let proof: Proof = bincode::deserialize(&proof)
+            .map_err(|_| Error::CorruptedData(String::from("unable to deserialize proof")))?;
+
         // Required to execute the root proof
         let mut root_keys_index: Vec<usize> = Vec::new();
         let mut root_hashes: Vec<[u8; 32]> = Vec::new();
@@ -387,12 +400,13 @@ impl GroveDb {
         let mut result_map: HashMap<Vec<u8>, Map> = HashMap::new();
 
         for path in proof.query_paths {
+            let path = path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
             // For each query path, get the result map after execution
             // and store hash + index for later root proof execution
-            let root_key = path[0];
-            let (hash, proof_result_map) = GroveDb::execute_path(path, &proof.proofs)?;
+            let root_key = &path[0];
+            let (hash, proof_result_map) = GroveDb::execute_path(&path, &proof.proofs)?;
             let compressed_root_key_path = GroveDb::compress_subtree_key(&[], Some(&root_key));
-            let compressed_query_path = GroveDb::compress_subtree_key(path, None);
+            let compressed_query_path = GroveDb::compress_subtree_key(&path, None);
 
             let index = proof
                 .root_leaf_keys
