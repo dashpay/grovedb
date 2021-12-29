@@ -371,6 +371,9 @@ fn test_proof_construction() {
         ])
         .unwrap();
 
+    // Deserialize the proof
+    let proof: Proof = bincode::deserialize(&proof).unwrap();
+
     // Perform assertions
     assert_eq!(proof.query_paths.len(), 3);
     assert_eq!(proof.query_paths[0], &[TEST_LEAF, b"innertree"]);
@@ -386,9 +389,10 @@ fn test_proof_construction() {
 
     // Check that all the subproofs were constructed correctly for each path and
     // subpath
-    let path_one_as_vec = GroveDb::compress_subtree_key(proof.query_paths[0], None);
-    let path_two_as_vec = GroveDb::compress_subtree_key(proof.query_paths[1], None);
-    let path_three_as_vec = GroveDb::compress_subtree_key(proof.query_paths[2], None);
+    let path_one_as_vec = GroveDb::compress_subtree_key(&[TEST_LEAF, b"innertree"], None);
+    let path_two_as_vec = GroveDb::compress_subtree_key(&[ANOTHER_TEST_LEAF, b"innertree3"], None);
+    let path_three_as_vec =
+        GroveDb::compress_subtree_key(&[ANOTHER_TEST_LEAF, b"innertree2"], None);
     let test_leaf_path_as_vec = GroveDb::compress_subtree_key(&[TEST_LEAF], None);
     let another_test_leaf_path_as_vec = GroveDb::compress_subtree_key(&[ANOTHER_TEST_LEAF], None);
 
