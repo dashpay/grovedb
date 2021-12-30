@@ -1,7 +1,4 @@
-use std::{
-    ops::{Deref, DerefMut},
-    os::unix::fs::chroot,
-};
+use std::ops::{Deref, DerefMut};
 
 use merk::test_utils::TempMerk;
 use tempdir::TempDir;
@@ -848,4 +845,65 @@ fn test_subtree_deletion() {
     assert_eq!(db.subtrees.len(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF and TEST_LEAF.key4 stay
     assert!(db.get(&[TEST_LEAF], b"key4").is_ok());
     assert_ne!(root_hash, db.root_tree.root().unwrap());
+}
+
+#[test]
+fn test_get_query() {
+    let mut db = make_grovedb();
+
+    // Insert a couple of subtrees first
+    db.insert(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree())
+        .expect("successful subtree insert");
+    db.insert(&[TEST_LEAF], b"key2".to_vec(), Element::empty_tree())
+        .expect("successful subtree insert");
+    // Insert some elements into subtree
+    db.insert(
+        &[TEST_LEAF, b"key1"],
+        b"key3".to_vec(),
+        Element::Item(b"ayya".to_vec()),
+    )
+    .expect("successful value insert");
+    db.insert(
+        &[TEST_LEAF, b"key1"],
+        b"key4".to_vec(),
+        Element::Item(b"ayyb".to_vec()),
+    )
+    .expect("successful value insert");
+    db.insert(
+        &[TEST_LEAF, b"key1"],
+        b"key5".to_vec(),
+        Element::Item(b"ayyc".to_vec()),
+    )
+    .expect("successful value insert");
+    db.insert(
+        &[TEST_LEAF, b"key2"],
+        b"key6".to_vec(),
+        Element::Item(b"ayyd".to_vec()),
+    )
+    .expect("successful value insert");
+
+    let path1 = vec![TEST_LEAF, b"key1"];
+    let path2 = vec![TEST_LEAF, b"key2"];
+    let mut query1 = Query::new();
+    let mut query2 = Query::new();
+    query1.insert_range_inclusive(b"key3".to_vec()..=b"key4".to_vec());
+    query2.insert_key(b"key6".to_vec());
+
+    let path_query1 = PathQuery {
+        path: &path1,
+        query: query1,
+    };
+    let path_query2 = PathQuery {
+        path: &path2,
+        query: query2,
+    };
+    assert_eq!(
+        db.get_query(&[path_query1, path_query2])
+            .expect("expected successful get_query"),
+        vec![
+            subtree::Element::Item(b"ayya".to_vec()),
+            subtree::Element::Item(b"ayyb".to_vec()),
+            subtree::Element::Item(b"ayyd".to_vec()),
+        ]
+    );
 }
