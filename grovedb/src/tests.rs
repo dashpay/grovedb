@@ -908,3 +908,46 @@ fn test_get_query() {
         ]
     );
 }
+
+#[test]
+fn test_aux_uses_separate_cf() {
+    let element = Element::Item(b"ayy".to_vec());
+    let mut db = make_grovedb();
+    // Insert some nested subtrees
+    db.insert(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree())
+        .expect("successful subtree 1 insert");
+    db.insert(
+        &[TEST_LEAF, b"key1"],
+        b"key2".to_vec(),
+        Element::empty_tree(),
+    )
+    .expect("successful subtree 2 insert");
+    // Insert an element into subtree
+    db.insert(
+        &[TEST_LEAF, b"key1", b"key2"],
+        b"key3".to_vec(),
+        element.clone(),
+    )
+    .expect("successful value insert");
+
+    db.put_aux(b"key1", b"a").expect("cannot put aux");
+    db.put_aux(b"key2", b"b").expect("cannot put aux");
+    db.put_aux(b"key3", b"c").expect("cannot put aux");
+    db.delete_aux(b"key3").expect("cannot delete from aux");
+
+    assert_eq!(
+        db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3")
+            .expect("cannot get element"),
+        element
+    );
+    assert_eq!(
+        db.get_aux(b"key1").expect("cannot get from aux"),
+        Some(b"a".to_vec())
+    );
+    assert_eq!(
+        db.get_aux(b"key2").expect("cannot get from aux"),
+        Some(b"b".to_vec())
+    );
+    assert_eq!(db.get_aux(b"key3").expect("cannot get from aux"), None,);
+    assert_eq!(db.get_aux(b"key4").expect("cannot get from aux"), None);
+}

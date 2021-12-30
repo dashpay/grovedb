@@ -53,10 +53,7 @@ impl GroveDb {
         Element::get(&merk, key)
     }
 
-    pub fn get_query(
-        &mut self,
-        path_queries: &[PathQuery],
-    ) -> Result<Vec<Element>, Error> {
+    pub fn get_query(&mut self, path_queries: &[PathQuery]) -> Result<Vec<Element>, Error> {
         let mut result = Vec::new();
         for query in path_queries {
             let merk = self

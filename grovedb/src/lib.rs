@@ -205,4 +205,8 @@ impl GroveDb {
         res = Sha256::hash(&res).to_vec();
         res
     }
+
+    pub fn flush(&self) -> Result<(), Error> {
+        Ok(self.meta_storage.flush()?)
+    }
 }
