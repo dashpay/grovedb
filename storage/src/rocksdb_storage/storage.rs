@@ -15,6 +15,7 @@ use crate::{
 };
 
 /// RocksDB wrapper to store items with prefixes
+#[derive(Clone)]
 pub struct PrefixedRocksDbStorage {
     pub(crate) db: Rc<rocksdb::OptimisticTransactionDB>,
     prefix: Vec<u8>,

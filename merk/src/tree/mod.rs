@@ -25,7 +25,7 @@ pub use walk::{Fetch, RefWalker, Walker};
 // relevant methods
 
 /// The fields of the `Tree` type, stored on the heap.
-#[derive(Encode, Decode)]
+#[derive(Clone, Encode, Decode)]
 struct TreeInner {
     left: Option<Link>,
     right: Option<Link>,
@@ -37,7 +37,7 @@ struct TreeInner {
 /// Trees' inner fields are stored on the heap so that nodes can recursively
 /// link to each other, and so we can detach nodes from their parents, then
 /// reattach without allocating or freeing heap memory.
-#[derive(Encode, Decode)]
+#[derive(Clone, Encode, Decode)]
 pub struct Tree {
     inner: Box<TreeInner>,
 }

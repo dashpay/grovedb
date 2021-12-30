@@ -4,7 +4,7 @@ pub mod chunks;
 use std::{cell::Cell, cmp::Ordering, collections::LinkedList};
 
 use anyhow::{anyhow, bail, Result};
-use storage::{self, Batch, Storage, Store};
+use storage::{self, rocksdb_storage::PrefixedRocksDbStorage, Batch, Storage, Store};
 
 use crate::{
     proofs::{encode_into, query::QueryItem, Query},
@@ -122,7 +122,12 @@ where
     /// ];
     /// store.apply(batch, &[], None).unwrap();
     /// ```
-    pub fn apply<'a: 'b, 'b>(&'a mut self, batch: &MerkBatch, aux: &MerkBatch, transaction: Option<&'b S::DBTransaction<'b>>) -> Result<()> {
+    pub fn apply<'a: 'b, 'b>(
+        &'a mut self,
+        batch: &MerkBatch,
+        aux: &MerkBatch,
+        transaction: Option<&'b S::DBTransaction<'b>>,
+    ) -> Result<()> {
         // ensure keys in batch are sorted and unique
         let mut maybe_prev_key: Option<Vec<u8>> = None;
         for (key, _) in batch.iter() {
@@ -160,7 +165,12 @@ where
     /// ];
     /// unsafe { store.apply_unchecked(batch, &[], None).unwrap() };
     /// ```
-    pub unsafe fn apply_unchecked<'a: 'b, 'b>(&'a mut self, batch: &MerkBatch, aux: &MerkBatch, transaction: Option<&'b S::DBTransaction<'b>>) -> Result<()> {
+    pub unsafe fn apply_unchecked<'a: 'b, 'b>(
+        &'a mut self,
+        batch: &MerkBatch,
+        aux: &MerkBatch,
+        transaction: Option<&'b S::DBTransaction<'b>>,
+    ) -> Result<()> {
         let maybe_walker = self
             .tree
             .take()
@@ -221,7 +231,12 @@ where
         })
     }
 
-    pub fn commit<'a: 'b, 'b>(&'a mut self, deleted_keys: LinkedList<Vec<u8>>, aux: &MerkBatch, transaction: Option<&'b S::DBTransaction<'b>>) -> Result<()> {
+    pub fn commit<'a: 'b, 'b>(
+        &'a mut self,
+        deleted_keys: LinkedList<Vec<u8>>,
+        aux: &MerkBatch,
+        transaction: Option<&'b S::DBTransaction<'b>>,
+    ) -> Result<()> {
         let mut batch = self.storage.new_batch(transaction)?;
         let mut to_batch = self.use_tree_mut(|maybe_tree| -> UseTreeMutResult {
             // TODO: concurrent commit
@@ -311,6 +326,23 @@ where
             self.tree = Cell::new(tree);
         }
         Ok(())
+    }
+}
+
+impl Clone for Merk<PrefixedRocksDbStorage> {
+    fn clone(&self) -> Self {
+        let tree_clone = match self.tree.take() {
+            None => None,
+            Some(tree) => {
+                let clone = tree.clone();
+                self.tree.set(Some(tree));
+                Some(clone)
+            }
+        };
+        Self {
+            tree: Cell::new(tree_clone),
+            storage: self.storage.clone(),
+        }
     }
 }
 
@@ -464,7 +496,7 @@ mod test {
         merk.apply(
             &[(vec![0], Op::Put(vec![1]))],
             &[(vec![2], Op::Put(vec![3]))],
-            None
+            None,
         )
         .expect("apply failed");
 

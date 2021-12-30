@@ -444,40 +444,27 @@ fn test_insert_if_not_exists() {
 #[test]
 fn test_insert_with_transaction_should_use_transaction() {
     let mut db = make_grovedb();
+    db.start_transaction();
     let storage = db.storage();
     let transaction = storage.transaction();
 
-    // Insert twice at the same path
-    assert_eq!(
-        db.insert_if_not_exists(
-            &[TEST_LEAF],
-            b"key1".to_vec(),
-            Element::empty_tree(),
-            Some(&transaction)
-        )
-        .expect("Provided valid path"),
-        true
-    );
-    assert_eq!(
-        db.insert_if_not_exists(
-            &[TEST_LEAF],
-            b"key1".to_vec(),
-            Element::empty_tree(),
-            Some(&transaction)
-        )
-        .expect("Provided valid path"),
-        false
-    );
-
-    // Should propagate errors from insertion
-    let result = db.insert_if_not_exists(
-        &[TEST_LEAF, b"unknown"],
-        b"key1".to_vec(),
-        Element::empty_tree(),
-        Some(&transaction),
-    );
+    // Check that there's no such key in the DB
+    let key = b"key1".to_vec();
+    let result = db.get(&[TEST_LEAF], &key);
     assert!(matches!(result, Err(Error::InvalidPath(_))));
 
-    // let key = b"key1".to_vec();
-    // let kekco = db.get(&[TEST_LEAF], b"key1".as_ref());
+    db.insert(
+        &[TEST_LEAF],
+        key.clone(),
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("Expected db.insert to work");
+
+    // transaction.rollback();
+
+    // Get without the transaction should return previous data set
+    let key = b"key1".to_vec();
+    let result = db.get(&[TEST_LEAF], &key);
+    assert!(matches!(result, Err(Error::InvalidPath(_))));
 }

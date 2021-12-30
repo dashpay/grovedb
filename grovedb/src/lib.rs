@@ -13,10 +13,14 @@ pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 use storage::{
-    rocksdb_storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError},
-    Storage,
+    rocksdb_storage::{
+        OptimisticTransactionDBTransaction, PrefixedRocksDbStorage, PrefixedRocksDbStorageError,
+    },
+    Storage, Transaction,
 };
 pub use subtree::Element;
+
+use crate::transaction::GroveDbTransaction;
 // pub use transaction::GroveDbTransaction;
 
 /// Limit of possible indirections
@@ -49,9 +53,35 @@ pub struct GroveDb {
     subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     meta_storage: PrefixedRocksDbStorage,
     pub(crate) db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
+    // Locks the database for writes during the transaction
+    is_readonly: bool,
+    // Temp trees used for writes during transaction
+    temp_root_tree: MerkleTree<Sha256>,
+    temp_root_leaf_keys: HashMap<Vec<u8>, usize>,
+    temp_subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
 }
 
 impl GroveDb {
+    pub fn new(
+        root_tree: MerkleTree<Sha256>,
+        root_leaf_keys: HashMap<Vec<u8>, usize>,
+        subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
+        meta_storage: PrefixedRocksDbStorage,
+        db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
+    ) -> Self {
+        Self {
+            root_tree,
+            root_leaf_keys,
+            subtrees,
+            meta_storage,
+            db,
+            temp_root_tree: MerkleTree::new(),
+            temp_root_leaf_keys: HashMap::new(),
+            temp_subtrees: HashMap::new(),
+            is_readonly: false,
+        }
+    }
+
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = Rc::new(
             storage::rocksdb_storage::OptimisticTransactionDB::open_cf_descriptors(
@@ -89,13 +119,13 @@ impl GroveDb {
             HashMap::new()
         };
 
-        Ok(GroveDb {
-            root_tree: Self::build_root_tree(&subtrees, &root_leaf_keys),
-            db,
-            subtrees,
+        Ok(GroveDb::new(
+            Self::build_root_tree(&subtrees, &root_leaf_keys),
             root_leaf_keys,
+            subtrees,
             meta_storage,
-        })
+            db,
+        ))
     }
 
     // TODO: Checkpoints are currently not implemented for the transactional DB
@@ -108,19 +138,51 @@ impl GroveDb {
     //     GroveDb::open(path)
     // }
 
-    fn store_subtrees_keys_data(&self) -> Result<(), Error> {
-        let prefixes: Vec<Vec<u8>> = self.subtrees.keys().map(|x| x.clone()).collect();
-        self.meta_storage.put_meta(
-            SUBTRESS_SERIALIZED_KEY,
-            &bincode::serialize(&prefixes)
-                .map_err(|_| Error::CorruptedData(String::from("unable to serialize prefixes")))?,
-        )?;
-        self.meta_storage.put_meta(
-            ROOT_LEAFS_SERIALIZED_KEY,
-            &bincode::serialize(&self.root_leaf_keys).map_err(|_| {
-                Error::CorruptedData(String::from("unable to serialize root leafs"))
-            })?,
-        )?;
+    fn store_subtrees_keys_data(
+        &self,
+        db_transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<(), Error> {
+        let subtrees = match db_transaction {
+            None => &self.subtrees,
+            Some(_) => &self.temp_subtrees,
+        };
+
+        let prefixes: Vec<Vec<u8>> = subtrees.keys().map(|x| x.clone()).collect();
+
+        // TODO: make StorageOrTransaction which will has the access to either storage
+        // or transaction
+        match db_transaction {
+            None => {
+                self.meta_storage.put_meta(
+                    SUBTRESS_SERIALIZED_KEY,
+                    &bincode::serialize(&prefixes).map_err(|_| {
+                        Error::CorruptedData(String::from("unable to serialize prefixes"))
+                    })?,
+                )?;
+                self.meta_storage.put_meta(
+                    ROOT_LEAFS_SERIALIZED_KEY,
+                    &bincode::serialize(&self.temp_root_leaf_keys).map_err(|_| {
+                        Error::CorruptedData(String::from("unable to serialize root leafs"))
+                    })?,
+                )?;
+            }
+            Some(tx) => {
+                let transaction = self.meta_storage.transaction(tx);
+                transaction.put_meta(
+                    SUBTRESS_SERIALIZED_KEY,
+                    &bincode::serialize(&prefixes).map_err(|_| {
+                        Error::CorruptedData(String::from("unable to serialize prefixes"))
+                    })?,
+                )?;
+                transaction.put_meta(
+                    ROOT_LEAFS_SERIALIZED_KEY,
+                    &bincode::serialize(&self.root_leaf_keys).map_err(|_| {
+                        Error::CorruptedData(String::from("unable to serialize root leafs"))
+                    })?,
+                )?;
+            }
+        }
+
         Ok(())
     }
 
@@ -147,6 +209,21 @@ impl GroveDb {
         mut element: subtree::Element,
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
+        let subtrees = match transaction {
+            None => &mut self.subtrees,
+            Some(_) => &mut self.temp_subtrees,
+        };
+
+        let root_leaf_keys = match transaction {
+            None => &mut self.root_leaf_keys,
+            Some(_) => &mut self.temp_root_leaf_keys,
+        };
+
+        let root_tree = match transaction {
+            None => &mut self.root_tree,
+            Some(_) => &mut self.temp_root_tree,
+        };
+
         let compressed_path = Self::compress_path(path, None);
         match &mut element {
             Element::Tree(subtree_root_hash) => {
@@ -169,25 +246,23 @@ impl GroveDb {
                     // Open Merk and put handle into `subtrees` dictionary accessible by its
                     // compressed path
                     let (compressed_path_subtree, subtree_merk) = create_subtree_merk()?;
-                    self.subtrees
-                        .insert(compressed_path_subtree.clone(), subtree_merk);
+                    subtrees.insert(compressed_path_subtree.clone(), subtree_merk);
 
                     // Update root leafs index to persist rs-merkle structure later
-                    if self.root_leaf_keys.get(&compressed_path_subtree).is_none() {
-                        self.root_leaf_keys
-                            .insert(compressed_path_subtree, self.root_tree.leaves_len());
+                    if root_leaf_keys.get(&compressed_path_subtree).is_none() {
+                        root_leaf_keys.insert(compressed_path_subtree, root_tree.leaves_len());
                     }
                     self.propagate_changes(&[&key], transaction)?;
                 } else {
                     // Add subtree to another subtree.
                     // First, check if a subtree exists to create a new subtree under it
-                    self.subtrees
+                    subtrees
                         .get(&compressed_path)
                         .ok_or(Error::InvalidPath("no subtree found under that path"))?;
                     let (compressed_path_subtree, subtree_merk) = create_subtree_merk()?;
                     // Set tree value as a a subtree root hash
                     *subtree_root_hash = subtree_merk.root_hash();
-                    self.subtrees.insert(compressed_path_subtree, subtree_merk);
+                    subtrees.insert(compressed_path_subtree, subtree_merk);
                     // Had to take merk from `subtrees` once again to solve multiple &mut s
                     let mut merk = self
                         .subtrees
@@ -197,7 +272,7 @@ impl GroveDb {
                     element.insert(&mut merk, key, transaction)?;
                     self.propagate_changes(path, transaction)?;
                 }
-                self.store_subtrees_keys_data()?;
+                self.store_subtrees_keys_data(transaction)?;
             }
             _ => {
                 // If path is empty that means there is an attempt to insert something into a
@@ -334,23 +409,36 @@ impl GroveDb {
         path: &[&[u8]],
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
+        let subtrees = match transaction {
+            None => &mut self.subtrees,
+            Some(_) => &mut self.temp_subtrees,
+        };
+
+        let root_leaf_keys = match transaction {
+            None => &mut self.root_leaf_keys,
+            Some(_) => &mut self.temp_root_leaf_keys,
+        };
+
         let mut split_path = path.split_last();
         // Go up until only one element in path, which means a key of a root tree
         while let Some((key, path_slice)) = split_path {
             if path_slice.is_empty() {
                 // Hit the root tree
-                self.root_tree = Self::build_root_tree(&self.subtrees, &self.root_leaf_keys);
+                match transaction {
+                    None => self.root_tree = Self::build_root_tree(&subtrees, &root_leaf_keys),
+                    Some(_) => {
+                        self.temp_root_tree = Self::build_root_tree(&subtrees, &root_leaf_keys)
+                    }
+                };
                 break;
             } else {
                 let compressed_path_upper_tree = Self::compress_path(path_slice, None);
                 let compressed_path_subtree = Self::compress_path(path_slice, Some(key));
-                let subtree = self
-                    .subtrees
+                let subtree = subtrees
                     .get(&compressed_path_subtree)
                     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
                 let element = Element::Tree(subtree.root_hash());
-                let upper_tree = self
-                    .subtrees
+                let upper_tree = subtrees
                     .get_mut(&compressed_path_upper_tree)
                     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
                 element.insert(upper_tree, key.to_vec(), transaction)?;
@@ -375,5 +463,28 @@ impl GroveDb {
 
     pub fn storage(&self) -> Rc<storage::rocksdb_storage::OptimisticTransactionDB> {
         self.db.clone()
+    }
+
+    pub fn start_transaction(&mut self) {
+        // Locking all writes outside of the transaction
+        self.is_readonly = true;
+
+        // Cloning all the trees to maintain original state before the transaction
+        self.temp_root_tree = self.root_tree.clone();
+        self.temp_root_leaf_keys = self.root_leaf_keys.clone();
+        self.temp_subtrees = self.subtrees.clone();
+    }
+
+    pub fn commit_transaction(&mut self) {
+        // Enabling writes again
+        self.is_readonly = false;
+
+        // Copying all changes that were made during the transaction into the db
+        self.root_tree = self.temp_root_tree.clone();
+        self.root_leaf_keys = self.temp_root_leaf_keys.drain().collect();
+        self.subtrees = self.temp_subtrees.drain().collect();
+
+        // TODO: root tree actually does support transactions, no need to do that
+        self.temp_root_tree = MerkleTree::new();
     }
 }

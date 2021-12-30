@@ -3,8 +3,7 @@
 //! Merk API to GroveDB needs.
 use merk::Op;
 use serde::{Deserialize, Serialize};
-use storage::rocksdb_storage::PrefixedRocksDbStorage;
-use storage::Storage;
+use storage::{rocksdb_storage::PrefixedRocksDbStorage, Storage};
 
 use crate::{Error, Merk};
 
@@ -43,13 +42,13 @@ impl Element {
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
-    /// If transaction is passed, the operation will be committed on the transaction
-    /// commit.
+    /// If transaction is passed, the operation will be committed on the
+    /// transaction commit.
     pub fn insert<'a: 'b, 'b>(
         &'a self,
         merk: &mut Merk<PrefixedRocksDbStorage>,
         key: Vec<u8>,
-        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>
+        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
         let batch_operations =
             [(

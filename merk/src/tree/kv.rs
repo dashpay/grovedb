@@ -10,6 +10,7 @@ use super::hash::{kv_hash, Hash, HASH_LENGTH, NULL_HASH};
 //       field and value field.
 
 /// Contains a key/value pair, and the hash of the key/value pair.
+#[derive(Clone)]
 pub struct KV {
     pub(super) key: Vec<u8>,
     pub(super) value: Vec<u8>,
