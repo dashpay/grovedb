@@ -331,18 +331,19 @@ where
 
 impl Clone for Merk<PrefixedRocksDbStorage> {
     fn clone(&self) -> Self {
-        let tree_clone = match self.tree.take() {
-            None => None,
-            Some(tree) => {
-                let clone = tree.clone();
-                self.tree.set(Some(tree));
-                Some(clone)
-            }
-        };
-        Self {
-            tree: Cell::new(tree_clone),
-            storage: self.storage.clone(),
-        }
+        // let tree_clone = match self.tree.take() {
+        //     None => None,
+        //     Some(tree) => {
+        //         let clone = tree.clone();
+        //         self.tree.set(Some(tree));
+        //         Some(clone)
+        //     }
+        // };
+        // Self {
+        //     tree: Cell::new(tree_clone),
+        //     storage: self.storage.clone(),
+        // }
+        Self::open(self.storage.clone()).unwrap()
     }
 }
 

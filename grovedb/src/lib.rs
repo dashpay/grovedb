@@ -48,7 +48,7 @@ pub enum Error {
 }
 
 pub struct GroveDb {
-    root_tree: MerkleTree<Sha256>,
+    pub root_tree: MerkleTree<Sha256>,
     root_leaf_keys: HashMap<Vec<u8>, usize>,
     subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     meta_storage: PrefixedRocksDbStorage,
@@ -56,7 +56,7 @@ pub struct GroveDb {
     // Locks the database for writes during the transaction
     is_readonly: bool,
     // Temp trees used for writes during transaction
-    temp_root_tree: MerkleTree<Sha256>,
+    pub temp_root_tree: MerkleTree<Sha256>,
     temp_root_leaf_keys: HashMap<Vec<u8>, usize>,
     temp_subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
 }
@@ -264,8 +264,7 @@ impl GroveDb {
                     *subtree_root_hash = subtree_merk.root_hash();
                     subtrees.insert(compressed_path_subtree, subtree_merk);
                     // Had to take merk from `subtrees` once again to solve multiple &mut s
-                    let mut merk = self
-                        .subtrees
+                    let mut merk = subtrees
                         .get_mut(&compressed_path)
                         .expect("merk object must exist in `subtrees`");
                     // need to mark key as taken in the upper tree
@@ -283,8 +282,7 @@ impl GroveDb {
                     ));
                 }
                 // Get a Merk by a path
-                let mut merk = self
-                    .subtrees
+                let mut merk = subtrees
                     .get_mut(&compressed_path)
                     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
                 element.insert(&mut merk, key, transaction)?;
@@ -301,7 +299,7 @@ impl GroveDb {
         element: subtree::Element,
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<bool, Error> {
-        if self.get(path, &key).is_ok() {
+        if self.get(path, &key, transaction).is_ok() {
             return Ok(false);
         }
         match self.insert(path, key, element, transaction) {
@@ -310,23 +308,43 @@ impl GroveDb {
         }
     }
 
-    pub fn get(&self, path: &[&[u8]], key: &[u8]) -> Result<subtree::Element, Error> {
-        match self.get_raw(path, key)? {
-            Element::Reference(reference_path) => self.follow_reference(reference_path),
+    pub fn get<'a>(
+        &self,
+        path: &[&[u8]],
+        key: &[u8],
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<subtree::Element, Error> {
+        match self.get_raw(path, key, transaction)? {
+            Element::Reference(reference_path) => {
+                self.follow_reference(reference_path, transaction)
+            }
             other => Ok(other),
         }
     }
 
     /// Get tree item without following references
-    fn get_raw(&self, path: &[&[u8]], key: &[u8]) -> Result<subtree::Element, Error> {
-        let merk = self
-            .subtrees
+    fn get_raw(
+        &self,
+        path: &[&[u8]],
+        key: &[u8],
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<subtree::Element, Error> {
+        let subtrees = match transaction {
+            None => &self.subtrees,
+            Some(_) => &self.temp_subtrees,
+        };
+        let merk = subtrees
             .get(&Self::compress_path(path, None))
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+
         Element::get(&merk, key)
     }
 
-    fn follow_reference(&self, mut path: Vec<Vec<u8>>) -> Result<subtree::Element, Error> {
+    fn follow_reference(
+        &self,
+        mut path: Vec<Vec<u8>>,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<subtree::Element, Error> {
         let mut hops_left = MAX_REFERENCE_HOPS;
         let mut current_element;
         let mut visited = HashSet::new();
@@ -343,6 +361,7 @@ impl GroveDb {
                         .collect::<Vec<_>>()
                         .as_slice(),
                     key,
+                    transaction,
                 )?;
             } else {
                 return Err(Error::InvalidPath("empty path"));
@@ -475,16 +494,16 @@ impl GroveDb {
         self.temp_subtrees = self.subtrees.clone();
     }
 
-    pub fn commit_transaction(&mut self) {
-        // Enabling writes again
-        self.is_readonly = false;
-
-        // Copying all changes that were made during the transaction into the db
-        self.root_tree = self.temp_root_tree.clone();
-        self.root_leaf_keys = self.temp_root_leaf_keys.drain().collect();
-        self.subtrees = self.temp_subtrees.drain().collect();
-
-        // TODO: root tree actually does support transactions, no need to do that
-        self.temp_root_tree = MerkleTree::new();
-    }
+    // pub fn commit_transaction(&mut self) {
+    //     // Enabling writes again
+    //     self.is_readonly = false;
+    //
+    //     // Copying all changes that were made during the transaction into the db
+    //     self.root_tree = self.temp_root_tree.clone();
+    //     self.root_leaf_keys = self.temp_root_leaf_keys.drain().collect();
+    //     self.subtrees = self.temp_subtrees.drain().collect();
+    //
+    //     // TODO: root tree actually does support transactions, no need to do that
+    //     self.temp_root_tree = MerkleTree::new();
+    // }
 }

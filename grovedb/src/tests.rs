@@ -1,4 +1,7 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    ops::{Deref, DerefMut},
+    option::Option::None,
+};
 
 use merk::test_utils::TempMerk;
 use tempdir::TempDir;
@@ -59,7 +62,7 @@ fn test_insert_value_to_merk() {
     db.insert(&[TEST_LEAF], b"key".to_vec(), element.clone(), None)
         .expect("successful insert");
     assert_eq!(
-        db.get(&[TEST_LEAF], b"key").expect("succesful get"),
+        db.get(&[TEST_LEAF], b"key", None).expect("succesful get"),
         element
     );
 }
@@ -81,7 +84,7 @@ fn test_insert_value_to_subtree() {
     )
     .expect("successful value insert");
     assert_eq!(
-        db.get(&[TEST_LEAF, b"key1"], b"key2")
+        db.get(&[TEST_LEAF, b"key1"], b"key2", None)
             .expect("succesful get"),
         element
     );
@@ -112,7 +115,7 @@ fn test_changes_propagated() {
     )
     .expect("successful value insert");
     assert_eq!(
-        db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3")
+        db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3", None)
             .expect("succesful get"),
         element
     );
@@ -144,7 +147,7 @@ fn test_follow_references() {
     )
     .expect("successful value insert");
     assert_eq!(
-        db.get(&[TEST_LEAF], b"reference_key")
+        db.get(&[TEST_LEAF], b"reference_key", None)
             .expect("succesful get"),
         element
     );
@@ -171,7 +174,7 @@ fn test_cyclic_references() {
     .expect("successful reference 2 insert");
 
     assert!(matches!(
-        db.get(&[TEST_LEAF], b"reference_key_1").unwrap_err(),
+        db.get(&[TEST_LEAF], b"reference_key_1", None).unwrap_err(),
         Error::CyclicReference
     ));
 }
@@ -201,7 +204,7 @@ fn test_too_many_indirections() {
     }
 
     assert!(matches!(
-        db.get(&[TEST_LEAF], &keygen(MAX_REFERENCE_HOPS + 1))
+        db.get(&[TEST_LEAF], &keygen(MAX_REFERENCE_HOPS + 1), None)
             .unwrap_err(),
         Error::ReferenceLimit
     ));
@@ -235,7 +238,7 @@ fn test_tree_structure_is_presistent() {
         )
         .expect("successful value insert");
         assert_eq!(
-            db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3")
+            db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3", None)
                 .expect("succesful get 1"),
             element
         );
@@ -243,11 +246,13 @@ fn test_tree_structure_is_presistent() {
     // Open a persisted GroveDB
     let db = GroveDb::open(tmp_dir).unwrap();
     assert_eq!(
-        db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3")
+        db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3", None)
             .expect("succesful get 2"),
         element
     );
-    assert!(db.get(&[TEST_LEAF, b"key1", b"key2"], b"key4").is_err());
+    assert!(db
+        .get(&[TEST_LEAF, b"key1", b"key2"], b"key4", None)
+        .is_err());
 }
 
 #[test]
@@ -443,28 +448,57 @@ fn test_insert_if_not_exists() {
 
 #[test]
 fn test_insert_with_transaction_should_use_transaction() {
+    let item_key = b"key3".to_vec();
+    let subtree_key = b"subtree_key".to_vec();
+
     let mut db = make_grovedb();
     db.start_transaction();
     let storage = db.storage();
     let transaction = storage.transaction();
 
+    println!("root, {}", db.root_tree.root_hex().unwrap());
+    println!("temp_root, {}", db.temp_root_tree.root_hex().unwrap());
+
+    println!("subtrees before: {}", db.subtrees.keys().len());
+    println!("temp subtrees before: {}", db.temp_subtrees.keys().len());
+
     // Check that there's no such key in the DB
-    let key = b"key1".to_vec();
-    let result = db.get(&[TEST_LEAF], &key);
+    let result = db.get(&[TEST_LEAF], &item_key, None);
     assert!(matches!(result, Err(Error::InvalidPath(_))));
+
+    let element1 = Element::Item(b"ayy".to_vec());
 
     db.insert(
         &[TEST_LEAF],
-        key.clone(),
+        item_key.clone(),
+        element1.clone(),
+        Some(&transaction),
+    )
+    .expect("cannot insert an item into GroveDB");
+
+    // The key was inserted inside the transaction, so it shouldn't be possible
+    // to get it back without committing or using transaction
+    let result = db.get(&[TEST_LEAF], &item_key, None);
+    assert!(matches!(result, Err(Error::InvalidPath(_))));
+    // Check that the element can be retrieved when transaction is passed
+    let result_with_transaction = db
+        .get(&[TEST_LEAF], &item_key, Some(&transaction))
+        .expect("Expected to work");
+    assert_eq!(result_with_transaction, Element::Item(b"ayy".to_vec()));
+
+    db.insert(
+        &[TEST_LEAF],
+        subtree_key.clone(),
         Element::empty_tree(),
         Some(&transaction),
     )
-    .expect("Expected db.insert to work");
+    .expect("cannot insert an item into GroveDB");
 
-    // transaction.rollback();
-
-    // Get without the transaction should return previous data set
-    let key = b"key1".to_vec();
-    let result = db.get(&[TEST_LEAF], &key);
+    let result = db.get(&[TEST_LEAF], &subtree_key, None);
     assert!(matches!(result, Err(Error::InvalidPath(_))));
+
+    let result_with_transaction = db
+        .get(&[TEST_LEAF], &subtree_key, Some(&transaction))
+        .expect("Expected to work");
+    assert_eq!(result_with_transaction, Element::empty_tree());
 }

@@ -151,20 +151,26 @@ impl Storage for PrefixedRocksDbStorage {
         transaction: Option<&'b OptimisticTransactionDBTransaction>,
     ) -> Result<Self::Batch<'b>, Self::Error> {
         match transaction {
-            Some(tx) => Ok(OrBatch::TransactionalBatch(
-                PrefixedTransactionalRocksDbBatch {
+            Some(tx) => {
+                println!("Batch is transaction");
+                Ok(OrBatch::TransactionalBatch(
+                    PrefixedTransactionalRocksDbBatch {
+                        prefix: self.prefix.clone(),
+                        transaction: tx,
+                        cf_aux: self.cf_aux()?,
+                        cf_roots: self.cf_roots()?,
+                    },
+                ))
+            }
+            None => {
+                println!("Youre kinda gay bro");
+                Ok(OrBatch::Batch(PrefixedRocksDbBatch {
                     prefix: self.prefix.clone(),
-                    transaction: tx,
+                    batch: WriteBatchWithTransaction::<true>::default(),
                     cf_aux: self.cf_aux()?,
                     cf_roots: self.cf_roots()?,
-                },
-            )),
-            None => Ok(OrBatch::Batch(PrefixedRocksDbBatch {
-                prefix: self.prefix.clone(),
-                batch: WriteBatchWithTransaction::<true>::default(),
-                cf_aux: self.cf_aux()?,
-                cf_roots: self.cf_roots()?,
-            })),
+                }))
+            }
         }
     }
 

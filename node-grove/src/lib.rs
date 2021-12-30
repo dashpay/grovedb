@@ -1,6 +1,6 @@
 mod converter;
 
-use std::{path::Path, sync::mpsc, thread};
+use std::{option::Option::None, path::Path, sync::mpsc, thread};
 
 use grovedb::GroveDb;
 use neon::prelude::*;
@@ -123,7 +123,7 @@ impl GroveDbWrapper {
 
         db.send_to_db_thread(move |grove_db: &mut GroveDb, channel| {
             let path_slice: Vec<&[u8]> = path.iter().map(|fragment| fragment.as_slice()).collect();
-            let result = grove_db.get(&path_slice, &key);
+            let result = grove_db.get(&path_slice, &key, None);
 
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);
