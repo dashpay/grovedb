@@ -316,6 +316,22 @@ impl GroveDb {
         }
     }
 
+    pub fn get_query(
+        &mut self,
+        path_queries: &[PathQuery],
+    ) -> Result<Vec<subtree::Element>, Error> {
+        let mut result = Vec::new();
+        for query in path_queries {
+            let merk = self
+                .subtrees
+                .get(&Self::compress_subtree_key(query.path, None))
+                .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+            let subtree_results = subtree::Element::get_query(merk, &query.query)?;
+            result.extend_from_slice(&subtree_results);
+        }
+        Ok(result)
+    }
+
     pub fn elements_iterator(&self, path: &[&[u8]]) -> Result<subtree::ElementsIterator, Error> {
         let merk = self
             .subtrees

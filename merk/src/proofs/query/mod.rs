@@ -31,7 +31,7 @@ impl Query {
         self.items.len()
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &QueryItem> {
+    pub fn iter(&self) -> impl Iterator<Item = &QueryItem> {
         self.items.iter()
     }
 
