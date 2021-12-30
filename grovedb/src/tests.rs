@@ -163,6 +163,7 @@ fn test_cyclic_references() {
 
 #[test]
 fn test_too_many_indirections() {
+    use crate::operations::get::MAX_REFERENCE_HOPS;
     let mut db = make_grovedb();
 
     let keygen = |idx| format!("key{}", idx).bytes().collect::<Vec<u8>>();
