@@ -491,10 +491,58 @@ impl GroveDb {
         res
     }
 
+    /// Returns a clone of reference counter to the underlying db storage.
+    /// Useful when working with transactions. For more details, please
+    /// refer to the [`GroveDb::start_transaction`] examples section.
     pub fn storage(&self) -> Rc<storage::rocksdb_storage::OptimisticTransactionDB> {
         self.db.clone()
     }
 
+    /// Starts database transaction. Please note that you have to start
+    /// underlying storage transaction manually.
+    ///
+    /// ## Examples:
+    /// ```
+    /// # use grovedb::{Element, Error, GroveDb};
+    /// # use rs_merkle::{MerkleTree, MerkleProof, algorithms::Sha256, Hasher, utils};
+    /// # use std::convert::TryFrom;
+    /// # use tempdir::TempDir;
+    /// #
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// const TEST_LEAF: &[u8] = b"test_leaf";
+    ///
+    /// let tmp_dir = TempDir::new("db").unwrap();
+    /// let mut db = GroveDb::open(tmp_dir.path())?;
+    /// db.insert(&[], TEST_LEAF.to_vec(), Element::empty_tree(), None)?;
+    ///
+    /// let storage = db.storage();
+    /// let db_transaction = storage.transaction();
+    /// db.start_transaction();
+    ///
+    /// let subtree_key = b"subtree_key".to_vec();
+    /// db.insert(
+    ///     &[TEST_LEAF],
+    ///     subtree_key.clone(),
+    ///     Element::empty_tree(),
+    ///     Some(&db_transaction),
+    /// )?;
+    ///
+    /// // This action exists only inside the transaction for now
+    /// let result = db.get(&[TEST_LEAF], &subtree_key, None);
+    /// assert!(matches!(result, Err(Error::InvalidPath(_))));
+    ///
+    /// // To access values inside the transaction, transaction needs to be passed to the `db::get`
+    /// let result_with_transaction = db.get(&[TEST_LEAF], &subtree_key, Some(&db_transaction))?;
+    /// assert_eq!(result_with_transaction, Element::empty_tree());
+    ///
+    /// // After transaction is committed, the value from it can be accessed normally.
+    /// db.commit_transaction(db_transaction);
+    /// let result = db.get(&[TEST_LEAF], &subtree_key, None)?;
+    /// assert_eq!(result, Element::empty_tree());
+    ///
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn start_transaction(&mut self) -> Result<(), Error> {
         if self.is_readonly {
             return Err(Error::DbIsInReadonlyMode);
@@ -510,6 +558,8 @@ impl GroveDb {
         Ok(())
     }
 
+    /// Commits previously started db transaction. For more details on the
+    /// transaction usage, please check [`GroveDb::start_transaction`]
     pub fn commit_transaction(
         &mut self,
         db_transaction: OptimisticTransactionDBTransaction,
