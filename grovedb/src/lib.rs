@@ -45,6 +45,11 @@ pub enum Error {
     StorageError(#[from] PrefixedRocksDbStorageError),
     #[error("data corruption error: {0}")]
     CorruptedData(String),
+    #[error(
+        "db is in readonly mode due to the active transaction. Please provide transaction or \
+         commit it"
+    )]
+    DbIsInReadonlyMode,
 }
 
 pub struct GroveDb {
@@ -209,6 +214,12 @@ impl GroveDb {
         mut element: subtree::Element,
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
+        if let None = transaction {
+            if self.is_readonly {
+                return Err(Error::DbIsInReadonlyMode);
+            }
+        }
+
         let subtrees = match transaction {
             None => &mut self.subtrees,
             Some(_) => &mut self.temp_subtrees,
@@ -484,7 +495,10 @@ impl GroveDb {
         self.db.clone()
     }
 
-    pub fn start_transaction(&mut self) {
+    pub fn start_transaction(&mut self) -> Result<(), Error> {
+        if self.is_readonly {
+            return Err(Error::DbIsInReadonlyMode);
+        }
         // Locking all writes outside of the transaction
         self.is_readonly = true;
 
@@ -492,9 +506,14 @@ impl GroveDb {
         self.temp_root_tree = self.root_tree.clone();
         self.temp_root_leaf_keys = self.root_leaf_keys.clone();
         self.temp_subtrees = self.subtrees.clone();
+
+        Ok(())
     }
 
-    pub fn commit_transaction(&mut self) {
+    pub fn commit_transaction(
+        &mut self,
+        db_transaction: OptimisticTransactionDBTransaction,
+    ) -> Result<(), Error> {
         // Enabling writes again
         self.is_readonly = false;
 
@@ -503,7 +522,12 @@ impl GroveDb {
         self.root_leaf_keys = self.temp_root_leaf_keys.drain().collect();
         self.subtrees = self.temp_subtrees.drain().collect();
 
-        // TODO: root tree actually does support transactions, no need to do that
+        // TODO: root tree actually does support transactions, so this
+        // code can be reworked to account for that
         self.temp_root_tree = MerkleTree::new();
+
+        Ok(db_transaction
+            .commit()
+            .map_err(PrefixedRocksDbStorageError::RocksDbError)?)
     }
 }

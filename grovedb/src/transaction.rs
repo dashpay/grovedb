@@ -1,7 +1,14 @@
-use std::rc::Rc;
+use std::{
+    collections::{hash_map::Drain, HashMap},
+    rc::Rc,
+};
 
+use merk::Merk;
+use rs_merkle::{algorithms::Sha256, MerkleTree};
 use storage::{
-    rocksdb_storage::{PrefixedRocksDbStorage, PrefixedRocksDbStorageError},
+    rocksdb_storage::{
+        OptimisticTransactionDBTransaction, PrefixedRocksDbStorage, PrefixedRocksDbStorageError,
+    },
     Storage,
 };
 
@@ -64,15 +71,40 @@ use crate::GroveDb;
 // }
 
 pub struct GroveDbTransaction<'a> {
-    db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
-    db_transaction: <PrefixedRocksDbStorage as Storage>::DBTransaction<'a>,
+    db_transaction: OptimisticTransactionDBTransaction<'a>,
+    root_tree: MerkleTree<Sha256>,
+    root_leaf_keys: HashMap<Vec<u8>, usize>,
+    subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
 }
 
-// impl<'a> GroveDbTransaction<'a> {
-//     pub fn new(db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>) ->
-// Self {         Self {
-//             db_transaction: db.transaction(),
-//             db,
-//         }
-//     }
-// }
+impl<'a> GroveDbTransaction<'a> {
+    pub fn new(
+        db_transaction: OptimisticTransactionDBTransaction<'a>,
+        root_tree: MerkleTree<Sha256>,
+        root_leaf_keys: HashMap<Vec<u8>, usize>,
+        subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
+    ) -> Self {
+        Self {
+            db_transaction,
+            root_tree,
+            root_leaf_keys,
+            subtrees,
+        }
+    }
+
+    pub fn root_leaf_keys_mut(&mut self) -> &mut HashMap<Vec<u8>, usize> {
+        &mut self.root_leaf_keys
+    }
+
+    pub fn root_leaf_keys(&self) -> &HashMap<Vec<u8>, usize> {
+        &self.root_leaf_keys
+    }
+
+    pub fn db_transaction(&self) -> &OptimisticTransactionDBTransaction {
+        &self.db_transaction
+    }
+
+    pub fn commit_db(self) -> Result<(), storage::rocksdb_storage::Error> {
+        self.db_transaction.commit()
+    }
+}

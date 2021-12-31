@@ -480,8 +480,8 @@ fn insert_item_with_transaction_should_use_transaction() {
     assert_eq!(result_with_transaction, Element::Item(b"ayy".to_vec()));
 
     // Test that commit works
-    transaction.commit();
-    db.commit_transaction();
+    // transaction.commit();
+    db.commit_transaction(transaction);
 
     // Check that the change was committed
     let result = db
@@ -495,9 +495,9 @@ fn insert_tree_with_transaction_should_use_transaction() {
     let subtree_key = b"subtree_key".to_vec();
 
     let mut db = make_grovedb();
-    db.start_transaction();
     let storage = db.storage();
-    let transaction = storage.transaction();
+    let db_transaction = storage.transaction();
+    db.start_transaction();
 
     // Check that there's no such key in the DB
     let result = db.get(&[TEST_LEAF], &subtree_key, None);
@@ -507,7 +507,7 @@ fn insert_tree_with_transaction_should_use_transaction() {
         &[TEST_LEAF],
         subtree_key.clone(),
         Element::empty_tree(),
-        Some(&transaction),
+        Some(&db_transaction),
     )
     .expect("cannot insert an item into GroveDB");
 
@@ -515,12 +515,35 @@ fn insert_tree_with_transaction_should_use_transaction() {
     assert!(matches!(result, Err(Error::InvalidPath(_))));
 
     let result_with_transaction = db
-        .get(&[TEST_LEAF], &subtree_key, Some(&transaction))
+        .get(&[TEST_LEAF], &subtree_key, Some(&db_transaction))
         .expect("Expected to work");
     assert_eq!(result_with_transaction, Element::empty_tree());
+
+    db.commit_transaction(db_transaction);
 
     let result = db
         .get(&[TEST_LEAF], &subtree_key, None)
         .expect("Expected transaction to work");
     assert_eq!(result, Element::empty_tree());
+}
+
+#[test]
+fn insert_should_return_error_when_trying_to_insert_while_transaction_is_in_process() {
+    let item_key = b"key3".to_vec();
+
+    let mut db = make_grovedb();
+    db.start_transaction();
+    let storage = db.storage();
+    let transaction = storage.transaction();
+
+    let element1 = Element::Item(b"ayy".to_vec());
+
+    let result = db.insert(&[TEST_LEAF], item_key.clone(), element1.clone(), None);
+    assert!(matches!(result, Err(Error::DbIsInReadonlyMode)));
+
+    db.commit_transaction(transaction);
+
+    // Check that writes are unlocked after the transaction is committed
+    let result = db.insert(&[TEST_LEAF], item_key.clone(), element1.clone(), None);
+    assert!(matches!(result, Ok(())));
 }
