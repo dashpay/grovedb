@@ -447,7 +447,7 @@ fn test_insert_if_not_exists() {
 }
 
 #[test]
-fn insert_item_with_transaction_should_use_transaction() {
+fn transaction_insert_item_with_transaction_should_use_transaction() {
     let item_key = b"key3".to_vec();
 
     let mut db = make_grovedb();
@@ -491,7 +491,7 @@ fn insert_item_with_transaction_should_use_transaction() {
 }
 
 #[test]
-fn insert_tree_with_transaction_should_use_transaction() {
+fn transaction_insert_tree_with_transaction_should_use_transaction() {
     let subtree_key = b"subtree_key".to_vec();
 
     let mut db = make_grovedb();
@@ -528,7 +528,7 @@ fn insert_tree_with_transaction_should_use_transaction() {
 }
 
 #[test]
-fn insert_should_return_error_when_trying_to_insert_while_transaction_is_in_process() {
+fn transaction_insert_should_return_error_when_trying_to_insert_while_transaction_is_in_process() {
     let item_key = b"key3".to_vec();
 
     let mut db = make_grovedb();
