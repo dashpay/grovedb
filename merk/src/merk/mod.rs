@@ -4,7 +4,7 @@ pub mod chunks;
 use std::{cell::Cell, cmp::Ordering, collections::LinkedList};
 
 use anyhow::{anyhow, bail, Result};
-use storage::{self, rocksdb_storage::PrefixedRocksDbStorage, Batch, Storage, Store};
+use storage::{self, rocksdb_storage::PrefixedRocksDbStorage, Batch, RawIterator, Storage, Store};
 
 use crate::{
     proofs::{encode_into, query::QueryItem, Query},
@@ -38,6 +38,21 @@ where
         merk.load_root()?;
 
         Ok(merk)
+    }
+
+    /// Deletes tree data
+    pub fn clear(self) -> Result<()> {
+        let mut iter = self.raw_iter();
+        iter.seek_to_first();
+        let mut to_delete = self.storage.new_batch()?;
+        while iter.valid() {
+            if let Some(key) = iter.key() {
+                to_delete.delete(key);
+            }
+            iter.next();
+        }
+        self.storage.commit_batch(to_delete)?;
+        Ok(())
     }
 
     /// Gets an auxiliary value.
@@ -405,7 +420,10 @@ impl Commit for MerkCommitter {
 #[cfg(test)]
 mod test {
     use rocksdb::{DBRawIteratorWithThreadMode, OptimisticTransactionDB};
-    use storage::rocksdb_storage::{default_rocksdb, PrefixedRocksDbStorage};
+    use storage::{
+        rocksdb_storage::{default_rocksdb, PrefixedRocksDbStorage},
+        RawIterator,
+    };
     use tempdir::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};

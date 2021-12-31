@@ -1,17 +1,15 @@
+mod operations;
 mod subtree;
 #[cfg(test)]
 mod tests;
 mod transaction;
 
-use std::{
-    collections::{HashMap, HashSet},
-    path::Path,
-    rc::Rc,
-};
+use std::{collections::HashMap, path::Path, rc::Rc};
 
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
-use rs_merkle::{algorithms::Sha256, MerkleTree};
+use rs_merkle::{algorithms::Sha256, Hasher, MerkleTree};
+use serde::{Deserialize, Serialize};
 use storage::{
     rocksdb_storage::{
         OptimisticTransactionDBTransaction, PrefixedRocksDbStorage, PrefixedRocksDbStorageError,
@@ -23,11 +21,9 @@ pub use subtree::Element;
 use crate::transaction::GroveDbTransaction;
 // pub use transaction::GroveDbTransaction;
 
-/// Limit of possible indirections
-const MAX_REFERENCE_HOPS: usize = 10;
 /// A key to store serialized data about subtree prefixes to restore HADS
 /// structure
-const SUBTRESS_SERIALIZED_KEY: &[u8] = b"subtreesSerialized";
+const SUBTREES_SERIALIZED_KEY: &[u8] = b"subtreesSerialized";
 /// A key to store serialized data about root tree leafs keys and order
 const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
 
@@ -38,6 +34,8 @@ pub enum Error {
     CyclicReference,
     #[error("reference hops limit exceeded")]
     ReferenceLimit,
+    #[error("invalid proof: {0}")]
+    InvalidProof(&'static str),
     #[error("invalid path: {0}")]
     InvalidPath(&'static str),
     // Irrecoverable errors
@@ -52,16 +50,29 @@ pub enum Error {
     DbIsInReadonlyMode,
 }
 
+pub struct PathQuery<'a> {
+    path: &'a [&'a [u8]],
+    query: Query,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Proof {
+    query_paths: Vec<Vec<Vec<u8>>>,
+    proofs: HashMap<Vec<u8>, Vec<u8>>,
+    root_proof: Vec<u8>,
+    root_leaf_keys: HashMap<Vec<u8>, usize>,
+}
+
 pub struct GroveDb {
-    pub root_tree: MerkleTree<Sha256>,
+    root_tree: MerkleTree<Sha256>,
     root_leaf_keys: HashMap<Vec<u8>, usize>,
     subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     meta_storage: PrefixedRocksDbStorage,
-    pub(crate) db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
+    db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
     // Locks the database for writes during the transaction
     is_readonly: bool,
     // Temp trees used for writes during transaction
-    pub temp_root_tree: MerkleTree<Sha256>,
+    temp_root_tree: MerkleTree<Sha256>,
     temp_root_leaf_keys: HashMap<Vec<u8>, usize>,
     temp_subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
 }
@@ -100,7 +111,7 @@ impl GroveDb {
 
         let mut subtrees = HashMap::new();
         // TODO: owned `get` is not required for deserialization
-        if let Some(prefixes_serialized) = meta_storage.get_meta(SUBTRESS_SERIALIZED_KEY)? {
+        if let Some(prefixes_serialized) = meta_storage.get_meta(SUBTREES_SERIALIZED_KEY)? {
             let subtrees_prefixes: Vec<Vec<u8>> = bincode::deserialize(&prefixes_serialized)
                 .map_err(|_| {
                     Error::CorruptedData(String::from("unable to deserialize prefixes"))
@@ -159,7 +170,7 @@ impl GroveDb {
         match db_transaction {
             None => {
                 self.meta_storage.put_meta(
-                    SUBTRESS_SERIALIZED_KEY,
+                    SUBTREES_SERIALIZED_KEY,
                     &bincode::serialize(&prefixes).map_err(|_| {
                         Error::CorruptedData(String::from("unable to serialize prefixes"))
                     })?,
@@ -174,7 +185,7 @@ impl GroveDb {
             Some(tx) => {
                 let transaction = self.meta_storage.transaction(tx);
                 transaction.put_meta(
-                    SUBTRESS_SERIALIZED_KEY,
+                    SUBTREES_SERIALIZED_KEY,
                     &bincode::serialize(&prefixes).map_err(|_| {
                         Error::CorruptedData(String::from("unable to serialize prefixes"))
                     })?,
@@ -206,231 +217,12 @@ impl GroveDb {
         res
     }
 
-    // TODO: split the function into smaller ones
-    pub fn insert<'a: 'b, 'b>(
-        &'a mut self,
-        path: &[&[u8]],
-        key: Vec<u8>,
-        mut element: subtree::Element,
-        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
-    ) -> Result<(), Error> {
-        if let None = transaction {
-            if self.is_readonly {
-                return Err(Error::DbIsInReadonlyMode);
-            }
-        }
-
-        let subtrees = match transaction {
-            None => &mut self.subtrees,
-            Some(_) => &mut self.temp_subtrees,
-        };
-
-        let root_leaf_keys = match transaction {
-            None => &mut self.root_leaf_keys,
-            Some(_) => &mut self.temp_root_leaf_keys,
-        };
-
-        let root_tree = match transaction {
-            None => &mut self.root_tree,
-            Some(_) => &mut self.temp_root_tree,
-        };
-
-        let compressed_path = Self::compress_path(path, None);
-        match &mut element {
-            Element::Tree(subtree_root_hash) => {
-                // Helper closure to create a new subtree under path + key
-                let create_subtree_merk =
-                    || -> Result<(Vec<u8>, Merk<PrefixedRocksDbStorage>), Error> {
-                        let compressed_path_subtree = Self::compress_path(path, Some(&key));
-                        Ok((
-                            compressed_path_subtree.clone(),
-                            Merk::open(PrefixedRocksDbStorage::new(
-                                self.db.clone(),
-                                compressed_path_subtree,
-                            )?)
-                            .map_err(|e| Error::CorruptedData(e.to_string()))?,
-                        ))
-                    };
-                if path.is_empty() {
-                    // Add subtree to the root tree
-
-                    // Open Merk and put handle into `subtrees` dictionary accessible by its
-                    // compressed path
-                    let (compressed_path_subtree, subtree_merk) = create_subtree_merk()?;
-                    subtrees.insert(compressed_path_subtree.clone(), subtree_merk);
-
-                    // Update root leafs index to persist rs-merkle structure later
-                    if root_leaf_keys.get(&compressed_path_subtree).is_none() {
-                        root_leaf_keys.insert(compressed_path_subtree, root_tree.leaves_len());
-                    }
-                    self.propagate_changes(&[&key], transaction)?;
-                } else {
-                    // Add subtree to another subtree.
-                    // First, check if a subtree exists to create a new subtree under it
-                    subtrees
-                        .get(&compressed_path)
-                        .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                    let (compressed_path_subtree, subtree_merk) = create_subtree_merk()?;
-                    // Set tree value as a a subtree root hash
-                    *subtree_root_hash = subtree_merk.root_hash();
-                    subtrees.insert(compressed_path_subtree, subtree_merk);
-                    // Had to take merk from `subtrees` once again to solve multiple &mut s
-                    let mut merk = subtrees
-                        .get_mut(&compressed_path)
-                        .expect("merk object must exist in `subtrees`");
-                    // need to mark key as taken in the upper tree
-                    element.insert(&mut merk, key, transaction)?;
-                    self.propagate_changes(path, transaction)?;
-                }
-                self.store_subtrees_keys_data(transaction)?;
-            }
-            _ => {
-                // If path is empty that means there is an attempt to insert something into a
-                // root tree and this branch is for anything but trees
-                if path.is_empty() {
-                    return Err(Error::InvalidPath(
-                        "only subtrees are allowed as root tree's leafs",
-                    ));
-                }
-                // Get a Merk by a path
-                let mut merk = subtrees
-                    .get_mut(&compressed_path)
-                    .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                element.insert(&mut merk, key, transaction)?;
-                self.propagate_changes(path, transaction)?;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn insert_if_not_exists<'a: 'b, 'b>(
-        &mut self,
-        path: &[&[u8]],
-        key: Vec<u8>,
-        element: subtree::Element,
-        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
-    ) -> Result<bool, Error> {
-        if self.get(path, &key, transaction).is_ok() {
-            return Ok(false);
-        }
-        match self.insert(path, key, element, transaction) {
-            Ok(_) => Ok(true),
-            Err(e) => Err(e),
-        }
-    }
-
-    pub fn get<'a>(
-        &self,
-        path: &[&[u8]],
-        key: &[u8],
-        transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<subtree::Element, Error> {
-        match self.get_raw(path, key, transaction)? {
-            Element::Reference(reference_path) => {
-                self.follow_reference(reference_path, transaction)
-            }
-            other => Ok(other),
-        }
-    }
-
-    /// Get tree item without following references
-    fn get_raw(
-        &self,
-        path: &[&[u8]],
-        key: &[u8],
-        transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<subtree::Element, Error> {
-        let subtrees = match transaction {
-            None => &self.subtrees,
-            Some(_) => &self.temp_subtrees,
-        };
-        let merk = subtrees
-            .get(&Self::compress_path(path, None))
-            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-
-        Element::get(&merk, key)
-    }
-
-    fn follow_reference(
-        &self,
-        mut path: Vec<Vec<u8>>,
-        transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<subtree::Element, Error> {
-        let mut hops_left = MAX_REFERENCE_HOPS;
-        let mut current_element;
-        let mut visited = HashSet::new();
-
-        while hops_left > 0 {
-            if visited.contains(&path) {
-                return Err(Error::CyclicReference);
-            }
-            if let Some((key, path_slice)) = path.split_last() {
-                current_element = self.get_raw(
-                    path_slice
-                        .iter()
-                        .map(|x| x.as_slice())
-                        .collect::<Vec<_>>()
-                        .as_slice(),
-                    key,
-                    transaction,
-                )?;
-            } else {
-                return Err(Error::InvalidPath("empty path"));
-            }
-            visited.insert(path);
-            match current_element {
-                Element::Reference(reference_path) => path = reference_path,
-                other => return Ok(other),
-            }
-            hops_left -= 1;
-        }
-        Err(Error::ReferenceLimit)
-    }
-
-    pub fn proof(&self, path: &[&[u8]], proof_query: Query) -> Result<Vec<Vec<u8>>, Error> {
-        let mut proofs: Vec<Vec<u8>> = Vec::new();
-
-        // First prove the query
-        proofs.push(self.prove_item(path, proof_query)?);
-
-        // Next prove the query path
-        let mut split_path = path.split_last();
-        while let Some((key, path_slice)) = split_path {
-            if path_slice.is_empty() {
-                // Get proof for root tree at current key
-                let root_key_index = self
-                    .root_leaf_keys
-                    .get(*key)
-                    .ok_or(Error::InvalidPath("root key not found"))?;
-                proofs.push(self.root_tree.proof(&[*root_key_index]).to_bytes());
-            } else {
-                let mut path_query = Query::new();
-                path_query.insert_item(QueryItem::Key(key.to_vec()));
-                proofs.push(self.prove_item(path_slice, path_query)?);
-            }
-            split_path = path_slice.split_last();
-        }
-
-        // Append the root leaf keys hash map to proof to provide context when verifying
-        // proof
-        let aux_data = bincode::serialize(&self.root_leaf_keys)
-            .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
-        proofs.push(aux_data);
-
-        Ok(proofs)
-    }
-
-    fn prove_item(&self, path: &[&[u8]], proof_query: Query) -> Result<Vec<u8>, Error> {
+    pub fn elements_iterator(&self, path: &[&[u8]]) -> Result<subtree::ElementsIterator, Error> {
         let merk = self
             .subtrees
-            .get(&Self::compress_path(path, None))
+            .get(&Self::compress_subtree_key(path, None))
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-
-        let proof_result = merk
-            .prove(proof_query)
-            .expect("should prove both inclusion and absence");
-
-        Ok(proof_result)
+        Ok(Element::iterator(merk.raw_iter()))
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
@@ -462,8 +254,8 @@ impl GroveDb {
                 };
                 break;
             } else {
-                let compressed_path_upper_tree = Self::compress_path(path_slice, None);
-                let compressed_path_subtree = Self::compress_path(path_slice, Some(key));
+                let compressed_path_upper_tree = Self::compress_subtree_key(path_slice, None);
+                let compressed_path_subtree = Self::compress_subtree_key(path_slice, Some(key));
                 let subtree = subtrees
                     .get(&compressed_path_subtree)
                     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
@@ -480,15 +272,31 @@ impl GroveDb {
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
-    fn compress_path(path: &[&[u8]], key: Option<&[u8]>) -> Vec<u8> {
-        let mut res = path.iter().fold(Vec::<u8>::new(), |mut acc, p| {
+    fn compress_subtree_key(path: &[&[u8]], key: Option<&[u8]>) -> Vec<u8> {
+        let segments_iter = path.into_iter().map(|x| *x).chain(key.into_iter());
+        let mut segments_count = path.len();
+        if key.is_some() {
+            segments_count += 1;
+        }
+        let mut res = segments_iter.fold(Vec::<u8>::new(), |mut acc, p| {
             acc.extend(p.into_iter());
             acc
         });
-        if let Some(k) = key {
-            res.extend_from_slice(k);
-        }
+
+        res.extend(segments_count.to_ne_bytes());
+        path.into_iter()
+            .map(|x| *x)
+            .chain(key.into_iter())
+            .fold(&mut res, |acc, p| {
+                acc.extend(p.len().to_ne_bytes());
+                acc
+            });
+        res = Sha256::hash(&res).to_vec();
         res
+    }
+
+    pub fn flush(&self) -> Result<(), Error> {
+        Ok(self.meta_storage.flush()?)
     }
 
     /// Returns a clone of reference counter to the underlying db storage.

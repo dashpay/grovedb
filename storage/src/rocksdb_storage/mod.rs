@@ -58,63 +58,251 @@ fn make_prefixed_key(prefix: Vec<u8>, key: &[u8]) -> Vec<u8> {
     prefixed_key
 }
 
-pub type DBRawTransactionIterator<'a> =
-    rocksdb::DBRawIteratorWithThreadMode<'a, OptimisticTransactionDB>;
+/// RocksDB wrapper to store items with prefixes
+pub struct PrefixedRocksDbStorage {
+    db: Rc<rocksdb::DB>,
+    prefix: Vec<u8>,
+}
 
-pub type OptimisticTransactionDBTransaction<'a> = rocksdb::Transaction<'a, OptimisticTransactionDB>;
+#[derive(thiserror::Error, Debug)]
+pub enum PrefixedRocksDbStorageError {
+    #[error("column family not found: {0}")]
+    ColumnFamilyNotFound(&'static str),
+    #[error(transparent)]
+    RocksDbError(#[from] rocksdb::Error),
+}
 
-// Implement marker trait for internal DB transaction
-impl DBTransaction<'_> for OptimisticTransactionDBTransaction<'_> {}
-
-impl RawIterator for DBRawTransactionIterator<'_> {
-    fn seek_to_first(&mut self) {
-        DBRawTransactionIterator::seek_to_first(self)
+impl PrefixedRocksDbStorage {
+    /// Wraps RocksDB to prepend prefixes to each operation
+    pub fn new(db: Rc<rocksdb::DB>, prefix: Vec<u8>) -> Result<Self, PrefixedRocksDbStorageError> {
+        Ok(PrefixedRocksDbStorage { prefix, db })
     }
 
-    fn seek(&mut self, key: &[u8]) {
-        DBRawTransactionIterator::seek(self, key)
+    /// Get auxiliary data column family
+    fn cf_aux(&self) -> Result<&rocksdb::ColumnFamily, PrefixedRocksDbStorageError> {
+        self.db
+            .cf_handle(AUX_CF_NAME)
+            .ok_or(PrefixedRocksDbStorageError::ColumnFamilyNotFound(
+                AUX_CF_NAME,
+            ))
     }
 
-    fn next(&mut self) {
-        DBRawTransactionIterator::next(self)
+    /// Get trees roots data column family
+    fn cf_roots(&self) -> Result<&rocksdb::ColumnFamily, PrefixedRocksDbStorageError> {
+        self.db
+            .cf_handle(ROOTS_CF_NAME)
+            .ok_or(PrefixedRocksDbStorageError::ColumnFamilyNotFound(
+                ROOTS_CF_NAME,
+            ))
     }
 
-    fn value(&self) -> Option<&[u8]> {
-        DBRawTransactionIterator::value(self)
-    }
-
-    fn key(&self) -> Option<&[u8]> {
-        DBRawTransactionIterator::key(self)
-    }
-
-    fn valid(&self) -> bool {
-        DBRawTransactionIterator::valid(self)
+    /// Get metadata column family
+    fn cf_meta(&self) -> Result<&rocksdb::ColumnFamily, PrefixedRocksDbStorageError> {
+        self.db
+            .cf_handle(META_CF_NAME)
+            .ok_or(PrefixedRocksDbStorageError::ColumnFamilyNotFound(
+                META_CF_NAME,
+            ))
     }
 }
 
-impl RawIterator for rocksdb::DBRawIterator<'_> {
+impl Storage for PrefixedRocksDbStorage {
+    type Batch<'a> = PrefixedRocksDbBatch<'a>;
+    type Error = PrefixedRocksDbStorageError;
+    type RawIterator<'a> = RawPrefixedIterator<'a>;
+
+    fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+        self.db
+            .put(make_prefixed_key(self.prefix.clone(), key), value)?;
+        Ok(())
+    }
+
+    fn put_aux(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+        self.db.put_cf(
+            self.cf_aux()?,
+            make_prefixed_key(self.prefix.clone(), key),
+            value,
+        )?;
+        Ok(())
+    }
+
+    fn put_root(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+        self.db.put_cf(
+            self.cf_roots()?,
+            make_prefixed_key(self.prefix.clone(), key),
+            value,
+        )?;
+        Ok(())
+    }
+
+    fn delete(&self, key: &[u8]) -> Result<(), Self::Error> {
+        self.db
+            .delete(make_prefixed_key(self.prefix.clone(), key))?;
+        Ok(())
+    }
+
+    fn delete_aux(&self, key: &[u8]) -> Result<(), Self::Error> {
+        self.db
+            .delete_cf(self.cf_aux()?, make_prefixed_key(self.prefix.clone(), key))?;
+        Ok(())
+    }
+
+    fn delete_root(&self, key: &[u8]) -> Result<(), Self::Error> {
+        self.db.delete_cf(
+            self.cf_roots()?,
+            make_prefixed_key(self.prefix.clone(), key),
+        )?;
+        Ok(())
+    }
+
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        Ok(self.db.get(make_prefixed_key(self.prefix.clone(), key))?)
+    }
+
+    fn get_aux(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        Ok(self
+            .db
+            .get_cf(self.cf_aux()?, make_prefixed_key(self.prefix.clone(), key))?)
+    }
+
+    fn get_root(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        Ok(self.db.get_cf(
+            self.cf_roots()?,
+            make_prefixed_key(self.prefix.clone(), key),
+        )?)
+    }
+
+    fn put_meta(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+        Ok(self.db.put_cf(self.cf_meta()?, key, value)?)
+    }
+
+    fn delete_meta(&self, key: &[u8]) -> Result<(), Self::Error> {
+        Ok(self.db.delete_cf(self.cf_meta()?, key)?)
+    }
+
+    fn get_meta(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        Ok(self.db.get_cf(self.cf_meta()?, key)?)
+    }
+
+    fn new_batch<'a>(&'a self) -> Result<Self::Batch<'a>, Self::Error> {
+        Ok(PrefixedRocksDbBatch {
+            prefix: self.prefix.clone(),
+            batch: WriteBatch::default(),
+            cf_aux: self.cf_aux()?,
+            cf_roots: self.cf_roots()?,
+        })
+    }
+
+    fn commit_batch<'a>(&'a self, batch: Self::Batch<'a>) -> Result<(), Self::Error> {
+        self.db.write(batch.batch)?;
+        Ok(())
+    }
+
+    fn flush(&self) -> Result<(), Self::Error> {
+        self.db.flush()?;
+        Ok(())
+    }
+
+    fn raw_iter<'a>(&'a self) -> Self::RawIterator<'a> {
+        RawPrefixedIterator {
+            rocksdb_iterator: self.db.raw_iterator(),
+            prefix: &self.prefix,
+        }
+    }
+}
+
+pub struct RawPrefixedIterator<'a> {
+    rocksdb_iterator: DBRawIterator<'a>,
+    prefix: &'a [u8],
+}
+
+impl RawIterator for RawPrefixedIterator<'_> {
     fn seek_to_first(&mut self) {
-        DBRawIterator::seek_to_first(self)
+        self.rocksdb_iterator.seek(self.prefix);
     }
 
     fn seek(&mut self, key: &[u8]) {
-        DBRawIterator::seek(self, key)
+        self.rocksdb_iterator
+            .seek(make_prefixed_key(self.prefix.to_vec(), key));
     }
 
     fn next(&mut self) {
-        DBRawIterator::next(self)
+        self.rocksdb_iterator.next();
+    }
+
+    fn prev(&mut self) {
+        self.rocksdb_iterator.prev();
     }
 
     fn value(&self) -> Option<&[u8]> {
-        DBRawIterator::value(self)
+        if self.valid() {
+            self.rocksdb_iterator.value()
+        } else {
+            None
+        }
     }
 
     fn key(&self) -> Option<&[u8]> {
-        DBRawIterator::key(self)
+        if self.valid() {
+            self.rocksdb_iterator
+                .key()
+                .map(|k| k.split_at(self.prefix.len()).1)
+        } else {
+            None
+        }
     }
 
     fn valid(&self) -> bool {
-        DBRawIterator::valid(self)
+        self.rocksdb_iterator
+            .key()
+            .map(|k| k.starts_with(self.prefix))
+            .unwrap_or(false)
+    }
+}
+
+/// Wrapper to RocksDB batch
+pub struct PrefixedRocksDbBatch<'a> {
+    prefix: Vec<u8>,
+    batch: rocksdb::WriteBatch,
+    cf_aux: &'a ColumnFamily,
+    cf_roots: &'a ColumnFamily,
+}
+
+impl<'a> Batch for PrefixedRocksDbBatch<'a> {
+    fn put(&mut self, key: &[u8], value: &[u8]) {
+        self.batch
+            .put(make_prefixed_key(self.prefix.clone(), key), value)
+    }
+
+    fn put_aux(&mut self, key: &[u8], value: &[u8]) {
+        self.batch.put_cf(
+            self.cf_aux,
+            make_prefixed_key(self.prefix.clone(), key),
+            value,
+        )
+    }
+
+    fn put_root(&mut self, key: &[u8], value: &[u8]) {
+        self.batch.put_cf(
+            self.cf_roots,
+            make_prefixed_key(self.prefix.clone(), key),
+            value,
+        )
+    }
+
+    fn delete(&mut self, key: &[u8]) {
+        self.batch
+            .delete(make_prefixed_key(self.prefix.clone(), key))
+    }
+
+    fn delete_aux(&mut self, key: &[u8]) {
+        self.batch
+            .delete_cf(self.cf_aux, make_prefixed_key(self.prefix.clone(), key))
+    }
+
+    fn delete_root(&mut self, key: &[u8]) {
+        self.batch
+            .delete_cf(self.cf_roots, make_prefixed_key(self.prefix.clone(), key))
     }
 }
 
@@ -341,18 +529,63 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn transaction_commit_should_work() {
-    //     let storage = TempPrefixedStorage::new();
-    //     let transaction = storage.transaction();
-    //     transaction
-    //         .put(b"key1", b"value1")
-    //         .expect("Expected to put value");
-    //     transaction
-    //         .put(b"key2", b"value2")
-    //         .expect("Expected to put value");
-    //     transaction
-    //         .put_root(b"root", b"yeet")
-    //         .expect("Expected to put root");
-    // }
+    #[test]
+    fn test_raw_iterator() {
+        let tmp_dir = TempDir::new("test_raw_iterator").expect("unable to open a tempdir");
+        let db = default_rocksdb(tmp_dir.path());
+
+        let storage = PrefixedRocksDbStorage::new(db.clone(), b"someprefix".to_vec())
+            .expect("cannot create a prefixed storage");
+        storage
+            .put(b"key1", b"value1")
+            .expect("expected successful insertion");
+        storage
+            .put(b"key0", b"value0")
+            .expect("expected successful insertion");
+        storage
+            .put(b"key3", b"value3")
+            .expect("expected successful insertion");
+        storage
+            .put(b"key2", b"value2")
+            .expect("expected successful insertion");
+
+        // Other storages are required to put something into rocksdb with other prefix
+        // to see if there will be any conflicts and boundaries are met
+        let another_storage_before =
+            PrefixedRocksDbStorage::new(db.clone(), b"anothersomeprefix".to_vec())
+                .expect("cannot create a prefixed storage");
+        another_storage_before
+            .put(b"key1", b"value1")
+            .expect("expected successful insertion");
+        another_storage_before
+            .put(b"key5", b"value5")
+            .expect("expected successful insertion");
+        let another_storage_after = PrefixedRocksDbStorage::new(db, b"zanothersomeprefix".to_vec())
+            .expect("cannot create a prefixed storage");
+        another_storage_after
+            .put(b"key1", b"value1")
+            .expect("expected successful insertion");
+        another_storage_after
+            .put(b"key5", b"value5")
+            .expect("expected successful insertion");
+
+        let expected: [(&'static [u8], &'static [u8]); 4] = [
+            (b"key0", b"value0"),
+            (b"key1", b"value1"),
+            (b"key2", b"value2"),
+            (b"key3", b"value3"),
+        ];
+        let mut expected_iter = expected.into_iter();
+
+        let mut iter = storage.raw_iter();
+        iter.seek_to_first();
+        while iter.valid() {
+            assert_eq!(
+                (iter.key().unwrap(), iter.value().unwrap()),
+                expected_iter.next().unwrap()
+            );
+            iter.next();
+        }
+        assert!(expected_iter.next().is_none());
+    }
 }

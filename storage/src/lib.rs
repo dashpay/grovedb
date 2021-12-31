@@ -189,6 +189,8 @@ pub trait RawIterator {
 
     fn next(&mut self);
 
+    fn prev(&mut self);
+
     fn value(&self) -> Option<&[u8]>;
 
     fn key(&self) -> Option<&[u8]>;
