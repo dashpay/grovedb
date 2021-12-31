@@ -494,16 +494,16 @@ impl GroveDb {
         self.temp_subtrees = self.subtrees.clone();
     }
 
-    // pub fn commit_transaction(&mut self) {
-    //     // Enabling writes again
-    //     self.is_readonly = false;
-    //
-    //     // Copying all changes that were made during the transaction into the db
-    //     self.root_tree = self.temp_root_tree.clone();
-    //     self.root_leaf_keys = self.temp_root_leaf_keys.drain().collect();
-    //     self.subtrees = self.temp_subtrees.drain().collect();
-    //
-    //     // TODO: root tree actually does support transactions, no need to do that
-    //     self.temp_root_tree = MerkleTree::new();
-    // }
+    pub fn commit_transaction(&mut self) {
+        // Enabling writes again
+        self.is_readonly = false;
+
+        // Copying all changes that were made during the transaction into the db
+        self.root_tree = self.temp_root_tree.clone();
+        self.root_leaf_keys = self.temp_root_leaf_keys.drain().collect();
+        self.subtrees = self.temp_subtrees.drain().collect();
+
+        // TODO: root tree actually does support transactions, no need to do that
+        self.temp_root_tree = MerkleTree::new();
+    }
 }

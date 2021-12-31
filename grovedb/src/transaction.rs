@@ -64,7 +64,15 @@ use crate::GroveDb;
 // }
 
 pub struct GroveDbTransaction<'a> {
-    db_transaction: Option<<PrefixedRocksDbStorage as Storage>::DBTransaction<'a>>,
+    db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
+    db_transaction: <PrefixedRocksDbStorage as Storage>::DBTransaction<'a>,
 }
 
-// impl GroveDbTransaction<'_> {}
+// impl<'a> GroveDbTransaction<'a> {
+//     pub fn new(db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>) ->
+// Self {         Self {
+//             db_transaction: db.transaction(),
+//             db,
+//         }
+//     }
+// }

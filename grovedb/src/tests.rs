@@ -447,20 +447,13 @@ fn test_insert_if_not_exists() {
 }
 
 #[test]
-fn test_insert_with_transaction_should_use_transaction() {
+fn insert_item_with_transaction_should_use_transaction() {
     let item_key = b"key3".to_vec();
-    let subtree_key = b"subtree_key".to_vec();
 
     let mut db = make_grovedb();
     db.start_transaction();
     let storage = db.storage();
     let transaction = storage.transaction();
-
-    println!("root, {}", db.root_tree.root_hex().unwrap());
-    println!("temp_root, {}", db.temp_root_tree.root_hex().unwrap());
-
-    println!("subtrees before: {}", db.subtrees.keys().len());
-    println!("temp subtrees before: {}", db.temp_subtrees.keys().len());
 
     // Check that there's no such key in the DB
     let result = db.get(&[TEST_LEAF], &item_key, None);
@@ -486,6 +479,30 @@ fn test_insert_with_transaction_should_use_transaction() {
         .expect("Expected to work");
     assert_eq!(result_with_transaction, Element::Item(b"ayy".to_vec()));
 
+    // Test that commit works
+    transaction.commit();
+    db.commit_transaction();
+
+    // Check that the change was committed
+    let result = db
+        .get(&[TEST_LEAF], &item_key, None)
+        .expect("Expected transaction to work");
+    assert_eq!(result, Element::Item(b"ayy".to_vec()));
+}
+
+#[test]
+fn insert_tree_with_transaction_should_use_transaction() {
+    let subtree_key = b"subtree_key".to_vec();
+
+    let mut db = make_grovedb();
+    db.start_transaction();
+    let storage = db.storage();
+    let transaction = storage.transaction();
+
+    // Check that there's no such key in the DB
+    let result = db.get(&[TEST_LEAF], &subtree_key, None);
+    assert!(matches!(result, Err(Error::InvalidPath(_))));
+
     db.insert(
         &[TEST_LEAF],
         subtree_key.clone(),
@@ -501,4 +518,9 @@ fn test_insert_with_transaction_should_use_transaction() {
         .get(&[TEST_LEAF], &subtree_key, Some(&transaction))
         .expect("Expected to work");
     assert_eq!(result_with_transaction, Element::empty_tree());
+
+    let result = db
+        .get(&[TEST_LEAF], &subtree_key, None)
+        .expect("Expected transaction to work");
+    assert_eq!(result, Element::empty_tree());
 }
