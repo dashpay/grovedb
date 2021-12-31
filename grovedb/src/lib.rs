@@ -18,7 +18,7 @@ use storage::{
 };
 pub use subtree::Element;
 
-use crate::transaction::GroveDbTransaction;
+// use crate::transaction::GroveDbTransaction;
 // pub use transaction::GroveDbTransaction;
 
 /// A key to store serialized data about subtree prefixes to restore HADS
@@ -217,9 +217,17 @@ impl GroveDb {
         res
     }
 
-    pub fn elements_iterator(&self, path: &[&[u8]]) -> Result<subtree::ElementsIterator, Error> {
-        let merk = self
-            .subtrees
+    pub fn elements_iterator(
+        &self,
+        path: &[&[u8]],
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<subtree::ElementsIterator, Error> {
+        let subtrees = match transaction {
+            None => &self.subtrees,
+            Some(_) => &self.temp_subtrees,
+        };
+
+        let merk = subtrees
             .get(&Self::compress_subtree_key(path, None))
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
         Ok(Element::iterator(merk.raw_iter()))

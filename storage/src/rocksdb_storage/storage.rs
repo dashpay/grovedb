@@ -3,8 +3,8 @@ use std::rc::Rc;
 use rocksdb::WriteBatchWithTransaction;
 
 use super::{
-    make_prefixed_key, DBRawTransactionIterator, PrefixedRocksDbBatch, PrefixedRocksDbTransaction,
-    AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME,
+    make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbTransaction,
+    RawPrefixedTransactionalIterator, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME,
 };
 use crate::{
     rocksdb_storage::{
@@ -70,7 +70,7 @@ impl Storage for PrefixedRocksDbStorage {
     type Batch<'a> = OrBatch<'a>;
     type DBTransaction<'a> = OptimisticTransactionDBTransaction<'a>;
     type Error = PrefixedRocksDbStorageError;
-    type RawIterator<'a> = DBRawTransactionIterator<'a>;
+    type RawIterator<'a> = RawPrefixedTransactionalIterator<'a>;
     type StorageTransaction<'a> = PrefixedRocksDbTransaction<'a>;
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
@@ -151,26 +151,20 @@ impl Storage for PrefixedRocksDbStorage {
         transaction: Option<&'b OptimisticTransactionDBTransaction>,
     ) -> Result<Self::Batch<'b>, Self::Error> {
         match transaction {
-            Some(tx) => {
-                println!("Batch is transaction");
-                Ok(OrBatch::TransactionalBatch(
-                    PrefixedTransactionalRocksDbBatch {
-                        prefix: self.prefix.clone(),
-                        transaction: tx,
-                        cf_aux: self.cf_aux()?,
-                        cf_roots: self.cf_roots()?,
-                    },
-                ))
-            }
-            None => {
-                println!("Youre kinda gay bro");
-                Ok(OrBatch::Batch(PrefixedRocksDbBatch {
+            Some(tx) => Ok(OrBatch::TransactionalBatch(
+                PrefixedTransactionalRocksDbBatch {
                     prefix: self.prefix.clone(),
-                    batch: WriteBatchWithTransaction::<true>::default(),
+                    transaction: tx,
                     cf_aux: self.cf_aux()?,
                     cf_roots: self.cf_roots()?,
-                }))
-            }
+                },
+            )),
+            None => Ok(OrBatch::Batch(PrefixedRocksDbBatch {
+                prefix: self.prefix.clone(),
+                batch: WriteBatchWithTransaction::<true>::default(),
+                cf_aux: self.cf_aux()?,
+                cf_roots: self.cf_roots()?,
+            })),
         }
     }
 
@@ -190,7 +184,10 @@ impl Storage for PrefixedRocksDbStorage {
     }
 
     fn raw_iter<'a>(&'a self) -> Self::RawIterator<'a> {
-        self.db.raw_iterator()
+        RawPrefixedTransactionalIterator {
+            rocksdb_iterator: self.db.raw_iterator(),
+            prefix: &self.prefix,
+        }
     }
 
     fn transaction<'a>(
