@@ -354,18 +354,9 @@ fn test_proof_construction() {
     // Get grovedb proof
     let proof = temp_db
         .proof(vec![
-            PathQuery {
-                path: &[TEST_LEAF, b"innertree"],
-                query: path_one_query,
-            },
-            PathQuery {
-                path: &[ANOTHER_TEST_LEAF, b"innertree3"],
-                query: path_two_query,
-            },
-            PathQuery {
-                path: &[ANOTHER_TEST_LEAF, b"innertree2"],
-                query: path_three_query,
-            },
+            PathQuery::new(&[TEST_LEAF, b"innertree"], path_one_query),
+            PathQuery::new(&[ANOTHER_TEST_LEAF, b"innertree3"], path_two_query),
+            PathQuery::new(&[ANOTHER_TEST_LEAF, b"innertree2"], path_three_query),
         ])
         .unwrap();
 
@@ -529,10 +520,10 @@ fn test_successful_proof_verification() {
     path_one_query.insert_key(b"key2".to_vec());
 
     let proof = temp_db
-        .proof(vec![PathQuery {
-            path: &[TEST_LEAF, b"innertree"],
-            query: path_one_query,
-        }])
+        .proof(vec![PathQuery::new(
+            &[TEST_LEAF, b"innertree"],
+            path_one_query,
+        )])
         .unwrap();
 
     // Assert correct root hash
@@ -558,14 +549,8 @@ fn test_successful_proof_verification() {
     // Get grovedb proof
     let proof = temp_db
         .proof(vec![
-            PathQuery {
-                path: &[ANOTHER_TEST_LEAF, b"innertree3"],
-                query: path_two_query,
-            },
-            PathQuery {
-                path: &[ANOTHER_TEST_LEAF, b"innertree2"],
-                query: path_three_query,
-            },
+            PathQuery::new(&[ANOTHER_TEST_LEAF, b"innertree3"], path_two_query),
+            PathQuery::new(&[ANOTHER_TEST_LEAF, b"innertree2"], path_three_query),
         ])
         .unwrap();
 
@@ -890,14 +875,9 @@ fn test_get_query() {
     query1.insert_range_inclusive(b"key3".to_vec()..=b"key4".to_vec());
     query2.insert_key(b"key6".to_vec());
 
-    let path_query1 = PathQuery {
-        path: &path1,
-        query: query1,
-    };
-    let path_query2 = PathQuery {
-        path: &path2,
-        query: query2,
-    };
+    let path_query1 = PathQuery::new(&path1, query1);
+    let path_query2 = PathQuery::new(&path2, query2);
+
     assert_eq!(
         db.get_query(&[path_query1, path_query2])
             .expect("expected successful get_query"),

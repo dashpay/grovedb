@@ -44,6 +44,12 @@ pub struct PathQuery<'a> {
     query: Query,
 }
 
+impl PathQuery<'_> {
+    pub fn new<'a>(path: &'a [&'a [u8]], query: Query) -> PathQuery {
+        PathQuery { path, query }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Proof {
     query_paths: Vec<Vec<Vec<u8>>>,
