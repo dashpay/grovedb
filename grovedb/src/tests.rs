@@ -85,7 +85,7 @@ fn test_insert_value_to_subtree() {
 #[test]
 fn test_changes_propagated() {
     let mut db = make_grovedb();
-    let old_hash = db.root_tree.root();
+    let old_hash = db.get_root_hash();
     let element = Element::Item(b"ayy".to_vec());
 
     // Insert some nested subtrees
@@ -109,7 +109,7 @@ fn test_changes_propagated() {
             .expect("succesful get"),
         element
     );
-    assert_ne!(old_hash, db.root_tree.root());
+    assert_ne!(old_hash, db.get_root_hash());
 }
 
 #[test]
@@ -528,7 +528,7 @@ fn test_successful_proof_verification() {
 
     // Assert correct root hash
     let (root_hash, result_maps) = GroveDb::execute_proof(proof).unwrap();
-    assert_eq!(temp_db.root_tree.root().unwrap(), root_hash);
+    assert_eq!(temp_db.get_root_hash().unwrap(), root_hash);
 
     // Assert correct result object
     // Proof query was for two keys key1 and key2
@@ -556,7 +556,7 @@ fn test_successful_proof_verification() {
 
     // Assert correct root hash
     let (root_hash, result_maps) = GroveDb::execute_proof(proof).unwrap();
-    assert_eq!(temp_db.root_tree.root().unwrap(), root_hash);
+    assert_eq!(temp_db.get_root_hash().unwrap(), root_hash);
 
     // Assert correct result object
     let path_one_as_vec = GroveDb::compress_subtree_key(&[ANOTHER_TEST_LEAF, b"innertree3"], None);
@@ -753,13 +753,13 @@ fn test_element_deletion() {
     let element = Element::Item(b"ayy".to_vec());
     db.insert(&[TEST_LEAF], b"key".to_vec(), element.clone())
         .expect("successful insert");
-    let root_hash = db.root_tree.root().unwrap();
+    let root_hash = db.get_root_hash().unwrap();
     assert!(db.delete(&[TEST_LEAF], b"key".to_vec()).is_ok(),);
     assert!(matches!(
         db.get(&[TEST_LEAF], b"key"),
         Err(Error::InvalidPath(_))
     ));
-    assert_ne!(root_hash, db.root_tree.root().unwrap());
+    assert_ne!(root_hash, db.get_root_hash().unwrap());
 }
 
 #[test]
@@ -821,7 +821,7 @@ fn test_subtree_deletion() {
     db.insert(&[TEST_LEAF], b"key4".to_vec(), Element::empty_tree())
         .expect("successful subtree 3 insert");
 
-    let root_hash = db.root_tree.root().unwrap();
+    let root_hash = db.get_root_hash().unwrap();
     db.delete(&[TEST_LEAF], b"key1".to_vec())
         .expect("unable to delete subtree");
     assert!(matches!(
@@ -830,7 +830,7 @@ fn test_subtree_deletion() {
     ));
     assert_eq!(db.subtrees.len(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF and TEST_LEAF.key4 stay
     assert!(db.get(&[TEST_LEAF], b"key4").is_ok());
-    assert_ne!(root_hash, db.root_tree.root().unwrap());
+    assert_ne!(root_hash, db.get_root_hash().unwrap());
 }
 
 #[test]
