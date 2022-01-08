@@ -113,6 +113,10 @@ impl GroveDb {
         })
     }
 
+    pub fn get_root_hash(&self) -> Option<[u8; 32]> {
+       self.root_tree.root()
+    }
+
     pub fn checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<GroveDb, Error> {
         storage::rocksdb_storage::Checkpoint::new(&self.db)
             .and_then(|x| x.create_checkpoint(&path))
