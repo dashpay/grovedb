@@ -254,7 +254,10 @@ where
     pub(crate) fn create_proof(
         &mut self,
         query: &[QueryItem],
-    ) -> Result<(LinkedList<Op>, (bool, bool))> {
+        limit: Option<u16>,
+        offset: Option<u16>,
+        left_to_right: bool,
+    ) -> Result<(LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>)> {
         // TODO: don't copy into vec, support comparing QI to byte slice
         let node_key = QueryItem::Key(self.tree().key().to_vec());
         let search = query.binary_search_by(|key| key.cmp(&node_key));
@@ -286,32 +289,67 @@ where
             Err(index) => (&query[..index], &query[index..]),
         };
 
-        let (mut proof, left_absence) = self.create_child_proof(true, left_items)?;
-        let (mut right_proof, right_absence) = self.create_child_proof(false, right_items)?;
+        if left_to_right {
+            let (mut proof, left_absence, new_limit, new_offset)
+                = self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
+            let (mut right_proof, right_absence, new_limit, new_offset)
+                = self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
 
-        let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
+            let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
 
-        proof.push_back(match search {
-            Ok(_) => Op::Push(self.to_kv_node()),
-            Err(_) => {
-                if left_absence.1 || right_absence.0 {
-                    Op::Push(self.to_kv_node())
-                } else {
-                    Op::Push(self.to_kvhash_node())
+            proof.push_back(match search {
+                Ok(_) => Op::Push(self.to_kv_node()),
+                Err(_) => {
+                    if left_absence.1 || right_absence.0 {
+                        Op::Push(self.to_kv_node())
+                    } else {
+                        Op::Push(self.to_kvhash_node())
+                    }
                 }
+            });
+
+            if has_left {
+                proof.push_back(Op::Parent);
             }
-        });
 
-        if has_left {
-            proof.push_back(Op::Parent);
+            if has_right {
+                proof.append(&mut right_proof);
+                proof.push_back(Op::Child);
+            }
+
+            Ok((proof, (left_absence.0, right_absence.1), new_limit, new_offset))
+        } else {
+            let (mut proof, left_absence, new_limit, new_offset)
+                = self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
+            let (mut right_proof, right_absence, new_limit, new_offset)
+                = self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
+
+            let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
+
+            proof.push_back(match search {
+                Ok(_) => Op::Push(self.to_kv_node()),
+                Err(_) => {
+                    if left_absence.1 || right_absence.0 {
+                        Op::Push(self.to_kv_node())
+                    } else {
+                        Op::Push(self.to_kvhash_node())
+                    }
+                }
+            });
+
+            if has_left {
+                proof.push_back(Op::Parent);
+            }
+
+            if has_right {
+                proof.append(&mut right_proof);
+                proof.push_back(Op::Child);
+            }
+
+            Ok((proof, (left_absence.0, right_absence.1), new_limit, new_offset))
         }
 
-        if has_right {
-            proof.append(&mut right_proof);
-            proof.push_back(Op::Child);
-        }
 
-        Ok((proof, (left_absence.0, right_absence.1)))
     }
 
     /// Similar to `create_proof`. Recurses into the child on the given side and
@@ -321,19 +359,22 @@ where
         &mut self,
         left: bool,
         query: &[QueryItem],
-    ) -> Result<(LinkedList<Op>, (bool, bool))> {
+        limit: Option<u16>,
+        offset: Option<u16>,
+        left_to_right: bool,
+    ) -> Result<(LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>)> {
         Ok(if !query.is_empty() {
             if let Some(mut child) = self.walk(left)? {
-                child.create_proof(query)?
+                child.create_proof(query, limit, offset, left_to_right)?
             } else {
-                (LinkedList::new(), (true, true))
+                (LinkedList::new(), (true, true), None, None)
             }
         } else if let Some(link) = self.tree().link(left) {
             let mut proof = LinkedList::new();
             proof.push_back(Op::Push(link.to_hash_node()));
-            (proof, (false, false))
+            (proof, (false, false), None, None)
         } else {
-            (LinkedList::new(), (false, false))
+            (LinkedList::new(), (false, false), None, None)
         })
     }
 }

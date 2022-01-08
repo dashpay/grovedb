@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use merk::proofs::query::Map;
 use rs_merkle::{algorithms::Sha256, MerkleProof};
 
-use crate::{Element, Error, GroveDb, PathQuery, Proof, Query};
+use crate::{Element, Error, GroveDb, PathQuery, Proof, Query, SizedQuery};
 
 impl GroveDb {
     pub fn proof(&mut self, proof_queries: Vec<PathQuery>) -> Result<Vec<u8>, Error> {
@@ -13,7 +13,7 @@ impl GroveDb {
         // if a node forks into multiple relevant paths then we should create a
         // combined proof for that node with all the relevant keys
         let mut query_paths = Vec::new();
-        let mut proof_spec: HashMap<Vec<u8>, Query> = HashMap::new();
+        let mut proof_spec: HashMap<Vec<u8>, SizedQuery> = HashMap::new();
         let mut root_keys: Vec<Vec<u8>> = Vec::new();
         let mut proofs: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
 
@@ -44,7 +44,9 @@ impl GroveDb {
                     } else {
                         let mut path_query = Query::new();
                         path_query.insert_key(key.to_vec());
-                        proof_spec.insert(compressed_path, path_query);
+
+                        let sized_query = SizedQuery::new(path_query, None, None, None);
+                        proof_spec.insert(compressed_path, sized_query);
                     }
                 }
                 split_path = path_slice.split_last();
@@ -81,17 +83,26 @@ impl GroveDb {
         Ok(seralized_proof)
     }
 
-    fn prove_item(&self, path: &Vec<u8>, proof_query: Query) -> Result<Vec<u8>, Error> {
+    fn prove_item(&self, path: &Vec<u8>, sized_query: SizedQuery) -> Result<Vec<u8>, Error> {
         let merk = self
             .subtrees
             .get(path)
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
 
-        let proof_result = merk
-            .prove(proof_query)
-            .expect("should prove both inclusion and absence");
+        if sized_query.subquery.is_none() {
+            //then limit should be applied directly to the proof here
+            let proof_result = merk
+                .prove(sized_query.query, sized_query.limit, sized_query.offset, sized_query.left_to_right)
+                .expect("should prove both inclusion and absence");
+            Ok(proof_result)
+        } else {
+            let limit = sized_query.limit;
 
-        Ok(proof_result)
+            let proof_result = merk
+                .prove(sized_query.query, None, None, sized_query.left_to_right)
+                .expect("should prove both inclusion and absence");
+            Ok(proof_result)
+        }
     }
 
     pub fn execute_proof(proof: Vec<u8>) -> Result<([u8; 32], HashMap<Vec<u8>, Map>), Error> {
