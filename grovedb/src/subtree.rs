@@ -14,7 +14,7 @@ use storage::{
     RawIterator, Store,
 };
 
-use crate::{Error, Merk};
+use crate::{Error, Merk, SizedQuery};
 
 /// Variants of GroveDB stored entities
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -56,45 +56,71 @@ impl Element {
         Ok(element)
     }
 
+    // Returns a vector of elements, and the number of skipped elements
     pub fn get_query(
         merk: &Merk<PrefixedRocksDbStorage>,
-        query: &Query,
-    ) -> Result<Vec<Element>, Error> {
+        sized_query: &SizedQuery,
+    ) -> Result<(Vec<Element>, u16), Error> {
         let mut result = Vec::new();
+        let mut skipped = 0 as u16;
         let mut iter = merk.raw_iter();
 
-        for item in query.iter() {
+        let mut limit = if sized_query.limit.is_some() { sized_query.limit.unwrap() } else { u16::MAX };
+        let mut offset = if sized_query.offset.is_some() { sized_query.offset.unwrap() } else { 0 as u16};
+
+        for item in sized_query.query.iter() {
             match item {
                 QueryItem::Key(key) => {
                     result.push(Element::get(merk, key)?);
                 }
                 QueryItem::Range(Range { start, end }) => {
-                    iter.seek(start);
-                    while iter.valid() && iter.key().is_some() && iter.key() != Some(end) {
-                        let element =
-                            raw_decode(iter.value().expect("if key exists then value should too"))?;
-                        result.push(element);
-                        iter.next();
+                    iter.seek(if sized_query.left_to_right {start} else {end});
+                    while limit > 0 && iter.valid() && iter.key().is_some() && iter.key() != Some(if sized_query.left_to_right {end} else {start}) {
+                            let element =
+                                raw_decode(iter.value().expect("if key exists then value should too"))?;
+                            match element {
+                                Element::Tree(_) => {
+                                    // if the query had a subquery then we should get elements from it
+                                    if sized_query.subquery_key.is_some() {
+                                        // this means that for each element we should get the element at the subquery_key
+
+                                    }
+                                }
+                                _ => {
+                                    if offset == 0 {
+                                        result.push(element);
+                                        limit -= 1;
+                                    } else {
+                                        offset -= 1;
+                                    }
+                                }
+                            }
+                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
                     }
                 }
                 QueryItem::RangeInclusive(r) => {
                     let start = r.start();
                     let end = r.end();
-                    iter.seek(start);
+                    iter.seek(if sized_query.left_to_right {start} else {end});
                     let mut work = true;
                     while iter.valid() && iter.key().is_some() && work {
-                        if iter.key() == Some(end) {
+                        if iter.key() == Some(if sized_query.left_to_right {end} else {start}) {
                             work = false;
                         }
-                        let element =
-                            raw_decode(iter.value().expect("if key exists then value should too"))?;
-                        result.push(element);
-                        iter.next();
+                        if offset == 0 {
+                            let element =
+                                raw_decode(iter.value().expect("if key exists then value should too"))?;
+                            result.push(element);
+                            limit -= 1;
+                        } else {
+                            offset -= 1;
+                        }
+                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
                     }
                 }
             }
         }
-        Ok(result)
+        Ok((result, skipped))
     }
 
     /// Insert an element in Merk under a key; path should be resolved and

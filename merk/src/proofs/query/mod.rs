@@ -35,6 +35,10 @@ impl Query {
         self.items.iter()
     }
 
+    pub fn rev_iter(&self) -> impl Iterator<Item = &QueryItem> {
+        self.items.iter().rev()
+    }
+
     /// Adds an individual key to the query, so that its value (or its absence)
     /// in the tree will be included in the resulting proof.
     ///

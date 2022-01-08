@@ -879,7 +879,7 @@ fn test_get_query() {
     let path_query2 = PathQuery::new(&path2, query2);
 
     assert_eq!(
-        db.get_query(&[path_query1, path_query2])
+        db.get_path_queries(&[path_query1, path_query2])
             .expect("expected successful get_query"),
         vec![
             subtree::Element::Item(b"ayya".to_vec()),

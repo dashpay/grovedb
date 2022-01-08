@@ -1,6 +1,10 @@
 use std::collections::HashSet;
+use merk::proofs::Query;
+use merk::proofs::query::QueryItem;
+use merk::proofs::query::QueryItem::Range;
+use storage::RawIterator;
 
-use crate::{Element, Error, GroveDb, PathQuery};
+use crate::{Element, Error, GroveDb, PathQuery, SizedQuery};
 
 /// Limit of possible indirections
 pub(crate) const MAX_REFERENCE_HOPS: usize = 10;
@@ -53,7 +57,7 @@ impl GroveDb {
         Element::get(&merk, key)
     }
 
-    pub fn get_query(&mut self, path_queries: &[PathQuery]) -> Result<Vec<Element>, Error> {
+    pub fn get_path_queries(&mut self, path_queries: &[&PathQuery]) -> Result<Vec<Element>, Error> {
         let mut result = Vec::new();
         for query in path_queries {
             let merk = self
@@ -62,6 +66,105 @@ impl GroveDb {
                 .ok_or(Error::InvalidPath("no subtree found under that path"))?;
             let subtree_results = Element::get_query(merk, &query.query)?;
             result.extend_from_slice(&subtree_results);
+        }
+        Ok(result)
+    }
+
+    pub fn get_path_query(
+        &mut self,
+        path_query: &PathQuery,
+    ) -> Result<Vec<Element>, Error> {
+        let path = path_query.path;
+        let merk = self
+            .subtrees
+            .get(&Self::compress_subtree_key(path, None))
+            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+        let sized_query = &path_query.query;
+        let mut result = Vec::new();
+        let mut iter = merk.raw_iter();
+
+        let mut limit = if sized_query.limit.is_some() { sized_query.limit.unwrap() } else { u16::MAX };
+        let mut offset = if sized_query.offset.is_some() { sized_query.offset.unwrap() } else { 0 as u16};
+
+        for item in sized_query.query.iter() {
+            match item {
+                QueryItem::Key(key) => {
+                    result.push(Element::get(merk, key)?);
+                }
+                QueryItem::Range(Range { start, end }) => {
+                    iter.seek(if sized_query.left_to_right {start} else {end});
+                    while limit > 0 && iter.valid() && iter.key().is_some() && iter.key() != Some(if sized_query.left_to_right {end} else {start}) {
+                        let element =
+                            raw_decode(iter.value().expect("if key exists then value should too"))?;
+                        match element {
+                            Element::Tree(_) => {
+                                // if the query had a subquery then we should get elements from it
+                                if path_query.subquery_key.is_some() {
+                                    // this means that for each element we should get the element at the subquery_key
+                                    let mut path_vec = path.to_vec();
+                                    path_vec.push(iter.key().expect("key should exist"))?;
+
+                                    if path_query.subquery.is_some() {
+                                        path_vec.push(path_query.subquery_key.unwrap());
+
+                                        let inner_merk = self
+                                            .subtrees
+                                            .get(&Self::compress_subtree_key(path_vec.as_slice(), None))
+                                            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                                        let inner_limit = if sized_query.limit.is_some() { Some(limit) } else { None };
+                                        let inner_offset = if sized_query.offset.is_some() { Some(offset) } else { None };
+                                        let inner_query = SizedQuery::new(path_query.subquery.unwrap(), inner_limit , inner_offset, sized_query.left_to_right);
+                                        let (mut sub_elements , skipped) = Element::get_query(inner_merk, &inner_query)?;
+                                        limit -= sub_elements.len();
+                                        offset -= skipped;
+                                        result.append(&mut sub_elements);
+                                    } else {
+                                        let inner_merk = self
+                                            .subtrees
+                                            .get(&Self::compress_subtree_key(path_vec.as_slice(), None))
+                                            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                                        if offset == 0 {
+                                            result.push(Element::get(inner_merk, key)?);
+                                            limit -= 1;
+                                        } else {
+                                            offset -= 1;
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                if offset == 0 {
+                                    result.push(element);
+                                    limit -= 1;
+                                } else {
+                                    offset -= 1;
+                                }
+                            }
+                        }
+                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
+                    }
+                }
+                QueryItem::RangeInclusive(r) => {
+                    let start = r.start();
+                    let end = r.end();
+                    iter.seek(if sized_query.left_to_right {start} else {end});
+                    let mut work = true;
+                    while iter.valid() && iter.key().is_some() && work {
+                        if iter.key() == Some(if sized_query.left_to_right {end} else {start}) {
+                            work = false;
+                        }
+                        if offset == 0 {
+                            let element =
+                                raw_decode(iter.value().expect("if key exists then value should too"))?;
+                            result.push(element);
+                            limit -= 1;
+                        } else {
+                            offset -= 1;
+                        }
+                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
+                    }
+                }
+            }
         }
         Ok(result)
     }
