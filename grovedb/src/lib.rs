@@ -114,7 +114,7 @@ impl GroveDb {
     }
 
     pub fn get_root_hash(&self) -> Option<[u8; 32]> {
-       self.root_tree.root()
+        self.root_tree.root()
     }
 
     pub fn checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<GroveDb, Error> {
