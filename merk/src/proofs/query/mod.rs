@@ -3,7 +3,7 @@ mod map;
 use std::{
     cmp::{max, min, Ordering},
     collections::BTreeSet,
-    ops::{Range, RangeInclusive},
+    ops::{Range, RangeInclusive, RangeFull, RangeTo, RangeFrom, RangeToInclusive},
 };
 
 use anyhow::{bail, Result};
@@ -59,6 +59,16 @@ impl Query {
     /// the range, the ranges will be joined together.
     pub fn insert_range(&mut self, range: Range<Vec<u8>>) {
         let range = QueryItem::Range(range);
+        self.insert_item(range);
+    }
+
+    /// Adds a range of all potential values to the query, so that the query
+    /// will return all values
+    ///
+    /// All other items in the query will be discarded as you are now getting
+    /// back all elements.
+    pub fn insert_all(&mut self) {
+        let range = QueryItem::RangeFull(RangeFull);
         self.insert_item(range);
     }
 
@@ -118,6 +128,10 @@ pub enum QueryItem {
     Key(Vec<u8>),
     Range(Range<Vec<u8>>),
     RangeInclusive(RangeInclusive<Vec<u8>>),
+    RangeFull(RangeFull),
+    RangeFrom(RangeFrom<Vec<u8>>),
+    RangeTo(RangeTo<Vec<u8>>),
+    RangeToInclusive(RangeToInclusive<Vec<u8>>),
 }
 
 impl QueryItem {
@@ -126,6 +140,22 @@ impl QueryItem {
             QueryItem::Key(key) => key.as_slice(),
             QueryItem::Range(range) => range.start.as_ref(),
             QueryItem::RangeInclusive(range) => range.start().as_ref(),
+            QueryItem::RangeFull(range) => b"",
+            QueryItem::RangeFrom(range) => range.start.as_ref(),
+            QueryItem::RangeTo(range) => b"",
+            QueryItem::RangeToInclusive(range) => b"",
+        }
+    }
+
+    pub fn lower_unbounded(&self) -> bool {
+        match self {
+            QueryItem::Key(_) => false,
+            QueryItem::Range(_) => false,
+            QueryItem::RangeInclusive(_) => false,
+            QueryItem::RangeFull(_) => true,
+            QueryItem::RangeFrom(_) => false,
+            QueryItem::RangeTo(_) => true,
+            QueryItem::RangeToInclusive(_) => true,
         }
     }
 
@@ -134,25 +164,65 @@ impl QueryItem {
             QueryItem::Key(key) => (key.as_slice(), true),
             QueryItem::Range(range) => (range.end.as_ref(), false),
             QueryItem::RangeInclusive(range) => (range.end().as_ref(), true),
+            QueryItem::RangeFull(_) => (b"", true),
+            QueryItem::RangeFrom(_) => (b"", true),
+            QueryItem::RangeTo(range) => (range.end.as_ref(), false),
+            QueryItem::RangeToInclusive(range) => (range.end.as_ref(), true),
+        }
+    }
+
+    pub fn upper_unbounded(&self) -> bool {
+        match self {
+            QueryItem::Key(_) => false,
+            QueryItem::Range(_) => false,
+            QueryItem::RangeInclusive(_) => false,
+            QueryItem::RangeFull(_) => true,
+            QueryItem::RangeFrom(_) => true,
+            QueryItem::RangeTo(_) => false,
+            QueryItem::RangeToInclusive(_) => false,
         }
     }
 
     pub fn contains(&self, key: &[u8]) -> bool {
         let (bound, inclusive) = self.upper_bound();
-        return key >= self.lower_bound() && (key < bound || (key == bound && inclusive));
+        return (self.lower_unbounded() || key >= self.lower_bound()) && (self.upper_unbounded() || key < bound || (key == bound && inclusive));
     }
 
     fn merge(self, other: QueryItem) -> QueryItem {
         // TODO: don't copy into new vecs
+        let lower_unbounded = self.lower_unbounded() || other.lower_unbounded();
+        let upper_unbounded = self.upper_unbounded() || other.upper_unbounded();
+        
         let start = min(self.lower_bound(), other.lower_bound()).to_vec();
         let end = max(self.upper_bound(), other.upper_bound());
-        if end.1 {
-            QueryItem::RangeInclusive(RangeInclusive::new(start, end.0.to_vec()))
+        
+        if lower_unbounded {
+            if upper_unbounded {
+                QueryItem::RangeFull(RangeFull)
+            } else {
+                if end.1 {
+                    QueryItem::RangeToInclusive(RangeToInclusive {
+                        end: end.0.to_vec(),
+                    })
+                } else {
+                    QueryItem::RangeTo(RangeTo {
+                        end: end.0.to_vec(),
+                    })
+                }
+            }
+            
+        } else if upper_unbounded {
+            QueryItem::RangeFrom(RangeFrom { start })
         } else {
-            QueryItem::Range(Range {
-                start,
-                end: end.0.to_vec(),
-            })
+            // neither are unbounded
+            if end.1 {
+                QueryItem::RangeInclusive(RangeInclusive::new(start, end.0.to_vec()))
+            } else {
+                QueryItem::Range(Range {
+                    start,
+                    end: end.0.to_vec(),
+                })
+            }
         }
     }
 }
@@ -173,8 +243,30 @@ impl Eq for QueryItem {}
 
 impl Ord for QueryItem {
     fn cmp(&self, other: &QueryItem) -> Ordering {
-        let cmp_lu = self.lower_bound().cmp(other.upper_bound().0);
-        let cmp_ul = self.upper_bound().0.cmp(other.lower_bound());
+        let cmp_lu = if self.lower_unbounded() {
+            if other.lower_unbounded() {
+                Ordering::Equal
+            } else {
+                Ordering::Less
+            }
+        } else if other.lower_unbounded() {
+            Ordering::Greater
+        } else {
+            self.lower_bound().cmp(other.upper_bound().0)
+        };
+
+        let cmp_ul = if self.upper_unbounded() {
+            if other.upper_unbounded() {
+                Ordering::Equal
+            } else {
+                Ordering::Greater
+            }
+        } else if other.upper_unbounded() {
+            Ordering::Less
+        } else {
+            self.upper_bound().0.cmp(other.lower_bound())
+        };
+
         let self_inclusive = self.upper_bound().1;
         let other_inclusive = other.upper_bound().1;
 

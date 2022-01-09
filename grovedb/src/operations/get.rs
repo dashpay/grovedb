@@ -61,12 +61,8 @@ impl GroveDb {
     pub fn get_path_queries(&mut self, path_queries: &[&PathQuery]) -> Result<Vec<Element>, Error> {
         let mut result = Vec::new();
         for query in path_queries {
-            let merk = self
-                .subtrees
-                .get(&Self::compress_subtree_key(query.path, None))
-                .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-            let (subtree_results, skipped) = Element::get_sized_query(merk, &query.query)?;
-            result.extend_from_slice(&subtree_results);
+            let (query_results, _) = self.get_path_query(query)?;
+            result.extend_from_slice(&query_results);
         }
         Ok(result)
     }
@@ -74,7 +70,7 @@ impl GroveDb {
     pub fn get_path_query(
         &mut self,
         path_query: &PathQuery,
-    ) -> Result<Vec<Element>, Error> {
+    ) -> Result<(Vec<Element>, u16), Error> {
         let path = path_query.path;
         let merk = self
             .subtrees
@@ -85,12 +81,20 @@ impl GroveDb {
         let mut iter = merk.raw_iter();
 
         let mut limit = if sized_query.limit.is_some() { sized_query.limit.unwrap() } else { u16::MAX };
-        let mut offset = if sized_query.offset.is_some() { sized_query.offset.unwrap() } else { 0 as u16};
+        let original_offset = if sized_query.offset.is_some() { sized_query.offset.unwrap() } else { 0 as u16};
+        let mut offset = original_offset;
 
         for item in sized_query.query.iter() {
             match item {
                 QueryItem::Key(key) => {
-                    result.push(Element::get(merk, key)?);
+                    if limit > 0 {
+                        if offset == 0 {
+                            result.push(Element::get(merk, key)?);
+                            limit -= 1;
+                        } else {
+                            offset -= 1;
+                        }
+                    }
                 }
                 QueryItem::Range(Range { start, end }) => {
                     iter.seek(if sized_query.left_to_right {start} else {end});
@@ -167,7 +171,10 @@ impl GroveDb {
                     }
                 }
             }
+            if limit == 0 {
+                break;
+            }
         }
-        Ok(result)
+        Ok((result, original_offset - offset))
     }
 }

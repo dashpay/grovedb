@@ -2,6 +2,7 @@ use std::ops::{Deref, DerefMut};
 
 use merk::test_utils::TempMerk;
 use tempdir::TempDir;
+use rand::Rng;
 
 use super::*;
 
@@ -875,15 +876,63 @@ fn test_get_full_query() {
     query1.insert_range_inclusive(b"key3".to_vec()..=b"key4".to_vec());
     query2.insert_key(b"key6".to_vec());
 
-    let sized_query1 = SizedQuery::new(query1, None, None, true);
-    let sized_query2 = SizedQuery::new(query2, None, None, true);
-
-    let path_query1 = PathQuery::new(&path1, sized_query1, None, None);
-    let path_query2 = PathQuery::new(&path2, sized_query2, None, None);
+    let path_query1 = PathQuery::new_unsized_basic(&path1, query1);
+    let path_query2 = PathQuery::new_unsized_basic(&path2, query2);
 
     assert_eq!(
         db.get_path_queries(&[&path_query1, &path_query2])
             .expect("expected successful get_query"),
+        vec![
+            subtree::Element::Item(b"ayya".to_vec()),
+            subtree::Element::Item(b"ayyb".to_vec()),
+            subtree::Element::Item(b"ayyd".to_vec()),
+        ]
+    );
+}
+
+fn populate_tree_for_range_subquery(mut db: TempGroveDb) {
+    // Insert a couple of subtrees first
+    for i in b"1985"..b"2000" {
+        db.insert(&[TEST_LEAF], i.to_vec(), Element::empty_tree())
+            .expect("successful subtree insert");
+        // Insert element 0
+        // Insert some elements into subtree
+        db.insert(
+            &[TEST_LEAF, i],
+            b"0".to_vec(),
+            Element::empty_tree()).expect("successful subtree insert");
+
+        for j in b"100"..b"130" {
+            db.insert(
+                &[TEST_LEAF, i, b"0"],
+                rand::thread_rng().gen::<[u8; 32]>(),
+                Element::Item(j.to_vec()),
+            )
+                .expect("successful value insert");
+        }
+    }
+}
+
+#[test]
+fn test_get_full_query_with_non_unique_subquery() {
+    let mut db = make_grovedb();
+
+    populate_tree_for_range_subquery(db);
+
+    let path = vec![TEST_LEAF];
+    let mut query = Query::new();
+    query1.insert_range_inclusive(b"1988".to_vec()..=b"1992".to_vec());
+
+    let subquery_key = b"0";
+
+    let mut query = Query::new();
+    query.insert_key()
+
+    let path_query = PathQuery::new_unsized(&path1, query1, Some(&subquery_key), None);
+    let (elements, skipped) = db.get_path_query(&path_query)
+        .expect("expected successful get_path_query");
+    assert_eq!(
+        elements
         vec![
             subtree::Element::Item(b"ayya".to_vec()),
             subtree::Element::Item(b"ayyb".to_vec()),

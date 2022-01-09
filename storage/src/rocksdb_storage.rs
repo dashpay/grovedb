@@ -208,6 +208,19 @@ impl RawIterator for RawPrefixedIterator<'_> {
         self.rocksdb_iterator.seek(self.prefix);
     }
 
+    fn seek_to_last(&mut self) {
+        let mut prefix_vec = self.prefix.to_vec().as_slice();
+        while let Some((last, elements)) = prefix_vec.split_last_mut() {
+            *last += 1;
+            if *last < u8::MAX {
+                break;
+            } else {
+                prefix_vec = elements;
+            }
+        }
+        self.rocksdb_iterator.seek_for_prev(prefix_vec);
+    }
+
     fn seek(&mut self, key: &[u8]) {
         self.rocksdb_iterator
             .seek(make_prefixed_key(self.prefix.to_vec(), key));

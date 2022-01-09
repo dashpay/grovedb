@@ -136,6 +136,92 @@ impl Element {
                         if sized_query.left_to_right {iter.next();} else {iter.prev();}
                     }
                 }
+                QueryItem::RangeFull(_) => {
+                    if sized_query.left_to_right {
+                        iter.seek_to_first();
+                    } else {
+                        iter.seek_to_last();
+                    }
+                    while limit > 0 && iter.valid() && iter.key().is_some() {
+                        let element =
+                            raw_decode(iter.value().expect("if key exists then value should too"))?;
+                        if offset == 0 {
+                            result.push(element);
+                            limit -= 1;
+                        } else {
+                            offset -= 1;
+                        }
+                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
+                    }
+                }
+                QueryItem::RangeFrom(range) => {
+                    if sized_query.left_to_right {
+                        iter.seek(start);
+                    } else {
+                        iter.seek_to_last();
+                    }
+                    let mut work = true;
+
+                    while limit > 0 && iter.valid() && iter.key().is_some() && work {
+                        //if we are going backwards, we need to make sure we are going to stop after the first element
+                        if !sized_query.left_to_right {
+                            if iter.key() == Some(start) {
+                                work = false;
+                            }
+                        }
+                        let element =
+                            raw_decode(iter.value().expect("if key exists then value should too"))?;
+                        if offset == 0 {
+                            result.push(element);
+                            limit -= 1;
+                        } else {
+                            offset -= 1;
+                        }
+                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
+                    }
+                }
+                QueryItem::RangeTo(range) => {
+                    if sized_query.left_to_right {
+                        iter.seek_to_first();
+                    } else {
+                        iter.seek(end);
+                        iter.prev();
+                    }
+
+                    while limit > 0 && iter.valid() && iter.key().is_some() && (!sized_query.left_to_right || iter.key() != Some(end)) {
+                        let element =
+                            raw_decode(iter.value().expect("if key exists then value should too"))?;
+                        if offset == 0 {
+                            result.push(element);
+                            limit -= 1;
+                        } else {
+                            offset -= 1;
+                        }
+                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
+                    }
+                }
+                QueryItem::RangeToInclusive(r) => {
+                    if sized_query.left_to_right {
+                        iter.seek_to_first();
+                    } else {
+                        iter.seek(end);
+                    }
+                    let mut work = true;
+                    while iter.valid() && iter.key().is_some() && work {
+                        if iter.key() == Some(if sized_query.left_to_right {end}) {
+                            work = false;
+                        }
+                        if offset == 0 {
+                            let element =
+                                raw_decode(iter.value().expect("if key exists then value should too"))?;
+                            result.push(element);
+                            limit -= 1;
+                        } else {
+                            offset -= 1;
+                        }
+                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
+                    }
+                }
             }
             if limit == 0 {
                 break;
