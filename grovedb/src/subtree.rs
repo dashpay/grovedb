@@ -1,7 +1,7 @@
 //! Module for subtrees handling.
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
-use std::ops::Range;
+use std::ops::{Range, RangeFrom, RangeTo, RangeToInclusive};
 
 use merk::{
     proofs::{query::QueryItem, Query},
@@ -154,7 +154,7 @@ impl Element {
                         if sized_query.left_to_right {iter.next();} else {iter.prev();}
                     }
                 }
-                QueryItem::RangeFrom(range) => {
+                QueryItem::RangeFrom(RangeFrom{ start}) => {
                     if sized_query.left_to_right {
                         iter.seek(start);
                     } else {
@@ -180,7 +180,7 @@ impl Element {
                         if sized_query.left_to_right {iter.next();} else {iter.prev();}
                     }
                 }
-                QueryItem::RangeTo(range) => {
+                QueryItem::RangeTo(RangeTo{ end}) => {
                     if sized_query.left_to_right {
                         iter.seek_to_first();
                     } else {
@@ -200,7 +200,7 @@ impl Element {
                         if sized_query.left_to_right {iter.next();} else {iter.prev();}
                     }
                 }
-                QueryItem::RangeToInclusive(r) => {
+                QueryItem::RangeToInclusive(RangeToInclusive{ end}) => {
                     if sized_query.left_to_right {
                         iter.seek_to_first();
                     } else {
@@ -208,9 +208,12 @@ impl Element {
                     }
                     let mut work = true;
                     while iter.valid() && iter.key().is_some() && work {
-                        if iter.key() == Some(if sized_query.left_to_right {end}) {
-                            work = false;
+                        if sized_query.left_to_right {
+                            if iter.key() == Some(end) {
+                                work = false;
+                            }
                         }
+
                         if offset == 0 {
                             let element =
                                 raw_decode(iter.value().expect("if key exists then value should too"))?;

@@ -209,13 +209,12 @@ impl RawIterator for RawPrefixedIterator<'_> {
     }
 
     fn seek_to_last(&mut self) {
-        let mut prefix_vec = self.prefix.to_vec().as_slice();
-        while let Some((last, elements)) = prefix_vec.split_last_mut() {
-            *last += 1;
-            if *last < u8::MAX {
+        let mut prefix_vec = self.prefix.to_vec();
+        for i in (0..prefix_vec.len()).rev() {
+            prefix_vec[i] += 1;
+            if prefix_vec[i] != 0 {
+                // if it is == 0 then we need to go to next bit
                 break;
-            } else {
-                prefix_vec = elements;
             }
         }
         self.rocksdb_iterator.seek_for_prev(prefix_vec);
