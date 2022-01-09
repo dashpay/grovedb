@@ -78,23 +78,12 @@ impl Element {
                     while limit > 0 && iter.valid() && iter.key().is_some() && iter.key() != Some(if sized_query.left_to_right {end} else {start}) {
                             let element =
                                 raw_decode(iter.value().expect("if key exists then value should too"))?;
-                            match element {
-                                Element::Tree(_) => {
-                                    // if the query had a subquery then we should get elements from it
-                                    if sized_query.subquery_key.is_some() {
-                                        // this means that for each element we should get the element at the subquery_key
-
-                                    }
+                                if offset == 0 {
+                                    result.push(element);
+                                    limit -= 1;
+                                } else {
+                                    offset -= 1;
                                 }
-                                _ => {
-                                    if offset == 0 {
-                                        result.push(element);
-                                        limit -= 1;
-                                    } else {
-                                        offset -= 1;
-                                    }
-                                }
-                            }
                         if sized_query.left_to_right {iter.next();} else {iter.prev();}
                     }
                 }
@@ -151,7 +140,7 @@ pub struct ElementsIterator<'a> {
     raw_iter: RawPrefixedIterator<'a>,
 }
 
-fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
+pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
     let tree = <Tree as Store>::decode(bytes).map_err(|e| Error::CorruptedData(e.to_string()))?;
     let element: Element = bincode::deserialize(tree.value())
         .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;

@@ -1,10 +1,11 @@
 use std::collections::HashSet;
 use merk::proofs::Query;
 use merk::proofs::query::QueryItem;
-use merk::proofs::query::QueryItem::Range;
 use storage::RawIterator;
+use std::ops::Range;
 
 use crate::{Element, Error, GroveDb, PathQuery, SizedQuery};
+use crate::subtree::raw_decode;
 
 /// Limit of possible indirections
 pub(crate) const MAX_REFERENCE_HOPS: usize = 10;
@@ -64,7 +65,7 @@ impl GroveDb {
                 .subtrees
                 .get(&Self::compress_subtree_key(query.path, None))
                 .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-            let subtree_results = Element::get_query(merk, &query.query)?;
+            let (subtree_results, skipped) = Element::get_query(merk, &query.query)?;
             result.extend_from_slice(&subtree_results);
         }
         Ok(result)
@@ -100,12 +101,13 @@ impl GroveDb {
                             Element::Tree(_) => {
                                 // if the query had a subquery then we should get elements from it
                                 if path_query.subquery_key.is_some() {
+                                    let subquery_key = path_query.subquery_key.unwrap();
                                     // this means that for each element we should get the element at the subquery_key
                                     let mut path_vec = path.to_vec();
-                                    path_vec.push(iter.key().expect("key should exist"))?;
+                                    path_vec.push(iter.key().expect("key should exist"));
 
                                     if path_query.subquery.is_some() {
-                                        path_vec.push(path_query.subquery_key.unwrap());
+                                        path_vec.push(subquery_key);
 
                                         let inner_merk = self
                                             .subtrees
@@ -113,9 +115,9 @@ impl GroveDb {
                                             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
                                         let inner_limit = if sized_query.limit.is_some() { Some(limit) } else { None };
                                         let inner_offset = if sized_query.offset.is_some() { Some(offset) } else { None };
-                                        let inner_query = SizedQuery::new(path_query.subquery.unwrap(), inner_limit , inner_offset, sized_query.left_to_right);
+                                        let inner_query = SizedQuery::new(path_query.subquery.clone().unwrap(), inner_limit , inner_offset, sized_query.left_to_right);
                                         let (mut sub_elements , skipped) = Element::get_query(inner_merk, &inner_query)?;
-                                        limit -= sub_elements.len();
+                                        limit -= sub_elements.len() as u16;
                                         offset -= skipped;
                                         result.append(&mut sub_elements);
                                     } else {
@@ -124,7 +126,7 @@ impl GroveDb {
                                             .get(&Self::compress_subtree_key(path_vec.as_slice(), None))
                                             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
                                         if offset == 0 {
-                                            result.push(Element::get(inner_merk, key)?);
+                                            result.push(Element::get(inner_merk, subquery_key)?);
                                             limit -= 1;
                                         } else {
                                             offset -= 1;

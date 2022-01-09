@@ -16,7 +16,7 @@ use crate::tree::{Fetch, Hash, Link, RefWalker};
 
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all of the requested values.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Query {
     items: BTreeSet<QueryItem>,
 }

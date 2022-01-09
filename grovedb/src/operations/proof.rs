@@ -19,7 +19,7 @@ impl GroveDb {
 
         // For each unique node including the root
         // determine what keys would need to be included in the proof
-        for proof_query in proof_queries {
+        for proof_query in proof_queries.iter() {
             query_paths.push(
                 proof_query
                     .path
@@ -64,19 +64,19 @@ impl GroveDb {
 
             // First we must get elements
 
-            if proof_query.query.subquery_key.is_some() {
+            if reduced_proof_query.subquery_key.is_some() {
                 self.get_path_queries(&[&reduced_proof_query]);
 
 
                 let mut path_vec = path.to_vec();
-                path_vec.push(proof_query.query.subquery_key.unwrap());
+                path_vec.push(reduced_proof_query.subquery_key.unwrap());
                 let compressed_path = GroveDb::compress_subtree_key(path_vec.as_slice(), None);
 
             }
 
             // Now we must insert the final proof for the sub leaves
             let compressed_path = GroveDb::compress_subtree_key(path, None);
-            let proof = self.prove_sized_item(&compressed_path, &reduced_proof_query.query)?;
+            let proof = self.prove_path_item(&compressed_path, reduced_proof_query)?;
             proofs.insert(compressed_path, proof);
         }
 
@@ -104,13 +104,15 @@ impl GroveDb {
         Ok(seralized_proof)
     }
 
-    fn prove_sized_item(&self, path: &Vec<u8>, sized_query: SizedQuery) -> Result<Vec<u8>, Error> {
+    fn prove_path_item(&self, compressed_path: &Vec<u8>, path_query: PathQuery) -> Result<Vec<u8>, Error> {
         let merk = self
             .subtrees
-            .get(path)
+            .get(compressed_path)
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
 
-        if sized_query.subquery.is_none() {
+        let sized_query = path_query.query;
+
+        if path_query.subquery.is_none() {
             //then limit should be applied directly to the proof here
             let proof_result = merk
                 .prove(sized_query.query, sized_query.limit, sized_query.offset, sized_query.left_to_right)

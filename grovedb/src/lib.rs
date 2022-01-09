@@ -41,7 +41,7 @@ pub enum Error {
 
 pub struct PathQuery<'a> {
     path: &'a [&'a [u8]],
-    query: SizedQuery<'a>,
+    query: SizedQuery,
     subquery_key: Option<&'a[u8]>,
     subquery: Option<Query>,
 }
@@ -49,14 +49,14 @@ pub struct PathQuery<'a> {
 // If a subquery exists :
 // limit should be applied to the elements returned by the subquery
 // offset should be applied to the first item that will subqueried (first in the case of a range)
-pub struct SizedQuery<'a> {
+pub struct SizedQuery {
     query: Query,
     limit: Option<u16>,
     offset: Option<u16>,
     left_to_right: bool,
 }
 
-impl SizedQuery<'_> {
+impl SizedQuery {
     pub fn new(
         query: Query,
         limit: Option<u16>,
