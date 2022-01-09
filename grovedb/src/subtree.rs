@@ -71,28 +71,48 @@ impl Element {
         sized_query: &SizedQuery,
     ) -> Result<(Vec<Element>, u16), Error> {
         let mut result = Vec::new();
-        let mut skipped = 0 as u16;
         let mut iter = merk.raw_iter();
 
         let mut limit = if sized_query.limit.is_some() { sized_query.limit.unwrap() } else { u16::MAX };
-        let mut offset = if sized_query.offset.is_some() { sized_query.offset.unwrap() } else { 0 as u16};
+        let original_offset = if sized_query.offset.is_some() { sized_query.offset.unwrap() } else { 0 as u16};
+        let mut offset = original_offset;
 
         for item in sized_query.query.iter() {
             match item {
                 QueryItem::Key(key) => {
-                    result.push(Element::get(merk, key)?);
+                    if limit > 0 {
+                        if offset == 0 {
+                            result.push(Element::get(merk, key)?);
+                            limit -= 1;
+                        } else {
+                            offset -= 1;
+                        }
+                    }
                 }
                 QueryItem::Range(Range { start, end }) => {
-                    iter.seek(if sized_query.left_to_right {start} else {end});
-                    while limit > 0 && iter.valid() && iter.key().is_some() && iter.key() != Some(if sized_query.left_to_right {end} else {start}) {
-                            let element =
-                                raw_decode(iter.value().expect("if key exists then value should too"))?;
-                                if offset == 0 {
-                                    result.push(element);
-                                    limit -= 1;
-                                } else {
-                                    offset -= 1;
-                                }
+                    if sized_query.left_to_right {
+                        iter.seek(start);
+                    } else {
+                        iter.seek(end);
+                        iter.prev();
+                    }
+                    let mut work = true;
+
+                    while limit > 0 && iter.valid() && iter.key().is_some() && work && (!sized_query.left_to_right || iter.key() != Some(end)) {
+                        //if we are going backwards, we need to make sure we are going to stop after the first element
+                        if !sized_query.left_to_right {
+                            if iter.key() == Some(start) {
+                                work = false;
+                            }
+                        }
+                        let element =
+                            raw_decode(iter.value().expect("if key exists then value should too"))?;
+                            if offset == 0 {
+                                result.push(element);
+                                limit -= 1;
+                            } else {
+                                offset -= 1;
+                            }
                         if sized_query.left_to_right {iter.next();} else {iter.prev();}
                     }
                 }
@@ -117,8 +137,11 @@ impl Element {
                     }
                 }
             }
+            if limit == 0 {
+                break;
+            }
         }
-        Ok((result, skipped))
+        Ok((result, original_offset - offset))
     }
 
     /// Insert an element in Merk under a key; path should be resolved and
@@ -261,6 +284,279 @@ mod tests {
                 Element::Item(b"ayyb".to_vec()),
                 Element::Item(b"ayyc".to_vec())
             ]
+        );
+    }
+
+    #[test]
+    fn test_get_range_query() {
+        let mut merk = TempMerk::new();
+        Element::Item(b"ayyd".to_vec())
+            .insert(&mut merk, b"d".to_vec())
+            .expect("expected successful insertion");
+        Element::Item(b"ayyc".to_vec())
+            .insert(&mut merk, b"c".to_vec())
+            .expect("expected successful insertion");
+        Element::Item(b"ayya".to_vec())
+            .insert(&mut merk, b"a".to_vec())
+            .expect("expected successful insertion");
+        Element::Item(b"ayyb".to_vec())
+            .insert(&mut merk, b"b".to_vec())
+            .expect("expected successful insertion");
+
+        // Test range inclusive query
+        let mut query = Query::new();
+        query.insert_range(b"a".to_vec()..b"d".to_vec());
+
+        let ascending_query = SizedQuery::new(query.clone(), None, None, true);
+        let (elements, skipped) = Element::get_sized_query(&mut merk, &ascending_query).expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayya".to_vec()),
+                Element::Item(b"ayyb".to_vec()),
+                Element::Item(b"ayyc".to_vec()),
+            ]
+        );
+        assert_eq!(
+            skipped,
+            0
+        );
+
+        let backwards_query = SizedQuery::new(query.clone(), None, None, false);
+        let (elements, skipped) = Element::get_sized_query(&mut merk, &backwards_query).expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayyc".to_vec()),
+                Element::Item(b"ayyb".to_vec()),
+                Element::Item(b"ayya".to_vec()),
+            ]
+        );
+        assert_eq!(
+            skipped,
+            0
+        );
+    }
+
+    #[test]
+    fn test_get_range_inclusive_query() {
+        let mut merk = TempMerk::new();
+        Element::Item(b"ayyd".to_vec())
+            .insert(&mut merk, b"d".to_vec())
+            .expect("expected successful insertion");
+        Element::Item(b"ayyc".to_vec())
+            .insert(&mut merk, b"c".to_vec())
+            .expect("expected successful insertion");
+        Element::Item(b"ayya".to_vec())
+            .insert(&mut merk, b"a".to_vec())
+            .expect("expected successful insertion");
+        Element::Item(b"ayyb".to_vec())
+            .insert(&mut merk, b"b".to_vec())
+            .expect("expected successful insertion");
+
+        // Test range inclusive query
+        let mut query = Query::new();
+        query.insert_range_inclusive(b"a".to_vec()..=b"d".to_vec());
+
+        let ascending_query = SizedQuery::new(query.clone(), None, None, true);
+        let (elements, skipped) = Element::get_sized_query(&mut merk, &ascending_query).expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayya".to_vec()),
+                Element::Item(b"ayyb".to_vec()),
+                Element::Item(b"ayyc".to_vec()),
+                Element::Item(b"ayyd".to_vec()),
+            ]
+        );
+        assert_eq!(
+            skipped,
+            0
+        );
+
+        let backwards_query = SizedQuery::new(query.clone(), None, None, false);
+        let (elements, skipped) = Element::get_sized_query(&mut merk, &backwards_query).expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayyd".to_vec()),
+                Element::Item(b"ayyc".to_vec()),
+                Element::Item(b"ayyb".to_vec()),
+                Element::Item(b"ayya".to_vec()),
+            ]
+        );
+        assert_eq!(
+            skipped,
+            0
+        );
+
+        // Test range inclusive query
+        let mut query = Query::new();
+        query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
+        query.insert_range(b"a".to_vec()..b"c".to_vec());
+
+        let backwards_query = SizedQuery::new(query.clone(), None, None, false);
+        let (elements, skipped) = Element::get_sized_query(&mut merk, &backwards_query).expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayyd".to_vec()),
+                Element::Item(b"ayyc".to_vec()),
+                Element::Item(b"ayyb".to_vec()),
+                Element::Item(b"ayya".to_vec()),
+            ]
+        );
+        assert_eq!(
+            skipped,
+            0
+        );
+    }
+
+    #[test]
+    fn test_get_limit_query() {
+        let mut merk = TempMerk::new();
+        Element::Item(b"ayyd".to_vec())
+            .insert(&mut merk, b"d".to_vec())
+            .expect("expected successful insertion");
+        Element::Item(b"ayyc".to_vec())
+            .insert(&mut merk, b"c".to_vec())
+            .expect("expected successful insertion");
+        Element::Item(b"ayya".to_vec())
+            .insert(&mut merk, b"a".to_vec())
+            .expect("expected successful insertion");
+        Element::Item(b"ayyb".to_vec())
+            .insert(&mut merk, b"b".to_vec())
+            .expect("expected successful insertion");
+
+        // Test queries by key
+        let mut query = Query::new();
+        query.insert_key(b"c".to_vec());
+        query.insert_key(b"a".to_vec());
+
+        // since these are just keys a backwards query will keep same order
+        let backwards_query = SizedQuery::new(query.clone(),None, None, false);
+        let (elements, skipped) = Element::get_sized_query(&mut merk, &backwards_query).expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayya".to_vec()),
+                Element::Item(b"ayyc".to_vec()),
+            ]
+        );
+        assert_eq!(
+            skipped,
+            0
+        );
+
+        // The limit will mean we will only get back 1 item
+        let limit_query = SizedQuery::new(query.clone(),Some(1), None, false);
+        let (elements, skipped) = Element::get_sized_query(&mut merk, &limit_query).expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayya".to_vec()),
+            ]
+        );
+        assert_eq!(
+            skipped,
+            0
+        );
+
+        // Test range query
+        let mut query = Query::new();
+        query.insert_range(b"b".to_vec()..b"d".to_vec());
+        query.insert_range(b"a".to_vec()..b"c".to_vec());
+        let limit_query = SizedQuery::new(query.clone(),Some(2), None, true);
+        let (elements, skipped) = Element::get_sized_query(&mut merk, &limit_query).expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayya".to_vec()),
+                Element::Item(b"ayyb".to_vec())
+            ]
+        );
+        assert_eq!(
+            skipped,
+            0
+        );
+
+        let limit_offset_query = SizedQuery::new(query.clone(),Some(2), Some(1), true);
+        let (elements, skipped) = Element::get_sized_query(&mut merk, &limit_offset_query).expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayyb".to_vec()),
+                Element::Item(b"ayyc".to_vec())
+            ]
+        );
+        assert_eq!(
+            skipped,
+            1
+        );
+
+        let limit_offset_backwards_query = SizedQuery::new(query.clone(),Some(2), Some(1), false);
+        let (elements, skipped) = Element::get_sized_query(&mut merk, &limit_offset_backwards_query).expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayyb".to_vec()),
+                Element::Item(b"ayya".to_vec())
+            ]
+        );
+        assert_eq!(
+            skipped,
+            1
+        );
+
+        // Test range inclusive query
+        let mut query = Query::new();
+        query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
+        query.insert_range(b"b".to_vec()..b"c".to_vec());
+        let limit_full_query = SizedQuery::new(query.clone(),Some(5), Some(0), true);
+        let (elements, skipped) = Element::get_sized_query(&mut merk, &limit_full_query).expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayyb".to_vec()),
+                Element::Item(b"ayyc".to_vec()),
+                Element::Item(b"ayyd".to_vec())
+            ]
+        );
+        assert_eq!(
+            skipped,
+            0
+        );
+        let limit_offset_backwards_query = SizedQuery::new(query.clone(),Some(2), Some(1), false);
+        let (elements, skipped) = Element::get_sized_query(&mut merk, &limit_offset_backwards_query).expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayyc".to_vec()),
+                Element::Item(b"ayyb".to_vec()),
+            ]
+        );
+        assert_eq!(
+            skipped,
+            1
+        );
+
+        // Test overlaps
+        let mut query = Query::new();
+        query.insert_key(b"a".to_vec());
+        query.insert_range(b"b".to_vec()..b"d".to_vec());
+        query.insert_range(b"b".to_vec()..b"c".to_vec());
+        let limit_backwards_query = SizedQuery::new(query.clone(),Some(2), None, false);
+        let (elements, skipped) = Element::get_sized_query(&mut merk, &limit_backwards_query).expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayya".to_vec()),
+                Element::Item(b"ayyc".to_vec()),
+            ]
+        );
+        assert_eq!(
+            skipped,
+            0
         );
     }
 }
