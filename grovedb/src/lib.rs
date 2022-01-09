@@ -81,6 +81,24 @@ impl PathQuery<'_> {
     ) -> PathQuery<'a> {
         PathQuery { path, query, subquery_key, subquery }
     }
+
+    pub fn new_unsized<'a>(
+        path: &'a [&'a [u8]],
+        query: Query,
+        subquery_key: Option<&'a[u8]>,
+        subquery: Option<Query>,
+    ) -> PathQuery<'a> {
+        let query = SizedQuery::new(query, None, None, true);
+        PathQuery { path, query, subquery_key, subquery }
+    }
+
+    pub fn new_unsized_basic<'a>(
+        path: &'a [&'a [u8]],
+        query: Query,
+    ) -> PathQuery<'a> {
+        let query = SizedQuery::new(query, None, None, true);
+        PathQuery { path, query, subquery_key: None, subquery: None }
+    }
 }
 
 #[derive(Serialize, Deserialize)]

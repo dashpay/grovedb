@@ -65,7 +65,7 @@ impl GroveDb {
                 .subtrees
                 .get(&Self::compress_subtree_key(query.path, None))
                 .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-            let (subtree_results, skipped) = Element::get_query(merk, &query.query)?;
+            let (subtree_results, skipped) = Element::get_sized_query(merk, &query.query)?;
             result.extend_from_slice(&subtree_results);
         }
         Ok(result)
@@ -116,7 +116,7 @@ impl GroveDb {
                                         let inner_limit = if sized_query.limit.is_some() { Some(limit) } else { None };
                                         let inner_offset = if sized_query.offset.is_some() { Some(offset) } else { None };
                                         let inner_query = SizedQuery::new(path_query.subquery.clone().unwrap(), inner_limit , inner_offset, sized_query.left_to_right);
-                                        let (mut sub_elements , skipped) = Element::get_query(inner_merk, &inner_query)?;
+                                        let (mut sub_elements , skipped) = Element::get_sized_query(inner_merk, &inner_query)?;
                                         limit -= sub_elements.len() as u16;
                                         offset -= skipped;
                                         result.append(&mut sub_elements);

@@ -56,8 +56,17 @@ impl Element {
         Ok(element)
     }
 
-    // Returns a vector of elements, and the number of skipped elements
     pub fn get_query(
+        merk: &Merk<PrefixedRocksDbStorage>,
+        query: &Query,
+    ) -> Result<Vec<Element>, Error> {
+        let sized_query = SizedQuery::new(query.clone(), None, None, true);
+        let (elements, skipped) = Element::get_sized_query(merk, &sized_query)?;
+        Ok(elements)
+    }
+
+    // Returns a vector of elements, and the number of skipped elements
+    pub fn get_sized_query(
         merk: &Merk<PrefixedRocksDbStorage>,
         sized_query: &SizedQuery,
     ) -> Result<(Vec<Element>, u16), Error> {

@@ -354,9 +354,9 @@ fn test_proof_construction() {
     // Get grovedb proof
     let proof = temp_db
         .proof(vec![
-            PathQuery::new(&[TEST_LEAF, b"innertree"], path_one_query),
-            PathQuery::new(&[ANOTHER_TEST_LEAF, b"innertree3"], path_two_query),
-            PathQuery::new(&[ANOTHER_TEST_LEAF, b"innertree2"], path_three_query),
+            PathQuery::new_unsized_basic(&[TEST_LEAF, b"innertree"], path_one_query),
+            PathQuery::new_unsized_basic(&[ANOTHER_TEST_LEAF, b"innertree3"], path_two_query),
+            PathQuery::new_unsized_basic(&[ANOTHER_TEST_LEAF, b"innertree2"], path_three_query),
         ])
         .unwrap();
 
@@ -395,14 +395,14 @@ fn test_proof_construction() {
     let mut proof_query = Query::new();
     proof_query.insert_key(b"key1".to_vec());
     proof_query.insert_key(b"key2".to_vec());
-    assert_eq!(*proof_for_path_one, inner_tree.prove(proof_query).unwrap());
+    assert_eq!(*proof_for_path_one, inner_tree.prove(proof_query, None, None, true).unwrap());
 
     // Assert path 2 proof
     let mut proof_query = Query::new();
     proof_query.insert_key(b"key4".to_vec());
     assert_eq!(
         *proof_for_path_two,
-        inner_tree_3.prove(proof_query).unwrap()
+        inner_tree_3.prove(proof_query, None, None, true).unwrap()
     );
 
     // Assert path 3 proof
@@ -410,13 +410,13 @@ fn test_proof_construction() {
     proof_query.insert_key(b"key3".to_vec());
     assert_eq!(
         *proof_for_path_three,
-        inner_tree_2.prove(proof_query).unwrap()
+        inner_tree_2.prove(proof_query, None, None, true).unwrap()
     );
 
     // Assert test leaf proof
     let mut proof_query = Query::new();
     proof_query.insert_key(b"innertree".to_vec());
-    assert_eq!(*proof_for_test_leaf, test_leaf.prove(proof_query).unwrap());
+    assert_eq!(*proof_for_test_leaf, test_leaf.prove(proof_query, None, None, true).unwrap());
 
     // Assert another test leaf proof
     // another test leaf appeared in two path,
@@ -426,7 +426,7 @@ fn test_proof_construction() {
     proof_query.insert_key(b"innertree3".to_vec());
     assert_eq!(
         *proof_for_another_test_leaf,
-        another_test_leaf.prove(proof_query).unwrap()
+        another_test_leaf.prove(proof_query, None, None, true).unwrap()
     );
 
     // Check that the root proof is valid
@@ -520,7 +520,7 @@ fn test_successful_proof_verification() {
     path_one_query.insert_key(b"key2".to_vec());
 
     let proof = temp_db
-        .proof(vec![PathQuery::new(
+        .proof(vec![PathQuery::new_unsized_basic(
             &[TEST_LEAF, b"innertree"],
             path_one_query,
         )])
@@ -549,8 +549,8 @@ fn test_successful_proof_verification() {
     // Get grovedb proof
     let proof = temp_db
         .proof(vec![
-            PathQuery::new(&[ANOTHER_TEST_LEAF, b"innertree3"], path_two_query),
-            PathQuery::new(&[ANOTHER_TEST_LEAF, b"innertree2"], path_three_query),
+            PathQuery::new_unsized_basic(&[ANOTHER_TEST_LEAF, b"innertree3"], path_two_query),
+            PathQuery::new_unsized_basic(&[ANOTHER_TEST_LEAF, b"innertree2"], path_three_query),
         ])
         .unwrap();
 
@@ -834,7 +834,7 @@ fn test_subtree_deletion() {
 }
 
 #[test]
-fn test_get_query() {
+fn test_get_full_query() {
     let mut db = make_grovedb();
 
     // Insert a couple of subtrees first
@@ -875,11 +875,14 @@ fn test_get_query() {
     query1.insert_range_inclusive(b"key3".to_vec()..=b"key4".to_vec());
     query2.insert_key(b"key6".to_vec());
 
-    let path_query1 = PathQuery::new(&path1, query1);
-    let path_query2 = PathQuery::new(&path2, query2);
+    let sized_query1 = SizedQuery::new(query1, None, None, true);
+    let sized_query2 = SizedQuery::new(query2, None, None, true);
+
+    let path_query1 = PathQuery::new(&path1, sized_query1, None, None);
+    let path_query2 = PathQuery::new(&path2, sized_query2, None, None);
 
     assert_eq!(
-        db.get_path_queries(&[path_query1, path_query2])
+        db.get_path_queries(&[&path_query1, &path_query2])
             .expect("expected successful get_query"),
         vec![
             subtree::Element::Item(b"ayya".to_vec()),

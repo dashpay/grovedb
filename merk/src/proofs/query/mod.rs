@@ -250,6 +250,14 @@ where
         Node::Hash(self.tree().hash())
     }
 
+    #[cfg(feature = "full")]
+    pub(crate) fn create_full_proof(
+        &mut self,
+        query: &[QueryItem],
+    ) -> Result<(LinkedList<Op>, (bool, bool))> {
+        let (linked_list, (left, right), _, _) = self.create_proof(query, None, None, true)?;
+        Ok((linked_list, (left, right)))
+    }
     /// Generates a proof for the list of queried keys. Returns a tuple
     /// containing the generated proof operators, and a tuple representing if
     /// any keys were queried were less than the left edge or greater than the
@@ -550,7 +558,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, _) = walker
-            .create_proof(
+            .create_full_proof(
                 keys.clone()
                     .into_iter()
                     .map(QueryItem::Key)
@@ -637,7 +645,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, absence) = walker
-            .create_proof(vec![].as_slice())
+            .create_full_proof(vec![].as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -680,7 +688,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![5])];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -721,7 +729,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![3])];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -762,7 +770,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![3]), QueryItem::Key(vec![7])];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -801,7 +809,7 @@ mod test {
             QueryItem::Key(vec![7]),
         ];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -833,7 +841,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![8])];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -874,7 +882,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![6])];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -951,7 +959,7 @@ mod test {
             QueryItem::Key(vec![4]),
         ];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1086,7 +1094,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1173,7 +1181,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1261,7 +1269,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 6, 5],
         )];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1349,7 +1357,7 @@ mod test {
             QueryItem::Range(vec![0, 0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7]),
         ];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1473,7 +1481,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, _) = walker
-            .create_proof(vec![QueryItem::Key(vec![5])].as_slice())
+            .create_full_proof(vec![QueryItem::Key(vec![5])].as_slice())
             .expect("failed to create proof");
         let mut bytes = vec![];
 
@@ -1495,7 +1503,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, _) = walker
-            .create_proof(vec![QueryItem::Key(vec![5])].as_slice())
+            .create_full_proof(vec![QueryItem::Key(vec![5])].as_slice())
             .expect("failed to create proof");
         let mut bytes = vec![];
 
@@ -1511,7 +1519,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let keys = vec![vec![5], vec![7]];
         let (proof, _) = walker
-            .create_proof(
+            .create_full_proof(
                 keys.clone()
                     .into_iter()
                     .map(QueryItem::Key)
