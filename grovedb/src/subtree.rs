@@ -10,8 +10,11 @@ use merk::{
 };
 use serde::{Deserialize, Serialize};
 use storage::{
-    rocksdb_storage::{PrefixedRocksDbStorage, RawPrefixedIterator},
-    RawIterator, Store,
+    rocksdb_storage::{
+        OptimisticTransactionDBTransaction, PrefixedRocksDbStorage,
+        RawPrefixedTransactionalIterator,
+    },
+    RawIterator, Storage, Store,
 };
 
 use crate::{Error, Merk, SizedQuery};
@@ -36,10 +39,14 @@ impl Element {
     }
 
     /// Delete an element from Merk under a key
-    pub fn delete(merk: &mut Merk<PrefixedRocksDbStorage>, key: Vec<u8>) -> Result<(), Error> {
+    pub fn delete(
+        merk: &mut Merk<PrefixedRocksDbStorage>,
+        key: Vec<u8>,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<(), Error> {
         // TODO: delete references on this element
         let batch = [(key, Op::Delete)];
-        merk.apply(&batch, &[])
+        merk.apply(&batch, &[], transaction)
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -122,30 +129,34 @@ impl Element {
 
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment
-    pub fn insert(
-        &self,
+    /// If transaction is not passed, the batch will be written immediately.
+    /// If transaction is passed, the operation will be committed on the
+    /// transaction commit.
+    pub fn insert<'a: 'b, 'b>(
+        &'a self,
         merk: &mut Merk<PrefixedRocksDbStorage>,
         key: Vec<u8>,
+        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
-        let batch =
+        let batch_operations =
             [(
                 key,
                 Op::Put(bincode::serialize(self).map_err(|_| {
                     Error::CorruptedData(String::from("unable to serialize element"))
                 })?),
             )];
-        merk.apply(&batch, &[])
+        merk.apply(&batch_operations, &[], transaction)
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    pub fn iterator(mut raw_iter: RawPrefixedIterator) -> ElementsIterator {
+    pub fn iterator(mut raw_iter: RawPrefixedTransactionalIterator) -> ElementsIterator {
         raw_iter.seek_to_first();
         ElementsIterator { raw_iter }
     }
 }
 
 pub struct ElementsIterator<'a> {
-    raw_iter: RawPrefixedIterator<'a>,
+    raw_iter: RawPrefixedTransactionalIterator<'a>,
 }
 
 pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
@@ -182,10 +193,10 @@ mod tests {
     fn test_success_insert() {
         let mut merk = TempMerk::new();
         Element::empty_tree()
-            .insert(&mut merk, b"mykey".to_vec())
+            .insert(&mut merk, b"mykey".to_vec(), None)
             .expect("expected successful insertion");
         Element::Item(b"value".to_vec())
-            .insert(&mut merk, b"another-key".to_vec())
+            .insert(&mut merk, b"another-key".to_vec(), None)
             .expect("expected successful insertion 2");
 
         assert_eq!(
@@ -198,16 +209,16 @@ mod tests {
     fn test_get_query() {
         let mut merk = TempMerk::new();
         Element::Item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d".to_vec())
+            .insert(&mut merk, b"d".to_vec(), None)
             .expect("expected successful insertion");
         Element::Item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c".to_vec())
+            .insert(&mut merk, b"c".to_vec(), None)
             .expect("expected successful insertion");
         Element::Item(b"ayya".to_vec())
-            .insert(&mut merk, b"a".to_vec())
+            .insert(&mut merk, b"a".to_vec(), None)
             .expect("expected successful insertion");
         Element::Item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b".to_vec())
+            .insert(&mut merk, b"b".to_vec(), None)
             .expect("expected successful insertion");
 
         // Test queries by key

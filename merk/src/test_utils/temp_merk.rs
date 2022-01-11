@@ -12,7 +12,7 @@ use crate::Merk;
 pub struct TempMerk {
     pub inner: Merk<PrefixedRocksDbStorage>,
     pub path: TempDir,
-    _db: Rc<rocksdb::DB>,
+    _db: Rc<rocksdb::OptimisticTransactionDB>,
 }
 
 impl TempMerk {
