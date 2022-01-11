@@ -1,13 +1,18 @@
-use std::collections::{HashMap, HashSet};
-use merk::proofs::Query;
-use merk::proofs::query::QueryItem;
-use storage::RawIterator;
-use std::ops::Range;
-use merk::Merk;
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+};
 
-use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage};
-use crate::{Element, Error, GroveDb, PathQuery, SizedQuery};
-use crate::subtree::raw_decode;
+use merk::{
+    proofs::{query::QueryItem, Query},
+    Merk,
+};
+use storage::{
+    rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage},
+    RawIterator,
+};
+
+use crate::{subtree::raw_decode, Element, Error, GroveDb, PathQuery, SizedQuery};
 
 /// Limit of possible indirections
 pub(crate) const MAX_REFERENCE_HOPS: usize = 10;
@@ -81,9 +86,10 @@ impl GroveDb {
         Element::get(&merk, key)
     }
 
-    pub fn get_path_queries(&mut self,
-                            path_queries: &[&PathQuery],
-                            transaction: Option<&OptimisticTransactionDBTransaction>,
+    pub fn get_path_queries(
+        &mut self,
+        path_queries: &[&PathQuery],
+        transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Vec<Element>, Error> {
         let subtrees = match transaction {
             None => &self.subtrees,
@@ -110,7 +116,7 @@ impl GroveDb {
     }
 
     fn get_path_query_on_trees(
-        &mut self,
+        &self,
         path_query: &PathQuery,
         subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     ) -> Result<(Vec<Element>, u16), Error> {
@@ -122,8 +128,16 @@ impl GroveDb {
         let mut result = Vec::new();
         let mut iter = merk.raw_iter();
 
-        let mut limit = if sized_query.limit.is_some() { sized_query.limit.unwrap() } else { u16::MAX };
-        let original_offset = if sized_query.offset.is_some() { sized_query.offset.unwrap() } else { 0 as u16};
+        let mut limit = if sized_query.limit.is_some() {
+            sized_query.limit.unwrap()
+        } else {
+            u16::MAX
+        };
+        let original_offset = if sized_query.offset.is_some() {
+            sized_query.offset.unwrap()
+        } else {
+            0 as u16
+        };
         let mut offset = original_offset;
 
         for item in sized_query.query.iter() {
@@ -139,8 +153,21 @@ impl GroveDb {
                     }
                 }
                 QueryItem::Range(Range { start, end }) => {
-                    iter.seek(if sized_query.left_to_right {start} else {end});
-                    while limit > 0 && iter.valid() && iter.key().is_some() && iter.key() != Some(if sized_query.left_to_right {end} else {start}) {
+                    iter.seek(if sized_query.left_to_right {
+                        start
+                    } else {
+                        end
+                    });
+                    while limit > 0
+                        && iter.valid()
+                        && iter.key().is_some()
+                        && iter.key()
+                            != Some(if sized_query.left_to_right {
+                                end
+                            } else {
+                                start
+                            })
+                    {
                         let element =
                             raw_decode(iter.value().expect("if key exists then value should too"))?;
                         match element {
@@ -148,7 +175,8 @@ impl GroveDb {
                                 // if the query had a subquery then we should get elements from it
                                 if path_query.subquery_key.is_some() {
                                     let subquery_key = path_query.subquery_key.unwrap();
-                                    // this means that for each element we should get the element at the subquery_key
+                                    // this means that for each element we should get the element at
+                                    // the subquery_key
                                     let mut path_vec = path.to_vec();
                                     path_vec.push(iter.key().expect("key should exist"));
 
@@ -157,20 +185,44 @@ impl GroveDb {
 
                                         let inner_merk = self
                                             .subtrees
-                                            .get(&Self::compress_subtree_key(path_vec.as_slice(), None))
-                                            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                                        let inner_limit = if sized_query.limit.is_some() { Some(limit) } else { None };
-                                        let inner_offset = if sized_query.offset.is_some() { Some(offset) } else { None };
-                                        let inner_query = SizedQuery::new(path_query.subquery.clone().unwrap(), inner_limit , inner_offset, sized_query.left_to_right);
-                                        let (mut sub_elements , skipped) = Element::get_sized_query(inner_merk, &inner_query)?;
+                                            .get(&Self::compress_subtree_key(
+                                                path_vec.as_slice(),
+                                                None,
+                                            ))
+                                            .ok_or(Error::InvalidPath(
+                                                "no subtree found under that path",
+                                            ))?;
+                                        let inner_limit = if sized_query.limit.is_some() {
+                                            Some(limit)
+                                        } else {
+                                            None
+                                        };
+                                        let inner_offset = if sized_query.offset.is_some() {
+                                            Some(offset)
+                                        } else {
+                                            None
+                                        };
+                                        let inner_query = SizedQuery::new(
+                                            path_query.subquery.clone().unwrap(),
+                                            inner_limit,
+                                            inner_offset,
+                                            sized_query.left_to_right,
+                                        );
+                                        let (mut sub_elements, skipped) =
+                                            Element::get_sized_query(inner_merk, &inner_query)?;
                                         limit -= sub_elements.len() as u16;
                                         offset -= skipped;
                                         result.append(&mut sub_elements);
                                     } else {
                                         let inner_merk = self
                                             .subtrees
-                                            .get(&Self::compress_subtree_key(path_vec.as_slice(), None))
-                                            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                                            .get(&Self::compress_subtree_key(
+                                                path_vec.as_slice(),
+                                                None,
+                                            ))
+                                            .ok_or(Error::InvalidPath(
+                                                "no subtree found under that path",
+                                            ))?;
                                         if offset == 0 {
                                             result.push(Element::get(inner_merk, subquery_key)?);
                                             limit -= 1;
@@ -189,27 +241,46 @@ impl GroveDb {
                                 }
                             }
                         }
-                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
+                        if sized_query.left_to_right {
+                            iter.next();
+                        } else {
+                            iter.prev();
+                        }
                     }
                 }
                 QueryItem::RangeInclusive(r) => {
                     let start = r.start();
                     let end = r.end();
-                    iter.seek(if sized_query.left_to_right {start} else {end});
+                    iter.seek(if sized_query.left_to_right {
+                        start
+                    } else {
+                        end
+                    });
                     let mut work = true;
                     while iter.valid() && iter.key().is_some() && work {
-                        if iter.key() == Some(if sized_query.left_to_right {end} else {start}) {
+                        if iter.key()
+                            == Some(if sized_query.left_to_right {
+                                end
+                            } else {
+                                start
+                            })
+                        {
                             work = false;
                         }
                         if offset == 0 {
-                            let element =
-                                raw_decode(iter.value().expect("if key exists then value should too"))?;
+                            let element = raw_decode(
+                                iter.value().expect("if key exists then value should too"),
+                            )?;
                             result.push(element);
                             limit -= 1;
                         } else {
                             offset -= 1;
                         }
-                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
+                        if sized_query.left_to_right {
+                            iter.next();
+                        } else {
+                            iter.prev();
+                        }
                     }
                 }
                 QueryItem::RangeFull(_) => {}

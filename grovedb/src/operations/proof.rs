@@ -58,8 +58,8 @@ impl GroveDb {
         for proof_query in proof_queries {
             let mut path = proof_query.path;
 
-            // If there is a subquery with a limit it's possible that we only need a reduced proof
-            // for this leaf.
+            // If there is a subquery with a limit it's possible that we only need a reduced
+            // proof for this leaf.
             let mut reduced_proof_query = proof_query;
 
             // First we must get elements
@@ -104,7 +104,11 @@ impl GroveDb {
         Ok(seralized_proof)
     }
 
-    fn prove_path_item(&self, compressed_path: &Vec<u8>, path_query: PathQuery) -> Result<Vec<u8>, Error> {
+    fn prove_path_item(
+        &self,
+        compressed_path: &Vec<u8>,
+        path_query: PathQuery,
+    ) -> Result<Vec<u8>, Error> {
         let merk = self
             .subtrees
             .get(compressed_path)
@@ -113,9 +117,14 @@ impl GroveDb {
         let sized_query = path_query.query;
 
         if path_query.subquery.is_none() {
-            //then limit should be applied directly to the proof here
+            // then limit should be applied directly to the proof here
             let proof_result = merk
-                .prove(sized_query.query, sized_query.limit, sized_query.offset, sized_query.left_to_right)
+                .prove(
+                    sized_query.query,
+                    sized_query.limit,
+                    sized_query.offset,
+                    sized_query.left_to_right,
+                )
                 .expect("should prove both inclusion and absence");
             Ok(proof_result)
         } else {
@@ -132,11 +141,11 @@ impl GroveDb {
             .get(path)
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
 
-            //then limit should be applied directly to the proof here
-            let proof_result = merk
-                .prove(query, None, None, true)
-                .expect("should prove both inclusion and absence");
-            Ok(proof_result)
+        // then limit should be applied directly to the proof here
+        let proof_result = merk
+            .prove(query, None, None, true)
+            .expect("should prove both inclusion and absence");
+        Ok(proof_result)
     }
 
     pub fn execute_proof(proof: Vec<u8>) -> Result<([u8; 32], HashMap<Vec<u8>, Map>), Error> {

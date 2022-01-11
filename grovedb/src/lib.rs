@@ -53,13 +53,14 @@ pub enum Error {
 pub struct PathQuery<'a> {
     path: &'a [&'a [u8]],
     query: SizedQuery,
-    subquery_key: Option<&'a[u8]>,
+    subquery_key: Option<&'a [u8]>,
     subquery: Option<Query>,
 }
 
 // If a subquery exists :
 // limit should be applied to the elements returned by the subquery
-// offset should be applied to the first item that will subqueried (first in the case of a range)
+// offset should be applied to the first item that will subqueried (first in the
+// case of a range)
 pub struct SizedQuery {
     query: Query,
     limit: Option<u16>,
@@ -72,13 +73,13 @@ impl SizedQuery {
         query: Query,
         limit: Option<u16>,
         offset: Option<u16>,
-        left_to_right: bool
+        left_to_right: bool,
     ) -> SizedQuery {
         SizedQuery {
             query,
             limit,
             offset,
-            left_to_right
+            left_to_right,
         }
     }
 }
@@ -87,28 +88,40 @@ impl PathQuery<'_> {
     pub fn new<'a>(
         path: &'a [&'a [u8]],
         query: SizedQuery,
-        subquery_key: Option<&'a[u8]>,
+        subquery_key: Option<&'a [u8]>,
         subquery: Option<Query>,
     ) -> PathQuery<'a> {
-        PathQuery { path, query, subquery_key, subquery }
+        PathQuery {
+            path,
+            query,
+            subquery_key,
+            subquery,
+        }
     }
 
     pub fn new_unsized<'a>(
         path: &'a [&'a [u8]],
         query: Query,
-        subquery_key: Option<&'a[u8]>,
+        subquery_key: Option<&'a [u8]>,
         subquery: Option<Query>,
     ) -> PathQuery<'a> {
         let query = SizedQuery::new(query, None, None, true);
-        PathQuery { path, query, subquery_key, subquery }
+        PathQuery {
+            path,
+            query,
+            subquery_key,
+            subquery,
+        }
     }
 
-    pub fn new_unsized_basic<'a>(
-        path: &'a [&'a [u8]],
-        query: Query,
-    ) -> PathQuery<'a> {
+    pub fn new_unsized_basic<'a>(path: &'a [&'a [u8]], query: Query) -> PathQuery<'a> {
         let query = SizedQuery::new(query, None, None, true);
-        PathQuery { path, query, subquery_key: None, subquery: None }
+        PathQuery {
+            path,
+            query,
+            subquery_key: None,
+            subquery: None,
+        }
     }
 }
 

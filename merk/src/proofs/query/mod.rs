@@ -3,15 +3,14 @@ mod map;
 use std::{
     cmp::{max, min, Ordering},
     collections::BTreeSet,
-    ops::{Range, RangeInclusive, RangeFull, RangeTo, RangeFrom, RangeToInclusive},
+    ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
 use anyhow::{bail, Result};
 pub use map::*;
+use storage::{rocksdb_storage::RawPrefixedTransactionalIterator, RawIterator};
 #[cfg(feature = "full")]
 use {super::Op, std::collections::LinkedList};
-use storage::RawIterator;
-use storage::rocksdb_storage::RawPrefixedIterator;
 
 use super::{tree::execute, Decoder, Node};
 use crate::tree::{Fetch, Hash, Link, RefWalker};
@@ -99,9 +98,9 @@ impl Query {
         self.insert_item(range);
     }
 
-    /// Adds a range until a certain non included value to the query, so that all
-    /// the entries in the tree with keys in the range will be included in the
-    /// resulting proof.
+    /// Adds a range until a certain non included value to the query, so that
+    /// all the entries in the tree with keys in the range will be included
+    /// in the resulting proof.
     ///
     /// If a range including the range already exists in the query, this will
     /// have no effect. If the query already includes a range that overlaps with
@@ -223,17 +222,18 @@ impl QueryItem {
 
     pub fn contains(&self, key: &[u8]) -> bool {
         let (bound, inclusive) = self.upper_bound();
-        return (self.lower_unbounded() || key >= self.lower_bound()) && (self.upper_unbounded() || key < bound || (key == bound && inclusive));
+        return (self.lower_unbounded() || key >= self.lower_bound())
+            && (self.upper_unbounded() || key < bound || (key == bound && inclusive));
     }
 
     fn merge(self, other: QueryItem) -> QueryItem {
         // TODO: don't copy into new vecs
         let lower_unbounded = self.lower_unbounded() || other.lower_unbounded();
         let upper_unbounded = self.upper_unbounded() || other.upper_unbounded();
-        
+
         let start = min(self.lower_bound(), other.lower_bound()).to_vec();
         let end = max(self.upper_bound(), other.upper_bound());
-        
+
         if lower_unbounded {
             if upper_unbounded {
                 QueryItem::RangeFull(RangeFull)
@@ -248,7 +248,6 @@ impl QueryItem {
                     })
                 }
             }
-            
         } else if upper_unbounded {
             QueryItem::RangeFrom(RangeFrom { start })
         } else {
@@ -271,9 +270,9 @@ impl QueryItem {
         }
     }
 
-    pub fn seek_for_iter(&self, iter: &mut RawPrefixedIterator, left_to_right: bool) {
+    pub fn seek_for_iter(&self, iter: &mut RawPrefixedTransactionalIterator, left_to_right: bool) {
         match self {
-            QueryItem::Key(_) => { },
+            QueryItem::Key(_) => {}
             QueryItem::Range(Range { start, end }) => {
                 if left_to_right {
                     iter.seek(start);
@@ -283,7 +282,11 @@ impl QueryItem {
                 }
             }
             QueryItem::RangeInclusive(range_inclusive) => {
-                iter.seek(if left_to_right {range_inclusive.start()} else {range_inclusive.end()});
+                iter.seek(if left_to_right {
+                    range_inclusive.start()
+                } else {
+                    range_inclusive.end()
+                });
             }
             QueryItem::RangeFull(..) => {
                 if left_to_right {
@@ -292,14 +295,14 @@ impl QueryItem {
                     iter.seek_to_last();
                 }
             }
-            QueryItem::RangeFrom(RangeFrom{ start}) => {
+            QueryItem::RangeFrom(RangeFrom { start }) => {
                 if left_to_right {
                     iter.seek(start);
                 } else {
                     iter.seek_to_last();
                 }
             }
-            QueryItem::RangeTo(RangeTo{end}) => {
+            QueryItem::RangeTo(RangeTo { end }) => {
                 if left_to_right {
                     iter.seek_to_first();
                 } else {
@@ -317,43 +320,57 @@ impl QueryItem {
         };
     }
 
-
-    pub fn iter_is_valid_for_type(&self,
-                                  iter: &RawPrefixedIterator,
-                                  limit: u16,
-                                  work: bool,
-                                  left_to_right: bool) -> (bool, bool) {
+    pub fn iter_is_valid_for_type(
+        &self,
+        iter: &RawPrefixedTransactionalIterator,
+        limit: u16,
+        work: bool,
+        left_to_right: bool,
+    ) -> (bool, bool) {
         match self {
             QueryItem::Key(_) => (true, true),
             QueryItem::Range(Range { start, end }) => {
-                let valid = limit > 0 && iter.valid() && iter.key().is_some() && work && (!left_to_right || iter.key() != Some(end));
-                //if we are going backwards, we need to make sure we are going to stop after the first element
+                let valid = limit > 0
+                    && iter.valid()
+                    && iter.key().is_some()
+                    && work
+                    && (!left_to_right || iter.key() != Some(end));
+                // if we are going backwards, we need to make sure we are going to stop after
+                // the first element
                 let next_valid = !(!left_to_right && iter.key() == Some(start));
                 (valid, next_valid)
-            },
+            }
             QueryItem::RangeInclusive(range_inclusive) => {
                 let valid = iter.valid() && iter.key().is_some() && work;
-                let next_valid = iter.key() != Some(if left_to_right {range_inclusive.end()} else {range_inclusive.start()});
+                let next_valid = iter.key()
+                    != Some(if left_to_right {
+                        range_inclusive.end()
+                    } else {
+                        range_inclusive.start()
+                    });
                 (valid, next_valid)
-            },
+            }
             QueryItem::RangeFull(..) => {
                 let valid = limit > 0 && iter.valid() && iter.key().is_some();
                 (valid, true)
-            },
-            QueryItem::RangeFrom(RangeFrom{ start}) => {
+            }
+            QueryItem::RangeFrom(RangeFrom { start }) => {
                 let valid = limit > 0 && iter.valid() && iter.key().is_some() && work;
-                let next_valid =  !(!left_to_right && iter.key() == Some(start));
+                let next_valid = !(!left_to_right && iter.key() == Some(start));
                 (valid, next_valid)
-            },
-            QueryItem::RangeTo(RangeTo{end}) => {
-                let valid = limit > 0 && iter.valid() && iter.key().is_some() && (!left_to_right || iter.key() != Some(end));
+            }
+            QueryItem::RangeTo(RangeTo { end }) => {
+                let valid = limit > 0
+                    && iter.valid()
+                    && iter.key().is_some()
+                    && (!left_to_right || iter.key() != Some(end));
                 (valid, true)
-            },
+            }
             QueryItem::RangeToInclusive(RangeToInclusive { end }) => {
                 let valid = iter.valid() && iter.key().is_some() && work;
                 let next_valid = !(left_to_right && iter.key() == Some(end));
                 (valid, next_valid)
-            },
+            }
         }
     }
 }
@@ -478,9 +495,10 @@ where
         &mut self,
         query: &[QueryItem],
     ) -> Result<(LinkedList<Op>, (bool, bool))> {
-        let (linked_list, (left, right), _, _) = self.create_proof(query, None, None, true)?;
+        let (linked_list, (left, right), ..) = self.create_proof(query, None, None, true)?;
         Ok((linked_list, (left, right)))
     }
+
     /// Generates a proof for the list of queried keys. Returns a tuple
     /// containing the generated proof operators, and a tuple representing if
     /// any keys were queried were less than the left edge or greater than the
@@ -525,10 +543,10 @@ where
         };
 
         if left_to_right {
-            let (mut proof, left_absence, new_limit, new_offset)
-                = self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
-            let (mut right_proof, right_absence, new_limit, new_offset)
-                = self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
+            let (mut proof, left_absence, new_limit, new_offset) =
+                self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
+            let (mut right_proof, right_absence, new_limit, new_offset) =
+                self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
 
             let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
 
@@ -552,12 +570,17 @@ where
                 proof.push_back(Op::Child);
             }
 
-            Ok((proof, (left_absence.0, right_absence.1), new_limit, new_offset))
+            Ok((
+                proof,
+                (left_absence.0, right_absence.1),
+                new_limit,
+                new_offset,
+            ))
         } else {
-            let (mut proof, left_absence, new_limit, new_offset)
-                = self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
-            let (mut right_proof, right_absence, new_limit, new_offset)
-                = self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
+            let (mut proof, left_absence, new_limit, new_offset) =
+                self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
+            let (mut right_proof, right_absence, new_limit, new_offset) =
+                self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
 
             let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
 
@@ -581,10 +604,13 @@ where
                 proof.push_back(Op::Child);
             }
 
-            Ok((proof, (left_absence.0, right_absence.1), new_limit, new_offset))
+            Ok((
+                proof,
+                (left_absence.0, right_absence.1),
+                new_limit,
+                new_offset,
+            ))
         }
-
-
     }
 
     /// Similar to `create_proof`. Recurses into the child on the given side and
