@@ -10,6 +10,8 @@ use anyhow::{bail, Result};
 pub use map::*;
 #[cfg(feature = "full")]
 use {super::Op, std::collections::LinkedList};
+use storage::RawIterator;
+use storage::rocksdb_storage::RawPrefixedIterator;
 
 use super::{tree::execute, Decoder, Node};
 use crate::tree::{Fetch, Hash, Link, RefWalker};
@@ -259,6 +261,99 @@ impl QueryItem {
                     end: end.0.to_vec(),
                 })
             }
+        }
+    }
+
+    pub fn is_range(&self) -> bool {
+        match self {
+            QueryItem::Key(_) => false,
+            _ => true,
+        }
+    }
+
+    pub fn seek_for_iter(&self, iter: &mut RawPrefixedIterator, left_to_right: bool) {
+        match self {
+            QueryItem::Key(_) => { },
+            QueryItem::Range(Range { start, end }) => {
+                if left_to_right {
+                    iter.seek(start);
+                } else {
+                    iter.seek(end);
+                    iter.prev();
+                }
+            }
+            QueryItem::RangeInclusive(range_inclusive) => {
+                iter.seek(if left_to_right {range_inclusive.start()} else {range_inclusive.end()});
+            }
+            QueryItem::RangeFull(..) => {
+                if left_to_right {
+                    iter.seek_to_first();
+                } else {
+                    iter.seek_to_last();
+                }
+            }
+            QueryItem::RangeFrom(RangeFrom{ start}) => {
+                if left_to_right {
+                    iter.seek(start);
+                } else {
+                    iter.seek_to_last();
+                }
+            }
+            QueryItem::RangeTo(RangeTo{end}) => {
+                if left_to_right {
+                    iter.seek_to_first();
+                } else {
+                    iter.seek(end);
+                    iter.prev();
+                }
+            }
+            QueryItem::RangeToInclusive(RangeToInclusive { end }) => {
+                if left_to_right {
+                    iter.seek_to_first();
+                } else {
+                    iter.seek(end);
+                }
+            }
+        };
+    }
+
+
+    pub fn iter_is_valid_for_type(&self,
+                                  iter: &RawPrefixedIterator,
+                                  limit: u16,
+                                  work: bool,
+                                  left_to_right: bool) -> (bool, bool) {
+        match self {
+            QueryItem::Key(_) => (true, true),
+            QueryItem::Range(Range { start, end }) => {
+                let valid = limit > 0 && iter.valid() && iter.key().is_some() && work && (!left_to_right || iter.key() != Some(end));
+                //if we are going backwards, we need to make sure we are going to stop after the first element
+                let next_valid = !(!left_to_right && iter.key() == Some(start));
+                (valid, next_valid)
+            },
+            QueryItem::RangeInclusive(range_inclusive) => {
+                let valid = iter.valid() && iter.key().is_some() && work;
+                let next_valid = iter.key() != Some(if left_to_right {range_inclusive.end()} else {range_inclusive.start()});
+                (valid, next_valid)
+            },
+            QueryItem::RangeFull(..) => {
+                let valid = limit > 0 && iter.valid() && iter.key().is_some();
+                (valid, true)
+            },
+            QueryItem::RangeFrom(RangeFrom{ start}) => {
+                let valid = limit > 0 && iter.valid() && iter.key().is_some() && work;
+                let next_valid =  !(!left_to_right && iter.key() == Some(start));
+                (valid, next_valid)
+            },
+            QueryItem::RangeTo(RangeTo{end}) => {
+                let valid = limit > 0 && iter.valid() && iter.key().is_some() && (!left_to_right || iter.key() != Some(end));
+                (valid, true)
+            },
+            QueryItem::RangeToInclusive(RangeToInclusive { end }) => {
+                let valid = iter.valid() && iter.key().is_some() && work;
+                let next_valid = !(left_to_right && iter.key() == Some(end));
+                (valid, next_valid)
+            },
         }
     }
 }

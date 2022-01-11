@@ -78,8 +78,9 @@ impl Element {
         let mut offset = original_offset;
 
         for item in sized_query.query.iter() {
-            match item {
-                QueryItem::Key(key) => {
+            if !item.is_range() {
+                // this is a query on a key
+                if let QueryItem::Key(key) = item {
                     if limit > 0 {
                         if offset == 0 {
                             result.push(Element::get(merk, key)?);
@@ -89,141 +90,27 @@ impl Element {
                         }
                     }
                 }
-                QueryItem::Range(Range { start, end }) => {
-                    if sized_query.left_to_right {
-                        iter.seek(start);
-                    } else {
-                        iter.seek(end);
-                        iter.prev();
-                    }
-                    let mut work = true;
+            } else {
+                // this is a query on a range
 
-                    while limit > 0 && iter.valid() && iter.key().is_some() && work && (!sized_query.left_to_right || iter.key() != Some(end)) {
-                        //if we are going backwards, we need to make sure we are going to stop after the first element
-                        if !sized_query.left_to_right {
-                            if iter.key() == Some(start) {
-                                work = false;
-                            }
-                        }
-                        let element =
-                            raw_decode(iter.value().expect("if key exists then value should too"))?;
-                            if offset == 0 {
-                                result.push(element);
-                                limit -= 1;
-                            } else {
-                                offset -= 1;
-                            }
-                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
-                    }
-                }
-                QueryItem::RangeInclusive(r) => {
-                    let start = r.start();
-                    let end = r.end();
-                    iter.seek(if sized_query.left_to_right {start} else {end});
-                    let mut work = true;
-                    while iter.valid() && iter.key().is_some() && work {
-                        if iter.key() == Some(if sized_query.left_to_right {end} else {start}) {
-                            work = false;
-                        }
-                        if offset == 0 {
-                            let element =
-                                raw_decode(iter.value().expect("if key exists then value should too"))?;
-                            result.push(element);
-                            limit -= 1;
-                        } else {
-                            offset -= 1;
-                        }
-                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
-                    }
-                }
-                QueryItem::RangeFull(_) => {
-                    if sized_query.left_to_right {
-                        iter.seek_to_first();
-                    } else {
-                        iter.seek_to_last();
-                    }
-                    while limit > 0 && iter.valid() && iter.key().is_some() {
-                        let element =
-                            raw_decode(iter.value().expect("if key exists then value should too"))?;
-                        if offset == 0 {
-                            result.push(element);
-                            limit -= 1;
-                        } else {
-                            offset -= 1;
-                        }
-                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
-                    }
-                }
-                QueryItem::RangeFrom(RangeFrom{ start}) => {
-                    if sized_query.left_to_right {
-                        iter.seek(start);
-                    } else {
-                        iter.seek_to_last();
-                    }
-                    let mut work = true;
+                item.seek_for_iter(&mut iter, sized_query.left_to_right);
+                let mut work= true;
 
-                    while limit > 0 && iter.valid() && iter.key().is_some() && work {
-                        //if we are going backwards, we need to make sure we are going to stop after the first element
-                        if !sized_query.left_to_right {
-                            if iter.key() == Some(start) {
-                                work = false;
-                            }
-                        }
-                        let element =
-                            raw_decode(iter.value().expect("if key exists then value should too"))?;
-                        if offset == 0 {
-                            result.push(element);
-                            limit -= 1;
-                        } else {
-                            offset -= 1;
-                        }
-                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
+                loop {
+                    let (valid, next_valid) = item.iter_is_valid_for_type(&iter, limit, work, sized_query.left_to_right);
+                    if !valid {
+                        break;
                     }
-                }
-                QueryItem::RangeTo(RangeTo{ end}) => {
-                    if sized_query.left_to_right {
-                        iter.seek_to_first();
+                    work = next_valid;
+                    let element =
+                        raw_decode(iter.value().expect("if key exists then value should too"))?;
+                    if offset == 0 {
+                        result.push(element);
+                        limit -= 1;
                     } else {
-                        iter.seek(end);
-                        iter.prev();
+                        offset -= 1;
                     }
-
-                    while limit > 0 && iter.valid() && iter.key().is_some() && (!sized_query.left_to_right || iter.key() != Some(end)) {
-                        let element =
-                            raw_decode(iter.value().expect("if key exists then value should too"))?;
-                        if offset == 0 {
-                            result.push(element);
-                            limit -= 1;
-                        } else {
-                            offset -= 1;
-                        }
-                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
-                    }
-                }
-                QueryItem::RangeToInclusive(RangeToInclusive{ end}) => {
-                    if sized_query.left_to_right {
-                        iter.seek_to_first();
-                    } else {
-                        iter.seek(end);
-                    }
-                    let mut work = true;
-                    while iter.valid() && iter.key().is_some() && work {
-                        if sized_query.left_to_right {
-                            if iter.key() == Some(end) {
-                                work = false;
-                            }
-                        }
-
-                        if offset == 0 {
-                            let element =
-                                raw_decode(iter.value().expect("if key exists then value should too"))?;
-                            result.push(element);
-                            limit -= 1;
-                        } else {
-                            offset -= 1;
-                        }
-                        if sized_query.left_to_right {iter.next();} else {iter.prev();}
-                    }
+                    if sized_query.left_to_right { iter.next(); } else { iter.prev(); }
                 }
             }
             if limit == 0 {
@@ -608,7 +495,7 @@ mod tests {
             vec![
                 Element::Item(b"ayyb".to_vec()),
                 Element::Item(b"ayyc".to_vec()),
-                Element::Item(b"ayyd".to_vec())
+                Element::Item(b"ayyd".to_vec()),
             ]
         );
         assert_eq!(
