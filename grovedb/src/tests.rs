@@ -890,23 +890,27 @@ fn test_get_full_query() {
     );
 }
 
-fn populate_tree_for_range_subquery(mut db: TempGroveDb) {
+fn populate_tree_for_range_subquery(db: &mut TempGroveDb) {
     // Insert a couple of subtrees first
-    for i in b"1985"..b"2000" {
-        db.insert(&[TEST_LEAF], i.to_vec(), Element::empty_tree())
+    for i in 1985u32..2000 {
+        let i_vec = (i as u32).to_be_bytes().to_vec();
+        db.insert(&[TEST_LEAF], i_vec.clone(), Element::empty_tree())
             .expect("successful subtree insert");
         // Insert element 0
         // Insert some elements into subtree
         db.insert(
-            &[TEST_LEAF, i],
+            &[TEST_LEAF, i_vec.as_slice()],
             b"0".to_vec(),
             Element::empty_tree()).expect("successful subtree insert");
 
-        for j in b"100"..b"130" {
+        for j in 100u32..150 {
+            let random_key = rand::thread_rng().gen::<[u8; 32]>();
+            let mut j_vec = i_vec.clone();
+            j_vec.append(&mut (j as u32).to_be_bytes().to_vec());
             db.insert(
-                &[TEST_LEAF, i, b"0"],
-                rand::thread_rng().gen::<[u8; 32]>(),
-                Element::Item(j.to_vec()),
+                &[TEST_LEAF, i_vec.clone().as_slice(), b"0"],
+                random_key.to_vec(),
+                Element::Item(j_vec),
             )
                 .expect("successful value insert");
         }
@@ -917,28 +921,29 @@ fn populate_tree_for_range_subquery(mut db: TempGroveDb) {
 fn test_get_full_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
 
-    populate_tree_for_range_subquery(db);
+    populate_tree_for_range_subquery(&mut db);
 
     let path = vec![TEST_LEAF];
     let mut query = Query::new();
-    query1.insert_range_inclusive(b"1988".to_vec()..=b"1992".to_vec());
+    query.insert_range((1988 as u32).to_be_bytes().to_vec()..(1992 as u32).to_be_bytes().to_vec());
 
-    let subquery_key = b"0";
+    let subquery_key: &[u8] = b"0";
 
-    let mut query = Query::new();
-    query.insert_key()
+    let mut sub_query = Query::new();
+    sub_query.insert_all();
 
-    let path_query = PathQuery::new_unsized(&path1, query1, Some(&subquery_key), None);
+    let path_query = PathQuery::new_unsized(&path, query, Some(&subquery_key), Some(sub_query));
     let (elements, skipped) = db.get_path_query(&path_query)
         .expect("expected successful get_path_query");
     assert_eq!(
-        elements
-        vec![
-            subtree::Element::Item(b"ayya".to_vec()),
-            subtree::Element::Item(b"ayyb".to_vec()),
-            subtree::Element::Item(b"ayyd".to_vec()),
-        ]
+        elements.len(),
+        200
     );
+    let mut first_value = (1988 as u32).to_be_bytes().to_vec();
+    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    assert!(
+        elements.contains(&subtree::Element::Item(first_value))
+    )
 }
 
 #[test]

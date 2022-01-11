@@ -62,16 +62,6 @@ impl Query {
         self.insert_item(range);
     }
 
-    /// Adds a range of all potential values to the query, so that the query
-    /// will return all values
-    ///
-    /// All other items in the query will be discarded as you are now getting
-    /// back all elements.
-    pub fn insert_all(&mut self) {
-        let range = QueryItem::RangeFull(RangeFull);
-        self.insert_item(range);
-    }
-
     /// Adds an inclusive range to the query, so that all the entries in the
     /// tree with keys in the range will be included in the resulting proof.
     ///
@@ -80,6 +70,52 @@ impl Query {
     /// the range, the ranges will be merged together.
     pub fn insert_range_inclusive(&mut self, range: RangeInclusive<Vec<u8>>) {
         let range = QueryItem::RangeInclusive(range);
+        self.insert_item(range);
+    }
+
+    /// Adds a range until a certain included value to the query, so that all
+    /// the entries in the tree with keys in the range will be included in the
+    /// resulting proof.
+    ///
+    /// If a range including the range already exists in the query, this will
+    /// have no effect. If the query already includes a range that overlaps with
+    /// the range, the ranges will be joined together.
+    pub fn insert_range_to_inclusive(&mut self, range: RangeToInclusive<Vec<u8>>) {
+        let range = QueryItem::RangeToInclusive(range);
+        self.insert_item(range);
+    }
+
+    /// Adds a range from a certain included value to the query, so that all
+    /// the entries in the tree with keys in the range will be included in the
+    /// resulting proof.
+    ///
+    /// If a range including the range already exists in the query, this will
+    /// have no effect. If the query already includes a range that overlaps with
+    /// the range, the ranges will be joined together.
+    pub fn insert_range_from(&mut self, range: RangeFrom<Vec<u8>>) {
+        let range = QueryItem::RangeFrom(range);
+        self.insert_item(range);
+    }
+
+    /// Adds a range until a certain non included value to the query, so that all
+    /// the entries in the tree with keys in the range will be included in the
+    /// resulting proof.
+    ///
+    /// If a range including the range already exists in the query, this will
+    /// have no effect. If the query already includes a range that overlaps with
+    /// the range, the ranges will be joined together.
+    pub fn insert_range_to(&mut self, range: RangeTo<Vec<u8>>) {
+        let range = QueryItem::RangeTo(range);
+        self.insert_item(range);
+    }
+
+    /// Adds a range of all potential values to the query, so that the query
+    /// will return all values
+    ///
+    /// All other items in the query will be discarded as you are now getting
+    /// back all elements.
+    pub fn insert_all(&mut self) {
+        let range = QueryItem::RangeFull(RangeFull);
         self.insert_item(range);
     }
 

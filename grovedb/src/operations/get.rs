@@ -170,6 +170,10 @@ impl GroveDb {
                         if sized_query.left_to_right {iter.next();} else {iter.prev();}
                     }
                 }
+                QueryItem::RangeFull(_) => {}
+                QueryItem::RangeFrom(_) => {}
+                QueryItem::RangeTo(_) => {}
+                QueryItem::RangeToInclusive(_) => {}
             }
             if limit == 0 {
                 break;
