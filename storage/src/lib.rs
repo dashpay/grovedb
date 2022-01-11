@@ -62,7 +62,10 @@ pub trait Storage {
     fn get_meta(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error>;
 
     /// Initialize a new batch
-    fn new_batch<'a: 'b, 'b>(&'a self, transaction: Option<&'b Self::DBTransaction<'b>>) -> Result<Self::Batch<'b>, Self::Error>;
+    fn new_batch<'a: 'b, 'b>(
+        &'a self,
+        transaction: Option<&'b Self::DBTransaction<'b>>,
+    ) -> Result<Self::Batch<'b>, Self::Error>;
 
     /// Commits changes from batch into storage
     fn commit_batch<'a>(&'a self, batch: Self::Batch<'a>) -> Result<(), Self::Error>;
@@ -78,11 +81,15 @@ pub trait Storage {
 }
 
 impl<'b, S: Storage> Storage for &'b S {
-    type Error = S::Error;
     type Batch<'a>
     where
         'b: 'a,
     = S::Batch<'a>;
+    type DBTransaction<'a>
+    where
+        'b: 'a,
+    = S::DBTransaction<'a>;
+    type Error = S::Error;
     type RawIterator<'a>
     where
         'b: 'a,
@@ -91,10 +98,6 @@ impl<'b, S: Storage> Storage for &'b S {
     where
         'b: 'a,
     = S::StorageTransaction<'a>;
-    type DBTransaction<'a>
-    where
-        'b: 'a,
-    = S::DBTransaction<'a>;
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
         (*self).put(key, value)
@@ -144,7 +147,10 @@ impl<'b, S: Storage> Storage for &'b S {
         (*self).get_meta(key)
     }
 
-    fn new_batch<'a: 'c, 'c>(&'a self, transaction: Option<&'c Self::DBTransaction<'c>>) -> Result<Self::Batch<'c>, Self::Error> {
+    fn new_batch<'a: 'c, 'c>(
+        &'a self,
+        transaction: Option<&'c Self::DBTransaction<'c>>,
+    ) -> Result<Self::Batch<'c>, Self::Error> {
         (*self).new_batch(transaction)
     }
 
@@ -198,10 +204,11 @@ pub trait RawIterator {
     fn valid(&self) -> bool;
 }
 
-/// Please note that the `Transaction` trait is used to access the underlying transaction
-/// through the storage, but many storages can share the same DB transaction. Thus, the
-/// storage itself can not commit the transaction, and transaction should be committed
-/// by its original opener - GroveDB instance in our case.
+/// Please note that the `Transaction` trait is used to access the underlying
+/// transaction through the storage, but many storages can share the same DB
+/// transaction. Thus, the storage itself can not commit the transaction, and
+/// transaction should be committed by its original opener - GroveDB instance in
+/// our case.
 pub trait Transaction {
     /// Storage error type
     type Error: std::error::Error + Send + Sync + 'static;

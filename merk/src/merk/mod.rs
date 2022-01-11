@@ -40,20 +40,21 @@ where
         Ok(merk)
     }
 
-    // /// Deletes tree data
-    // pub fn clear<'a>(self, transaction: Option<&'a S::DBTransaction<'a>>) ->
-    // Result<()> {     let mut iter = self.raw_iter();
-    //     iter.seek_to_first();
-    //     let mut to_delete = self.storage.new_batch(transaction)?;
-    //     while iter.valid() {
-    //         if let Some(key) = iter.key() {
-    //             to_delete.delete(key);
-    //         }
-    //         iter.next();
-    //     }
-    //     self.storage.commit_batch(to_delete)?;
-    //     Ok(())
-    // }
+    /// Deletes tree data
+    pub fn clear<'a>(&'a mut self, transaction: Option<&'a S::DBTransaction<'a>>) -> Result<()> {
+        let mut iter = self.raw_iter();
+        iter.seek_to_first();
+        let mut to_delete = self.storage.new_batch(transaction)?;
+        while iter.valid() {
+            if let Some(key) = iter.key() {
+                to_delete.delete(key);
+            }
+            iter.next();
+        }
+        self.storage.commit_batch(to_delete)?;
+        self.tree.set(None);
+        Ok(())
+    }
 
     /// Gets an auxiliary value.
     pub fn get_aux(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {

@@ -54,7 +54,7 @@ pub struct PrefixedTransactionalRocksDbBatch<'a> {
     pub prefix: Vec<u8>,
     pub cf_aux: &'a ColumnFamily,
     pub cf_roots: &'a ColumnFamily,
-    pub transaction:  &'a rocksdb::Transaction<'a, OptimisticTransactionDB>,
+    pub transaction: &'a rocksdb::Transaction<'a, OptimisticTransactionDB>,
 }
 
 // TODO: don't ignore errors
@@ -98,49 +98,49 @@ impl<'a> Batch for PrefixedTransactionalRocksDbBatch<'a> {
 
 pub enum OrBatch<'a> {
     Batch(PrefixedRocksDbBatch<'a>),
-    TransactionalBatch(PrefixedTransactionalRocksDbBatch<'a>)
+    TransactionalBatch(PrefixedTransactionalRocksDbBatch<'a>),
 }
 
-impl <'a> Batch for OrBatch<'a> {
+impl<'a> Batch for OrBatch<'a> {
     fn put(&mut self, key: &[u8], value: &[u8]) {
         match self {
             Self::TransactionalBatch(batch) => batch.put(key, value),
-            Self::Batch(batch) => batch.put(key, value)
+            Self::Batch(batch) => batch.put(key, value),
         }
     }
 
     fn put_aux(&mut self, key: &[u8], value: &[u8]) {
         match self {
             Self::TransactionalBatch(batch) => batch.put_aux(key, value),
-            Self::Batch(batch) => batch.put_aux(key, value)
+            Self::Batch(batch) => batch.put_aux(key, value),
         }
     }
 
     fn put_root(&mut self, key: &[u8], value: &[u8]) {
         match self {
             Self::TransactionalBatch(batch) => batch.put_root(key, value),
-            Self::Batch(batch) => batch.put_root(key, value)
+            Self::Batch(batch) => batch.put_root(key, value),
         }
     }
 
     fn delete(&mut self, key: &[u8]) {
         match self {
             Self::TransactionalBatch(batch) => batch.delete(key),
-            Self::Batch(batch) => batch.delete(key)
+            Self::Batch(batch) => batch.delete(key),
         }
     }
 
     fn delete_aux(&mut self, key: &[u8]) {
         match self {
             Self::TransactionalBatch(batch) => batch.delete_aux(key),
-            Self::Batch(batch) => batch.delete_aux(key)
+            Self::Batch(batch) => batch.delete_aux(key),
         }
     }
 
     fn delete_root(&mut self, key: &[u8]) {
         match self {
             Self::TransactionalBatch(batch) => batch.delete_root(key),
-            Self::Batch(batch) => batch.delete_root(key)
+            Self::Batch(batch) => batch.delete_root(key),
         }
     }
 }

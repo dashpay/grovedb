@@ -991,17 +991,16 @@ fn test_subtree_deletion() {
     db.insert(&[TEST_LEAF], b"key4".to_vec(), Element::empty_tree(), None)
         .expect("successful subtree 3 insert");
 
-    // TODO: Because I've removed clear, this test doesn't work anymore
-    // let root_hash = db.root_tree.root().unwrap();
-    // db.delete(&[TEST_LEAF], b"key1".to_vec(), None)
-    //     .expect("unable to delete subtree");
-    // assert!(matches!(
-    //     db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3", None),
-    //     Err(Error::InvalidPath(_))
-    // ));
-    // assert_eq!(db.subtrees.len(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF and
-    // TEST_LEAF.key4 stay assert!(db.get(&[TEST_LEAF], b"key4",
-    // None).is_ok()); assert_ne!(root_hash, db.root_tree.root().unwrap());
+    let root_hash = db.root_tree.root().unwrap();
+    db.delete(&[TEST_LEAF], b"key1".to_vec(), None)
+        .expect("unable to delete subtree");
+    assert!(matches!(
+        db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3", None),
+        Err(Error::InvalidPath(_))
+    ));
+    assert_eq!(db.subtrees.len(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF TEST_LEAF.key4 stay
+    assert!(db.get(&[TEST_LEAF], b"key4", None).is_ok());
+    assert_ne!(root_hash, db.root_tree.root().unwrap());
 }
 
 #[test]
