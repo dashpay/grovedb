@@ -407,7 +407,7 @@ mod tests {
     fn leaf_chunk_roundtrip() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(0..31);
-        merk.apply(batch.as_slice(), &[]).unwrap();
+        merk.apply(batch.as_slice(), &[], None).unwrap();
 
         let root_node = merk.tree.take();
         let root_key = root_node.as_ref().unwrap().key().to_vec();
