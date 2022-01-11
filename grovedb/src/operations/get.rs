@@ -173,8 +173,7 @@ impl GroveDb {
                         match element {
                             Element::Tree(_) => {
                                 // if the query had a subquery then we should get elements from it
-                                if path_query.subquery_key.is_some() {
-                                    let subquery_key = path_query.subquery_key.unwrap();
+                                if let Some(subquery_key) = path_query.subquery_key {
                                     // this means that for each element we should get the element at
                                     // the subquery_key
                                     let mut path_vec = path.to_vec();
