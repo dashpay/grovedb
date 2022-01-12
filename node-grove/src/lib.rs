@@ -65,6 +65,7 @@ impl GroveDbWrapper {
                     }
                     // Immediately close the connection, even if there are pending messages
                     DbMessage::Close(callback) => {
+                        drop(grove_db);
                         callback(&channel);
                         break;
                     }
