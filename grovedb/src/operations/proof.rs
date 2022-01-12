@@ -67,11 +67,9 @@ impl GroveDb {
             if reduced_proof_query.subquery_key.is_some() {
                 self.get_path_queries(&[&reduced_proof_query], None);
 
-
                 let mut path_vec = path.to_vec();
                 path_vec.push(reduced_proof_query.subquery_key.unwrap());
                 let compressed_path = GroveDb::compress_subtree_key(path_vec.as_slice(), None);
-
             }
 
             // Now we must insert the final proof for the sub leaves

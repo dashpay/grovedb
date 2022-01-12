@@ -1,8 +1,10 @@
 //! Module for subtrees handling.
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
-use std::collections::HashMap;
-use std::ops::{Range, RangeFrom, RangeTo, RangeToInclusive};
+use std::{
+    collections::HashMap,
+    ops::{Range, RangeFrom, RangeTo, RangeToInclusive},
+};
 
 use merk::{
     proofs::{query::QueryItem, Query},
@@ -73,7 +75,18 @@ impl Element {
         Ok(elements)
     }
 
-    fn basic_push(_subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>, _key: Option<&[u8]>, element: Element, _path: Option<&[&[u8]]>, _subquery_key: Option<&[u8]>, _subquery: Option<Query>, _left_to_right: bool, results: &mut Vec<Element>, limit: &mut Option<u16>, offset: &mut Option<u16>) -> Result<(), Error> {
+    fn basic_push(
+        _subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        _key: Option<&[u8]>,
+        element: Element,
+        _path: Option<&[&[u8]]>,
+        _subquery_key: Option<&[u8]>,
+        _subquery: Option<Query>,
+        _left_to_right: bool,
+        results: &mut Vec<Element>,
+        limit: &mut Option<u16>,
+        offset: &mut Option<u16>,
+    ) -> Result<(), Error> {
         if offset.is_some() && offset.unwrap() == 0 {
             results.push(element);
             if limit.is_some() {
@@ -87,7 +100,18 @@ impl Element {
         Ok(())
     }
 
-    fn path_query_push(subtrees_option: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>, key: Option<&[u8]>, element: Element, path: Option<&[&[u8]]>, subquery_key_option: Option<& [u8]>, subquery: Option<Query>, left_to_right: bool, results: &mut Vec<Element>, limit: &mut Option<u16>, offset: &mut Option<u16>) -> Result<(), Error> {
+    fn path_query_push(
+        subtrees_option: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        key: Option<&[u8]>,
+        element: Element,
+        path: Option<&[&[u8]]>,
+        subquery_key_option: Option<&[u8]>,
+        subquery: Option<Query>,
+        left_to_right: bool,
+        results: &mut Vec<Element>,
+        limit: &mut Option<u16>,
+        offset: &mut Option<u16>,
+    ) -> Result<(), Error> {
         match element {
             Element::Tree(_) => {
                 // if the query had a subquery then we should get elements from it
@@ -97,9 +121,11 @@ impl Element {
                     ))?;
                     // this means that for each element we should get the element at
                     // the subquery_key
-                    let mut path_vec = path.ok_or(Error::MissingParameter(
-                        "the path must be provided when using a subquery key",
-                    ))?.to_vec();
+                    let mut path_vec = path
+                        .ok_or(Error::MissingParameter(
+                            "the path must be provided when using a subquery key",
+                        ))?
+                        .to_vec();
                     path_vec.push(key.ok_or(Error::MissingParameter(
                         "the key must be provided when using a subquery key",
                     ))?);
@@ -108,19 +134,10 @@ impl Element {
                         path_vec.push(subquery_key);
 
                         let inner_merk = subtrees
-                            .get(&GroveDb::compress_subtree_key(
-                                path_vec.as_slice(),
-                                None,
-                            ))
-                            .ok_or(Error::InvalidPath(
-                                "no subtree found under that path",
-                            ))?;
-                        let inner_query = SizedQuery::new(
-                            subquery.unwrap(),
-                            *limit,
-                            *offset,
-                            left_to_right,
-                        );
+                            .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
+                            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                        let inner_query =
+                            SizedQuery::new(subquery.unwrap(), *limit, *offset, left_to_right);
                         let (mut sub_elements, skipped) =
                             Element::get_sized_query(inner_merk, &inner_query)?;
                         if limit.is_some() {
@@ -132,13 +149,8 @@ impl Element {
                         results.append(&mut sub_elements);
                     } else {
                         let inner_merk = subtrees
-                            .get(&GroveDb::compress_subtree_key(
-                                path_vec.as_slice(),
-                                None,
-                            ))
-                            .ok_or(Error::InvalidPath(
-                                "no subtree found under that path",
-                            ))?;
+                            .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
+                            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
                         if offset.is_some() && offset.unwrap() == 0 {
                             results.push(Element::get(inner_merk, subquery_key)?);
                             if limit.is_some() {
@@ -173,7 +185,15 @@ impl Element {
         merk: &Merk<PrefixedRocksDbStorage>,
         sized_query: &SizedQuery,
     ) -> Result<(Vec<Element>, u16), Error> {
-        Element::get_query_apply_function(merk, sized_query, None, None, None, None, Element::basic_push)
+        Element::get_query_apply_function(
+            merk,
+            sized_query,
+            None,
+            None,
+            None,
+            None,
+            Element::basic_push,
+        )
     }
 
     pub fn get_query_apply_function(
@@ -183,16 +203,18 @@ impl Element {
         subquery_key: Option<&[u8]>,
         subquery: Option<Query>,
         subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
-        add_element_function: fn(subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
-                                 key: Option<&[u8]>,
-                                 element: Element,
-                                 path: Option<&[&[u8]]>,
-                                 subquery_key: Option<&[u8]>,
-                                 subquery: Option<Query>,
-                                 left_to_right: bool,
-                                 &mut Vec<Element>,
-                                 limit: &mut Option<u16>,
-                                 offset: &mut Option<u16>) -> Result<(), Error>
+        add_element_function: fn(
+            subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+            key: Option<&[u8]>,
+            element: Element,
+            path: Option<&[&[u8]]>,
+            subquery_key: Option<&[u8]>,
+            subquery: Option<Query>,
+            left_to_right: bool,
+            &mut Vec<Element>,
+            limit: &mut Option<u16>,
+            offset: &mut Option<u16>,
+        ) -> Result<(), Error>,
     ) -> Result<(Vec<Element>, u16), Error> {
         let mut results = Vec::new();
         let mut iter = merk.raw_iter();
@@ -205,7 +227,18 @@ impl Element {
             if !item.is_range() {
                 // this is a query on a key
                 if let QueryItem::Key(key) = item {
-                    add_element_function(subtrees, Some(key.as_slice()), Element::get(merk, key)?, path, subquery_key, subquery.clone(), sized_query.left_to_right, &mut results, &mut limit, &mut offset);
+                    add_element_function(
+                        subtrees,
+                        Some(key.as_slice()),
+                        Element::get(merk, key)?,
+                        path,
+                        subquery_key,
+                        subquery.clone(),
+                        sized_query.left_to_right,
+                        &mut results,
+                        &mut limit,
+                        &mut offset,
+                    );
                 }
             } else {
                 // this is a query on a range
@@ -222,7 +255,18 @@ impl Element {
                     let element =
                         raw_decode(iter.value().expect("if key exists then value should too"))?;
                     let key = iter.key().expect("key should exist");
-                    add_element_function(subtrees, Some(key), element, path, subquery_key, subquery.clone(), sized_query.left_to_right, &mut results, &mut limit, &mut offset);
+                    add_element_function(
+                        subtrees,
+                        Some(key),
+                        element,
+                        path,
+                        subquery_key,
+                        subquery.clone(),
+                        sized_query.left_to_right,
+                        &mut results,
+                        &mut limit,
+                        &mut offset,
+                    );
                     if sized_query.left_to_right {
                         iter.next();
                     } else {
@@ -248,7 +292,15 @@ impl Element {
         path_query: &PathQuery,
         subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
     ) -> Result<(Vec<Element>, u16), Error> {
-        Element::get_query_apply_function(merk, &path_query.query, Some(path_query.path), path_query.subquery_key, path_query.subquery.clone(), subtrees, Element::path_query_push)
+        Element::get_query_apply_function(
+            merk,
+            &path_query.query,
+            Some(path_query.path),
+            path_query.subquery_key,
+            path_query.subquery.clone(),
+            subtrees,
+            Element::path_query_push,
+        )
     }
 
     /// Insert an element in Merk under a key; path should be resolved and
