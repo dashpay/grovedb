@@ -1181,7 +1181,7 @@ fn test_get_range_inclusive_full_query_with_non_unique_subquery() {
         .expect("expected successful get_path_query");
     assert_eq!(elements.len(), 250);
     let mut last_value = (1992 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (150 as u32).to_be_bytes().to_vec());
+    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
     assert!(elements.contains(&subtree::Element::Item(last_value)))
 }
 
