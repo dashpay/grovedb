@@ -74,7 +74,7 @@ impl Element {
         Ok(elements)
     }
 
-    fn basic_push(_subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>, _key: Option<&[u8]>, element: Element, _path: Option<&[&[u8]]>, results: &mut Vec<Element>, mut limit: u16, mut offset: u16) -> Result<(), Error> {
+    fn basic_push(_subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>, _key: Option<&[u8]>, element: Element, _path: Option<&[&[u8]]>, results: &mut Vec<Element>, mut limit: Option<u16>, mut offset: Option<u16>) -> Result<(), Error> {
         if offset == 0 {
             results.push(element);
             limit -= 1;
@@ -84,7 +84,7 @@ impl Element {
         Ok(())
     }
 
-    fn path_query_push(subtrees_option: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>, key: Option<&[u8]>, element: Element, path: Option<&[&[u8]]>, results: &mut Vec<Element>, mut limit: u16, mut offset: u16) -> Result<(), Error> {
+    fn path_query_push(subtrees_option: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>, key: Option<&[u8]>, element: Element, path: Option<&[&[u8]]>, results: &mut Vec<Element>, mut limit: Option<u16>, mut offset: Option<u16>) -> Result<(), Error> {
         match element {
             Element::Tree(_) => {
                 // if the query had a subquery then we should get elements from it
@@ -199,7 +199,7 @@ impl Element {
             if !item.is_range() {
                 // this is a query on a key
                 if let QueryItem::Key(key) = item {
-                    add_element_function(subtrees, Some(key.as_slice()), Element::get(merk, key)?, Some(), &mut results, limit, offset);
+                    add_element_function(subtrees, Some(key.as_slice()), Element::get(merk, key)?, path, &mut results, limit, offset);
                 }
             } else {
                 // this is a query on a range
@@ -238,69 +238,6 @@ impl Element {
         subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
     ) -> Result<(Vec<Element>, u16), Error> {
         Element::get_query_apply_function(merk, &path_query.query, Some(path_query.path), subtrees, Element::path_query_push)
-        let path = ;
-        let mut result = Vec::new();
-        let mut iter = merk.raw_iter();
-
-        let mut limit = if path_query.query.limit.is_some() {
-            sized_query.limit.unwrap()
-        } else {
-            u16::MAX
-        };
-        let original_offset = if path_query.query.offset.is_some() {
-            sized_query.offset.unwrap()
-        } else {
-            0 as u16
-        };
-        let mut offset = original_offset;
-
-        for item in path_query.query.query.iter() {
-            if !item.is_range() {
-                // this is a query on a key
-                if let QueryItem::Key(key) = item {
-                    if limit > 0 {
-                        if offset == 0 {
-                            result.push(Element::get(merk, key)?);
-                            limit -= 1;
-                        } else {
-                            offset -= 1;
-                        }
-                    }
-                }
-            } else {
-                // this is a query on a range
-
-                item.seek_for_iter(&mut iter, sized_query.left_to_right);
-                let mut work = true;
-
-                loop {
-                    let (valid, next_valid) =
-                        item.iter_is_valid_for_type(&iter, limit, work, sized_query.left_to_right);
-                    if !valid {
-                        break;
-                    }
-                    work = next_valid;
-                    let element =
-                        raw_decode(iter.value().expect("if key exists then value should too"))?;
-
-                    if offset == 0 {
-                        result.push(element);
-                        limit -= 1;
-                    } else {
-                        offset -= 1;
-                    }
-                    if sized_query.left_to_right {
-                        iter.next();
-                    } else {
-                        iter.prev();
-                    }
-                }
-            }
-            if limit == 0 {
-                break;
-            }
-        }
-        Ok((result, original_offset - offset))
     }
 
     /// Insert an element in Merk under a key; path should be resolved and
