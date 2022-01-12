@@ -87,7 +87,7 @@ impl Element {
         limit: &mut Option<u16>,
         offset: &mut Option<u16>,
     ) -> Result<(), Error> {
-        if offset.is_some() && offset.unwrap() == 0 {
+        if offset.is_none() || offset.is_some() && offset.unwrap() == 0 {
             results.push(element);
             if limit.is_some() {
                 *limit = Some(limit.unwrap() - 1);
@@ -151,7 +151,7 @@ impl Element {
                         let inner_merk = subtrees
                             .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
                             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                        if offset.is_some() && offset.unwrap() == 0 {
+                        if offset.is_none() || offset.is_some() && offset.unwrap() == 0 {
                             results.push(Element::get(inner_merk, subquery_key)?);
                             if limit.is_some() {
                                 *limit = Some(limit.unwrap() - 1);
@@ -165,7 +165,7 @@ impl Element {
                 }
             }
             _ => {
-                if offset.is_some() && offset.unwrap() == 0 {
+                if offset.is_none() || offset.is_some() && offset.unwrap() == 0 {
                     results.push(element);
                     if limit.is_some() {
                         *limit = Some(limit.unwrap() - 1);

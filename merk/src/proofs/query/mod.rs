@@ -330,7 +330,7 @@ impl QueryItem {
         match self {
             QueryItem::Key(_) => (true, true),
             QueryItem::Range(Range { start, end }) => {
-                let valid = limit > Some(0)
+                let valid = (limit == None || limit.unwrap() > 0)
                     && iter.valid()
                     && iter.key().is_some()
                     && work
@@ -351,16 +351,16 @@ impl QueryItem {
                 (valid, next_valid)
             }
             QueryItem::RangeFull(..) => {
-                let valid = limit > Some(0) && iter.valid() && iter.key().is_some();
+                let valid = (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
                 (valid, true)
             }
             QueryItem::RangeFrom(RangeFrom { start }) => {
-                let valid = limit > Some(0) && iter.valid() && iter.key().is_some() && work;
+                let valid = (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some() && work;
                 let next_valid = !(!left_to_right && iter.key() == Some(start));
                 (valid, next_valid)
             }
             QueryItem::RangeTo(RangeTo { end }) => {
-                let valid = limit > Some(0)
+                let valid = (limit == None || limit.unwrap() > 0)
                     && iter.valid()
                     && iter.key().is_some()
                     && (!left_to_right || iter.key() != Some(end));
