@@ -10,6 +10,7 @@ use merk::{
     Op,
 };
 use serde::{Deserialize, Serialize};
+use proc_macro::tracked_path::path;
 use storage::{
     rocksdb_storage::{
         OptimisticTransactionDBTransaction, PrefixedRocksDbStorage,
@@ -163,19 +164,21 @@ impl Element {
         merk: &Merk<PrefixedRocksDbStorage>,
         sized_query: &SizedQuery,
     ) -> Result<(Vec<Element>, u16), Error> {
-        Element::get_sized_query_apply_function(merk, sized_query, None, Element::basic_push)
+        Element::get_query_apply_function(merk, sized_query, None, None, Element::basic_push)
     }
 
-    pub fn get_sized_query_apply_function(
+    pub fn get_query_apply_function(
         merk: &Merk<PrefixedRocksDbStorage>,
         sized_query: &SizedQuery,
+        path: Option<&[&[u8]]>,
         subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
         add_element_function: fn(subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
                                  key: Option<&[u8]>,
                                  element: Element,
+                                 path: Option<&[&[u8]]>,
                                  &mut Vec<Element>,
                                  mut limit: u16,
-                                 mut offset: u16)
+                                 mut offset: u16) -> Result<(), Error>
     ) -> Result<(Vec<Element>, u16), Error> {
         let mut results = Vec::new();
         let mut iter = merk.raw_iter();
@@ -196,7 +199,7 @@ impl Element {
             if !item.is_range() {
                 // this is a query on a key
                 if let QueryItem::Key(key) = item {
-                    add_element_function(subtrees, Some(key.as_slice()), Element::get(merk, key)?, &mut results, limit, offset);
+                    add_element_function(subtrees, Some(key.as_slice()), Element::get(merk, key)?, Some(), &mut results, limit, offset);
                 }
             } else {
                 // this is a query on a range
@@ -213,7 +216,7 @@ impl Element {
                     let element =
                         raw_decode(iter.value().expect("if key exists then value should too"))?;
                     let key = iter.key().expect("key should exist")?;
-                    add_element_function(subtrees, key, element, &mut results, limit, offset);
+                    add_element_function(subtrees, key, element, path, &mut results, limit, offset);
                     if sized_query.left_to_right {
                         iter.next();
                     } else {
@@ -232,8 +235,10 @@ impl Element {
     pub fn get_path_query(
         merk: &Merk<PrefixedRocksDbStorage>,
         path_query: &PathQuery,
+        subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
     ) -> Result<(Vec<Element>, u16), Error> {
-        let path = path_query.path;
+        Element::get_query_apply_function(merk, &path_query.query, Some(path_query.path), subtrees, Element::path_query_push)
+        let path = ;
         let mut result = Vec::new();
         let mut iter = merk.raw_iter();
 
