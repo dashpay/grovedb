@@ -38,6 +38,8 @@ pub enum Error {
     InvalidProof(&'static str),
     #[error("invalid path: {0}")]
     InvalidPath(&'static str),
+    #[error("missing parameter: {0}")]
+    MissingParameter(&'static str),
     // Irrecoverable errors
     #[error("storage error: {0}")]
     StorageError(#[from] PrefixedRocksDbStorageError),

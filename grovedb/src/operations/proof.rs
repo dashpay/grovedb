@@ -65,7 +65,7 @@ impl GroveDb {
             // First we must get elements
 
             if reduced_proof_query.subquery_key.is_some() {
-                self.get_path_queries(&[&reduced_proof_query]);
+                self.get_path_queries(&[&reduced_proof_query], None);
 
 
                 let mut path_vec = path.to_vec();

@@ -1104,7 +1104,6 @@ fn populate_tree_for_range_subquery(db: &mut TempGroveDb) {
 }
 
 #[test]
-#[ignore]
 fn test_get_range_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
 
@@ -1160,7 +1159,6 @@ fn test_get_range_query_with_non_unique_subquery() {
 }
 
 #[test]
-#[ignore]
 fn test_get_range_inclusive_full_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
 
