@@ -323,14 +323,14 @@ impl QueryItem {
     pub fn iter_is_valid_for_type(
         &self,
         iter: &RawPrefixedTransactionalIterator,
-        limit: u16,
+        limit: Option<u16>,
         work: bool,
         left_to_right: bool,
     ) -> (bool, bool) {
         match self {
             QueryItem::Key(_) => (true, true),
             QueryItem::Range(Range { start, end }) => {
-                let valid = limit > 0
+                let valid = limit > Some(0)
                     && iter.valid()
                     && iter.key().is_some()
                     && work
@@ -351,16 +351,16 @@ impl QueryItem {
                 (valid, next_valid)
             }
             QueryItem::RangeFull(..) => {
-                let valid = limit > 0 && iter.valid() && iter.key().is_some();
+                let valid = limit > Some(0) && iter.valid() && iter.key().is_some();
                 (valid, true)
             }
             QueryItem::RangeFrom(RangeFrom { start }) => {
-                let valid = limit > 0 && iter.valid() && iter.key().is_some() && work;
+                let valid = limit > Some(0) && iter.valid() && iter.key().is_some() && work;
                 let next_valid = !(!left_to_right && iter.key() == Some(start));
                 (valid, next_valid)
             }
             QueryItem::RangeTo(RangeTo { end }) => {
-                let valid = limit > 0
+                let valid = limit > Some(0)
                     && iter.valid()
                     && iter.key().is_some()
                     && (!left_to_right || iter.key() != Some(end));
