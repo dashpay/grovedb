@@ -38,6 +38,8 @@ pub enum Error {
     InvalidProof(&'static str),
     #[error("invalid path: {0}")]
     InvalidPath(&'static str),
+    #[error("invalid query: {0}")]
+    InvalidQuery(&'static str),
     #[error("missing parameter: {0}")]
     MissingParameter(&'static str),
     // Irrecoverable errors
@@ -467,5 +469,12 @@ impl GroveDb {
         Ok(db_transaction
             .commit()
             .map_err(PrefixedRocksDbStorageError::RocksDbError)?)
+    }
+
+    pub fn get_subtrees_for_transaction(&mut self, transaction: Option<&OptimisticTransactionDBTransaction>) -> &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>> {
+        match transaction {
+            None => &self.subtrees,
+            Some(_) => &self.temp_subtrees,
+        }
     }
 }

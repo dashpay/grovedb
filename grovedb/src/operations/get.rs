@@ -91,13 +91,29 @@ impl GroveDb {
         path_queries: &[&PathQuery],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Vec<Element>, Error> {
+        let elements = self.get_path_queries_raw(path_queries, transaction)?;
+        elements.into_iter().map(|element| {
+            match element {
+                Element::Reference(reference_path) => {
+                    self.follow_reference(reference_path, transaction)
+                }
+                other => Err(Error::InvalidQuery("path_queries can only refer to references")),
+            }
+        }).collect()
+    }
+
+    pub fn get_path_queries_raw(
+        &mut self,
+        path_queries: &[&PathQuery],
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<Vec<Element>, Error> {
         let subtrees = match transaction {
             None => &self.subtrees,
             Some(_) => &self.temp_subtrees,
         };
         let mut result = Vec::new();
         for query in path_queries {
-            let (query_results, _) = self.get_path_query_on_trees(query, subtrees)?;
+            let (query_results, _) = self.get_path_query_on_trees_raw(query, subtrees)?;
             result.extend_from_slice(&query_results);
         }
         Ok(result)
@@ -108,14 +124,31 @@ impl GroveDb {
         path_query: &PathQuery,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(Vec<Element>, u16), Error> {
+        let (elements, skipped) = self.get_path_query_raw(path_query, transaction)?;
+        let results = elements.into_iter().map(|element| {
+            match element {
+                Element::Reference(reference_path) => {
+                    self.follow_reference(reference_path, transaction)
+                }
+                other => Err(Error::InvalidQuery("path_queries can only refer to references")),
+            }
+        }).collect::<Result<Vec<Element>, Error>>()?;
+        Ok((results, skipped))
+    }
+
+    pub fn get_path_query_raw(
+        &mut self,
+        path_query: &PathQuery,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<(Vec<Element>, u16), Error> {
         let subtrees = match transaction {
             None => &self.subtrees,
             Some(_) => &self.temp_subtrees,
         };
-        self.get_path_query_on_trees(path_query, subtrees)
+        self.get_path_query_on_trees_raw(path_query, subtrees)
     }
 
-    fn get_path_query_on_trees(
+    fn get_path_query_on_trees_raw(
         &self,
         path_query: &PathQuery,
         subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
