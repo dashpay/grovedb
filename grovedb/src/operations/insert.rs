@@ -27,10 +27,8 @@ impl GroveDb {
         element: Element,
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
-        if let None = transaction {
-            if self.is_readonly {
-                return Err(Error::DbIsInReadonlyMode);
-            }
+        if transaction.is_none() && self.is_readonly {
+            return Err(Error::DbIsInReadonlyMode);
         }
 
         let subtrees = match transaction {

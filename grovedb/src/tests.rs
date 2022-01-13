@@ -863,6 +863,48 @@ fn transaction_insert_should_return_error_when_trying_to_insert_while_transactio
 }
 
 #[test]
+fn test_get_with_running_transaction() {
+    let key = b"test_get_with_running_transaction_key".to_vec();
+    let subtree_key = b"test_get_with_running_transaction_subtree_key".to_vec();
+    let item = Element::Item(b"testitem".to_vec());
+
+    let mut db = make_grovedb();
+    db.insert(
+        &[TEST_LEAF],
+        subtree_key.clone(),
+        Element::empty_tree(),
+        None,
+    )
+    .expect("cannot insert a subtree");
+
+    // Start a transaction to insert a value
+    let storage = db.storage();
+    let db_transaction = storage.transaction();
+    db.start_transaction().expect("unable to start transaction");
+
+    db.insert(
+        &[TEST_LEAF, &subtree_key],
+        key.clone(),
+        item.clone(),
+        Some(&db_transaction),
+    )
+    .expect("cannot insert an item into GroveDB");
+
+    // Ensure that value is inaccessible outside of uncommited transaction
+    let result = db.get(&[TEST_LEAF, &subtree_key], &key, None);
+    assert!(matches!(result, Err(Error::InvalidPath(_))));
+
+    db.commit_transaction(db_transaction)
+        .expect("unable to commit transaction");
+
+    // Should be accessible now
+    let result = db
+        .get(&[TEST_LEAF, &subtree_key], &key, None)
+        .expect("Expected transaction to work");
+    assert_eq!(result, item);
+}
+
+#[test]
 fn test_subtree_pairs_iterator() {
     let mut db = make_grovedb();
     let element = Element::Item(b"ayy".to_vec());

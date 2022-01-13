@@ -10,11 +10,10 @@ pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, Hasher, MerkleTree};
 use serde::{Deserialize, Serialize};
+pub use storage::{rocksdb_storage::PrefixedRocksDbStorage, Storage};
 use storage::{
-    rocksdb_storage::{
-        OptimisticTransactionDBTransaction, PrefixedRocksDbStorage, PrefixedRocksDbStorageError,
-    },
-    Storage, Transaction,
+    rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorageError},
+    Transaction,
 };
 pub use subtree::Element;
 
