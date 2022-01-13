@@ -1072,7 +1072,7 @@ fn test_get_full_query() {
     );
 }
 
-fn populate_tree_for_range_subquery(db: &mut TempGroveDb) {
+fn populate_tree_for_non_unique_range_subquery(db: &mut TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
         let i_vec = (i as u32).to_be_bytes().to_vec();
@@ -1103,11 +1103,28 @@ fn populate_tree_for_range_subquery(db: &mut TempGroveDb) {
     }
 }
 
+fn populate_tree_for_unique_range_subquery(db: &mut TempGroveDb) {
+    // Insert a couple of subtrees first
+    for i in 1985u32..2000 {
+        let i_vec = (i as u32).to_be_bytes().to_vec();
+        db.insert(&[TEST_LEAF], i_vec.clone(), Element::empty_tree(), None)
+            .expect("successful subtree insert");
+
+        db.insert(
+            &[TEST_LEAF, i_vec.as_slice()],
+            b"0".to_vec(),
+            Element::Item(i_vec),
+            None,
+        )
+            .expect("successful value insert");
+    }
+}
+
 #[test]
 fn test_get_range_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
 
-    populate_tree_for_range_subquery(&mut db);
+    populate_tree_for_non_unique_range_subquery(&mut db);
 
     let path = vec![TEST_LEAF];
     let mut query = Query::new();
@@ -1162,7 +1179,7 @@ fn test_get_range_query_with_non_unique_subquery() {
 fn test_get_range_inclusive_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
 
-    populate_tree_for_range_subquery(&mut db);
+    populate_tree_for_non_unique_range_subquery(&mut db);
 
     let path = vec![TEST_LEAF];
     let mut query = Query::new();
@@ -1189,7 +1206,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
 fn test_get_range_from_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
 
-    populate_tree_for_range_subquery(&mut db);
+    populate_tree_for_non_unique_range_subquery(&mut db);
 
     let path = vec![TEST_LEAF];
     let mut query = Query::new();
@@ -1222,7 +1239,7 @@ fn test_get_range_from_query_with_non_unique_subquery() {
 fn test_get_range_to_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
 
-    populate_tree_for_range_subquery(&mut db);
+    populate_tree_for_non_unique_range_subquery(&mut db);
 
     let path = vec![TEST_LEAF];
     let mut query = Query::new();
@@ -1255,7 +1272,7 @@ fn test_get_range_to_query_with_non_unique_subquery() {
 fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
 
-    populate_tree_for_range_subquery(&mut db);
+    populate_tree_for_non_unique_range_subquery(&mut db);
 
     let path = vec![TEST_LEAF];
     let mut query = Query::new();
