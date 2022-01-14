@@ -1166,19 +1166,6 @@ fn populate_tree_for_unique_range_subquery(db: &mut TempGroveDb) {
     }
 }
 
-// Iteration type
-// range
-// range inclusive
-// range from
-// range to
-// range to inclusive
-
-// Populate the db
-// build the path and the initial query to the tree
-// build the sub query
-// Execute the query without limits and offset
-// Choose different limits and offsets to break the system
-
 #[test]
 fn test_get_range_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
@@ -1208,7 +1195,6 @@ fn test_get_range_query_with_non_unique_subquery() {
     let mut first_value = (1988 as u32).to_be_bytes().to_vec();
     first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
     assert_eq!(elements[0], Element::Item(first_value));
-    // assert!(elements.contains(&Element::Item(first_value)));
 
     let mut last_value = (1991 as u32).to_be_bytes().to_vec();
     last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
@@ -1226,14 +1212,11 @@ fn test_get_range_query_with_unique_subquery() {
     query.insert_range((1988 as u32).to_be_bytes().to_vec()..(1992 as u32).to_be_bytes().to_vec());
 
     let subquery_key: &[u8] = b"0";
-    // let mut sub_query = Query::new();
-    // sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
         &path,
         query.clone(),
         Some(&subquery_key),
-        // Some(sub_query.clone()),
         None,
     );
 
@@ -1299,14 +1282,11 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
     );
 
     let subquery_key: &[u8] = b"0";
-    // let mut sub_query = Query::new();
-    // sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
         &path,
         query.clone(),
         Some(&subquery_key),
-        // Some(sub_query.clone()),
         None,
     );
 
@@ -1368,14 +1348,11 @@ fn test_get_range_from_query_with_unique_subquery() {
     query.insert_range_from((1995 as u32).to_be_bytes().to_vec()..);
 
     let subquery_key: &[u8] = b"0";
-    // let mut sub_query = Query::new();
-    // sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
         &path,
         query.clone(),
         Some(&subquery_key),
-        // Some(sub_query.clone()),
         None,
     );
 
@@ -1437,14 +1414,11 @@ fn test_get_range_to_query_with_unique_subquery() {
     query.insert_range_to(..(1995 as u32).to_be_bytes().to_vec());
 
     let subquery_key: &[u8] = b"0";
-    // let mut sub_query = Query::new();
-    // sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
         &path,
         query.clone(),
         Some(&subquery_key),
-        // Some(sub_query.clone()),
         None,
     );
 
@@ -1506,14 +1480,11 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
     query.insert_range_to_inclusive(..=(1995 as u32).to_be_bytes().to_vec());
 
     let subquery_key: &[u8] = b"0";
-    // let mut sub_query = Query::new();
-    // sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
         &path,
         query.clone(),
         Some(&subquery_key),
-        // Some(sub_query.clone()),
         None,
     );
 
@@ -1529,180 +1500,139 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
     let mut last_value = (1995 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
 }
-// #[test]
-// fn test_get_range_query_with_non_unique_subquery() {
-//     let mut db = make_grovedb();
-//
-//     populate_tree_for_non_unique_range_subquery(&mut db);
-//
-//     let path = vec![TEST_LEAF];
-//     let mut query = Query::new();
-//     query.insert_range((1988 as u32).to_be_bytes().to_vec()..(1992 as
-// u32).to_be_bytes().to_vec());
-//
-//     let subquery_key: &[u8] = b"0";
-//
-//     let mut sub_query = Query::new();
-//     sub_query.insert_all();
-//
-//     let path_query = PathQuery::new_unsized(
-//         &path,
-//         query.clone(),
-//         Some(&subquery_key),
-//         Some(sub_query.clone()),
-//     );
-//
-//     let (elements, skipped) = db
-//         .get_path_query(&path_query, None)
-//         .expect("expected successful get_path_query");
-//
-//     assert_eq!(elements.len(), 200);
-//     let mut first_value = (1988 as u32).to_be_bytes().to_vec();
-//     first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
-//     assert!(elements.contains(&subtree::Element::Item(first_value)));
-//
-//     let path_query = PathQuery::new(
-//         &path,
-//         SizedQuery::new(query.clone(), None, Some(30), true),
-//         Some(&subquery_key),
-//         Some(sub_query.clone()),
-//     );
-//     let (elements, skipped) = db
-//         .get_path_query(&path_query, None)
-//         .expect("expected successful get_path_query");
-//     assert_eq!(elements.len(), 170);
-//     let mut a_value = (1989 as u32).to_be_bytes().to_vec();
-//     a_value.append(&mut (100 as u32).to_be_bytes().to_vec());
-//     assert!(elements.contains(&subtree::Element::Item(a_value)));
-//
-//     let path_query = PathQuery::new(
-//         &path,
-//         SizedQuery::new(query.clone(), Some(40), Some(30), true),
-//         Some(&subquery_key),
-//         Some(sub_query.clone()),
-//     );
-//     let (elements, skipped) = db
-//         .get_path_query(&path_query, None)
-//         .expect("expected successful get_path_query");
-//     assert_eq!(elements.len(), 40);
-// }
-//
-// #[test]
-// fn test_get_range_inclusive_query_with_non_unique_subquery() {
-//     let mut db = make_grovedb();
-//
-//     populate_tree_for_non_unique_range_subquery(&mut db);
-//
-//     let path = vec![TEST_LEAF];
-//     let mut query = Query::new();
-//     query.insert_range_inclusive(
-//         (1988 as u32).to_be_bytes().to_vec()..=(1992 as
-// u32).to_be_bytes().to_vec(),     );
-//
-//     let subquery_key: &[u8] = b"0";
-//
-//     let mut sub_query = Query::new();
-//     sub_query.insert_all();
-//
-//     let path_query = PathQuery::new_unsized(&path, query,
-// Some(&subquery_key), Some(sub_query));     let (elements, skipped) = db
-//         .get_path_query(&path_query, None)
-//         .expect("expected successful get_path_query");
-//     assert_eq!(elements.len(), 250);
-//     let mut last_value = (1992 as u32).to_be_bytes().to_vec();
-//     last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
-//     assert!(elements.contains(&subtree::Element::Item(last_value)))
-// }
-//
-// #[test]
-// fn test_get_range_from_query_with_non_unique_subquery() {
-//     let mut db = make_grovedb();
-//
-//     populate_tree_for_non_unique_range_subquery(&mut db);
-//
-//     let path = vec![TEST_LEAF];
-//     let mut query = Query::new();
-//     query.insert_range_from(std::ops::RangeFrom {
-//         start: (1990 as u32).to_be_bytes().to_vec(),
-//     });
-//
-//     let subquery_key: &[u8] = b"0";
-//
-//     let mut sub_query = Query::new();
-//     sub_query.insert_all();
-//
-//     let path_query = PathQuery::new_unsized(&path, query,
-// Some(&subquery_key), Some(sub_query));     let (elements, skipped) = db
-//         .get_path_query(&path_query, None)
-//         .expect("expected successful get_path_query");
-//     assert_eq!(elements.len(), 500);
-//     let mut a_value = (1992 as u32).to_be_bytes().to_vec();
-//     a_value.append(&mut (149 as u32).to_be_bytes().to_vec());
-//     assert!(elements.contains(&subtree::Element::Item(a_value)));
-//
-//     let mut a_value = (1989 as u32).to_be_bytes().to_vec();
-//     a_value.append(&mut (149 as u32).to_be_bytes().to_vec());
-//     assert!(!elements.contains(&subtree::Element::Item(a_value)));
-// }
-//
-// #[test]
-// fn test_get_range_to_query_with_non_unique_subquery() {
-//     let mut db = make_grovedb();
-//
-//     populate_tree_for_non_unique_range_subquery(&mut db);
-//
-//     let path = vec![TEST_LEAF];
-//     let mut query = Query::new();
-//     query.insert_range_to(std::ops::RangeTo {
-//         end: (1990 as u32).to_be_bytes().to_vec(),
-//     });
-//
-//     let subquery_key: &[u8] = b"0";
-//
-//     let mut sub_query = Query::new();
-//     sub_query.insert_all();
-//
-//     let path_query = PathQuery::new_unsized(&path, query,
-// Some(&subquery_key), Some(sub_query));     let (elements, skipped) = db
-//         .get_path_query(&path_query, None)
-//         .expect("expected successful get_path_query");
-//     assert_eq!(elements.len(), 250);
-//     let mut a_value = (1992 as u32).to_be_bytes().to_vec();
-//     a_value.append(&mut (149 as u32).to_be_bytes().to_vec());
-//     assert!(!elements.contains(&subtree::Element::Item(a_value)));
-//
-//     let mut a_value = (1989 as u32).to_be_bytes().to_vec();
-//     a_value.append(&mut (149 as u32).to_be_bytes().to_vec());
-//     assert!(elements.contains(&subtree::Element::Item(a_value)));
-// }
-//
-// #[test]
-// fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
-//     let mut db = make_grovedb();
-//
-//     populate_tree_for_non_unique_range_subquery(&mut db);
-//
-//     let path = vec![TEST_LEAF];
-//     let mut query = Query::new();
-//     query.insert_range_to_inclusive(std::ops::RangeToInclusive {
-//         end: (1990 as u32).to_be_bytes().to_vec(),
-//     });
-//
-//     let subquery_key: &[u8] = b"0";
-//
-//     let mut sub_query = Query::new();
-//     sub_query.insert_all();
-//
-//     let path_query = PathQuery::new_unsized(&path, query,
-// Some(&subquery_key), Some(sub_query));     let (elements, skipped) = db
-//         .get_path_query(&path_query, None)
-//         .expect("expected successful get_path_query");
-//     assert_eq!(elements.len(), 300);
-//     let mut a_value = (1992 as u32).to_be_bytes().to_vec();
-//     a_value.append(&mut (149 as u32).to_be_bytes().to_vec());
-//     assert!(!elements.contains(&subtree::Element::Item(a_value)));
-//
-//     let mut a_value = (1990 as u32).to_be_bytes().to_vec();
-//     a_value.append(&mut (149 as u32).to_be_bytes().to_vec());
-//     assert!(elements.contains(&subtree::Element::Item(a_value)));
-// }
+
+#[test]
+fn test_get_range_query_with_limit_and_offset() {
+    let mut db = make_grovedb();
+    populate_tree_for_non_unique_range_subquery(&mut db);
+
+    let path = vec![TEST_LEAF];
+    let mut query = Query::new();
+    query.insert_range((1990 as u32).to_be_bytes().to_vec()..(1995 as u32).to_be_bytes().to_vec());
+
+    let subquery_key: &[u8] = b"0";
+    let mut sub_query = Query::new();
+    sub_query.insert_all();
+
+    // Baseline query: no offset or limit + left to right
+    let path_query = PathQuery::new(
+        &path,
+        SizedQuery::new(query.clone(), None, None, true),
+        Some(&subquery_key),
+        Some(sub_query.clone()),
+    );
+
+    let (elements, skipped) = db
+        .get_path_query(&path_query, None)
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 250);
+
+    let mut first_value = (1990 as u32).to_be_bytes().to_vec();
+    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[0], Element::Item(first_value));
+
+    let mut last_value = (1994 as u32).to_be_bytes().to_vec();
+    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+
+    // Baseline query: no offset or limit + right to left
+    let path_query = PathQuery::new(
+        &path,
+        SizedQuery::new(query.clone(), None, None, false),
+        Some(&subquery_key),
+        Some(sub_query.clone()),
+    );
+
+    let (elements, skipped) = db
+        .get_path_query(&path_query, None)
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 250);
+
+    let mut first_value = (1994 as u32).to_be_bytes().to_vec();
+    first_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[0], Element::Item(first_value));
+
+    let mut last_value = (1990 as u32).to_be_bytes().to_vec();
+    last_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+
+    // Limit the result to just 55 elements
+    let path_query = PathQuery::new(
+        &path,
+        SizedQuery::new(query.clone(), Some(55), None, true),
+        Some(&subquery_key),
+        Some(sub_query.clone()),
+    );
+
+    let (elements, skipped) = db
+        .get_path_query(&path_query, None)
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 55);
+
+    let mut first_value = (1990 as u32).to_be_bytes().to_vec();
+    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[0], Element::Item(first_value));
+
+    // Second tree 5 element [100, 101, 102, 103, 104]
+    let mut last_value = (1991 as u32).to_be_bytes().to_vec();
+    last_value.append(&mut (104 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+
+    // Limit the result set to 60 elements but skip the first 14 elements
+    let path_query = PathQuery::new(
+        &path,
+        SizedQuery::new(query.clone(), Some(60), Some(14), true),
+        Some(&subquery_key),
+        Some(sub_query.clone()),
+    );
+
+    let (elements, skipped) = db
+        .get_path_query(&path_query, None)
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 60);
+
+    // Skips the first 14 elements, starts from the 15th
+    // i.e skips [100 - 113] starts from 114
+    let mut first_value = (1990 as u32).to_be_bytes().to_vec();
+    first_value.append(&mut (114 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[0], Element::Item(first_value));
+
+    // Continues for 60 iterations
+    // Takes 36 elements from the first tree (50 - 14)
+    // takes the remaining 24 from the second three (60 - 36)
+    let mut last_value = (1991 as u32).to_be_bytes().to_vec();
+    last_value.append(&mut (123 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+
+    // Offset bigger than elements in range
+    let path_query = PathQuery::new(
+        &path,
+        SizedQuery::new(query.clone(), None, Some(5000), true),
+        Some(&subquery_key),
+        Some(sub_query.clone()),
+    );
+
+    let (elements, skipped) = db
+        .get_path_query(&path_query, None)
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 0);
+
+    // Limit bigger than elements in range
+    let path_query = PathQuery::new(
+        &path,
+        SizedQuery::new(query.clone(), Some(5000), None, true),
+        Some(&subquery_key),
+        Some(sub_query.clone()),
+    );
+
+    let (elements, skipped) = db
+        .get_path_query(&path_query, None)
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 250);
+}
