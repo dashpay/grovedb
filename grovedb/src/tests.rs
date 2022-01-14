@@ -1583,6 +1583,30 @@ fn test_get_range_query_with_limit_and_offset() {
     last_value.append(&mut (123 as u32).to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
 
+    // Limit the result set to 60 element but skip first 10 elements (this time right to left)
+    let path_query = PathQuery::new(
+        &path,
+        SizedQuery::new(query.clone(), Some(60), Some(10), false),
+        Some(&subquery_key),
+        Some(sub_query.clone()),
+    );
+
+    let (elements, skipped) = db
+        .get_path_query(&path_query, None)
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 60);
+
+    // Skips the first 10 elements from the back
+    // last tree and starts from the 11th before the end
+    let mut first_value = (1994 as u32).to_be_bytes().to_vec();
+    first_value.append(&mut (139 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[0], Element::Item(first_value));
+
+    let mut last_value = (1993 as u32).to_be_bytes().to_vec();
+    last_value.append(&mut (130 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+
     // Offset bigger than elements in range
     let path_query = PathQuery::new(
         &path,
