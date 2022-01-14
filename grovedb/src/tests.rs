@@ -720,6 +720,38 @@ fn test_insert_if_not_exists() {
 }
 
 #[test]
+fn test_is_empty_tree() {
+    let mut db = make_grovedb();
+
+    // Create an empty tree with no elements
+    db.insert(
+        &[TEST_LEAF],
+        b"innertree".to_vec(),
+        Element::empty_tree(),
+        None,
+    );
+
+    assert_eq!(
+        db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
+            .expect("path is valid tree"),
+        true
+    );
+
+    // add an element to the tree to make it non empty
+    db.insert(
+        &[TEST_LEAF, b"innertree"],
+        b"key1".to_vec(),
+        Element::Item(b"hello".to_vec()),
+        None,
+    );
+    assert_eq!(
+        db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
+            .expect("path is valid tree"),
+        false
+    );
+}
+
+#[test]
 fn transaction_insert_item_with_transaction_should_use_transaction() {
     let item_key = b"key3".to_vec();
 
