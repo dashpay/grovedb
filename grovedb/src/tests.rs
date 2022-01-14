@@ -1583,7 +1583,8 @@ fn test_get_range_query_with_limit_and_offset() {
     last_value.append(&mut (123 as u32).to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
 
-    // Limit the result set to 60 element but skip first 10 elements (this time right to left)
+    // Limit the result set to 60 element but skip first 10 elements (this time
+    // right to left)
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), Some(60), Some(10), false),
