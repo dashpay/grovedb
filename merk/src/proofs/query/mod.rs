@@ -169,6 +169,9 @@ pub enum QueryItem {
     RangeFrom(RangeFrom<Vec<u8>>),
     RangeTo(RangeTo<Vec<u8>>),
     RangeToInclusive(RangeToInclusive<Vec<u8>>),
+    RangeAfter(RangeFrom<Vec<u8>>),
+    RangeAfterTo(Range<Vec<u8>>),
+    RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
 }
 
 impl QueryItem {
