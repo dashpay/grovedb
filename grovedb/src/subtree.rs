@@ -130,21 +130,21 @@ impl Element {
                         "the key must be provided when using a subquery key",
                     ))?);
 
-                    if subquery.is_some() {
+                    if let Some(subquery) = subquery {
                         path_vec.push(subquery_key);
 
                         let inner_merk = subtrees
                             .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
                             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
                         let inner_query =
-                            SizedQuery::new(subquery.unwrap(), *limit, *offset, left_to_right);
+                            SizedQuery::new(subquery, *limit, *offset, left_to_right);
                         let (mut sub_elements, skipped) =
                             Element::get_sized_query(inner_merk, &inner_query)?;
-                        if limit.is_some() {
-                            *limit = Some(limit.unwrap() - sub_elements.len() as u16);
+                        if let Some(limit) = limit {
+                            *limit = *limit - sub_elements.len() as u16;
                         }
-                        if offset.is_some() {
-                            *offset = Some(offset.unwrap() - skipped);
+                        if let Some(offset) = offset {
+                            *offset = *offset - skipped;
                         }
                         results.append(&mut sub_elements);
                     } else {
