@@ -91,10 +91,6 @@ impl GroveDb {
         path_queries: &[&PathQuery],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Vec<Element>, Error> {
-        let subtrees = match transaction {
-            None => &self.subtrees,
-            Some(_) => &self.temp_subtrees,
-        };
         let mut result = Vec::new();
         for query in path_queries {
             let (query_results, _) = self.get_path_query(query, transaction)?;
