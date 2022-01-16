@@ -140,11 +140,11 @@ impl Element {
                             SizedQuery::new(subquery, *limit, *offset, left_to_right);
                         let (mut sub_elements, skipped) =
                             Element::get_sized_query(inner_merk, &inner_query)?;
-                        if limit.is_some() {
-                            *limit = Some(limit.unwrap() - sub_elements.len() as u16);
+                        if let Some(limit) = limit {
+                            *limit = *limit - sub_elements.len() as u16;
                         }
-                        if offset.is_some() {
-                            *offset = Some(offset.unwrap() - skipped);
+                        if let Some(offset) = offset {
+                            *offset = *offset - skipped;
                         }
                         results.append(&mut sub_elements);
                     } else {
