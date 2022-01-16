@@ -130,7 +130,7 @@ impl Element {
                         "the key must be provided when using a subquery key",
                     ))?);
 
-                    if subquery.is_some() {
+                    if let Some(subquery) = subquery {
                         path_vec.push(subquery_key);
 
                         let inner_merk = subtrees
