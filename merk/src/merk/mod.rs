@@ -212,8 +212,14 @@ where
     /// check adds some overhead, so if you are sure your batch is sorted and
     /// unique you can use the unsafe `prove_unchecked` for a small performance
     /// gain.
-    pub fn prove(&self, query: Query) -> Result<Vec<u8>> {
-        self.prove_unchecked(query)
+    pub fn prove(
+        &self,
+        query: Query,
+        limit: Option<u16>,
+        offset: Option<u16>,
+        left_to_right: bool,
+    ) -> Result<Vec<u8>> {
+        self.prove_unchecked(query, limit, offset, left_to_right)
     }
 
     /// Creates a Merkle proof for the list of queried keys. For each key in
@@ -228,7 +234,13 @@ where
     /// if they are not, there will be undefined behavior. For a safe version
     /// of this method which checks to ensure the batch is sorted and
     /// unique, see `prove`.
-    pub fn prove_unchecked<Q, I>(&self, query: I) -> Result<Vec<u8>>
+    pub fn prove_unchecked<Q, I>(
+        &self,
+        query: I,
+        limit: Option<u16>,
+        offset: Option<u16>,
+        left_to_right: bool,
+    ) -> Result<Vec<u8>>
     where
         Q: Into<QueryItem>,
         I: IntoIterator<Item = Q>,
@@ -239,7 +251,8 @@ where
             let tree = maybe_tree.ok_or(anyhow!("Cannot create proof for empty tree"))?;
 
             let mut ref_walker = RefWalker::new(tree, self.source());
-            let (proof, _) = ref_walker.create_proof(query_vec.as_slice())?;
+            let (proof, ..) =
+                ref_walker.create_proof(query_vec.as_slice(), limit, offset, left_to_right)?;
 
             let mut bytes = Vec::with_capacity(128);
             encode_into(proof.iter(), &mut bytes);

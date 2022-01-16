@@ -3,11 +3,12 @@ mod map;
 use std::{
     cmp::{max, min, Ordering},
     collections::BTreeSet,
-    ops::{Range, RangeInclusive},
+    ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
 use anyhow::{bail, Result};
 pub use map::*;
+use storage::{rocksdb_storage::RawPrefixedTransactionalIterator, RawIterator};
 #[cfg(feature = "full")]
 use {super::Op, std::collections::LinkedList};
 
@@ -16,7 +17,7 @@ use crate::tree::{Fetch, Hash, Link, RefWalker};
 
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all of the requested values.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Query {
     items: BTreeSet<QueryItem>,
 }
@@ -33,6 +34,10 @@ impl Query {
 
     pub fn iter(&self) -> impl Iterator<Item = &QueryItem> {
         self.items.iter()
+    }
+
+    pub fn rev_iter(&self) -> impl Iterator<Item = &QueryItem> {
+        self.items.iter().rev()
     }
 
     /// Adds an individual key to the query, so that its value (or its absence)
@@ -66,6 +71,52 @@ impl Query {
     /// the range, the ranges will be merged together.
     pub fn insert_range_inclusive(&mut self, range: RangeInclusive<Vec<u8>>) {
         let range = QueryItem::RangeInclusive(range);
+        self.insert_item(range);
+    }
+
+    /// Adds a range until a certain included value to the query, so that all
+    /// the entries in the tree with keys in the range will be included in the
+    /// resulting proof.
+    ///
+    /// If a range including the range already exists in the query, this will
+    /// have no effect. If the query already includes a range that overlaps with
+    /// the range, the ranges will be joined together.
+    pub fn insert_range_to_inclusive(&mut self, range: RangeToInclusive<Vec<u8>>) {
+        let range = QueryItem::RangeToInclusive(range);
+        self.insert_item(range);
+    }
+
+    /// Adds a range from a certain included value to the query, so that all
+    /// the entries in the tree with keys in the range will be included in the
+    /// resulting proof.
+    ///
+    /// If a range including the range already exists in the query, this will
+    /// have no effect. If the query already includes a range that overlaps with
+    /// the range, the ranges will be joined together.
+    pub fn insert_range_from(&mut self, range: RangeFrom<Vec<u8>>) {
+        let range = QueryItem::RangeFrom(range);
+        self.insert_item(range);
+    }
+
+    /// Adds a range until a certain non included value to the query, so that
+    /// all the entries in the tree with keys in the range will be included
+    /// in the resulting proof.
+    ///
+    /// If a range including the range already exists in the query, this will
+    /// have no effect. If the query already includes a range that overlaps with
+    /// the range, the ranges will be joined together.
+    pub fn insert_range_to(&mut self, range: RangeTo<Vec<u8>>) {
+        let range = QueryItem::RangeTo(range);
+        self.insert_item(range);
+    }
+
+    /// Adds a range of all potential values to the query, so that the query
+    /// will return all values
+    ///
+    /// All other items in the query will be discarded as you are now getting
+    /// back all elements.
+    pub fn insert_all(&mut self) {
+        let range = QueryItem::RangeFull(RangeFull);
         self.insert_item(range);
     }
 
@@ -114,6 +165,10 @@ pub enum QueryItem {
     Key(Vec<u8>),
     Range(Range<Vec<u8>>),
     RangeInclusive(RangeInclusive<Vec<u8>>),
+    RangeFull(RangeFull),
+    RangeFrom(RangeFrom<Vec<u8>>),
+    RangeTo(RangeTo<Vec<u8>>),
+    RangeToInclusive(RangeToInclusive<Vec<u8>>),
 }
 
 impl QueryItem {
@@ -122,6 +177,22 @@ impl QueryItem {
             QueryItem::Key(key) => key.as_slice(),
             QueryItem::Range(range) => range.start.as_ref(),
             QueryItem::RangeInclusive(range) => range.start().as_ref(),
+            QueryItem::RangeFull(range) => b"",
+            QueryItem::RangeFrom(range) => range.start.as_ref(),
+            QueryItem::RangeTo(range) => b"",
+            QueryItem::RangeToInclusive(range) => b"",
+        }
+    }
+
+    pub fn lower_unbounded(&self) -> bool {
+        match self {
+            QueryItem::Key(_) => false,
+            QueryItem::Range(_) => false,
+            QueryItem::RangeInclusive(_) => false,
+            QueryItem::RangeFull(_) => true,
+            QueryItem::RangeFrom(_) => false,
+            QueryItem::RangeTo(_) => true,
+            QueryItem::RangeToInclusive(_) => true,
         }
     }
 
@@ -130,25 +201,176 @@ impl QueryItem {
             QueryItem::Key(key) => (key.as_slice(), true),
             QueryItem::Range(range) => (range.end.as_ref(), false),
             QueryItem::RangeInclusive(range) => (range.end().as_ref(), true),
+            QueryItem::RangeFull(_) => (b"", true),
+            QueryItem::RangeFrom(_) => (b"", true),
+            QueryItem::RangeTo(range) => (range.end.as_ref(), false),
+            QueryItem::RangeToInclusive(range) => (range.end.as_ref(), true),
+        }
+    }
+
+    pub fn upper_unbounded(&self) -> bool {
+        match self {
+            QueryItem::Key(_) => false,
+            QueryItem::Range(_) => false,
+            QueryItem::RangeInclusive(_) => false,
+            QueryItem::RangeFull(_) => true,
+            QueryItem::RangeFrom(_) => true,
+            QueryItem::RangeTo(_) => false,
+            QueryItem::RangeToInclusive(_) => false,
         }
     }
 
     pub fn contains(&self, key: &[u8]) -> bool {
         let (bound, inclusive) = self.upper_bound();
-        return key >= self.lower_bound() && (key < bound || (key == bound && inclusive));
+        return (self.lower_unbounded() || key >= self.lower_bound())
+            && (self.upper_unbounded() || key < bound || (key == bound && inclusive));
     }
 
     fn merge(self, other: QueryItem) -> QueryItem {
         // TODO: don't copy into new vecs
+        let lower_unbounded = self.lower_unbounded() || other.lower_unbounded();
+        let upper_unbounded = self.upper_unbounded() || other.upper_unbounded();
+
         let start = min(self.lower_bound(), other.lower_bound()).to_vec();
         let end = max(self.upper_bound(), other.upper_bound());
-        if end.1 {
-            QueryItem::RangeInclusive(RangeInclusive::new(start, end.0.to_vec()))
+
+        if lower_unbounded {
+            if upper_unbounded {
+                QueryItem::RangeFull(RangeFull)
+            } else {
+                if end.1 {
+                    QueryItem::RangeToInclusive(RangeToInclusive {
+                        end: end.0.to_vec(),
+                    })
+                } else {
+                    QueryItem::RangeTo(RangeTo {
+                        end: end.0.to_vec(),
+                    })
+                }
+            }
+        } else if upper_unbounded {
+            QueryItem::RangeFrom(RangeFrom { start })
         } else {
-            QueryItem::Range(Range {
-                start,
-                end: end.0.to_vec(),
-            })
+            // neither are unbounded
+            if end.1 {
+                QueryItem::RangeInclusive(RangeInclusive::new(start, end.0.to_vec()))
+            } else {
+                QueryItem::Range(Range {
+                    start,
+                    end: end.0.to_vec(),
+                })
+            }
+        }
+    }
+
+    pub fn is_range(&self) -> bool {
+        match self {
+            QueryItem::Key(_) => false,
+            _ => true,
+        }
+    }
+
+    pub fn seek_for_iter(&self, iter: &mut RawPrefixedTransactionalIterator, left_to_right: bool) {
+        match self {
+            QueryItem::Key(_) => {}
+            QueryItem::Range(Range { start, end }) => {
+                if left_to_right {
+                    iter.seek(start);
+                } else {
+                    iter.seek(end);
+                    iter.prev();
+                }
+            }
+            QueryItem::RangeInclusive(range_inclusive) => {
+                iter.seek(if left_to_right {
+                    range_inclusive.start()
+                } else {
+                    range_inclusive.end()
+                });
+            }
+            QueryItem::RangeFull(..) => {
+                if left_to_right {
+                    iter.seek_to_first();
+                } else {
+                    iter.seek_to_last();
+                }
+            }
+            QueryItem::RangeFrom(RangeFrom { start }) => {
+                if left_to_right {
+                    iter.seek(start);
+                } else {
+                    iter.seek_to_last();
+                }
+            }
+            QueryItem::RangeTo(RangeTo { end }) => {
+                if left_to_right {
+                    iter.seek_to_first();
+                } else {
+                    iter.seek(end);
+                    iter.prev();
+                }
+            }
+            QueryItem::RangeToInclusive(RangeToInclusive { end }) => {
+                if left_to_right {
+                    iter.seek_to_first();
+                } else {
+                    iter.seek(end);
+                }
+            }
+        };
+    }
+
+    pub fn iter_is_valid_for_type(
+        &self,
+        iter: &RawPrefixedTransactionalIterator,
+        limit: Option<u16>,
+        work: bool,
+        left_to_right: bool,
+    ) -> (bool, bool) {
+        match self {
+            QueryItem::Key(_) => (true, true),
+            QueryItem::Range(Range { start, end }) => {
+                let valid = (limit == None || limit.unwrap() > 0)
+                    && iter.valid()
+                    && iter.key().is_some()
+                    && work
+                    && (!left_to_right || iter.key() != Some(end));
+                // if we are going backwards, we need to make sure we are going to stop after
+                // the first element
+                let next_valid = !(!left_to_right && iter.key() == Some(start));
+                (valid, next_valid)
+            }
+            QueryItem::RangeInclusive(range_inclusive) => {
+                let valid = iter.valid() && iter.key().is_some() && work;
+                let next_valid = iter.key()
+                    != Some(if left_to_right {
+                        range_inclusive.end()
+                    } else {
+                        range_inclusive.start()
+                    });
+                (valid, next_valid)
+            }
+            QueryItem::RangeFull(..) => {
+                let valid = (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                (valid, true)
+            }
+            QueryItem::RangeFrom(RangeFrom { start }) => {
+                let valid = (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some() && work;
+                let next_valid = !(!left_to_right && iter.key() == Some(start));
+                (valid, next_valid)
+            }
+            QueryItem::RangeTo(RangeTo { end }) => {
+                let valid = (limit == None || limit.unwrap() > 0)
+                    && iter.valid()
+                    && iter.key().is_some()
+                    && (!left_to_right || iter.key() != Some(end));
+                (valid, true)
+            }
+            QueryItem::RangeToInclusive(RangeToInclusive { end }) => {
+                let valid = iter.valid() && iter.key().is_some() && work;
+                let next_valid = !(left_to_right && iter.key() == Some(end));
+                (valid, next_valid)
+            }
         }
     }
 }
@@ -169,8 +391,30 @@ impl Eq for QueryItem {}
 
 impl Ord for QueryItem {
     fn cmp(&self, other: &QueryItem) -> Ordering {
-        let cmp_lu = self.lower_bound().cmp(other.upper_bound().0);
-        let cmp_ul = self.upper_bound().0.cmp(other.lower_bound());
+        let cmp_lu = if self.lower_unbounded() {
+            if other.lower_unbounded() {
+                Ordering::Equal
+            } else {
+                Ordering::Less
+            }
+        } else if other.lower_unbounded() {
+            Ordering::Greater
+        } else {
+            self.lower_bound().cmp(other.upper_bound().0)
+        };
+
+        let cmp_ul = if self.upper_unbounded() {
+            if other.upper_unbounded() {
+                Ordering::Equal
+            } else {
+                Ordering::Greater
+            }
+        } else if other.upper_unbounded() {
+            Ordering::Less
+        } else {
+            self.upper_bound().0.cmp(other.lower_bound())
+        };
+
         let self_inclusive = self.upper_bound().1;
         let other_inclusive = other.upper_bound().1;
 
@@ -246,6 +490,15 @@ where
         Node::Hash(self.tree().hash())
     }
 
+    #[cfg(feature = "full")]
+    pub(crate) fn create_full_proof(
+        &mut self,
+        query: &[QueryItem],
+    ) -> Result<(LinkedList<Op>, (bool, bool))> {
+        let (linked_list, (left, right), ..) = self.create_proof(query, None, None, true)?;
+        Ok((linked_list, (left, right)))
+    }
+
     /// Generates a proof for the list of queried keys. Returns a tuple
     /// containing the generated proof operators, and a tuple representing if
     /// any keys were queried were less than the left edge or greater than the
@@ -254,7 +507,10 @@ where
     pub(crate) fn create_proof(
         &mut self,
         query: &[QueryItem],
-    ) -> Result<(LinkedList<Op>, (bool, bool))> {
+        limit: Option<u16>,
+        offset: Option<u16>,
+        left_to_right: bool,
+    ) -> Result<(LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>)> {
         // TODO: don't copy into vec, support comparing QI to byte slice
         let node_key = QueryItem::Key(self.tree().key().to_vec());
         let search = query.binary_search_by(|key| key.cmp(&node_key));
@@ -286,32 +542,75 @@ where
             Err(index) => (&query[..index], &query[index..]),
         };
 
-        let (mut proof, left_absence) = self.create_child_proof(true, left_items)?;
-        let (mut right_proof, right_absence) = self.create_child_proof(false, right_items)?;
+        if left_to_right {
+            let (mut proof, left_absence, new_limit, new_offset) =
+                self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
+            let (mut right_proof, right_absence, new_limit, new_offset) =
+                self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
 
-        let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
+            let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
 
-        proof.push_back(match search {
-            Ok(_) => Op::Push(self.to_kv_node()),
-            Err(_) => {
-                if left_absence.1 || right_absence.0 {
-                    Op::Push(self.to_kv_node())
-                } else {
-                    Op::Push(self.to_kvhash_node())
+            proof.push_back(match search {
+                Ok(_) => Op::Push(self.to_kv_node()),
+                Err(_) => {
+                    if left_absence.1 || right_absence.0 {
+                        Op::Push(self.to_kv_node())
+                    } else {
+                        Op::Push(self.to_kvhash_node())
+                    }
                 }
+            });
+
+            if has_left {
+                proof.push_back(Op::Parent);
             }
-        });
 
-        if has_left {
-            proof.push_back(Op::Parent);
+            if has_right {
+                proof.append(&mut right_proof);
+                proof.push_back(Op::Child);
+            }
+
+            Ok((
+                proof,
+                (left_absence.0, right_absence.1),
+                new_limit,
+                new_offset,
+            ))
+        } else {
+            let (mut proof, left_absence, new_limit, new_offset) =
+                self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
+            let (mut right_proof, right_absence, new_limit, new_offset) =
+                self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
+
+            let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
+
+            proof.push_back(match search {
+                Ok(_) => Op::Push(self.to_kv_node()),
+                Err(_) => {
+                    if left_absence.1 || right_absence.0 {
+                        Op::Push(self.to_kv_node())
+                    } else {
+                        Op::Push(self.to_kvhash_node())
+                    }
+                }
+            });
+
+            if has_left {
+                proof.push_back(Op::Parent);
+            }
+
+            if has_right {
+                proof.append(&mut right_proof);
+                proof.push_back(Op::Child);
+            }
+
+            Ok((
+                proof,
+                (left_absence.0, right_absence.1),
+                new_limit,
+                new_offset,
+            ))
         }
-
-        if has_right {
-            proof.append(&mut right_proof);
-            proof.push_back(Op::Child);
-        }
-
-        Ok((proof, (left_absence.0, right_absence.1)))
     }
 
     /// Similar to `create_proof`. Recurses into the child on the given side and
@@ -321,19 +620,22 @@ where
         &mut self,
         left: bool,
         query: &[QueryItem],
-    ) -> Result<(LinkedList<Op>, (bool, bool))> {
+        limit: Option<u16>,
+        offset: Option<u16>,
+        left_to_right: bool,
+    ) -> Result<(LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>)> {
         Ok(if !query.is_empty() {
             if let Some(mut child) = self.walk(left)? {
-                child.create_proof(query)?
+                child.create_proof(query, limit, offset, left_to_right)?
             } else {
-                (LinkedList::new(), (true, true))
+                (LinkedList::new(), (true, true), None, None)
             }
         } else if let Some(link) = self.tree().link(left) {
             let mut proof = LinkedList::new();
             proof.push_back(Op::Push(link.to_hash_node()));
-            (proof, (false, false))
+            (proof, (false, false), None, None)
         } else {
-            (LinkedList::new(), (false, false))
+            (LinkedList::new(), (false, false), None, None)
         })
     }
 }
@@ -505,7 +807,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, _) = walker
-            .create_proof(
+            .create_full_proof(
                 keys.clone()
                     .into_iter()
                     .map(QueryItem::Key)
@@ -592,7 +894,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, absence) = walker
-            .create_proof(vec![].as_slice())
+            .create_full_proof(vec![].as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -635,7 +937,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![5])];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -676,7 +978,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![3])];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -717,7 +1019,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![3]), QueryItem::Key(vec![7])];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -756,7 +1058,7 @@ mod test {
             QueryItem::Key(vec![7]),
         ];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -788,7 +1090,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![8])];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -829,7 +1131,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![6])];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -906,7 +1208,7 @@ mod test {
             QueryItem::Key(vec![4]),
         ];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1041,7 +1343,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1128,7 +1430,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1216,7 +1518,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 6, 5],
         )];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1304,7 +1606,7 @@ mod test {
             QueryItem::Range(vec![0, 0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7]),
         ];
         let (proof, absence) = walker
-            .create_proof(queryitems.as_slice())
+            .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1428,7 +1730,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, _) = walker
-            .create_proof(vec![QueryItem::Key(vec![5])].as_slice())
+            .create_full_proof(vec![QueryItem::Key(vec![5])].as_slice())
             .expect("failed to create proof");
         let mut bytes = vec![];
 
@@ -1450,7 +1752,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, _) = walker
-            .create_proof(vec![QueryItem::Key(vec![5])].as_slice())
+            .create_full_proof(vec![QueryItem::Key(vec![5])].as_slice())
             .expect("failed to create proof");
         let mut bytes = vec![];
 
@@ -1466,7 +1768,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let keys = vec![vec![5], vec![7]];
         let (proof, _) = walker
-            .create_proof(
+            .create_full_proof(
                 keys.clone()
                     .into_iter()
                     .map(QueryItem::Key)

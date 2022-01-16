@@ -1,8 +1,18 @@
-use std::collections::HashSet;
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+};
 
-use storage::rocksdb_storage::OptimisticTransactionDBTransaction;
+use merk::{
+    proofs::{query::QueryItem, Query},
+    Merk,
+};
+use storage::{
+    rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage},
+    RawIterator,
+};
 
-use crate::{Element, Error, GroveDb, PathQuery};
+use crate::{subtree::raw_decode, Element, Error, GroveDb, PathQuery, SizedQuery};
 
 /// Limit of possible indirections
 pub(crate) const MAX_REFERENCE_HOPS: usize = 10;
@@ -76,24 +86,40 @@ impl GroveDb {
         Element::get(&merk, key)
     }
 
-    pub fn get_query(
+    pub fn get_path_queries(
         &mut self,
-        path_queries: &[PathQuery],
+        path_queries: &[&PathQuery],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Vec<Element>, Error> {
+        let mut result = Vec::new();
+        for query in path_queries {
+            let (query_results, _) = self.get_path_query(query, transaction)?;
+            result.extend_from_slice(&query_results);
+        }
+        Ok(result)
+    }
+
+    pub fn get_path_query(
+        &mut self,
+        path_query: &PathQuery,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<(Vec<Element>, u16), Error> {
         let subtrees = match transaction {
             None => &self.subtrees,
             Some(_) => &self.temp_subtrees,
         };
+        self.get_path_query_on_trees(path_query, subtrees)
+    }
 
-        let mut result = Vec::new();
-        for query in path_queries {
-            let merk = subtrees
-                .get(&Self::compress_subtree_key(query.path, None))
-                .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-            let subtree_results = Element::get_query(merk, &query.query)?;
-            result.extend_from_slice(&subtree_results);
-        }
-        Ok(result)
+    fn get_path_query_on_trees(
+        &self,
+        path_query: &PathQuery,
+        subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
+    ) -> Result<(Vec<Element>, u16), Error> {
+        let path = path_query.path;
+        let merk = subtrees
+            .get(&Self::compress_subtree_key(path, None))
+            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+        Element::get_path_query(merk, path_query, Some(subtrees))
     }
 }

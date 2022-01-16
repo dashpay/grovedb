@@ -191,6 +191,8 @@ pub trait Batch {
 pub trait RawIterator {
     fn seek_to_first(&mut self);
 
+    fn seek_to_last(&mut self);
+
     fn seek(&mut self, key: &[u8]);
 
     fn next(&mut self);

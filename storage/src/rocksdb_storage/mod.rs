@@ -72,6 +72,18 @@ impl RawIterator for RawPrefixedTransactionalIterator<'_> {
         self.rocksdb_iterator.seek(self.prefix);
     }
 
+    fn seek_to_last(&mut self) {
+        let mut prefix_vec = self.prefix.to_vec();
+        for i in (0..prefix_vec.len()).rev() {
+            prefix_vec[i] += 1;
+            if prefix_vec[i] != 0 {
+                // if it is == 0 then we need to go to next bit
+                break;
+            }
+        }
+        self.rocksdb_iterator.seek_for_prev(prefix_vec);
+    }
+
     fn seek(&mut self, key: &[u8]) {
         self.rocksdb_iterator
             .seek(make_prefixed_key(self.prefix.to_vec(), key));
@@ -119,6 +131,18 @@ pub struct RawPrefixedIterator<'a> {
 impl RawIterator for RawPrefixedIterator<'_> {
     fn seek_to_first(&mut self) {
         self.rocksdb_iterator.seek(self.prefix);
+    }
+
+    fn seek_to_last(&mut self) {
+        let mut prefix_vec = self.prefix.to_vec();
+        for i in (0..prefix_vec.len()).rev() {
+            prefix_vec[i] += 1;
+            if prefix_vec[i] != 0 {
+                // if it is == 0 then we need to go to next bit
+                break;
+            }
+        }
+        self.rocksdb_iterator.seek_for_prev(prefix_vec);
     }
 
     fn seek(&mut self, key: &[u8]) {
@@ -414,8 +438,9 @@ mod tests {
         another_storage_before
             .put(b"key5", b"value5")
             .expect("expected successful insertion");
-        let another_storage_after = PrefixedRocksDbStorage::new(db, b"zanothersomeprefix".to_vec())
-            .expect("cannot create a prefixed storage");
+        let another_storage_after =
+            PrefixedRocksDbStorage::new(db.clone(), b"zanothersomeprefix".to_vec())
+                .expect("cannot create a prefixed storage");
         another_storage_after
             .put(b"key1", b"value1")
             .expect("expected successful insertion");
@@ -431,6 +456,8 @@ mod tests {
         ];
         let mut expected_iter = expected.into_iter();
 
+        // Test iterator goes forward
+
         let mut iter = storage.raw_iter();
         iter.seek_to_first();
         while iter.valid() {
@@ -441,5 +468,25 @@ mod tests {
             iter.next();
         }
         assert!(expected_iter.next().is_none());
+
+        // Test `seek_to_last` on a storage with elements
+
+        let mut iter = storage.raw_iter();
+        iter.seek_to_last();
+        assert_eq!(
+            (iter.key().unwrap(), iter.value().unwrap()),
+            expected.last().unwrap().clone(),
+        );
+        iter.next();
+        assert!(!iter.valid());
+
+        // Test `seek_to_last` on empty storage
+        let empty_storage = PrefixedRocksDbStorage::new(db.clone(), b"notexist".to_vec())
+            .expect("cannot create a prefixed storage");
+        let mut iter = empty_storage.raw_iter();
+        iter.seek_to_last();
+        assert!(!iter.valid());
+        iter.next();
+        assert!(!iter.valid());
     }
 }

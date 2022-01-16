@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use merk::proofs::query::Map;
+use merk::proofs::query::{Map, QueryItem};
 use rs_merkle::{algorithms::Sha256, MerkleProof};
 
-use crate::{Element, Error, GroveDb, PathQuery, Proof, Query};
+use crate::{Element, Error, GroveDb, PathQuery, Proof, Query, SizedQuery};
 
 impl GroveDb {
     pub fn proof(&mut self, proof_queries: Vec<PathQuery>) -> Result<Vec<u8>, Error> {
@@ -13,13 +13,13 @@ impl GroveDb {
         // if a node forks into multiple relevant paths then we should create a
         // combined proof for that node with all the relevant keys
         let mut query_paths = Vec::new();
-        let mut proof_spec: HashMap<Vec<u8>, Query> = HashMap::new();
+        let mut intermediate_proof_spec: HashMap<Vec<u8>, Query> = HashMap::new();
         let mut root_keys: Vec<Vec<u8>> = Vec::new();
         let mut proofs: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
 
         // For each unique node including the root
         // determine what keys would need to be included in the proof
-        for proof_query in proof_queries {
+        for proof_query in proof_queries.iter() {
             query_paths.push(
                 proof_query
                     .path
@@ -27,9 +27,6 @@ impl GroveDb {
                     .map(|x| x.to_vec())
                     .collect::<Vec<_>>(),
             );
-
-            let compressed_path = GroveDb::compress_subtree_key(proof_query.path, None);
-            proof_spec.insert(compressed_path, proof_query.query);
 
             let mut split_path = proof_query.path.split_last();
             while let Some((key, path_slice)) = split_path {
@@ -39,22 +36,46 @@ impl GroveDb {
                     root_keys.push(compressed_path);
                 } else {
                     let compressed_path = GroveDb::compress_subtree_key(path_slice, None);
-                    if let Some(path_query) = proof_spec.get_mut(&compressed_path) {
+                    if let Some(path_query) = intermediate_proof_spec.get_mut(&compressed_path) {
                         path_query.insert_key(key.to_vec());
                     } else {
                         let mut path_query = Query::new();
                         path_query.insert_key(key.to_vec());
-                        proof_spec.insert(compressed_path, path_query);
+                        intermediate_proof_spec.insert(compressed_path, path_query);
                     }
                 }
                 split_path = path_slice.split_last();
             }
         }
 
-        // Construct the sub proofs
-        for (path, query) in proof_spec {
+        // Construct the path proofs
+        for (path, query) in intermediate_proof_spec {
             let proof = self.prove_item(&path, query)?;
             proofs.insert(path, proof);
+        }
+
+        // Construct the leaf proofs
+        for proof_query in proof_queries {
+            let mut path = proof_query.path;
+
+            // If there is a subquery with a limit it's possible that we only need a reduced
+            // proof for this leaf.
+            let mut reduced_proof_query = proof_query;
+
+            // First we must get elements
+
+            if let Some(subquery_key) = reduced_proof_query.subquery_key {
+                self.get_path_queries(&[&reduced_proof_query], None)?;
+
+                let mut path_vec = path.to_vec();
+                path_vec.push(subquery_key);
+                let compressed_path = GroveDb::compress_subtree_key(path_vec.as_slice(), None);
+            }
+
+            // Now we must insert the final proof for the sub leaves
+            let compressed_path = GroveDb::compress_subtree_key(path, None);
+            let proof = self.prove_path_item(&compressed_path, reduced_proof_query)?;
+            proofs.insert(compressed_path, proof);
         }
 
         // Construct the root proof
@@ -81,16 +102,47 @@ impl GroveDb {
         Ok(seralized_proof)
     }
 
-    fn prove_item(&self, path: &Vec<u8>, proof_query: Query) -> Result<Vec<u8>, Error> {
+    fn prove_path_item(
+        &self,
+        compressed_path: &Vec<u8>,
+        path_query: PathQuery,
+    ) -> Result<Vec<u8>, Error> {
+        let merk = self
+            .subtrees
+            .get(compressed_path)
+            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+
+        let sized_query = path_query.query;
+
+        if path_query.subquery.is_none() {
+            // then limit should be applied directly to the proof here
+            let proof_result = merk
+                .prove(
+                    sized_query.query,
+                    sized_query.limit,
+                    sized_query.offset,
+                    sized_query.left_to_right,
+                )
+                .expect("should prove both inclusion and absence");
+            Ok(proof_result)
+        } else {
+            let proof_result = merk
+                .prove(sized_query.query, None, None, sized_query.left_to_right)
+                .expect("should prove both inclusion and absence");
+            Ok(proof_result)
+        }
+    }
+
+    fn prove_item(&self, path: &Vec<u8>, query: Query) -> Result<Vec<u8>, Error> {
         let merk = self
             .subtrees
             .get(path)
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
 
+        // then limit should be applied directly to the proof here
         let proof_result = merk
-            .prove(proof_query)
+            .prove(query, None, None, true)
             .expect("should prove both inclusion and absence");
-
         Ok(proof_result)
     }
 
