@@ -97,7 +97,7 @@ impl GroveDb {
         };
         let mut result = Vec::new();
         for query in path_queries {
-            let (query_results, _) = self.get_path_query_on_trees(query, subtrees)?;
+            let (query_results, _) = self.get_path_query(query, transaction)?;
             result.extend_from_slice(&query_results);
         }
         Ok(result)
