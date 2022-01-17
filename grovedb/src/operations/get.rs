@@ -1,18 +1,9 @@
-use std::{
-    collections::{HashMap, HashSet},
-    ops::Range,
-};
+use std::collections::{HashMap, HashSet};
 
-use merk::{
-    proofs::{query::QueryItem, Query},
-    Merk,
-};
-use storage::{
-    rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage},
-    RawIterator,
-};
+use merk::Merk;
+use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage};
 
-use crate::{subtree::raw_decode, Element, Error, GroveDb, PathQuery, SizedQuery};
+use crate::{Element, Error, GroveDb, PathQuery};
 
 /// Limit of possible indirections
 pub(crate) const MAX_REFERENCE_HOPS: usize = 10;

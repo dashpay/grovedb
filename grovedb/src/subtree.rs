@@ -1,10 +1,7 @@
 //! Module for subtrees handling.
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
-use std::{
-    collections::HashMap,
-    ops::{Range, RangeFrom, RangeTo, RangeToInclusive},
-};
+use std::collections::HashMap;
 
 use merk::{
     proofs::{query::QueryItem, Query},

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use merk::proofs::query::{Map, QueryItem};
+use merk::proofs::query::Map;
 use rs_merkle::{algorithms::Sha256, MerkleProof};
 
-use crate::{Element, Error, GroveDb, PathQuery, Proof, Query, SizedQuery};
+use crate::{Element, Error, GroveDb, PathQuery, Proof, Query};
 
 impl GroveDb {
     pub fn proof(&mut self, proof_queries: Vec<PathQuery>) -> Result<Vec<u8>, Error> {
