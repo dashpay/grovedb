@@ -317,38 +317,6 @@ impl QueryItem {
                 end: end.to_vec(),
             });
         }
-
-        // if lower_unbounded {
-        //     if upper_unbounded {
-        //         QueryItem::RangeFull(RangeFull)
-        //     } else {
-        //         if end_inclusive {
-        //             QueryItem::RangeToInclusive(RangeToInclusive {
-        //                 end: end.0.to_vec(),
-        //             })
-        //         } else {
-        //             QueryItem::RangeTo(RangeTo {
-        //                 end: end.0.to_vec(),
-        //             })
-        //         }
-        //     }
-        // } else if upper_unbounded {
-        //     if start_non_inclusive {
-        //         QueryItem::RangeAfter(RangeFrom{ start: start.to_vec() })
-        //     } else {
-        //         QueryItem::RangeFrom(RangeFrom { start: start.to_vec() })
-        //     }
-        // } else {
-        //     // neither are unbounded
-        //     if end.1 {
-        //         QueryItem::RangeInclusive(RangeInclusive::new(start,
-        // end.0.to_vec()))     } else {
-        //         QueryItem::Range(Range {
-        //             start,
-        //             end: end.0.to_vec(),
-        //         })
-        //     }
-        // }
     }
 
     pub fn is_range(&self) -> bool {
@@ -489,13 +457,6 @@ impl QueryItem {
                 (valid, next_valid)
             }
             QueryItem::RangeAfter(RangeFrom { start }) => {
-                // (true, true)
-                // The goal of this section is to tell the iterator when to stop
-                // we will be passed the left_to_right key so we know the direction
-                // For range after, we keep going until the iterator is no longer valid
-                // bur if it is right to left then we don't want it to equal the start??
-                // damn, how do we know the next key.
-                // we need the next valid thing here
                 let valid = (limit == None || limit.unwrap() > 0)
                     && iter.valid()
                     && iter.key().is_some()
@@ -503,18 +464,22 @@ impl QueryItem {
                 (valid, true)
             }
             QueryItem::RangeAfterTo(Range { start, end }) => {
-                // (true, true)
-                // Continue until you hit the end, you don't want inclusive so everything in 1??
                 let valid = (limit == None || limit.unwrap() > 0)
                     && iter.valid()
                     && iter.key().is_some()
                     && !(!left_to_right && iter.key() == Some(start))
                     && !(left_to_right && iter.key() == Some(end));
                 (valid, true)
-            },
+            }
             QueryItem::RangeAfterToInclusive(range_inclusive) => {
-                //
-            },
+                let valid = (limit == None || limit.unwrap() > 0)
+                    && iter.valid()
+                    && iter.key().is_some()
+                    && work;
+                let next_valid = !(!left_to_right && iter.key() == Some(range_inclusive.start()))
+                    && !(left_to_right && iter.key() == Some(range_inclusive.end()));
+                (valid, next_valid)
+            }
         }
     }
 }
