@@ -1,175 +1,313 @@
-const GroveDB = require('./index.js');
-const rimraf = require('rimraf');
-const { promisify } = require("util");
-const removeTestDataFiles = promisify(rimraf);
+const fs = require('fs');
+
 const { expect } = require('chai');
 
-const testDataPath = './test_data';
+const GroveDB = require('./index');
+
+const TEST_DATA_PATH = './test_data';
 
 describe('GroveDB', () => {
-    let groveDb;
+  let groveDb;
+  let treeKey;
+  let itemKey;
+  let itemValue;
+  let rootTreePath;
+  let itemTreePath;
 
-    beforeEach(() => {
-        groveDb = GroveDB.open(testDataPath);
+  beforeEach(() => {
+    groveDb = new GroveDB(TEST_DATA_PATH);
+
+    treeKey = Buffer.from('test_tree');
+    itemKey = Buffer.from('test_key');
+    itemValue = Buffer.from('very nice test value');
+
+    rootTreePath = [];
+    itemTreePath = [treeKey];
+  });
+
+  afterEach(async () => {
+    await groveDb.close();
+
+    fs.rmSync(TEST_DATA_PATH, { recursive: true });
+  });
+
+  it('should store and retrieve a value', async () => {
+    // Making a subtree to insert items into
+    await groveDb.insert(
+      rootTreePath,
+      treeKey,
+      { type: 'tree', value: Buffer.alloc(32) },
+    );
+
+    // Inserting an item into the subtree
+    await groveDb.insert(
+      itemTreePath,
+      itemKey,
+      { type: 'item', value: itemValue },
+    );
+
+    const element = await groveDb.get(itemTreePath, itemKey);
+
+    expect(element.type).to.be.equal('item');
+    expect(element.value).to.deep.equal(itemValue);
+  });
+
+  it('should store and delete a value', async () => {
+    // Making a subtree to insert items into
+    await groveDb.insert(
+      rootTreePath,
+      treeKey,
+      { type: 'tree', value: Buffer.alloc(32) },
+      false,
+    );
+
+    // Inserting an item into the subtree
+    await groveDb.insert(
+      itemTreePath,
+      itemKey,
+      { type: 'item', value: itemValue },
+      false,
+    );
+
+    // Get item
+    const element = await groveDb.get(itemTreePath, itemKey);
+
+    expect(element.type).to.be.equal('item');
+    expect(element.value).to.deep.equal(itemValue);
+
+    // Delete an item from the subtree
+    await groveDb.delete(
+      itemTreePath,
+      itemKey,
+      false,
+    );
+
+    try {
+      await groveDb.get(itemTreePath, itemKey);
+
+      expect.fail('Expected to throw en error');
+    } catch (e) {
+      expect(e.message).to.be.equal('invalid path: key not found in Merk');
+    }
+  });
+
+  describe('transactions', () => {
+    it('should allow to read existing data from transaction', async () => {
+      // Making a subtree to insert items into
+      await groveDb.insert(
+        rootTreePath,
+        treeKey,
+        { type: 'tree', value: Buffer.alloc(32) },
+      );
+
+      // Inserting an item into the subtree
+      await groveDb.insert(
+        itemTreePath,
+        itemKey,
+        { type: 'item', value: itemValue },
+      );
+
+      await groveDb.startTransaction();
+
+      // Read existing data from transaction
+      const elementInTransaction = await groveDb.get(itemTreePath, itemKey, true);
+
+      expect(elementInTransaction.type).to.be.equal('item');
+      expect(elementInTransaction.value).to.deep.equal(itemValue);
     });
 
-    afterEach(async () => {
-        await groveDb.close();
-        await removeTestDataFiles(testDataPath);
+    it('should not allow to insert data when transaction is started', async () => {
+      // Making a subtree to insert items into
+      await groveDb.insert(
+        rootTreePath,
+        treeKey,
+        { type: 'tree', value: Buffer.alloc(32) },
+      );
+
+      await groveDb.startTransaction();
+
+      try {
+        // Inserting an item into the subtree without transaction
+        await groveDb.insert(
+          itemTreePath,
+          itemKey,
+          {
+            type: 'item',
+            value: itemValue,
+          },
+        );
+
+        expect.fail('should throw an error');
+      } catch (e) {
+        expect(e.message).to.equal('db is in readonly mode due to the active transaction. Please provide transaction or commit it');
+      }
     });
 
-    it('should store and retrieve a value', async () => {
-        const tree_key = Buffer.from("test_tree");
+    it('should not allow to read transactional data from main database until it\'s committed', async () => {
+      // Making a subtree to insert items into
+      await groveDb.insert(
+        rootTreePath,
+        treeKey,
+        { type: 'tree', value: Buffer.alloc(32) },
+      );
 
-        const item_key = Buffer.from("test_key");
-        const item_value = Buffer.from("very nice test value");
+      await groveDb.startTransaction();
 
-        const root_tree_path = [];
-        const item_tree_path = [tree_key];
+      // Inserting an item into the subtree
+      await groveDb.insert(
+        itemTreePath,
+        itemKey,
+        { type: 'item', value: itemValue },
+        true,
+      );
 
-        // Making a subtree to insert items into
-        await groveDb.insert(
-            root_tree_path,
-            tree_key,
-            { type: "tree", value: Buffer.alloc(32) },
-            false
-        );
+      // Inserted value is not yet commited, but can be retrieved by `get`
+      // with `useTransaction` flag.
+      const elementInTransaction = await groveDb.get(itemTreePath, itemKey, true);
 
-        // Inserting an item into the subtree
-        await groveDb.insert(
-            item_tree_path,
-            item_key,
-            { type: "item", value: item_value },
-            false
-        );
+      expect(elementInTransaction.type).to.be.equal('item');
+      expect(elementInTransaction.value).to.deep.equal(itemValue);
 
-        const element = await groveDb.get(item_tree_path, item_key, false);
+      // ... and using `get` without the flag should return no value
+      try {
+        await groveDb.get(itemTreePath, itemKey);
 
-        expect(element.type).to.be.equal("item");
-        expect(element.value.toString()).to.be.equal("very nice test value");
+        expect.fail('Expected to throw an error');
+      } catch (e) {
+        expect(e.message).to.be.equal('invalid path: key not found in Merk');
+      }
     });
 
-    it('should store and delete a value', async () => {
-        const tree_key = Buffer.from("test_tree");
+    it('should commit transactional data to main database', async () => {
+      // Making a subtree to insert items into
+      await groveDb.insert(
+        rootTreePath,
+        treeKey,
+        { type: 'tree', value: Buffer.alloc(32) },
+      );
 
-        const item_key = Buffer.from("test_key");
-        const item_value = Buffer.from("very nice test value");
+      await groveDb.startTransaction();
 
-        const root_tree_path = [];
-        const item_tree_path = [tree_key];
+      // Inserting an item into the subtree
+      await groveDb.insert(
+        itemTreePath,
+        itemKey,
+        { type: 'item', value: itemValue },
+        true,
+      );
 
-        // Making a subtree to insert items into
-        await groveDb.insert(
-            root_tree_path,
-            tree_key,
-            { type: "tree", value: Buffer.alloc(32) },
-            false
-        );
+      // ... and using `get` without the flag should return no value
+      try {
+        await groveDb.get(itemTreePath, itemKey);
 
-        // Inserting an item into the subtree
-        await groveDb.insert(
-            item_tree_path,
-            item_key,
-            { type: "item", value: item_value },
-            false
-        );
+        expect.fail('Expected to throw an error');
+      } catch (e) {
+        expect(e.message).to.be.equal('invalid path: key not found in Merk');
+      }
 
-        const element = await groveDb.get(item_tree_path, item_key, false);
+      await groveDb.commitTransaction();
 
-        expect(element.type).to.be.equal("item");
-        expect(element.value.toString()).to.be.equal("very nice test value");
+      // When committed, the value should be accessible without running transaction
+      const element = await groveDb.get(itemTreePath, itemKey);
+      expect(element.type).to.be.equal('item');
+      expect(element.value).to.deep.equal(itemValue);
+    });
+  });
 
-        // Delete an item from the subtree
-        await groveDb.delete(
-            item_tree_path,
-            item_key,
-            false
-        );
+  describe('#insertIfNotExists', () => {
+    it('should insert a value if key is not exist yet', async () => {
+      // Making a subtree to insert items into
+      await groveDb.insert(
+        rootTreePath,
+        treeKey,
+        { type: 'tree', value: Buffer.alloc(32) },
+      );
 
-        try {
-            await groveDb.get(item_tree_path, item_key, false);
-            expect.fail("Expected to throw en error");
-        } catch (e) {
-            expect(e.message).to.be.equal("invalid path: key not found in Merk");
-        }
+      // Inserting an item into the subtree
+      await groveDb.insertIfNotExists(
+        itemTreePath,
+        itemKey,
+        { type: 'item', value: itemValue },
+      );
+
+      const element = await groveDb.get(itemTreePath, itemKey);
+
+      expect(element.type).to.equal('item');
+      expect(element.value).to.deep.equal(itemValue);
     });
 
-    it('should work with transactions', async () => {
-        const tree_key = Buffer.from("test_tree");
+    it('shouldn\'t overwrite already stored value', async () => {
+      // Making a subtree to insert items into
+      await groveDb.insert(
+        rootTreePath,
+        treeKey,
+        { type: 'tree', value: Buffer.alloc(32) },
+      );
 
-        const item_key = Buffer.from("test_key");
-        const item_value = Buffer.from("very nice test value");
+      // Inserting an item into the subtree
+      await groveDb.insert(
+        itemTreePath,
+        itemKey,
+        { type: 'item', value: itemValue },
+      );
 
-        const root_tree_path = [];
-        const item_tree_path = [tree_key];
+      const newItemValue = Buffer.from('replaced item value');
 
-        // Making a subtree to insert items into
-        await groveDb.insert(
-            root_tree_path,
-            tree_key,
-            { type: "tree", value: Buffer.alloc(32) },
-            false
-        );
+      // Inserting an item into the subtree
+      await groveDb.insertIfNotExists(
+        itemTreePath,
+        itemKey,
+        { type: 'item', value: newItemValue },
+      );
 
-        await groveDb.start_transaction();
+      const element = await groveDb.get(itemTreePath, itemKey);
 
-        // Inserting an item into the subtree
-        await groveDb.insert(
-            item_tree_path,
-            item_key,
-            { type: "item", value: item_value },
-            true
-        );
+      expect(element.type).to.equal('item');
+      expect(element.value).to.deep.equal(itemValue);
+    });
+  });
 
-        // Inserted value is not yet commited, but can be retrieved by `get`
-        // with `use_transaction` flag.
-        const element_in_transaction = await groveDb.get(item_tree_path, item_key, true);
-        expect(element_in_transaction.type).to.be.equal("item");
-        expect(element_in_transaction.value.toString()).to.be.equal("very nice test value");
-
-        // ... and using `get` without the flag should return no value
-        try {
-            await groveDb.get(item_tree_path, item_key, false);
-            expect.fail("Expected to throw an error")
-        } catch (e) {
-            expect(e.message).to.be.equal("invalid path: key not found in Merk");
-        }
-
-        await groveDb.commit_transaction();
-
-        // When commited, the value should be accessible without running transaction
-        const element_ = await groveDb.get(item_tree_path, item_key, false);
-        expect(element_.type).to.be.equal("item");
-        expect(element_.value.toString()).to.be.equal("very nice test value");
+  describe('#insert', () => {
+    it('should be able to insert a tree', async () => {
+      await groveDb.insert(
+        [],
+        Buffer.from('test_tree'),
+        { type: 'tree', value: Buffer.alloc(32) },
+      );
     });
 
-    describe('#insert', () => {
-        it('should be able to insert a tree', async () => {
-            await groveDb.insert([], Buffer.from("test_tree"), { type: "tree", value: Buffer.alloc(32) }, false)
-        });
+    it('should throw when trying to insert non-existent element type', async () => {
+      const path = [];
+      const key = Buffer.from('test_key');
 
-        it('should throw when trying to insert non-existent element type', async () => {
-            const path = [];
-            const key = Buffer.from("test_key");
+      try {
+        await groveDb.insert(
+          path,
+          key,
+          { type: 'not_a_tree', value: Buffer.alloc(32) },
+        );
 
-            try {
-                await groveDb.insert(path, key, { type: "not_a_tree", value: Buffer.alloc(32) }, false)
-                expect.fail("Expected to throw en error");
-            } catch (e) {
-                expect(e.message).to.be.equal("Unexpected element type not_a_tree");
-            }
-        });
+        expect.fail('Expected to throw en error');
+      } catch (e) {
+        expect(e.message).to.be.equal('Unexpected element type not_a_tree');
+      }
+    });
 
-        it('should throw when trying to insert a tree that is not 32 bytes', async () => {
-            const path = [];
-            const key = Buffer.from("test_key");
+    it('should throw when trying to insert a tree that is not 32 bytes', async () => {
+      const path = [];
+      const key = Buffer.from('test_key');
 
-            try {
-                await groveDb.insert(path, key, { type: "tree", value: Buffer.alloc(1) }, false)
-                expect.fail("Expected to throw en error");
-            } catch (e) {
-                expect(e.message).to.be.equal("Tree buffer is expected to be 32 bytes long, but got 1");
-            }
-        });
-    })
+      try {
+        await groveDb.insert(
+          path,
+          key,
+          { type: 'tree', value: Buffer.alloc(1) },
+        );
+
+        expect.fail('Expected to throw en error');
+      } catch (e) {
+        expect(e.message).to.be.equal('Tree buffer is expected to be 32 bytes long, but got 1');
+      }
+    });
+  });
 });
