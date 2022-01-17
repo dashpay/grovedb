@@ -11,6 +11,9 @@ const {
   groveDbCommitTransaction,
   groveDbDelete,
   groveDbInsertIfNotExists,
+  groveDbPutAux,
+  groveDbDeleteAux,
+  groveDbGetAux,
 } = require('../index.node');
 
 // Convert the DB methods from using callbacks to returning promises
@@ -21,6 +24,9 @@ const groveDbDeleteAsync = promisify(groveDbDelete);
 const groveDbCloseAsync = promisify(groveDbClose);
 const groveDbStartTransactionAsync = promisify(groveDbStartTransaction);
 const groveDbCommitTransactionAsync = promisify(groveDbCommitTransaction);
+const groveDbPutAuxAsync = promisify(groveDbPutAux);
+const groveDbDeleteAuxAsync = promisify(groveDbDeleteAux);
+const groveDbGetAuxAsync = promisify(groveDbGetAux);
 
 // Wrapper class for the boxed `Database` for idiomatic JavaScript usage
 class GroveDB {
@@ -70,7 +76,7 @@ class GroveDB {
    * @param {boolean} [useTransaction=false]
    * @return {Promise<*>}
    */
-  async delete(path, key, useTransaction) {
+  async delete(path, key, useTransaction = false) {
     return groveDbDeleteAsync.call(this.db, path, key, useTransaction);
   }
 
@@ -104,6 +110,37 @@ class GroveDB {
    */
   async commitTransaction() {
     return groveDbCommitTransactionAsync.call(this.db);
+  }
+
+  /**
+   * Put auxiliary data
+   * @param {Buffer} key
+   * @param {Buffer} value
+   * @param {boolean} [useTransaction=false]
+   * @return {Promise<*>}
+   */
+  async put_aux(key, value, use_transaction = false) {
+      return groveDbPutAuxAsync.call(this.db, key, value, use_transaction);
+  }
+
+  /**
+   * Delete auxiliary data
+   * @param {Buffer} key
+   * @param {boolean} [useTransaction=false]
+   * @return {Promise<*>}
+   */
+  async delete_aux(key, use_transaction = false) {
+      return groveDbDeleteAuxAsync.call(this.db, key, use_transaction);
+  }
+
+  /**
+   * Get auxiliary data
+   * @param {Buffer} key
+   * @param {boolean} [useTransaction=false]
+   * @return {Promise<Buffer>}
+   */
+  async get_aux(key, use_transaction = false) {
+      return groveDbGetAuxAsync.call(this.db, key, use_transaction);
   }
 }
 

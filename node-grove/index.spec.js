@@ -58,7 +58,6 @@ describe('GroveDB', () => {
       rootTreePath,
       treeKey,
       { type: 'tree', value: Buffer.alloc(32) },
-      false,
     );
 
     // Inserting an item into the subtree
@@ -66,7 +65,6 @@ describe('GroveDB', () => {
       itemTreePath,
       itemKey,
       { type: 'item', value: itemValue },
-      false,
     );
 
     // Get item
@@ -79,7 +77,6 @@ describe('GroveDB', () => {
     await groveDb.delete(
       itemTreePath,
       itemKey,
-      false,
     );
 
     try {
@@ -308,6 +305,25 @@ describe('GroveDB', () => {
       } catch (e) {
         expect(e.message).to.be.equal('Tree buffer is expected to be 32 bytes long, but got 1');
       }
+    });
+  });
+
+  describe('auxiliary data methods', () => {
+    it('should be able to insert and get aux data', async () => {
+      const key = Buffer.from('aux_key');
+      const value = Buffer.from('ayy');
+      await groveDb.put_aux(key, value);
+      const result = await groveDb.get_aux(key);
+      expect(result).to.deep.equal(value);
+    });
+
+    it('should be able to insert and delete aux data', async () => {
+      const key = Buffer.from('aux_key');
+      const value = Buffer.from('ayy');
+      await groveDb.put_aux(key, value);
+      await groveDb.delete_aux(key);
+      const result = await groveDb.get_aux(key);
+      expect(result).to.be.null;
     });
   });
 });
