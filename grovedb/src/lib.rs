@@ -437,9 +437,6 @@ impl GroveDb {
         // Locking all writes outside of the transaction
         self.is_readonly = true;
 
-        // TODO: root tree actually does support transactions, so this
-        //  code can be reworked to account for that
-
         // Cloning all the trees to maintain original state before the transaction
         self.temp_root_tree = self.root_tree.clone();
         self.temp_root_leaf_keys = self.root_leaf_keys.clone();
@@ -454,7 +451,21 @@ impl GroveDb {
         &mut self,
         db_transaction: OptimisticTransactionDBTransaction,
     ) -> Result<(), Error> {
-        self.cleanup_transactional_data();
+        // Enabling writes again
+        self.is_readonly = false;
+
+        // Copying all changes that were made during the transaction into the db
+        self.root_tree = self.temp_root_tree.clone();
+        self.root_leaf_keys = self.temp_root_leaf_keys.drain().collect();
+        self.subtrees = self.temp_subtrees.drain().collect();
+
+        // TODO: root tree actually does support transactions, so this
+        //  code can be reworked to account for that
+
+        // Free transactional data
+        self.temp_root_tree = MerkleTree::new();
+        self.temp_root_leaf_keys = HashMap::new();
+        self.temp_subtrees = HashMap::new();
 
         Ok(db_transaction
             .commit()
@@ -463,62 +474,17 @@ impl GroveDb {
 
     /// Rollbacks previously started db transaction. For more details on the
     /// transaction usage, please check [`GroveDb::start_transaction`]
-    ///
-    /// ## Examples:
-    /// ```
-    /// # use grovedb::{Element, Error, GroveDb};
-    /// # use rs_merkle::{MerkleTree, MerkleProof, algorithms::Sha256, Hasher, utils};
-    /// # use std::convert::TryFrom;
-    /// # use tempdir::TempDir;
-    /// #
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// const TEST_LEAF: &[u8] = b"test_leaf";
-    ///
-    /// let tmp_dir = TempDir::new("db").unwrap();
-    /// let mut db = GroveDb::open(tmp_dir.path())?;
-    ///
-    /// db.insert(&[], TEST_LEAF.to_vec(), Element::empty_tree(), None)?;
-    ///
-    /// let storage = db.storage();
-    /// let db_transaction = storage.transaction();
-    /// db.start_transaction();
-    ///
-    /// let subtree_key = b"subtree_key".to_vec();
-    /// db.insert(
-    ///     &[TEST_LEAF],
-    ///     subtree_key.clone(),
-    ///     Element::empty_tree(),
-    ///     Some(&db_transaction),
-    /// )?;
-    ///
-    /// // After transaction is aborted, the value from it will be rolled back.
-    /// db.rollback_transaction(db_transaction);
-    /// let result = db.get(&[TEST_LEAF], &subtree_key, None)?;
-    /// assert!(matches!(result, Err(Error::InvalidPath(_))));
-    ///
-    /// # Ok(())
-    /// # }
-    /// ```
     pub fn rollback_transaction(
         &mut self,
         db_transaction: OptimisticTransactionDBTransaction,
     ) -> Result<(), Error> {
-        self.cleanup_transactional_data();
+        // Cloning all the trees to maintain original state before the transaction
+        self.temp_root_tree = self.root_tree.clone();
+        self.temp_root_leaf_keys = self.root_leaf_keys.clone();
+        self.temp_subtrees = self.subtrees.clone();
 
         Ok(db_transaction
             .rollback()
             .map_err(PrefixedRocksDbStorageError::RocksDbError)?)
-    }
-
-    /// Method to cleanup transactional data
-    /// It's using when transaction is committed or rolled back
-    fn cleanup_transactional_data(&mut self) {
-        // Enabling writes again
-        self.is_readonly = false;
-
-        // Free transactional data
-        self.temp_root_tree = MerkleTree::new();
-        self.temp_root_leaf_keys = HashMap::new();
-        self.temp_subtrees = HashMap::new();
     }
 }
