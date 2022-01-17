@@ -251,6 +251,51 @@ impl GroveDbWrapper {
         Ok(cx.undefined())
     }
 
+    fn js_delete(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+        let js_path = cx.argument::<JsArray>(0)?;
+        let js_key = cx.argument::<JsBuffer>(1)?;
+        let js_using_transaction = cx.argument::<JsBoolean>(2)?;
+        let js_callback = cx.argument::<JsFunction>(3)?.root(&mut cx);
+
+        let path = converter::js_array_of_buffers_to_vec(js_path, &mut cx)?;
+        let key = converter::js_buffer_to_vec_u8(js_key, &mut cx);
+
+        let db = cx
+            .this()
+            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+        let using_transaction = js_using_transaction.value(&mut cx);
+
+        db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
+            let path_slice: Vec<&[u8]> = path.iter().map(|fragment| fragment.as_slice()).collect();
+            let result = grove_db.delete(
+                &path_slice,
+                key,
+                using_transaction.then(|| transaction).flatten(),
+            );
+
+            channel.send(move |mut task_context| {
+                let callback = js_callback.into_inner(&mut task_context);
+                let this = task_context.undefined();
+                let callback_arguments: Vec<Handle<JsValue>> = match result {
+                    Ok(()) => {
+                        vec![task_context.null().upcast()]
+                    }
+
+                    // Convert the error to a JavaScript exception on failure
+                    Err(err) => vec![task_context.error(err.to_string())?.upcast()],
+                };
+
+                callback.call(&mut task_context, this, callback_arguments)?;
+
+                Ok(())
+            });
+        })
+        .or_else(|err| cx.throw_error(err.to_string()))?;
+
+        // The result is returned through the callback, not through direct return
+        Ok(cx.undefined())
+    }
+
     fn js_insert(mut cx: FunctionContext) -> JsResult<JsUndefined> {
         let js_path = cx.argument::<JsArray>(0)?;
         let js_key = cx.argument::<JsBuffer>(1)?;
@@ -282,6 +327,54 @@ impl GroveDbWrapper {
                 let this = task_context.undefined();
                 let callback_arguments: Vec<Handle<JsValue>> = match result {
                     Ok(_) => vec![task_context.null().upcast()],
+                    Err(err) => vec![task_context.error(err.to_string())?.upcast()],
+                };
+
+                callback.call(&mut task_context, this, callback_arguments)?;
+                Ok(())
+            });
+        })
+        .or_else(|err| cx.throw_error(err.to_string()))?;
+
+        Ok(cx.undefined())
+    }
+
+    fn js_insert_if_not_exists(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+        let js_path = cx.argument::<JsArray>(0)?;
+        let js_key = cx.argument::<JsBuffer>(1)?;
+        let js_element = cx.argument::<JsObject>(2)?;
+        let js_using_transaction = cx.argument::<JsBoolean>(3)?;
+        let js_callback = cx.argument::<JsFunction>(4)?.root(&mut cx);
+
+        let path = converter::js_array_of_buffers_to_vec(js_path, &mut cx)?;
+        let key = converter::js_buffer_to_vec_u8(js_key, &mut cx);
+        let element = converter::js_object_to_element(js_element, &mut cx)?;
+        let using_transaction = js_using_transaction.value(&mut cx);
+
+        // Get the `this` value as a `JsBox<Database>`
+        let db = cx
+            .this()
+            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+
+        db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
+            let path_slice: Vec<&[u8]> = path.iter().map(|fragment| fragment.as_slice()).collect();
+            let result = grove_db.insert_if_not_exists(
+                &path_slice,
+                key,
+                element,
+                using_transaction.then(|| transaction).flatten(),
+            );
+
+            channel.send(move |mut task_context| {
+                let callback = js_callback.into_inner(&mut task_context);
+                let this = task_context.undefined();
+                let callback_arguments: Vec<Handle<JsValue>> = match result {
+                    Ok(is_inserted) => vec![
+                        task_context.null().upcast(),
+                        task_context
+                            .boolean(is_inserted)
+                            .as_value(&mut task_context),
+                    ],
                     Err(err) => vec![task_context.error(err.to_string())?.upcast()],
                 };
 
@@ -329,7 +422,12 @@ impl GroveDbWrapper {
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("groveDbOpen", GroveDbWrapper::js_open)?;
     cx.export_function("groveDbInsert", GroveDbWrapper::js_insert)?;
+    cx.export_function(
+        "groveDbInsertIfNotExists",
+        GroveDbWrapper::js_insert_if_not_exists,
+    )?;
     cx.export_function("groveDbGet", GroveDbWrapper::js_get)?;
+    cx.export_function("groveDbDelete", GroveDbWrapper::js_delete)?;
     cx.export_function("groveDbProof", GroveDbWrapper::js_proof)?;
     cx.export_function("groveDbClose", GroveDbWrapper::js_close)?;
     cx.export_function(
