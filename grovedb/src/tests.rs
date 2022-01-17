@@ -1477,6 +1477,41 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
 }
 
 #[test]
+fn test_get_range_after_query_with_non_unique_subquery() {
+    let mut db = make_grovedb();
+    populate_tree_for_non_unique_range_subquery(&mut db);
+
+    let path = vec![TEST_LEAF];
+    let mut query = Query::new();
+    query.insert_range_after((1995 as u32).to_be_bytes().to_vec()..);
+
+    let subquery_key: &[u8] = b"0";
+    let mut sub_query = Query::new();
+    sub_query.insert_all();
+
+    let path_query = PathQuery::new_unsized(
+        &path,
+        query.clone(),
+        Some(&subquery_key),
+        Some(sub_query.clone()),
+    );
+
+    let (elements, skipped) = db
+        .get_path_query(&path_query, None)
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 200);
+
+    let mut first_value = (1996 as u32).to_be_bytes().to_vec();
+    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[0], Element::Item(first_value));
+
+    let mut last_value = (1999 as u32).to_be_bytes().to_vec();
+    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+}
+
+#[test]
 fn test_get_range_query_with_limit_and_offset() {
     let mut db = make_grovedb();
     populate_tree_for_non_unique_range_subquery(&mut db);

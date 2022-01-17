@@ -113,6 +113,22 @@ impl Query {
         self.insert_item(range);
     }
 
+    // TODO: Add comments
+    pub fn insert_range_after(&mut self, range: RangeFrom<Vec<u8>>) {
+        let range = QueryItem::RangeAfter(range);
+        self.insert_item(range);
+    }
+
+    pub fn insert_range_after_to(&mut self, range: Range<Vec<u8>>) {
+        let range = QueryItem::RangeAfterTo(range);
+        self.insert_item(range);
+    }
+
+    pub fn insert_range_after_to_inclusive(&mut self, range: RangeInclusive<Vec<u8>>) {
+        let range = QueryItem::RangeAfterToInclusive(range);
+        self.insert_item(range);
+    }
+
     /// Adds a range of all potential values to the query, so that the query
     /// will return all values
     ///
@@ -263,7 +279,10 @@ impl QueryItem {
                     start: start.to_vec(),
                 });
             } else if end_inclusive {
-                return QueryItem::RangeAfterToInclusive(RangeInclusive::new(start.to_vec(), end.to_vec()));
+                return QueryItem::RangeAfterToInclusive(RangeInclusive::new(
+                    start.to_vec(),
+                    end.to_vec(),
+                ));
             } else {
                 // upper is bounded and not inclusive
                 return QueryItem::RangeAfterTo(Range {
@@ -403,7 +422,7 @@ impl QueryItem {
                     iter.prev();
                 }
             }
-            QueryItem::RangeAfterToInclusive(range_inclusive ) => {
+            QueryItem::RangeAfterToInclusive(range_inclusive) => {
                 if left_to_right {
                     iter.seek(range_inclusive.start());
                     iter.next();
@@ -469,7 +488,20 @@ impl QueryItem {
                 let next_valid = !(left_to_right && iter.key() == Some(end));
                 (valid, next_valid)
             }
-            QueryItem::RangeAfter(_) => (true, true),
+            QueryItem::RangeAfter(RangeFrom { start }) => {
+                // (true, true)
+                // The goal of this section is to tell the iterator when to stop
+                // we will be passed the left_to_right key so we know the direction
+                // For range after, we keep going until the iterator is no longer valid
+                // bur if it is right to left then we don't want it to equal the start??
+                // damn, how do we know the next key.
+                // we need the next valid thing here
+                let valid = (limit == None || limit.unwrap() > 0)
+                    && iter.valid()
+                    && iter.key().is_some()
+                    && !(!left_to_right && iter.key() == Some(start));
+                (valid, true)
+            }
             QueryItem::RangeAfterTo(_) => (true, true),
             QueryItem::RangeAfterToInclusive(_) => (true, true),
         }
