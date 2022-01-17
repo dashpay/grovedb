@@ -113,17 +113,36 @@ impl Query {
         self.insert_item(range);
     }
 
-    // TODO: Add comments
+    /// Adds a range after the first value, so that all the entries in the tree
+    /// with keys in the range will be included in the resulting proof.
+    ///
+    /// If a range including the range already exists in the query, this will
+    /// have no effect. If the query already includes a range that overlaps with
+    /// the range, the ranges will be joined together.
     pub fn insert_range_after(&mut self, range: RangeFrom<Vec<u8>>) {
         let range = QueryItem::RangeAfter(range);
         self.insert_item(range);
     }
 
+    /// Adds a range after the first value, until a certain non included value to the query,
+    /// so that all the entries in the tree with keys in the range will be included
+    /// in the resulting proof.
+    ///
+    /// If a range including the range already exists in the query, this will
+    /// have no effect. If the query already includes a range that overlaps with
+    /// the range, the ranges will be joined together.
     pub fn insert_range_after_to(&mut self, range: Range<Vec<u8>>) {
         let range = QueryItem::RangeAfterTo(range);
         self.insert_item(range);
     }
 
+    /// Adds a range after the first value, until a certain included value to the query,
+    /// so that all the entries in the tree with keys in the range will be included
+    /// in the resulting proof.
+    ///
+    /// If a range including the range already exists in the query, this will
+    /// have no effect. If the query already includes a range that overlaps with
+    /// the range, the ranges will be joined together.
     pub fn insert_range_after_to_inclusive(&mut self, range: RangeInclusive<Vec<u8>>) {
         let range = QueryItem::RangeAfterToInclusive(range);
         self.insert_item(range);
