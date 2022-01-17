@@ -502,8 +502,19 @@ impl QueryItem {
                     && !(!left_to_right && iter.key() == Some(start));
                 (valid, true)
             }
-            QueryItem::RangeAfterTo(_) => (true, true),
-            QueryItem::RangeAfterToInclusive(_) => (true, true),
+            QueryItem::RangeAfterTo(Range { start, end }) => {
+                // (true, true)
+                // Continue until you hit the end, you don't want inclusive so everything in 1??
+                let valid = (limit == None || limit.unwrap() > 0)
+                    && iter.valid()
+                    && iter.key().is_some()
+                    && !(!left_to_right && iter.key() == Some(start))
+                    && !(left_to_right && iter.key() == Some(end));
+                (valid, true)
+            },
+            QueryItem::RangeAfterToInclusive(range_inclusive) => {
+                //
+            },
         }
     }
 }
