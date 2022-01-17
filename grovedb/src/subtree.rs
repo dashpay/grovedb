@@ -80,7 +80,7 @@ impl Element {
         _key: Option<&[u8]>,
         element: Element,
         _path: Option<&[&[u8]]>,
-        _subquery_key: Option<&[u8]>,
+        _subquery_key: Option<Vec<u8>>,
         _subquery: Option<Query>,
         _left_to_right: bool,
         results: &mut Vec<Element>,
@@ -105,7 +105,7 @@ impl Element {
         key: Option<&[u8]>,
         element: Element,
         path: Option<&[&[u8]]>,
-        subquery_key_option: Option<&[u8]>,
+        subquery_key_option: Option<Vec<u8>>,
         subquery: Option<Query>,
         left_to_right: bool,
         results: &mut Vec<Element>,
@@ -131,7 +131,7 @@ impl Element {
                     ))?);
 
                     if let Some(subquery) = subquery {
-                        path_vec.push(subquery_key);
+                        path_vec.push(subquery_key.as_slice());
 
                         let inner_merk = subtrees
                             .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
@@ -152,7 +152,7 @@ impl Element {
                             .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
                             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
                         if offset.is_none() || offset.is_some() && offset.unwrap() == 0 {
-                            results.push(Element::get(inner_merk, subquery_key)?);
+                            results.push(Element::get(inner_merk, subquery_key.as_slice())?);
                             if limit.is_some() {
                                 *limit = Some(limit.unwrap() - 1);
                             }
@@ -200,7 +200,7 @@ impl Element {
         merk: &Merk<PrefixedRocksDbStorage>,
         sized_query: &SizedQuery,
         path: Option<&[&[u8]]>,
-        subquery_key: Option<&[u8]>,
+        subquery_key: Option<Vec<u8>>,
         subquery: Option<Query>,
         subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
         add_element_function: fn(
@@ -208,7 +208,7 @@ impl Element {
             key: Option<&[u8]>,
             element: Element,
             path: Option<&[&[u8]]>,
-            subquery_key: Option<&[u8]>,
+            subquery_key: Option<Vec<u8>>,
             subquery: Option<Query>,
             left_to_right: bool,
             &mut Vec<Element>,
@@ -232,7 +232,7 @@ impl Element {
                         Some(key.as_slice()),
                         Element::get(merk, key)?,
                         path,
-                        subquery_key,
+                        subquery_key.clone(),
                         subquery.clone(),
                         sized_query.left_to_right,
                         &mut results,
@@ -260,7 +260,7 @@ impl Element {
                         Some(key),
                         element,
                         path,
-                        subquery_key,
+                        subquery_key.clone(),
                         subquery.clone(),
                         sized_query.left_to_right,
                         &mut results,
@@ -296,7 +296,7 @@ impl Element {
             merk,
             &path_query.query,
             Some(path_query.path),
-            path_query.subquery_key,
+            path_query.subquery_key.clone(),
             path_query.subquery.clone(),
             subtrees,
             Element::path_query_push,

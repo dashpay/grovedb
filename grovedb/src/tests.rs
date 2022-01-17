@@ -1241,14 +1241,14 @@ fn test_get_range_query_with_non_unique_subquery() {
     let mut query = Query::new();
     query.insert_range((1988 as u32).to_be_bytes().to_vec()..(1992 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: &[u8] = b"0";
+    let subquery_key: Vec<u8> = b"0".to_vec();
     let mut sub_query = Query::new();
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
         &path,
         query.clone(),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1276,9 +1276,9 @@ fn test_get_range_query_with_unique_subquery() {
     let mut query = Query::new();
     query.insert_range((1988 as u32).to_be_bytes().to_vec()..(1992 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: &[u8] = b"0";
+    let subquery_key: Vec<u8> = b"0".to_vec();
 
-    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(&subquery_key), None);
+    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
 
     let (elements, skipped) = db
         .get_path_query(&path_query, None)
@@ -1304,14 +1304,14 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
         (1988 as u32).to_be_bytes().to_vec()..=(1995 as u32).to_be_bytes().to_vec(),
     );
 
-    let subquery_key: &[u8] = b"0";
+    let subquery_key: Vec<u8> = b"0".to_vec();
     let mut sub_query = Query::new();
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
         &path,
         query.clone(),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1341,9 +1341,9 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
         (1988 as u32).to_be_bytes().to_vec()..=(1995 as u32).to_be_bytes().to_vec(),
     );
 
-    let subquery_key: &[u8] = b"0";
+    let subquery_key: Vec<u8> = b"0".to_vec();
 
-    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(&subquery_key), None);
+    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
 
     let (elements, skipped) = db
         .get_path_query(&path_query, None)
@@ -1367,14 +1367,14 @@ fn test_get_range_from_query_with_non_unique_subquery() {
     let mut query = Query::new();
     query.insert_range_from((1995 as u32).to_be_bytes().to_vec()..);
 
-    let subquery_key: &[u8] = b"0";
+    let subquery_key: Vec<u8> = b"0".to_vec();
     let mut sub_query = Query::new();
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
         &path,
         query.clone(),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1402,9 +1402,9 @@ fn test_get_range_from_query_with_unique_subquery() {
     let mut query = Query::new();
     query.insert_range_from((1995 as u32).to_be_bytes().to_vec()..);
 
-    let subquery_key: &[u8] = b"0";
+    let subquery_key: Vec<u8> = b"0".to_vec();
 
-    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(&subquery_key), None);
+    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
 
     let (elements, skipped) = db
         .get_path_query(&path_query, None)
@@ -1428,14 +1428,14 @@ fn test_get_range_to_query_with_non_unique_subquery() {
     let mut query = Query::new();
     query.insert_range_to(..(1995 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: &[u8] = b"0";
+    let subquery_key: Vec<u8> = b"0".to_vec();
     let mut sub_query = Query::new();
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
         &path,
         query.clone(),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1463,9 +1463,9 @@ fn test_get_range_to_query_with_unique_subquery() {
     let mut query = Query::new();
     query.insert_range_to(..(1995 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: &[u8] = b"0";
+    let subquery_key: Vec<u8> = b"0".to_vec();
 
-    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(&subquery_key), None);
+    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
 
     let (elements, skipped) = db
         .get_path_query(&path_query, None)
@@ -1489,14 +1489,14 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
     let mut query = Query::new();
     query.insert_range_to_inclusive(..=(1995 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: &[u8] = b"0";
+    let subquery_key: Vec<u8> = b"0".to_vec();
     let mut sub_query = Query::new();
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
         &path,
         query.clone(),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1524,9 +1524,9 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
     let mut query = Query::new();
     query.insert_range_to_inclusive(..=(1995 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: &[u8] = b"0";
+    let subquery_key: Vec<u8> = b"0".to_vec();
 
-    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(&subquery_key), None);
+    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
 
     let (elements, skipped) = db
         .get_path_query(&path_query, None)
@@ -1550,7 +1550,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let mut query = Query::new();
     query.insert_range((1990 as u32).to_be_bytes().to_vec()..(1995 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: &[u8] = b"0";
+    let subquery_key: Vec<u8> = b"0".to_vec();
     let mut sub_query = Query::new();
     sub_query.insert_all();
 
@@ -1558,7 +1558,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), None, None, true),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1580,7 +1580,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), None, None, false),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1602,7 +1602,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), Some(55), None, true),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1625,7 +1625,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), Some(60), Some(14), true),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1652,7 +1652,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), Some(60), Some(10), false),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1676,7 +1676,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), None, Some(5000), true),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1690,7 +1690,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), Some(5000), None, true),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1710,7 +1710,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), Some(5), Some(2), true),
-        Some(&subquery_key),
+        Some(subquery_key),
         None,
     );
 
