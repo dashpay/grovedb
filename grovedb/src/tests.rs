@@ -1127,10 +1127,11 @@ fn test_aux_uses_separate_cf() {
     )
     .expect("successful value insert");
 
-    db.put_aux(b"key1", b"a").expect("cannot put aux");
-    db.put_aux(b"key2", b"b").expect("cannot put aux");
-    db.put_aux(b"key3", b"c").expect("cannot put aux");
-    db.delete_aux(b"key3").expect("cannot delete from aux");
+    db.put_aux(b"key1", b"a", None).expect("cannot put aux");
+    db.put_aux(b"key2", b"b", None).expect("cannot put aux");
+    db.put_aux(b"key3", b"c", None).expect("cannot put aux");
+    db.delete_aux(b"key3", None)
+        .expect("cannot delete from aux");
 
     assert_eq!(
         db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3", None)
@@ -1138,15 +1139,61 @@ fn test_aux_uses_separate_cf() {
         element
     );
     assert_eq!(
-        db.get_aux(b"key1").expect("cannot get from aux"),
+        db.get_aux(b"key1", None).expect("cannot get from aux"),
         Some(b"a".to_vec())
     );
     assert_eq!(
-        db.get_aux(b"key2").expect("cannot get from aux"),
+        db.get_aux(b"key2", None).expect("cannot get from aux"),
         Some(b"b".to_vec())
     );
-    assert_eq!(db.get_aux(b"key3").expect("cannot get from aux"), None);
-    assert_eq!(db.get_aux(b"key4").expect("cannot get from aux"), None);
+    assert_eq!(
+        db.get_aux(b"key3", None).expect("cannot get from aux"),
+        None
+    );
+    assert_eq!(
+        db.get_aux(b"key4", None).expect("cannot get from aux"),
+        None
+    );
+}
+
+#[test]
+fn test_aux_with_transaction() {
+    let element = Element::Item(b"ayy".to_vec());
+    let aux_value = b"ayylmao".to_vec();
+    let key = b"key".to_vec();
+    let mut db = make_grovedb();
+    let storage = db.storage();
+    let db_transaction = storage.transaction();
+    db.start_transaction();
+
+    // Insert a regular data with aux data in the same transaction
+    db.insert(
+        &[TEST_LEAF],
+        key.clone(),
+        element.clone(),
+        Some(&db_transaction),
+    )
+    .expect("unable to insert");
+    db.put_aux(&key, &aux_value, Some(&db_transaction))
+        .expect("unable to insert aux value");
+    assert_eq!(
+        db.get_aux(&key, Some(&db_transaction))
+            .expect("unable to get aux value"),
+        Some(aux_value.clone())
+    );
+    // Cannot reach the data outside of transaction
+    assert_eq!(
+        db.get_aux(&key, None).expect("unable to get aux value"),
+        None
+    );
+    // And should be able to get data when commited
+    db.commit_transaction(db_transaction)
+        .expect("unable to commit transaction");
+    assert_eq!(
+        db.get_aux(&key, None)
+            .expect("unable to get commited aux value"),
+        Some(aux_value)
+    );
 }
 
 fn populate_tree_for_non_unique_range_subquery(db: &mut TempGroveDb) {
@@ -1615,7 +1662,8 @@ fn test_get_range_query_with_limit_and_offset() {
     last_value.append(&mut (123 as u32).to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
 
-    // Limit the result set to 60 element but skip first 10 elements (this time right to left)
+    // Limit the result set to 60 element but skip first 10 elements (this time
+    // right to left)
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), Some(60), Some(10), false),

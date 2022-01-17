@@ -351,11 +351,15 @@ impl QueryItem {
                 (valid, next_valid)
             }
             QueryItem::RangeFull(..) => {
-                let valid = (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                let valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
                 (valid, true)
             }
             QueryItem::RangeFrom(RangeFrom { start }) => {
-                let valid = (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some() && work;
+                let valid = (limit == None || limit.unwrap() > 0)
+                    && iter.valid()
+                    && iter.key().is_some()
+                    && work;
                 let next_valid = !(!left_to_right && iter.key() == Some(start));
                 (valid, next_valid)
             }
