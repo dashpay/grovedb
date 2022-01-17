@@ -4,11 +4,13 @@ const { promisify } = require("util");
 
 // This file is crated when run `npm run build`. The actual source file that
 // exports those functions is ./src/lib.rs
-const { groveDbOpen, groveDbGet, groveDbInsert, groveDbProof, groveDbClose, groveDbStartTransaction, groveDbCommitTransaction } = require("../index.node");
+const { groveDbOpen, groveDbGet, groveDbInsert, groveDbProof, groveDbClose, groveDbStartTransaction, groveDbCommitTransaction, groveDbDelete, groveDbInsertIfNotExists } = require("../index.node");
 
 // Convert the DB methods from using callbacks to returning promises
 const groveDbGetAsync = promisify(groveDbGet);
 const groveDbInsertAsync = promisify(groveDbInsert);
+const groveDbInsertIfNotExistsAsync = promisify(groveDbInsertIfNotExists);
+const groveDbDeleteAsync = promisify(groveDbDelete);
 const groveDbProofAsync = promisify(groveDbProof);
 const groveDbCloseAsync = promisify(groveDbClose);
 const groveDbStartTransactionAsync = promisify(groveDbStartTransaction);
@@ -46,6 +48,22 @@ class GroveDB {
         return groveDbInsertAsync.call(this.db, path, key, value, use_transaction);
     }
 
+    async insert_if_not_exists(path, key, value, use_transaction) {
+        return groveDbInsertIfNotExistsAsync.call(this.db, path, key, value, use_transaction);
+    }
+
+    async put_aux(key, value, use_transaction) {
+
+    }
+
+    async delete_aux(key, use_transaction) {
+
+    }
+
+    async get_aux(key, use_transaction) {
+
+    }
+
     /**
      * Not implemented in GroveDB yet
      *
@@ -70,6 +88,10 @@ class GroveDB {
 
     async commit_transaction() {
         return groveDbCommitTransactionAsync.call(this.db);
+    }
+
+    async delete(path, key, use_transaction) {
+        return groveDbDeleteAsync.call(this.db, path, key, use_transaction);
     }
 }
 

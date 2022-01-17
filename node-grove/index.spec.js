@@ -49,6 +49,51 @@ describe('GroveDB', () => {
         expect(element.value.toString()).to.be.equal("very nice test value");
     });
 
+    it('should store and delete a value', async () => {
+        const tree_key = Buffer.from("test_tree");
+
+        const item_key = Buffer.from("test_key");
+        const item_value = Buffer.from("very nice test value");
+
+        const root_tree_path = [];
+        const item_tree_path = [tree_key];
+
+        // Making a subtree to insert items into
+        await groveDb.insert(
+            root_tree_path,
+            tree_key,
+            { type: "tree", value: Buffer.alloc(32) },
+            false
+        );
+
+        // Inserting an item into the subtree
+        await groveDb.insert(
+            item_tree_path,
+            item_key,
+            { type: "item", value: item_value },
+            false
+        );
+
+        const element = await groveDb.get(item_tree_path, item_key, false);
+
+        expect(element.type).to.be.equal("item");
+        expect(element.value.toString()).to.be.equal("very nice test value");
+
+        // Delete an item from the subtree
+        await groveDb.delete(
+            item_tree_path,
+            item_key,
+            false
+        );
+
+        try {
+            await groveDb.get(item_tree_path, item_key, false);
+            expect.fail("Expected to throw en error");
+        } catch (e) {
+            expect(e.message).to.be.equal("invalid path: key not found in Merk");
+        }
+    });
+
     it('should work with transactions', async () => {
         const tree_key = Buffer.from("test_tree");
 
