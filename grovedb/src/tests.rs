@@ -1558,7 +1558,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), None, None, true),
-        Some(subquery_key),
+        Some(subquery_key.clone()),
         Some(sub_query.clone()),
     );
 
@@ -1580,7 +1580,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), None, None, false),
-        Some(subquery_key),
+        Some(subquery_key.clone()),
         Some(sub_query.clone()),
     );
 
@@ -1602,7 +1602,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), Some(55), None, true),
-        Some(subquery_key),
+        Some(subquery_key.clone()),
         Some(sub_query.clone()),
     );
 
@@ -1625,7 +1625,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), Some(60), Some(14), true),
-        Some(subquery_key),
+        Some(subquery_key.clone()),
         Some(sub_query.clone()),
     );
 
@@ -1652,7 +1652,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), Some(60), Some(10), false),
-        Some(subquery_key),
+        Some(subquery_key.clone()),
         Some(sub_query.clone()),
     );
 
@@ -1676,7 +1676,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), None, Some(5000), true),
-        Some(subquery_key),
+        Some(subquery_key.clone()),
         Some(sub_query.clone()),
     );
 
@@ -1690,7 +1690,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), Some(5000), None, true),
-        Some(subquery_key),
+        Some(subquery_key.clone()),
         Some(sub_query.clone()),
     );
 
@@ -1710,7 +1710,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), Some(5), Some(2), true),
-        Some(subquery_key),
+        Some(subquery_key.clone()),
         None,
     );
 
