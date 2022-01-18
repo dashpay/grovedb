@@ -308,7 +308,7 @@ describe('GroveDB', () => {
 
       const result = await groveDb.getAux(key);
 
-      expect(result).to.be.null();
+      expect(result).to.be.null;
     });
   });
 });
