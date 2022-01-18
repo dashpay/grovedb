@@ -863,6 +863,25 @@ fn transaction_insert_should_return_error_when_trying_to_insert_while_transactio
 }
 
 #[test]
+fn transaction_is_started_should_return_true_if_transaction_was_started() {
+    let mut db = make_grovedb();
+
+    db.start_transaction();
+
+    let result = db.is_transaction_started();
+    assert!(result, "transaction is not started");
+}
+
+#[test]
+fn transaction_is_started_should_return_false_if_transaction_was_not_started() {
+    let mut db = make_grovedb();
+
+    let result = db.is_transaction_started();
+
+    assert!(!result, "transaction is started");
+}
+
+#[test]
 fn test_subtree_pairs_iterator() {
     let mut db = make_grovedb();
     let element = Element::Item(b"ayy".to_vec());
