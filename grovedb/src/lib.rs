@@ -37,6 +37,8 @@ pub enum Error {
     InvalidProof(&'static str),
     #[error("invalid path: {0}")]
     InvalidPath(&'static str),
+    #[error("invalid query: {0}")]
+    InvalidQuery(&'static str),
     #[error("missing parameter: {0}")]
     MissingParameter(&'static str),
     // Irrecoverable errors
@@ -54,7 +56,7 @@ pub enum Error {
 pub struct PathQuery<'a> {
     path: &'a [&'a [u8]],
     query: SizedQuery,
-    subquery_key: Option<&'a [u8]>,
+    subquery_key: Option<Vec<u8>>,
     subquery: Option<Query>,
 }
 
@@ -89,7 +91,7 @@ impl PathQuery<'_> {
     pub fn new<'a>(
         path: &'a [&'a [u8]],
         query: SizedQuery,
-        subquery_key: Option<&'a [u8]>,
+        subquery_key: Option<Vec<u8>>,
         subquery: Option<Query>,
     ) -> PathQuery<'a> {
         PathQuery {
@@ -103,7 +105,7 @@ impl PathQuery<'_> {
     pub fn new_unsized<'a>(
         path: &'a [&'a [u8]],
         query: Query,
-        subquery_key: Option<&'a [u8]>,
+        subquery_key: Option<Vec<u8>>,
         subquery: Option<Query>,
     ) -> PathQuery<'a> {
         let query = SizedQuery::new(query, None, None, true);
@@ -483,6 +485,13 @@ impl GroveDb {
         Ok(db_transaction
             .commit()
             .map_err(PrefixedRocksDbStorageError::RocksDbError)?)
+    }
+
+    pub fn get_subtrees_for_transaction(&mut self, transaction: Option<&OptimisticTransactionDBTransaction>) -> &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>> {
+        match transaction {
+            None => &self.subtrees,
+            Some(_) => &self.temp_subtrees,
+        }
     }
 
     /// Rollbacks previously started db transaction to initial state.
