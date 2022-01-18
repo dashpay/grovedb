@@ -136,8 +136,7 @@ impl Element {
                         let inner_merk = subtrees
                             .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
                             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                        let inner_query =
-                            SizedQuery::new(subquery, *limit, *offset, left_to_right);
+                        let inner_query = SizedQuery::new(subquery, *limit, *offset, left_to_right);
                         let (mut sub_elements, skipped) =
                             Element::get_sized_query(inner_merk, &inner_query)?;
                         if let Some(limit) = limit {

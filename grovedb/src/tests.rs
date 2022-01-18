@@ -863,6 +863,52 @@ fn transaction_insert_should_return_error_when_trying_to_insert_while_transactio
 }
 
 #[test]
+fn transaction_should_be_aborted_when_rollback_is_called() {
+    let item_key = b"key3".to_vec();
+
+    let mut db = make_grovedb();
+
+    db.start_transaction();
+    let storage = db.storage();
+    let transaction = storage.transaction();
+
+    let element1 = Element::Item(b"ayy".to_vec());
+
+    let result = db.insert(
+        &[TEST_LEAF],
+        item_key.clone(),
+        element1.clone(),
+        Some(&transaction),
+    );
+
+    assert!(matches!(result, Ok(())));
+
+    db.rollback_transaction(&transaction);
+
+    let result = db.get(&[TEST_LEAF], &item_key.clone(), Some(&transaction));
+    assert!(matches!(result, Err(Error::InvalidPath(_))));
+}
+
+#[test]
+fn transaction_is_started_should_return_true_if_transaction_was_started() {
+    let mut db = make_grovedb();
+
+    db.start_transaction();
+
+    let result = db.is_transaction_started();
+    assert!(result, "transaction is not started");
+}
+
+#[test]
+fn transaction_is_started_should_return_false_if_transaction_was_not_started() {
+    let mut db = make_grovedb();
+
+    let result = db.is_transaction_started();
+
+    assert!(!result, "transaction is started");
+}
+
+#[test]
 fn test_subtree_pairs_iterator() {
     let mut db = make_grovedb();
     let element = Element::Item(b"ayy".to_vec());
@@ -1127,10 +1173,11 @@ fn test_aux_uses_separate_cf() {
     )
     .expect("successful value insert");
 
-    db.put_aux(b"key1", b"a").expect("cannot put aux");
-    db.put_aux(b"key2", b"b").expect("cannot put aux");
-    db.put_aux(b"key3", b"c").expect("cannot put aux");
-    db.delete_aux(b"key3").expect("cannot delete from aux");
+    db.put_aux(b"key1", b"a", None).expect("cannot put aux");
+    db.put_aux(b"key2", b"b", None).expect("cannot put aux");
+    db.put_aux(b"key3", b"c", None).expect("cannot put aux");
+    db.delete_aux(b"key3", None)
+        .expect("cannot delete from aux");
 
     assert_eq!(
         db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3", None)
@@ -1138,15 +1185,61 @@ fn test_aux_uses_separate_cf() {
         element
     );
     assert_eq!(
-        db.get_aux(b"key1").expect("cannot get from aux"),
+        db.get_aux(b"key1", None).expect("cannot get from aux"),
         Some(b"a".to_vec())
     );
     assert_eq!(
-        db.get_aux(b"key2").expect("cannot get from aux"),
+        db.get_aux(b"key2", None).expect("cannot get from aux"),
         Some(b"b".to_vec())
     );
-    assert_eq!(db.get_aux(b"key3").expect("cannot get from aux"), None);
-    assert_eq!(db.get_aux(b"key4").expect("cannot get from aux"), None);
+    assert_eq!(
+        db.get_aux(b"key3", None).expect("cannot get from aux"),
+        None
+    );
+    assert_eq!(
+        db.get_aux(b"key4", None).expect("cannot get from aux"),
+        None
+    );
+}
+
+#[test]
+fn test_aux_with_transaction() {
+    let element = Element::Item(b"ayy".to_vec());
+    let aux_value = b"ayylmao".to_vec();
+    let key = b"key".to_vec();
+    let mut db = make_grovedb();
+    let storage = db.storage();
+    let db_transaction = storage.transaction();
+    db.start_transaction();
+
+    // Insert a regular data with aux data in the same transaction
+    db.insert(
+        &[TEST_LEAF],
+        key.clone(),
+        element.clone(),
+        Some(&db_transaction),
+    )
+    .expect("unable to insert");
+    db.put_aux(&key, &aux_value, Some(&db_transaction))
+        .expect("unable to insert aux value");
+    assert_eq!(
+        db.get_aux(&key, Some(&db_transaction))
+            .expect("unable to get aux value"),
+        Some(aux_value.clone())
+    );
+    // Cannot reach the data outside of transaction
+    assert_eq!(
+        db.get_aux(&key, None).expect("unable to get aux value"),
+        None
+    );
+    // And should be able to get data when commited
+    db.commit_transaction(db_transaction)
+        .expect("unable to commit transaction");
+    assert_eq!(
+        db.get_aux(&key, None)
+            .expect("unable to get commited aux value"),
+        Some(aux_value)
+    );
 }
 
 fn populate_tree_for_non_unique_range_subquery(db: &mut TempGroveDb) {
@@ -1653,6 +1746,115 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
 }
 
 #[test]
+fn test_get_range_after_query_with_non_unique_subquery() {
+    let mut db = make_grovedb();
+    populate_tree_for_non_unique_range_subquery(&mut db);
+
+    let path = vec![TEST_LEAF];
+    let mut query = Query::new();
+    query.insert_range_after((1995 as u32).to_be_bytes().to_vec()..);
+
+    let subquery_key: &[u8] = b"0";
+    let mut sub_query = Query::new();
+    sub_query.insert_all();
+
+    let path_query = PathQuery::new_unsized(
+        &path,
+        query.clone(),
+        Some(&subquery_key),
+        Some(sub_query.clone()),
+    );
+
+    let (elements, skipped) = db
+        .get_path_query(&path_query, None)
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 200);
+
+    let mut first_value = (1996 as u32).to_be_bytes().to_vec();
+    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[0], Element::Item(first_value));
+
+    let mut last_value = (1999 as u32).to_be_bytes().to_vec();
+    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+}
+
+#[test]
+fn test_get_range_after_to_query_with_non_unique_subquery() {
+    let mut db = make_grovedb();
+    populate_tree_for_non_unique_range_subquery(&mut db);
+
+    let path = vec![TEST_LEAF];
+    let mut query = Query::new();
+    query.insert_range_after_to(
+        (1995 as u32).to_be_bytes().to_vec()..(1997 as u32).to_be_bytes().to_vec(),
+    );
+
+    let subquery_key: &[u8] = b"0";
+    let mut sub_query = Query::new();
+    sub_query.insert_all();
+
+    let path_query = PathQuery::new_unsized(
+        &path,
+        query.clone(),
+        Some(&subquery_key),
+        Some(sub_query.clone()),
+    );
+
+    let (elements, skipped) = db
+        .get_path_query(&path_query, None)
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 50);
+
+    let mut first_value = (1996 as u32).to_be_bytes().to_vec();
+    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[0], Element::Item(first_value));
+
+    let mut last_value = (1996 as u32).to_be_bytes().to_vec();
+    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+}
+
+#[test]
+fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
+    let mut db = make_grovedb();
+    populate_tree_for_non_unique_range_subquery(&mut db);
+
+    let path = vec![TEST_LEAF];
+    let mut query = Query::new();
+    query.insert_range_after_to_inclusive(
+        (1995 as u32).to_be_bytes().to_vec()..=(1997 as u32).to_be_bytes().to_vec(),
+    );
+
+    let subquery_key: &[u8] = b"0";
+    let mut sub_query = Query::new();
+    sub_query.insert_all();
+
+    let path_query = PathQuery::new_unsized(
+        &path,
+        query.clone(),
+        Some(&subquery_key),
+        Some(sub_query.clone()),
+    );
+
+    let (elements, skipped) = db
+        .get_path_query(&path_query, None)
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 100);
+
+    let mut first_value = (1996 as u32).to_be_bytes().to_vec();
+    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[0], Element::Item(first_value));
+
+    let mut last_value = (1997 as u32).to_be_bytes().to_vec();
+    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+}
+
+#[test]
 fn test_get_range_query_with_limit_and_offset() {
     let mut db = make_grovedb();
     populate_tree_for_non_unique_range_subquery(&mut db);
@@ -1759,7 +1961,8 @@ fn test_get_range_query_with_limit_and_offset() {
     last_value.append(&mut (123 as u32).to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 
-    // Limit the result set to 60 element but skip first 10 elements (this time right to left)
+    // Limit the result set to 60 element but skip first 10 elements (this time
+    // right to left)
     let path_query = PathQuery::new(
         &path,
         SizedQuery::new(query.clone(), Some(60), Some(10), false),

@@ -10,11 +10,10 @@ pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, Hasher, MerkleTree};
 use serde::{Deserialize, Serialize};
+pub use storage::{rocksdb_storage::PrefixedRocksDbStorage, Storage};
 use storage::{
-    rocksdb_storage::{
-        OptimisticTransactionDBTransaction, PrefixedRocksDbStorage, PrefixedRocksDbStorageError,
-    },
-    Storage, Transaction,
+    rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorageError},
+    Transaction,
 };
 pub use subtree::Element;
 
@@ -448,6 +447,12 @@ impl GroveDb {
         Ok(())
     }
 
+    /// Returns true if transaction is started. For more details on the
+    /// transaction usage, please check [`GroveDb::start_transaction`]
+    pub fn is_transaction_started(&self) -> bool {
+        return self.is_readonly;
+    }
+
     /// Commits previously started db transaction. For more details on the
     /// transaction usage, please check [`GroveDb::start_transaction`]
     pub fn commit_transaction(
@@ -463,8 +468,12 @@ impl GroveDb {
         self.subtrees = self.temp_subtrees.drain().collect();
 
         // TODO: root tree actually does support transactions, so this
-        // code can be reworked to account for that
+        //  code can be reworked to account for that
+
+        // Free transactional data
         self.temp_root_tree = MerkleTree::new();
+        self.temp_root_leaf_keys = HashMap::new();
+        self.temp_subtrees = HashMap::new();
 
         Ok(db_transaction
             .commit()
@@ -476,5 +485,21 @@ impl GroveDb {
             None => &self.subtrees,
             Some(_) => &self.temp_subtrees,
         }
+    }
+
+    /// Rollbacks previously started db transaction. For more details on the
+    /// transaction usage, please check [`GroveDb::start_transaction`]
+    pub fn rollback_transaction(
+        &mut self,
+        db_transaction: &OptimisticTransactionDBTransaction,
+    ) -> Result<(), Error> {
+        // Cloning all the trees to maintain to rollback transactional changes
+        self.temp_root_tree = self.root_tree.clone();
+        self.temp_root_leaf_keys = self.root_leaf_keys.clone();
+        self.temp_subtrees = self.subtrees.clone();
+
+        Ok(db_transaction
+            .rollback()
+            .map_err(PrefixedRocksDbStorageError::RocksDbError)?)
     }
 }

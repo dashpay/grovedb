@@ -13,7 +13,10 @@ use storage::{rocksdb_storage::RawPrefixedTransactionalIterator, RawIterator};
 use {super::Op, std::collections::LinkedList};
 
 use super::{tree::execute, Decoder, Node};
-use crate::tree::{Fetch, Hash, Link, RefWalker};
+use crate::{
+    proofs::{query::QueryItem::RangeAfter, Op::Parent},
+    tree::{Fetch, Hash, Link, RefWalker},
+};
 
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all of the requested values.
@@ -110,6 +113,41 @@ impl Query {
         self.insert_item(range);
     }
 
+    /// Adds a range after the first value, so that all the entries in the tree
+    /// with keys in the range will be included in the resulting proof.
+    ///
+    /// If a range including the range already exists in the query, this will
+    /// have no effect. If the query already includes a range that overlaps with
+    /// the range, the ranges will be joined together.
+    pub fn insert_range_after(&mut self, range: RangeFrom<Vec<u8>>) {
+        let range = QueryItem::RangeAfter(range);
+        self.insert_item(range);
+    }
+
+    /// Adds a range after the first value, until a certain non included value to the query,
+    /// so that all the entries in the tree with keys in the range will be included
+    /// in the resulting proof.
+    ///
+    /// If a range including the range already exists in the query, this will
+    /// have no effect. If the query already includes a range that overlaps with
+    /// the range, the ranges will be joined together.
+    pub fn insert_range_after_to(&mut self, range: Range<Vec<u8>>) {
+        let range = QueryItem::RangeAfterTo(range);
+        self.insert_item(range);
+    }
+
+    /// Adds a range after the first value, until a certain included value to the query,
+    /// so that all the entries in the tree with keys in the range will be included
+    /// in the resulting proof.
+    ///
+    /// If a range including the range already exists in the query, this will
+    /// have no effect. If the query already includes a range that overlaps with
+    /// the range, the ranges will be joined together.
+    pub fn insert_range_after_to_inclusive(&mut self, range: RangeInclusive<Vec<u8>>) {
+        let range = QueryItem::RangeAfterToInclusive(range);
+        self.insert_item(range);
+    }
+
     /// Adds a range of all potential values to the query, so that the query
     /// will return all values
     ///
@@ -169,18 +207,24 @@ pub enum QueryItem {
     RangeFrom(RangeFrom<Vec<u8>>),
     RangeTo(RangeTo<Vec<u8>>),
     RangeToInclusive(RangeToInclusive<Vec<u8>>),
+    RangeAfter(RangeFrom<Vec<u8>>),
+    RangeAfterTo(Range<Vec<u8>>),
+    RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
 }
 
 impl QueryItem {
-    pub fn lower_bound(&self) -> &[u8] {
+    pub fn lower_bound(&self) -> (&[u8], bool) {
         match self {
-            QueryItem::Key(key) => key.as_slice(),
-            QueryItem::Range(range) => range.start.as_ref(),
-            QueryItem::RangeInclusive(range) => range.start().as_ref(),
-            QueryItem::RangeFull(range) => b"",
-            QueryItem::RangeFrom(range) => range.start.as_ref(),
-            QueryItem::RangeTo(range) => b"",
-            QueryItem::RangeToInclusive(range) => b"",
+            QueryItem::Key(key) => (key.as_slice(), false),
+            QueryItem::Range(range) => (range.start.as_ref(), false),
+            QueryItem::RangeInclusive(range) => (range.start().as_ref(), false),
+            QueryItem::RangeFull(range) => (b"", false),
+            QueryItem::RangeFrom(range) => (range.start.as_ref(), false),
+            QueryItem::RangeTo(range) => (b"", false),
+            QueryItem::RangeToInclusive(range) => (b"", false),
+            QueryItem::RangeAfter(range) => (range.start.as_ref(), true),
+            QueryItem::RangeAfterTo(range) => (range.start.as_ref(), true),
+            QueryItem::RangeAfterToInclusive(range) => (range.start().as_ref(), true),
         }
     }
 
@@ -193,6 +237,9 @@ impl QueryItem {
             QueryItem::RangeFrom(_) => false,
             QueryItem::RangeTo(_) => true,
             QueryItem::RangeToInclusive(_) => true,
+            QueryItem::RangeAfter(_) => false,
+            QueryItem::RangeAfterTo(_) => false,
+            QueryItem::RangeAfterToInclusive(_) => false,
         }
     }
 
@@ -205,6 +252,9 @@ impl QueryItem {
             QueryItem::RangeFrom(_) => (b"", true),
             QueryItem::RangeTo(range) => (range.end.as_ref(), false),
             QueryItem::RangeToInclusive(range) => (range.end.as_ref(), true),
+            QueryItem::RangeAfter(_) => (b"", true),
+            QueryItem::RangeAfterTo(range) => (range.end.as_ref(), false),
+            QueryItem::RangeAfterToInclusive(range) => (range.end().as_ref(), true),
         }
     }
 
@@ -217,13 +267,21 @@ impl QueryItem {
             QueryItem::RangeFrom(_) => true,
             QueryItem::RangeTo(_) => false,
             QueryItem::RangeToInclusive(_) => false,
+            QueryItem::RangeAfter(_) => true,
+            QueryItem::RangeAfterTo(_) => false,
+            QueryItem::RangeAfterToInclusive(_) => false,
         }
     }
 
     pub fn contains(&self, key: &[u8]) -> bool {
-        let (bound, inclusive) = self.upper_bound();
-        return (self.lower_unbounded() || key >= self.lower_bound())
-            && (self.upper_unbounded() || key < bound || (key == bound && inclusive));
+        let (lower_bound, lower_bound_non_inclusive) = self.lower_bound();
+        let (upper_bound, upper_bound_inclusive) = self.upper_bound();
+        return (self.lower_unbounded()
+            || key > lower_bound
+            || (key == lower_bound && !lower_bound_non_inclusive))
+            && (self.upper_unbounded()
+                || key < upper_bound
+                || (key == upper_bound && upper_bound_inclusive));
     }
 
     fn merge(self, other: QueryItem) -> QueryItem {
@@ -231,35 +289,52 @@ impl QueryItem {
         let lower_unbounded = self.lower_unbounded() || other.lower_unbounded();
         let upper_unbounded = self.upper_unbounded() || other.upper_unbounded();
 
-        let start = min(self.lower_bound(), other.lower_bound()).to_vec();
-        let end = max(self.upper_bound(), other.upper_bound());
+        let (start, start_non_inclusive) = min(self.lower_bound(), other.lower_bound());
+        let (end, end_inclusive) = max(self.upper_bound(), other.upper_bound());
+
+        if start_non_inclusive {
+            if upper_unbounded {
+                return QueryItem::RangeAfter(RangeFrom {
+                    start: start.to_vec(),
+                });
+            } else if end_inclusive {
+                return QueryItem::RangeAfterToInclusive(RangeInclusive::new(
+                    start.to_vec(),
+                    end.to_vec(),
+                ));
+            } else {
+                // upper is bounded and not inclusive
+                return QueryItem::RangeAfterTo(Range {
+                    start: start.to_vec(),
+                    end: end.to_vec(),
+                });
+            }
+        }
 
         if lower_unbounded {
             if upper_unbounded {
-                QueryItem::RangeFull(RangeFull)
+                return QueryItem::RangeFull(RangeFull);
+            } else if end_inclusive {
+                return QueryItem::RangeToInclusive(RangeToInclusive { end: end.to_vec() });
             } else {
-                if end.1 {
-                    QueryItem::RangeToInclusive(RangeToInclusive {
-                        end: end.0.to_vec(),
-                    })
-                } else {
-                    QueryItem::RangeTo(RangeTo {
-                        end: end.0.to_vec(),
-                    })
-                }
+                // upper is bounded and not inclusive
+                return QueryItem::RangeTo(RangeTo { end: end.to_vec() });
             }
-        } else if upper_unbounded {
-            QueryItem::RangeFrom(RangeFrom { start })
+        }
+
+        // Lower is bounded
+        if upper_unbounded {
+            return QueryItem::RangeFrom(RangeFrom {
+                start: start.to_vec(),
+            });
+        } else if end_inclusive {
+            return QueryItem::RangeInclusive(RangeInclusive::new(start.to_vec(), end.to_vec()));
         } else {
-            // neither are unbounded
-            if end.1 {
-                QueryItem::RangeInclusive(RangeInclusive::new(start, end.0.to_vec()))
-            } else {
-                QueryItem::Range(Range {
-                    start,
-                    end: end.0.to_vec(),
-                })
-            }
+            // upper is bounded and not inclusive
+            return QueryItem::Range(Range {
+                start: start.to_vec(),
+                end: end.to_vec(),
+            });
         }
     }
 
@@ -317,6 +392,31 @@ impl QueryItem {
                     iter.seek(end);
                 }
             }
+            QueryItem::RangeAfter(RangeFrom { start }) => {
+                if left_to_right {
+                    iter.seek(start);
+                    iter.next();
+                } else {
+                    iter.seek_to_last();
+                }
+            }
+            QueryItem::RangeAfterTo(Range { start, end }) => {
+                if left_to_right {
+                    iter.seek(start);
+                    iter.next();
+                } else {
+                    iter.seek(end);
+                    iter.prev();
+                }
+            }
+            QueryItem::RangeAfterToInclusive(range_inclusive) => {
+                if left_to_right {
+                    iter.seek(range_inclusive.start());
+                    iter.next();
+                } else {
+                    iter.seek(range_inclusive.end());
+                }
+            }
         };
     }
 
@@ -351,11 +451,15 @@ impl QueryItem {
                 (valid, next_valid)
             }
             QueryItem::RangeFull(..) => {
-                let valid = (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                let valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
                 (valid, true)
             }
             QueryItem::RangeFrom(RangeFrom { start }) => {
-                let valid = (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some() && work;
+                let valid = (limit == None || limit.unwrap() > 0)
+                    && iter.valid()
+                    && iter.key().is_some()
+                    && work;
                 let next_valid = !(!left_to_right && iter.key() == Some(start));
                 (valid, next_valid)
             }
@@ -369,6 +473,30 @@ impl QueryItem {
             QueryItem::RangeToInclusive(RangeToInclusive { end }) => {
                 let valid = iter.valid() && iter.key().is_some() && work;
                 let next_valid = !(left_to_right && iter.key() == Some(end));
+                (valid, next_valid)
+            }
+            QueryItem::RangeAfter(RangeFrom { start }) => {
+                let valid = (limit == None || limit.unwrap() > 0)
+                    && iter.valid()
+                    && iter.key().is_some()
+                    && !(!left_to_right && iter.key() == Some(start));
+                (valid, true)
+            }
+            QueryItem::RangeAfterTo(Range { start, end }) => {
+                let valid = (limit == None || limit.unwrap() > 0)
+                    && iter.valid()
+                    && iter.key().is_some()
+                    && !(!left_to_right && iter.key() == Some(start))
+                    && !(left_to_right && iter.key() == Some(end));
+                (valid, true)
+            }
+            QueryItem::RangeAfterToInclusive(range_inclusive) => {
+                let valid = (limit == None || limit.unwrap() > 0)
+                    && iter.valid()
+                    && iter.key().is_some()
+                    && work;
+                let next_valid = !(!left_to_right && iter.key() == Some(range_inclusive.start()))
+                    && !(left_to_right && iter.key() == Some(range_inclusive.end()));
                 (valid, next_valid)
             }
         }
@@ -400,7 +528,7 @@ impl Ord for QueryItem {
         } else if other.lower_unbounded() {
             Ordering::Greater
         } else {
-            self.lower_bound().cmp(other.upper_bound().0)
+            self.lower_bound().0.cmp(other.upper_bound().0)
         };
 
         let cmp_ul = if self.upper_unbounded() {
@@ -412,7 +540,7 @@ impl Ord for QueryItem {
         } else if other.upper_unbounded() {
             Ordering::Less
         } else {
-            self.upper_bound().0.cmp(other.lower_bound())
+            self.upper_bound().0.cmp(other.lower_bound().0)
         };
 
         let self_inclusive = self.upper_bound().1;
@@ -518,7 +646,7 @@ where
         let (left_items, right_items) = match search {
             Ok(index) => {
                 let item = &query[index];
-                let left_bound = item.lower_bound();
+                let left_bound = item.lower_bound().0;
                 let right_bound = item.upper_bound().0;
 
                 // if range starts before this node's key, include it in left
@@ -705,7 +833,7 @@ pub fn verify_query(
                     // item. ensure lower bound of query item is proven
                     match last_push {
                         // lower bound is proven - we have an exact match
-                        _ if key == query_item.lower_bound() => {}
+                        _ if key == query_item.lower_bound().0 => {}
 
                         // lower bound is proven - this is the leftmost node
                         // in the tree
