@@ -58,7 +58,6 @@ describe('GroveDB', () => {
       rootTreePath,
       treeKey,
       { type: 'tree', value: Buffer.alloc(32) },
-      false,
     );
 
     // Inserting an item into the subtree
@@ -66,7 +65,6 @@ describe('GroveDB', () => {
       itemTreePath,
       itemKey,
       { type: 'item', value: itemValue },
-      false,
     );
 
     // Get item
@@ -79,7 +77,6 @@ describe('GroveDB', () => {
     await groveDb.delete(
       itemTreePath,
       itemKey,
-      false,
     );
 
     try {
@@ -91,31 +88,7 @@ describe('GroveDB', () => {
     }
   });
 
-  describe('transactions', () => {
-    it('should allow to read existing data from transaction', async () => {
-      // Making a subtree to insert items into
-      await groveDb.insert(
-        rootTreePath,
-        treeKey,
-        { type: 'tree', value: Buffer.alloc(32) },
-      );
-
-      // Inserting an item into the subtree
-      await groveDb.insert(
-        itemTreePath,
-        itemKey,
-        { type: 'item', value: itemValue },
-      );
-
-      await groveDb.startTransaction();
-
-      // Read existing data from transaction
-      const elementInTransaction = await groveDb.get(itemTreePath, itemKey, true);
-
-      expect(elementInTransaction.type).to.be.equal('item');
-      expect(elementInTransaction.value).to.deep.equal(itemValue);
-    });
-
+  describe('transaction', () => {
     it('should not allow to insert data when transaction is started', async () => {
       // Making a subtree to insert items into
       await groveDb.insert(
@@ -308,6 +281,34 @@ describe('GroveDB', () => {
       } catch (e) {
         expect(e.message).to.be.equal('Tree buffer is expected to be 32 bytes long, but got 1');
       }
+    });
+  });
+
+  describe('auxiliary data methods', () => {
+    let key;
+    let value;
+
+    beforeEach(() => {
+      key = Buffer.from('aux_key');
+      value = Buffer.from('ayy');
+    });
+
+    it('should be able to store and get aux data', async () => {
+      await groveDb.putAux(key, value);
+
+      const result = await groveDb.getAux(key);
+
+      expect(result).to.deep.equal(value);
+    });
+
+    it('should be able to insert and delete aux data', async () => {
+      await groveDb.putAux(key, value);
+
+      await groveDb.deleteAux(key);
+
+      const result = await groveDb.getAux(key);
+
+      expect(result).to.be.null();
     });
   });
 });
