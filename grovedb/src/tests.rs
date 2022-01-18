@@ -863,6 +863,33 @@ fn transaction_insert_should_return_error_when_trying_to_insert_while_transactio
 }
 
 #[test]
+fn transaction_should_be_aborted_when_rollback_is_called() {
+    let item_key = b"key3".to_vec();
+
+    let mut db = make_grovedb();
+
+    db.start_transaction();
+    let storage = db.storage();
+    let transaction = storage.transaction();
+
+    let element1 = Element::Item(b"ayy".to_vec());
+
+    let result = db.insert(
+        &[TEST_LEAF],
+        item_key.clone(),
+        element1.clone(),
+        Some(&transaction),
+    );
+
+    assert!(matches!(result, Ok(())));
+
+    db.rollback_transaction(&transaction);
+
+    let result = db.get(&[TEST_LEAF], &item_key.clone(), Some(&transaction));
+    assert!(matches!(result, Err(Error::InvalidPath(_))));
+}
+
+#[test]
 fn transaction_is_started_should_return_true_if_transaction_was_started() {
     let mut db = make_grovedb();
 
