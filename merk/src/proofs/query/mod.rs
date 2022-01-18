@@ -124,9 +124,9 @@ impl Query {
         self.insert_item(range);
     }
 
-    /// Adds a range after the first value, until a certain non included value to the query,
-    /// so that all the entries in the tree with keys in the range will be included
-    /// in the resulting proof.
+    /// Adds a range after the first value, until a certain non included value
+    /// to the query, so that all the entries in the tree with keys in the
+    /// range will be included in the resulting proof.
     ///
     /// If a range including the range already exists in the query, this will
     /// have no effect. If the query already includes a range that overlaps with
@@ -136,9 +136,9 @@ impl Query {
         self.insert_item(range);
     }
 
-    /// Adds a range after the first value, until a certain included value to the query,
-    /// so that all the entries in the tree with keys in the range will be included
-    /// in the resulting proof.
+    /// Adds a range after the first value, until a certain included value to
+    /// the query, so that all the entries in the tree with keys in the
+    /// range will be included in the resulting proof.
     ///
     /// If a range including the range already exists in the query, this will
     /// have no effect. If the query already includes a range that overlaps with
