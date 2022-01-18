@@ -890,6 +890,25 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
 }
 
 #[test]
+fn transaction_is_started_should_return_true_if_transaction_was_started() {
+    let mut db = make_grovedb();
+
+    db.start_transaction();
+
+    let result = db.is_transaction_started();
+    assert!(result, "transaction is not started");
+}
+
+#[test]
+fn transaction_is_started_should_return_false_if_transaction_was_not_started() {
+    let mut db = make_grovedb();
+
+    let result = db.is_transaction_started();
+
+    assert!(!result, "transaction is started");
+}
+
+#[test]
 fn test_subtree_pairs_iterator() {
     let mut db = make_grovedb();
     let element = Element::Item(b"ayy".to_vec());
@@ -1579,6 +1598,115 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
     assert_eq!(elements[0], Element::Item(first_value));
 
     let mut last_value = (1995 as u32).to_be_bytes().to_vec();
+    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+}
+
+#[test]
+fn test_get_range_after_query_with_non_unique_subquery() {
+    let mut db = make_grovedb();
+    populate_tree_for_non_unique_range_subquery(&mut db);
+
+    let path = vec![TEST_LEAF];
+    let mut query = Query::new();
+    query.insert_range_after((1995 as u32).to_be_bytes().to_vec()..);
+
+    let subquery_key: &[u8] = b"0";
+    let mut sub_query = Query::new();
+    sub_query.insert_all();
+
+    let path_query = PathQuery::new_unsized(
+        &path,
+        query.clone(),
+        Some(&subquery_key),
+        Some(sub_query.clone()),
+    );
+
+    let (elements, skipped) = db
+        .get_path_query(&path_query, None)
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 200);
+
+    let mut first_value = (1996 as u32).to_be_bytes().to_vec();
+    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[0], Element::Item(first_value));
+
+    let mut last_value = (1999 as u32).to_be_bytes().to_vec();
+    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+}
+
+#[test]
+fn test_get_range_after_to_query_with_non_unique_subquery() {
+    let mut db = make_grovedb();
+    populate_tree_for_non_unique_range_subquery(&mut db);
+
+    let path = vec![TEST_LEAF];
+    let mut query = Query::new();
+    query.insert_range_after_to(
+        (1995 as u32).to_be_bytes().to_vec()..(1997 as u32).to_be_bytes().to_vec(),
+    );
+
+    let subquery_key: &[u8] = b"0";
+    let mut sub_query = Query::new();
+    sub_query.insert_all();
+
+    let path_query = PathQuery::new_unsized(
+        &path,
+        query.clone(),
+        Some(&subquery_key),
+        Some(sub_query.clone()),
+    );
+
+    let (elements, skipped) = db
+        .get_path_query(&path_query, None)
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 50);
+
+    let mut first_value = (1996 as u32).to_be_bytes().to_vec();
+    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[0], Element::Item(first_value));
+
+    let mut last_value = (1996 as u32).to_be_bytes().to_vec();
+    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+}
+
+#[test]
+fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
+    let mut db = make_grovedb();
+    populate_tree_for_non_unique_range_subquery(&mut db);
+
+    let path = vec![TEST_LEAF];
+    let mut query = Query::new();
+    query.insert_range_after_to_inclusive(
+        (1995 as u32).to_be_bytes().to_vec()..=(1997 as u32).to_be_bytes().to_vec(),
+    );
+
+    let subquery_key: &[u8] = b"0";
+    let mut sub_query = Query::new();
+    sub_query.insert_all();
+
+    let path_query = PathQuery::new_unsized(
+        &path,
+        query.clone(),
+        Some(&subquery_key),
+        Some(sub_query.clone()),
+    );
+
+    let (elements, skipped) = db
+        .get_path_query(&path_query, None)
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 100);
+
+    let mut first_value = (1996 as u32).to_be_bytes().to_vec();
+    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    assert_eq!(elements[0], Element::Item(first_value));
+
+    let mut last_value = (1997 as u32).to_be_bytes().to_vec();
+    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
 }
 
