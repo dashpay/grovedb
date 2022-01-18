@@ -1782,14 +1782,14 @@ fn test_get_range_after_query_with_non_unique_subquery() {
     let mut query = Query::new();
     query.insert_range_after((1995 as u32).to_be_bytes().to_vec()..);
 
-    let subquery_key: &[u8] = b"0";
+    let subquery_key: Vec<u8> = b"0".to_vec();
     let mut sub_query = Query::new();
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
         &path,
         query.clone(),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1801,11 +1801,11 @@ fn test_get_range_after_query_with_non_unique_subquery() {
 
     let mut first_value = (1996 as u32).to_be_bytes().to_vec();
     first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
-    assert_eq!(elements[0], Element::Item(first_value));
+    assert_eq!(elements[0], first_value);
 
     let mut last_value = (1999 as u32).to_be_bytes().to_vec();
     last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
-    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+    assert_eq!(elements[elements.len() - 1], last_value);
 }
 
 #[test]
@@ -1819,14 +1819,14 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
         (1995 as u32).to_be_bytes().to_vec()..(1997 as u32).to_be_bytes().to_vec(),
     );
 
-    let subquery_key: &[u8] = b"0";
+    let subquery_key: Vec<u8> = b"0".to_vec();
     let mut sub_query = Query::new();
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
         &path,
         query.clone(),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1838,11 +1838,11 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
 
     let mut first_value = (1996 as u32).to_be_bytes().to_vec();
     first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
-    assert_eq!(elements[0], Element::Item(first_value));
+    assert_eq!(elements[0], first_value);
 
     let mut last_value = (1996 as u32).to_be_bytes().to_vec();
     last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
-    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+    assert_eq!(elements[elements.len() - 1], last_value);
 }
 
 #[test]
@@ -1856,14 +1856,14 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
         (1995 as u32).to_be_bytes().to_vec()..=(1997 as u32).to_be_bytes().to_vec(),
     );
 
-    let subquery_key: &[u8] = b"0";
+    let subquery_key: Vec<u8> = b"0".to_vec();
     let mut sub_query = Query::new();
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
         &path,
         query.clone(),
-        Some(&subquery_key),
+        Some(subquery_key),
         Some(sub_query.clone()),
     );
 
@@ -1875,11 +1875,11 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
 
     let mut first_value = (1996 as u32).to_be_bytes().to_vec();
     first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
-    assert_eq!(elements[0], Element::Item(first_value));
+    assert_eq!(elements[0], first_value);
 
     let mut last_value = (1997 as u32).to_be_bytes().to_vec();
     last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
-    assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
+    assert_eq!(elements[elements.len() - 1], last_value);
 }
 
 #[test]
