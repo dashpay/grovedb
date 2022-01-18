@@ -875,7 +875,7 @@ fn test_get_with_running_transaction() {
         Element::empty_tree(),
         None,
     )
-    .expect("cannot insert a subtree");
+        .expect("cannot insert a subtree");
 
     // Start a transaction to insert a value
     let storage = db.storage();
@@ -888,7 +888,7 @@ fn test_get_with_running_transaction() {
         item.clone(),
         Some(&db_transaction),
     )
-    .expect("cannot insert an item into GroveDB");
+        .expect("cannot insert an item into GroveDB");
 
     // Ensure that value is inaccessible outside of uncommited transaction
     let result = db.get(&[TEST_LEAF, &subtree_key], &key, None);
@@ -902,6 +902,7 @@ fn test_get_with_running_transaction() {
         .get(&[TEST_LEAF, &subtree_key], &key, None)
         .expect("Expected transaction to work");
     assert_eq!(result, item);
+}
 
 #[test]
 fn transaction_should_be_aborted_when_rollback_is_called() {
@@ -975,7 +976,6 @@ fn transaction_should_be_aborted() {
     // Transactional data shouldn't be commited to the main database
     let result = db.get(&[TEST_LEAF], &item_key.clone(), None);
     assert!(matches!(result, Err(Error::InvalidPath(_))));
->>>>>>> origin/master
 }
 
 #[test]
