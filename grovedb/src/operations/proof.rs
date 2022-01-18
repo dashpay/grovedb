@@ -64,11 +64,11 @@ impl GroveDb {
 
             // First we must get elements
 
-            if let Some(subquery_key) = reduced_proof_query.subquery_key {
-                self.get_path_queries(&[&reduced_proof_query], None)?;
+            if let Some(subquery_key) = reduced_proof_query.subquery_key.clone() {
+                self.get_path_queries_raw(&[&reduced_proof_query], None)?;
 
                 let mut path_vec = path.to_vec();
-                path_vec.push(subquery_key);
+                path_vec.push(subquery_key.as_slice());
                 let compressed_path = GroveDb::compress_subtree_key(path_vec.as_slice(), None);
             }
 

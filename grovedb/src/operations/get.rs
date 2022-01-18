@@ -90,10 +90,32 @@ impl GroveDb {
         &mut self,
         path_queries: &[&PathQuery],
         transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<Vec<Vec<u8>>, Error> {
+        let elements = self.get_path_queries_raw(path_queries, transaction)?;
+        let results = elements.into_iter().map(|element| {
+            match element {
+                Element::Reference(reference_path) => {
+                    let maybe_item = self.follow_reference(reference_path, transaction)?;
+                    if let Element::Item(item) = maybe_item {
+                        Ok(item)
+                    } else {
+                        Err(Error::InvalidQuery("the reference must result in an item"))
+                    }
+                }
+                other => Err(Error::InvalidQuery("path_queries can only refer to references")),
+            }
+        }).collect::<Result<Vec<Vec<u8>>, Error>>()?;
+        Ok(results)
+    }
+
+    pub fn get_path_queries_raw(
+        &mut self,
+        path_queries: &[&PathQuery],
+        transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Vec<Element>, Error> {
         let mut result = Vec::new();
         for query in path_queries {
-            let (query_results, _) = self.get_path_query(query, transaction)?;
+            let (query_results, _) = self.get_path_query_raw(query, transaction)?;
             result.extend_from_slice(&query_results);
         }
         Ok(result)
@@ -103,15 +125,38 @@ impl GroveDb {
         &mut self,
         path_query: &PathQuery,
         transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<(Vec<Vec<u8>>, u16), Error> {
+        let (elements, skipped) = self.get_path_query_raw(path_query, transaction)?;
+        let results = elements.into_iter().map(|element| {
+            match element {
+                Element::Reference(reference_path) => {
+                    let maybe_item = self.follow_reference(reference_path, transaction)?;
+                    if let Element::Item(item) = maybe_item {
+                        Ok(item)
+                    } else {
+                        Err(Error::InvalidQuery("the reference must result in an item"))
+                    }
+                }
+                Element::Item(item) => Ok(item),
+                Element::Tree(_) => Err(Error::InvalidQuery("path_queries can only refer to items and references")),
+            }
+        }).collect::<Result<Vec<Vec<u8>>, Error>>()?;
+        Ok((results, skipped))
+    }
+
+    pub fn get_path_query_raw(
+        &mut self,
+        path_query: &PathQuery,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(Vec<Element>, u16), Error> {
         let subtrees = match transaction {
             None => &self.subtrees,
             Some(_) => &self.temp_subtrees,
         };
-        self.get_path_query_on_trees(path_query, subtrees)
+        self.get_path_query_on_trees_raw(path_query, subtrees)
     }
 
-    fn get_path_query_on_trees(
+    fn get_path_query_on_trees_raw(
         &self,
         path_query: &PathQuery,
         subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
