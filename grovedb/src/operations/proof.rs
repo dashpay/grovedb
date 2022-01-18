@@ -56,11 +56,11 @@ impl GroveDb {
 
         // Construct the leaf proofs
         for proof_query in proof_queries {
-            let mut path = proof_query.path;
+            let path = proof_query.path;
 
             // If there is a subquery with a limit it's possible that we only need a reduced
             // proof for this leaf.
-            let mut reduced_proof_query = proof_query;
+            let reduced_proof_query = proof_query;
 
             // First we must get elements
 
