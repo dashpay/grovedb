@@ -476,9 +476,9 @@ impl GroveDb {
     /// transaction usage, please check [`GroveDb::start_transaction`]
     pub fn rollback_transaction(
         &mut self,
-        db_transaction: OptimisticTransactionDBTransaction,
+        db_transaction: &OptimisticTransactionDBTransaction,
     ) -> Result<(), Error> {
-        // Cloning all the trees to maintain original state before the transaction
+        // Cloning all the trees to maintain to rollback transactional changes
         self.temp_root_tree = self.root_tree.clone();
         self.temp_root_leaf_keys = self.root_leaf_keys.clone();
         self.temp_subtrees = self.subtrees.clone();

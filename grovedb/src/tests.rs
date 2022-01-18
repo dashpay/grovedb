@@ -883,7 +883,7 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
 
     assert!(matches!(result, Ok(())));
 
-    db.rollback_transaction(transaction);
+    db.rollback_transaction(&transaction);
 
     let result = db.get(&[TEST_LEAF], &item_key.clone(), Some(&transaction));
     assert!(matches!(result, Err(Error::InvalidPath(_))));
