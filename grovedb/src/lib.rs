@@ -457,29 +457,24 @@ impl GroveDb {
         &mut self,
         db_transaction: OptimisticTransactionDBTransaction,
     ) -> Result<(), Error> {
-        // Enabling writes again
-        self.is_readonly = false;
-
         // Copying all changes that were made during the transaction into the db
+
+        // TODO: root tree actually does support transactions, so this
+        //  code can be reworked to account for that
         self.root_tree = self.temp_root_tree.clone();
         self.root_leaf_keys = self.temp_root_leaf_keys.drain().collect();
         self.subtrees = self.temp_subtrees.drain().collect();
 
-        // TODO: root tree actually does support transactions, so this
-        //  code can be reworked to account for that
-
-        // Free transactional data
-        self.temp_root_tree = MerkleTree::new();
-        self.temp_root_leaf_keys = HashMap::new();
-        self.temp_subtrees = HashMap::new();
+        self.cleanup_transactional_data();
 
         Ok(db_transaction
             .commit()
             .map_err(PrefixedRocksDbStorageError::RocksDbError)?)
     }
 
-    /// Rollbacks previously started db transaction. For more details on the
-    /// transaction usage, please check [`GroveDb::start_transaction`]
+    /// Rollbacks previously started db transaction to initial state.
+    /// For more details on the transaction usage, please check
+    /// [`GroveDb::start_transaction`]
     pub fn rollback_transaction(
         &mut self,
         db_transaction: &OptimisticTransactionDBTransaction,
@@ -492,5 +487,29 @@ impl GroveDb {
         Ok(db_transaction
             .rollback()
             .map_err(PrefixedRocksDbStorageError::RocksDbError)?)
+    }
+
+    /// Rollbacks previously started db transaction to initial state.
+    /// For more details on the transaction usage, please check
+    /// [`GroveDb::start_transaction`]
+    pub fn abort_transaction(
+        &mut self,
+        db_transaction: OptimisticTransactionDBTransaction,
+    ) -> Result<(), Error> {
+        // Cloning all the trees to maintain to rollback transactional changes
+        self.cleanup_transactional_data();
+
+        Ok(())
+    }
+
+    /// Cleanup transactional data after commit or abort
+    fn cleanup_transactional_data(&mut self) {
+        // Enabling writes again
+        self.is_readonly = false;
+
+        // Free transactional data
+        self.temp_root_tree = MerkleTree::new();
+        self.temp_root_leaf_keys = HashMap::new();
+        self.temp_subtrees = HashMap::new();
     }
 }

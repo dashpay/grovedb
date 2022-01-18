@@ -909,6 +909,34 @@ fn transaction_is_started_should_return_false_if_transaction_was_not_started() {
 }
 
 #[test]
+fn transaction_should_be_aborted() {
+    let mut db = make_grovedb();
+
+    db.start_transaction();
+    let storage = db.storage();
+    let transaction = storage.transaction();
+
+    let item_key = b"key3".to_vec();
+    let element = Element::Item(b"ayy".to_vec());
+
+    let result = db.insert(
+        &[TEST_LEAF],
+        item_key.clone(),
+        element.clone(),
+        Some(&transaction),
+    );
+
+    db.abort_transaction(transaction);
+
+    // Transaction should be closed
+    assert!(!db.is_transaction_started());
+
+    // Transactional data shouldn't be commited to the main database
+    let result = db.get(&[TEST_LEAF], &item_key.clone(), None);
+    assert!(matches!(result, Err(Error::InvalidPath(_))));
+}
+
+#[test]
 fn test_subtree_pairs_iterator() {
     let mut db = make_grovedb();
     let element = Element::Item(b"ayy".to_vec());
