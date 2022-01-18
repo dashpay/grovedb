@@ -225,6 +225,19 @@ impl GroveDb {
     //     GroveDb::open(path)
     // }
 
+    /// Returns root hash of GroveDb.
+    /// Will be `None` if GroveDb is empty.
+    pub fn root_hash(
+        &self,
+        db_transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Option<[u8; 32]> {
+        if db_transaction.is_some() {
+            self.temp_root_tree.root()
+        } else {
+            self.root_tree.root()
+        }
+    }
+
     fn store_subtrees_keys_data(
         &self,
         db_transaction: Option<&OptimisticTransactionDBTransaction>,

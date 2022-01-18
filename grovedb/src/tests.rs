@@ -1896,3 +1896,38 @@ fn test_get_range_query_with_limit_and_offset() {
     let mut last_value = (1996 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], Element::Item(last_value));
 }
+
+#[test]
+fn test_root_hash() {
+    let mut db = make_grovedb();
+    // Check hashes are different if tree is edited
+    let old_root_hash = db.root_hash(None);
+    db.insert(
+        &[TEST_LEAF],
+        b"key1".to_vec(),
+        Element::Item(b"ayy".to_vec()),
+        None,
+    )
+    .expect("unable to insert an item");
+    let new_root_hash = db.root_hash(None);
+    assert_ne!(old_root_hash, db.root_hash(None));
+
+    // Check isolation
+    let storage = db.storage();
+    let transaction = storage.transaction();
+    db.start_transaction();
+
+    db.insert(
+        &[TEST_LEAF],
+        b"key2".to_vec(),
+        Element::Item(b"ayy".to_vec()),
+        Some(&transaction),
+    )
+    .expect("unable to insert an item");
+    let root_hash_outside = db.root_hash(None);
+    assert_ne!(db.root_hash(Some(&transaction)), root_hash_outside);
+
+    assert_eq!(db.root_hash(None), root_hash_outside);
+    db.commit_transaction(transaction);
+    assert_ne!(db.root_hash(None), root_hash_outside);
+}
