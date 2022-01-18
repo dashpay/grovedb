@@ -45,7 +45,7 @@ pub enum Error {
     #[error("data corruption error: {0}")]
     CorruptedData(String),
     #[error(
-    "db is in readonly mode due to the active transaction. Please provide transaction or \
+        "db is in readonly mode due to the active transaction. Please provide transaction or \
          commit it"
     )]
     DbIsInReadonlyMode,
@@ -176,7 +176,7 @@ impl GroveDb {
                 path,
                 storage::rocksdb_storage::column_families(),
             )
-                .map_err(Into::<PrefixedRocksDbStorageError>::into)?,
+            .map_err(Into::<PrefixedRocksDbStorageError>::into)?,
         );
         let meta_storage = PrefixedRocksDbStorage::new(db.clone(), Vec::new())?;
 
@@ -197,7 +197,7 @@ impl GroveDb {
 
         // TODO: owned `get` is not required for deserialization
         let root_leaf_keys: HashMap<Vec<u8>, usize> = if let Some(root_leaf_keys_serialized) =
-        meta_storage.get_meta(ROOT_LEAFS_SERIALIZED_KEY)?
+            meta_storage.get_meta(ROOT_LEAFS_SERIALIZED_KEY)?
         {
             bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {
                 Error::CorruptedData(String::from("unable to deserialize root leafs"))
