@@ -515,6 +515,51 @@ impl GroveDbWrapper {
         Ok(cx.undefined())
     }
 
+    fn js_get_path_query(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+        let js_path_query = cx.argument::<JsObject>(0)?;
+        let js_using_transaction = cx.argument::<JsBoolean>(1)?;
+        let js_callback = cx.argument::<JsFunction>(2)?.root(&mut cx);
+
+        let path_query = converter::js_path_query_to_path_query(js_path_query, &mut cx);
+
+        let db = cx
+            .this()
+            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+        let using_transaction = js_using_transaction.value(&mut cx);
+
+        db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
+            // let result = grove_db.get_aux(&key, using_transaction.then(|| transaction).flatten());
+
+            // channel.send(move |mut task_context| {
+            //     let callback = js_callback.into_inner(&mut task_context);
+            //     let this = task_context.undefined();
+            //     let callback_arguments: Vec<Handle<JsValue>> = match result {
+            //         Ok(value) => {
+            //             if let Some(value) = value {
+            //                 vec![
+            //                     task_context.null().upcast(),
+            //                     JsBuffer::external(&mut task_context, value).upcast(),
+            //                 ]
+            //             } else {
+            //                 vec![task_context.null().upcast(), task_context.null().upcast()]
+            //             }
+            //         }
+
+            //         // Convert the error to a JavaScript exception on failure
+            //         Err(err) => vec![task_context.error(err.to_string())?.upcast()],
+            //     };
+
+            //     callback.call(&mut task_context, this, callback_arguments)?;
+
+            //     Ok(())
+            // });
+        })
+        .or_else(|err| cx.throw_error(err.to_string()))?;
+
+        // The result is returned through the callback, not through direct return
+        Ok(cx.undefined())
+    }
+
     /// Not implemented
     fn js_proof(mut cx: FunctionContext) -> JsResult<JsUndefined> {
         Ok(cx.undefined())
@@ -570,6 +615,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("groveDbPutAux", GroveDbWrapper::js_put_aux)?;
     cx.export_function("groveDbDeleteAux", GroveDbWrapper::js_delete_aux)?;
     cx.export_function("groveDbGetAux", GroveDbWrapper::js_get_aux)?;
+    cx.export_function("groveDbGetPathQuery", GroveDbWrapper::js_get_path_query)?;
 
     Ok(())
 }

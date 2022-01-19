@@ -311,4 +311,48 @@ describe('GroveDB', () => {
       expect(result).to.be.null;
     });
   });
+
+  describe('get by query', () => {
+    it('should be able to retrieve data using query', async () => {
+      // Making a subtree to insert items into
+      await groveDb.insert(
+        rootTreePath,
+        treeKey,
+        { type: 'tree', value: Buffer.alloc(32) },
+      );
+
+      // Inserting items into the subtree
+      await groveDb.insert(
+        itemTreePath,
+        Buffer.from('akey'),
+        { type: 'item', value: Buffer.from('a') },
+      );
+      await groveDb.insert(
+        itemTreePath,
+        Buffer.from('bkey'),
+        { type: 'item', value: Buffer.from('b') },
+      );
+      await groveDb.insert(
+        itemTreePath,
+        Buffer.from('ckey'),
+        { type: 'item', value: Buffer.from('c') },
+      );
+
+      // Do a simple range query
+      const query = {
+        path: itemTreePath,
+        query: {
+          query: {
+            items: [
+              {
+                type: 'rangeFrom',
+                from: Buffer.from('b'),
+              }
+            ]
+          }
+        }
+      };
+      const result = await groveDb.getPathQuery(query);
+    });
+  });
 });

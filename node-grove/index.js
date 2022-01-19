@@ -14,6 +14,7 @@ const {
   groveDbPutAux,
   groveDbDeleteAux,
   groveDbGetAux,
+  groveDbGetPathQuery,
 } = require('../index.node');
 
 // Convert the DB methods from using callbacks to returning promises
@@ -27,6 +28,7 @@ const groveDbCommitTransactionAsync = promisify(groveDbCommitTransaction);
 const groveDbPutAuxAsync = promisify(groveDbPutAux);
 const groveDbDeleteAuxAsync = promisify(groveDbDeleteAux);
 const groveDbGetAuxAsync = promisify(groveDbGetAux);
+const groveDbGetPathQueryAsync = promisify(groveDbGetPathQuery);
 
 // Wrapper class for the boxed `Database` for idiomatic JavaScript usage
 class GroveDB {
@@ -137,6 +139,7 @@ class GroveDB {
 
   /**
    * Get auxiliary data
+   * 
    * @param {Buffer} key
    * @param {boolean} [useTransaction=false]
    * @return {Promise<Buffer>}
@@ -144,12 +147,44 @@ class GroveDB {
   async getAux(key, useTransaction = false) {
     return groveDbGetAuxAsync.call(this.db, key, useTransaction);
   }
+
+  /**
+   * Get data using query.
+   * 
+   * @param {PathQuery}
+   * @param {boolean} [useTransaction=false]
+   * @return {Promise<*>}
+   */
+  async getPathQuery(query, useTransaction = false) {
+    return groveDbGetPathQueryAsync.call(this.db, query, useTransaction);
+  }
 }
 
 /**
  * @typedef Element
  * @property {string} type - element type. Can be "item", "reference" or "tree"
  * @property {Buffer|Buffer[]} value - element value
+ */
+
+/**
+ * @typedef PathQuery
+ * @property {Buffer[]} path
+ * @property {SizedQuery} query
+ * @property {Buffer|null} subqueryKey
+ * @property {Query|null} subquery
+ */
+
+/**
+ * @typedef SizedQuery
+ * @property {Query} query
+ * @property {Number|null} limit
+ * @property {Number|null} offset
+ * @property {boolean} leftToRight
+ */
+
+/**
+ * @typedef Query
+ * @property {Array} items
  */
 
 module.exports = GroveDB;

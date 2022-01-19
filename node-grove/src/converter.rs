@@ -1,4 +1,4 @@
-use grovedb::Element;
+use grovedb::{Element, PathQuery};
 use neon::{borrow::Borrow, prelude::*};
 
 fn element_to_string(element: Element) -> String {
@@ -100,4 +100,15 @@ pub fn js_array_of_buffers_to_vec<'a, C: Context<'a>>(
     }
 
     Ok(vec)
+}
+
+pub fn js_path_query_to_path_query<'a, C: Context<'a>>(
+    js_path_query: Handle<JsObject>,
+    cx: &mut C,
+) -> NeonResult<PathQuery<'a>> {
+    let path =
+        js_array_of_buffers_to_vec(js_path_query.get(cx, "path")?.downcast_or_throw(cx)?, cx);
+
+    // dbg!(path);
+    todo!()
 }
