@@ -88,8 +88,8 @@ describe('GroveDB', () => {
     }
   });
 
-  describe('transaction', () => {
-    it('should not allow to insert data when transaction is started', async () => {
+  describe('#startTransaction', () => {
+    it('should not allow to insert data to main database after it called', async () => {
       // Making a subtree to insert items into
       await groveDb.insert(
         rootTreePath,
@@ -150,7 +150,9 @@ describe('GroveDB', () => {
         expect(e.message).to.be.equal('invalid path: key not found in Merk');
       }
     });
+  });
 
+  describe('#commitTransaction', () => {
     it('should commit transactional data to main database', async () => {
       // Making a subtree to insert items into
       await groveDb.insert(
@@ -184,6 +186,100 @@ describe('GroveDB', () => {
       const element = await groveDb.get(itemTreePath, itemKey);
       expect(element.type).to.be.equal('item');
       expect(element.value).to.deep.equal(itemValue);
+    });
+  });
+
+  describe('#rollbackTransaction', () => {
+    it('should rollaback transaction state to its initial state', async () => {
+      // Making a subtree to insert items into
+      await groveDb.insert(
+        rootTreePath,
+        treeKey,
+        { type: 'tree', value: Buffer.alloc(32) },
+      );
+
+      await groveDb.startTransaction();
+
+      // Inserting an item into the subtree
+      await groveDb.insert(
+        itemTreePath,
+        itemKey,
+        { type: 'item', value: itemValue },
+        true,
+      );
+
+      // Should rollback inserted item
+      await groveDb.rollbackTransaction();
+
+      try {
+        await groveDb.get(itemTreePath, itemKey);
+
+        expect.fail('Expected to throw an error');
+      } catch (e) {
+        expect(e.message).to.be.equal('invalid path: key not found in Merk');
+      }
+    });
+  });
+
+  describe('#isTransactionStarted', () => {
+    it('should return true if transaction is started', async () => {
+      // Making a subtree to insert items into
+      await groveDb.insert(
+        rootTreePath,
+        treeKey,
+        { type: 'tree', value: Buffer.alloc(32) },
+      );
+
+      await groveDb.startTransaction();
+
+      const result = await groveDb.isTransactionStarted();
+
+      // eslint-disable-next-line no-unused-expressions
+      expect(result).to.be.true;
+    });
+
+    it('should return false if transaction is not started', async () => {
+      const result = await groveDb.isTransactionStarted();
+
+      // eslint-disable-next-line no-unused-expressions
+      expect(result).to.be.false;
+    });
+  });
+
+  describe('#abortTransaction', () => {
+    it('should abort transaction', async () => {
+      // Making a subtree to insert items into
+      await groveDb.insert(
+        rootTreePath,
+        treeKey,
+        { type: 'tree', value: Buffer.alloc(32) },
+      );
+
+      await groveDb.startTransaction();
+
+      // Inserting an item into the subtree
+      await groveDb.insert(
+        itemTreePath,
+        itemKey,
+        { type: 'item', value: itemValue },
+        true,
+      );
+
+      // Should abort inserted item
+      await groveDb.abortTransaction();
+
+      const isTransactionStarted = await groveDb.isTransactionStarted();
+
+      // eslint-disable-next-line no-unused-expressions
+      expect(isTransactionStarted).to.be.false;
+
+      try {
+        await groveDb.get(itemTreePath, itemKey);
+
+        expect.fail('Expected to throw an error');
+      } catch (e) {
+        expect(e.message).to.be.equal('invalid path: key not found in Merk');
+      }
     });
   });
 
@@ -308,7 +404,20 @@ describe('GroveDB', () => {
 
       const result = await groveDb.getAux(key);
 
+      // eslint-disable-next-line no-unused-expressions
       expect(result).to.be.null;
+    });
+  });
+
+  describe('#flush', () => {
+    it('should flush data on disc', async () => {
+      await groveDb.insert(
+        [],
+        Buffer.from('test_tree'),
+        { type: 'tree', value: Buffer.alloc(32) },
+      );
+
+      await groveDb.flush();
     });
   });
 });

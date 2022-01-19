@@ -1,6 +1,6 @@
 /target
 .idea
-Cargo.lock
+Cargo.lock.old
 index.node
 node_modules
 .DS_Store
