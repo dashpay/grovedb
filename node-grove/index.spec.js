@@ -420,4 +420,59 @@ describe('GroveDB', () => {
       await groveDb.flush();
     });
   });
+
+  describe('#getRootHash', () => {
+    it('should return empty root hash if there is no data', async () => {
+      const result = await groveDb.getRootHash();
+
+      expect(result).to.deep.equal(Buffer.alloc(32));
+
+      // Get root hash for transaction too
+      await groveDb.startTransaction();
+
+      const transactionalResult = await groveDb.getRootHash(true);
+
+      expect(transactionalResult).to.deep.equal(Buffer.alloc(32));
+    });
+  });
+
+  it('should root hash', async () => {
+    // Making a subtree to insert items into
+    await groveDb.insert(
+      rootTreePath,
+      treeKey,
+      { type: 'tree', value: Buffer.alloc(32) },
+    );
+
+    // Inserting an item into the subtree
+    await groveDb.insert(
+      itemTreePath,
+      itemKey,
+      { type: 'item', value: itemValue },
+    );
+
+    await groveDb.startTransaction();
+
+    // Inserting an item into the subtree
+    await groveDb.insert(
+      itemTreePath,
+      Buffer.from('transactional_test_key'),
+      { type: 'item', value: itemValue },
+      true,
+    );
+
+    const result = await groveDb.getRootHash();
+    const transactionalResult = await groveDb.getRootHash(true);
+
+    // Hashes shouldn't be equal
+    expect(result).to.not.deep.equal(transactionalResult);
+
+    // Hashes shouldn't be empty
+
+    // eslint-disable-next-line no-unused-expressions
+    expect(result >= Buffer.alloc(32)).to.be.true;
+
+    // eslint-disable-next-line no-unused-expressions
+    expect(transactionalResult >= Buffer.alloc(32)).to.be.true;
+  });
 });

@@ -693,6 +693,45 @@ impl GroveDbWrapper {
 
         Ok(cx.undefined())
     }
+
+    /// Returns root hash or empty buffer
+    fn js_root_hash(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+        let js_using_transaction = cx.argument::<JsBoolean>(0)?;
+        let js_callback = cx.argument::<JsFunction>(1)?.root(&mut cx);
+
+        let db = cx
+            .this()
+            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+
+        let using_transaction = js_using_transaction.value(&mut cx);
+
+        db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
+            let result = grove_db.root_hash(using_transaction.then(|| transaction).flatten());
+
+            channel.send(move |mut task_context| {
+                let callback = js_callback.into_inner(&mut task_context);
+                let this = task_context.undefined();
+
+                let hash = match result {
+                   Some(hash)  => JsBuffer::external(&mut task_context, hash),
+                   None  => task_context.buffer(32)?,
+                };
+
+                let callback_arguments: Vec<Handle<JsValue>> = vec![
+                    task_context.null().upcast(),
+                    hash.upcast(),
+                ];
+
+                callback.call(&mut task_context, this, callback_arguments)?;
+
+                Ok(())
+            });
+        })
+            .or_else(|err| cx.throw_error(err.to_string()))?;
+
+        // The result is returned through the callback, not through direct return
+        Ok(cx.undefined())
+    }
 }
 
 #[neon::main]
@@ -731,6 +770,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("groveDbPutAux", GroveDbWrapper::js_put_aux)?;
     cx.export_function("groveDbDeleteAux", GroveDbWrapper::js_delete_aux)?;
     cx.export_function("groveDbGetAux", GroveDbWrapper::js_get_aux)?;
+    cx.export_function("groveDbRootHash", GroveDbWrapper::js_root_hash)?;
 
     Ok(())
 }

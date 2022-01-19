@@ -18,7 +18,9 @@ const {
   groveDbPutAux,
   groveDbDeleteAux,
   groveDbGetAux,
+  groveDbRootHash,
 } = require('../index.node');
+const {use} = require("chai");
 
 // Convert the DB methods from using callbacks to returning promises
 const groveDbGetAsync = promisify(groveDbGet);
@@ -35,6 +37,7 @@ const groveDbAbortTransactionAsync = promisify(groveDbAbortTransaction);
 const groveDbPutAuxAsync = promisify(groveDbPutAux);
 const groveDbDeleteAuxAsync = promisify(groveDbDeleteAux);
 const groveDbGetAuxAsync = promisify(groveDbGetAux);
+const groveDbRootHashAsync = promisify(groveDbRootHash);
 
 // Wrapper class for the boxed `Database` for idiomatic JavaScript usage
 class GroveDB {
@@ -181,12 +184,23 @@ class GroveDB {
 
   /**
    * Get auxiliary data
+   *
    * @param {Buffer} key
    * @param {boolean} [useTransaction=false]
    * @return {Promise<Buffer>}
    */
   async getAux(key, useTransaction = false) {
     return groveDbGetAuxAsync.call(this.db, key, useTransaction);
+  }
+
+  /**
+   * Get root hash
+   *
+   * @param {boolean} [useTransaction=false]
+   * @returns {Promise<void>}
+   */
+  async getRootHash(useTransaction = false) {
+    return groveDbRootHashAsync.call(this.db, useTransaction);
   }
 }
 
