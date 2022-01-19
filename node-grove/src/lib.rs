@@ -643,7 +643,7 @@ impl GroveDbWrapper {
         let js_using_transaction = cx.argument::<JsBoolean>(1)?;
         let js_callback = cx.argument::<JsFunction>(2)?.root(&mut cx);
 
-        let path_query = converter::js_path_query_to_path_query(js_path_query, &mut cx);
+        let path_query = converter::js_path_query_to_path_query(js_path_query, &mut cx)?;
 
         let db = cx
             .this()
@@ -651,31 +651,32 @@ impl GroveDbWrapper {
         let using_transaction = js_using_transaction.value(&mut cx);
 
         db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
-            // let result = grove_db.get_aux(&key, using_transaction.then(|| transaction).flatten());
+            let result = grove_db.get_path_query(
+                &path_query,
+                using_transaction.then(|| transaction).flatten(),
+            );
 
-            // channel.send(move |mut task_context| {
-            //     let callback = js_callback.into_inner(&mut task_context);
-            //     let this = task_context.undefined();
-            //     let callback_arguments: Vec<Handle<JsValue>> = match result {
-            //         Ok(value) => {
-            //             if let Some(value) = value {
-            //                 vec![
-            //                     task_context.null().upcast(),
-            //                     JsBuffer::external(&mut task_context, value).upcast(),
-            //                 ]
-            //             } else {
-            //                 vec![task_context.null().upcast(), task_context.null().upcast()]
-            //             }
-            //         }
+            channel.send(move |mut task_context| {
+                let callback = js_callback.into_inner(&mut task_context);
+                let this = task_context.undefined();
+                let callback_arguments: Vec<Handle<JsValue>> = match result {
+                    Ok((value, skipped)) => {
+                        let js_array: Handle<JsArray> = task_context.empty_array();
+                        let js_vecs = converter::nested_vecs_to_js(value, &mut task_context)?;
+                        let js_num = task_context.number(skipped).upcast::<JsValue>();
+                        js_array.set(&mut task_context, 0, js_vecs)?;
+                        js_array.set(&mut task_context, 1, js_num)?;
+                        vec![task_context.null().upcast(), js_array.upcast()]
+                    }
 
-            //         // Convert the error to a JavaScript exception on failure
-            //         Err(err) => vec![task_context.error(err.to_string())?.upcast()],
-            //     };
+                    // Convert the error to a JavaScript exception on failure
+                    Err(err) => vec![task_context.error(err.to_string())?.upcast()],
+                };
 
-            //     callback.call(&mut task_context, this, callback_arguments)?;
+                callback.call(&mut task_context, this, callback_arguments)?;
 
-            //     Ok(())
-            // });
+                Ok(())
+            });
         })
         .or_else(|err| cx.throw_error(err.to_string()))?;
 
@@ -758,21 +759,19 @@ impl GroveDbWrapper {
                 let this = task_context.undefined();
 
                 let hash = match result {
-                   Some(hash)  => JsBuffer::external(&mut task_context, hash),
-                   None  => task_context.buffer(32)?,
+                    Some(hash) => JsBuffer::external(&mut task_context, hash),
+                    None => task_context.buffer(32)?,
                 };
 
-                let callback_arguments: Vec<Handle<JsValue>> = vec![
-                    task_context.null().upcast(),
-                    hash.upcast(),
-                ];
+                let callback_arguments: Vec<Handle<JsValue>> =
+                    vec![task_context.null().upcast(), hash.upcast()];
 
                 callback.call(&mut task_context, this, callback_arguments)?;
 
                 Ok(())
             });
         })
-            .or_else(|err| cx.throw_error(err.to_string()))?;
+        .or_else(|err| cx.throw_error(err.to_string()))?;
 
         // The result is returned through the callback, not through direct return
         Ok(cx.undefined())

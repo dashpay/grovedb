@@ -53,8 +53,9 @@ pub enum Error {
     DbIsInReadonlyMode,
 }
 
-pub struct PathQuery<'a> {
-    path: &'a [&'a [u8]],
+pub struct PathQuery {
+    // TODO: Make generic over path type
+    path: Vec<Vec<u8>>,
     query: SizedQuery,
     subquery_key: Option<Vec<u8>>,
     subquery: Option<Query>,
@@ -64,6 +65,7 @@ pub struct PathQuery<'a> {
 // limit should be applied to the elements returned by the subquery
 // offset should be applied to the first item that will subqueried (first in the
 // case of a range)
+#[derive(Debug)]
 pub struct SizedQuery {
     query: Query,
     limit: Option<u16>,
@@ -87,13 +89,13 @@ impl SizedQuery {
     }
 }
 
-impl PathQuery<'_> {
-    pub fn new<'a>(
-        path: &'a [&'a [u8]],
+impl PathQuery {
+    pub fn new(
+        path: Vec<Vec<u8>>,
         query: SizedQuery,
         subquery_key: Option<Vec<u8>>,
         subquery: Option<Query>,
-    ) -> PathQuery<'a> {
+    ) -> PathQuery {
         PathQuery {
             path,
             query,
@@ -102,12 +104,12 @@ impl PathQuery<'_> {
         }
     }
 
-    pub fn new_unsized<'a>(
-        path: &'a [&'a [u8]],
+    pub fn new_unsized(
+        path: Vec<Vec<u8>>,
         query: Query,
         subquery_key: Option<Vec<u8>>,
         subquery: Option<Query>,
-    ) -> PathQuery<'a> {
+    ) -> PathQuery {
         let query = SizedQuery::new(query, None, None, true);
         PathQuery {
             path,
@@ -117,7 +119,7 @@ impl PathQuery<'_> {
         }
     }
 
-    pub fn new_unsized_basic<'a>(path: &'a [&'a [u8]], query: Query) -> PathQuery<'a> {
+    pub fn new_unsized_basic(path: Vec<Vec<u8>>, query: Query) -> PathQuery {
         let query = SizedQuery::new(query, None, None, true);
         PathQuery {
             path,
@@ -487,7 +489,10 @@ impl GroveDb {
             .map_err(PrefixedRocksDbStorageError::RocksDbError)?)
     }
 
-    pub fn get_subtrees_for_transaction(&mut self, transaction: Option<&OptimisticTransactionDBTransaction>) -> &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>> {
+    pub fn get_subtrees_for_transaction(
+        &mut self,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>> {
         match transaction {
             None => &self.subtrees,
             Some(_) => &self.temp_subtrees,

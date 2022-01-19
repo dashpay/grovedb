@@ -291,10 +291,15 @@ impl Element {
         path_query: &PathQuery,
         subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
     ) -> Result<(Vec<Element>, u16), Error> {
+        let path_slices = path_query
+            .path
+            .iter()
+            .map(|x| x.as_slice())
+            .collect::<Vec<_>>();
         Element::get_query_apply_function(
             merk,
             &path_query.query,
-            Some(path_query.path),
+            Some(path_slices.as_slice()),
             path_query.subquery_key.clone(),
             path_query.subquery.clone(),
             subtrees,

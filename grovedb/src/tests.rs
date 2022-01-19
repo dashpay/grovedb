@@ -391,9 +391,18 @@ fn test_proof_construction() {
     // Get grovedb proof
     let proof = temp_db
         .proof(vec![
-            PathQuery::new_unsized_basic(&[TEST_LEAF, b"innertree"], path_one_query),
-            PathQuery::new_unsized_basic(&[ANOTHER_TEST_LEAF, b"innertree3"], path_two_query),
-            PathQuery::new_unsized_basic(&[ANOTHER_TEST_LEAF, b"innertree2"], path_three_query),
+            PathQuery::new_unsized_basic(
+                vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
+                path_one_query,
+            ),
+            PathQuery::new_unsized_basic(
+                vec![ANOTHER_TEST_LEAF.to_vec(), b"innertree3".to_vec()],
+                path_two_query,
+            ),
+            PathQuery::new_unsized_basic(
+                vec![ANOTHER_TEST_LEAF.to_vec(), b"innertree2".to_vec()],
+                path_three_query,
+            ),
         ])
         .unwrap();
 
@@ -577,7 +586,7 @@ fn test_successful_proof_verification() {
 
     let proof = temp_db
         .proof(vec![PathQuery::new_unsized_basic(
-            &[TEST_LEAF, b"innertree"],
+            vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
             path_one_query,
         )])
         .unwrap();
@@ -605,8 +614,14 @@ fn test_successful_proof_verification() {
     // Get grovedb proof
     let proof = temp_db
         .proof(vec![
-            PathQuery::new_unsized_basic(&[ANOTHER_TEST_LEAF, b"innertree3"], path_two_query),
-            PathQuery::new_unsized_basic(&[ANOTHER_TEST_LEAF, b"innertree2"], path_three_query),
+            PathQuery::new_unsized_basic(
+                vec![ANOTHER_TEST_LEAF.to_vec(), b"innertree3".to_vec()],
+                path_two_query,
+            ),
+            PathQuery::new_unsized_basic(
+                vec![ANOTHER_TEST_LEAF.to_vec(), b"innertree2".to_vec()],
+                path_three_query,
+            ),
         ])
         .unwrap();
 
@@ -875,7 +890,7 @@ fn test_get_with_running_transaction() {
         Element::empty_tree(),
         None,
     )
-        .expect("cannot insert a subtree");
+    .expect("cannot insert a subtree");
 
     // Start a transaction to insert a value
     let storage = db.storage();
@@ -888,7 +903,7 @@ fn test_get_with_running_transaction() {
         item.clone(),
         Some(&db_transaction),
     )
-        .expect("cannot insert an item into GroveDB");
+    .expect("cannot insert an item into GroveDB");
 
     // Ensure that value is inaccessible outside of uncommited transaction
     let result = db.get(&[TEST_LEAF, &subtree_key], &key, None);
@@ -1199,15 +1214,15 @@ fn test_get_full_query() {
     )
     .expect("successful value insert");
 
-    let path1 = vec![TEST_LEAF, b"key1"];
-    let path2 = vec![TEST_LEAF, b"key2"];
+    let path1 = vec![TEST_LEAF.to_vec(), b"key1".to_vec()];
+    let path2 = vec![TEST_LEAF.to_vec(), b"key2".to_vec()];
     let mut query1 = Query::new();
     let mut query2 = Query::new();
     query1.insert_range_inclusive(b"key3".to_vec()..=b"key4".to_vec());
     query2.insert_key(b"key6".to_vec());
 
-    let path_query1 = PathQuery::new_unsized_basic(&path1, query1);
-    let path_query2 = PathQuery::new_unsized_basic(&path2, query2);
+    let path_query1 = PathQuery::new_unsized_basic(path1, query1);
+    let path_query2 = PathQuery::new_unsized_basic(path2, query2);
 
     assert_eq!(
         db.get_path_queries_raw(&[&path_query1, &path_query2], None)
@@ -1355,8 +1370,13 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &mut TempGroveDb
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
         let i_vec = (i as u32).to_be_bytes().to_vec();
-        db.insert(&[TEST_LEAF, b"1"], i_vec.clone(), Element::empty_tree(), None)
-            .expect("successful subtree insert");
+        db.insert(
+            &[TEST_LEAF, b"1"],
+            i_vec.clone(),
+            Element::empty_tree(),
+            None,
+        )
+        .expect("successful subtree insert");
         // Insert element 0
         // Insert some elements into subtree
         db.insert(
@@ -1365,7 +1385,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &mut TempGroveDb
             Element::empty_tree(),
             None,
         )
-            .expect("successful subtree insert");
+        .expect("successful subtree insert");
 
         for j in 100u32..150 {
             let random_key = rand::thread_rng().gen::<[u8; 32]>();
@@ -1379,7 +1399,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &mut TempGroveDb
                 Element::Item(j_vec.clone()),
                 None,
             )
-                .expect("successful value insert");
+            .expect("successful value insert");
 
             db.insert(
                 &[TEST_LEAF, b"1", i_vec.clone().as_slice(), b"0"],
@@ -1387,7 +1407,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &mut TempGroveDb
                 Element::Reference(vec![TEST_LEAF.to_vec(), b"0".to_vec(), random_key.to_vec()]),
                 None,
             )
-                .expect("successful value insert");
+            .expect("successful value insert");
         }
     }
 }
@@ -1420,8 +1440,13 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &mut TempGroveDb) {
 
     for i in 1985u32..2000 {
         let i_vec = (i as u32).to_be_bytes().to_vec();
-        db.insert(&[TEST_LEAF, b"1"], i_vec.clone(), Element::empty_tree(), None)
-            .expect("successful subtree insert");
+        db.insert(
+            &[TEST_LEAF, b"1"],
+            i_vec.clone(),
+            Element::empty_tree(),
+            None,
+        )
+        .expect("successful subtree insert");
 
         // We should insert every item to the tree holding items
         db.insert(
@@ -1430,7 +1455,7 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &mut TempGroveDb) {
             Element::Item(i_vec.clone()),
             None,
         )
-            .expect("successful value insert");
+        .expect("successful value insert");
 
         // We should insert a reference to the item
         db.insert(
@@ -1439,7 +1464,7 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &mut TempGroveDb) {
             Element::Reference(vec![TEST_LEAF.to_vec(), b"0".to_vec(), i_vec.clone()]),
             None,
         )
-            .expect("successful value insert");
+        .expect("successful value insert");
     }
 }
 
@@ -1448,7 +1473,7 @@ fn test_get_range_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
     populate_tree_for_non_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF];
+    let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range((1988 as u32).to_be_bytes().to_vec()..(1992 as u32).to_be_bytes().to_vec());
 
@@ -1457,7 +1482,7 @@ fn test_get_range_query_with_non_unique_subquery() {
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
-        &path,
+        path,
         query.clone(),
         Some(subquery_key),
         Some(sub_query.clone()),
@@ -1483,13 +1508,13 @@ fn test_get_range_query_with_unique_subquery() {
     let mut db = make_grovedb();
     populate_tree_for_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF];
+    let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range((1988 as u32).to_be_bytes().to_vec()..(1992 as u32).to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"0".to_vec();
 
-    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
+    let path_query = PathQuery::new_unsized(path, query.clone(), Some(subquery_key), None);
 
     let (elements, skipped) = db
         .get_path_query(&path_query, None)
@@ -1509,13 +1534,13 @@ fn test_get_range_query_with_unique_subquery_on_references() {
     let mut db = make_grovedb();
     populate_tree_by_reference_for_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF, b"1"];
+    let path = vec![TEST_LEAF.to_vec(), b"1".to_vec()];
     let mut query = Query::new();
     query.insert_range((1988 as u32).to_be_bytes().to_vec()..(1992 as u32).to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"0".to_vec();
 
-    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
+    let path_query = PathQuery::new_unsized(path, query.clone(), Some(subquery_key), None);
 
     let (elements, skipped) = db
         .get_path_query(&path_query, None)
@@ -1535,7 +1560,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
     populate_tree_for_non_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF];
+    let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_inclusive(
         (1988 as u32).to_be_bytes().to_vec()..=(1995 as u32).to_be_bytes().to_vec(),
@@ -1546,7 +1571,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
-        &path,
+        path,
         query.clone(),
         Some(subquery_key),
         Some(sub_query.clone()),
@@ -1572,7 +1597,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
     let mut db = make_grovedb();
     populate_tree_by_reference_for_non_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF, b"1"];
+    let path = vec![TEST_LEAF.to_vec(), b"1".to_vec()];
     let mut query = Query::new();
     query.insert_range_inclusive(
         (1988 as u32).to_be_bytes().to_vec()..=(1995 as u32).to_be_bytes().to_vec(),
@@ -1583,7 +1608,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
-        &path,
+        path,
         query.clone(),
         Some(subquery_key),
         Some(sub_query.clone()),
@@ -1609,7 +1634,7 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
     let mut db = make_grovedb();
     populate_tree_for_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF];
+    let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_inclusive(
         (1988 as u32).to_be_bytes().to_vec()..=(1995 as u32).to_be_bytes().to_vec(),
@@ -1617,7 +1642,7 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
 
     let subquery_key: Vec<u8> = b"0".to_vec();
 
-    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
+    let path_query = PathQuery::new_unsized(path, query.clone(), Some(subquery_key), None);
 
     let (elements, skipped) = db
         .get_path_query(&path_query, None)
@@ -1637,7 +1662,7 @@ fn test_get_range_from_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
     populate_tree_for_non_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF];
+    let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_from((1995 as u32).to_be_bytes().to_vec()..);
 
@@ -1646,7 +1671,7 @@ fn test_get_range_from_query_with_non_unique_subquery() {
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
-        &path,
+        path,
         query.clone(),
         Some(subquery_key),
         Some(sub_query.clone()),
@@ -1672,13 +1697,13 @@ fn test_get_range_from_query_with_unique_subquery() {
     let mut db = make_grovedb();
     populate_tree_for_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF];
+    let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_from((1995 as u32).to_be_bytes().to_vec()..);
 
     let subquery_key: Vec<u8> = b"0".to_vec();
 
-    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
+    let path_query = PathQuery::new_unsized(path, query.clone(), Some(subquery_key), None);
 
     let (elements, skipped) = db
         .get_path_query(&path_query, None)
@@ -1698,7 +1723,7 @@ fn test_get_range_to_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
     populate_tree_for_non_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF];
+    let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_to(..(1995 as u32).to_be_bytes().to_vec());
 
@@ -1707,7 +1732,7 @@ fn test_get_range_to_query_with_non_unique_subquery() {
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
-        &path,
+        path,
         query.clone(),
         Some(subquery_key),
         Some(sub_query.clone()),
@@ -1733,13 +1758,13 @@ fn test_get_range_to_query_with_unique_subquery() {
     let mut db = make_grovedb();
     populate_tree_for_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF];
+    let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_to(..(1995 as u32).to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"0".to_vec();
 
-    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
+    let path_query = PathQuery::new_unsized(path, query.clone(), Some(subquery_key), None);
 
     let (elements, skipped) = db
         .get_path_query(&path_query, None)
@@ -1759,7 +1784,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
     populate_tree_for_non_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF];
+    let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_to_inclusive(..=(1995 as u32).to_be_bytes().to_vec());
 
@@ -1768,7 +1793,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
-        &path,
+        path,
         query.clone(),
         Some(subquery_key),
         Some(sub_query.clone()),
@@ -1794,13 +1819,13 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
     let mut db = make_grovedb();
     populate_tree_for_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF];
+    let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_to_inclusive(..=(1995 as u32).to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"0".to_vec();
 
-    let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
+    let path_query = PathQuery::new_unsized(path, query.clone(), Some(subquery_key), None);
 
     let (elements, skipped) = db
         .get_path_query(&path_query, None)
@@ -1820,7 +1845,7 @@ fn test_get_range_after_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
     populate_tree_for_non_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF];
+    let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_after((1995 as u32).to_be_bytes().to_vec()..);
 
@@ -1829,7 +1854,7 @@ fn test_get_range_after_query_with_non_unique_subquery() {
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
-        &path,
+        path,
         query.clone(),
         Some(subquery_key),
         Some(sub_query.clone()),
@@ -1855,7 +1880,7 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
     populate_tree_for_non_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF];
+    let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_after_to(
         (1995 as u32).to_be_bytes().to_vec()..(1997 as u32).to_be_bytes().to_vec(),
@@ -1866,7 +1891,7 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
-        &path,
+        path,
         query.clone(),
         Some(subquery_key),
         Some(sub_query.clone()),
@@ -1892,7 +1917,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
     let mut db = make_grovedb();
     populate_tree_for_non_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF];
+    let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_after_to_inclusive(
         (1995 as u32).to_be_bytes().to_vec()..=(1997 as u32).to_be_bytes().to_vec(),
@@ -1903,7 +1928,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
     sub_query.insert_all();
 
     let path_query = PathQuery::new_unsized(
-        &path,
+        path,
         query.clone(),
         Some(subquery_key),
         Some(sub_query.clone()),
@@ -1929,7 +1954,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let mut db = make_grovedb();
     populate_tree_for_non_unique_range_subquery(&mut db);
 
-    let path = vec![TEST_LEAF];
+    let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range((1990 as u32).to_be_bytes().to_vec()..(1995 as u32).to_be_bytes().to_vec());
 
@@ -1939,13 +1964,13 @@ fn test_get_range_query_with_limit_and_offset() {
 
     // Baseline query: no offset or limit + left to right
     let path_query = PathQuery::new(
-        &path,
+        path.clone(),
         SizedQuery::new(query.clone(), None, None, true),
         Some(subquery_key.clone()),
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1961,13 +1986,13 @@ fn test_get_range_query_with_limit_and_offset() {
 
     // Baseline query: no offset or limit + right to left
     let path_query = PathQuery::new(
-        &path,
+        path.clone(),
         SizedQuery::new(query.clone(), None, None, false),
         Some(subquery_key.clone()),
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1983,13 +2008,13 @@ fn test_get_range_query_with_limit_and_offset() {
 
     // Limit the result to just 55 elements
     let path_query = PathQuery::new(
-        &path,
+        path.clone(),
         SizedQuery::new(query.clone(), Some(55), None, true),
         Some(subquery_key.clone()),
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -2006,13 +2031,13 @@ fn test_get_range_query_with_limit_and_offset() {
 
     // Limit the result set to 60 elements but skip the first 14 elements
     let path_query = PathQuery::new(
-        &path,
+        path.clone(),
         SizedQuery::new(query.clone(), Some(60), Some(14), true),
         Some(subquery_key.clone()),
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -2034,13 +2059,13 @@ fn test_get_range_query_with_limit_and_offset() {
     // Limit the result set to 60 element but skip first 10 elements (this time
     // right to left)
     let path_query = PathQuery::new(
-        &path,
+        path.clone(),
         SizedQuery::new(query.clone(), Some(60), Some(10), false),
         Some(subquery_key.clone()),
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -2058,13 +2083,13 @@ fn test_get_range_query_with_limit_and_offset() {
 
     // Offset bigger than elements in range
     let path_query = PathQuery::new(
-        &path,
+        path.clone(),
         SizedQuery::new(query.clone(), None, Some(5000), true),
         Some(subquery_key.clone()),
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -2072,13 +2097,13 @@ fn test_get_range_query_with_limit_and_offset() {
 
     // Limit bigger than elements in range
     let path_query = PathQuery::new(
-        &path,
+        path.clone(),
         SizedQuery::new(query.clone(), Some(5000), None, true),
         Some(subquery_key.clone()),
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -2092,22 +2117,22 @@ fn test_get_range_query_with_limit_and_offset() {
     query.insert_range((1990 as u32).to_be_bytes().to_vec()..(2000 as u32).to_be_bytes().to_vec());
 
     let path_query = PathQuery::new(
-        &path,
+        path,
         SizedQuery::new(query.clone(), Some(5), Some(2), true),
         Some(subquery_key.clone()),
         None,
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
     assert_eq!(elements.len(), 5);
 
-    let mut first_value = (1992 as u32).to_be_bytes().to_vec();
+    let first_value = (1992 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1996 as u32).to_be_bytes().to_vec();
+    let last_value = (1996 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 

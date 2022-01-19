@@ -35,7 +35,9 @@ impl GroveDb {
                     let compressed_path = GroveDb::compress_subtree_key(&[], Some(key));
                     root_keys.push(compressed_path);
                 } else {
-                    let compressed_path = GroveDb::compress_subtree_key(path_slice, None);
+                    let path_slices = path_slice.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
+                    let compressed_path =
+                        GroveDb::compress_subtree_key(path_slices.as_slice(), None);
                     if let Some(path_query) = intermediate_proof_spec.get_mut(&compressed_path) {
                         path_query.insert_key(key.to_vec());
                     } else {
@@ -56,16 +58,21 @@ impl GroveDb {
 
         // Construct the leaf proofs
         for proof_query in proof_queries {
-            let mut path = proof_query.path;
+            let path_slices = proof_query
+                .path
+                .iter()
+                .map(|x| x.as_slice())
+                .collect::<Vec<_>>();
+            let mut path = path_slices.as_slice();
 
             // If there is a subquery with a limit it's possible that we only need a reduced
             // proof for this leaf.
-            let mut reduced_proof_query = proof_query;
+            // let mut reduced_proof_query = proof_query;
 
             // First we must get elements
 
-            if let Some(subquery_key) = reduced_proof_query.subquery_key.clone() {
-                self.get_path_queries_raw(&[&reduced_proof_query], None)?;
+            if let Some(subquery_key) = proof_query.subquery_key.clone() {
+                self.get_path_queries_raw(&[&proof_query], None)?;
 
                 let mut path_vec = path.to_vec();
                 path_vec.push(subquery_key.as_slice());
@@ -74,7 +81,7 @@ impl GroveDb {
 
             // Now we must insert the final proof for the sub leaves
             let compressed_path = GroveDb::compress_subtree_key(path, None);
-            let proof = self.prove_path_item(&compressed_path, reduced_proof_query)?;
+            let proof = self.prove_path_item(&compressed_path, proof_query)?;
             proofs.insert(compressed_path, proof);
         }
 

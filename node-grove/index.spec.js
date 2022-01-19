@@ -439,6 +439,7 @@ describe('GroveDB', () => {
       const query = {
         path: itemTreePath,
         query: {
+          limit: 322,
           query: {
             items: [
               {
@@ -446,10 +447,12 @@ describe('GroveDB', () => {
                 from: Buffer.from('b'),
               }
             ]
-          }
+          },
+          leftToRight: true
         }
       };
       const result = await groveDb.getPathQuery(query);
+      // TODO
     });
   });
 
