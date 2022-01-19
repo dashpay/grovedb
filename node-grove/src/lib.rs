@@ -22,6 +22,9 @@ enum DbMessage {
     Close(UnitCallback),
     StartTransaction(UnitCallback),
     CommitTransaction(UnitCallback),
+    RollbackTransaction(UnitCallback),
+    AbortTransaction(UnitCallback),
+    Flush(UnitCallback),
 }
 
 struct GroveDbWrapper {
@@ -83,6 +86,12 @@ impl GroveDbWrapper {
                         callback(&channel);
                         break;
                     }
+                    // Flush message
+                    DbMessage::Flush(callback) => {
+                        grove_db.flush().unwrap();
+
+                        callback(&channel);
+                    }
                     DbMessage::StartTransaction(callback) => {
                         grove_db.start_transaction().unwrap();
                         transaction = Some(storage.transaction());
@@ -91,6 +100,18 @@ impl GroveDbWrapper {
                     DbMessage::CommitTransaction(callback) => {
                         grove_db
                             .commit_transaction(transaction.take().unwrap())
+                            .unwrap();
+                        callback(&channel);
+                    }
+                    DbMessage::RollbackTransaction(callback) => {
+                        grove_db
+                            .rollback_transaction(&transaction.take().unwrap())
+                            .unwrap();
+                        callback(&channel);
+                    }
+                    DbMessage::AbortTransaction(callback) => {
+                        grove_db
+                            .abort_transaction(transaction.take().unwrap())
                             .unwrap();
                         callback(&channel);
                     }
@@ -109,6 +130,16 @@ impl GroveDbWrapper {
         callback: impl FnOnce(&Channel) + Send + 'static,
     ) -> Result<(), mpsc::SendError<DbMessage>> {
         self.tx.send(DbMessage::Close(Box::new(callback)))
+    }
+
+    // Idiomatic rust would take an owned `self` to prevent use after close
+    // However, it's not possible to prevent JavaScript from continuing to hold a
+    // closed database
+    fn flush(
+        &self,
+        callback: impl FnOnce(&Channel) + Send + 'static,
+    ) -> Result<(), mpsc::SendError<DbMessage>> {
+        self.tx.send(DbMessage::Flush(Box::new(callback)))
     }
 
     fn send_to_db_thread(
@@ -137,6 +168,22 @@ impl GroveDbWrapper {
     ) -> Result<(), mpsc::SendError<DbMessage>> {
         self.tx
             .send(DbMessage::CommitTransaction(Box::new(callback)))
+    }
+
+    fn rollback_transaction(
+        &self,
+        callback: impl FnOnce(&Channel) + Send + 'static,
+    ) -> Result<(), mpsc::SendError<DbMessage>> {
+        self.tx
+            .send(DbMessage::RollbackTransaction(Box::new(callback)))
+    }
+
+    fn abort_transaction(
+        &self,
+        callback: impl FnOnce(&Channel) + Send + 'static,
+    ) -> Result<(), mpsc::SendError<DbMessage>> {
+        self.tx
+            .send(DbMessage::AbortTransaction(Box::new(callback)))
     }
 }
 
@@ -186,6 +233,82 @@ impl GroveDbWrapper {
             .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
 
         db.commit_transaction(|channel| {
+            channel.send(move |mut task_context| {
+                let callback = js_callback.into_inner(&mut task_context);
+                let this = task_context.undefined();
+                let callback_arguments: Vec<Handle<JsValue>> = vec![task_context.null().upcast()];
+
+                callback.call(&mut task_context, this, callback_arguments)?;
+
+                Ok(())
+            });
+        })
+        .or_else(|err| cx.throw_error(err.to_string()))?;
+
+        Ok(cx.undefined())
+    }
+
+    fn js_rollback_transaction(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+        let js_callback = cx.argument::<JsFunction>(0)?.root(&mut cx);
+
+        let db = cx
+            .this()
+            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+
+        db.rollback_transaction(|channel| {
+            channel.send(move |mut task_context| {
+                let callback = js_callback.into_inner(&mut task_context);
+                let this = task_context.undefined();
+                let callback_arguments: Vec<Handle<JsValue>> = vec![task_context.null().upcast()];
+
+                callback.call(&mut task_context, this, callback_arguments)?;
+
+                Ok(())
+            });
+        })
+        .or_else(|err| cx.throw_error(err.to_string()))?;
+
+        Ok(cx.undefined())
+    }
+
+    fn js_is_transaction_started(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+        let js_callback = cx.argument::<JsFunction>(0)?.root(&mut cx);
+
+        let db = cx
+            .this()
+            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+
+        db.send_to_db_thread(move |grove_db: &mut GroveDb, _transaction, channel| {
+            let result = grove_db.is_transaction_started();
+
+            channel.send(move |mut task_context| {
+                let callback = js_callback.into_inner(&mut task_context);
+                let this = task_context.undefined();
+
+                // First parameter of JS callbacks is error, which is null in this case
+                let callback_arguments: Vec<Handle<JsValue>> = vec![
+                    task_context.null().upcast(),
+                    task_context.boolean(result).upcast(),
+                ];
+
+                callback.call(&mut task_context, this, callback_arguments)?;
+
+                Ok(())
+            });
+        })
+        .or_else(|err| cx.throw_error(err.to_string()))?;
+
+        Ok(cx.undefined())
+    }
+
+    fn js_abort_transaction(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+        let js_callback = cx.argument::<JsFunction>(0)?.root(&mut cx);
+
+        let db = cx
+            .this()
+            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+
+        db.abort_transaction(|channel| {
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);
                 let this = task_context.undefined();
@@ -590,6 +713,70 @@ impl GroveDbWrapper {
 
         Ok(cx.undefined())
     }
+
+    /// Flush data on disc and then calls js callback passed as a first
+    /// argument to the function
+    fn js_flush(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+        let js_callback = cx.argument::<JsFunction>(0)?.root(&mut cx);
+
+        let db = cx
+            .this()
+            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+
+        db.flush(|channel| {
+            channel.send(move |mut task_context| {
+                let callback = js_callback.into_inner(&mut task_context);
+                let this = task_context.undefined();
+                let callback_arguments: Vec<Handle<JsValue>> = vec![task_context.null().upcast()];
+
+                callback.call(&mut task_context, this, callback_arguments)?;
+
+                Ok(())
+            });
+        })
+        .or_else(|err| cx.throw_error(err.to_string()))?;
+
+        Ok(cx.undefined())
+    }
+
+    /// Returns root hash or empty buffer
+    fn js_root_hash(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+        let js_using_transaction = cx.argument::<JsBoolean>(0)?;
+        let js_callback = cx.argument::<JsFunction>(1)?.root(&mut cx);
+
+        let db = cx
+            .this()
+            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+
+        let using_transaction = js_using_transaction.value(&mut cx);
+
+        db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
+            let result = grove_db.root_hash(using_transaction.then(|| transaction).flatten());
+
+            channel.send(move |mut task_context| {
+                let callback = js_callback.into_inner(&mut task_context);
+                let this = task_context.undefined();
+
+                let hash = match result {
+                   Some(hash)  => JsBuffer::external(&mut task_context, hash),
+                   None  => task_context.buffer(32)?,
+                };
+
+                let callback_arguments: Vec<Handle<JsValue>> = vec![
+                    task_context.null().upcast(),
+                    hash.upcast(),
+                ];
+
+                callback.call(&mut task_context, this, callback_arguments)?;
+
+                Ok(())
+            });
+        })
+            .or_else(|err| cx.throw_error(err.to_string()))?;
+
+        // The result is returned through the callback, not through direct return
+        Ok(cx.undefined())
+    }
 }
 
 #[neon::main]
@@ -604,6 +791,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("groveDbDelete", GroveDbWrapper::js_delete)?;
     cx.export_function("groveDbProof", GroveDbWrapper::js_proof)?;
     cx.export_function("groveDbClose", GroveDbWrapper::js_close)?;
+    cx.export_function("groveDbFlush", GroveDbWrapper::js_flush)?;
     cx.export_function(
         "groveDbStartTransaction",
         GroveDbWrapper::js_start_transaction,
@@ -612,10 +800,23 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
         "groveDbCommitTransaction",
         GroveDbWrapper::js_commit_transaction,
     )?;
+    cx.export_function(
+        "groveDbRollbackTransaction",
+        GroveDbWrapper::js_rollback_transaction,
+    )?;
+    cx.export_function(
+        "groveDbIsTransactionStarted",
+        GroveDbWrapper::js_is_transaction_started,
+    )?;
+    cx.export_function(
+        "groveDbAbortTransaction",
+        GroveDbWrapper::js_abort_transaction,
+    )?;
     cx.export_function("groveDbPutAux", GroveDbWrapper::js_put_aux)?;
     cx.export_function("groveDbDeleteAux", GroveDbWrapper::js_delete_aux)?;
     cx.export_function("groveDbGetAux", GroveDbWrapper::js_get_aux)?;
     cx.export_function("groveDbGetPathQuery", GroveDbWrapper::js_get_path_query)?;
+    cx.export_function("groveDbRootHash", GroveDbWrapper::js_root_hash)?;
 
     Ok(())
 }

@@ -7,15 +7,21 @@ const {
   groveDbGet,
   groveDbInsert,
   groveDbClose,
+  groveDbFlush,
   groveDbStartTransaction,
   groveDbCommitTransaction,
+  groveDbRollbackTransaction,
+  groveDbIsTransactionStarted,
+  groveDbAbortTransaction,
   groveDbDelete,
   groveDbInsertIfNotExists,
   groveDbPutAux,
   groveDbDeleteAux,
   groveDbGetAux,
   groveDbGetPathQuery,
+  groveDbRootHash,
 } = require('../index.node');
+const {use} = require("chai");
 
 // Convert the DB methods from using callbacks to returning promises
 const groveDbGetAsync = promisify(groveDbGet);
@@ -23,12 +29,17 @@ const groveDbInsertAsync = promisify(groveDbInsert);
 const groveDbInsertIfNotExistsAsync = promisify(groveDbInsertIfNotExists);
 const groveDbDeleteAsync = promisify(groveDbDelete);
 const groveDbCloseAsync = promisify(groveDbClose);
+const groveDbFlushAsync = promisify(groveDbFlush);
 const groveDbStartTransactionAsync = promisify(groveDbStartTransaction);
 const groveDbCommitTransactionAsync = promisify(groveDbCommitTransaction);
+const groveDbRollbackTransactionAsync = promisify(groveDbRollbackTransaction);
+const groveDbIsTransactionStartedAsync = promisify(groveDbIsTransactionStarted);
+const groveDbAbortTransactionAsync = promisify(groveDbAbortTransaction);
 const groveDbPutAuxAsync = promisify(groveDbPutAux);
 const groveDbDeleteAuxAsync = promisify(groveDbDeleteAux);
 const groveDbGetAuxAsync = promisify(groveDbGetAux);
 const groveDbGetPathQueryAsync = promisify(groveDbGetPathQuery);
+const groveDbRootHashAsync = promisify(groveDbRootHash);
 
 // Wrapper class for the boxed `Database` for idiomatic JavaScript usage
 class GroveDB {
@@ -83,7 +94,16 @@ class GroveDB {
   }
 
   /**
-   * Closes connection to the DB
+   * Flush data on the disk
+   *
+   * @returns {Promise<void>}
+   */
+  async flush() {
+    return groveDbFlushAsync.call(this.db);
+  }
+
+  /**
+   * Close connection to the DB
    *
    * @returns {Promise<void>}
    */
@@ -115,6 +135,33 @@ class GroveDB {
   }
 
   /**
+   * Rollback transaction to this initial state when it was created
+   *
+   * @returns {Promise<void>}
+   */
+  async rollbackTransaction() {
+    return groveDbRollbackTransactionAsync.call(this.db);
+  }
+
+  /**
+   * Returns true if transaction started
+   *
+   * @returns {Promise<void>}
+   */
+  async isTransactionStarted() {
+    return groveDbIsTransactionStartedAsync.call(this.db);
+  }
+
+  /**
+   * Aborts transaction
+   *
+   * @returns {Promise<void>}
+   */
+  async abortTransaction() {
+    return groveDbAbortTransactionAsync.call(this.db);
+  }
+
+  /**
    * Put auxiliary data
    *
    * @param {Buffer} key
@@ -139,7 +186,7 @@ class GroveDB {
 
   /**
    * Get auxiliary data
-   * 
+   *
    * @param {Buffer} key
    * @param {boolean} [useTransaction=false]
    * @return {Promise<Buffer>}
@@ -157,6 +204,16 @@ class GroveDB {
    */
   async getPathQuery(query, useTransaction = false) {
     return groveDbGetPathQueryAsync.call(this.db, query, useTransaction);
+  }
+
+  /**
+   * Get root hash
+   *
+   * @param {boolean} [useTransaction=false]
+   * @returns {Promise<void>}
+   */
+  async getRootHash(useTransaction = false) {
+    return groveDbRootHashAsync.call(this.db, useTransaction);
   }
 }
 
