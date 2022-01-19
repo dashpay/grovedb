@@ -10,7 +10,6 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
-      - run: cargo build
       - run: cargo test
   clippy:
     runs-on: ubuntu-latest
@@ -21,3 +20,11 @@ jobs:
           toolchain: nightly
       - run: rustup component add clippy --toolchain nightly
       - run: cargo clippy
+  cargo-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+      - run: cargo check
