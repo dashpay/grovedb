@@ -68,7 +68,7 @@ impl Element {
         query: &Query,
     ) -> Result<Vec<Element>, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None, true);
-        let (elements, skipped) = Element::get_sized_query(merk, &sized_query)?;
+        let (elements, _) = Element::get_sized_query(merk, &sized_query)?;
         Ok(elements)
     }
 
