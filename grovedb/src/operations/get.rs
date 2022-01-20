@@ -80,10 +80,16 @@ impl GroveDb {
             Some(_) => &self.temp_subtrees,
         };
 
-        let merk = subtrees
-            .get(&Self::compress_subtree_key(path, None))
-            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+        let merk = self.get_subtree(path).unwrap();
+
+        // let merk = subtrees
+        //     .get(&Self::compress_subtree_key(path, None))
+        //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
         Element::get(&merk, key)
+    }
+
+    fn get_subtree(&self, path: &[&[u8]]) -> Result<Merk<PrefixedRocksDbStorage>, Error> {
+       todo!()
     }
 
     pub fn get_path_queries(
