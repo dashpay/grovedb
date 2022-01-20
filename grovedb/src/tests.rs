@@ -901,7 +901,7 @@ fn transaction_is_started_should_return_true_if_transaction_was_started() {
 
 #[test]
 fn transaction_is_started_should_return_false_if_transaction_was_not_started() {
-    let mut db = make_grovedb();
+    let db = make_grovedb();
 
     let result = db.is_transaction_started();
 
@@ -1455,10 +1455,10 @@ fn test_get_range_query_with_unique_subquery() {
 
     assert_eq!(elements.len(), 4);
 
-    let mut first_value = (1988 as u32).to_be_bytes().to_vec();
+    let first_value = (1988 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1991 as u32).to_be_bytes().to_vec();
+    let last_value = (1991 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1481,10 +1481,10 @@ fn test_get_range_query_with_unique_subquery_on_references() {
 
     assert_eq!(elements.len(), 4);
 
-    let mut first_value = (1988 as u32).to_be_bytes().to_vec();
+    let first_value = (1988 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1991 as u32).to_be_bytes().to_vec();
+    let last_value = (1991 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1583,10 +1583,10 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
 
     assert_eq!(elements.len(), 8);
 
-    let mut first_value = (1988 as u32).to_be_bytes().to_vec();
+    let first_value = (1988 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1995 as u32).to_be_bytes().to_vec();
+    let last_value = (1995 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1644,10 +1644,10 @@ fn test_get_range_from_query_with_unique_subquery() {
 
     assert_eq!(elements.len(), 5);
 
-    let mut first_value = (1995 as u32).to_be_bytes().to_vec();
+    let first_value = (1995 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1999 as u32).to_be_bytes().to_vec();
+    let last_value = (1999 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1705,10 +1705,10 @@ fn test_get_range_to_query_with_unique_subquery() {
 
     assert_eq!(elements.len(), 10);
 
-    let mut first_value = (1985 as u32).to_be_bytes().to_vec();
+    let first_value = (1985 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1994 as u32).to_be_bytes().to_vec();
+    let last_value = (1994 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1766,10 +1766,10 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
 
     assert_eq!(elements.len(), 11);
 
-    let mut first_value = (1985 as u32).to_be_bytes().to_vec();
+    let first_value = (1985 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1995 as u32).to_be_bytes().to_vec();
+    let last_value = (1995 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -2062,10 +2062,10 @@ fn test_get_range_query_with_limit_and_offset() {
 
     assert_eq!(elements.len(), 5);
 
-    let mut first_value = (1992 as u32).to_be_bytes().to_vec();
+    let first_value = (1992 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1996 as u32).to_be_bytes().to_vec();
+    let last_value = (1996 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
