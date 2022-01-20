@@ -191,7 +191,7 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::{Batch, Storage, Transaction};
+    use crate::{Batch, Storage};
 
     struct TempPrefixedStorage {
         storage: PrefixedRocksDbStorage,

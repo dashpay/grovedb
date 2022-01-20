@@ -13,10 +13,7 @@ use storage::{rocksdb_storage::RawPrefixedTransactionalIterator, RawIterator};
 use {super::Op, std::collections::LinkedList};
 
 use super::{tree::execute, Decoder, Node};
-use crate::{
-    proofs::{query::QueryItem::RangeAfter, Op::Parent},
-    tree::{Fetch, Hash, Link, RefWalker},
-};
+use crate::tree::{Fetch, Hash, Link, RefWalker};
 
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all of the requested values.
