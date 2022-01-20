@@ -249,7 +249,7 @@ impl GroveDb {
             Some(_) => &self.temp_subtrees,
         };
 
-        let prefixes: Vec<Vec<u8>> = subtrees.keys().map(|x| x.clone()).collect();
+        let prefixes: Vec<Vec<u8>> = subtrees.keys().cloned().collect();
 
         // TODO: make StorageOrTransaction which will has the access to either storage
         // or transaction
@@ -366,7 +366,7 @@ impl GroveDb {
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
     fn compress_subtree_key(path: &[&[u8]], key: Option<&[u8]>) -> Vec<u8> {
-        let segments_iter = path.iter().map(|x| *x).chain(key.into_iter());
+        let segments_iter = path.iter().copied().chain(key.into_iter());
         let mut segments_count = path.len();
         if key.is_some() {
             segments_count += 1;
@@ -378,7 +378,7 @@ impl GroveDb {
 
         res.extend(segments_count.to_ne_bytes());
         path.iter()
-            .map(|x| *x)
+            .copied()
             .chain(key.into_iter())
             .fold(&mut res, |acc, p| {
                 acc.extend(p.len().to_ne_bytes());
