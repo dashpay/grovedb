@@ -10,7 +10,8 @@
     "install": "npm run build",
     "clean": "cargo +nightly clean",
     "test": "mocha node-grove/index.spec.js",
-    "postpublish": "rm README.md && mv README.md.old README.md"
+    "postpublish": "rm README.md && mv README.md.old README.md",
+    "lint": "eslint ."
   },
   "files": [
     "node-grove/index.js",
