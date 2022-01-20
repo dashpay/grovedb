@@ -30,7 +30,7 @@ impl GroveDb {
                 let mut merk = subtrees
                     .get_mut(&Self::compress_subtree_key(path, None))
                     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                Element::delete(&mut merk, key.clone(), transaction)?;
+                Element::delete(merk, key.clone(), transaction)?;
             }
 
             if let Element::Tree(_) = element {
