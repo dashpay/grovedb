@@ -74,7 +74,7 @@ impl GroveDb {
         let merk = subtrees
             .get(&Self::compress_subtree_key(path, None))
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-        Element::get(&merk, key)
+        Element::get(merk, key)
     }
 
     pub fn get_path_queries(

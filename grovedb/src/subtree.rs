@@ -54,7 +54,7 @@ impl Element {
     /// Merk should be loaded by this moment
     pub fn get(merk: &Merk<PrefixedRocksDbStorage>, key: &[u8]) -> Result<Element, Error> {
         let element = bincode::deserialize(
-            merk.get(&key)
+            merk.get(key)
                 .map_err(|e| Error::CorruptedData(e.to_string()))?
                 .ok_or(Error::InvalidPath("key not found in Merk"))?
                 .as_slice(),

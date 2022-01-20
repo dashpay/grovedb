@@ -164,14 +164,14 @@ impl GroveDb {
             // and store hash + index for later root proof execution
             let root_key = &path[0];
             let (hash, proof_result_map) = GroveDb::execute_path(&path, &proof.proofs)?;
-            let compressed_root_key_path = GroveDb::compress_subtree_key(&[], Some(&root_key));
+            let compressed_root_key_path = GroveDb::compress_subtree_key(&[], Some(root_key));
             let compressed_query_path = GroveDb::compress_subtree_key(&path, None);
 
             let index = proof
                 .root_leaf_keys
                 .get(&compressed_root_key_path)
                 .ok_or(Error::InvalidPath("Bad path"))?;
-            if !root_keys_index.contains(&index) {
+            if !root_keys_index.contains(index) {
                 root_keys_index.push(*index);
                 root_hashes.push(hash);
             }
