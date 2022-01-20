@@ -367,18 +367,18 @@ impl GroveDb {
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
     fn compress_subtree_key(path: &[&[u8]], key: Option<&[u8]>) -> Vec<u8> {
-        let segments_iter = path.into_iter().map(|x| *x).chain(key.into_iter());
+        let segments_iter = path.iter().map(|x| *x).chain(key.into_iter());
         let mut segments_count = path.len();
         if key.is_some() {
             segments_count += 1;
         }
         let mut res = segments_iter.fold(Vec::<u8>::new(), |mut acc, p| {
-            acc.extend(p.into_iter());
+            acc.extend(p.iter());
             acc
         });
 
         res.extend(segments_count.to_ne_bytes());
-        path.into_iter()
+        path.iter()
             .map(|x| *x)
             .chain(key.into_iter())
             .fold(&mut res, |acc, p| {
