@@ -73,7 +73,7 @@ impl GroveDb {
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Vec<Vec<Vec<u8>>>, Error> {
         let mut queue: Vec<Vec<Vec<u8>>> = vec![path.clone()];
-        let mut result: Vec<Vec<Vec<u8>>> = vec![path.clone()];
+        let mut result: Vec<Vec<Vec<u8>>> = vec![path];
 
         while let Some(q) = queue.pop() {
             // TODO: eventually we need to do something about this nested slices
