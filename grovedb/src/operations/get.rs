@@ -1,6 +1,8 @@
 use std::{
+    arch::x86_64::_mm_extract_si64,
     collections::{HashMap, HashSet},
     ops::Range,
+    rc::Rc,
 };
 
 use merk::{
@@ -75,21 +77,28 @@ impl GroveDb {
         key: &[u8],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Element, Error> {
-        let subtrees = match transaction {
-            None => &self.subtrees,
-            Some(_) => &self.temp_subtrees,
-        };
-
-        let merk = self.get_subtree(path).unwrap();
-
-        // let merk = subtrees
-        //     .get(&Self::compress_subtree_key(path, None))
-        //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-        Element::get(&merk, key)
+        Element::get(&self.get_subtree(path, transaction)?, key)
     }
 
-    fn get_subtree(&self, path: &[&[u8]]) -> Result<Merk<PrefixedRocksDbStorage>, Error> {
-       todo!()
+    pub fn get_subtree(
+        &self,
+        path: &[&[u8]],
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<Merk<PrefixedRocksDbStorage>, Error> {
+        let subtree_prefix = GroveDb::compress_subtree_key(path, None);
+        match transaction {
+            None => Ok(
+                Merk::open(PrefixedRocksDbStorage::new(self.storage(), subtree_prefix)?)
+                    .map_err(|_| Error::InvalidPath("no subtree found under that path"))?,
+            ),
+            Some(_) => {
+                if let Some(merk) = self.temp_subtrees.get(&subtree_prefix) {
+                    Ok(merk.clone())
+                } else {
+                    Err(Error::InvalidPath("no subtree found under that path"))
+                }
+            }
+        }
     }
 
     pub fn get_path_queries(
@@ -98,8 +107,9 @@ impl GroveDb {
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Vec<Vec<u8>>, Error> {
         let elements = self.get_path_queries_raw(path_queries, transaction)?;
-        let results = elements.into_iter().map(|element| {
-            match element {
+        let results = elements
+            .into_iter()
+            .map(|element| match element {
                 Element::Reference(reference_path) => {
                     let maybe_item = self.follow_reference(reference_path, transaction)?;
                     if let Element::Item(item) = maybe_item {
@@ -108,9 +118,11 @@ impl GroveDb {
                         Err(Error::InvalidQuery("the reference must result in an item"))
                     }
                 }
-                other => Err(Error::InvalidQuery("path_queries can only refer to references")),
-            }
-        }).collect::<Result<Vec<Vec<u8>>, Error>>()?;
+                other => Err(Error::InvalidQuery(
+                    "path_queries can only refer to references",
+                )),
+            })
+            .collect::<Result<Vec<Vec<u8>>, Error>>()?;
         Ok(results)
     }
 
@@ -133,8 +145,9 @@ impl GroveDb {
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(Vec<Vec<u8>>, u16), Error> {
         let (elements, skipped) = self.get_path_query_raw(path_query, transaction)?;
-        let results = elements.into_iter().map(|element| {
-            match element {
+        let results = elements
+            .into_iter()
+            .map(|element| match element {
                 Element::Reference(reference_path) => {
                     let maybe_item = self.follow_reference(reference_path, transaction)?;
                     if let Element::Item(item) = maybe_item {
@@ -144,9 +157,11 @@ impl GroveDb {
                     }
                 }
                 Element::Item(item) => Ok(item),
-                Element::Tree(_) => Err(Error::InvalidQuery("path_queries can only refer to items and references")),
-            }
-        }).collect::<Result<Vec<Vec<u8>>, Error>>()?;
+                Element::Tree(_) => Err(Error::InvalidQuery(
+                    "path_queries can only refer to items and references",
+                )),
+            })
+            .collect::<Result<Vec<Vec<u8>>, Error>>()?;
         Ok((results, skipped))
     }
 
