@@ -321,17 +321,17 @@ impl QueryItem {
 
         // Lower is bounded
         if upper_unbounded {
-            return QueryItem::RangeFrom(RangeFrom {
+            QueryItem::RangeFrom(RangeFrom {
                 start: start.to_vec(),
-            });
+            })
         } else if end_inclusive {
-            return QueryItem::RangeInclusive(RangeInclusive::new(start.to_vec(), end.to_vec()));
+            QueryItem::RangeInclusive(RangeInclusive::new(start.to_vec(), end.to_vec()))
         } else {
             // upper is bounded and not inclusive
-            return QueryItem::Range(Range {
+            QueryItem::Range(Range {
                 start: start.to_vec(),
                 end: end.to_vec(),
-            });
+            })
         }
     }
 
