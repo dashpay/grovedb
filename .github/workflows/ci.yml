@@ -3,7 +3,7 @@ on: [push, pull_request]
 name: CI
 
 jobs:
-  build_and_test:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -11,7 +11,7 @@ jobs:
         with:
           toolchain: nightly
       - run: cargo test
-  clippy:
+  linting:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -20,7 +20,7 @@ jobs:
           toolchain: nightly
       - run: rustup component add clippy --toolchain nightly
       - run: cargo clippy
-  cargo-check:
+  errors:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
