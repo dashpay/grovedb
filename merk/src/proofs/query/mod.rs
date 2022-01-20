@@ -434,7 +434,7 @@ impl QueryItem {
                     && (!left_to_right || iter.key() != Some(end));
                 // if we are going backwards, we need to make sure we are going to stop after
                 // the first element
-                let next_valid = !(!left_to_right && iter.key() == Some(start));
+                let next_valid = left_to_right || iter.key() != Some(start);
                 (valid, next_valid)
             }
             QueryItem::RangeInclusive(range_inclusive) => {
@@ -457,7 +457,7 @@ impl QueryItem {
                     && iter.valid()
                     && iter.key().is_some()
                     && work;
-                let next_valid = !(!left_to_right && iter.key() == Some(start));
+                let next_valid = left_to_right || iter.key() != Some(start);
                 (valid, next_valid)
             }
             QueryItem::RangeTo(RangeTo { end }) => {
@@ -476,14 +476,14 @@ impl QueryItem {
                 let valid = (limit == None || limit.unwrap() > 0)
                     && iter.valid()
                     && iter.key().is_some()
-                    && !(!left_to_right && iter.key() == Some(start));
+                    && (left_to_right || iter.key() != Some(start));
                 (valid, true)
             }
             QueryItem::RangeAfterTo(Range { start, end }) => {
                 let valid = (limit == None || limit.unwrap() > 0)
                     && iter.valid()
                     && iter.key().is_some()
-                    && !(!left_to_right && iter.key() == Some(start))
+                    && (left_to_right || iter.key() != Some(start))
                     && !(left_to_right && iter.key() == Some(end));
                 (valid, true)
             }
@@ -492,7 +492,7 @@ impl QueryItem {
                     && iter.valid()
                     && iter.key().is_some()
                     && work;
-                let next_valid = !(!left_to_right && iter.key() == Some(range_inclusive.start()))
+                let next_valid = (left_to_right || iter.key() != Some(range_inclusive.start()))
                     && !(left_to_right && iter.key() == Some(range_inclusive.end()));
                 (valid, next_valid)
             }
