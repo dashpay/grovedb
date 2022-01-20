@@ -463,7 +463,7 @@ impl GroveDb {
     /// Returns true if transaction is started. For more details on the
     /// transaction usage, please check [`GroveDb::start_transaction`]
     pub fn is_transaction_started(&self) -> bool {
-        return self.is_readonly;
+        self.is_readonly
     }
 
     /// Commits previously started db transaction. For more details on the
