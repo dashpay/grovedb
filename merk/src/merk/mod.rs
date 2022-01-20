@@ -433,7 +433,6 @@ impl Commit for MerkCommitter {
 
 #[cfg(test)]
 mod test {
-    use rocksdb::{DBRawIteratorWithThreadMode, OptimisticTransactionDB};
     use storage::{
         rocksdb_storage::{
             default_rocksdb, PrefixedRocksDbStorage, RawPrefixedTransactionalIterator,
