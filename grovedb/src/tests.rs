@@ -1421,7 +1421,7 @@ fn test_get_range_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1449,7 +1449,7 @@ fn test_get_range_query_with_unique_subquery() {
 
     let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1475,7 +1475,7 @@ fn test_get_range_query_with_unique_subquery_on_references() {
 
     let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1510,7 +1510,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1547,7 +1547,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1577,7 +1577,7 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
 
     let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1610,7 +1610,7 @@ fn test_get_range_from_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1638,7 +1638,7 @@ fn test_get_range_from_query_with_unique_subquery() {
 
     let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1671,7 +1671,7 @@ fn test_get_range_to_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1699,7 +1699,7 @@ fn test_get_range_to_query_with_unique_subquery() {
 
     let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1732,7 +1732,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1760,7 +1760,7 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
 
     let path_query = PathQuery::new_unsized(&path, query.clone(), Some(subquery_key), None);
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1793,7 +1793,7 @@ fn test_get_range_after_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1830,7 +1830,7 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1867,7 +1867,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1903,7 +1903,7 @@ fn test_get_range_query_with_limit_and_offset() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1925,7 +1925,7 @@ fn test_get_range_query_with_limit_and_offset() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1947,7 +1947,7 @@ fn test_get_range_query_with_limit_and_offset() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1970,7 +1970,7 @@ fn test_get_range_query_with_limit_and_offset() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1998,7 +1998,7 @@ fn test_get_range_query_with_limit_and_offset() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -2022,7 +2022,7 @@ fn test_get_range_query_with_limit_and_offset() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -2036,7 +2036,7 @@ fn test_get_range_query_with_limit_and_offset() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -2056,7 +2056,7 @@ fn test_get_range_query_with_limit_and_offset() {
         None,
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
