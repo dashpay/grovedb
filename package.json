@@ -5,7 +5,7 @@
   "main": "node-grove/index.js",
   "readme": "node-grove/README.md",
   "scripts": {
-    "build": "cargo-cp-artifact -nc index.node -- cargo +nightly-aarch64-apple-darwin build --message-format=json-render-diagnostics",
+    "build": "cargo-cp-artifact -nc index.node -- cargo build --message-format=json-render-diagnostics",
     "prepare": "mv README.md README.md.old && cp node-grove/README.md README.md",
     "install": "npm run build",
     "clean": "cargo +nightly clean",
