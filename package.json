@@ -1,19 +1,24 @@
 {
-  "name": "@dashevo/node-grove",
+  "name": "@dashevo/grovedb",
   "version": "0.0.10",
-  "description": "Neon binding for GroveDb",
+  "description": "Node.JS binding for GroveDb",
   "main": "node-grove/index.js",
   "readme": "node-grove/README.md",
   "scripts": {
-    "build": "cargo-cp-artifact -nc index.node -- cargo +nightly-aarch64-apple-darwin build --message-format=json-render-diagnostics",
+    "build": "cargo-cp-artifact -ac node-grove native/index.node -- cargo +nightly build --message-format=json-render-diagnostics && npm run build:move",
+    "build:debug": "npm run build --",
+    "build:release": "npm run build -- --release",
+    "build:move": "neon-tag-prebuild && cp -R prebuilds/* node-grove/prebuilds/ && rm -rf native && rm -rf prebuilds",
     "prepare": "mv README.md README.md.old && cp node-grove/README.md README.md",
-    "install": "npm run build",
+    "install": "neon-load-or-build",
     "clean": "cargo +nightly clean",
+    "pretest": "npm run build:debug",
     "test": "mocha node-grove/index.spec.js",
     "postpublish": "rm README.md && mv README.md.old README.md",
     "lint": "eslint ."
   },
   "files": [
+    "node-grove/prebuilds",
     "node-grove/index.js",
     "node-grove/src",
     "node-grove/Cargo.toml",
@@ -27,10 +32,10 @@
   "license": "MIT",
   "devDependencies": {
     "chai": "^4.3.4",
-    "mocha": "^9.1.4",
     "eslint": "^8.7.0",
     "eslint-config-airbnb-base": "^15.0.0",
-    "eslint-plugin-import": "^2.25.4"
+    "eslint-plugin-import": "^2.25.4",
+    "mocha": "^9.1.4"
   },
   "repository": {
     "type": "git",
@@ -46,6 +51,10 @@
   },
   "homepage": "https://github.com/dashevo/grovedb#readme",
   "dependencies": {
-    "cargo-cp-artifact": "^0.1.6"
+    "cargo-cp-artifact": "^0.1.6",
+    "detect-libc": "^2.0.0",
+    "neon-cli": "^0.9.1",
+    "neon-load-or-build": "^2.2.2",
+    "neon-tag-prebuild": "github:shumkov/neon-tag-prebuild#patch-1"
   }
 }

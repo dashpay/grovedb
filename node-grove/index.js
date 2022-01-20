@@ -20,7 +20,9 @@ const {
   groveDbGetAux,
   groveDbGetPathQuery,
   groveDbRootHash,
-} = require('../index.node');
+} = require('neon-load-or-build')({
+  dir: __dirname,
+});
 
 // Convert the DB methods from using callbacks to returning promises
 const groveDbGetAsync = promisify(groveDbGet);

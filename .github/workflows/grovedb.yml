@@ -4,7 +4,7 @@ on:
     branches:
       - master
 
-name: GroveDB tests
+name: GroveDB
 
 jobs:
   test:
