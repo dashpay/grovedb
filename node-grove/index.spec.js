@@ -409,7 +409,7 @@ describe('GroveDB', () => {
     });
   });
 
-  describe('get by query', () => {
+  describe('#getPathQuery', () => {
     it('should be able to retrieve data using query', async () => {
       // Making a subtree to insert items into
       await groveDb.insert(
@@ -418,21 +418,25 @@ describe('GroveDB', () => {
         { type: 'tree', value: Buffer.alloc(32) },
       );
 
+      const aValue = Buffer.from('a');
+      const bValue = Buffer.from('b');
+      const cValue = Buffer.from('c');
+
       // Inserting items into the subtree
       await groveDb.insert(
         itemTreePath,
         Buffer.from('akey'),
-        { type: 'item', value: Buffer.from('a') },
+        { type: 'item', value: aValue },
       );
       await groveDb.insert(
         itemTreePath,
         Buffer.from('bkey'),
-        { type: 'item', value: Buffer.from('b') },
+        { type: 'item', value: bValue },
       );
       await groveDb.insert(
         itemTreePath,
         Buffer.from('ckey'),
-        { type: 'item', value: Buffer.from('c') },
+        { type: 'item', value: cValue },
       );
 
       // Do a simple range query
@@ -444,15 +448,26 @@ describe('GroveDB', () => {
             items: [
               {
                 type: 'rangeFrom',
-                from: Buffer.from('b'),
-              }
-            ]
+                from: bValue,
+              },
+            ],
           },
-          leftToRight: true
-        }
+          leftToRight: true,
+        },
       };
+
       const result = await groveDb.getPathQuery(query);
-      // TODO
+
+      expect(result).to.have.a.lengthOf(2);
+
+      const [elementValues, skipped] = result;
+
+      expect(elementValues).to.deep.equals([
+        bValue,
+        cValue,
+      ]);
+
+      expect(skipped).to.equals(0);
     });
   });
 

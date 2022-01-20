@@ -21,7 +21,6 @@ const {
   groveDbGetPathQuery,
   groveDbRootHash,
 } = require('../index.node');
-const {use} = require("chai");
 
 // Convert the DB methods from using callbacks to returning promises
 const groveDbGetAsync = promisify(groveDbGet);
@@ -197,7 +196,7 @@ class GroveDB {
 
   /**
    * Get data using query.
-   * 
+   *
    * @param {PathQuery}
    * @param {boolean} [useTransaction=false]
    * @return {Promise<*>}
