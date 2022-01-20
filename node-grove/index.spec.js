@@ -509,7 +509,6 @@ describe('GroveDB', () => {
         Buffer.from('dcKey'),
         { type: 'item', value: ebValue },
       );
-
     });
 
     it('should be able to use limit', async () => {
