@@ -137,10 +137,10 @@ impl Element {
                         let (mut sub_elements, skipped) =
                             Element::get_sized_query(inner_merk, &inner_query)?;
                         if let Some(limit) = limit {
-                            *limit = *limit - sub_elements.len() as u16;
+                            *limit -= sub_elements.len() as u16;
                         }
                         if let Some(offset) = offset {
-                            *offset = *offset - skipped;
+                            *offset -= skipped;
                         }
                         results.append(&mut sub_elements);
                     } else {
