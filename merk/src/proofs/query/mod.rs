@@ -336,10 +336,7 @@ impl QueryItem {
     }
 
     pub fn is_range(&self) -> bool {
-        match self {
-            QueryItem::Key(_) => false,
-            _ => true,
-        }
+        !matches!(self, QueryItem::Key(_))
     }
 
     pub fn seek_for_iter(&self, iter: &mut RawPrefixedTransactionalIterator, left_to_right: bool) {
