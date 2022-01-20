@@ -89,10 +89,8 @@ impl Element {
             if limit.is_some() {
                 *limit = Some(limit.unwrap() - 1);
             }
-        } else {
-            if offset.is_some() {
-                *offset = Some(offset.unwrap() - 1);
-            }
+        } else if offset.is_some() {
+            *offset = Some(offset.unwrap() - 1);
         }
         Ok(())
     }
@@ -152,10 +150,8 @@ impl Element {
                             if limit.is_some() {
                                 *limit = Some(limit.unwrap() - 1);
                             }
-                        } else {
-                            if offset.is_some() {
-                                *offset = Some(offset.unwrap() - 1);
-                            }
+                        } else if offset.is_some() {
+                            *offset = Some(offset.unwrap() - 1);
                         }
                     }
                 }
@@ -166,10 +162,8 @@ impl Element {
                     if limit.is_some() {
                         *limit = Some(limit.unwrap() - 1);
                     }
-                } else {
-                    if offset.is_some() {
-                        *offset = Some(offset.unwrap() - 1);
-                    }
+                } else if offset.is_some() {
+                    *offset = Some(offset.unwrap() - 1);
                 }
             }
         }
