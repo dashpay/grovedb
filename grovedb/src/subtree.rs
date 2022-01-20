@@ -114,53 +114,63 @@ impl Element {
     ) -> Result<(), Error> {
         match element {
             Element::Tree(_) => {
-                // if the query had a subquery then we should get elements from it
-                if let Some(subquery_key) = subquery_key_option {
-                    let subtrees = subtrees_option.ok_or(Error::MissingParameter(
-                        "subtrees must be provided when using a subquery key",
-                    ))?;
-                    // this means that for each element we should get the element at
-                    // the subquery_key
-                    let mut path_vec = path
-                        .ok_or(Error::MissingParameter(
-                            "the path must be provided when using a subquery key",
-                        ))?
-                        .to_vec();
-                    path_vec.push(key.ok_or(Error::MissingParameter(
-                        "the key must be provided when using a subquery key",
-                    ))?);
+                if subtrees_option.is_none() && subquery.is_none() {
+                    return Err(Error::InvalidPath(
+                        "you must provide a subquery or a subquery_key when interacting with a \
+                         tree of trees",
+                    ));
+                }
+                let subtrees = subtrees_option.ok_or(Error::MissingParameter(
+                    "subtrees must be provided when using a subquery key",
+                ))?;
+                // this means that for each element we should get the element at
+                // the subquery_key or just the directly with the subquery
+                let mut path_vec = path
+                    .ok_or(Error::MissingParameter(
+                        "the path must be provided when using a subquery key",
+                    ))?
+                    .to_vec();
+                path_vec.push(key.ok_or(Error::MissingParameter(
+                    "the key must be provided when using a subquery key",
+                ))?);
 
-                    if let Some(subquery) = subquery {
+                if let Some(subquery) = subquery {
+                    if let Some(subquery_key) = &subquery_key_option {
                         path_vec.push(subquery_key.as_slice());
+                    }
 
-                        let inner_merk = subtrees
-                            .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
-                            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                        let inner_query = SizedQuery::new(subquery, *limit, *offset, left_to_right);
-                        let (mut sub_elements, skipped) =
-                            Element::get_sized_query(inner_merk, &inner_query)?;
-                        if let Some(limit) = limit {
-                            *limit = *limit - sub_elements.len() as u16;
+                    let inner_merk = subtrees
+                        .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
+                        .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                    let inner_query = SizedQuery::new(subquery, *limit, *offset, left_to_right);
+                    let (mut sub_elements, skipped) =
+                        Element::get_sized_query(inner_merk, &inner_query)?;
+                    if let Some(limit) = limit {
+                        *limit = *limit - sub_elements.len() as u16;
+                    }
+                    if let Some(offset) = offset {
+                        *offset = *offset - skipped;
+                    }
+                    results.append(&mut sub_elements);
+                } else if let Some(subquery_key) = subquery_key_option {
+                    let inner_merk = subtrees
+                        .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
+                        .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                    if offset.is_none() || offset.is_some() && offset.unwrap() == 0 {
+                        results.push(Element::get(inner_merk, subquery_key.as_slice())?);
+                        if limit.is_some() {
+                            *limit = Some(limit.unwrap() - 1);
                         }
-                        if let Some(offset) = offset {
-                            *offset = *offset - skipped;
-                        }
-                        results.append(&mut sub_elements);
                     } else {
-                        let inner_merk = subtrees
-                            .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
-                            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                        if offset.is_none() || offset.is_some() && offset.unwrap() == 0 {
-                            results.push(Element::get(inner_merk, subquery_key.as_slice())?);
-                            if limit.is_some() {
-                                *limit = Some(limit.unwrap() - 1);
-                            }
-                        } else {
-                            if offset.is_some() {
-                                *offset = Some(offset.unwrap() - 1);
-                            }
+                        if offset.is_some() {
+                            *offset = Some(offset.unwrap() - 1);
                         }
                     }
+                } else {
+                    return Err(Error::InvalidPath(
+                        "you must provide a subquery or a subquery_key when interacting with a \
+                         tree of trees",
+                    ));
                 }
             }
             _ => {

@@ -1313,8 +1313,13 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &mut TempGroveDb
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
         let i_vec = (i as u32).to_be_bytes().to_vec();
-        db.insert(&[TEST_LEAF, b"1"], i_vec.clone(), Element::empty_tree(), None)
-            .expect("successful subtree insert");
+        db.insert(
+            &[TEST_LEAF, b"1"],
+            i_vec.clone(),
+            Element::empty_tree(),
+            None,
+        )
+        .expect("successful subtree insert");
         // Insert element 0
         // Insert some elements into subtree
         db.insert(
@@ -1323,7 +1328,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &mut TempGroveDb
             Element::empty_tree(),
             None,
         )
-            .expect("successful subtree insert");
+        .expect("successful subtree insert");
 
         for j in 100u32..150 {
             let random_key = rand::thread_rng().gen::<[u8; 32]>();
@@ -1337,7 +1342,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &mut TempGroveDb
                 Element::Item(j_vec.clone()),
                 None,
             )
-                .expect("successful value insert");
+            .expect("successful value insert");
 
             db.insert(
                 &[TEST_LEAF, b"1", i_vec.clone().as_slice(), b"0"],
@@ -1345,7 +1350,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &mut TempGroveDb
                 Element::Reference(vec![TEST_LEAF.to_vec(), b"0".to_vec(), random_key.to_vec()]),
                 None,
             )
-                .expect("successful value insert");
+            .expect("successful value insert");
         }
     }
 }
@@ -1378,8 +1383,13 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &mut TempGroveDb) {
 
     for i in 1985u32..2000 {
         let i_vec = (i as u32).to_be_bytes().to_vec();
-        db.insert(&[TEST_LEAF, b"1"], i_vec.clone(), Element::empty_tree(), None)
-            .expect("successful subtree insert");
+        db.insert(
+            &[TEST_LEAF, b"1"],
+            i_vec.clone(),
+            Element::empty_tree(),
+            None,
+        )
+        .expect("successful subtree insert");
 
         // We should insert every item to the tree holding items
         db.insert(
@@ -1388,7 +1398,7 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &mut TempGroveDb) {
             Element::Item(i_vec.clone()),
             None,
         )
-            .expect("successful value insert");
+        .expect("successful value insert");
 
         // We should insert a reference to the item
         db.insert(
@@ -1397,7 +1407,7 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &mut TempGroveDb) {
             Element::Reference(vec![TEST_LEAF.to_vec(), b"0".to_vec(), i_vec.clone()]),
             None,
         )
-            .expect("successful value insert");
+        .expect("successful value insert");
     }
 }
 
