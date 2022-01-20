@@ -53,6 +53,7 @@ pub enum Error {
     DbIsInReadonlyMode,
 }
 
+#[derive(Debug)]
 pub struct PathQuery {
     // TODO: Make generic over path type
     path: Vec<Vec<u8>>,
