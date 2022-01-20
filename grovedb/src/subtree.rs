@@ -234,7 +234,7 @@ impl Element {
                         &mut results,
                         &mut limit,
                         &mut offset,
-                    );
+                    )?;
                 }
             } else {
                 // this is a query on a range
@@ -262,7 +262,7 @@ impl Element {
                         &mut results,
                         &mut limit,
                         &mut offset,
-                    );
+                    )?;
                     if sized_query.left_to_right {
                         iter.next();
                     } else {
