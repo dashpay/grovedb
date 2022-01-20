@@ -299,8 +299,7 @@ impl GroveDb {
                 .expect("`root_leaf_keys` must be in sync with `subtrees`");
             leaf_hashes[*root_leaf_idx] = subtree_merk.root_hash();
         }
-        let res = MerkleTree::<Sha256>::from_leaves(&leaf_hashes);
-        res
+        MerkleTree::<Sha256>::from_leaves(&leaf_hashes)
     }
 
     pub fn elements_iterator(
