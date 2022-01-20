@@ -1089,6 +1089,77 @@ fn test_find_subtrees() {
 }
 
 #[test]
+fn test_get_subtree() {
+    let mut db = make_grovedb();
+    let element = Element::Item(b"ayy".to_vec());
+
+    // Returns error is subtree is not valid
+    let subtree = db.get_subtree(&[TEST_LEAF, b"invalid_tree"], None);
+    assert_eq!(subtree.is_err(), true);
+
+    // Doesn't return an error for subtree that exists but empty
+    // let subtree = db.get_subtree(&[TEST_LEAF], None);
+    // assert_eq!(subtree.is_err(), false);
+
+    // Insert some nested subtrees
+    db.insert(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
+        .expect("successful subtree 1 insert");
+    // let subtree = db.get_subtree(&[TEST_LEAF, b"key1"], None);
+    // assert_eq!(subtree.is_err(), false);
+
+    db.insert(
+        &[TEST_LEAF, b"key1"],
+        b"key2".to_vec(),
+        Element::empty_tree(),
+        None,
+    )
+        .expect("successful subtree 2 insert");
+
+    // Insert an element into subtree
+    db.insert(
+        &[TEST_LEAF, b"key1", b"key2"],
+        b"key3".to_vec(),
+        element.clone(),
+        None,
+    )
+        .expect("successful value insert");
+    db.insert(&[TEST_LEAF], b"key4".to_vec(), Element::empty_tree(), None)
+        .expect("successful subtree 3 insert");
+
+    // Retrieve subtree instance
+    // Check if it returns the same instance that was inserted
+    // let subtree = db.get_subtree(&[TEST_LEAF, b"key1", b"key2"], None).unwrap();
+    // let result_element = Element::get(&subtree, b"key3").unwrap();
+    // assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
+
+    // Insert a new tree with transaction
+    // db.start_transaction().unwrap();
+    // let storage = db.storage();
+    // let transaction = storage.transaction();
+
+    // db.insert(
+    //     &[TEST_LEAF, b"key1"],
+    //     b"innertree".to_vec(),
+    //     Element::empty_tree(),
+    //     // Some(&transaction),
+    //     None,
+    // ).expect("successful subtree insert");
+
+    // db.insert(
+    //     &[TEST_LEAF, b"key1", b"innertree"],
+    //     b"key4".to_vec(),
+    //     element.clone(),
+    //     Some(&transaction),
+    // ).expect("successful value insert");
+
+    // Retrieve subtree instance without transaction
+    let subtree = db.get_subtree(&[TEST_LEAF, b"key1", b"innertree"], None);
+    assert_eq!(subtree.is_err(), false);
+    // let result_element = Element::get(&subtree, b"key4").unwrap();
+    // assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
+}
+
+#[test]
 fn test_subtree_deletion() {
     let element = Element::Item(b"ayy".to_vec());
     let mut db = make_grovedb();
