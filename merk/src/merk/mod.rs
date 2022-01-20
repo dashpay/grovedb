@@ -445,8 +445,6 @@ mod test {
     use super::{Merk, MerkSource, RefWalker};
     use crate::{test_utils::*, Op};
 
-    type OptimisticTransactionDBRawIterator<'a> =
-        DBRawIteratorWithThreadMode<'a, OptimisticTransactionDB>;
     // TODO: Close and then reopen test
 
     fn assert_invariants(merk: &TempMerk) {
