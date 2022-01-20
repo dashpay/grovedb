@@ -2170,3 +2170,131 @@ fn test_root_hash() {
     db.commit_transaction(transaction);
     assert_ne!(db.root_hash(None), root_hash_outside);
 }
+
+#[test]
+fn test_get_path_query_with_subquery_and_subquery_key() {
+    // This test attempts to get subtree contents with one level of indirection (it
+    // has one sub-sub tree to be skipped by `subquery_key` usage)
+    let mut db = make_grovedb();
+    let subtree_key = b"subtree_key".to_vec();
+    let element_a = Element::Item(b"ayya".to_vec());
+    let element_b = Element::Item(b"ayyb".to_vec());
+    let element_c = Element::Item(b"ayyc".to_vec());
+
+    db.insert(
+        &[TEST_LEAF],
+        subtree_key.clone(),
+        Element::empty_tree(),
+        None,
+    )
+    .expect("successful subtree insert");
+    db.insert(
+        &[TEST_LEAF, &subtree_key],
+        subtree_key.clone(),
+        Element::empty_tree(),
+        None,
+    )
+    .expect("successful subtree insert");
+
+    db.insert(
+        &[TEST_LEAF, &subtree_key, &subtree_key],
+        b"keya".to_vec(),
+        element_a.clone(),
+        None,
+    )
+    .expect("successful value insert");
+    db.insert(
+        &[TEST_LEAF, &subtree_key, &subtree_key],
+        b"keyb".to_vec(),
+        element_b.clone(),
+        None,
+    )
+    .expect("successful value insert");
+    db.insert(
+        &[TEST_LEAF, &subtree_key, &subtree_key],
+        b"keyc".to_vec(),
+        element_c.clone(),
+        None,
+    )
+    .expect("successful value insert");
+
+    let mut query = Query::new();
+    query.insert_all();
+    let mut subquery = Query::new();
+    subquery.insert_all();
+    let path_query = PathQuery::new(
+        vec![TEST_LEAF.to_vec()],
+        SizedQuery::new(query, None, None, true),
+        Some(subtree_key),
+        Some(subquery),
+    );
+
+    let result = db
+        .get_path_query(&path_query, None)
+        .expect("should return items");
+    assert_eq!(
+        result.0.into_iter().map(Element::Item).collect::<Vec<_>>(),
+        vec![element_a, element_b, element_c]
+    );
+}
+
+#[test]
+fn test_get_path_query_with_subquery_without_subquery_key() {
+    // This test attempts to get subtree contents without `subquery_key` usage
+    // meaning that first we query a subtree and subquery will give all its children
+    // items
+    let mut db = make_grovedb();
+    let subtree_key = b"subtree_key".to_vec();
+    let element_a = Element::Item(b"ayya".to_vec());
+    let element_b = Element::Item(b"ayyb".to_vec());
+    let element_c = Element::Item(b"ayyc".to_vec());
+
+    db.insert(
+        &[TEST_LEAF],
+        subtree_key.clone(),
+        Element::empty_tree(),
+        None,
+    )
+    .expect("successful subtree insert");
+
+    db.insert(
+        &[TEST_LEAF, &subtree_key],
+        b"keya".to_vec(),
+        element_a.clone(),
+        None,
+    )
+    .expect("successful value insert");
+    db.insert(
+        &[TEST_LEAF, &subtree_key],
+        b"keyb".to_vec(),
+        element_b.clone(),
+        None,
+    )
+    .expect("successful value insert");
+    db.insert(
+        &[TEST_LEAF, &subtree_key],
+        b"keyc".to_vec(),
+        element_c.clone(),
+        None,
+    )
+    .expect("successful value insert");
+
+    let mut query = Query::new();
+    query.insert_all();
+    let mut subquery = Query::new();
+    subquery.insert_all();
+    let path_query = PathQuery::new(
+        vec![TEST_LEAF.to_vec()],
+        SizedQuery::new(query, None, None, true),
+        None,
+        Some(subquery),
+    );
+
+    let result = db
+        .get_path_query(&path_query, None)
+        .expect("should return items");
+    assert_eq!(
+        result.0.into_iter().map(Element::Item).collect::<Vec<_>>(),
+        vec![element_a, element_b, element_c]
+    );
+}

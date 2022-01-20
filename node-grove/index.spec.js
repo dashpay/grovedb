@@ -417,12 +417,14 @@ describe('GroveDB', () => {
     let cValue;
     let cKey;
     let dPath;
+    let dKey;
     let ePath;
 
     let daValue;
     let dbValue;
     let dcValue;
     let eaValue;
+    let eaKey;
     let ebValue;
 
     beforeEach(async () => {
@@ -438,10 +440,12 @@ describe('GroveDB', () => {
       bKey = Buffer.from('bKey');
       cValue = Buffer.from('c');
       cKey = Buffer.from('cKey');
+      dKey = Buffer.from('dKey');
       daValue = Buffer.from('da');
       dbValue = Buffer.from('db');
       dcValue = Buffer.from('dc');
       eaValue = Buffer.from('ea');
+      eaKey = Buffer.from('eaKey');
       ebValue = Buffer.from('eb');
 
       await groveDb.insert(
@@ -462,7 +466,6 @@ describe('GroveDB', () => {
         { type: 'item', value: cValue },
       );
 
-      const dKey = Buffer.from('dKey');
       dPath = [...itemTreePath];
       dPath.push(dKey);
       await groveDb.insert(
@@ -500,13 +503,13 @@ describe('GroveDB', () => {
 
       await groveDb.insert(
         ePath,
-        Buffer.from('dbKey'),
+        Buffer.from('eaKey'),
         { type: 'item', value: eaValue },
       );
 
       await groveDb.insert(
         ePath,
-        Buffer.from('dcKey'),
+        Buffer.from('ebKey'),
         { type: 'item', value: ebValue },
       );
     });
@@ -874,6 +877,44 @@ describe('GroveDB', () => {
       expect(elementValues).to.deep.equals([
         bValue,
         cValue,
+      ]);
+
+      expect(skipped).to.equals(0);
+    });
+
+    it('should be able to retrieve data with subquery', async () => {
+      // This should give us only last subtree and apply subquery to it
+      const query = {
+        path: itemTreePath,
+        query: {
+          query: {
+            items: [
+              {
+                type: 'rangeAfter',
+                after: dKey,
+              },
+            ],
+          },
+          leftToRight: true,
+        },
+        subquery: {
+          items: [
+            {
+              type: 'rangeAfter',
+              after: eaKey,
+            }
+          ]
+        }
+      };
+
+      const result = await groveDb.getPathQuery(query);
+
+      expect(result).to.have.a.lengthOf(2);
+
+      const [elementValues, skipped] = result;
+
+      expect(elementValues).to.deep.equals([
+        ebValue,
       ]);
 
       expect(skipped).to.equals(0);
