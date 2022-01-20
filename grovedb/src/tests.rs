@@ -2081,8 +2081,7 @@ fn test_root_hash() {
         None,
     )
     .expect("unable to insert an item");
-    let new_root_hash = db.root_hash(None);
-    assert_ne!(old_root_hash, db.root_hash(None));
+    assert_ne!(old_root_hash.unwrap(), db.root_hash(None).unwrap());
 
     // Check isolation
     let storage = db.storage();
@@ -2097,9 +2096,9 @@ fn test_root_hash() {
     )
     .expect("unable to insert an item");
     let root_hash_outside = db.root_hash(None);
-    assert_ne!(db.root_hash(Some(&transaction)), root_hash_outside);
+    assert_ne!(db.root_hash(Some(&transaction)).unwrap(), root_hash_outside.unwrap());
 
-    assert_eq!(db.root_hash(None), root_hash_outside);
-    db.commit_transaction(transaction);
-    assert_ne!(db.root_hash(None), root_hash_outside);
+    assert_eq!(db.root_hash(None).unwrap(), root_hash_outside.unwrap());
+    db.commit_transaction(transaction).unwrap();
+    assert_ne!(db.root_hash(None).unwrap(), root_hash_outside.unwrap());
 }
