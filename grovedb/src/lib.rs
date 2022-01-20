@@ -341,9 +341,9 @@ impl GroveDb {
             if path_slice.is_empty() {
                 // Hit the root tree
                 match transaction {
-                    None => self.root_tree = Self::build_root_tree(&subtrees, &root_leaf_keys),
+                    None => self.root_tree = Self::build_root_tree(subtrees, root_leaf_keys),
                     Some(_) => {
-                        self.temp_root_tree = Self::build_root_tree(&subtrees, &root_leaf_keys)
+                        self.temp_root_tree = Self::build_root_tree(subtrees, root_leaf_keys)
                     }
                 };
                 break;
