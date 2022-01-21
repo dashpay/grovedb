@@ -72,7 +72,7 @@ impl GroveDb {
         key: &[u8],
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
-        if let None = transaction {
+        if transaction.is_none() {
             if self.is_readonly {
                 return Err(Error::DbIsInReadonlyMode);
             }
@@ -113,7 +113,7 @@ impl GroveDb {
         key: Vec<u8>,
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
-        if let None = transaction {
+        if transaction.is_none() {
             if self.is_readonly {
                 return Err(Error::DbIsInReadonlyMode);
             }

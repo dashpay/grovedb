@@ -9,7 +9,7 @@ impl GroveDb {
         key: Vec<u8>,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(), Error> {
-        if let None = transaction {
+        if transaction.is_none() {
             if self.is_readonly {
                 return Err(Error::DbIsInReadonlyMode);
             }
