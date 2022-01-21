@@ -902,9 +902,9 @@ describe('GroveDB', () => {
             {
               type: 'rangeAfter',
               after: eaKey,
-            }
-          ]
-        }
+            },
+          ],
+        },
       };
 
       const result = await groveDb.getPathQuery(query);
