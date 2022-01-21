@@ -497,16 +497,6 @@ impl GroveDb {
             .map_err(PrefixedRocksDbStorageError::RocksDbError)?)
     }
 
-    pub fn get_subtrees_for_transaction(
-        &mut self,
-        transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>> {
-        match transaction {
-            None => &self.subtrees,
-            Some(_) => &self.temp_subtrees,
-        }
-    }
-
     /// Rollbacks previously started db transaction to initial state.
     /// For more details on the transaction usage, please check
     /// [`GroveDb::start_transaction`]
