@@ -9,10 +9,8 @@ impl GroveDb {
         key: Vec<u8>,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(), Error> {
-        if transaction.is_none() {
-            if self.is_readonly {
-                return Err(Error::DbIsInReadonlyMode);
-            }
+        if transaction.is_none() && self.is_readonly {
+            return Err(Error::DbIsInReadonlyMode);
         }
         if path.is_empty() {
             // Attempt to delete a root tree leaf
