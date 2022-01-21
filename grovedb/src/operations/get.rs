@@ -1,18 +1,9 @@
-use std::{
-    collections::{HashMap, HashSet},
-    ops::Range,
-};
+use std::collections::{HashMap, HashSet};
 
-use merk::{
-    proofs::{query::QueryItem, Query},
-    Merk,
-};
-use storage::{
-    rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage},
-    RawIterator,
-};
+use merk::Merk;
+use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage};
 
-use crate::{subtree::raw_decode, Element, Error, GroveDb, PathQuery, SizedQuery};
+use crate::{Element, Error, GroveDb, PathQuery};
 
 /// Limit of possible indirections
 pub(crate) const MAX_REFERENCE_HOPS: usize = 10;
@@ -83,7 +74,7 @@ impl GroveDb {
         let merk = subtrees
             .get(&Self::compress_subtree_key(path, None))
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-        Element::get(&merk, key)
+        Element::get(merk, key)
     }
 
     pub fn get_path_queries(
@@ -102,7 +93,7 @@ impl GroveDb {
                         Err(Error::InvalidQuery("the reference must result in an item"))
                     }
                 }
-                other => Err(Error::InvalidQuery("path_queries can only refer to references")),
+                _ => Err(Error::InvalidQuery("path_queries can only refer to references")),
             }
         }).collect::<Result<Vec<Vec<u8>>, Error>>()?;
         Ok(results)

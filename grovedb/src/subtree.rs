@@ -1,10 +1,7 @@
 //! Module for subtrees handling.
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
-use std::{
-    collections::HashMap,
-    ops::{Range, RangeFrom, RangeTo, RangeToInclusive},
-};
+use std::collections::HashMap;
 
 use merk::{
     proofs::{query::QueryItem, Query},
@@ -57,7 +54,7 @@ impl Element {
     /// Merk should be loaded by this moment
     pub fn get(merk: &Merk<PrefixedRocksDbStorage>, key: &[u8]) -> Result<Element, Error> {
         let element = bincode::deserialize(
-            merk.get(&key)
+            merk.get(key)
                 .map_err(|e| Error::CorruptedData(e.to_string()))?
                 .ok_or(Error::InvalidPath("key not found in Merk"))?
                 .as_slice(),
@@ -71,7 +68,7 @@ impl Element {
         query: &Query,
     ) -> Result<Vec<Element>, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None, true);
-        let (elements, skipped) = Element::get_sized_query(merk, &sized_query)?;
+        let (elements, _) = Element::get_sized_query(merk, &sized_query)?;
         Ok(elements)
     }
 
@@ -92,10 +89,8 @@ impl Element {
             if limit.is_some() {
                 *limit = Some(limit.unwrap() - 1);
             }
-        } else {
-            if offset.is_some() {
-                *offset = Some(offset.unwrap() - 1);
-            }
+        } else if offset.is_some() {
+            *offset = Some(offset.unwrap() - 1);
         }
         Ok(())
     }
@@ -140,10 +135,10 @@ impl Element {
                         let (mut sub_elements, skipped) =
                             Element::get_sized_query(inner_merk, &inner_query)?;
                         if let Some(limit) = limit {
-                            *limit = *limit - sub_elements.len() as u16;
+                            *limit -= sub_elements.len() as u16;
                         }
                         if let Some(offset) = offset {
-                            *offset = *offset - skipped;
+                            *offset -= skipped;
                         }
                         results.append(&mut sub_elements);
                     } else {
@@ -155,10 +150,8 @@ impl Element {
                             if limit.is_some() {
                                 *limit = Some(limit.unwrap() - 1);
                             }
-                        } else {
-                            if offset.is_some() {
-                                *offset = Some(offset.unwrap() - 1);
-                            }
+                        } else if offset.is_some() {
+                            *offset = Some(offset.unwrap() - 1);
                         }
                     }
                 }
@@ -169,10 +162,8 @@ impl Element {
                     if limit.is_some() {
                         *limit = Some(limit.unwrap() - 1);
                     }
-                } else {
-                    if offset.is_some() {
-                        *offset = Some(offset.unwrap() - 1);
-                    }
+                } else if offset.is_some() {
+                    *offset = Some(offset.unwrap() - 1);
                 }
             }
         }
@@ -237,7 +228,7 @@ impl Element {
                         &mut results,
                         &mut limit,
                         &mut offset,
-                    );
+                    )?;
                 }
             } else {
                 // this is a query on a range
@@ -265,7 +256,7 @@ impl Element {
                         &mut results,
                         &mut limit,
                         &mut offset,
-                    );
+                    )?;
                     if sized_query.left_to_right {
                         iter.next();
                     } else {
