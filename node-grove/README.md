@@ -60,10 +60,10 @@ Run `npm run build` to build the package, `npm test` to test it.
 
 The main file that is used form the node.js side is `index.js`. It contains
 class named `GroveDb`. The actual functions this class makes calls to are
-stored in the `./src/lib.rs`. When building the project, it is compiled to 
+stored in the `./src/lib.rs`. When building the project, it is compiled to
 binary in the `prebuilds` directory. This binary imported into the `index.js` file.
 
-Please note that the binding itself contains a lot of code. This is due to 
+Please note that the binding itself contains a lot of code. This is due to
 the fact that GroveDB is not thread-safe, and needs to live in its own thread.
 It communicates with the main binding thread through messages.
 
