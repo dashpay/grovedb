@@ -30,8 +30,7 @@ impl GroveDb {
                 let mut merk = subtrees
                     .get_mut(&Self::compress_subtree_key(path, None))
                     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-
-                Element::delete(&mut merk, key.clone(), transaction)?;
+                Element::delete(merk, key.clone(), transaction)?;
             }
 
             if let Element::Tree(_) = element {
@@ -74,7 +73,7 @@ impl GroveDb {
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Vec<Vec<Vec<u8>>>, Error> {
         let mut queue: Vec<Vec<Vec<u8>>> = vec![path.clone()];
-        let mut result: Vec<Vec<Vec<u8>>> = vec![path.clone()];
+        let mut result: Vec<Vec<Vec<u8>>> = vec![path];
 
         while let Some(q) = queue.pop() {
             // TODO: eventually we need to do something about this nested slices

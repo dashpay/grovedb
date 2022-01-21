@@ -55,7 +55,7 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
 
     let js_value: Handle<JsValue> = match element {
         Element::Item(item) => {
-            let js_buffer = JsBuffer::external(cx, item.clone());
+            let js_buffer = JsBuffer::external(cx, item);
             js_buffer.upcast()
         }
         Element::Reference(reference) => {
@@ -70,7 +70,7 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
             js_array.upcast()
         }
         Element::Tree(tree) => {
-            let js_buffer = JsBuffer::external(cx, tree.clone());
+            let js_buffer = JsBuffer::external(cx, tree);
             js_buffer.upcast()
         }
     };

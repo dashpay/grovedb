@@ -251,7 +251,7 @@ impl GroveDb {
             Some(_) => &self.temp_subtrees,
         };
 
-        let prefixes: Vec<Vec<u8>> = subtrees.keys().map(|x| x.clone()).collect();
+        let prefixes: Vec<Vec<u8>> = subtrees.keys().cloned().collect();
 
         // TODO: make StorageOrTransaction which will has the access to either storage
         // or transaction
@@ -301,8 +301,7 @@ impl GroveDb {
                 .expect("`root_leaf_keys` must be in sync with `subtrees`");
             leaf_hashes[*root_leaf_idx] = subtree_merk.root_hash();
         }
-        let res = MerkleTree::<Sha256>::from_leaves(&leaf_hashes);
-        res
+        MerkleTree::<Sha256>::from_leaves(&leaf_hashes)
     }
 
     pub fn elements_iterator(
@@ -343,9 +342,9 @@ impl GroveDb {
             if path_slice.is_empty() {
                 // Hit the root tree
                 match transaction {
-                    None => self.root_tree = Self::build_root_tree(&subtrees, &root_leaf_keys),
+                    None => self.root_tree = Self::build_root_tree(subtrees, root_leaf_keys),
                     Some(_) => {
-                        self.temp_root_tree = Self::build_root_tree(&subtrees, &root_leaf_keys)
+                        self.temp_root_tree = Self::build_root_tree(subtrees, root_leaf_keys)
                     }
                 };
                 break;
@@ -377,19 +376,19 @@ impl GroveDb {
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
     fn compress_subtree_key(path: &[&[u8]], key: Option<&[u8]>) -> Vec<u8> {
-        let segments_iter = path.into_iter().map(|x| *x).chain(key.into_iter());
+        let segments_iter = path.iter().copied().chain(key.into_iter());
         let mut segments_count = path.len();
         if key.is_some() {
             segments_count += 1;
         }
         let mut res = segments_iter.fold(Vec::<u8>::new(), |mut acc, p| {
-            acc.extend(p.into_iter());
+            acc.extend(p.iter());
             acc
         });
 
         res.extend(segments_count.to_ne_bytes());
-        path.into_iter()
-            .map(|x| *x)
+        path.iter()
+            .copied()
             .chain(key.into_iter())
             .fold(&mut res, |acc, p| {
                 acc.extend(p.len().to_ne_bytes());
@@ -473,7 +472,7 @@ impl GroveDb {
     /// Returns true if transaction is started. For more details on the
     /// transaction usage, please check [`GroveDb::start_transaction`]
     pub fn is_transaction_started(&self) -> bool {
-        return self.is_readonly;
+        self.is_readonly
     }
 
     /// Commits previously started db transaction. For more details on the
