@@ -85,31 +85,32 @@ impl GroveDb {
         path: &[&[u8]],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Merk<PrefixedRocksDbStorage>, Error> {
-        let subtree_prefix = GroveDb::compress_subtree_key(path, None);
         match transaction {
             None => self.get_subtree_without_transaction(path),
             Some(_) => self.get_subtree_with_transaction(path),
         }
     }
 
-    fn get_subtree_without_transaction(&self, path: &[&[u8]]) -> Result<Merk<PrefixedRocksDbStorage>, Error> {
+    fn get_subtree_without_transaction(
+        &self,
+        path: &[&[u8]],
+    ) -> Result<Merk<PrefixedRocksDbStorage>, Error> {
         let subtree_prefix = GroveDb::compress_subtree_key(path, None);
         let (subtree, has_keys) = self.get_subtree_with_key_info(path, None)?;
         if !has_keys {
             // if the subtree has no keys, it's either empty or invalid
             // we can confirm that it's an empty tree by checking if it was inserted into
             // the parent tree
-            let (key, parent_path) =
-                path.split_last().ok_or(Error::InvalidPath("empty path"))?;
+            let (key, parent_path) = path.split_last().ok_or(Error::InvalidPath("empty path"))?;
 
             // if parent path is empty, we are dealing with root leaf node
             // we can confirm validity of a root leaf node by checking root_leaf_keys
-            if parent_path.is_empty(){
-                if self.root_leaf_keys.contains_key(&subtree_prefix){
-                    return Ok(subtree);
+            if parent_path.is_empty() {
+                return if self.root_leaf_keys.contains_key(&subtree_prefix) {
+                    Ok(subtree)
                 } else {
-                    return Err(Error::InvalidPath("no subtree found under that path"));
-                }
+                    Err(Error::InvalidPath("no subtree found under that path"))
+                };
             }
 
             // Non root leaf nodes, get parent tree and confirm child validity
@@ -131,7 +132,10 @@ impl GroveDb {
         }
     }
 
-    fn get_subtree_with_transaction(&self, path: &[&[u8]]) -> Result<Merk<PrefixedRocksDbStorage>, Error> {
+    fn get_subtree_with_transaction(
+        &self,
+        path: &[&[u8]],
+    ) -> Result<Merk<PrefixedRocksDbStorage>, Error> {
         let subtree_prefix = GroveDb::compress_subtree_key(path, None);
         if let Some(merk) = self.temp_subtrees.get(&subtree_prefix) {
             Ok(merk.clone())
@@ -143,7 +147,7 @@ impl GroveDb {
     fn get_subtree_with_key_info(
         &self,
         path: &[&[u8]],
-        key: Option<&[u8]>
+        key: Option<&[u8]>,
     ) -> Result<(Merk<PrefixedRocksDbStorage>, bool), Error> {
         let subtree_prefix = GroveDb::compress_subtree_key(path, key);
         let merk = Merk::open(PrefixedRocksDbStorage::new(self.storage(), subtree_prefix)?)
