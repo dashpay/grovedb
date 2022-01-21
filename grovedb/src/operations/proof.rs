@@ -66,7 +66,7 @@
 //             // First we must get elements
 //
 //             if let Some(subquery_key) =
-// reduced_proof_query.query.query.subquery_key.clone() {                 
+// reduced_proof_query.query.query.subquery_key.clone() {
 // self.get_path_queries_raw(&[&reduced_proof_query], None)?;
 //
 //                 let mut path_vec = path.to_vec();
@@ -107,7 +107,7 @@
 //
 //     fn prove_path_item(
 //         &self,
-//         compressed_path: &Vec<u8>,
+//         compressed_path: &[u8],
 //         path_query: PathQuery,
 //     ) -> Result<Vec<u8>, Error> {
 //         let merk = self
@@ -135,7 +135,7 @@
 //         }
 //     }
 //
-//     fn prove_item(&self, path: &Vec<u8>, query: Query) -> Result<Vec<u8>,
+//     fn prove_item(&self, path: &[u8], query: Query) -> Result<Vec<u8>,
 // Error> {         let merk = self
 //             .subtrees
 //             .get(path)
@@ -235,7 +235,7 @@
 //                 let result_map = proof_result.1;
 //                 // TODO: Handle the error better here
 //                 let elem: Element =
-//                     
+//
 // bincode::deserialize(result_map.get(key).unwrap().unwrap()).unwrap();
 //                 let merk_root_hash = match elem {
 //                     Element::Tree(hash) => Ok(hash),
