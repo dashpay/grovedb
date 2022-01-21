@@ -347,26 +347,40 @@ fn test_proof_construction() {
     // Insert level 2 nodes
     let mut inner_tree = TempMerk::new();
     let value_one = Element::Item(b"value1".to_vec());
-    value_one.insert(&mut inner_tree, b"key1".to_vec(), None).unwrap();
+    value_one
+        .insert(&mut inner_tree, b"key1".to_vec(), None)
+        .unwrap();
     let value_two = Element::Item(b"value2".to_vec());
-    value_two.insert(&mut inner_tree, b"key2".to_vec(), None).unwrap();
+    value_two
+        .insert(&mut inner_tree, b"key2".to_vec(), None)
+        .unwrap();
 
     let mut inner_tree_2 = TempMerk::new();
     let value_three = Element::Item(b"value3".to_vec());
-    value_three.insert(&mut inner_tree_2, b"key3".to_vec(), None).unwrap();
+    value_three
+        .insert(&mut inner_tree_2, b"key3".to_vec(), None)
+        .unwrap();
 
     let mut inner_tree_3 = TempMerk::new();
     let value_four = Element::Item(b"value4".to_vec());
-    value_four.insert(&mut inner_tree_3, b"key4".to_vec(), None).unwrap();
+    value_four
+        .insert(&mut inner_tree_3, b"key4".to_vec(), None)
+        .unwrap();
     // Insert level 1 nodes
     let mut test_leaf = TempMerk::new();
     let inner_tree_root = Element::Tree(inner_tree.root_hash());
-    inner_tree_root.insert(&mut test_leaf, b"innertree".to_vec(), None).unwrap();
+    inner_tree_root
+        .insert(&mut test_leaf, b"innertree".to_vec(), None)
+        .unwrap();
     let mut another_test_leaf = TempMerk::new();
     let inner_tree_2_root = Element::Tree(inner_tree_2.root_hash());
-    inner_tree_2_root.insert(&mut another_test_leaf, b"innertree2".to_vec(), None).unwrap();
+    inner_tree_2_root
+        .insert(&mut another_test_leaf, b"innertree2".to_vec(), None)
+        .unwrap();
     let inner_tree_3_root = Element::Tree(inner_tree_3.root_hash());
-    inner_tree_3_root.insert(&mut another_test_leaf, b"innertree3".to_vec(), None).unwrap();
+    inner_tree_3_root
+        .insert(&mut another_test_leaf, b"innertree3".to_vec(), None)
+        .unwrap();
     // Insert root nodes
     let leaves = [test_leaf.root_hash(), another_test_leaf.root_hash()];
     let root_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
@@ -738,7 +752,8 @@ fn test_is_empty_tree() {
         b"innertree".to_vec(),
         Element::empty_tree(),
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     assert_eq!(
         db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
@@ -752,7 +767,8 @@ fn test_is_empty_tree() {
         b"key1".to_vec(),
         Element::Item(b"hello".to_vec()),
         None,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(
         db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
             .expect("path is valid tree"),
@@ -924,7 +940,8 @@ fn transaction_should_be_aborted() {
         item_key.clone(),
         element.clone(),
         Some(&transaction),
-    ).unwrap();
+    )
+    .unwrap();
 
     db.abort_transaction(transaction).unwrap();
 
@@ -1316,7 +1333,7 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &mut TempGroveDb) {
             Element::empty_tree(),
             None,
         )
-            .expect("successful subtree insert");
+        .expect("successful subtree insert");
 
         for j in 25u32..50 {
             let j_vec = (j as u32).to_be_bytes().to_vec();
@@ -1326,7 +1343,7 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &mut TempGroveDb) {
                 Element::empty_tree(),
                 None,
             )
-                .expect("successful value insert");
+            .expect("successful value insert");
 
             // Insert element 0
             // Insert some elements into subtree
@@ -1336,17 +1353,23 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &mut TempGroveDb) {
                 Element::empty_tree(),
                 None,
             )
-                .expect("successful subtree insert");
+            .expect("successful subtree insert");
 
             for k in 100u32..110 {
                 let k_vec = (k as u32).to_be_bytes().to_vec();
                 db.insert(
-                    &[TEST_LEAF, i_vec.as_slice(), b"a", j_vec.clone().as_slice(), b"0"],
+                    &[
+                        TEST_LEAF,
+                        i_vec.as_slice(),
+                        b"a",
+                        j_vec.clone().as_slice(),
+                        b"0",
+                    ],
                     k_vec.clone(),
                     Element::Item(k_vec),
                     None,
                 )
-                    .expect("successful value insert");
+                .expect("successful value insert");
             }
         }
     }
@@ -1477,10 +1500,7 @@ fn test_get_range_query_with_non_unique_subquery() {
     query.set_subquery_key(subquery_key);
     query.set_subquery(subquery);
 
-    let path_query = PathQuery::new_unsized(
-        &path,
-        query.clone(),
-    );
+    let path_query = PathQuery::new_unsized(&path, query.clone());
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -1571,10 +1591,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
     query.set_subquery_key(subquery_key);
     query.set_subquery(subquery);
 
-    let path_query = PathQuery::new_unsized(
-        &path,
-        query.clone(),
-    );
+    let path_query = PathQuery::new_unsized(&path, query.clone());
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -1609,10 +1626,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
     query.set_subquery_key(subquery_key);
     query.set_subquery(subquery);
 
-    let path_query = PathQuery::new_unsized(
-        &path,
-        query.clone(),
-    );
+    let path_query = PathQuery::new_unsized(&path, query.clone());
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -1675,10 +1689,7 @@ fn test_get_range_from_query_with_non_unique_subquery() {
     query.set_subquery_key(subquery_key);
     query.set_subquery(subquery);
 
-    let path_query = PathQuery::new_unsized(
-        &path,
-        query.clone(),
-    );
+    let path_query = PathQuery::new_unsized(&path, query.clone());
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -1739,10 +1750,7 @@ fn test_get_range_to_query_with_non_unique_subquery() {
     query.set_subquery_key(subquery_key);
     query.set_subquery(subquery);
 
-    let path_query = PathQuery::new_unsized(
-        &path,
-        query.clone(),
-    );
+    let path_query = PathQuery::new_unsized(&path, query.clone());
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -1803,10 +1811,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
     query.set_subquery_key(subquery_key);
     query.set_subquery(subquery);
 
-    let path_query = PathQuery::new_unsized(
-        &path,
-        query.clone(),
-    );
+    let path_query = PathQuery::new_unsized(&path, query.clone());
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -1867,10 +1872,7 @@ fn test_get_range_after_query_with_non_unique_subquery() {
     query.set_subquery_key(subquery_key);
     query.set_subquery(subquery);
 
-    let path_query = PathQuery::new_unsized(
-        &path,
-        query.clone(),
-    );
+    let path_query = PathQuery::new_unsized(&path, query.clone());
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -1905,10 +1907,7 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
     query.set_subquery_key(subquery_key);
     query.set_subquery(subquery);
 
-    let path_query = PathQuery::new_unsized(
-        &path,
-        query.clone(),
-    );
+    let path_query = PathQuery::new_unsized(&path, query.clone());
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -1943,10 +1942,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
     query.set_subquery_key(subquery_key);
     query.set_subquery(subquery);
 
-    let path_query = PathQuery::new_unsized(
-        &path,
-        query.clone(),
-    );
+    let path_query = PathQuery::new_unsized(&path, query.clone());
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -2022,10 +2018,7 @@ fn test_get_range_query_with_limit_and_offset() {
     query.set_subquery(subquery.clone());
 
     // Baseline query: no offset or limit + left to right
-    let path_query = PathQuery::new(
-        &path,
-        SizedQuery::new(query.clone(), None, None, true),
-    );
+    let path_query = PathQuery::new(&path, SizedQuery::new(query.clone(), None, None, true));
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -2045,10 +2038,7 @@ fn test_get_range_query_with_limit_and_offset() {
     query.set_subquery(subquery.clone());
 
     // Baseline query: no offset or limit + right to left
-    let path_query = PathQuery::new(
-        &path,
-        SizedQuery::new(query.clone(), None, None, false),
-    );
+    let path_query = PathQuery::new(&path, SizedQuery::new(query.clone(), None, None, false));
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -2068,10 +2058,7 @@ fn test_get_range_query_with_limit_and_offset() {
     query.set_subquery(subquery.clone());
 
     // Limit the result to just 55 elements
-    let path_query = PathQuery::new(
-        &path,
-        SizedQuery::new(query.clone(), Some(55), None, true),
-    );
+    let path_query = PathQuery::new(&path, SizedQuery::new(query.clone(), Some(55), None, true));
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -2226,7 +2213,10 @@ fn test_root_hash() {
     )
     .expect("unable to insert an item");
     let root_hash_outside = db.root_hash(None);
-    assert_ne!(db.root_hash(Some(&transaction)).unwrap(), root_hash_outside.unwrap());
+    assert_ne!(
+        db.root_hash(Some(&transaction)).unwrap(),
+        root_hash_outside.unwrap()
+    );
 
     assert_eq!(db.root_hash(None).unwrap(), root_hash_outside.unwrap());
     db.commit_transaction(transaction).unwrap();

@@ -94,8 +94,11 @@ impl GroveDb {
                         Err(Error::InvalidQuery("the reference must result in an item"))
                     }
                 }
-                _ => Err(Error::InvalidQuery("path_queries can only refer to references")),
-            }).collect::<Result<Vec<Vec<u8>>, Error>>()?;
+                _ => Err(Error::InvalidQuery(
+                    "path_queries can only refer to references",
+                )),
+            })
+            .collect::<Result<Vec<Vec<u8>>, Error>>()?;
         Ok(results)
     }
 

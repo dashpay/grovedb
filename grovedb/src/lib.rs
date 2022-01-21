@@ -86,33 +86,18 @@ impl SizedQuery {
 }
 
 impl PathQuery<'_> {
-    pub fn new<'a>(
-        path: &'a [&'a [u8]],
-        query: SizedQuery,
-    ) -> PathQuery<'a> {
-        PathQuery {
-            path,
-            query,
-        }
+    pub fn new<'a>(path: &'a [&'a [u8]], query: SizedQuery) -> PathQuery<'a> {
+        PathQuery { path, query }
     }
 
-    pub fn new_unsized<'a>(
-        path: &'a [&'a [u8]],
-        query: Query,
-    ) -> PathQuery<'a> {
+    pub fn new_unsized<'a>(path: &'a [&'a [u8]], query: Query) -> PathQuery<'a> {
         let query = SizedQuery::new(query, None, None, true);
-        PathQuery {
-            path,
-            query,
-        }
+        PathQuery { path, query }
     }
 
     pub fn new_unsized_basic<'a>(path: &'a [&'a [u8]], query: Query) -> PathQuery<'a> {
         let query = SizedQuery::new(query, None, None, true);
-        PathQuery {
-            path,
-            query,
-        }
+        PathQuery { path, query }
     }
 }
 

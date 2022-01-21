@@ -190,7 +190,11 @@ impl Query {
 impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
     fn from(other: Vec<Q>) -> Self {
         let items = other.into_iter().map(Into::into).collect();
-        Query { items, subquery_key: None, subquery: None }
+        Query {
+            items,
+            subquery_key: None,
+            subquery: None,
+        }
     }
 }
 
@@ -680,46 +684,49 @@ where
         };
 
         // if left_to_right {
-            let (mut proof, left_absence, new_limit, new_offset) =
-                self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
-            let (mut right_proof, right_absence, new_limit, new_offset) =
-                self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
+        let (mut proof, left_absence, new_limit, new_offset) =
+            self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
+        let (mut right_proof, right_absence, new_limit, new_offset) =
+            self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
 
-            let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
+        let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
 
-            proof.push_back(match search {
-                Ok(_) => Op::Push(self.to_kv_node()),
-                Err(_) => {
-                    if left_absence.1 || right_absence.0 {
-                        Op::Push(self.to_kv_node())
-                    } else {
-                        Op::Push(self.to_kvhash_node())
-                    }
+        proof.push_back(match search {
+            Ok(_) => Op::Push(self.to_kv_node()),
+            Err(_) => {
+                if left_absence.1 || right_absence.0 {
+                    Op::Push(self.to_kv_node())
+                } else {
+                    Op::Push(self.to_kvhash_node())
                 }
-            });
-
-            if has_left {
-                proof.push_back(Op::Parent);
             }
+        });
 
-            if has_right {
-                proof.append(&mut right_proof);
-                proof.push_back(Op::Child);
-            }
+        if has_left {
+            proof.push_back(Op::Parent);
+        }
 
-            Ok((
-                proof,
-                (left_absence.0, right_absence.1),
-                new_limit,
-                new_offset,
-            ))
+        if has_right {
+            proof.append(&mut right_proof);
+            proof.push_back(Op::Child);
+        }
+
+        Ok((
+            proof,
+            (left_absence.0, right_absence.1),
+            new_limit,
+            new_offset,
+        ))
         // } else {
         //     let (mut proof, left_absence, new_limit, new_offset) =
-        //         self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
-        //     let (mut right_proof, right_absence, new_limit, new_offset) =
-        //         self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
+        //         self.create_child_proof(true, left_items, limit, offset,
+        // left_to_right)?;     let (mut right_proof, right_absence,
+        // new_limit, new_offset) =         self.
+        // create_child_proof(false, right_items, new_limit, new_offset,
+        // left_to_right)?;
         //
-        //     let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
+        //     let (has_left, has_right) = (!proof.is_empty(),
+        // !right_proof.is_empty());
         //
         //     proof.push_back(match search {
         //         Ok(_) => Op::Push(self.to_kv_node()),

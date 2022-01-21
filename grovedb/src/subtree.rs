@@ -138,7 +138,7 @@ impl Element {
                         .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
                         .ok_or(Error::InvalidPath("no subtree found under that path"))?;
                     let inner_query = SizedQuery::new(subquery, *limit, *offset, left_to_right);
-                    let inner_path_query = PathQuery::new( path_vec.as_slice(), inner_query);
+                    let inner_path_query = PathQuery::new(path_vec.as_slice(), inner_query);
                     let (mut sub_elements, skipped) =
                         Element::get_path_query(inner_merk, &inner_path_query, subtrees_option)?;
                     if let Some(limit) = limit {
@@ -218,7 +218,11 @@ impl Element {
                         Element::get(merk, key)?,
                         path,
                         sized_query.query.subquery_key.clone(),
-                        sized_query.query.subquery.as_ref().map(|query| *query.clone()),
+                        sized_query
+                            .query
+                            .subquery
+                            .as_ref()
+                            .map(|query| *query.clone()),
                         sized_query.left_to_right,
                         &mut results,
                         &mut limit,
@@ -246,7 +250,11 @@ impl Element {
                         element,
                         path,
                         sized_query.query.subquery_key.clone(),
-                        sized_query.query.subquery.as_ref().map(|query| *query.clone()),
+                        sized_query
+                            .query
+                            .subquery
+                            .as_ref()
+                            .map(|query| *query.clone()),
                         sized_query.left_to_right,
                         &mut results,
                         &mut limit,
@@ -300,7 +308,6 @@ impl Element {
             Element::path_query_push,
         )
     }
-
 
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment
