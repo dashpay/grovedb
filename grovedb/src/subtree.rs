@@ -1,10 +1,7 @@
 //! Module for subtrees handling.
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
-use std::{
-    collections::HashMap,
-    ops::{Range, RangeFrom, RangeTo, RangeToInclusive},
-};
+use std::collections::HashMap;
 
 use merk::{
     proofs::{query::QueryItem, Query},
@@ -57,7 +54,7 @@ impl Element {
     /// Merk should be loaded by this moment
     pub fn get(merk: &Merk<PrefixedRocksDbStorage>, key: &[u8]) -> Result<Element, Error> {
         let element = bincode::deserialize(
-            merk.get(&key)
+            merk.get(key)
                 .map_err(|e| Error::CorruptedData(e.to_string()))?
                 .ok_or(Error::InvalidPath("key not found in Merk"))?
                 .as_slice(),
@@ -72,7 +69,7 @@ impl Element {
         subtrees_option: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
     ) -> Result<Vec<Element>, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None, true);
-        let (elements, skipped) = Element::get_sized_query(merk, &sized_query, subtrees_option)?;
+        let (elements, _) = Element::get_sized_query(merk, &sized_query, subtrees_option)?;
         Ok(elements)
     }
 
@@ -93,10 +90,8 @@ impl Element {
             if limit.is_some() {
                 *limit = Some(limit.unwrap() - 1);
             }
-        } else {
-            if offset.is_some() {
-                *offset = Some(offset.unwrap() - 1);
-            }
+        } else if offset.is_some() {
+            *offset = Some(offset.unwrap() - 1);
         }
         Ok(())
     }
@@ -139,7 +134,6 @@ impl Element {
                     if let Some(subquery_key) = &subquery_key_option {
                         path_vec.push(subquery_key.as_slice());
                     }
-
                     let inner_merk = subtrees
                         .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
                         .ok_or(Error::InvalidPath("no subtree found under that path"))?;
@@ -181,10 +175,8 @@ impl Element {
                     if limit.is_some() {
                         *limit = Some(limit.unwrap() - 1);
                     }
-                } else {
-                    if offset.is_some() {
-                        *offset = Some(offset.unwrap() - 1);
-                    }
+                } else if offset.is_some() {
+                    *offset = Some(offset.unwrap() - 1);
                 }
             }
         }
@@ -231,7 +223,7 @@ impl Element {
                         &mut results,
                         &mut limit,
                         &mut offset,
-                    );
+                    )?;
                 }
             } else {
                 // this is a query on a range
@@ -259,7 +251,7 @@ impl Element {
                         &mut results,
                         &mut limit,
                         &mut offset,
-                    );
+                    )?;
                     if sized_query.left_to_right {
                         iter.next();
                     } else {

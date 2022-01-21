@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use merk::proofs::query::{Map, QueryItem};
+use merk::proofs::query::Map;
 use rs_merkle::{algorithms::Sha256, MerkleProof};
 
-use crate::{Element, Error, GroveDb, PathQuery, Proof, Query, SizedQuery};
+use crate::{Element, Error, GroveDb, PathQuery, Proof, Query};
 
 impl GroveDb {
     pub fn proof(&mut self, proof_queries: Vec<PathQuery>) -> Result<Vec<u8>, Error> {
@@ -56,11 +56,11 @@ impl GroveDb {
 
         // Construct the leaf proofs
         for proof_query in proof_queries {
-            let mut path = proof_query.path;
+            let path = proof_query.path;
 
             // If there is a subquery with a limit it's possible that we only need a reduced
             // proof for this leaf.
-            let mut reduced_proof_query = proof_query;
+            let reduced_proof_query = proof_query;
 
             // First we must get elements
 
@@ -164,14 +164,14 @@ impl GroveDb {
             // and store hash + index for later root proof execution
             let root_key = &path[0];
             let (hash, proof_result_map) = GroveDb::execute_path(&path, &proof.proofs)?;
-            let compressed_root_key_path = GroveDb::compress_subtree_key(&[], Some(&root_key));
+            let compressed_root_key_path = GroveDb::compress_subtree_key(&[], Some(root_key));
             let compressed_query_path = GroveDb::compress_subtree_key(&path, None);
 
             let index = proof
                 .root_leaf_keys
                 .get(&compressed_root_key_path)
                 .ok_or(Error::InvalidPath("Bad path"))?;
-            if !root_keys_index.contains(&index) {
+            if !root_keys_index.contains(index) {
                 root_keys_index.push(*index);
                 root_hashes.push(hash);
             }
