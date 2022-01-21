@@ -23,6 +23,8 @@ use crate::{
 #[derive(Default, Clone)]
 pub struct Query {
     items: BTreeSet<QueryItem>,
+    pub subquery_key: Option<Vec<u8>>,
+    pub subquery: Option<Box<Query>>,
 }
 
 impl Query {
@@ -41,6 +43,19 @@ impl Query {
 
     pub fn rev_iter(&self) -> impl Iterator<Item = &QueryItem> {
         self.items.iter().rev()
+    }
+
+    /// Sets the subquery_key for the query. This causes every element that is
+    /// returned by the query to be subqueried to the subquery_key.
+    pub fn set_subquery_key(&mut self, key: Vec<u8>) {
+        self.subquery_key = Some(key);
+    }
+
+    /// Sets the subquery for the query. This causes every element that is
+    /// returned by the query to be subqueried or subqueried to the
+    /// subquery_key/subquery if a subquery is present.
+    pub fn set_subquery(&mut self, subquery: Query) {
+        self.subquery = Some(Box::new(subquery));
     }
 
     /// Adds an individual key to the query, so that its value (or its absence)
@@ -178,7 +193,7 @@ impl Query {
 impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
     fn from(other: Vec<Q>) -> Self {
         let items = other.into_iter().map(Into::into).collect();
-        Query { items }
+        Query { items, subquery_key: None, subquery: None }
     }
 }
 

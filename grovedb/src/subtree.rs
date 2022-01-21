@@ -189,28 +189,10 @@ impl Element {
         Ok(())
     }
 
-    // Returns a vector of elements, and the number of skipped elements
-    pub fn get_sized_query(
-        merk: &Merk<PrefixedRocksDbStorage>,
-        sized_query: &SizedQuery,
-    ) -> Result<(Vec<Element>, u16), Error> {
-        Element::get_query_apply_function(
-            merk,
-            sized_query,
-            None,
-            None,
-            None,
-            None,
-            Element::basic_push,
-        )
-    }
-
     pub fn get_query_apply_function(
         merk: &Merk<PrefixedRocksDbStorage>,
         sized_query: &SizedQuery,
         path: Option<&[&[u8]]>,
-        subquery_key: Option<Vec<u8>>,
-        subquery: Option<Query>,
         subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
         add_element_function: fn(
             subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
@@ -241,8 +223,8 @@ impl Element {
                         Some(key.as_slice()),
                         Element::get(merk, key)?,
                         path,
-                        subquery_key.clone(),
-                        subquery.clone(),
+                        sized_query.query.subquery_key.clone(),
+                        sized_query.query.subquery.as_ref().map(|query| *query.clone()),
                         sized_query.left_to_right,
                         &mut results,
                         &mut limit,
@@ -269,8 +251,8 @@ impl Element {
                         Some(key),
                         element,
                         path,
-                        subquery_key.clone(),
-                        subquery.clone(),
+                        sized_query.query.subquery_key.clone(),
+                        sized_query.query.subquery.as_ref().map(|query| *query.clone()),
                         sized_query.left_to_right,
                         &mut results,
                         &mut limit,
@@ -305,12 +287,25 @@ impl Element {
             merk,
             &path_query.query,
             Some(path_query.path),
-            path_query.subquery_key.clone(),
-            path_query.subquery.clone(),
             subtrees,
             Element::path_query_push,
         )
     }
+
+    // Returns a vector of elements, and the number of skipped elements
+    pub fn get_sized_query(
+        merk: &Merk<PrefixedRocksDbStorage>,
+        sized_query: &SizedQuery,
+    ) -> Result<(Vec<Element>, u16), Error> {
+        Element::get_query_apply_function(
+            merk,
+            sized_query,
+            None,
+            None,
+            Element::path_query_push,
+        )
+    }
+
 
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment

@@ -56,8 +56,6 @@ pub enum Error {
 pub struct PathQuery<'a> {
     path: &'a [&'a [u8]],
     query: SizedQuery,
-    subquery_key: Option<Vec<u8>>,
-    subquery: Option<Query>,
 }
 
 // If a subquery exists :
@@ -91,29 +89,21 @@ impl PathQuery<'_> {
     pub fn new<'a>(
         path: &'a [&'a [u8]],
         query: SizedQuery,
-        subquery_key: Option<Vec<u8>>,
-        subquery: Option<Query>,
     ) -> PathQuery<'a> {
         PathQuery {
             path,
             query,
-            subquery_key,
-            subquery,
         }
     }
 
     pub fn new_unsized<'a>(
         path: &'a [&'a [u8]],
         query: Query,
-        subquery_key: Option<Vec<u8>>,
-        subquery: Option<Query>,
     ) -> PathQuery<'a> {
         let query = SizedQuery::new(query, None, None, true);
         PathQuery {
             path,
             query,
-            subquery_key,
-            subquery,
         }
     }
 
@@ -122,8 +112,6 @@ impl PathQuery<'_> {
         PathQuery {
             path,
             query,
-            subquery_key: None,
-            subquery: None,
         }
     }
 }
