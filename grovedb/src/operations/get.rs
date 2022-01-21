@@ -88,22 +88,36 @@ impl GroveDb {
         let subtree_prefix = GroveDb::compress_subtree_key(path, None);
         match transaction {
             None => {
-                let (subtree, has_keys) = self.get_subtree_with_key_info(path)?;
+                let (subtree, has_keys) = self.get_subtree_with_key_info(path, None)?;
                 if !has_keys {
-                    // if the subtree has not keys then it's either empty or invalid
+                    // if the subtree has no keys, it's either empty or invalid
                     // we can confirm that it's an empty tree by checking if it was inserted into
                     // the parent tree
-                    let (key, parent_path) = path.split_last().ok_or(Error::InvalidPath("empty path"))?;
-                    let (parent_tree, has_keys) = self.get_subtree_with_key_info(parent_path)?;
+                    let (key, parent_path) =
+                        path.split_last().ok_or(Error::InvalidPath("empty path"))?;
+
+                    // if parent path is empty, we are dealing with root leaf node
+                    // we can confirm validity of a root leaf node by checking root_leaf_keys
+                    if parent_path.is_empty(){
+                        if self.root_leaf_keys.contains_key(&subtree_prefix){
+                            return Ok(subtree);
+                        } else {
+                            return Err(Error::InvalidPath("no subtree found under that path"));
+                        }
+                    }
+
+                    // Non root lead nodes, get parent tree and confirm child validity
+                    let (parent_tree, has_keys) = self.get_subtree_with_key_info(parent_path, Some(key))?;
                     if !has_keys {
                         // parent tree can't be empty, hence invalid path
                         Err(Error::InvalidPath("no subtree found under that path"))
                     } else {
                         // Check that it contains the child as an empty tree
-                        let elem = Element::get(&parent_tree, key).map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
+                        let elem = Element::get(&parent_tree, key)
+                            .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
                         match elem {
                             Element::Tree(_) => Ok(subtree),
-                            _ => Err(Error::InvalidPath("no subtree found under that path"))
+                            _ => Err(Error::InvalidPath("no subtree found under that path")),
                         }
                     }
                 } else {
@@ -120,8 +134,12 @@ impl GroveDb {
         }
     }
 
-    fn get_subtree_with_key_info(&self, path: &[&[u8]]) -> Result<(Merk<PrefixedRocksDbStorage>, bool), Error> {
-        let subtree_prefix = GroveDb::compress_subtree_key(path, None);
+    fn get_subtree_with_key_info(
+        &self,
+        path: &[&[u8]],
+        key: Option<&[u8]>
+    ) -> Result<(Merk<PrefixedRocksDbStorage>, bool), Error> {
+        let subtree_prefix = GroveDb::compress_subtree_key(path, key);
         let merk = Merk::open(PrefixedRocksDbStorage::new(self.storage(), subtree_prefix)?)
             .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
         let mut has_keys = false;

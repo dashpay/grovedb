@@ -1098,8 +1098,8 @@ fn test_get_subtree() {
     assert_eq!(subtree.is_err(), true);
 
     // Doesn't return an error for subtree that exists but empty
-    // let subtree = db.get_subtree(&[TEST_LEAF], None);
-    // assert_eq!(subtree.is_err(), false);
+    let subtree = db.get_subtree(&[TEST_LEAF], None);
+    assert_eq!(subtree.is_err(), false);
 
     // Insert some nested subtrees
     db.insert(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
@@ -1143,7 +1143,8 @@ fn test_get_subtree() {
         Element::empty_tree(),
         // Some(&transaction),
         None,
-    ).expect("successful subtree insert");
+    )
+    .expect("successful subtree insert");
 
     db.insert(
         &[TEST_LEAF, b"key1", b"innertree"],
@@ -1151,7 +1152,8 @@ fn test_get_subtree() {
         element.clone(),
         // Some(&transaction),
         None,
-    ).expect("successful value insert");
+    )
+    .expect("successful value insert");
 
     // Retrieve subtree instance without transaction
     let subtree = db.get_subtree(&[TEST_LEAF, b"key1", b"innertree"], None);
