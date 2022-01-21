@@ -1104,8 +1104,6 @@ fn test_get_subtree() {
     // Insert some nested subtrees
     db.insert(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
         .expect("successful subtree 1 insert");
-    // let subtree = db.get_subtree(&[TEST_LEAF, b"key1"], None);
-    // assert_eq!(subtree.is_err(), false);
 
     db.insert(
         &[TEST_LEAF, b"key1"],
@@ -1128,21 +1126,20 @@ fn test_get_subtree() {
 
     // Retrieve subtree instance
     // Check if it returns the same instance that was inserted
-    // let subtree = db.get_subtree(&[TEST_LEAF, b"key1", b"key2"], None).unwrap();
-    // let result_element = Element::get(&subtree, b"key3").unwrap();
-    // assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
+    let subtree = db.get_subtree(&[TEST_LEAF, b"key1", b"key2"], None).unwrap();
+    let result_element = Element::get(&subtree, b"key3").unwrap();
+    assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
 
     // Insert a new tree with transaction
-    // db.start_transaction().unwrap();
-    // let storage = db.storage();
-    // let transaction = storage.transaction();
+    db.start_transaction().unwrap();
+    let storage = db.storage();
+    let transaction = storage.transaction();
 
     db.insert(
         &[TEST_LEAF, b"key1"],
         b"innertree".to_vec(),
         Element::empty_tree(),
-        // Some(&transaction),
-        None,
+        Some(&transaction),
     )
     .expect("successful subtree insert");
 
@@ -1150,16 +1147,14 @@ fn test_get_subtree() {
         &[TEST_LEAF, b"key1", b"innertree"],
         b"key4".to_vec(),
         element.clone(),
-        // Some(&transaction),
-        None,
+        Some(&transaction),
     )
     .expect("successful value insert");
 
     // Retrieve subtree instance without transaction
-    let subtree = db.get_subtree(&[TEST_LEAF, b"key1", b"innertree"], None);
-    assert_eq!(subtree.is_err(), false);
-    // let result_element = Element::get(&subtree, b"key4").unwrap();
-    // assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
+    let subtree = db.get_subtree(&[TEST_LEAF, b"key1", b"innertree"], Some(&transaction)).unwrap();
+    let result_element = Element::get(&subtree, b"key4").unwrap();
+    assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
 }
 
 #[test]
