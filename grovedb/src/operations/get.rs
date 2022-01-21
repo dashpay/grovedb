@@ -106,8 +106,8 @@ impl GroveDb {
                         }
                     }
 
-                    // Non root lead nodes, get parent tree and confirm child validity
-                    let (parent_tree, has_keys) = self.get_subtree_with_key_info(parent_path, Some(key))?;
+                    // Non root leaf nodes, get parent tree and confirm child validity
+                    let (parent_tree, has_keys) = self.get_subtree_with_key_info(parent_path, None)?;
                     if !has_keys {
                         // parent tree can't be empty, hence invalid path
                         Err(Error::InvalidPath("no subtree found under that path"))
