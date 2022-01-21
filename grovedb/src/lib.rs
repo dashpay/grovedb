@@ -3,6 +3,7 @@ mod subtree;
 #[cfg(test)]
 mod tests;
 mod transaction;
+mod subtrees;
 
 use std::{collections::HashMap, path::Path, rc::Rc};
 
@@ -16,6 +17,7 @@ use storage::{
     Transaction,
 };
 pub use subtree::Element;
+use subtrees::Subtrees;
 
 // use crate::transaction::GroveDbTransaction;
 // pub use transaction::GroveDbTransaction;
@@ -362,6 +364,14 @@ impl GroveDb {
             }
         }
         Ok(())
+    }
+
+    fn get_subtrees(&self) -> Subtrees {
+       Subtrees{
+           root_leaf_keys: &self.root_leaf_keys,
+           temp_subtrees: &self.temp_subtrees,
+           storage: self.storage(),
+       }
     }
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
