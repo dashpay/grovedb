@@ -1302,6 +1302,58 @@ fn populate_tree_for_non_unique_range_subquery(db: &mut TempGroveDb) {
     }
 }
 
+fn populate_tree_for_non_unique_double_range_subquery(db: &mut TempGroveDb) {
+    // Insert a couple of subtrees first
+    for i in 0u32..500 {
+        let i_vec = (i as u32).to_be_bytes().to_vec();
+        db.insert(&[TEST_LEAF], i_vec.clone(), Element::empty_tree(), None)
+            .expect("successful subtree insert");
+        // Insert element 0
+        // Insert some elements into subtree
+        db.insert(
+            &[TEST_LEAF, i_vec.as_slice()],
+            b"a".to_vec(),
+            Element::empty_tree(),
+            None,
+        )
+            .expect("successful subtree insert");
+
+        for j in 0u32..50 {
+            let mut j_vec = i_vec.clone();
+            j_vec.append(&mut (j as u32).to_be_bytes().to_vec());
+            db.insert(
+                &[TEST_LEAF, i_vec.clone().as_slice(), b"a"],
+                j_vec.clone(),
+                Element::empty_tree(),
+                None,
+            )
+                .expect("successful value insert");
+
+            // Insert element 0
+            // Insert some elements into subtree
+            db.insert(
+                &[TEST_LEAF, i_vec.as_slice(), b"a", j_vec.clone().as_slice()],
+                b"0".to_vec(),
+                Element::empty_tree(),
+                None,
+            )
+                .expect("successful subtree insert");
+
+            for k in 50u32..100 {
+                let mut k_vec = i_vec.clone();
+                k_vec.append(&mut (k as u32).to_be_bytes().to_vec());
+                db.insert(
+                    &[TEST_LEAF, i_vec.as_slice(), b"a", j_vec.clone().as_slice(), b"0"],
+                    k_vec.clone(),
+                    Element::Item(k_vec),
+                    None,
+                )
+                    .expect("successful value insert");
+            }
+        }
+    }
+}
+
 fn populate_tree_by_reference_for_non_unique_range_subquery(db: &mut TempGroveDb) {
     // This subtree will be holding values
     db.insert(&[TEST_LEAF], b"0".to_vec(), Element::empty_tree(), None)
