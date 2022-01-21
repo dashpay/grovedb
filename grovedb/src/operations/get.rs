@@ -87,10 +87,29 @@ impl GroveDb {
     ) -> Result<Merk<PrefixedRocksDbStorage>, Error> {
         let subtree_prefix = GroveDb::compress_subtree_key(path, None);
         match transaction {
-            None => Ok(
-                Merk::open(PrefixedRocksDbStorage::new(self.storage(), subtree_prefix)?)
-                    .map_err(|_| Error::InvalidPath("no subtree found under that path"))?,
-            ),
+            None => {
+                let (subtree, has_keys) = self.get_subtree_with_key_info(path)?;
+                if !has_keys {
+                    // if the subtree has not keys then it's either empty or invalid
+                    // we can confirm that it's an empty tree by checking if it was inserted into
+                    // the parent tree
+                    let (key, parent_path) = path.split_last().ok_or(Error::InvalidPath("empty path"))?;
+                    let (parent_tree, has_keys) = self.get_subtree_with_key_info(parent_path)?;
+                    if !has_keys {
+                        // parent tree can't be empty, hence invalid path
+                        Err(Error::InvalidPath("no subtree found under that path"))
+                    } else {
+                        // Check that it contains the child as an empty tree
+                        let elem = Element::get(&parent_tree, key).map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
+                        match elem {
+                            Element::Tree(_) => Ok(subtree),
+                            _ => Err(Error::InvalidPath("no subtree found under that path"))
+                        }
+                    }
+                } else {
+                    Ok(subtree)
+                }
+            }
             Some(_) => {
                 if let Some(merk) = self.temp_subtrees.get(&subtree_prefix) {
                     Ok(merk.clone())
@@ -99,6 +118,21 @@ impl GroveDb {
                 }
             }
         }
+    }
+
+    fn get_subtree_with_key_info(&self, path: &[&[u8]]) -> Result<(Merk<PrefixedRocksDbStorage>, bool), Error> {
+        let subtree_prefix = GroveDb::compress_subtree_key(path, None);
+        let merk = Merk::open(PrefixedRocksDbStorage::new(self.storage(), subtree_prefix)?)
+            .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
+        let mut has_keys = false;
+        {
+            let mut iter = merk.raw_iter();
+            iter.seek_to_first();
+            if iter.valid() {
+                has_keys = true;
+            }
+        }
+        Ok((merk, has_keys))
     }
 
     pub fn get_path_queries(

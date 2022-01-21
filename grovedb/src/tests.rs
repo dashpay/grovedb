@@ -1113,7 +1113,7 @@ fn test_get_subtree() {
         Element::empty_tree(),
         None,
     )
-        .expect("successful subtree 2 insert");
+    .expect("successful subtree 2 insert");
 
     // Insert an element into subtree
     db.insert(
@@ -1122,7 +1122,7 @@ fn test_get_subtree() {
         element.clone(),
         None,
     )
-        .expect("successful value insert");
+    .expect("successful value insert");
     db.insert(&[TEST_LEAF], b"key4".to_vec(), Element::empty_tree(), None)
         .expect("successful subtree 3 insert");
 
@@ -1137,20 +1137,21 @@ fn test_get_subtree() {
     // let storage = db.storage();
     // let transaction = storage.transaction();
 
-    // db.insert(
-    //     &[TEST_LEAF, b"key1"],
-    //     b"innertree".to_vec(),
-    //     Element::empty_tree(),
-    //     // Some(&transaction),
-    //     None,
-    // ).expect("successful subtree insert");
+    db.insert(
+        &[TEST_LEAF, b"key1"],
+        b"innertree".to_vec(),
+        Element::empty_tree(),
+        // Some(&transaction),
+        None,
+    ).expect("successful subtree insert");
 
-    // db.insert(
-    //     &[TEST_LEAF, b"key1", b"innertree"],
-    //     b"key4".to_vec(),
-    //     element.clone(),
-    //     Some(&transaction),
-    // ).expect("successful value insert");
+    db.insert(
+        &[TEST_LEAF, b"key1", b"innertree"],
+        b"key4".to_vec(),
+        element.clone(),
+        // Some(&transaction),
+        None,
+    ).expect("successful value insert");
 
     // Retrieve subtree instance without transaction
     let subtree = db.get_subtree(&[TEST_LEAF, b"key1", b"innertree"], None);
