@@ -9,12 +9,12 @@
     "build:debug": "npm run build --",
     "build:release": "npm run build -- --release",
     "build:move": "neon-tag-prebuild && cp -R prebuilds/* node-grove/prebuilds/ && rm -rf native && rm -rf prebuilds",
-    "prepare": "mv README.md README.md.old && cp node-grove/README.md README.md",
+    "prepack": "mv README.md README.md.old && cp node-grove/README.md README.md",
+    "postpack": "rm README.md && mv README.md.old README.md",
     "install": "neon-load-or-build",
     "clean": "cargo +nightly clean",
     "pretest": "npm run build:debug",
     "test": "mocha node-grove/index.spec.js",
-    "postpublish": "rm README.md && mv README.md.old README.md",
     "lint": "eslint ."
   },
   "files": [
