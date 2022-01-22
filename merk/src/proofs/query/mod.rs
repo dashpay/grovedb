@@ -531,11 +531,11 @@ impl QueryItem {
                     None => false,
                     Some(key) => {
                         if left_to_right {
-                            let end = range_inclusive.end().as_slice();
-                            key <= end
+                            let end = range_inclusive.end();
+                            Vec::from(key) <= *end
                         } else {
-                            let start = range_inclusive.start().as_slice();
-                            key > start
+                            let start = range_inclusive.start();
+                            Vec::from(key) > *start
                         }
                     }
                 };
