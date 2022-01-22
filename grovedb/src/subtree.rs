@@ -279,8 +279,8 @@ impl Element {
                 break;
             }
         }
-        let skipped = if original_offset.is_some() {
-            original_offset.unwrap() - offset.unwrap()
+        let skipped = if let Some(original_offset_unwrapped) = original_offset {
+            original_offset_unwrapped - offset.unwrap()
         } else {
             0
         };
