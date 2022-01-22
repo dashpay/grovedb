@@ -24,7 +24,7 @@ where
     /// Returns a tuple containing the produced proof, and a boolean indicating
     /// whether or not there will be more chunks to follow. If the chunk
     /// contains the entire tree, the boolean will be `false`, if the chunk
-    /// is abdriged and will be connected to leaf chunks, it will be `true`.
+    /// is abridged and will be connected to leaf chunks, it will be `true`.
     pub fn create_trunk_proof(&mut self) -> Result<(Vec<Op>, bool)> {
         let approx_size = 2usize.pow((self.tree().height() / 2) as u32) * 3;
         let mut proof = Vec::with_capacity(approx_size);

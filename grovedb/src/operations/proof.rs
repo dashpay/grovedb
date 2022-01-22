@@ -98,11 +98,11 @@
 //             root_leaf_keys: self.root_leaf_keys.clone(),
 //         };
 //
-//         let seralized_proof = bincode::serialize(&proof)
+//         let serialized_proof = bincode::serialize(&proof)
 //             .map_err(|_| Error::CorruptedData(String::from("unable to
 // serialize proof")))?;
 //
-//         Ok(seralized_proof)
+//         Ok(serialized_proof)
 //     }
 //
 //     fn prove_path_item(

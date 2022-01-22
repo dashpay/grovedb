@@ -20,7 +20,7 @@ impl MapBuilder {
         })
     }
 
-    /// Adds the node's data to the uncerlying `Map` (if node is type `KV`), or
+    /// Adds the node's data to the underlying `Map` (if node is type `KV`), or
     /// makes a note of non-contiguous data (if node is type `KVHash` or
     /// `Hash`).
     pub fn insert(&mut self, node: &Node) -> Result<()> {

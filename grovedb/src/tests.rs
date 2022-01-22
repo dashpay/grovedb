@@ -63,7 +63,7 @@ fn test_insert_value_to_merk() {
     db.insert(&[TEST_LEAF], b"key".to_vec(), element.clone(), None)
         .expect("successful insert");
     assert_eq!(
-        db.get(&[TEST_LEAF], b"key", None).expect("succesful get"),
+        db.get(&[TEST_LEAF], b"key", None).expect("successful get"),
         element
     );
 }
@@ -86,7 +86,7 @@ fn test_insert_value_to_subtree() {
     .expect("successful value insert");
     assert_eq!(
         db.get(&[TEST_LEAF, b"key1"], b"key2", None)
-            .expect("succesful get"),
+            .expect("successful get"),
         element
     );
 }
@@ -117,7 +117,7 @@ fn test_changes_propagated() {
     .expect("successful value insert");
     assert_eq!(
         db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3", None)
-            .expect("succesful get"),
+            .expect("successful get"),
         element
     );
     assert_ne!(old_hash, db.root_tree.root());
@@ -149,7 +149,7 @@ fn test_follow_references() {
     .expect("successful value insert");
     assert_eq!(
         db.get(&[TEST_LEAF], b"reference_key", None)
-            .expect("succesful get"),
+            .expect("successful get"),
         element
     );
 }
@@ -213,7 +213,7 @@ fn test_too_many_indirections() {
 }
 
 #[test]
-fn test_tree_structure_is_presistent() {
+fn test_tree_structure_is_persistent() {
     let tmp_dir = TempDir::new("db").unwrap();
     let element = Element::Item(b"ayy".to_vec());
     // Create a scoped GroveDB
@@ -241,7 +241,7 @@ fn test_tree_structure_is_presistent() {
         .expect("successful value insert");
         assert_eq!(
             db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3", None)
-                .expect("succesful get 1"),
+                .expect("successful get 1"),
             element
         );
     }
@@ -249,7 +249,7 @@ fn test_tree_structure_is_presistent() {
     let db = GroveDb::open(tmp_dir).unwrap();
     assert_eq!(
         db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3", None)
-            .expect("succesful get 2"),
+            .expect("successful get 2"),
         element
     );
     assert!(db
@@ -966,7 +966,7 @@ fn transaction_should_be_aborted() {
     // Transaction should be closed
     assert!(!db.is_transaction_started());
 
-    // Transactional data shouldn't be commited to the main database
+    // Transactional data shouldn't be committed to the main database
     let result = db.get(&[TEST_LEAF], &item_key.clone(), None);
     assert!(matches!(result, Err(Error::InvalidPathKey(_))));
 }
@@ -1002,7 +1002,7 @@ fn test_subtree_pairs_iterator() {
     .expect("successful value insert");
     assert_eq!(
         db.get(&[TEST_LEAF, b"subtree1", b"subtree11"], b"key1", None)
-            .expect("succesful get 1"),
+            .expect("successful get 1"),
         element
     );
     db.insert(
@@ -1025,14 +1025,14 @@ fn test_subtree_pairs_iterator() {
         element.clone(),
         None,
     )
-    .expect("succesful value insert");
+    .expect("successful value insert");
     db.insert(
         &[TEST_LEAF, b"subtree1"],
         b"key2".to_vec(),
         element2.clone(),
         None,
     )
-    .expect("succesful value insert");
+    .expect("successful value insert");
 
     // Iterate over subtree1 to see if keys of other subtrees messed up
     // let mut iter = db
@@ -1386,12 +1386,12 @@ fn test_aux_with_transaction() {
         db.get_aux(&key, None).expect("unable to get aux value"),
         None
     );
-    // And should be able to get data when commited
+    // And should be able to get data when committed
     db.commit_transaction(db_transaction)
         .expect("unable to commit transaction");
     assert_eq!(
         db.get_aux(&key, None)
-            .expect("unable to get commited aux value"),
+            .expect("unable to get committed aux value"),
         Some(aux_value)
     );
 }
