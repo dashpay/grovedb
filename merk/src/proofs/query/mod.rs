@@ -301,12 +301,12 @@ impl QueryItem {
     pub fn contains(&self, key: &[u8]) -> bool {
         let (lower_bound, lower_bound_non_inclusive) = self.lower_bound();
         let (upper_bound, upper_bound_inclusive) = self.upper_bound();
-        return (self.lower_unbounded()
+        (self.lower_unbounded()
             || key > lower_bound
             || (key == lower_bound && !lower_bound_non_inclusive))
             && (self.upper_unbounded()
                 || key < upper_bound
-                || (key == upper_bound && upper_bound_inclusive));
+                || (key == upper_bound && upper_bound_inclusive))
     }
 
     fn merge(self, other: QueryItem) -> QueryItem {
