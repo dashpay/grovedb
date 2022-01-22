@@ -926,7 +926,15 @@ fn transaction_should_be_aborted() {
         Some(&transaction),
     ).unwrap();
 
+    assert!(db.is_readonly);
+    assert!(db.temp_root_tree.leaves_len() > 0);
+    assert!(!db.temp_root_leaf_keys.is_empty());
+    assert!(!db.temp_subtrees.is_empty());
     db.abort_transaction(transaction).unwrap();
+    assert!(!db.is_readonly);
+    assert_eq!(db.temp_root_tree.leaves_len(), 0);
+    assert!(db.temp_root_leaf_keys.is_empty());
+    assert!(db.temp_subtrees.is_empty());
 
     // Transaction should be closed
     assert!(!db.is_transaction_started());
