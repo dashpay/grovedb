@@ -531,10 +531,10 @@ impl QueryItem {
                     None => false,
                     Some(key) => {
                         if left_to_right {
-                            let end = range_inclusive.end();
+                            let end = range_inclusive.end().as_slice();
                             key <= end
                         } else {
-                            let start = range_inclusive.start();
+                            let start = range_inclusive.start().as_slice();
                             key > start
                         }
                     }
