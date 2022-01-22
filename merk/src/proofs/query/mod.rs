@@ -399,12 +399,23 @@ impl QueryItem {
                     iter.seek_to_first();
                 } else {
                     iter.seek(end);
+                    // if the key is not the same as the end we should go back one
+                    if let Some(key) = iter.key() {
+                        if key != end {
+                            iter.prev()
+                        }
+                    }
                 }
             }
             QueryItem::RangeAfter(RangeFrom { start }) => {
                 if left_to_right {
                     iter.seek(start);
-                    iter.next();
+                    // if the key is the same as start we should go to next
+                    if let Some(key) = iter.key() {
+                        if key == start {
+                            iter.next()
+                        }
+                    }
                 } else {
                     iter.seek_to_last();
                 }
@@ -412,7 +423,12 @@ impl QueryItem {
             QueryItem::RangeAfterTo(Range { start, end }) => {
                 if left_to_right {
                     iter.seek(start);
-                    iter.next();
+                    // if the key is the same as start we should go to next
+                    if let Some(key) = iter.key() {
+                        if key == start {
+                            iter.next()
+                        }
+                    }
                 } else {
                     iter.seek(end);
                     iter.prev();
@@ -421,9 +437,21 @@ impl QueryItem {
             QueryItem::RangeAfterToInclusive(range_inclusive) => {
                 if left_to_right {
                     iter.seek(range_inclusive.start());
-                    iter.next();
+                    // if the key is the same as start we should go to next
+                    if let Some(key) = iter.key() {
+                        if key == start {
+                            iter.next()
+                        }
+                    }
                 } else {
-                    iter.seek(range_inclusive.end());
+                    let end = range_inclusive.end();
+                    iter.seek(end);
+                    // if the key is not the same as the end we should go back one
+                    if let Some(key) = iter.key() {
+                        if key != end {
+                            iter.prev()
+                        }
+                    }
                 }
             }
         };
