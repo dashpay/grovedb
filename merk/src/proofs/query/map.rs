@@ -198,7 +198,7 @@ impl<'a> Iterator for Range<'a> {
 
         // if nodes weren't contiguous, we cannot verify that we have all values
         // in the desired range
-        if !skip_exclusion_check && !contiguous {
+        if !skip_exclusion_check && !*contiguous {
             return Some(Err(anyhow!("Proof is missing data for query")));
         }
 
