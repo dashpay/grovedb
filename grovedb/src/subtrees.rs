@@ -9,6 +9,7 @@ use storage::{
 
 use crate::{Element, Error, GroveDb};
 
+// TODO: should take temp_root_leaf_keys also
 pub struct Subtrees<'a> {
     pub root_leaf_keys: &'a HashMap<Vec<u8>, usize>,
     pub temp_subtrees: &'a HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
@@ -42,7 +43,9 @@ impl Subtrees<'_> {
             // if parent path is empty, we are dealing with root leaf node
             // we can confirm validity of a root leaf node by checking root_leaf_keys
             if parent_path.is_empty() {
-                return if self.root_leaf_keys.contains_key(&subtree_prefix) {
+                dbg!("parent path is empty, checking the root tree");
+                let root_key = path[0].to_vec();
+                return if self.root_leaf_keys.contains_key(&root_key) {
                     Ok(subtree)
                 } else {
                     Err(Error::InvalidPath("no subtree found under that path"))
@@ -76,7 +79,13 @@ impl Subtrees<'_> {
         if let Some(merk) = self.temp_subtrees.get(&subtree_prefix) {
             Ok(merk.clone())
         } else {
-            Err(Error::InvalidPath("no subtree found under that path"))
+            dbg!("Getting subtree without transaction");
+            // if the subtree doesn't exist in temp_subtrees,
+            // check if it was created before the transaction was started
+            let merk = self
+                .get_subtree_without_transaction(path)
+                .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
+            Ok(merk)
         }
     }
 

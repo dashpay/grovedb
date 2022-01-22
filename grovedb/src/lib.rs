@@ -210,8 +210,15 @@ impl GroveDb {
             HashMap::new()
         };
 
+        let temp_subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>> = HashMap::new();
+        let subtrees_view = Subtrees {
+            root_leaf_keys: &root_leaf_keys,
+            temp_subtrees: &temp_subtrees,
+            storage: db.clone(),
+        };
+
         Ok(GroveDb::new(
-            Self::build_root_tree(&subtrees, &root_leaf_keys),
+            Self::build_root_tree(subtrees_view, &root_leaf_keys, None),
             root_leaf_keys,
             subtrees,
             meta_storage,
@@ -291,13 +298,15 @@ impl GroveDb {
     }
 
     fn build_root_tree(
-        subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
+        // subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
+        subtrees: Subtrees,
         root_leaf_keys: &HashMap<Vec<u8>, usize>,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> MerkleTree<Sha256> {
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
         for (subtree_path, root_leaf_idx) in root_leaf_keys {
             let subtree_merk = subtrees
-                .get(subtree_path)
+                .get(&[subtree_path.as_slice()], transaction)
                 .expect("`root_leaf_keys` must be in sync with `subtrees`");
             leaf_hashes[*root_leaf_idx] = subtree_merk.root_hash();
         }
@@ -309,14 +318,18 @@ impl GroveDb {
         path: &[&[u8]],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<subtree::ElementsIterator, Error> {
-        let subtrees = match transaction {
-            None => &self.subtrees,
-            Some(_) => &self.temp_subtrees,
-        };
+        // let subtrees = match transaction {
+        //     None => &self.subtrees,
+        //     Some(_) => &self.temp_subtrees,
+        // };
 
-        let merk = subtrees
-            .get(&Self::compress_subtree_key(path, None))
-            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+        // let merk = subtrees
+        //     .get(&Self::compress_subtree_key(path, None))
+        //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+        let merk = self
+            .get_subtrees()
+            .get(path, transaction)
+            .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
         Ok(Element::iterator(merk.raw_iter()))
     }
 
@@ -326,42 +339,72 @@ impl GroveDb {
         path: &[&[u8]],
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
-        let subtrees = match transaction {
-            None => &mut self.subtrees,
-            Some(_) => &mut self.temp_subtrees,
-        };
+        // let subtrees = match transaction {
+        //     None => &mut self.subtrees,
+        //     Some(_) => &mut self.temp_subtrees,
+        // };
+        let subtrees = self.get_subtrees();
 
-        let root_leaf_keys = match transaction {
-            None => &mut self.root_leaf_keys,
-            Some(_) => &mut self.temp_root_leaf_keys,
-        };
-
-        let mut split_path = path.split_last();
+        // We are given a path to a subtree that was just changed
+        // We want to get it's root hash and then propagate changes up
+        // There is the case were the thing that was changed is the root leaf node
+        // if length == 1 then a root leaf node was changed
+        // if length > 1 then a tree further down was changed
+        // for root leaf nodes, we have to rebuild the root tree
+        // for others we just update them
+        let mut path = path;
+        // let mut split_path = path.split_last();
         // Go up until only one element in path, which means a key of a root tree
-        while let Some((key, path_slice)) = split_path {
-            if path_slice.is_empty() {
-                // Hit the root tree
-                match transaction {
-                    None => self.root_tree = Self::build_root_tree(subtrees, root_leaf_keys),
-                    Some(_) => {
-                        self.temp_root_tree = Self::build_root_tree(subtrees, root_leaf_keys)
-                    }
-                };
-                break;
-            } else {
-                let compressed_path_upper_tree = Self::compress_subtree_key(path_slice, None);
-                let compressed_path_subtree = Self::compress_subtree_key(path_slice, Some(key));
-                let subtree = subtrees
-                    .get(&compressed_path_subtree)
-                    .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                let element = Element::Tree(subtree.root_hash());
-                let upper_tree = subtrees
-                    .get_mut(&compressed_path_upper_tree)
-                    .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                element.insert(upper_tree, key.to_vec(), transaction)?;
-                split_path = path_slice.split_last();
+        while path.len() > 1 {
+            // non root leaf node
+            let subtree = subtrees.get(path, transaction)?;
+            let element = Element::Tree(subtree.root_hash());
+
+            let (key, parent_path) = path.split_last().ok_or(Error::InvalidPath("empty path"))?;
+            let mut upper_tree = subtrees.get(path, transaction)?;
+            element.insert(&mut upper_tree, key.to_vec(), transaction);
+
+            path = parent_path;
+        }
+
+        // root leaf nodes
+        if path.len() == 1 {
+            let root_leaf_keys = match transaction {
+                None => &self.root_leaf_keys,
+                Some(_) => &self.temp_root_leaf_keys,
+            };
+            let root_tree = Self::build_root_tree(subtrees, root_leaf_keys, transaction);
+            match transaction {
+                None => self.root_tree = root_tree,
+                Some(_) => self.temp_root_tree = root_tree,
             }
         }
+
+        // while let Some((key, path_slice)) = split_path {
+        //     if path_slice.is_empty() {
+        //         // Hit the root tree
+        //         match transaction {
+        //             None => self.root_tree = Self::build_root_tree(subtrees,
+        // root_leaf_keys),             Some(_) => {
+        //                 self.temp_root_tree = Self::build_root_tree(subtrees,
+        // root_leaf_keys)             }
+        //         };
+        //         break;
+        //     } else {
+        //         let compressed_path_upper_tree =
+        // Self::compress_subtree_key(path_slice, None);         let
+        // compressed_path_subtree = Self::compress_subtree_key(path_slice, Some(key));
+        //         let subtree = subtrees
+        //             .get(&compressed_path_subtree)
+        //             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+        //         let element = Element::Tree(subtree.root_hash());
+        //         let upper_tree = subtrees
+        //             .get_mut(&compressed_path_upper_tree)
+        //             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+        //         element.insert(upper_tree, key.to_vec(), transaction)?;
+        //         split_path = path_slice.split_last();
+        //     }
+        // }
         Ok(())
     }
 
@@ -464,7 +507,7 @@ impl GroveDb {
         // Cloning all the trees to maintain original state before the transaction
         self.temp_root_tree = self.root_tree.clone();
         self.temp_root_leaf_keys = self.root_leaf_keys.clone();
-        self.temp_subtrees = self.subtrees.clone();
+        // self.temp_subtrees = self.subtrees.clone();
 
         Ok(())
     }
@@ -506,7 +549,7 @@ impl GroveDb {
         // Cloning all the trees to maintain to rollback transactional changes
         self.temp_root_tree = self.root_tree.clone();
         self.temp_root_leaf_keys = self.root_leaf_keys.clone();
-        self.temp_subtrees = self.subtrees.clone();
+        // self.temp_subtrees = self.subtrees.clone();
 
         Ok(db_transaction
             .rollback()

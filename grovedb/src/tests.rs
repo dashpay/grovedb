@@ -1111,9 +1111,7 @@ fn test_get_subtree() {
     let element = Element::Item(b"ayy".to_vec());
 
     // Returns error is subtree is not valid
-    let subtree = db
-        .get_subtrees()
-        .get(&[TEST_LEAF, b"invalid_tree"], None);
+    let subtree = db.get_subtrees().get(&[TEST_LEAF, b"invalid_tree"], None);
     assert_eq!(subtree.is_err(), true);
 
     // Doesn't return an error for subtree that exists but empty
@@ -1173,12 +1171,20 @@ fn test_get_subtree() {
     )
     .expect("successful value insert");
 
-    // Retrieve subtree instance without transaction
+    // Retrieve subtree instance with transaction
     let subtree = db
         .get_subtrees()
         .get(&[TEST_LEAF, b"key1", b"innertree"], Some(&transaction))
         .unwrap();
     let result_element = Element::get(&subtree, b"key4").unwrap();
+    assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
+
+    // Should be able to retrieve instances created before transaction
+    let subtree = db
+        .get_subtrees()
+        .get(&[TEST_LEAF, b"key1", b"key2"], None)
+        .unwrap();
+    let result_element = Element::get(&subtree, b"key3").unwrap();
     assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
 }
 

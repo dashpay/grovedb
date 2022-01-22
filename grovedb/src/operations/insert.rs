@@ -98,10 +98,12 @@ impl GroveDb {
         subtrees.insert(subtree_prefix.clone(), subtree_merk);
 
         // Update root leafs index to persist rs-merkle structure later
-        if root_leaf_keys.get(&subtree_prefix).is_none() {
-            root_leaf_keys.insert(subtree_prefix, root_tree.leaves_len());
+        if root_leaf_keys.get(&key.to_vec()).is_none() {
+            root_leaf_keys.insert(key.to_vec(), root_tree.leaves_len());
         }
+        dbg!("propagating after adding root");
         self.propagate_changes(&[key], transaction)?;
+        dbg!("done propagating after adding root");
         Ok(())
     }
 
@@ -118,27 +120,35 @@ impl GroveDb {
             }
         }
 
-        let subtrees = match transaction {
-            None => &mut self.subtrees,
-            Some(_) => &mut self.temp_subtrees,
-        };
-
-        let compressed_path = Self::compress_subtree_key(path, None);
         // First, check if a subtree exists to create a new subtree under it
-        subtrees
-            .get(&compressed_path)
-            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+        self.get_subtrees().get(path, transaction)?;
+
         let (subtree_prefix, subtree_merk) = create_merk_with_prefix(self.db.clone(), path, &key)?;
+
         // Set tree value as a a subtree root hash
         let element = Element::Tree(subtree_merk.root_hash());
-        subtrees.insert(subtree_prefix, subtree_merk);
+
+        // Save subtrees, to be removed
+        // TODO: Remove this
+        {
+            let subtrees = match transaction {
+                None => &mut self.subtrees,
+                Some(_) => &mut self.temp_subtrees,
+            };
+            subtrees.insert(subtree_prefix, subtree_merk);
+        }
+
         // Had to take merk from `subtrees` once again to solve multiple &mut s
-        let mut merk = subtrees
-            .get_mut(&compressed_path)
-            .expect("merk object must exist in `subtrees`");
+        let mut merk = self
+            .get_subtrees()
+            .get(path, transaction)
+            .expect("confirmed subtree exists above");
+
         // need to mark key as taken in the upper tree
-        element.insert(merk, key, transaction)?;
+        element.insert(&mut merk, key, transaction)?;
+
         self.propagate_changes(path, transaction)?;
+
         Ok(())
     }
 
