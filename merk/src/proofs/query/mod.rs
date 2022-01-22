@@ -318,32 +318,32 @@ impl QueryItem {
         let (end, end_inclusive) = max(self.upper_bound(), other.upper_bound());
 
         if start_non_inclusive {
-            if upper_unbounded {
-                return QueryItem::RangeAfter(RangeFrom {
+            return if upper_unbounded {
+                QueryItem::RangeAfter(RangeFrom {
                     start: start.to_vec(),
-                });
+                })
             } else if end_inclusive {
-                return QueryItem::RangeAfterToInclusive(RangeInclusive::new(
+                QueryItem::RangeAfterToInclusive(RangeInclusive::new(
                     start.to_vec(),
                     end.to_vec(),
-                ));
+                ))
             } else {
                 // upper is bounded and not inclusive
-                return QueryItem::RangeAfterTo(Range {
+                QueryItem::RangeAfterTo(Range {
                     start: start.to_vec(),
                     end: end.to_vec(),
-                });
+                })
             }
         }
 
         if lower_unbounded {
-            if upper_unbounded {
-                return QueryItem::RangeFull(RangeFull);
+            return if upper_unbounded {
+                QueryItem::RangeFull(RangeFull)
             } else if end_inclusive {
-                return QueryItem::RangeToInclusive(RangeToInclusive { end: end.to_vec() });
+                QueryItem::RangeToInclusive(RangeToInclusive { end: end.to_vec() })
             } else {
                 // upper is bounded and not inclusive
-                return QueryItem::RangeTo(RangeTo { end: end.to_vec() });
+                QueryItem::RangeTo(RangeTo { end: end.to_vec() })
             }
         }
 
