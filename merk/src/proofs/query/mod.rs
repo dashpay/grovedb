@@ -436,7 +436,8 @@ impl QueryItem {
             }
             QueryItem::RangeAfterToInclusive(range_inclusive) => {
                 if left_to_right {
-                    iter.seek(range_inclusive.start());
+                    let start = range_inclusive.start();
+                    iter.seek(start);
                     // if the key is the same as start we should go to next
                     if let Some(key) = iter.key() {
                         if key == start {
