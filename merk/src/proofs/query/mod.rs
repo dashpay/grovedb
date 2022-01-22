@@ -442,23 +442,24 @@ impl QueryItem {
         match self {
             QueryItem::Key(_) => true,
             QueryItem::Range(Range { start, end }) => {
-                let basic_valid = (limit == None || limit.unwrap() > 0)
-                    && iter.valid()
-                    && iter.key().is_some();
-                let valid = basic_valid && if left_to_right {
-                    iter.key() < Some(end)
-                } else {
-                    iter.key() >= Some(start)
-                };
+                let basic_valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                let valid = basic_valid
+                    && if left_to_right {
+                        iter.key() < Some(end)
+                    } else {
+                        iter.key() >= Some(start)
+                    };
                 valid
             }
             QueryItem::RangeInclusive(range_inclusive) => {
                 let basic_valid = iter.valid() && iter.key().is_some();
-                let valid = basic_valid && if left_to_right {
-                    iter.key() <= Some(range_inclusive.end())
-                } else {
-                    iter.key() >= Some(range_inclusive.start())
-                };
+                let valid = basic_valid
+                    && if left_to_right {
+                        iter.key() <= Some(range_inclusive.end())
+                    } else {
+                        iter.key() >= Some(range_inclusive.start())
+                    };
                 valid
             }
             QueryItem::RangeFull(..) => {
@@ -467,68 +468,76 @@ impl QueryItem {
                 valid
             }
             QueryItem::RangeFrom(RangeFrom { start }) => {
-                let basic_valid = (limit == None || limit.unwrap() > 0)
-                    && iter.valid()
-                    && iter.key().is_some();
-                let valid = basic_valid && if left_to_right {
-                    true
-                } else {
-                    iter.key() >= Some(start)
-                };
+                let basic_valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                let valid = basic_valid
+                    && if left_to_right {
+                        true
+                    } else {
+                        iter.key() >= Some(start)
+                    };
                 valid
             }
             QueryItem::RangeTo(RangeTo { end }) => {
-                let basic_valid = (limit == None || limit.unwrap() > 0)
-                    && iter.valid()
-                    && iter.key().is_some();
-                let valid = basic_valid && if left_to_right {
-                    iter.key() < Some(end)
-                } else {
-                    true
-                };
+                let basic_valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                let valid = basic_valid
+                    && if left_to_right {
+                        iter.key() < Some(end)
+                    } else {
+                        true
+                    };
                 valid
             }
             QueryItem::RangeToInclusive(RangeToInclusive { end }) => {
-                let basic_valid  = (limit == None || limit.unwrap() > 0)
-                    && iter.valid()
-                    && iter.key().is_some();
-                let valid = basic_valid && if left_to_right {
-                    iter.key() <= Some(end)
-                } else {
-                    true
-                };
+                let basic_valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                let valid = basic_valid
+                    && if left_to_right {
+                        iter.key() <= Some(end)
+                    } else {
+                        true
+                    };
                 valid
             }
             QueryItem::RangeAfter(RangeFrom { start }) => {
-                let basic_valid = (limit == None || limit.unwrap() > 0)
-                    && iter.valid()
-                    && iter.key().is_some();
-                let valid = basic_valid && if left_to_right {
-                    true
-                } else {
-                    iter.key() > Some(start)
-                };
+                let basic_valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                let valid = basic_valid
+                    && if left_to_right {
+                        true
+                    } else {
+                        iter.key() > Some(start)
+                    };
                 valid
             }
             QueryItem::RangeAfterTo(Range { start, end }) => {
-                let basic_valid = (limit == None || limit.unwrap() > 0)
-                    && iter.valid()
-                    && iter.key().is_some();
-                let valid = basic_valid && if left_to_right {
-                    iter.key() < Some(end)
-                } else {
-                    iter.key() > Some(start)
-                };
+                let basic_valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                let valid = basic_valid
+                    && if left_to_right {
+                        iter.key() < Some(end)
+                    } else {
+                        iter.key() > Some(start)
+                    };
                 valid
             }
             QueryItem::RangeAfterToInclusive(range_inclusive) => {
-                let basic_valid = (limit == None || limit.unwrap() > 0)
-                    && iter.valid()
-                    && iter.key().is_some();
-                let valid = basic_valid && if left_to_right {
-                    iter.key() <= Some(range_inclusive.end())
-                } else {
-                    iter.key() > Some(range_inclusive.start())
+                let basic_valid = (limit == None || limit.unwrap() > 0) && iter.valid();
+                if !basic_valid {
+                    return false;
+                }
+                let valid = match iter.key() {
+                    None => false,
+                    Some(key) => {
+                        if left_to_right {
+                            let end = range_inclusive.end();
+                            key <= end
+                        } else {
+                            let start = range_inclusive.start();
+                            key > start
+                        }
+                    }
                 };
                 valid
             }
