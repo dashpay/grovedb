@@ -731,15 +731,13 @@ fn test_insert_if_not_exists() {
     let mut db = make_grovedb();
 
     // Insert twice at the same path
-    assert_eq!(
+    assert!(
         db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
-            .expect("Provided valid path"),
-        true
+            .expect("Provided valid path")
     );
-    assert_eq!(
-        db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
-            .expect("Provided valid path"),
-        false
+    assert!(
+        !db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
+            .expect("Provided valid path")
     );
 
     // Should propagate errors from insertion
@@ -765,10 +763,9 @@ fn test_is_empty_tree() {
     )
     .unwrap();
 
-    assert_eq!(
+    assert!(
         db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
-            .expect("path is valid tree"),
-        true
+            .expect("path is valid tree")
     );
 
     // add an element to the tree to make it non empty
@@ -779,10 +776,9 @@ fn test_is_empty_tree() {
         None,
     )
     .unwrap();
-    assert_eq!(
-        db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
-            .expect("path is valid tree"),
-        false
+    assert!(
+        !db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
+            .expect("path is valid tree")
     );
 }
 
