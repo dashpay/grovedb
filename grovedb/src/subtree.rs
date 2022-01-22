@@ -56,7 +56,9 @@ impl Element {
         let element = bincode::deserialize(
             merk.get(key)
                 .map_err(|e| Error::CorruptedData(e.to_string()))?
-                .ok_or(Error::InvalidPath("key not found in Merk"))?
+                .ok_or(Error::InvalidPathKey(
+                    ["key not found in Merk".to_string(), hex::encode(key)].join(" "),
+                ))?
                 .as_slice(),
         )
         .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;

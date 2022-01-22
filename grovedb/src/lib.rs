@@ -35,6 +35,8 @@ pub enum Error {
     ReferenceLimit,
     #[error("invalid proof: {0}")]
     InvalidProof(&'static str),
+    #[error("invalid path key: {0}")]
+    InvalidPathKey(String),
     #[error("invalid path: {0}")]
     InvalidPath(&'static str),
     #[error("invalid query: {0}")]
