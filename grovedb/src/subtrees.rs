@@ -1,20 +1,26 @@
 //! Module for retrieving subtrees
-use std::{collections::HashMap};
-use merk::{Merk};
-use crate::{GroveDb, Error, Element};
-use std::{rc::Rc};
+use std::{collections::HashMap, rc::Rc};
 
-use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage};
-use storage::RawIterator;
+use merk::Merk;
+use storage::{
+    rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage},
+    RawIterator,
+};
 
-pub struct Subtrees<'a>{
+use crate::{Element, Error, GroveDb};
+
+pub struct Subtrees<'a> {
     pub root_leaf_keys: &'a HashMap<Vec<u8>, usize>,
     pub temp_subtrees: &'a HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     pub storage: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
 }
 
 impl Subtrees<'_> {
-    pub fn get_subtree(&self, path: &[&[u8]], transaction: Option<&OptimisticTransactionDBTransaction>) -> Result<Merk<PrefixedRocksDbStorage>, Error> {
+    pub fn get(
+        &self,
+        path: &[&[u8]],
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<Merk<PrefixedRocksDbStorage>, Error> {
         match transaction {
             None => self.get_subtree_without_transaction(path),
             Some(_) => self.get_subtree_with_transaction(path),
@@ -80,8 +86,11 @@ impl Subtrees<'_> {
         key: Option<&[u8]>,
     ) -> Result<(Merk<PrefixedRocksDbStorage>, bool), Error> {
         let subtree_prefix = GroveDb::compress_subtree_key(path, key);
-        let merk = Merk::open(PrefixedRocksDbStorage::new(self.storage.clone(), subtree_prefix)?)
-            .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
+        let merk = Merk::open(PrefixedRocksDbStorage::new(
+            self.storage.clone(),
+            subtree_prefix,
+        )?)
+        .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
         let mut has_keys = false;
         {
             let mut iter = merk.raw_iter();
@@ -92,5 +101,4 @@ impl Subtrees<'_> {
         }
         Ok((merk, has_keys))
     }
-
 }

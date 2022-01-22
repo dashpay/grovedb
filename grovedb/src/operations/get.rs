@@ -71,7 +71,7 @@ impl GroveDb {
         key: &[u8],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Element, Error> {
-        Element::get(&self.get_subtrees().get_subtree(path, transaction)?, key)
+        Element::get(&self.get_subtrees().get(path, transaction)?, key)
     }
 
     pub fn get_path_queries(
@@ -90,9 +90,12 @@ impl GroveDb {
                     } else {
                         Err(Error::InvalidQuery("the reference must result in an item"))
                     }
-                },
-                _ => Err(Error::InvalidQuery("path_queries can only refer to references")),
-            }).collect::<Result<Vec<Vec<u8>>, Error>>()?;
+                }
+                _ => Err(Error::InvalidQuery(
+                    "path_queries can only refer to references",
+                )),
+            })
+            .collect::<Result<Vec<Vec<u8>>, Error>>()?;
         Ok(results)
     }
 

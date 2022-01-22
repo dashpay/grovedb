@@ -1,9 +1,9 @@
 mod operations;
 mod subtree;
+mod subtrees;
 #[cfg(test)]
 mod tests;
 mod transaction;
-mod subtrees;
 
 use std::{collections::HashMap, path::Path, rc::Rc};
 
@@ -366,11 +366,11 @@ impl GroveDb {
     }
 
     fn get_subtrees(&self) -> Subtrees {
-       Subtrees{
-           root_leaf_keys: &self.root_leaf_keys,
-           temp_subtrees: &self.temp_subtrees,
-           storage: self.storage(),
-       }
+        Subtrees {
+            root_leaf_keys: &self.root_leaf_keys,
+            temp_subtrees: &self.temp_subtrees,
+            storage: self.storage(),
+        }
     }
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree

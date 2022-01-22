@@ -8,7 +8,7 @@ impl GroveDb {
         path: &[&[u8]],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<bool, Error> {
-        let merk = self.get_subtrees().get_subtree(path, transaction)?;
+        let merk = self.get_subtrees().get(path, transaction)?;
 
         let mut iter = merk.raw_iter();
         iter.seek_to_first();

@@ -347,26 +347,40 @@ fn test_proof_construction() {
     // Insert level 2 nodes
     let mut inner_tree = TempMerk::new();
     let value_one = Element::Item(b"value1".to_vec());
-    value_one.insert(&mut inner_tree, b"key1".to_vec(), None).unwrap();
+    value_one
+        .insert(&mut inner_tree, b"key1".to_vec(), None)
+        .unwrap();
     let value_two = Element::Item(b"value2".to_vec());
-    value_two.insert(&mut inner_tree, b"key2".to_vec(), None).unwrap();
+    value_two
+        .insert(&mut inner_tree, b"key2".to_vec(), None)
+        .unwrap();
 
     let mut inner_tree_2 = TempMerk::new();
     let value_three = Element::Item(b"value3".to_vec());
-    value_three.insert(&mut inner_tree_2, b"key3".to_vec(), None).unwrap();
+    value_three
+        .insert(&mut inner_tree_2, b"key3".to_vec(), None)
+        .unwrap();
 
     let mut inner_tree_3 = TempMerk::new();
     let value_four = Element::Item(b"value4".to_vec());
-    value_four.insert(&mut inner_tree_3, b"key4".to_vec(), None).unwrap();
+    value_four
+        .insert(&mut inner_tree_3, b"key4".to_vec(), None)
+        .unwrap();
     // Insert level 1 nodes
     let mut test_leaf = TempMerk::new();
     let inner_tree_root = Element::Tree(inner_tree.root_hash());
-    inner_tree_root.insert(&mut test_leaf, b"innertree".to_vec(), None).unwrap();
+    inner_tree_root
+        .insert(&mut test_leaf, b"innertree".to_vec(), None)
+        .unwrap();
     let mut another_test_leaf = TempMerk::new();
     let inner_tree_2_root = Element::Tree(inner_tree_2.root_hash());
-    inner_tree_2_root.insert(&mut another_test_leaf, b"innertree2".to_vec(), None).unwrap();
+    inner_tree_2_root
+        .insert(&mut another_test_leaf, b"innertree2".to_vec(), None)
+        .unwrap();
     let inner_tree_3_root = Element::Tree(inner_tree_3.root_hash());
-    inner_tree_3_root.insert(&mut another_test_leaf, b"innertree3".to_vec(), None).unwrap();
+    inner_tree_3_root
+        .insert(&mut another_test_leaf, b"innertree3".to_vec(), None)
+        .unwrap();
     // Insert root nodes
     let leaves = [test_leaf.root_hash(), another_test_leaf.root_hash()];
     let root_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
@@ -738,7 +752,8 @@ fn test_is_empty_tree() {
         b"innertree".to_vec(),
         Element::empty_tree(),
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     assert_eq!(
         db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
@@ -752,7 +767,8 @@ fn test_is_empty_tree() {
         b"key1".to_vec(),
         Element::Item(b"hello".to_vec()),
         None,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(
         db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
             .expect("path is valid tree"),
@@ -927,7 +943,8 @@ fn transaction_should_be_aborted() {
         item_key.clone(),
         element.clone(),
         Some(&transaction),
-    ).unwrap();
+    )
+    .unwrap();
 
     db.abort_transaction(transaction).unwrap();
 
@@ -1094,11 +1111,13 @@ fn test_get_subtree() {
     let element = Element::Item(b"ayy".to_vec());
 
     // Returns error is subtree is not valid
-    let subtree = db.get_subtrees().get_subtree(&[TEST_LEAF, b"invalid_tree"], None);
+    let subtree = db
+        .get_subtrees()
+        .get(&[TEST_LEAF, b"invalid_tree"], None);
     assert_eq!(subtree.is_err(), true);
 
     // Doesn't return an error for subtree that exists but empty
-    let subtree = db.get_subtrees().get_subtree(&[TEST_LEAF], None);
+    let subtree = db.get_subtrees().get(&[TEST_LEAF], None);
     assert_eq!(subtree.is_err(), false);
 
     // Insert some nested subtrees
@@ -1126,7 +1145,10 @@ fn test_get_subtree() {
 
     // Retrieve subtree instance
     // Check if it returns the same instance that was inserted
-    let subtree = db.get_subtrees().get_subtree(&[TEST_LEAF, b"key1", b"key2"], None).unwrap();
+    let subtree = db
+        .get_subtrees()
+        .get(&[TEST_LEAF, b"key1", b"key2"], None)
+        .unwrap();
     let result_element = Element::get(&subtree, b"key3").unwrap();
     assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
 
@@ -1152,7 +1174,10 @@ fn test_get_subtree() {
     .expect("successful value insert");
 
     // Retrieve subtree instance without transaction
-    let subtree = db.get_subtrees().get_subtree(&[TEST_LEAF, b"key1", b"innertree"], Some(&transaction)).unwrap();
+    let subtree = db
+        .get_subtrees()
+        .get(&[TEST_LEAF, b"key1", b"innertree"], Some(&transaction))
+        .unwrap();
     let result_element = Element::get(&subtree, b"key4").unwrap();
     assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
 }
@@ -2182,7 +2207,10 @@ fn test_root_hash() {
     )
     .expect("unable to insert an item");
     let root_hash_outside = db.root_hash(None);
-    assert_ne!(db.root_hash(Some(&transaction)).unwrap(), root_hash_outside.unwrap());
+    assert_ne!(
+        db.root_hash(Some(&transaction)).unwrap(),
+        root_hash_outside.unwrap()
+    );
 
     assert_eq!(db.root_hash(None).unwrap(), root_hash_outside.unwrap());
     db.commit_transaction(transaction).unwrap();
