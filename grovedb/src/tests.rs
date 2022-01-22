@@ -406,7 +406,7 @@ fn test_root_tree_leafs_are_noted() {
 //         .proof(vec![
 //             PathQuery::new_unsized(&[TEST_LEAF, b"innertree"],
 // path_one_query),             PathQuery::new_unsized(&[ANOTHER_TEST_LEAF,
-// b"innertree3"], path_two_query),             
+// b"innertree3"], path_two_query),
 // PathQuery::new_unsized(&[ANOTHER_TEST_LEAF, b"innertree2"],
 // path_three_query),         ])
 //         .unwrap();
@@ -804,7 +804,7 @@ fn transaction_insert_item_with_transaction_should_use_transaction() {
     db.insert(
         &[TEST_LEAF],
         item_key.clone(),
-        element1.clone(),
+        element1,
         Some(&transaction),
     )
     .expect("cannot insert an item into GroveDB");
@@ -884,7 +884,7 @@ fn transaction_insert_should_return_error_when_trying_to_insert_while_transactio
     db.commit_transaction(transaction).unwrap();
 
     // Check that writes are unlocked after the transaction is committed
-    let result = db.insert(&[TEST_LEAF], item_key.clone(), element1.clone(), None);
+    let result = db.insert(&[TEST_LEAF], item_key, element1, None);
     assert!(matches!(result, Ok(())));
 }
 
@@ -903,7 +903,7 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
     let result = db.insert(
         &[TEST_LEAF],
         item_key.clone(),
-        element1.clone(),
+        element1,
         Some(&transaction),
     );
 
@@ -911,7 +911,7 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
 
     db.rollback_transaction(&transaction).unwrap();
 
-    let result = db.get(&[TEST_LEAF], &item_key.clone(), Some(&transaction));
+    let result = db.get(&[TEST_LEAF], &item_key, Some(&transaction));
     assert!(matches!(result, Err(Error::InvalidPathKey(_))));
 }
 
@@ -948,7 +948,7 @@ fn transaction_should_be_aborted() {
     db.insert(
         &[TEST_LEAF],
         item_key.clone(),
-        element.clone(),
+        element,
         Some(&transaction),
     )
     .unwrap();
@@ -967,7 +967,7 @@ fn transaction_should_be_aborted() {
     assert!(!db.is_transaction_started());
 
     // Transactional data shouldn't be committed to the main database
-    let result = db.get(&[TEST_LEAF], &item_key.clone(), None);
+    let result = db.get(&[TEST_LEAF], &item_key, None);
     assert!(matches!(result, Err(Error::InvalidPathKey(_))));
 }
 
@@ -1072,7 +1072,7 @@ fn test_compress_path_not_possible_collision() {
 fn test_element_deletion() {
     let mut db = make_grovedb();
     let element = Element::Item(b"ayy".to_vec());
-    db.insert(&[TEST_LEAF], b"key".to_vec(), element.clone(), None)
+    db.insert(&[TEST_LEAF], b"key".to_vec(), element, None)
         .expect("successful insert");
     let root_hash = db.root_tree.root().unwrap();
     assert!(db.delete(&[TEST_LEAF], b"key".to_vec(), None).is_ok());
@@ -1101,7 +1101,7 @@ fn test_find_subtrees() {
     db.insert(
         &[TEST_LEAF, b"key1", b"key2"],
         b"key3".to_vec(),
-        element.clone(),
+        element,
         None,
     )
     .expect("successful value insert");
@@ -1222,7 +1222,7 @@ fn test_subtree_deletion() {
     db.insert(
         &[TEST_LEAF, b"key1", b"key2"],
         b"key3".to_vec(),
-        element.clone(),
+        element,
         None,
     )
     .expect("successful value insert");
@@ -1370,7 +1370,7 @@ fn test_aux_with_transaction() {
     db.insert(
         &[TEST_LEAF],
         key.clone(),
-        element.clone(),
+        element,
         Some(&db_transaction),
     )
     .expect("unable to insert");
