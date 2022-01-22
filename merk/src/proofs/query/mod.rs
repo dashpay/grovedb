@@ -1,10 +1,6 @@
 mod map;
 
-use std::{
-    cmp::{max, min, Ordering},
-    collections::BTreeSet,
-    ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
-};
+use std::{cmp::{max, min, Ordering}, cmp, collections::BTreeSet, ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive}};
 
 use anyhow::{bail, Result};
 pub use map::*;
@@ -433,6 +429,18 @@ impl QueryItem {
         };
     }
 
+    fn compare(a: &[u8], b: &[u8]) -> cmp::Ordering {
+        for (ai, bi) in a.iter().zip(b.iter()) {
+            match ai.cmp(&bi) {
+                Ordering::Equal => continue,
+                ord => return ord
+            }
+        }
+
+        /* if every single element was equal, compare length */
+        a.len().cmp(&b.len())
+    }
+
     pub fn iter_is_valid_for_type(
         &self,
         iter: &RawPrefixedTransactionalIterator,
@@ -531,11 +539,19 @@ impl QueryItem {
                     None => false,
                     Some(key) => {
                         if left_to_right {
-                            let end = range_inclusive.end();
-                            Vec::from(key) <= *end
+                            let end = range_inclusive.end().as_slice();
+                            match QueryItem::compare(key, end) {
+                                Ordering::Less => true,
+                                Ordering::Equal => true,
+                                Ordering::Greater => false
+                            }
                         } else {
-                            let start = range_inclusive.start();
-                            Vec::from(key) > *start
+                            let start = range_inclusive.start().as_slice();
+                            match QueryItem::compare(key, start) {
+                                Ordering::Less => false,
+                                Ordering::Equal => false,
+                                Ordering::Greater => true
+                            }
                         }
                     }
                 };
