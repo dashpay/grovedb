@@ -318,18 +318,18 @@ impl GroveDb {
         path: &[&[u8]],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<subtree::ElementsIterator, Error> {
-        // let subtrees = match transaction {
-        //     None => &self.subtrees,
-        //     Some(_) => &self.temp_subtrees,
-        // };
+        let subtrees = match transaction {
+            None => &self.subtrees,
+            Some(_) => &self.temp_subtrees,
+        };
 
-        // let merk = subtrees
-        //     .get(&Self::compress_subtree_key(path, None))
-        //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-        let merk = self
-            .get_subtrees()
-            .get(path, transaction)
-            .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
+        let merk = subtrees
+            .get(&Self::compress_subtree_key(path, None))
+            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+        // let merk = self
+        //     .get_subtrees()
+        //     .get(path, transaction)
+        //     .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
         Ok(Element::iterator(merk.raw_iter()))
     }
 
