@@ -76,14 +76,11 @@ impl GroveDb {
             let mut iter = Element::iterator(merk.raw_iter());
             // let mut iter = self.elements_iterator(&q_ref, transaction)?;
             while let Some((key, value)) = iter.next()? {
-                match value {
-                    Element::Tree(_) => {
-                        let mut sub_path = q.clone();
-                        sub_path.push(key);
-                        queue.push(sub_path.clone());
-                        result.push(sub_path);
-                    }
-                    _ => {}
+                if let Element::Tree(_) = value {
+                    let mut sub_path = q.clone();
+                    sub_path.push(key);
+                    queue.push(sub_path.clone());
+                    result.push(sub_path);
                 }
             }
         }
