@@ -1503,22 +1503,20 @@ mod test {
     #[test]
     fn query_item_cmp() {
         assert!(QueryItem::Key(vec![10]) < QueryItem::Key(vec![20]));
-        assert!(QueryItem::Key(vec![10]) == QueryItem::Key(vec![10]));
+        assert_eq!(QueryItem::Key(vec![10]), QueryItem::Key(vec![10]));
         assert!(QueryItem::Key(vec![20]) > QueryItem::Key(vec![10]));
 
         assert!(QueryItem::Key(vec![10]) < QueryItem::Range(vec![20]..vec![30]));
-        assert!(QueryItem::Key(vec![10]) == QueryItem::Range(vec![10]..vec![20]));
-        assert!(QueryItem::Key(vec![15]) == QueryItem::Range(vec![10]..vec![20]));
+        assert_eq!(QueryItem::Key(vec![10]), QueryItem::Range(vec![10]..vec![20]));
+        assert_eq!(QueryItem::Key(vec![15]), QueryItem::Range(vec![10]..vec![20]));
         assert!(QueryItem::Key(vec![20]) > QueryItem::Range(vec![10]..vec![20]));
-        assert!(QueryItem::Key(vec![20]) == QueryItem::RangeInclusive(vec![10]..=vec![20]));
+        assert_eq!(QueryItem::Key(vec![20]), QueryItem::RangeInclusive(vec![10]..=vec![20]));
         assert!(QueryItem::Key(vec![30]) > QueryItem::Range(vec![10]..vec![20]));
 
         assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![30]..vec![40]));
         assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![20]..vec![30]));
-        assert!(
-            QueryItem::RangeInclusive(vec![10]..=vec![20]) == QueryItem::Range(vec![20]..vec![30])
-        );
-        assert!(QueryItem::Range(vec![15]..vec![25]) == QueryItem::Range(vec![20]..vec![30]));
+        assert_eq!(QueryItem::RangeInclusive(vec![10]..=vec![20]), QueryItem::Range(vec![20]..vec![30]));
+        assert_eq!(QueryItem::Range(vec![15]..vec![25]), QueryItem::Range(vec![20]..vec![30]));
         assert!(QueryItem::Range(vec![20]..vec![30]) > QueryItem::Range(vec![10]..vec![20]));
     }
 

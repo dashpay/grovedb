@@ -117,7 +117,7 @@ pub fn make_del_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry> {
 
 pub fn make_tree_rand(node_count: u64, batch_size: u64, initial_seed: u64) -> Tree {
     assert!(node_count >= batch_size);
-    assert!((node_count % batch_size) == 0);
+    assert_eq!((node_count % batch_size), 0);
 
     let value = vec![123; 60];
     let mut tree = Tree::new(vec![0; 20], value);
@@ -136,7 +136,7 @@ pub fn make_tree_rand(node_count: u64, batch_size: u64, initial_seed: u64) -> Tr
 
 pub fn make_tree_seq(node_count: u64) -> Tree {
     let batch_size = if node_count >= 10_000 {
-        assert!(node_count % 10_000 == 0);
+        assert_eq!(node_count % 10_000, 0);
         10_000
     } else {
         node_count
