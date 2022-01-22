@@ -405,7 +405,7 @@ impl GroveDb {
     ///
     /// // This action exists only inside the transaction for now
     /// let result = db.get(&[TEST_LEAF], &subtree_key, None);
-    /// assert!(matches!(result, Err(Error::InvalidPath(_))));
+    /// assert!(matches!(result, Err(Error::InvalidPathKey(_))));
     ///
     /// // To access values inside the transaction, transaction needs to be passed to the `db::get`
     /// let result_with_transaction = db.get(&[TEST_LEAF], &subtree_key, Some(&db_transaction))?;

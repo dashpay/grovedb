@@ -787,7 +787,7 @@ fn transaction_insert_item_with_transaction_should_use_transaction() {
 
     // Check that there's no such key in the DB
     let result = db.get(&[TEST_LEAF], &item_key, None);
-    assert!(matches!(result, Err(Error::InvalidPath(_))));
+    assert!(matches!(result, Err(Error::InvalidPathKey(_))));
 
     let element1 = Element::Item(b"ayy".to_vec());
 
@@ -802,7 +802,7 @@ fn transaction_insert_item_with_transaction_should_use_transaction() {
     // The key was inserted inside the transaction, so it shouldn't be possible
     // to get it back without committing or using transaction
     let result = db.get(&[TEST_LEAF], &item_key, None);
-    assert!(matches!(result, Err(Error::InvalidPath(_))));
+    assert!(matches!(result, Err(Error::InvalidPathKey(_))));
     // Check that the element can be retrieved when transaction is passed
     let result_with_transaction = db
         .get(&[TEST_LEAF], &item_key, Some(&transaction))
@@ -831,7 +831,7 @@ fn transaction_insert_tree_with_transaction_should_use_transaction() {
 
     // Check that there's no such key in the DB
     let result = db.get(&[TEST_LEAF], &subtree_key, None);
-    assert!(matches!(result, Err(Error::InvalidPath(_))));
+    assert!(matches!(result, Err(Error::InvalidPathKey(_))));
 
     db.insert(
         &[TEST_LEAF],
@@ -842,7 +842,7 @@ fn transaction_insert_tree_with_transaction_should_use_transaction() {
     .expect("cannot insert an item into GroveDB");
 
     let result = db.get(&[TEST_LEAF], &subtree_key, None);
-    assert!(matches!(result, Err(Error::InvalidPath(_))));
+    assert!(matches!(result, Err(Error::InvalidPathKey(_))));
 
     let result_with_transaction = db
         .get(&[TEST_LEAF], &subtree_key, Some(&db_transaction))
@@ -902,7 +902,7 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
     db.rollback_transaction(&transaction).unwrap();
 
     let result = db.get(&[TEST_LEAF], &item_key.clone(), Some(&transaction));
-    assert!(matches!(result, Err(Error::InvalidPath(_))));
+    assert!(matches!(result, Err(Error::InvalidPathKey(_))));
 }
 
 #[test]
@@ -950,7 +950,7 @@ fn transaction_should_be_aborted() {
 
     // Transactional data shouldn't be commited to the main database
     let result = db.get(&[TEST_LEAF], &item_key.clone(), None);
-    assert!(matches!(result, Err(Error::InvalidPath(_))));
+    assert!(matches!(result, Err(Error::InvalidPathKey(_))));
 }
 
 #[test]
@@ -1055,7 +1055,7 @@ fn test_element_deletion() {
     assert!(db.delete(&[TEST_LEAF], b"key".to_vec(), None).is_ok());
     assert!(matches!(
         db.get(&[TEST_LEAF], b"key", None),
-        Err(Error::InvalidPath(_))
+        Err(Error::InvalidPathKey(_))
     ));
     assert_ne!(root_hash, db.root_tree.root().unwrap());
 }

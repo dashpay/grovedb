@@ -236,13 +236,7 @@ impl Element {
                 item.seek_for_iter(&mut iter, sized_query.left_to_right);
                 let mut work = true;
 
-                loop {
-                    let (valid, next_valid) =
-                        item.iter_is_valid_for_type(&iter, limit, work, sized_query.left_to_right);
-                    if !valid {
-                        break;
-                    }
-                    work = next_valid;
+                while item.iter_is_valid_for_type(&iter, limit, sized_query.left_to_right) {
                     let element =
                         raw_decode(iter.value().expect("if key exists then value should too"))?;
                     let key = iter.key().expect("key should exist");
