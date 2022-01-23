@@ -448,7 +448,7 @@ fn test_proof_construction() {
     proof_query.insert_key(b"key2".to_vec());
     assert_eq!(
         *proof_for_path_one,
-        inner_tree.prove(proof_query, None, None, true).unwrap()
+        inner_tree.prove(proof_query, None, None).unwrap()
     );
 
     // Assert path 2 proof
@@ -456,7 +456,7 @@ fn test_proof_construction() {
     proof_query.insert_key(b"key4".to_vec());
     assert_eq!(
         *proof_for_path_two,
-        inner_tree_3.prove(proof_query, None, None, true).unwrap()
+        inner_tree_3.prove(proof_query, None, None).unwrap()
     );
 
     // Assert path 3 proof
@@ -464,7 +464,7 @@ fn test_proof_construction() {
     proof_query.insert_key(b"key3".to_vec());
     assert_eq!(
         *proof_for_path_three,
-        inner_tree_2.prove(proof_query, None, None, true).unwrap()
+        inner_tree_2.prove(proof_query, None, None).unwrap()
     );
 
     // Assert test leaf proof
@@ -472,7 +472,7 @@ fn test_proof_construction() {
     proof_query.insert_key(b"innertree".to_vec());
     assert_eq!(
         *proof_for_test_leaf,
-        test_leaf.prove(proof_query, None, None, true).unwrap()
+        test_leaf.prove(proof_query, None, None).unwrap()
     );
 
     // Assert another test leaf proof
@@ -484,7 +484,7 @@ fn test_proof_construction() {
     assert_eq!(
         *proof_for_another_test_leaf,
         another_test_leaf
-            .prove(proof_query, None, None, true)
+            .prove(proof_query, None, None)
             .unwrap()
     );
 
@@ -2007,7 +2007,7 @@ fn test_get_range_query_with_limit_and_offset() {
     populate_tree_for_non_unique_range_subquery(&mut db);
 
     let path = vec![TEST_LEAF];
-    let mut query = Query::new();
+    let mut query = Query::new_with_direction(true);
     query.insert_range((1990 as u32).to_be_bytes().to_vec()..(1995 as u32).to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"0".to_vec();
@@ -2018,7 +2018,7 @@ fn test_get_range_query_with_limit_and_offset() {
     query.set_subquery(subquery.clone());
 
     // Baseline query: no offset or limit + left to right
-    let path_query = PathQuery::new(&path, SizedQuery::new(query.clone(), None, None, true));
+    let path_query = PathQuery::new(&path, SizedQuery::new(query.clone(), None, None));
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -2034,11 +2034,15 @@ fn test_get_range_query_with_limit_and_offset() {
     last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 
+    subquery.left_to_right = false;
+
     query.set_subquery_key(subquery_key.clone());
     query.set_subquery(subquery.clone());
 
+    query.left_to_right = false;
+
     // Baseline query: no offset or limit + right to left
-    let path_query = PathQuery::new(&path, SizedQuery::new(query.clone(), None, None, false));
+    let path_query = PathQuery::new(&path, SizedQuery::new(query.clone(), None, None));
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -2054,11 +2058,15 @@ fn test_get_range_query_with_limit_and_offset() {
     last_value.append(&mut (100 as u32).to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 
+    subquery.left_to_right = true;
+
     query.set_subquery_key(subquery_key.clone());
     query.set_subquery(subquery.clone());
 
+    query.left_to_right = true;
+
     // Limit the result to just 55 elements
-    let path_query = PathQuery::new(&path, SizedQuery::new(query.clone(), Some(55), None, true));
+    let path_query = PathQuery::new(&path, SizedQuery::new(query.clone(), Some(55), None));
 
     let (elements, _) = db
         .get_path_query(&path_query, None)
@@ -2081,7 +2089,7 @@ fn test_get_range_query_with_limit_and_offset() {
     // Limit the result set to 60 elements but skip the first 14 elements
     let path_query = PathQuery::new(
         &path,
-        SizedQuery::new(query.clone(), Some(60), Some(14), true),
+        SizedQuery::new(query.clone(), Some(60), Some(14)),
     );
 
     let (elements, _) = db
@@ -2106,11 +2114,13 @@ fn test_get_range_query_with_limit_and_offset() {
     query.set_subquery_key(subquery_key.clone());
     query.set_subquery(subquery.clone());
 
+    query.left_to_right = false;
+
     // Limit the result set to 60 element but skip first 10 elements (this time
     // right to left)
     let path_query = PathQuery::new(
         &path,
-        SizedQuery::new(query.clone(), Some(60), Some(10), false),
+        SizedQuery::new(query.clone(), Some(60), Some(10)),
     );
 
     let (elements, _) = db
@@ -2121,21 +2131,24 @@ fn test_get_range_query_with_limit_and_offset() {
 
     // Skips the first 10 elements from the back
     // last tree and starts from the 11th before the end
+    // Underlying subquery is ascending
     let mut first_value = (1994 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (139 as u32).to_be_bytes().to_vec());
+    first_value.append(&mut (110 as u32).to_be_bytes().to_vec());
     assert_eq!(elements[0], first_value);
 
     let mut last_value = (1993 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (130 as u32).to_be_bytes().to_vec());
+    last_value.append(&mut (119 as u32).to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 
     query.set_subquery_key(subquery_key.clone());
     query.set_subquery(subquery.clone());
 
+    query.left_to_right = true;
+
     // Offset bigger than elements in range
     let path_query = PathQuery::new(
         &path,
-        SizedQuery::new(query.clone(), None, Some(5000), true),
+        SizedQuery::new(query.clone(), None, Some(5000)),
     );
 
     let (elements, _) = db
@@ -2150,7 +2163,7 @@ fn test_get_range_query_with_limit_and_offset() {
     // Limit bigger than elements in range
     let path_query = PathQuery::new(
         &path,
-        SizedQuery::new(query.clone(), Some(5000), None, true),
+        SizedQuery::new(query.clone(), Some(5000), None),
     );
 
     let (elements, _) = db
@@ -2163,14 +2176,14 @@ fn test_get_range_query_with_limit_and_offset() {
     let mut db = make_grovedb();
     populate_tree_for_unique_range_subquery(&mut db);
 
-    let mut query = Query::new();
+    let mut query = Query::new_with_direction(true);
     query.insert_range((1990 as u32).to_be_bytes().to_vec()..(2000 as u32).to_be_bytes().to_vec());
 
     query.set_subquery_key(subquery_key.clone());
 
     let path_query = PathQuery::new(
         &path,
-        SizedQuery::new(query.clone(), Some(5), Some(2), true),
+        SizedQuery::new(query.clone(), Some(5), Some(2)),
     );
 
     let (elements, _) = db
