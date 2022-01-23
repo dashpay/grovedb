@@ -6,9 +6,10 @@ use std::{
 };
 
 use merk::Merk;
+use storage::RawIterator;
 use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage};
 
-use crate::{Element, Error, GroveDb, PathQuery};
+use crate::{Element, Error, GroveDb, PathQuery, Subtrees};
 
 /// Limit of possible indirections
 pub(crate) const MAX_REFERENCE_HOPS: usize = 10;
@@ -122,6 +123,7 @@ impl GroveDb {
             .into_iter()
             .map(|element| match element {
                 Element::Reference(reference_path) => {
+                    dbg!("ref");
                     let maybe_item = self.follow_reference(reference_path, transaction)?;
                     if let Element::Item(item) = maybe_item {
                         Ok(item)
@@ -129,10 +131,17 @@ impl GroveDb {
                         Err(Error::InvalidQuery("the reference must result in an item"))
                     }
                 }
-                Element::Item(item) => Ok(item),
-                Element::Tree(_) => Err(Error::InvalidQuery(
-                    "path_queries can only refer to items and references",
-                )),
+                Element::Item(item) => {
+                    dbg!("item");
+                    Ok(item)
+                },
+                Element::Tree(item) => {
+                    dbg!("tree");
+                    // Err(Error::InvalidQuery(
+                    //     "path_queries can only refer to items and references",
+                    // ))
+                    Ok(item.to_vec())
+                },
             })
             .collect::<Result<Vec<Vec<u8>>, Error>>()?;
         Ok((results, skipped))
@@ -143,22 +152,26 @@ impl GroveDb {
         path_query: &PathQuery,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(Vec<Element>, u16), Error> {
-        let subtrees = match transaction {
-            None => &self.subtrees,
-            Some(_) => &self.temp_subtrees,
-        };
-        self.get_path_query_on_trees_raw(path_query, subtrees)
+        // let subtrees = match transaction {
+        //     None => &self.subtrees,
+        //     Some(_) => &self.temp_subtrees,
+        // };
+        let subtrees = self.get_subtrees();
+        self.get_path_query_on_trees_raw(path_query, subtrees, transaction)
     }
 
     fn get_path_query_on_trees_raw(
         &self,
         path_query: &PathQuery,
-        subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
+        subtrees: Subtrees,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+        // subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     ) -> Result<(Vec<Element>, u16), Error> {
         let path = path_query.path;
-        let merk = subtrees
-            .get(&Self::compress_subtree_key(path, None))
-            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-        Element::get_path_query(merk, path_query, Some(subtrees))
+        // let merk = subtrees
+        //     .get(&Self::compress_subtree_key(path, None))
+        //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+        let merk = subtrees.get(path, transaction).map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
+        Element::get_path_query(&merk, path_query, Some(&subtrees))
     }
 }

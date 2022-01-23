@@ -361,7 +361,7 @@ impl GroveDb {
             let element = Element::Tree(subtree.root_hash());
 
             let (key, parent_path) = path.split_last().ok_or(Error::InvalidPath("empty path"))?;
-            let mut upper_tree = subtrees.get(path, transaction)?;
+            let mut upper_tree = subtrees.get(parent_path, transaction)?;
             element.insert(&mut upper_tree, key.to_vec(), transaction);
 
             path = parent_path;
