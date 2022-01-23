@@ -1646,7 +1646,6 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
 fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
     let mut db = make_grovedb();
     populate_tree_by_reference_for_non_unique_range_subquery(&mut db);
-    panic!("We got here");
     dbg!("failed when populating");
 
     let path = vec![TEST_LEAF, b"1"];

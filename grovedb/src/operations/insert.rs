@@ -56,9 +56,10 @@ impl GroveDb {
                     ));
                 }
                 // Get a Merk by a path
-                let mut merk = subtrees
-                    .get_mut(&Self::compress_subtree_key(path, None))
-                    .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                // let mut merk = subtrees
+                //     .get_mut(&Self::compress_subtree_key(path, None))
+                //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                let mut merk = self.get_subtrees().get(path, transaction).map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
                 element.insert(&mut merk, key, transaction)?;
                 self.propagate_changes(path, transaction)?;
             }
