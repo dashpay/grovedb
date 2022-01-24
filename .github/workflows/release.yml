@@ -96,7 +96,7 @@ jobs:
         env:
           LIBC: ${{ matrix.compiler == 'musl' }}
           ARCH: ${{ matrix.node_arch }} # Overwrite current arch with target one
-          RUSTFLAGS: "-C target-feature=-crt-static"
+          RUSTFLAGS: "-C target-feature=-crt-static" # Musl build doesn't work with this feature
 
       - name: Upload prebuild artifacts
         uses: actions/upload-artifact@v2
