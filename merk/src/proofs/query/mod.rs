@@ -1,6 +1,7 @@
 mod map;
 
 use std::{
+    cmp,
     cmp::{max, min, Ordering},
     collections::BTreeSet,
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
@@ -20,12 +21,21 @@ use crate::tree::{Fetch, Hash, Link, RefWalker};
 #[derive(Debug, Default, Clone)]
 pub struct Query {
     items: BTreeSet<QueryItem>,
+    pub subquery_key: Option<Vec<u8>>,
+    pub subquery: Option<Box<Query>>,
+    pub left_to_right: bool,
 }
 
 impl Query {
     /// Creates a new query which contains no items.
     pub fn new() -> Self {
-        Default::default()
+        Query::new_with_direction(true)
+    }
+
+    pub fn new_with_direction(left_to_right: bool) -> Self {
+        let mut default: Query = Default::default();
+        default.left_to_right = left_to_right;
+        default
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -38,6 +48,19 @@ impl Query {
 
     pub fn rev_iter(&self) -> impl Iterator<Item = &QueryItem> {
         self.items.iter().rev()
+    }
+
+    /// Sets the subquery_key for the query. This causes every element that is
+    /// returned by the query to be subqueried to the subquery_key.
+    pub fn set_subquery_key(&mut self, key: Vec<u8>) {
+        self.subquery_key = Some(key);
+    }
+
+    /// Sets the subquery for the query. This causes every element that is
+    /// returned by the query to be subqueried or subqueried to the
+    /// subquery_key/subquery if a subquery is present.
+    pub fn set_subquery(&mut self, subquery: Query) {
+        self.subquery = Some(Box::new(subquery));
     }
 
     /// Adds an individual key to the query, so that its value (or its absence)
@@ -175,7 +198,12 @@ impl Query {
 impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
     fn from(other: Vec<Q>) -> Self {
         let items = other.into_iter().map(Into::into).collect();
-        Query { items }
+        Query {
+            items,
+            subquery_key: None,
+            subquery: None,
+            left_to_right: true,
+        }
     }
 }
 
@@ -384,12 +412,23 @@ impl QueryItem {
                     iter.seek_to_first();
                 } else {
                     iter.seek(end);
+                    // if the key is not the same as the end we should go back one
+                    if let Some(key) = iter.key() {
+                        if key != end {
+                            iter.prev()
+                        }
+                    }
                 }
             }
             QueryItem::RangeAfter(RangeFrom { start }) => {
                 if left_to_right {
                     iter.seek(start);
-                    iter.next();
+                    // if the key is the same as start we should go to next
+                    if let Some(key) = iter.key() {
+                        if key == start {
+                            iter.next()
+                        }
+                    }
                 } else {
                     iter.seek_to_last();
                 }
@@ -397,7 +436,12 @@ impl QueryItem {
             QueryItem::RangeAfterTo(Range { start, end }) => {
                 if left_to_right {
                     iter.seek(start);
-                    iter.next();
+                    // if the key is the same as start we should go to next
+                    if let Some(key) = iter.key() {
+                        if key == start {
+                            iter.next()
+                        }
+                    }
                 } else {
                     iter.seek(end);
                     iter.prev();
@@ -405,93 +449,155 @@ impl QueryItem {
             }
             QueryItem::RangeAfterToInclusive(range_inclusive) => {
                 if left_to_right {
-                    iter.seek(range_inclusive.start());
-                    iter.next();
+                    let start = range_inclusive.start();
+                    iter.seek(start);
+                    // if the key is the same as start we should go to next
+                    if let Some(key) = iter.key() {
+                        if key == start {
+                            iter.next()
+                        }
+                    }
                 } else {
-                    iter.seek(range_inclusive.end());
+                    let end = range_inclusive.end();
+                    iter.seek(end);
+                    // if the key is not the same as the end we should go back one
+                    if let Some(key) = iter.key() {
+                        if key != end {
+                            iter.prev()
+                        }
+                    }
                 }
             }
         };
+    }
+
+    fn compare(a: &[u8], b: &[u8]) -> cmp::Ordering {
+        for (ai, bi) in a.iter().zip(b.iter()) {
+            match ai.cmp(&bi) {
+                Ordering::Equal => continue,
+                ord => return ord,
+            }
+        }
+
+        // if every single element was equal, compare length
+        a.len().cmp(&b.len())
     }
 
     pub fn iter_is_valid_for_type(
         &self,
         iter: &RawPrefixedTransactionalIterator,
         limit: Option<u16>,
-        work: bool,
         left_to_right: bool,
-    ) -> (bool, bool) {
+    ) -> bool {
         match self {
-            QueryItem::Key(_) => (true, true),
+            QueryItem::Key(_) => true,
             QueryItem::Range(Range { start, end }) => {
-                let valid = (limit == None || limit.unwrap() > 0)
-                    && iter.valid()
-                    && iter.key().is_some()
-                    && work
-                    && (!left_to_right || iter.key() != Some(end));
-                // if we are going backwards, we need to make sure we are going to stop after
-                // the first element
-                let next_valid = left_to_right || iter.key() != Some(start);
-                (valid, next_valid)
+                let basic_valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                let valid = basic_valid
+                    && if left_to_right {
+                        iter.key() < Some(end)
+                    } else {
+                        iter.key() >= Some(start)
+                    };
+                valid
             }
             QueryItem::RangeInclusive(range_inclusive) => {
-                let valid = iter.valid() && iter.key().is_some() && work;
-                let next_valid = iter.key()
-                    != Some(if left_to_right {
-                        range_inclusive.end()
+                let basic_valid = iter.valid() && iter.key().is_some();
+                let valid = basic_valid
+                    && if left_to_right {
+                        iter.key() <= Some(range_inclusive.end())
                     } else {
-                        range_inclusive.start()
-                    });
-                (valid, next_valid)
+                        iter.key() >= Some(range_inclusive.start())
+                    };
+                valid
             }
             QueryItem::RangeFull(..) => {
                 let valid =
                     (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
-                (valid, true)
+                valid
             }
             QueryItem::RangeFrom(RangeFrom { start }) => {
-                let valid = (limit == None || limit.unwrap() > 0)
-                    && iter.valid()
-                    && iter.key().is_some()
-                    && work;
-                let next_valid = left_to_right || iter.key() != Some(start);
-                (valid, next_valid)
+                let basic_valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                let valid = basic_valid
+                    && if left_to_right {
+                        true
+                    } else {
+                        iter.key() >= Some(start)
+                    };
+                valid
             }
             QueryItem::RangeTo(RangeTo { end }) => {
-                let valid = (limit == None || limit.unwrap() > 0)
-                    && iter.valid()
-                    && iter.key().is_some()
-                    && (!left_to_right || iter.key() != Some(end));
-                (valid, true)
+                let basic_valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                let valid = basic_valid
+                    && if left_to_right {
+                        iter.key() < Some(end)
+                    } else {
+                        true
+                    };
+                valid
             }
             QueryItem::RangeToInclusive(RangeToInclusive { end }) => {
-                let valid = iter.valid() && iter.key().is_some() && work;
-                let next_valid = !(left_to_right && iter.key() == Some(end));
-                (valid, next_valid)
+                let basic_valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                let valid = basic_valid
+                    && if left_to_right {
+                        iter.key() <= Some(end)
+                    } else {
+                        true
+                    };
+                valid
             }
             QueryItem::RangeAfter(RangeFrom { start }) => {
-                let valid = (limit == None || limit.unwrap() > 0)
-                    && iter.valid()
-                    && iter.key().is_some()
-                    && (left_to_right || iter.key() != Some(start));
-                (valid, true)
+                let basic_valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                let valid = basic_valid
+                    && if left_to_right {
+                        true
+                    } else {
+                        iter.key() > Some(start)
+                    };
+                valid
             }
             QueryItem::RangeAfterTo(Range { start, end }) => {
-                let valid = (limit == None || limit.unwrap() > 0)
-                    && iter.valid()
-                    && iter.key().is_some()
-                    && (left_to_right || iter.key() != Some(start))
-                    && !(left_to_right && iter.key() == Some(end));
-                (valid, true)
+                let basic_valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
+                let valid = basic_valid
+                    && if left_to_right {
+                        iter.key() < Some(end)
+                    } else {
+                        iter.key() > Some(start)
+                    };
+                valid
             }
             QueryItem::RangeAfterToInclusive(range_inclusive) => {
-                let valid = (limit == None || limit.unwrap() > 0)
-                    && iter.valid()
-                    && iter.key().is_some()
-                    && work;
-                let next_valid = (left_to_right || iter.key() != Some(range_inclusive.start()))
-                    && !(left_to_right && iter.key() == Some(range_inclusive.end()));
-                (valid, next_valid)
+                let basic_valid = (limit == None || limit.unwrap() > 0) && iter.valid();
+                if !basic_valid {
+                    return false;
+                }
+                let valid = match iter.key() {
+                    None => false,
+                    Some(key) => {
+                        if left_to_right {
+                            let end = range_inclusive.end().as_slice();
+                            match QueryItem::compare(key, end) {
+                                Ordering::Less => true,
+                                Ordering::Equal => true,
+                                Ordering::Greater => false,
+                            }
+                        } else {
+                            let start = range_inclusive.start().as_slice();
+                            match QueryItem::compare(key, start) {
+                                Ordering::Less => false,
+                                Ordering::Equal => false,
+                                Ordering::Greater => true,
+                            }
+                        }
+                    }
+                };
+                valid
             }
         }
     }

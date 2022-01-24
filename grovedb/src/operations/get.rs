@@ -99,7 +99,6 @@ impl GroveDb {
                 )),
             })
             .collect::<Result<Vec<Vec<u8>>, Error>>()?;
-
         Ok(results)
     }
 
