@@ -99,6 +99,16 @@ jobs:
           default: true
           target: ${{ steps.set-target.outputs.result }}
 
+      - run: cat .cargo/config
+
+      - name: Set defualt target
+        uses: DamianReeves/write-file-action
+        with:
+          path: .cargo/config
+          contents: |
+            [build]
+            target = "${{ steps.set-target.outputs.result }}"
+
       - name: Build
         run: npm run build:release -- --target ${{ steps.set-target.outputs.result }}
         env:
