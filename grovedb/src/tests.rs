@@ -347,26 +347,40 @@ fn test_proof_construction() {
     // Insert level 2 nodes
     let mut inner_tree = TempMerk::new();
     let value_one = Element::Item(b"value1".to_vec());
-    value_one.insert(&mut inner_tree, b"key1".to_vec(), None);
+    value_one
+        .insert(&mut inner_tree, b"key1".to_vec(), None)
+        .unwrap();
     let value_two = Element::Item(b"value2".to_vec());
-    value_two.insert(&mut inner_tree, b"key2".to_vec(), None);
+    value_two
+        .insert(&mut inner_tree, b"key2".to_vec(), None)
+        .unwrap();
 
     let mut inner_tree_2 = TempMerk::new();
     let value_three = Element::Item(b"value3".to_vec());
-    value_three.insert(&mut inner_tree_2, b"key3".to_vec(), None);
+    value_three
+        .insert(&mut inner_tree_2, b"key3".to_vec(), None)
+        .unwrap();
 
     let mut inner_tree_3 = TempMerk::new();
     let value_four = Element::Item(b"value4".to_vec());
-    value_four.insert(&mut inner_tree_3, b"key4".to_vec(), None);
+    value_four
+        .insert(&mut inner_tree_3, b"key4".to_vec(), None)
+        .unwrap();
     // Insert level 1 nodes
     let mut test_leaf = TempMerk::new();
     let inner_tree_root = Element::Tree(inner_tree.root_hash());
-    inner_tree_root.insert(&mut test_leaf, b"innertree".to_vec(), None);
+    inner_tree_root
+        .insert(&mut test_leaf, b"innertree".to_vec(), None)
+        .unwrap();
     let mut another_test_leaf = TempMerk::new();
     let inner_tree_2_root = Element::Tree(inner_tree_2.root_hash());
-    inner_tree_2_root.insert(&mut another_test_leaf, b"innertree2".to_vec(), None);
+    inner_tree_2_root
+        .insert(&mut another_test_leaf, b"innertree2".to_vec(), None)
+        .unwrap();
     let inner_tree_3_root = Element::Tree(inner_tree_3.root_hash());
-    inner_tree_3_root.insert(&mut another_test_leaf, b"innertree3".to_vec(), None);
+    inner_tree_3_root
+        .insert(&mut another_test_leaf, b"innertree3".to_vec(), None)
+        .unwrap();
     // Insert root nodes
     let leaves = [test_leaf.root_hash(), another_test_leaf.root_hash()];
     let root_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
@@ -753,7 +767,8 @@ fn test_is_empty_tree() {
         b"innertree".to_vec(),
         Element::empty_tree(),
         None,
-    );
+    )
+    .unwrap();
 
     assert_eq!(
         db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
@@ -767,7 +782,8 @@ fn test_is_empty_tree() {
         b"key1".to_vec(),
         Element::Item(b"hello".to_vec()),
         None,
-    );
+    )
+    .unwrap();
     assert_eq!(
         db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
             .expect("path is valid tree"),
@@ -780,7 +796,7 @@ fn transaction_insert_item_with_transaction_should_use_transaction() {
     let item_key = b"key3".to_vec();
 
     let mut db = make_grovedb();
-    db.start_transaction();
+    db.start_transaction().unwrap();
     let storage = db.storage();
     let transaction = storage.transaction();
 
@@ -810,7 +826,7 @@ fn transaction_insert_item_with_transaction_should_use_transaction() {
 
     // Test that commit works
     // transaction.commit();
-    db.commit_transaction(transaction);
+    db.commit_transaction(transaction).unwrap();
 
     // Check that the change was committed
     let result = db
@@ -826,7 +842,7 @@ fn transaction_insert_tree_with_transaction_should_use_transaction() {
     let mut db = make_grovedb();
     let storage = db.storage();
     let db_transaction = storage.transaction();
-    db.start_transaction();
+    db.start_transaction().unwrap();
 
     // Check that there's no such key in the DB
     let result = db.get(&[TEST_LEAF], &subtree_key, None);
@@ -848,7 +864,7 @@ fn transaction_insert_tree_with_transaction_should_use_transaction() {
         .expect("Expected to work");
     assert_eq!(result_with_transaction, Element::empty_tree());
 
-    db.commit_transaction(db_transaction);
+    db.commit_transaction(db_transaction).unwrap();
 
     let result = db
         .get(&[TEST_LEAF], &subtree_key, None)
@@ -861,7 +877,7 @@ fn transaction_insert_should_return_error_when_trying_to_insert_while_transactio
     let item_key = b"key3".to_vec();
 
     let mut db = make_grovedb();
-    db.start_transaction();
+    db.start_transaction().unwrap();
     let storage = db.storage();
     let transaction = storage.transaction();
 
@@ -870,7 +886,7 @@ fn transaction_insert_should_return_error_when_trying_to_insert_while_transactio
     let result = db.insert(&[TEST_LEAF], item_key.clone(), element1.clone(), None);
     assert!(matches!(result, Err(Error::DbIsInReadonlyMode)));
 
-    db.commit_transaction(transaction);
+    db.commit_transaction(transaction).unwrap();
 
     // Check that writes are unlocked after the transaction is committed
     let result = db.insert(&[TEST_LEAF], item_key.clone(), element1.clone(), None);
@@ -925,7 +941,7 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
 
     let mut db = make_grovedb();
 
-    db.start_transaction();
+    db.start_transaction().unwrap();
     let storage = db.storage();
     let transaction = storage.transaction();
 
@@ -940,7 +956,7 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
 
     assert!(matches!(result, Ok(())));
 
-    db.rollback_transaction(&transaction);
+    db.rollback_transaction(&transaction).unwrap();
 
     let result = db.get(&[TEST_LEAF], &item_key.clone(), Some(&transaction));
     assert!(matches!(result, Err(Error::InvalidPath(_))));
@@ -950,7 +966,7 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
 fn transaction_is_started_should_return_true_if_transaction_was_started() {
     let mut db = make_grovedb();
 
-    db.start_transaction();
+    db.start_transaction().unwrap();
 
     let result = db.is_transaction_started();
     assert!(result, "transaction is not started");
@@ -958,7 +974,7 @@ fn transaction_is_started_should_return_true_if_transaction_was_started() {
 
 #[test]
 fn transaction_is_started_should_return_false_if_transaction_was_not_started() {
-    let mut db = make_grovedb();
+    let db = make_grovedb();
 
     let result = db.is_transaction_started();
 
@@ -969,21 +985,22 @@ fn transaction_is_started_should_return_false_if_transaction_was_not_started() {
 fn transaction_should_be_aborted() {
     let mut db = make_grovedb();
 
-    db.start_transaction();
+    db.start_transaction().unwrap();
     let storage = db.storage();
     let transaction = storage.transaction();
 
     let item_key = b"key3".to_vec();
     let element = Element::Item(b"ayy".to_vec());
 
-    let result = db.insert(
+    db.insert(
         &[TEST_LEAF],
         item_key.clone(),
         element.clone(),
         Some(&transaction),
-    );
+    )
+    .unwrap();
 
-    db.abort_transaction(transaction);
+    db.abort_transaction(transaction).unwrap();
 
     // Transaction should be closed
     assert!(!db.is_transaction_started());
@@ -1295,7 +1312,7 @@ fn test_aux_with_transaction() {
     let mut db = make_grovedb();
     let storage = db.storage();
     let db_transaction = storage.transaction();
-    db.start_transaction();
+    db.start_transaction().unwrap();
 
     // Insert a regular data with aux data in the same transaction
     db.insert(
@@ -1488,7 +1505,7 @@ fn test_get_range_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1516,16 +1533,16 @@ fn test_get_range_query_with_unique_subquery() {
 
     let path_query = PathQuery::new_unsized(path, query.clone(), Some(subquery_key), None);
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
     assert_eq!(elements.len(), 4);
 
-    let mut first_value = (1988 as u32).to_be_bytes().to_vec();
+    let first_value = (1988 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1991 as u32).to_be_bytes().to_vec();
+    let last_value = (1991 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1542,16 +1559,16 @@ fn test_get_range_query_with_unique_subquery_on_references() {
 
     let path_query = PathQuery::new_unsized(path, query.clone(), Some(subquery_key), None);
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
     assert_eq!(elements.len(), 4);
 
-    let mut first_value = (1988 as u32).to_be_bytes().to_vec();
+    let first_value = (1988 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1991 as u32).to_be_bytes().to_vec();
+    let last_value = (1991 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1577,7 +1594,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1614,7 +1631,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1644,16 +1661,16 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
 
     let path_query = PathQuery::new_unsized(path, query.clone(), Some(subquery_key), None);
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
     assert_eq!(elements.len(), 8);
 
-    let mut first_value = (1988 as u32).to_be_bytes().to_vec();
+    let first_value = (1988 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1995 as u32).to_be_bytes().to_vec();
+    let last_value = (1995 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1677,7 +1694,7 @@ fn test_get_range_from_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1705,16 +1722,16 @@ fn test_get_range_from_query_with_unique_subquery() {
 
     let path_query = PathQuery::new_unsized(path, query.clone(), Some(subquery_key), None);
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
     assert_eq!(elements.len(), 5);
 
-    let mut first_value = (1995 as u32).to_be_bytes().to_vec();
+    let first_value = (1995 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1999 as u32).to_be_bytes().to_vec();
+    let last_value = (1999 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1738,7 +1755,7 @@ fn test_get_range_to_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1766,16 +1783,16 @@ fn test_get_range_to_query_with_unique_subquery() {
 
     let path_query = PathQuery::new_unsized(path, query.clone(), Some(subquery_key), None);
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
     assert_eq!(elements.len(), 10);
 
-    let mut first_value = (1985 as u32).to_be_bytes().to_vec();
+    let first_value = (1985 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1994 as u32).to_be_bytes().to_vec();
+    let last_value = (1994 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1799,7 +1816,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1827,16 +1844,16 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
 
     let path_query = PathQuery::new_unsized(path, query.clone(), Some(subquery_key), None);
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
     assert_eq!(elements.len(), 11);
 
-    let mut first_value = (1985 as u32).to_be_bytes().to_vec();
+    let first_value = (1985 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1995 as u32).to_be_bytes().to_vec();
+    let last_value = (1995 as u32).to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1860,7 +1877,7 @@ fn test_get_range_after_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1897,7 +1914,7 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -1934,7 +1951,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
         Some(sub_query.clone()),
     );
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
@@ -2148,13 +2165,12 @@ fn test_root_hash() {
         None,
     )
     .expect("unable to insert an item");
-    let new_root_hash = db.root_hash(None);
-    assert_ne!(old_root_hash, db.root_hash(None));
+    assert_ne!(old_root_hash.unwrap(), db.root_hash(None).unwrap());
 
     // Check isolation
     let storage = db.storage();
     let transaction = storage.transaction();
-    db.start_transaction();
+    db.start_transaction().unwrap();
 
     db.insert(
         &[TEST_LEAF],
@@ -2164,11 +2180,14 @@ fn test_root_hash() {
     )
     .expect("unable to insert an item");
     let root_hash_outside = db.root_hash(None);
-    assert_ne!(db.root_hash(Some(&transaction)), root_hash_outside);
+    assert_ne!(
+        db.root_hash(Some(&transaction)).unwrap(),
+        root_hash_outside.unwrap()
+    );
 
-    assert_eq!(db.root_hash(None), root_hash_outside);
-    db.commit_transaction(transaction);
-    assert_ne!(db.root_hash(None), root_hash_outside);
+    assert_eq!(db.root_hash(None).unwrap(), root_hash_outside.unwrap());
+    db.commit_transaction(transaction).unwrap();
+    assert_ne!(db.root_hash(None).unwrap(), root_hash_outside.unwrap());
 }
 
 #[test]

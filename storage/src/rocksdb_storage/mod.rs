@@ -56,10 +56,9 @@ pub fn default_rocksdb(path: &Path) -> Rc<rocksdb::OptimisticTransactionDB> {
     )
 }
 
-fn make_prefixed_key(prefix: Vec<u8>, key: &[u8]) -> Vec<u8> {
-    let mut prefixed_key = prefix.clone();
-    prefixed_key.extend_from_slice(key);
-    prefixed_key
+fn make_prefixed_key(mut prefix: Vec<u8>, key: &[u8]) -> Vec<u8> {
+    prefix.extend_from_slice(key);
+    prefix
 }
 
 pub struct RawPrefixedTransactionalIterator<'a> {
@@ -191,7 +190,7 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::{Batch, Storage, Transaction};
+    use crate::{Batch, Storage};
 
     struct TempPrefixedStorage {
         storage: PrefixedRocksDbStorage,

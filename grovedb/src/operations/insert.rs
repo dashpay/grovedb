@@ -11,7 +11,7 @@ fn create_merk_with_prefix(
     path: &[&[u8]],
     key: &[u8],
 ) -> Result<(Vec<u8>, Merk<PrefixedRocksDbStorage>), Error> {
-    let subtree_prefix = GroveDb::compress_subtree_key(&path, Some(&key));
+    let subtree_prefix = GroveDb::compress_subtree_key(path, Some(key));
     Ok((
         subtree_prefix.clone(),
         Merk::open(PrefixedRocksDbStorage::new(db, subtree_prefix)?)
@@ -92,14 +92,14 @@ impl GroveDb {
         };
         // Open Merk and put handle into `subtrees` dictionary accessible by its
         // compressed path
-        let (subtree_prefix, subtree_merk) = create_merk_with_prefix(self.db.clone(), &[], &key)?;
+        let (subtree_prefix, subtree_merk) = create_merk_with_prefix(self.db.clone(), &[], key)?;
         subtrees.insert(subtree_prefix.clone(), subtree_merk);
 
         // Update root leafs index to persist rs-merkle structure later
         if root_leaf_keys.get(&subtree_prefix).is_none() {
             root_leaf_keys.insert(subtree_prefix, root_tree.leaves_len());
         }
-        self.propagate_changes(&[&key], transaction)?;
+        self.propagate_changes(&[key], transaction)?;
         Ok(())
     }
 
@@ -135,7 +135,7 @@ impl GroveDb {
             .get_mut(&compressed_path)
             .expect("merk object must exist in `subtrees`");
         // need to mark key as taken in the upper tree
-        element.insert(&mut merk, key, transaction)?;
+        element.insert(merk, key, transaction)?;
         self.propagate_changes(path, transaction)?;
         Ok(())
     }

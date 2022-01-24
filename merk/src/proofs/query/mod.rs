@@ -13,10 +13,7 @@ use storage::{rocksdb_storage::RawPrefixedTransactionalIterator, RawIterator};
 use {super::Op, std::collections::LinkedList};
 
 use super::{tree::execute, Decoder, Node};
-use crate::{
-    proofs::{query::QueryItem::RangeAfter, Op::Parent},
-    tree::{Fetch, Hash, Link, RefWalker},
-};
+use crate::tree::{Fetch, Hash, Link, RefWalker};
 
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all of the requested values.
@@ -324,25 +321,22 @@ impl QueryItem {
 
         // Lower is bounded
         if upper_unbounded {
-            return QueryItem::RangeFrom(RangeFrom {
+            QueryItem::RangeFrom(RangeFrom {
                 start: start.to_vec(),
-            });
+            })
         } else if end_inclusive {
-            return QueryItem::RangeInclusive(RangeInclusive::new(start.to_vec(), end.to_vec()));
+            QueryItem::RangeInclusive(RangeInclusive::new(start.to_vec(), end.to_vec()))
         } else {
             // upper is bounded and not inclusive
-            return QueryItem::Range(Range {
+            QueryItem::Range(Range {
                 start: start.to_vec(),
                 end: end.to_vec(),
-            });
+            })
         }
     }
 
     pub fn is_range(&self) -> bool {
-        match self {
-            QueryItem::Key(_) => false,
-            _ => true,
-        }
+        !matches!(self, QueryItem::Key(_))
     }
 
     pub fn seek_for_iter(&self, iter: &mut RawPrefixedTransactionalIterator, left_to_right: bool) {
@@ -437,7 +431,7 @@ impl QueryItem {
                     && (!left_to_right || iter.key() != Some(end));
                 // if we are going backwards, we need to make sure we are going to stop after
                 // the first element
-                let next_valid = !(!left_to_right && iter.key() == Some(start));
+                let next_valid = left_to_right || iter.key() != Some(start);
                 (valid, next_valid)
             }
             QueryItem::RangeInclusive(range_inclusive) => {
@@ -460,7 +454,7 @@ impl QueryItem {
                     && iter.valid()
                     && iter.key().is_some()
                     && work;
-                let next_valid = !(!left_to_right && iter.key() == Some(start));
+                let next_valid = left_to_right || iter.key() != Some(start);
                 (valid, next_valid)
             }
             QueryItem::RangeTo(RangeTo { end }) => {
@@ -479,14 +473,14 @@ impl QueryItem {
                 let valid = (limit == None || limit.unwrap() > 0)
                     && iter.valid()
                     && iter.key().is_some()
-                    && !(!left_to_right && iter.key() == Some(start));
+                    && (left_to_right || iter.key() != Some(start));
                 (valid, true)
             }
             QueryItem::RangeAfterTo(Range { start, end }) => {
                 let valid = (limit == None || limit.unwrap() > 0)
                     && iter.valid()
                     && iter.key().is_some()
-                    && !(!left_to_right && iter.key() == Some(start))
+                    && (left_to_right || iter.key() != Some(start))
                     && !(left_to_right && iter.key() == Some(end));
                 (valid, true)
             }
@@ -495,7 +489,7 @@ impl QueryItem {
                     && iter.valid()
                     && iter.key().is_some()
                     && work;
-                let next_valid = !(!left_to_right && iter.key() == Some(range_inclusive.start()))
+                let next_valid = (left_to_right || iter.key() != Some(range_inclusive.start()))
                     && !(left_to_right && iter.key() == Some(range_inclusive.end()));
                 (valid, next_valid)
             }
@@ -670,75 +664,78 @@ where
             Err(index) => (&query[..index], &query[index..]),
         };
 
-        if left_to_right {
-            let (mut proof, left_absence, new_limit, new_offset) =
-                self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
-            let (mut right_proof, right_absence, new_limit, new_offset) =
-                self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
+        // if left_to_right {
+        let (mut proof, left_absence, new_limit, new_offset) =
+            self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
+        let (mut right_proof, right_absence, new_limit, new_offset) =
+            self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
 
-            let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
+        let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
 
-            proof.push_back(match search {
-                Ok(_) => Op::Push(self.to_kv_node()),
-                Err(_) => {
-                    if left_absence.1 || right_absence.0 {
-                        Op::Push(self.to_kv_node())
-                    } else {
-                        Op::Push(self.to_kvhash_node())
-                    }
+        proof.push_back(match search {
+            Ok(_) => Op::Push(self.to_kv_node()),
+            Err(_) => {
+                if left_absence.1 || right_absence.0 {
+                    Op::Push(self.to_kv_node())
+                } else {
+                    Op::Push(self.to_kvhash_node())
                 }
-            });
-
-            if has_left {
-                proof.push_back(Op::Parent);
             }
+        });
 
-            if has_right {
-                proof.append(&mut right_proof);
-                proof.push_back(Op::Child);
-            }
-
-            Ok((
-                proof,
-                (left_absence.0, right_absence.1),
-                new_limit,
-                new_offset,
-            ))
-        } else {
-            let (mut proof, left_absence, new_limit, new_offset) =
-                self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
-            let (mut right_proof, right_absence, new_limit, new_offset) =
-                self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
-
-            let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
-
-            proof.push_back(match search {
-                Ok(_) => Op::Push(self.to_kv_node()),
-                Err(_) => {
-                    if left_absence.1 || right_absence.0 {
-                        Op::Push(self.to_kv_node())
-                    } else {
-                        Op::Push(self.to_kvhash_node())
-                    }
-                }
-            });
-
-            if has_left {
-                proof.push_back(Op::Parent);
-            }
-
-            if has_right {
-                proof.append(&mut right_proof);
-                proof.push_back(Op::Child);
-            }
-
-            Ok((
-                proof,
-                (left_absence.0, right_absence.1),
-                new_limit,
-                new_offset,
-            ))
+        if has_left {
+            proof.push_back(Op::Parent);
         }
+
+        if has_right {
+            proof.append(&mut right_proof);
+            proof.push_back(Op::Child);
+        }
+
+        Ok((
+            proof,
+            (left_absence.0, right_absence.1),
+            new_limit,
+            new_offset,
+        ))
+        // } else {
+        //     let (mut proof, left_absence, new_limit, new_offset) =
+        //         self.create_child_proof(true, left_items, limit, offset,
+        // left_to_right)?;     let (mut right_proof, right_absence,
+        // new_limit, new_offset) =         self.
+        // create_child_proof(false, right_items, new_limit, new_offset,
+        // left_to_right)?;
+        //
+        //     let (has_left, has_right) = (!proof.is_empty(),
+        // !right_proof.is_empty());
+        //
+        //     proof.push_back(match search {
+        //         Ok(_) => Op::Push(self.to_kv_node()),
+        //         Err(_) => {
+        //             if left_absence.1 || right_absence.0 {
+        //                 Op::Push(self.to_kv_node())
+        //             } else {
+        //                 Op::Push(self.to_kvhash_node())
+        //             }
+        //         }
+        //     });
+        //
+        //     if has_left {
+        //         proof.push_back(Op::Parent);
+        //     }
+        //
+        //     if has_right {
+        //         proof.append(&mut right_proof);
+        //         proof.push_back(Op::Child);
+        //     }
+        //
+        //     Ok((
+        //         proof,
+        //         (left_absence.0, right_absence.1),
+        //         new_limit,
+        //         new_offset,
+        //     ))
+        // }
     }
 
     /// Similar to `create_proof`. Recurses into the child on the given side and
