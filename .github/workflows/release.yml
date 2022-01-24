@@ -38,6 +38,8 @@ jobs:
             node_arch: arm64
             compiler: musl
             platform: unknown-linux
+            build_dependencies:
+              - aarch64-linux-musl-gcc
           - os: macos-11
             arch: x86_64
             platform: apple-darwin
