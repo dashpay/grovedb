@@ -405,9 +405,9 @@ fn test_proof_construction() {
     // Get grovedb proof
     let proof = temp_db
         .proof(vec![
-            PathQuery::new_unsized_basic(&[TEST_LEAF, b"innertree"], path_one_query),
-            PathQuery::new_unsized_basic(&[ANOTHER_TEST_LEAF, b"innertree3"], path_two_query),
-            PathQuery::new_unsized_basic(&[ANOTHER_TEST_LEAF, b"innertree2"], path_three_query),
+            PathQuery::new_unsized(&[TEST_LEAF, b"innertree"], path_one_query),
+            PathQuery::new_unsized(&[ANOTHER_TEST_LEAF, b"innertree3"], path_two_query),
+            PathQuery::new_unsized(&[ANOTHER_TEST_LEAF, b"innertree2"], path_three_query),
         ])
         .unwrap();
 
@@ -590,7 +590,7 @@ fn test_successful_proof_verification() {
     path_one_query.insert_key(b"key2".to_vec());
 
     let proof = temp_db
-        .proof(vec![PathQuery::new_unsized_basic(
+        .proof(vec![PathQuery::new_unsized(
             &[TEST_LEAF, b"innertree"],
             path_one_query,
         )])
@@ -619,8 +619,8 @@ fn test_successful_proof_verification() {
     // Get grovedb proof
     let proof = temp_db
         .proof(vec![
-            PathQuery::new_unsized_basic(&[ANOTHER_TEST_LEAF, b"innertree3"], path_two_query),
-            PathQuery::new_unsized_basic(&[ANOTHER_TEST_LEAF, b"innertree2"], path_three_query),
+            PathQuery::new_unsized(&[ANOTHER_TEST_LEAF, b"innertree3"], path_two_query),
+            PathQuery::new_unsized(&[ANOTHER_TEST_LEAF, b"innertree2"], path_three_query),
         ])
         .unwrap();
 
@@ -1181,8 +1181,8 @@ fn test_get_full_query() {
     query1.insert_range_inclusive(b"key3".to_vec()..=b"key4".to_vec());
     query2.insert_key(b"key6".to_vec());
 
-    let path_query1 = PathQuery::new_unsized_basic(&path1, query1);
-    let path_query2 = PathQuery::new_unsized_basic(&path2, query2);
+    let path_query1 = PathQuery::new_unsized(&path1, query1);
+    let path_query2 = PathQuery::new_unsized(&path2, query2);
 
     assert_eq!(
         db.get_path_queries_raw(&[&path_query1, &path_query2], None)
