@@ -96,12 +96,12 @@ jobs:
           default: true
           target: ${{ steps.set-target.outputs.result }}
 
-      - run: cat .cargo/config
+      - run: cat .cargo/config.toml
 
       - name: Set defualt target
         uses: DamianReeves/write-file-action
         with:
-          path: .cargo/config
+          path: .cargo/config.toml
           contents: |
             [build]
             target = "${{ steps.set-target.outputs.result }}"
