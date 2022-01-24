@@ -35,6 +35,8 @@ pub enum Error {
     ReferenceLimit,
     #[error("invalid proof: {0}")]
     InvalidProof(&'static str),
+    #[error("invalid path key: {0}")]
+    InvalidPathKey(String),
     #[error("invalid path: {0}")]
     InvalidPath(&'static str),
     #[error("invalid query: {0}")]
@@ -58,8 +60,6 @@ pub struct PathQuery {
     // TODO: Make generic over path type
     path: Vec<Vec<u8>>,
     query: SizedQuery,
-    subquery_key: Option<Vec<u8>>,
-    subquery: Option<Query>,
 }
 
 // If a subquery exists :
@@ -91,43 +91,15 @@ impl SizedQuery {
 }
 
 impl PathQuery {
-    pub fn new(
-        path: Vec<Vec<u8>>,
-        query: SizedQuery,
-        subquery_key: Option<Vec<u8>>,
-        subquery: Option<Query>,
-    ) -> PathQuery {
-        PathQuery {
-            path,
-            query,
-            subquery_key,
-            subquery,
-        }
+    pub fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> PathQuery {
+        let path = path.iter().map(|x| x.to_vec()).collect();
+        PathQuery { path, query }
     }
 
-    pub fn new_unsized(
-        path: Vec<Vec<u8>>,
-        query: Query,
-        subquery_key: Option<Vec<u8>>,
-        subquery: Option<Query>,
-    ) -> PathQuery {
+    pub fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> PathQuery {
         let query = SizedQuery::new(query, None, None, true);
-        PathQuery {
-            path,
-            query,
-            subquery_key,
-            subquery,
-        }
-    }
-
-    pub fn new_unsized_basic(path: Vec<Vec<u8>>, query: Query) -> PathQuery {
-        let query = SizedQuery::new(query, None, None, true);
-        PathQuery {
-            path,
-            query,
-            subquery_key: None,
-            subquery: None,
-        }
+        let path = path.iter().map(|x| x.to_vec()).collect();
+        PathQuery { path, query }
     }
 }
 
@@ -433,7 +405,7 @@ impl GroveDb {
     ///
     /// // This action exists only inside the transaction for now
     /// let result = db.get(&[TEST_LEAF], &subtree_key, None);
-    /// assert!(matches!(result, Err(Error::InvalidPath(_))));
+    /// assert!(matches!(result, Err(Error::InvalidPathKey(_))));
     ///
     /// // To access values inside the transaction, transaction needs to be passed to the `db::get`
     /// let result_with_transaction = db.get(&[TEST_LEAF], &subtree_key, Some(&db_transaction))?;

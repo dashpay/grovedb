@@ -230,11 +230,11 @@ pub fn js_path_query_to_path_query<'a, C: Context<'a>>(
         js_array_of_buffers_to_vec(js_path_query.get(cx, "path")?.downcast_or_throw(cx)?, cx)?;
     let query =
         js_object_to_sized_query(js_path_query.get(cx, "query")?.downcast_or_throw(cx)?, cx)?;
-    let subquery_key =
-        js_value_to_option::<JsBuffer, _>(js_path_query.get(cx, "subqueryKey")?, cx)?
-            .map(|x| js_buffer_to_vec_u8(x, cx));
-    let subquery = js_value_to_option::<JsObject, _>(js_path_query.get(cx, "subquery")?, cx)?
-        .map(|x| js_object_to_query(x, cx))
-        .transpose()?;
-    Ok(PathQuery::new(path, query, subquery_key, subquery))
+    // let subquery_key =
+    //     js_value_to_option::<JsBuffer, _>(js_path_query.get(cx, "subqueryKey")?,
+    // cx)?         .map(|x| js_buffer_to_vec_u8(x, cx));
+    // let subquery = js_value_to_option::<JsObject, _>(js_path_query.get(cx,
+    // "subquery")?, cx)?     .map(|x| js_object_to_query(x, cx))
+    //     .transpose()?;
+    Ok(PathQuery::new(path, query))
 }
