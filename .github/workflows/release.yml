@@ -31,6 +31,7 @@ jobs:
               - gcc-aarch64-linux-gnu
               - binutils-aarch64-linux-gnu
               - clang
+              - gcc-multilib
           - os: ubuntu-latest
             arch: x86_64
             compiler: musl
@@ -89,7 +90,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install ${{ join(matrix.build_dependencies, ' ') }}
 
-      - name: Fix the missing "musl-g++" problem RockDB build # https://github.com/rust-lang/cargo/issues/3359
+      - name: Fix missing "musl-g++" for x86_64-unknown-linux-musl # https://github.com/rust-lang/cargo/issues/3359
         if: ${{ matrix.os == 'ubuntu-latest' && matrix.arch == 'x86_64' && matrix.compiler == 'musl' }}
         run: sudo ln -s /bin/g++ /bin/musl-g++
 
