@@ -30,6 +30,7 @@ jobs:
             build_dependencies:
               - gcc-aarch64-linux-gnu
               - binutils-aarch64-linux-gnu
+              - clang
           - os: ubuntu-latest
             arch: x86_64
             compiler: musl
