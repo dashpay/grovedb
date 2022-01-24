@@ -11,8 +11,32 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [ 16.x ]
-        os: [ ubuntu-latest, macos-latest, windows-latest ]
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+            compiler: gnu
+            platform: unknown-linux
+          - os: ubuntu-latest
+            arch: aarch64
+            node_arch: arm64
+            compiler: gnu
+            platform: unknown-linux
+          - os: ubuntu-latest
+            arch: x86_64
+            compiler: musl
+            platform: unknown-linux
+          - os: ubuntu-latest
+            arch: aarch64
+            node_arch: arm64
+            compiler: musl
+            platform: unknown-linux
+          - os: macos-11
+            arch: x86_64
+            platform: apple-darwin
+          - os: macos-11
+            arch: aarch64
+            node_arch: arm64
+            platform: apple-darwin
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -22,7 +46,7 @@ jobs:
       - name: Setup Node.JS
         uses: actions/setup-node@v2
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 16
 
       - name: Setup Rust toolchain
         uses: actions-rs/toolchain@v1
@@ -32,8 +56,24 @@ jobs:
       - name: Install NPM deps
         run: npm ci
 
-      - name: Build and run tests
+      - name: Run tests
         run: npm test
+
+      - name: Set target name
+        uses: actions/github-script@v5
+        id: set-result
+        with:
+          script: console.dir(context)
+      # - ${{ matrix.arch }}-${{ matrix.platform }}-${{ matrix.compiler }}
+
+      - name: Add target
+      - run: rustup target add ${}
+
+      - name: Build and run tests
+        run: npm run build:release -- --target {{set-result}}
+        env:
+          LIBC: ${{ matrix.compiler == 'musl' }}
+          ARCH: ${{ matrix.node_arch }}
 
       - name: Upload prebuild artifacts
         uses: actions/upload-artifact@v2
@@ -48,24 +88,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout the repo
-        uses: actions/checkout@v2
-
-      - name: Check package version matches tag
-        uses: geritol/match-tag-to-package-version@0.2.0
-        env:
-          TAG_PREFIX: v
-
-      - name: Setup Node.JS
-        uses: actions/setup-node@v2
-        with:
-          node-version: ${{ matrix.node-version }}
-
-      - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: nightly
-
+#      - name: Checkout the repo
+#        uses: actions/checkout@v2
+#
+#      - name: Check package version matches tag
+#        uses: geritol/match-tag-to-package-version@0.2.0
+#        env:
+#          TAG_PREFIX: v
+#
+#      - name: Setup Node.JS
+#        uses: actions/setup-node@v2
+#        with:
+#          node-version: ${{ matrix.node-version }}
+#
+#      - name: Setup Rust toolchain
+#        uses: actions-rs/toolchain@v1
+#        with:
+#          toolchain: nightly
+#
       - name: Download prebuild artifacts
         uses: actions/download-artifact@v2
         with:
@@ -75,7 +115,7 @@ jobs:
       - name: Check prebuilds
         run: ls -laR prebuilds
 
-      - name: NPM Publish
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+#      - name: NPM Publish
+#        run: npm publish --access public
+#        env:
+#          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
