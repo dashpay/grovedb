@@ -45,31 +45,40 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Check out repo
-        uses: actions/checkout@v2
+#      - name: Check out repo
+#        uses: actions/checkout@v2
+#
+#      - name: Setup Node.JS
+#        uses: actions/setup-node@v2
+#        with:
+#          node-version: 16
+#
+#      - name: Setup Rust toolchain
+#        uses: actions-rs/toolchain@v1
+#        with:
+#          toolchain: nightly
+#
+#      - name: Install NPM deps
+#        run: npm ci
 
-      - name: Setup Node.JS
-        uses: actions/setup-node@v2
-        with:
-          node-version: 16
-
-      - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: nightly
-
-      - name: Install NPM deps
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
+#      - name: Run tests
+#        run: npm test
 
       - name: Set target name
         uses: actions/github-script@v5
         id: set-result
         with:
-          script: console.dir(context)
-      # - ${{ matrix.arch }}-${{ matrix.platform }}-${{ matrix.compiler }}
+          script: |
+            console.dir(context);
+            let target = `${context.matrix.arch}-${context.matrix.platform}`;
+            if (context.matrix.compiler) {
+              target += `-${context.matrix.compiler}`;
+            }
+            
+            console.log(target);
+            
+            return target;
+          result-encoding: string
 
 #      - name: Add target
 #      - run: rustup target add
@@ -89,9 +98,7 @@ jobs:
   publish:
     name: Publish NPM Package
     needs: [build]
-
     runs-on: ubuntu-latest
-
     steps:
 #      - name: Checkout the repo
 #        uses: actions/checkout@v2
