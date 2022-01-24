@@ -45,3 +45,10 @@ jobs:
           default: true
 
       - run: cargo check
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions-rs/audit-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
