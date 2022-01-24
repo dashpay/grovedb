@@ -103,7 +103,16 @@ jobs:
           contents: |
             [build]
             target = "${{ steps.set-target.outputs.result }}"
-            
+
+      - name: Enable lgcc for aarch64-unknown-linux-musl target
+        if: {{ matrix.os == 'ubuntu-latest' && matrix.arch == 'aarch64' && matrix.compiler == 'musl' }}
+        uses: DamianReeves/write-file-action@v1.0
+        with:
+          path: .cargo/config.toml
+          contents: |
+            [target.aarch64-unknown-linux-musl]
+            linker = "aarch64-linux-gnu-gcc"
+            rustflags = [ "-C", "target-feature=-crt-static", "-C", "link-arg=-lgcc" ]
 
       # - name: Run tests
       #   run: npm test
