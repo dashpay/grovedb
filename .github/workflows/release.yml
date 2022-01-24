@@ -15,6 +15,7 @@ jobs:
     name: Build Node.JS binding
 
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -26,6 +27,8 @@ jobs:
             node_arch: arm64
             compiler: gnu
             platform: unknown-linux
+            build_dependencies:
+              - gcc-aarch64-linux-gnu
           - os: ubuntu-latest
             arch: x86_64
             compiler: musl
@@ -74,8 +77,16 @@ jobs:
               target += `-${{ matrix.compiler }}`;
             }
             
+            core.info(`Set target ${target}`);
+            
             return target;
           result-encoding: string
+
+      - name: Install build deps
+        if: ${{ matrix.build_dependencies && matrix.build_dependencies[0] }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install ${{ join(matrix.build_dependencies, ' ') }}
 
       - name: Add build target
         run: rustup target add ${{ steps.set-target.outputs.result }}
