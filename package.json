@@ -5,7 +5,7 @@
   "main": "node-grove/index.js",
   "readme": "node-grove/README.md",
   "scripts": {
-    "build": "cargo-cp-artifact -ac node-grove native/index.node -- cargo +nightly-x86_64-apple-darwin build --message-format=json-render-diagnostics",
+    "build": "cargo-cp-artifact -ac node-grove native/index.node -- cargo +nightly build --message-format=json-render-diagnostics",
     "build:debug": "npm run build --",
     "build:release": "npm run build -- --release",
     "postbuild": "neon-tag-prebuild && cp -R prebuilds/* node-grove/prebuilds/ && rm -rf native && rm -rf prebuilds",
