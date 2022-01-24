@@ -71,34 +71,25 @@ pub struct SizedQuery {
     query: Query,
     limit: Option<u16>,
     offset: Option<u16>,
-    left_to_right: bool,
 }
 
 impl SizedQuery {
-    pub fn new(
-        query: Query,
-        limit: Option<u16>,
-        offset: Option<u16>,
-        left_to_right: bool,
-    ) -> SizedQuery {
+    pub fn new(query: Query, limit: Option<u16>, offset: Option<u16>) -> SizedQuery {
         SizedQuery {
             query,
             limit,
             offset,
-            left_to_right,
         }
     }
 }
 
 impl PathQuery {
     pub fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> PathQuery {
-        let path = path.iter().map(|x| x.to_vec()).collect();
         PathQuery { path, query }
     }
 
     pub fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> PathQuery {
-        let query = SizedQuery::new(query, None, None, true);
-        let path = path.iter().map(|x| x.to_vec()).collect();
+        let query = SizedQuery::new(query, None, None);
         PathQuery { path, query }
     }
 }

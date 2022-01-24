@@ -215,11 +215,11 @@ fn js_object_to_sized_query<'a, C: Context<'a>>(
                 .or_else(|_| cx.throw_range_error("`offset` must fit in u16"))
         })
         .transpose()?;
-    let left_to_right = js_object
-        .get(cx, "leftToRight")?
-        .downcast_or_throw::<JsBoolean, _>(cx)?
-        .value(cx);
-    Ok(SizedQuery::new(query, limit, offset, left_to_right))
+    // let left_to_right = js_object
+    //     .get(cx, "leftToRight")?
+    //     .downcast_or_throw::<JsBoolean, _>(cx)?
+    //     .value(cx);
+    Ok(SizedQuery::new(query, limit, offset))
 }
 
 pub fn js_path_query_to_path_query<'a, C: Context<'a>>(

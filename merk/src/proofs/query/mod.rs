@@ -23,12 +23,19 @@ pub struct Query {
     items: BTreeSet<QueryItem>,
     pub subquery_key: Option<Vec<u8>>,
     pub subquery: Option<Box<Query>>,
+    pub left_to_right: bool,
 }
 
 impl Query {
     /// Creates a new query which contains no items.
     pub fn new() -> Self {
-        Default::default()
+        Query::new_with_direction(true)
+    }
+
+    pub fn new_with_direction(left_to_right: bool) -> Self {
+        let mut default: Query = Default::default();
+        default.left_to_right = left_to_right;
+        default
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -195,6 +202,7 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
             items,
             subquery_key: None,
             subquery: None,
+            left_to_right: true,
         }
     }
 }
