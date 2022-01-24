@@ -28,11 +28,9 @@ jobs:
             compiler: gnu
             platform: unknown-linux
             build_dependencies:
-              - gcc-9-aarch64-linux-gnu
-#              - gcc-aarch64-linux-gnu
+              - gcc-aarch64-linux-gnu
               - binutils-aarch64-linux-gnu
               - clang
-              - gcc-multilib
           - os: ubuntu-latest
             arch: x86_64
             compiler: musl
@@ -48,7 +46,8 @@ jobs:
               - gcc-aarch64-linux-gnu
               - binutils-aarch64-linux-gnu
               - clang
-              - musl-tools
+#              - musl-tools
+              - musl:arm64
           - os: macos-11
             arch: x86_64
             platform: apple-darwin
@@ -84,6 +83,10 @@ jobs:
             
             return target;
           result-encoding: string
+
+      - name: Add arm64 architecture for apt
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.arch == 'aarch64' }}
+        run: sudo dpkg --add-architecture arm64
 
       - name: Install build deps
         if: ${{ matrix.os == 'ubuntu-latest' && matrix.build_dependencies && matrix.build_dependencies[0] }}
