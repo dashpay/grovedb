@@ -105,7 +105,7 @@ jobs:
             target = "${{ steps.set-target.outputs.result }}"
 
       - name: Enable lgcc for aarch64-unknown-linux-musl target
-        if: {{ matrix.os == 'ubuntu-latest' && matrix.arch == 'aarch64' && matrix.compiler == 'musl' }}
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.arch == 'aarch64' && matrix.compiler == 'musl' }}
         uses: DamianReeves/write-file-action@v1.0
         with:
           path: .cargo/config.toml
