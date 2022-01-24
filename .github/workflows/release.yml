@@ -61,11 +61,6 @@ jobs:
         with:
           node-version: 16
 
-      - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: nightly
-
       - name: Install NPM deps
         run: npm ci
 
@@ -97,8 +92,12 @@ jobs:
         if: ${{ matrix.os == 'ubuntu-latest' && matrix.arch == 'x86_64' && matrix.compiler == 'musl' }}
         run: sudo ln -s /bin/g++ /bin/musl-g++
 
-      - name: Add build target
-        run: rustup target add ${{ steps.set-target.outputs.result }}
+      - name: Setup Rust toolchain and target
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          default: true
+          target: ${{ steps.set-target.outputs.result }}
 
       - name: Build
         run: npm run build:release -- --target ${{ steps.set-target.outputs.result }}

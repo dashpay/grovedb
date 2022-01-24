@@ -26,6 +26,7 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
+          default: true
 
       - name: Install NPM deps
         run: npm ci
@@ -52,6 +53,7 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
+          default: true
 
       - name: Install NPM deps
         run: npm ci
