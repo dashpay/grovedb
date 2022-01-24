@@ -109,7 +109,7 @@ jobs:
       #   run: npm test
 
       - name: Build
-        run: npm run build:release -- --target ${{ steps.set-target.outputs.result }}
+        run: npm run build:release
         env:
           LIBC: ${{ matrix.compiler == 'musl' }}
           ARCH: ${{ matrix.node_arch }} # Overwrite current arch with target one
