@@ -66,13 +66,13 @@ jobs:
 
       - name: Set target name
         uses: actions/github-script@v5
-        id: set-result
+        id: set-target
         with:
           script: |
             console.dir(context);
-            let target = `${context.matrix.arch}-${context.matrix.platform}`;
-            if (context.matrix.compiler) {
-              target += `-${context.matrix.compiler}`;
+            let target = '${{ matrix.arch }}-${{ matrix.platform }}';
+            if ('${{ matrix.compiler }}') {
+              target += `-${{ matrix.compiler }}`;
             }
             
             console.log(target);
@@ -84,7 +84,7 @@ jobs:
 #      - run: rustup target add
 
 #      - name: Build and run tests
-#        run: npm run build:release -- --target {{set-result}}
+#        run: npm run build:release -- --target ${{set-target.outputs.result}}
 #        env:
 #          LIBC: ${{ matrix.compiler == 'musl' }}
 #          ARCH: ${{ matrix.node_arch }}
