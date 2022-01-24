@@ -114,8 +114,7 @@ impl Element {
             Element::Tree(_) => {
                 if subtrees_option.is_none() && subquery.is_none() {
                     return Err(Error::InvalidPath(
-                        "you must provide a subquery or a subquery_key when interacting with a \
-                         tree of trees",
+                        "a subtrees_option or a subquery should be provided",
                     ));
                 }
                 let subtrees = subtrees_option.ok_or(Error::MissingParameter(
