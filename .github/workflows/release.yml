@@ -33,6 +33,8 @@ jobs:
             arch: x86_64
             compiler: musl
             platform: unknown-linux
+            build_dependencies:
+              - musl-tools
           - os: ubuntu-latest
             arch: aarch64
             node_arch: arm64
