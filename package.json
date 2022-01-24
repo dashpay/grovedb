@@ -52,8 +52,6 @@
   "homepage": "https://github.com/dashevo/grovedb#readme",
   "dependencies": {
     "cargo-cp-artifact": "^0.1.6",
-    "detect-libc": "^2.0.0",
-    "neon-cli": "^0.9.1",
     "neon-load-or-build": "^2.2.2",
     "neon-tag-prebuild": "github:shumkov/neon-tag-prebuild#patch-1"
   }

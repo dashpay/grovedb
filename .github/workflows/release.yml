@@ -45,21 +45,21 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-#      - name: Check out repo
-#        uses: actions/checkout@v2
-#
-#      - name: Setup Node.JS
-#        uses: actions/setup-node@v2
-#        with:
-#          node-version: 16
-#
-#      - name: Setup Rust toolchain
-#        uses: actions-rs/toolchain@v1
-#        with:
-#          toolchain: nightly
-#
-#      - name: Install NPM deps
-#        run: npm ci
+      - name: Check out repo
+        uses: actions/checkout@v2
+
+      - name: Setup Node.JS
+        uses: actions/setup-node@v2
+        with:
+          node-version: 16
+
+      - name: Setup Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+
+      - name: Install NPM deps
+        run: npm ci
 
 #      - name: Run tests
 #        run: npm test
@@ -69,55 +69,50 @@ jobs:
         id: set-target
         with:
           script: |
-            console.dir(context);
             let target = '${{ matrix.arch }}-${{ matrix.platform }}';
             if ('${{ matrix.compiler }}') {
               target += `-${{ matrix.compiler }}`;
             }
             
-            console.log(target);
-            
             return target;
           result-encoding: string
 
-#      - name: Add target
-#      - run: rustup target add
+      - name: Add build target
+      - run: rustup target add ${{ set-target.outputs.result }}
 
-#      - name: Build and run tests
-#        run: npm run build:release -- --target ${{set-target.outputs.result}}
-#        env:
-#          LIBC: ${{ matrix.compiler == 'musl' }}
-#          ARCH: ${{ matrix.node_arch }}
-#
-#      - name: Upload prebuild artifacts
-#        uses: actions/upload-artifact@v2
-#        with:
-#          name: prebuilds
-#          path: node-grove/prebuilds/
+      - name: Build
+        run: npm run build:release -- --target ${{set-target.outputs.result}}
+        env:
+          LIBC: ${{ matrix.compiler == 'musl' }}
+          ARCH: ${{ matrix.node_arch }}
+
+      - name: Upload prebuild artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: prebuilds
+          path: node-grove/prebuilds/
 
   publish:
     name: Publish NPM Package
     needs: [build]
     runs-on: ubuntu-latest
     steps:
-#      - name: Checkout the repo
-#        uses: actions/checkout@v2
+      - name: Checkout the repo
+        uses: actions/checkout@v2
 #
 #      - name: Check package version matches tag
 #        uses: geritol/match-tag-to-package-version@0.2.0
 #        env:
 #          TAG_PREFIX: v
 #
-#      - name: Setup Node.JS
-#        uses: actions/setup-node@v2
-#        with:
-#          node-version: ${{ matrix.node-version }}
-#
-#      - name: Setup Rust toolchain
-#        uses: actions-rs/toolchain@v1
-#        with:
-#          toolchain: nightly
-#
+      - name: Setup Node.JS
+        uses: actions/setup-node@v2
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install NPM deps
+        run: npm ci
+
       - name: Download prebuild artifacts
         uses: actions/download-artifact@v2
         with:
