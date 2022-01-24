@@ -64,9 +64,6 @@ jobs:
       - name: Install NPM deps
         run: npm ci
 
-#      - name: Run tests
-#        run: npm test
-
       - name: Set target name
         uses: actions/github-script@v5
         id: set-target
@@ -108,6 +105,10 @@ jobs:
           contents: |
             [build]
             target = "${{ steps.set-target.outputs.result }}"
+            
+
+      # - name: Run tests
+      #   run: npm test
 
       - name: Build
         run: npm run build:release -- --target ${{ steps.set-target.outputs.result }}
