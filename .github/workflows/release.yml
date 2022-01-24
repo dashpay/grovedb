@@ -107,6 +107,9 @@ jobs:
             [target.aarch64-unknown-linux-musl]
             linker = "aarch64-linux-gnu-gcc"
             rustflags = [ "-C", "target-feature=-crt-static", "-C", "link-arg=-lgcc" ]
+            
+            [target.x86_64-unknown-linux-musl]
+            rustflags = [ "-C", "target-feature=-crt-static" ]
 
       # - name: Run tests
       #   run: npm test
@@ -116,7 +119,6 @@ jobs:
         env:
           LIBC: ${{ matrix.compiler == 'musl' }}
           ARCH: ${{ matrix.node_arch }} # Overwrite current arch with target one
-          RUSTFLAGS: "-C target-feature=-crt-static" # Musl build doesn't work with this feature
 
       - name: Upload prebuild artifacts
         uses: actions/upload-artifact@v2
