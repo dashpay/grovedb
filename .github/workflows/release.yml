@@ -96,8 +96,6 @@ jobs:
           default: true
           target: ${{ steps.set-target.outputs.result }}
 
-      - run: cat .cargo/config.toml
-
       - name: Set defualt target
         uses: DamianReeves/write-file-action@v1.0
         with:
