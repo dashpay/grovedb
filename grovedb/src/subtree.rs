@@ -57,7 +57,7 @@ impl Element {
             merk.get(key)
                 .map_err(|e| Error::CorruptedData(e.to_string()))?
                 .ok_or(Error::InvalidPathKey(
-                    ["key not found in Merk".to_string(), hex::encode(key)].join(" "),
+                    format!("key not found in Merk: {}", hex::encode(key)),
                 ))?
                 .as_slice(),
         )
