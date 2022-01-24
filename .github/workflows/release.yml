@@ -78,7 +78,7 @@ jobs:
           result-encoding: string
 
       - name: Add build target
-      - run: rustup target add ${{ set-target.outputs.result }}
+        run: rustup target add ${{ set-target.outputs.result }}
 
       - name: Build
         run: npm run build:release -- --target ${{set-target.outputs.result}}
