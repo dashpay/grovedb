@@ -68,7 +68,6 @@ pub struct SizedQuery {
     query: Query,
     limit: Option<u16>,
     offset: Option<u16>,
-    left_to_right: bool,
 }
 
 impl SizedQuery {
@@ -76,13 +75,11 @@ impl SizedQuery {
         query: Query,
         limit: Option<u16>,
         offset: Option<u16>,
-        left_to_right: bool,
     ) -> SizedQuery {
         SizedQuery {
             query,
             limit,
             offset,
-            left_to_right,
         }
     }
 }
@@ -93,7 +90,7 @@ impl PathQuery<'_> {
     }
 
     pub fn new_unsized<'a>(path: &'a [&'a [u8]], query: Query) -> PathQuery<'a> {
-        let query = SizedQuery::new(query, None, None, true);
+        let query = SizedQuery::new(query, None, None);
         PathQuery { path, query }
     }
 }
