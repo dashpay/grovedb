@@ -64,7 +64,7 @@ impl GroveDb {
 
             // First we must get elements
 
-            if let Some(subquery_key) = reduced_proof_query.subquery_key.clone() {
+            if let Some(subquery_key) = reduced_proof_query.query.query.subquery_key.clone() {
                 self.get_path_queries_raw(&[&reduced_proof_query], None)?;
 
                 let mut path_vec = path.to_vec();
@@ -114,7 +114,7 @@ impl GroveDb {
 
         let sized_query = path_query.query;
 
-        if path_query.subquery.is_none() {
+        if sized_query.query.subquery.is_none() {
             // then limit should be applied directly to the proof here
             let proof_result = merk
                 .prove(
