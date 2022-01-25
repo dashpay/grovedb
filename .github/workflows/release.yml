@@ -46,8 +46,9 @@ jobs:
               - gcc-aarch64-linux-gnu
               - binutils-aarch64-linux-gnu
               - clang
-#              - musl-tools
-              - musl:arm64
+              - musl-tools
+              - musl
+#              - musl:arm64
           - os: macos-11
             arch: x86_64
             platform: apple-darwin
