@@ -18,6 +18,7 @@ use storage::{
 };
 pub use subtree::Element;
 use subtrees::Subtrees;
+use blake3;
 
 // use crate::transaction::GroveDbTransaction;
 // pub use transaction::GroveDbTransaction;
@@ -323,7 +324,7 @@ impl GroveDb {
                 acc.extend(p.len().to_ne_bytes());
                 acc
             });
-        res = Sha256::hash(&res).to_vec();
+        res = blake3::hash(&res).as_bytes().to_vec();
         res
     }
 
