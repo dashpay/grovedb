@@ -84,9 +84,9 @@ jobs:
             return target;
           result-encoding: string
 
-      - name: Add arm64 architecture for apt
-        if: ${{ matrix.os == 'ubuntu-latest' && matrix.arch == 'aarch64' }}
-        run: sudo dpkg --add-architecture arm64
+#      - name: Add arm64 architecture for apt
+#        if: ${{ matrix.os == 'ubuntu-latest' && matrix.arch == 'aarch64' }}
+#        run: sudo dpkg --add-architecture arm64
 
       - name: Install build deps
         if: ${{ matrix.os == 'ubuntu-latest' && matrix.build_dependencies && matrix.build_dependencies[0] }}
