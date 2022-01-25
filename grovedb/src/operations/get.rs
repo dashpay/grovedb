@@ -73,9 +73,23 @@ impl GroveDb {
         key: &[u8],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Element, Error> {
-        let (merk, prefix) = self.get_subtrees().get(path, transaction)?;
+        // If path is empty, then we need to combine the provided key and path
+        // then use this to get merk.
+        let merk_result;
+        if path.is_empty() {
+           merk_result = self.get_subtrees().get(&[key], transaction)?;
+        } else {
+            merk_result = self.get_subtrees().get(path, transaction)?;
+        }
 
-        let elem = Element::get(&merk, key);
+        let (merk, prefix) = merk_result;
+
+        let elem;
+        if path.is_empty(){
+           elem = Ok(Element::Tree(merk.root_hash()));
+        } else {
+            elem = Element::get(&merk, key);
+        }
 
         if let Some(prefix) = prefix {
             self.get_subtrees()

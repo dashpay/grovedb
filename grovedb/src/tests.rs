@@ -1057,16 +1057,12 @@ fn test_element_deletion() {
     db.insert(&[TEST_LEAF], b"key".to_vec(), element.clone(), None)
         .expect("successful insert");
     let root_hash = db.root_tree.root().unwrap();
-    dbg!("starting delete");
     assert!(db.delete(&[TEST_LEAF], b"key".to_vec(), None).is_ok());
-    dbg!("successful first delete");
     assert!(matches!(
         db.get(&[TEST_LEAF], b"key", None),
         Err(Error::InvalidPathKey(_))
     ));
-    dbg!("successful get");
     assert_ne!(root_hash, db.root_tree.root().unwrap());
-    dbg!("failed here");
 }
 
 #[test]
@@ -1224,6 +1220,8 @@ fn test_subtree_deletion() {
     ));
     // assert_eq!(db.subtrees.len(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF
     // TEST_LEAF.key4 stay
+    assert!(db.get(&[], TEST_LEAF, None).is_ok());
+    assert!(db.get(&[], ANOTHER_TEST_LEAF, None).is_ok());
     assert!(db.get(&[TEST_LEAF], b"key4", None).is_ok());
     assert_ne!(root_hash, db.root_tree.root().unwrap());
 }

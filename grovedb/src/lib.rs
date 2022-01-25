@@ -200,7 +200,6 @@ impl GroveDb {
     }
 
     fn build_root_tree(
-        // subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
         subtrees: &Subtrees,
         root_leaf_keys: &HashMap<Vec<u8>, usize>,
         transaction: Option<&OptimisticTransactionDBTransaction>,
@@ -280,7 +279,7 @@ impl GroveDb {
         }
 
         // root leaf nodes
-        if path.len() == 1 {
+        if path.len() <= 1 {
             let root_leaf_keys = match transaction {
                 None => &self.root_leaf_keys,
                 Some(_) => &self.temp_root_leaf_keys,
