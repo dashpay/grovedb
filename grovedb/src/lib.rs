@@ -206,11 +206,15 @@ impl GroveDb {
     ) -> MerkleTree<Sha256> {
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
         for (subtree_path, root_leaf_idx) in root_leaf_keys {
-            let subtree_merk = subtrees
+            let (subtree_merk, prefix) = subtrees
                 .get(&[subtree_path.as_slice()], transaction)
                 .expect("`root_leaf_keys` must be in sync with `subtrees`");
             leaf_hashes[*root_leaf_idx] = subtree_merk.root_hash();
-            subtrees.insert_temp_tree(&[subtree_path.as_slice()], subtree_merk, transaction);
+            if prefix.is_some() {
+                subtrees.insert_temp_tree_with_prefix(prefix.expect("confirmed as some"), subtree_merk, transaction);
+            } else {
+                subtrees.insert_temp_tree(&[subtree_path.as_slice()], subtree_merk, transaction);
+            }
         }
         MerkleTree::<Sha256>::from_leaves(&leaf_hashes)
     }
@@ -251,16 +255,25 @@ impl GroveDb {
         // Go up until only one element in path, which means a key of a root tree
         while path.len() > 1 {
             // non root leaf node
-            let subtree = subtrees.get(path, transaction)?;
+            let (subtree, prefix) = subtrees.get(path, transaction)?;
             let element = Element::Tree(subtree.root_hash());
-            self.get_subtrees()
-                .insert_temp_tree(path, subtree, transaction);
+            if prefix.is_some() {
+                self.get_subtrees()
+                    .insert_temp_tree_with_prefix(prefix.expect("confirmed as some"), subtree, transaction);
+            } else {
+                self.get_subtrees()
+                    .insert_temp_tree(path, subtree, transaction);
+            }
 
             let (key, parent_path) = path.split_last().ok_or(Error::InvalidPath("empty path"))?;
-            let mut upper_tree = subtrees.get(parent_path, transaction)?;
+            let (mut upper_tree, prefix) = subtrees.get(parent_path, transaction)?;
             element.insert(&mut upper_tree, key.to_vec(), transaction);
-            self.get_subtrees()
-                .insert_temp_tree(parent_path, upper_tree, transaction);
+            if prefix.is_some() {
+                self.get_subtrees()
+                    .insert_temp_tree(parent_path, upper_tree, transaction);
+            } else {
+                self.get_subtrees().insert_temp_tree(path, upper_tree, transaction);
+            }
 
             path = parent_path;
         }

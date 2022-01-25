@@ -1020,7 +1020,7 @@ fn test_subtree_pairs_iterator() {
     // let mut iter = db
     //     .elements_iterator(&[TEST_LEAF, b"subtree1"], None)
     //     .expect("cannot create iterator");
-    let merk = db
+    let (merk, _) = db
         .get_subtrees()
         .get(&[TEST_LEAF, b"subtree1"], None)
         .unwrap();
@@ -1145,7 +1145,7 @@ fn test_get_subtree() {
 
     // Retrieve subtree instance
     // Check if it returns the same instance that was inserted
-    let subtree = db
+    let (subtree, _) = db
         .get_subtrees()
         .get(&[TEST_LEAF, b"key1", b"key2"], None)
         .unwrap();
@@ -1174,7 +1174,7 @@ fn test_get_subtree() {
     .expect("successful value insert");
 
     // Retrieve subtree instance with transaction
-    let subtree = db
+    let (subtree, _) = db
         .get_subtrees()
         .get(&[TEST_LEAF, b"key1", b"innertree"], Some(&transaction))
         .unwrap();
@@ -1182,7 +1182,7 @@ fn test_get_subtree() {
     assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
 
     // Should be able to retrieve instances created before transaction
-    let subtree = db
+    let (subtree, _) = db
         .get_subtrees()
         .get(&[TEST_LEAF, b"key1", b"key2"], None)
         .unwrap();

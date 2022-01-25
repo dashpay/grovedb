@@ -73,12 +73,18 @@ impl GroveDb {
         key: &[u8],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Element, Error> {
-        let merk = self.get_subtrees().get(path, transaction)?;
+        let (merk, prefix) = self.get_subtrees().get(path, transaction)?;
 
         let elem = Element::get(&merk, key);
 
-        self.get_subtrees()
-            .insert_temp_tree(path, merk, transaction);
+        if prefix.is_some() {
+            self.get_subtrees()
+                .insert_temp_tree_with_prefix(prefix.expect("confirmed it's some"), merk, transaction);
+        } else {
+            self.get_subtrees()
+                .insert_temp_tree(path, merk, transaction);
+        }
+
         elem
     }
 
@@ -163,11 +169,15 @@ impl GroveDb {
         // subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     ) -> Result<(Vec<Element>, u16), Error> {
         let path = path_query.path;
-        let merk = subtrees.get(path, transaction)?;
+        let (merk, prefix) = subtrees.get(path, transaction)?;
 
         let elem = Element::get_path_query(&merk, path_query, Some(&subtrees));
 
-        subtrees.insert_temp_tree(path, merk, transaction);
+        if prefix.is_some(){
+            subtrees.insert_temp_tree_with_prefix(prefix.expect("confirmed it's some"), merk, transaction);
+        } else {
+            subtrees.insert_temp_tree(path, merk, transaction);
+        }
 
         elem
     }

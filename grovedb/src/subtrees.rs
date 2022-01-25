@@ -48,20 +48,22 @@ impl Subtrees<'_> {
         &self,
         path: &[&[u8]],
         transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<Merk<PrefixedRocksDbStorage>, Error> {
+    ) -> Result<(Merk<PrefixedRocksDbStorage>, Option<Vec<u8>>), Error> {
         let merk;
+        let mut prefix: Option<Vec<u8>> = None;
         match transaction {
             None => {
                 merk = self.get_subtree_without_transaction(path)?;
             }
             Some(_) => {
-                let prefix = &GroveDb::compress_subtree_key(path, None);
-                if self.temp_subtrees.borrow().contains_key(prefix) {
+                let tree_prefix = GroveDb::compress_subtree_key(path, None);
+                prefix = Some(tree_prefix.clone());
+                if self.temp_subtrees.borrow().contains_key(&tree_prefix) {
                     // get the merk out
                     merk = self
                         .temp_subtrees
                         .borrow_mut()
-                        .remove(prefix)
+                        .remove(&tree_prefix)
                         .expect("confirmed it's in the hashmap");
                 } else {
                     // merk is not in the hash map get it without transaction
@@ -69,14 +71,13 @@ impl Subtrees<'_> {
                 }
             }
         }
-        Ok(merk)
+        Ok((merk, prefix))
     }
 
     pub fn get_subtree_without_transaction(
         &self,
         path: &[&[u8]],
     ) -> Result<Merk<PrefixedRocksDbStorage>, Error> {
-        let subtree_prefix = GroveDb::compress_subtree_key(path, None);
         let (subtree, has_keys) = self.get_subtree_with_key_info(path, None)?;
         if !has_keys {
             // if the subtree has no keys, it's either empty or invalid

@@ -137,14 +137,20 @@ impl Element {
                     if let Some(subquery_key) = &subquery_key_option {
                         path_vec.push(subquery_key.as_slice());
                     }
-                    let inner_merk = subtrees
+                    let (inner_merk, prefix) = subtrees
                         .get(path_vec.as_slice(), None)
                         .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
                     let inner_query = SizedQuery::new(subquery, *limit, *offset);
                     let inner_path_query = PathQuery::new(path_vec.as_slice(), inner_query);
                     let (mut sub_elements, skipped) =
                         Element::get_path_query(&inner_merk, &inner_path_query, subtrees_option)?;
-                    subtrees.insert_temp_tree(path_vec.as_slice(), inner_merk, None);
+
+                    if prefix.is_some() {
+                        subtrees.insert_temp_tree_with_prefix(prefix.expect("confirmed as some"), inner_merk, None);
+                    } else {
+                        subtrees.insert_temp_tree(path_vec.as_slice(), inner_merk, None);
+                    }
+
                     if let Some(limit) = limit {
                         *limit = *limit - sub_elements.len() as u16;
                     }
@@ -153,7 +159,7 @@ impl Element {
                     }
                     results.append(&mut sub_elements);
                 } else if let Some(subquery_key) = subquery_key_option {
-                    let inner_merk = subtrees
+                    let (inner_merk, prefix) = subtrees
                         .get(path_vec.as_slice(), None)
                         .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
                     if offset.is_none() || offset.is_some() && offset.unwrap() == 0 {
@@ -166,7 +172,11 @@ impl Element {
                             *offset = Some(offset.unwrap() - 1);
                         }
                     }
-                    subtrees.insert_temp_tree(path_vec.as_slice(), inner_merk, None);
+                    if prefix.is_some() {
+                        subtrees.insert_temp_tree_with_prefix(prefix.expect("confirmed as some"), inner_merk, None);
+                    } else {
+                        subtrees.insert_temp_tree(path_vec.as_slice(), inner_merk, None);
+                    }
                 } else {
                     return Err(Error::InvalidPath(
                         "you must provide a subquery or a subquery_key when interacting with a \

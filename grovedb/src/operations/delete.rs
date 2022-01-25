@@ -22,12 +22,17 @@ impl GroveDb {
         } else {
             let element = self.get_raw(path, &key, transaction)?;
             {
-                let mut merk = self.get_subtrees().get(path, transaction)?;
+                let (mut merk, prefix) = self.get_subtrees().get(path, transaction)?;
                 Element::delete(&mut merk, key.clone(), transaction)?;
 
                 // after deletion, if there is a transaction, add the merk back into the hashmap
-                self.get_subtrees()
-                    .insert_temp_tree(path, merk, transaction);
+                if prefix.is_some(){
+                    self.get_subtrees()
+                        .insert_temp_tree_with_prefix(prefix.expect("confirmed it's some"), merk, transaction);
+                } else {
+                    self.get_subtrees()
+                        .insert_temp_tree(path, merk, transaction);
+                }
             }
 
             if let Element::Tree(_) = element {
@@ -78,7 +83,7 @@ impl GroveDb {
             // TODO: eventually we need to do something about this nested slices
             let q_ref: Vec<&[u8]> = q.iter().map(|x| x.as_slice()).collect();
             // Get the correct subtree with q_ref as path
-            let merk = self.get_subtrees().get(&q_ref, transaction)?;
+            let (merk, _) = self.get_subtrees().get(&q_ref, transaction)?;
             let mut iter = Element::iterator(merk.raw_iter());
             // let mut iter = self.elements_iterator(&q_ref, transaction)?;
             while let Some((key, value)) = iter.next()? {

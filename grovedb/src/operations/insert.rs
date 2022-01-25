@@ -50,13 +50,18 @@ impl GroveDb {
                     ));
                 }
 
-                let mut merk = self
+                let (mut merk, prefix) = self
                     .get_subtrees()
                     .get(path, transaction)
                     .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
                 element.insert(&mut merk, key, transaction)?;
-                self.get_subtrees()
-                    .insert_temp_tree(path, merk, transaction);
+                if prefix.is_some(){
+                    self.get_subtrees()
+                        .insert_temp_tree_with_prefix(prefix.expect("confirmed it's some"), merk, transaction);
+                } else {
+                    self.get_subtrees()
+                        .insert_temp_tree(path, merk, transaction);
+                }
                 self.propagate_changes(path, transaction)?;
             }
         }
@@ -118,9 +123,14 @@ impl GroveDb {
         }
 
         // First, check if a subtree exists to create a new subtree under it
-        let parent = self.get_subtrees().get(path, transaction)?;
-        self.get_subtrees()
-            .insert_temp_tree(path, parent, transaction);
+        let (parent, prefix) = self.get_subtrees().get(path, transaction)?;
+        if prefix.is_some() {
+            self.get_subtrees()
+                .insert_temp_tree_with_prefix(prefix.expect("confirmed it's some"), parent, transaction);
+        } else {
+            self.get_subtrees()
+                .insert_temp_tree(path, parent, transaction);
+        }
 
         let (subtree_prefix, subtree_merk) = create_merk_with_prefix(self.db.clone(), path, &key)?;
 
@@ -130,15 +140,20 @@ impl GroveDb {
             .insert_temp_tree_with_prefix(subtree_prefix, subtree_merk, transaction);
 
         // Had to take merk from `subtrees` once again to solve multiple &mut s
-        let mut merk = self
+        let (mut merk, prefix) = self
             .get_subtrees()
             .get(path, transaction)
             .expect("confirmed subtree exists above");
 
         // need to mark key as taken in the upper tree
         element.insert(&mut merk, key, transaction)?;
-        self.get_subtrees()
-            .insert_temp_tree(path, merk, transaction);
+        if prefix.is_some(){
+            self.get_subtrees()
+                .insert_temp_tree_with_prefix(prefix.expect("confirmed it's some"), merk, transaction);
+        } else {
+            self.get_subtrees()
+                .insert_temp_tree(path, merk, transaction);
+        }
 
         self.propagate_changes(path, transaction)?;
 
