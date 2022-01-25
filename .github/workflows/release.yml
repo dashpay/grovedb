@@ -167,7 +167,7 @@ jobs:
           path: node-grove/prebuilds
 
       - name: Check prebuilds
-        run: ls -laR prebuilds
+        run: ls -laR node-grove/prebuilds
 
 #      - name: NPM Publish
 #        run: npm publish --access public
