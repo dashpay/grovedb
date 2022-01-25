@@ -218,7 +218,7 @@ impl GroveDb {
         };
 
         Ok(GroveDb::new(
-            Self::build_root_tree(subtrees_view, &root_leaf_keys, None),
+            Self::build_root_tree(&subtrees_view, &root_leaf_keys, None),
             root_leaf_keys,
             subtrees,
             meta_storage,
@@ -299,7 +299,7 @@ impl GroveDb {
 
     fn build_root_tree(
         // subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
-        subtrees: Subtrees,
+        subtrees: &Subtrees,
         root_leaf_keys: &HashMap<Vec<u8>, usize>,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> MerkleTree<Sha256> {
@@ -309,6 +309,7 @@ impl GroveDb {
                 .get(&[subtree_path.as_slice()], transaction)
                 .expect("`root_leaf_keys` must be in sync with `subtrees`");
             leaf_hashes[*root_leaf_idx] = subtree_merk.root_hash();
+            subtrees.insert_temp_tree(&[subtree_path.as_slice()], subtree_merk, transaction);
         }
         MerkleTree::<Sha256>::from_leaves(&leaf_hashes)
     }
@@ -363,17 +364,19 @@ impl GroveDb {
             let (key, parent_path) = path.split_last().ok_or(Error::InvalidPath("empty path"))?;
             let mut upper_tree = subtrees.get(parent_path, transaction)?;
             element.insert(&mut upper_tree, key.to_vec(), transaction);
+            self.get_subtrees().insert_temp_tree(parent_path, upper_tree, transaction);
 
             path = parent_path;
         }
 
         // root leaf nodes
         if path.len() == 1 {
+
             let root_leaf_keys = match transaction {
                 None => &self.root_leaf_keys,
                 Some(_) => &self.temp_root_leaf_keys,
             };
-            let root_tree = Self::build_root_tree(subtrees, root_leaf_keys, transaction);
+            let root_tree = GroveDb::build_root_tree(&subtrees, root_leaf_keys, transaction);
             match transaction {
                 None => self.root_tree = root_tree,
                 Some(_) => self.temp_root_tree = root_tree,

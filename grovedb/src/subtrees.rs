@@ -17,7 +17,7 @@ pub struct Subtrees<'a> {
 }
 
 impl Subtrees<'_> {
-    pub fn insert_temp_tree(self, path: &[&[u8]], merk: Merk<PrefixedRocksDbStorage>, transaction: Option<&OptimisticTransactionDBTransaction>) -> Option<Merk<PrefixedRocksDbStorage>> {
+    pub fn insert_temp_tree(&self, path: &[&[u8]], merk: Merk<PrefixedRocksDbStorage>, transaction: Option<&OptimisticTransactionDBTransaction>) -> Option<Merk<PrefixedRocksDbStorage>> {
         match transaction{
             None => None,
             Some(_) => {
@@ -27,7 +27,7 @@ impl Subtrees<'_> {
         }
     }
 
-    pub fn insert_temp_tree_with_prefix(self, prefix: Vec<u8>, merk: Merk<PrefixedRocksDbStorage>, transaction: Option<&OptimisticTransactionDBTransaction>) -> Option<Merk<PrefixedRocksDbStorage>> {
+    pub fn insert_temp_tree_with_prefix(&self, prefix: Vec<u8>, merk: Merk<PrefixedRocksDbStorage>, transaction: Option<&OptimisticTransactionDBTransaction>) -> Option<Merk<PrefixedRocksDbStorage>> {
         match transaction{
             None => None,
             Some(_) => {

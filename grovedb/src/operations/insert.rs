@@ -143,6 +143,7 @@ impl GroveDb {
 
         // need to mark key as taken in the upper tree
         element.insert(&mut merk, key, transaction)?;
+        self.get_subtrees().insert_temp_tree(path, merk, transaction);
 
         self.propagate_changes(path, transaction)?;
 
