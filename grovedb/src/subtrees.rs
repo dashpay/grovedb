@@ -114,25 +114,6 @@ impl Subtrees<'_> {
         }
     }
 
-    // pub fn get_subtree_with_transaction(
-    //     &self,
-    //     path: &[&[u8]],
-    // ) -> Result<&Merk<PrefixedRocksDbStorage>, Error> {
-    //     let subtree_prefix = GroveDb::compress_subtree_key(path, None);
-    //     if let Some(merk) = self.temp_subtrees.borrow().get(&subtree_prefix) {
-    //         Ok(merk)
-    //     } else {
-    //         Err(Error::InvalidPath("no subtree found under that path"))
-    //         // dbg!("Getting subtree without transaction");
-    //         // // if the subtree doesn't exist in temp_subtrees,
-    //         // // check if it was created before the transaction was started
-    //         // let merk = self
-    //         //     .get_subtree_without_transaction(path)
-    //         //     .map_err(|_| Error::InvalidPath("no subtree found under that
-    // path"))?;         // Ok(merk)
-    //     }
-    // }
-
     fn get_subtree_with_key_info(
         &self,
         path: &[&[u8]],

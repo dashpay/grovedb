@@ -75,36 +75,11 @@ impl GroveDb {
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Element, Error> {
         let merk = self.get_subtrees().get(path, transaction)?;
-        // let merk;
-        // match transaction {
-        //     None => {
-        //         merk = self.get_subtrees().get_subtree_without_transaction(path)?;
-        //     },
-        //     Some(_) => {
-        //         let prefix = &Self::compress_subtree_key(path, None);
-        //         if self.temp_subtrees.borrow().contains_key(prefix) {
-        //             // get the merk out
-        //             merk =
-        // self.temp_subtrees.borrow_mut().remove(prefix).expect("confirmed it's in the
-        // hashmap");         } else {
-        //             // merk is not in the hash map get it without transaction
-        //             merk =
-        // self.get_subtrees().get_subtree_without_transaction(path)?;         }
-        //     }
-        // }
 
         let elem = Element::get(&merk, key);
 
         self.get_subtrees()
             .insert_temp_tree(path, merk, transaction);
-        // match transaction {
-        //     None => {},
-        //     Some(_) => {
-        //         let prefix = Self::compress_subtree_key(path, None);
-        //         self.temp_subtrees.borrow_mut().insert(prefix, merk);
-        //     }
-        // };
-
         elem
     }
 
@@ -177,10 +152,6 @@ impl GroveDb {
         path_query: &PathQuery,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(Vec<Element>, u16), Error> {
-        // let subtrees = match transaction {
-        //     None => &self.subtrees,
-        //     Some(_) => &self.temp_subtrees,
-        // };
         let subtrees = self.get_subtrees();
         self.get_path_query_on_trees_raw(path_query, subtrees, transaction)
     }
@@ -193,38 +164,11 @@ impl GroveDb {
         // subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     ) -> Result<(Vec<Element>, u16), Error> {
         let path = path_query.path;
-        // let merk = subtrees
-        //     .get(&Self::compress_subtree_key(path, None))
-        //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-        // let merk;
         let merk = subtrees.get(path, transaction)?;
-        // match transaction {
-        //     None => {
-        //         merk = self.get_subtrees().get_subtree_without_transaction(path)?;
-        //     },
-        //     Some(_) => {
-        //         let prefix = &Self::compress_subtree_key(path, None);
-        //         if self.temp_subtrees.borrow().contains_key(prefix) {
-        //             // get the merk out
-        //             merk =
-        // self.temp_subtrees.borrow_mut().remove(prefix).expect("confirmed it's in the
-        // hashmap");         } else {
-        //             // merk is not in the hash map get it without transaction
-        //             merk =
-        // self.get_subtrees().get_subtree_without_transaction(path)?;         }
-        //     }
-        // }
 
         let elem = Element::get_path_query(&merk, path_query, Some(&subtrees));
 
         subtrees.insert_temp_tree(path, merk, transaction);
-        // match transaction {
-        //     None => {},
-        //     Some(_) => {
-        //         let prefix = Self::compress_subtree_key(path, None);
-        //         self.temp_subtrees.borrow_mut().insert(prefix, merk);
-        //     }
-        // };
 
         elem
     }

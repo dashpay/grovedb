@@ -49,10 +49,7 @@ impl GroveDb {
                         "only subtrees are allowed as root tree's leafs",
                     ));
                 }
-                // Get a Merk by a path
-                // let mut merk = subtrees
-                //     .get_mut(&Self::compress_subtree_key(path, None))
-                //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+
                 let mut merk = self
                     .get_subtrees()
                     .get(path, transaction)
@@ -78,15 +75,10 @@ impl GroveDb {
             }
         }
 
-        // let subtrees = match transaction {
-        //     None => &mut self.subtrees,
-        //     Some(_) => &mut self.temp_subtrees,
-        // };
 
         // Open Merk and put handle into `subtrees` dictionary accessible by its
         // compressed path
         let (subtree_prefix, subtree_merk) = create_merk_with_prefix(self.db.clone(), &[], key)?;
-        // subtrees.insert(subtree_prefix.clone(), subtree_merk);
         self.get_subtrees()
             .insert_temp_tree_with_prefix(subtree_prefix, subtree_merk, transaction);
 
@@ -136,16 +128,6 @@ impl GroveDb {
         let element = Element::Tree(subtree_merk.root_hash());
         self.get_subtrees()
             .insert_temp_tree_with_prefix(subtree_prefix, subtree_merk, transaction);
-
-        // Save subtrees, to be removed
-        // TODO: Remove this
-        // {
-        //     let subtrees = match transaction {
-        //         None => &mut self.subtrees,
-        //         Some(_) => &mut self.temp_subtrees,
-        //     };
-        //     subtrees.insert(subtree_prefix, subtree_merk);
-        // }
 
         // Had to take merk from `subtrees` once again to solve multiple &mut s
         let mut merk = self
