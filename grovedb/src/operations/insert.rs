@@ -33,11 +33,6 @@ impl GroveDb {
             }
         }
 
-        let subtrees = match transaction {
-            None => &mut self.subtrees,
-            Some(_) => &mut self.temp_subtrees,
-        };
-
         match element {
             Element::Tree(_) => {
                 if path.is_empty() {
@@ -45,7 +40,6 @@ impl GroveDb {
                 } else {
                     self.add_non_root_subtree(path, key, transaction)?;
                 }
-                self.store_subtrees_keys_data(transaction)?;
             }
             _ => {
                 // If path is empty that means there is an attempt to insert something into a
@@ -61,6 +55,7 @@ impl GroveDb {
                 //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
                 let mut merk = self.get_subtrees().get(path, transaction).map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
                 element.insert(&mut merk, key, transaction)?;
+                self.get_subtrees().insert_temp_tree(path, merk, transaction);
                 self.propagate_changes(path, transaction)?;
             }
         }
@@ -79,10 +74,16 @@ impl GroveDb {
             }
         }
 
-        let subtrees = match transaction {
-            None => &mut self.subtrees,
-            Some(_) => &mut self.temp_subtrees,
-        };
+        // let subtrees = match transaction {
+        //     None => &mut self.subtrees,
+        //     Some(_) => &mut self.temp_subtrees,
+        // };
+
+        // Open Merk and put handle into `subtrees` dictionary accessible by its
+        // compressed path
+        let (subtree_prefix, subtree_merk) = create_merk_with_prefix(self.db.clone(), &[], key)?;
+        // subtrees.insert(subtree_prefix.clone(), subtree_merk);
+        self.get_subtrees().insert_temp_tree_with_prefix(subtree_prefix, subtree_merk, transaction);
 
         let root_leaf_keys = match transaction {
             None => &mut self.root_leaf_keys,
@@ -93,11 +94,6 @@ impl GroveDb {
             None => &mut self.root_tree,
             Some(_) => &mut self.temp_root_tree,
         };
-        // Open Merk and put handle into `subtrees` dictionary accessible by its
-        // compressed path
-        let (subtree_prefix, subtree_merk) = create_merk_with_prefix(self.db.clone(), &[], key)?;
-        subtrees.insert(subtree_prefix.clone(), subtree_merk);
-
         // Update root leafs index to persist rs-merkle structure later
         if root_leaf_keys.get(&key.to_vec()).is_none() {
             root_leaf_keys.insert(key.to_vec(), root_tree.leaves_len());
@@ -131,13 +127,13 @@ impl GroveDb {
 
         // Save subtrees, to be removed
         // TODO: Remove this
-        {
-            let subtrees = match transaction {
-                None => &mut self.subtrees,
-                Some(_) => &mut self.temp_subtrees,
-            };
-            subtrees.insert(subtree_prefix, subtree_merk);
-        }
+        // {
+        //     let subtrees = match transaction {
+        //         None => &mut self.subtrees,
+        //         Some(_) => &mut self.temp_subtrees,
+        //     };
+        //     subtrees.insert(subtree_prefix, subtree_merk);
+        // }
 
         // Had to take merk from `subtrees` once again to solve multiple &mut s
         let mut merk = self

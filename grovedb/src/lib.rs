@@ -5,7 +5,7 @@ mod subtrees;
 mod tests;
 mod transaction;
 
-use std::{collections::HashMap, path::Path, rc::Rc};
+use std::{collections::HashMap, path::Path, rc::Rc, cell::RefCell};
 
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
@@ -149,7 +149,7 @@ pub struct GroveDb {
     // Temp trees used for writes during transaction
     temp_root_tree: MerkleTree<Sha256>,
     temp_root_leaf_keys: HashMap<Vec<u8>, usize>,
-    temp_subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
+    temp_subtrees: RefCell<HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
 }
 
 impl GroveDb {
@@ -168,7 +168,7 @@ impl GroveDb {
             db,
             temp_root_tree: MerkleTree::new(),
             temp_root_leaf_keys: HashMap::new(),
-            temp_subtrees: HashMap::new(),
+            temp_subtrees: RefCell::new(HashMap::new()),
             is_readonly: false,
         }
     }
@@ -210,7 +210,7 @@ impl GroveDb {
             HashMap::new()
         };
 
-        let temp_subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>> = HashMap::new();
+        let temp_subtrees: RefCell<HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>> = RefCell::new(HashMap::new());
         let subtrees_view = Subtrees {
             root_leaf_keys: &root_leaf_keys,
             temp_subtrees: &temp_subtrees,
@@ -249,53 +249,53 @@ impl GroveDb {
         }
     }
 
-    fn store_subtrees_keys_data(
-        &self,
-        db_transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<(), Error> {
-        let subtrees = match db_transaction {
-            None => &self.subtrees,
-            Some(_) => &self.temp_subtrees,
-        };
-
-        let prefixes: Vec<Vec<u8>> = subtrees.keys().cloned().collect();
-
-        // TODO: make StorageOrTransaction which will has the access to either storage
-        // or transaction
-        match db_transaction {
-            None => {
-                self.meta_storage.put_meta(
-                    SUBTREES_SERIALIZED_KEY,
-                    &bincode::serialize(&prefixes).map_err(|_| {
-                        Error::CorruptedData(String::from("unable to serialize prefixes"))
-                    })?,
-                )?;
-                self.meta_storage.put_meta(
-                    ROOT_LEAFS_SERIALIZED_KEY,
-                    &bincode::serialize(&self.temp_root_leaf_keys).map_err(|_| {
-                        Error::CorruptedData(String::from("unable to serialize root leafs"))
-                    })?,
-                )?;
-            }
-            Some(tx) => {
-                let transaction = self.meta_storage.transaction(tx);
-                transaction.put_meta(
-                    SUBTREES_SERIALIZED_KEY,
-                    &bincode::serialize(&prefixes).map_err(|_| {
-                        Error::CorruptedData(String::from("unable to serialize prefixes"))
-                    })?,
-                )?;
-                transaction.put_meta(
-                    ROOT_LEAFS_SERIALIZED_KEY,
-                    &bincode::serialize(&self.root_leaf_keys).map_err(|_| {
-                        Error::CorruptedData(String::from("unable to serialize root leafs"))
-                    })?,
-                )?;
-            }
-        }
-
-        Ok(())
-    }
+    // fn store_subtrees_keys_data(
+    //     &self,
+    //     db_transaction: Option<&OptimisticTransactionDBTransaction>,
+    // ) -> Result<(), Error> {
+    //     let subtrees = match db_transaction {
+    //         None => &self.subtrees,
+    //         Some(_) => &self.temp_subtrees,
+    //     };
+    //
+    //     let prefixes: Vec<Vec<u8>> = subtrees.keys().cloned().collect();
+    //
+    //     // TODO: make StorageOrTransaction which will has the access to either storage
+    //     // or transaction
+    //     match db_transaction {
+    //         None => {
+    //             self.meta_storage.put_meta(
+    //                 SUBTREES_SERIALIZED_KEY,
+    //                 &bincode::serialize(&prefixes).map_err(|_| {
+    //                     Error::CorruptedData(String::from("unable to serialize prefixes"))
+    //                 })?,
+    //             )?;
+    //             self.meta_storage.put_meta(
+    //                 ROOT_LEAFS_SERIALIZED_KEY,
+    //                 &bincode::serialize(&self.temp_root_leaf_keys).map_err(|_| {
+    //                     Error::CorruptedData(String::from("unable to serialize root leafs"))
+    //                 })?,
+    //             )?;
+    //         }
+    //         Some(tx) => {
+    //             let transaction = self.meta_storage.transaction(tx);
+    //             transaction.put_meta(
+    //                 SUBTREES_SERIALIZED_KEY,
+    //                 &bincode::serialize(&prefixes).map_err(|_| {
+    //                     Error::CorruptedData(String::from("unable to serialize prefixes"))
+    //                 })?,
+    //             )?;
+    //             transaction.put_meta(
+    //                 ROOT_LEAFS_SERIALIZED_KEY,
+    //                 &bincode::serialize(&self.root_leaf_keys).map_err(|_| {
+    //                     Error::CorruptedData(String::from("unable to serialize root leafs"))
+    //                 })?,
+    //             )?;
+    //         }
+    //     }
+    //
+    //     Ok(())
+    // }
 
     fn build_root_tree(
         // subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
@@ -318,19 +318,19 @@ impl GroveDb {
         path: &[&[u8]],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<subtree::ElementsIterator, Error> {
-        let subtrees = match transaction {
-            None => &self.subtrees,
-            Some(_) => &self.temp_subtrees,
-        };
-
-        let merk = subtrees
-            .get(&Self::compress_subtree_key(path, None))
-            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-        // let merk = self
-        //     .get_subtrees()
+        // let subtrees = match transaction {
+        //     None => &self.subtrees,
+        //     Some(_) => &self.temp_subtrees,
+        // };
+        todo!()
+        // let merk = self.get_subtrees()
         //     .get(path, transaction)
-        //     .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
-        Ok(Element::iterator(merk.raw_iter()))
+        //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+        // // let merk = self
+        // //     .get_subtrees()
+        // //     .get(path, transaction)
+        // //     .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
+        // Ok(Element::iterator(merk.raw_iter()))
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
@@ -530,7 +530,7 @@ impl GroveDb {
         //  code can be reworked to account for that
         self.root_tree = self.temp_root_tree.clone();
         self.root_leaf_keys = self.temp_root_leaf_keys.drain().collect();
-        self.subtrees = self.temp_subtrees.drain().collect();
+        // self.subtrees = self.temp_subtrees.drain().collect();
 
         self.cleanup_transactional_data();
 
@@ -577,6 +577,6 @@ impl GroveDb {
         // Free transactional data
         self.temp_root_tree = MerkleTree::new();
         self.temp_root_leaf_keys = HashMap::new();
-        self.temp_subtrees = HashMap::new();
+        self.temp_subtrees = RefCell::new(HashMap::new());
     }
 }
