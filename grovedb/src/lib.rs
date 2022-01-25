@@ -319,11 +319,13 @@ impl GroveDb {
         path: &[&[u8]],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<subtree::ElementsIterator, Error> {
+        // Get the correct subtrees instance
         // let subtrees = match transaction {
         //     None => &self.subtrees,
         //     Some(_) => &self.temp_subtrees,
         // };
         todo!()
+        // Get the merk at the current path
         // let merk = self.get_subtrees()
         //     .get(path, transaction)
         //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
@@ -331,6 +333,7 @@ impl GroveDb {
         // //     .get_subtrees()
         // //     .get(path, transaction)
         // //     .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
+        // Return the raw iter of the merk
         // Ok(Element::iterator(merk.raw_iter()))
     }
 

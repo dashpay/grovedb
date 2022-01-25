@@ -108,7 +108,10 @@ impl GroveDb {
         while let Some(q) = queue.pop() {
             // TODO: eventually we need to do something about this nested slices
             let q_ref: Vec<&[u8]> = q.iter().map(|x| x.as_slice()).collect();
-            let mut iter = self.elements_iterator(&q_ref, transaction)?;
+            // Get the correct subtree with q_ref as path
+            let merk = self.get_subtrees().get(&q_ref, transaction)?;
+            let mut iter = Element::iterator(merk.raw_iter());
+            // let mut iter = self.elements_iterator(&q_ref, transaction)?;
             while let Some((key, value)) = iter.next()? {
                 match value {
                     Element::Tree(_) => {
