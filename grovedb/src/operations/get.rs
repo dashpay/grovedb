@@ -200,33 +200,35 @@ impl GroveDb {
         // let merk = subtrees
         //     .get(&Self::compress_subtree_key(path, None))
         //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-        let merk;
-        match transaction {
-            None => {
-                merk = self.get_subtrees().get_subtree_without_transaction(path)?;
-            },
-            Some(_) => {
-                let prefix = &Self::compress_subtree_key(path, None);
-                if self.temp_subtrees.borrow().contains_key(prefix) {
-                    // get the merk out
-                    merk = self.temp_subtrees.borrow_mut().remove(prefix).expect("confirmed it's in the hashmap");
-                } else {
-                    // merk is not in the hash map get it without transaction
-                    merk = self.get_subtrees().get_subtree_without_transaction(path)?;
-                }
-            }
-        }
+        // let merk;
+        let merk = subtrees.get(path, transaction)?;
+        // match transaction {
+        //     None => {
+        //         merk = self.get_subtrees().get_subtree_without_transaction(path)?;
+        //     },
+        //     Some(_) => {
+        //         let prefix = &Self::compress_subtree_key(path, None);
+        //         if self.temp_subtrees.borrow().contains_key(prefix) {
+        //             // get the merk out
+        //             merk = self.temp_subtrees.borrow_mut().remove(prefix).expect("confirmed it's in the hashmap");
+        //         } else {
+        //             // merk is not in the hash map get it without transaction
+        //             merk = self.get_subtrees().get_subtree_without_transaction(path)?;
+        //         }
+        //     }
+        // }
 
         let elem = Element::get_path_query(&merk, path_query, Some(&subtrees));
 
 
-        match transaction {
-            None => {},
-            Some(_) => {
-                let prefix = Self::compress_subtree_key(path, None);
-                self.temp_subtrees.borrow_mut().insert(prefix, merk);
-            }
-        };
+        subtrees.insert_temp_tree(path, merk, transaction);
+        // match transaction {
+        //     None => {},
+        //     Some(_) => {
+        //         let prefix = Self::compress_subtree_key(path, None);
+        //         self.temp_subtrees.borrow_mut().insert(prefix, merk);
+        //     }
+        // };
 
         elem
     }

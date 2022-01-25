@@ -143,6 +143,7 @@ impl Element {
                         let (mut sub_elements, skipped) =
                             Element::get_sized_query(&inner_merk, &inner_query)?;
                         dbg!(sub_elements.len());
+                        subtrees.insert_temp_tree(path_vec.as_slice(), inner_merk, None);
                         if let Some(limit) = limit {
                             *limit -= sub_elements.len() as u16;
                         }
@@ -163,6 +164,7 @@ impl Element {
                         } else if offset.is_some() {
                             *offset = Some(offset.unwrap() - 1);
                         }
+                        subtrees.insert_temp_tree(path_vec.as_slice(), inner_merk, None);
                     }
                 }
             }
