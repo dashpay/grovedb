@@ -22,33 +22,33 @@ jobs:
             arch: x86_64
             compiler: gnu
             platform: unknown-linux
-          - os: ubuntu-latest
-            arch: aarch64
-            node_arch: arm64
-            compiler: gnu
-            platform: unknown-linux
-            build_dependencies:
-              - gcc-aarch64-linux-gnu
-              - binutils-aarch64-linux-gnu
-              - clang
+#          - os: ubuntu-latest
+#            arch: aarch64
+#            node_arch: arm64
+#            compiler: gnu
+#            platform: unknown-linux
+#            build_dependencies:
+#              - gcc-aarch64-linux-gnu
+#              - binutils-aarch64-linux-gnu
+#              - clang
           - os: ubuntu-latest
             arch: x86_64
             compiler: musl
             platform: unknown-linux
             build_dependencies:
               - musl-tools
-          - os: ubuntu-latest
-            arch: aarch64
-            node_arch: arm64
-            compiler: musl
-            platform: unknown-linux
-            build_dependencies:
-              - gcc-aarch64-linux-gnu
-              - binutils-aarch64-linux-gnu
-              - clang
-              - musl-tools
-              - musl
-#              - musl:arm64
+#          - os: ubuntu-latest
+#            arch: aarch64
+#            node_arch: arm64
+#            compiler: musl
+#            platform: unknown-linux
+#            build_dependencies:
+#              - gcc-aarch64-linux-gnu
+#              - binutils-aarch64-linux-gnu
+#              - clang
+#              - musl-tools
+#              - musl
+##              - musl:arm64
           - os: macos-11
             arch: x86_64
             platform: apple-darwin
@@ -121,11 +121,11 @@ jobs:
             [target.x86_64-unknown-linux-musl]
             rustflags = [ "-C", "target-feature=-crt-static" ]
 
-      - name: Run tests
-        run: npm test
-        env:
-            LIBC: ${{ matrix.compiler == 'musl' }}
-            ARCH: ${{ matrix.node_arch }} # Overwrite current arch with target one
+#      - name: Run tests
+#        run: npm test
+#        env:
+#            LIBC: ${{ matrix.compiler == 'musl' }}
+#            ARCH: ${{ matrix.node_arch }} # Overwrite current arch with target one
 
       - name: Build
         run: npm run build:release
