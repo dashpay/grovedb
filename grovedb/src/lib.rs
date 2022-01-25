@@ -360,6 +360,7 @@ impl GroveDb {
             // non root leaf node
             let subtree = subtrees.get(path, transaction)?;
             let element = Element::Tree(subtree.root_hash());
+            self.get_subtrees().insert_temp_tree(path, subtree, transaction);
 
             let (key, parent_path) = path.split_last().ok_or(Error::InvalidPath("empty path"))?;
             let mut upper_tree = subtrees.get(parent_path, transaction)?;
@@ -552,7 +553,7 @@ impl GroveDb {
         // Cloning all the trees to maintain to rollback transactional changes
         self.temp_root_tree = self.root_tree.clone();
         self.temp_root_leaf_keys = self.root_leaf_keys.clone();
-        // self.temp_subtrees = self.subtrees.clone();
+        self.temp_subtrees = RefCell::new(HashMap::new());
 
         Ok(db_transaction
             .rollback()

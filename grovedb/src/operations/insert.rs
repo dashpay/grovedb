@@ -105,6 +105,11 @@ impl GroveDb {
     }
 
     // Add subtree to another subtree.
+    // We want to add a new empty merk to another merk at a key
+    // first make sure other merk exist
+    // if it exists, then create merk to be inserted, and get root hash
+    // we only care about root hash of merk to be inserted
+    //
     fn add_non_root_subtree<'a: 'b, 'b>(
         &'a mut self,
         path: &[&[u8]],
@@ -118,12 +123,14 @@ impl GroveDb {
         }
 
         // First, check if a subtree exists to create a new subtree under it
-        self.get_subtrees().get(path, transaction)?;
+        let parent = self.get_subtrees().get(path, transaction)?;
+        self.get_subtrees().insert_temp_tree(path, parent, transaction);
 
         let (subtree_prefix, subtree_merk) = create_merk_with_prefix(self.db.clone(), path, &key)?;
 
         // Set tree value as a a subtree root hash
         let element = Element::Tree(subtree_merk.root_hash());
+        self.get_subtrees().insert_temp_tree_with_prefix(subtree_prefix, subtree_merk, transaction);
 
         // Save subtrees, to be removed
         // TODO: Remove this
