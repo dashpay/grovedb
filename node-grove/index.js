@@ -228,8 +228,6 @@ class GroveDB {
  * @typedef PathQuery
  * @property {Buffer[]} path
  * @property {SizedQuery} query
- * @property {Buffer|null} subqueryKey
- * @property {Query|null} subquery
  */
 
 /**
@@ -237,12 +235,14 @@ class GroveDB {
  * @property {Query} query
  * @property {Number|null} limit
  * @property {Number|null} offset
- * @property {boolean} leftToRight
  */
 
 /**
  * @typedef Query
  * @property {Array} items
+ * @property {Buffer|null} subqueryKey
+ * @property {Query|null} subquery
+ * @property {boolean| null} leftToRight
  */
 
 module.exports = GroveDB;

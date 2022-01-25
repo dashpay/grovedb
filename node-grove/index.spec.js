@@ -84,7 +84,7 @@ describe('GroveDB', () => {
 
       expect.fail('Expected to throw en error');
     } catch (e) {
-      expect(e.message).to.be.equal('invalid path: key not found in Merk');
+      expect(e.message).to.be.equal('invalid path key: key not found in Merk: 746573745f6b6579');
     }
   });
 
@@ -147,7 +147,7 @@ describe('GroveDB', () => {
 
         expect.fail('Expected to throw an error');
       } catch (e) {
-        expect(e.message).to.be.equal('invalid path: key not found in Merk');
+        expect(e.message).to.be.equal('invalid path key: key not found in Merk: 746573745f6b6579');
       }
     });
   });
@@ -177,7 +177,7 @@ describe('GroveDB', () => {
 
         expect.fail('Expected to throw an error');
       } catch (e) {
-        expect(e.message).to.be.equal('invalid path: key not found in Merk');
+        expect(e.message).to.be.equal('invalid path key: key not found in Merk: 746573745f6b6579');
       }
 
       await groveDb.commitTransaction();
@@ -216,7 +216,7 @@ describe('GroveDB', () => {
 
         expect.fail('Expected to throw an error');
       } catch (e) {
-        expect(e.message).to.be.equal('invalid path: key not found in Merk');
+        expect(e.message).to.be.equal('invalid path key: key not found in Merk: 746573745f6b6579');
       }
     });
   });
@@ -278,7 +278,7 @@ describe('GroveDB', () => {
 
         expect.fail('Expected to throw an error');
       } catch (e) {
-        expect(e.message).to.be.equal('invalid path: key not found in Merk');
+        expect(e.message).to.be.equal('invalid path key: key not found in Merk: 746573745f6b6579');
       }
     });
   });
@@ -409,23 +409,23 @@ describe('GroveDB', () => {
     });
   });
 
-  describe('#getPathQuery', () => {
+  describe('#getPathQuery for Item subtrees', () => {
     let aValue;
     let aKey;
     let bValue;
     let bKey;
     let cValue;
     let cKey;
-    let dPath;
-    let dKey;
-    let ePath;
+    // let dPath;
+    // let dKey;
+    // let ePath;
 
-    let daValue;
-    let dbValue;
-    let dcValue;
-    let eaValue;
-    let eaKey;
-    let ebValue;
+    // let daValue;
+    // let dbValue;
+    // let dcValue;
+    // let eaValue;
+    // let eaKey;
+    // let ebValue;
 
     beforeEach(async () => {
       await groveDb.insert(
@@ -440,13 +440,13 @@ describe('GroveDB', () => {
       bKey = Buffer.from('bKey');
       cValue = Buffer.from('c');
       cKey = Buffer.from('cKey');
-      dKey = Buffer.from('dKey');
-      daValue = Buffer.from('da');
-      dbValue = Buffer.from('db');
-      dcValue = Buffer.from('dc');
-      eaValue = Buffer.from('ea');
-      eaKey = Buffer.from('eaKey');
-      ebValue = Buffer.from('eb');
+      // dKey = Buffer.from('dKey');
+      // daValue = Buffer.from('da');
+      // dbValue = Buffer.from('db');
+      // dcValue = Buffer.from('dc');
+      // eaValue = Buffer.from('ea');
+      // eaKey = Buffer.from('eaKey');
+      // ebValue = Buffer.from('eb');
 
       await groveDb.insert(
         itemTreePath,
@@ -465,6 +465,444 @@ describe('GroveDB', () => {
         cKey,
         { type: 'item', value: cValue },
       );
+
+      // dPath = [...itemTreePath];
+      //   dPath.push(dKey);
+      //   await groveDb.insert(
+      //     itemTreePath,
+      //     dKey,
+      //     { type: 'tree', value: Buffer.alloc(32) },
+      //   );
+
+      //   await groveDb.insert(
+      //     dPath,
+      //     Buffer.from('daKey'),
+      //     { type: 'item', value: daValue },
+      //   );
+
+      //   await groveDb.insert(
+      //     dPath,
+      //     Buffer.from('dbKey'),
+      //     { type: 'item', value: dbValue },
+      //   );
+
+      //   await groveDb.insert(
+      //     dPath,
+      //     Buffer.from('dcKey'),
+      //     { type: 'item', value: dcValue },
+      //   );
+
+      //   const eKey = Buffer.from('eKey');
+      //   ePath = [...itemTreePath];
+      //   ePath.push(eKey);
+      //   await groveDb.insert(
+      //     itemTreePath,
+      //     eKey,
+      //     { type: 'tree', value: Buffer.alloc(32) },
+      //   );
+
+      //   await groveDb.insert(
+      //     ePath,
+      //     Buffer.from('eaKey'),
+      //     { type: 'item', value: eaValue },
+      //   );
+
+      //   await groveDb.insert(
+      //     ePath,
+      //     Buffer.from('ebKey'),
+      //     { type: 'item', value: ebValue },
+      //   );
+    });
+
+    it('should be able to use limit', async () => {
+      const query = {
+        path: itemTreePath,
+        query: {
+          limit: 1,
+          query: {
+            items: [
+              {
+                type: 'rangeFrom',
+                from: bValue,
+              },
+            ],
+          },
+        },
+      };
+
+      const result = await groveDb.getPathQuery(query);
+
+      expect(result).to.have.a.lengthOf(2);
+
+      const [elementValues, skipped] = result;
+
+      expect(elementValues).to.deep.equals([
+        bValue,
+      ]);
+
+      expect(skipped).to.equals(0);
+    });
+
+    it('should be able to use offset', async () => {
+      const query = {
+        path: itemTreePath,
+        query: {
+          offset: 1,
+          query: {
+            items: [
+              {
+                type: 'rangeFrom',
+                from: bValue,
+              },
+            ],
+          },
+
+        },
+      };
+
+      const result = await groveDb.getPathQuery(query);
+
+      expect(result).to.have.a.lengthOf(2);
+
+      const [elementValues, skipped] = result;
+
+      expect(elementValues).to.deep.equals([
+        cValue,
+      ]);
+
+      expect(skipped).to.equals(1);
+    });
+
+    it('should be able to retrieve data using `key`', async () => {
+      const query = {
+        path: itemTreePath,
+        query: {
+          query: {
+            items: [
+              {
+                type: 'key',
+                key: aKey,
+              },
+              {
+                type: 'key',
+                key: bKey,
+              },
+            ],
+          },
+        },
+      };
+
+      const result = await groveDb.getPathQuery(query);
+
+      expect(result).to.have.a.lengthOf(2);
+
+      const [elementValues, skipped] = result;
+
+      expect(elementValues).to.deep.equals([
+        aValue,
+        bValue,
+      ]);
+
+      expect(skipped).to.equals(0);
+    });
+
+    it('should be able to retrieve data using `range`', async () => {
+      const query = {
+        path: itemTreePath,
+        query: {
+          query: {
+            items: [
+              {
+                type: 'range',
+                from: aKey,
+                to: cKey,
+              },
+            ],
+          },
+
+        },
+      };
+
+      const result = await groveDb.getPathQuery(query);
+
+      expect(result).to.have.a.lengthOf(2);
+
+      const [elementValues, skipped] = result;
+
+      expect(elementValues).to.deep.equals([
+        aValue,
+        bValue,
+      ]);
+
+      expect(skipped).to.equals(0);
+    });
+
+    it('should be able to retrieve data using `rangeInclusive`', async () => {
+      const query = {
+        path: itemTreePath,
+        query: {
+          query: {
+            items: [
+              {
+                type: 'rangeInclusive',
+                from: aKey,
+                to: bKey,
+              },
+            ],
+          },
+        },
+      };
+
+      const result = await groveDb.getPathQuery(query);
+
+      expect(result).to.have.a.lengthOf(2);
+
+      const [elementValues, skipped] = result;
+
+      expect(elementValues).to.deep.equals([
+        aValue,
+        bValue,
+      ]);
+
+      expect(skipped).to.equals(0);
+    });
+
+    it('should be able to retrieve data using `rangeFull`', async () => {
+      const query = {
+        path: itemTreePath,
+        query: {
+          query: {
+            items: [
+              {
+                type: 'rangeFull',
+              },
+            ],
+          },
+
+        },
+      };
+
+      const result = await groveDb.getPathQuery(query);
+
+      expect(result).to.have.a.lengthOf(2);
+
+      const [elementValues, skipped] = result;
+
+      expect(elementValues).to.deep.equals([
+        aValue,
+        bValue,
+        cValue,
+      ]);
+
+      expect(skipped).to.equals(0);
+    });
+
+    it('should be able to retrieve data using `rangeFrom`', async () => {
+      const query = {
+        path: itemTreePath,
+        query: {
+          query: {
+            items: [
+              {
+                type: 'rangeFrom',
+                from: bKey,
+              },
+            ],
+          },
+        },
+      };
+
+      const result = await groveDb.getPathQuery(query);
+
+      expect(result).to.have.a.lengthOf(2);
+
+      const [elementValues, skipped] = result;
+
+      expect(elementValues).to.deep.equals([
+        bValue,
+        cValue,
+      ]);
+
+      expect(skipped).to.equals(0);
+    });
+
+    it('should be able to retrieve data using `rangeTo`', async () => {
+      const query = {
+        path: itemTreePath,
+        query: {
+          query: {
+            items: [
+              {
+                type: 'rangeTo',
+                to: cKey,
+              },
+            ],
+          },
+
+        },
+      };
+
+      const result = await groveDb.getPathQuery(query);
+
+      expect(result).to.have.a.lengthOf(2);
+
+      const [elementValues, skipped] = result;
+
+      expect(elementValues).to.deep.equals([
+        aValue,
+        bValue,
+      ]);
+
+      expect(skipped).to.equals(0);
+    });
+
+    it('should be able to retrieve data using `rangeToInclusive`', async () => {
+      const query = {
+        path: itemTreePath,
+        query: {
+          query: {
+            items: [
+              {
+                type: 'rangeToInclusive',
+                to: cKey,
+              },
+            ],
+          },
+        },
+      };
+
+      const result = await groveDb.getPathQuery(query);
+
+      expect(result).to.have.a.lengthOf(2);
+
+      const [elementValues, skipped] = result;
+
+      expect(elementValues).to.deep.equals([
+        aValue,
+        bValue,
+        cValue,
+      ]);
+
+      expect(skipped).to.equals(0);
+    });
+
+    it('should be able to retrieve data using `rangeAfter`', async () => {
+      const query = {
+        path: itemTreePath,
+        query: {
+          query: {
+            items: [
+              {
+                type: 'rangeAfter',
+                after: aKey,
+              },
+            ],
+          },
+
+        },
+      };
+
+      const result = await groveDb.getPathQuery(query);
+
+      expect(result).to.have.a.lengthOf(2);
+
+      const [elementValues, skipped] = result;
+
+      expect(elementValues).to.deep.equals([
+        bValue,
+        cValue,
+      ]);
+
+      expect(skipped).to.equals(0);
+    });
+
+    it('should be able to retrieve data using `rangeAfterTo`', async () => {
+      const query = {
+        path: itemTreePath,
+        query: {
+          query: {
+            items: [
+              {
+                type: 'rangeAfterTo',
+                after: aKey,
+                to: cKey,
+              },
+            ],
+          },
+        },
+      };
+
+      const result = await groveDb.getPathQuery(query);
+
+      expect(result).to.have.a.lengthOf(2);
+
+      const [elementValues, skipped] = result;
+
+      expect(elementValues).to.deep.equals([
+        bValue,
+      ]);
+
+      expect(skipped).to.equals(0);
+    });
+
+    it('should be able to retrieve data using `rangeAfterToInclusive`', async () => {
+      const query = {
+        path: itemTreePath,
+        query: {
+          query: {
+            items: [
+              {
+                type: 'rangeAfterToInclusive',
+                after: aKey,
+                to: cKey,
+              },
+            ],
+          },
+
+        },
+      };
+
+      const result = await groveDb.getPathQuery(query);
+
+      expect(result).to.have.a.lengthOf(2);
+
+      const [elementValues, skipped] = result;
+
+      expect(elementValues).to.deep.equals([
+        bValue,
+        cValue,
+      ]);
+
+      expect(skipped).to.equals(0);
+    });
+  });
+
+  describe('#getPathQuery for nested subtrees with subquery', () => {
+    let dPath;
+    let dKey;
+    let ePath;
+
+    let daValue;
+    let dbValue;
+    let dcValue;
+    let eaValue;
+    let eaKey;
+    let ebValue;
+
+    beforeEach(async () => {
+      await groveDb.insert(
+        rootTreePath,
+        treeKey,
+        { type: 'tree', value: Buffer.alloc(32) },
+      );
+
+      dKey = Buffer.from('dKey');
+      daValue = Buffer.from('da');
+      dbValue = Buffer.from('db');
+      dcValue = Buffer.from('dc');
+      eaValue = Buffer.from('ea');
+      eaKey = Buffer.from('eaKey');
+      ebValue = Buffer.from('eb');
 
       dPath = [...itemTreePath];
       dPath.push(dKey);
@@ -514,374 +952,6 @@ describe('GroveDB', () => {
       );
     });
 
-    it('should be able to use limit', async () => {
-      const query = {
-        path: itemTreePath,
-        query: {
-          limit: 1,
-          query: {
-            items: [
-              {
-                type: 'rangeFrom',
-                from: bValue,
-              },
-            ],
-          },
-          leftToRight: true,
-        },
-      };
-
-      const result = await groveDb.getPathQuery(query);
-
-      expect(result).to.have.a.lengthOf(2);
-
-      const [elementValues, skipped] = result;
-
-      expect(elementValues).to.deep.equals([
-        bValue,
-      ]);
-
-      expect(skipped).to.equals(0);
-    });
-
-    it('should be able to use offset', async () => {
-      const query = {
-        path: itemTreePath,
-        query: {
-          offset: 1,
-          query: {
-            items: [
-              {
-                type: 'rangeFrom',
-                from: bValue,
-              },
-            ],
-          },
-          leftToRight: true,
-        },
-      };
-
-      const result = await groveDb.getPathQuery(query);
-
-      expect(result).to.have.a.lengthOf(2);
-
-      const [elementValues, skipped] = result;
-
-      expect(elementValues).to.deep.equals([
-        cValue,
-      ]);
-
-      expect(skipped).to.equals(1);
-    });
-
-    it('should be able to retrieve data using `key`', async () => {
-      const query = {
-        path: itemTreePath,
-        query: {
-          query: {
-            items: [
-              {
-                type: 'key',
-                key: aKey,
-              },
-              {
-                type: 'key',
-                key: bKey,
-              },
-            ],
-          },
-          leftToRight: true,
-        },
-      };
-
-      const result = await groveDb.getPathQuery(query);
-
-      expect(result).to.have.a.lengthOf(2);
-
-      const [elementValues, skipped] = result;
-
-      expect(elementValues).to.deep.equals([
-        aValue,
-        bValue,
-      ]);
-
-      expect(skipped).to.equals(0);
-    });
-
-    it('should be able to retrieve data using `range`', async () => {
-      const query = {
-        path: itemTreePath,
-        query: {
-          query: {
-            items: [
-              {
-                type: 'range',
-                from: aKey,
-                to: cKey,
-              },
-            ],
-          },
-          leftToRight: true,
-        },
-      };
-
-      const result = await groveDb.getPathQuery(query);
-
-      expect(result).to.have.a.lengthOf(2);
-
-      const [elementValues, skipped] = result;
-
-      expect(elementValues).to.deep.equals([
-        aValue,
-        bValue,
-      ]);
-
-      expect(skipped).to.equals(0);
-    });
-
-    it('should be able to retrieve data using `rangeInclusive`', async () => {
-      const query = {
-        path: itemTreePath,
-        query: {
-          query: {
-            items: [
-              {
-                type: 'rangeInclusive',
-                from: aKey,
-                to: bKey,
-              },
-            ],
-          },
-          leftToRight: true,
-        },
-      };
-
-      const result = await groveDb.getPathQuery(query);
-
-      expect(result).to.have.a.lengthOf(2);
-
-      const [elementValues, skipped] = result;
-
-      expect(elementValues).to.deep.equals([
-        aValue,
-        bValue,
-      ]);
-
-      expect(skipped).to.equals(0);
-    });
-
-    it('should be able to retrieve data using `rangeFull`', async () => {
-      const query = {
-        path: itemTreePath,
-        query: {
-          query: {
-            items: [
-              {
-                type: 'rangeFull',
-              },
-            ],
-          },
-          leftToRight: true,
-        },
-      };
-
-      const result = await groveDb.getPathQuery(query);
-
-      expect(result).to.have.a.lengthOf(2);
-
-      const [elementValues, skipped] = result;
-
-      expect(elementValues).to.deep.equals([
-        aValue,
-        bValue,
-        cValue,
-      ]);
-
-      expect(skipped).to.equals(0);
-    });
-
-    it('should be able to retrieve data using `rangeFrom`', async () => {
-      const query = {
-        path: itemTreePath,
-        query: {
-          query: {
-            items: [
-              {
-                type: 'rangeFrom',
-                from: bKey,
-              },
-            ],
-          },
-          leftToRight: true,
-        },
-      };
-
-      const result = await groveDb.getPathQuery(query);
-
-      expect(result).to.have.a.lengthOf(2);
-
-      const [elementValues, skipped] = result;
-
-      expect(elementValues).to.deep.equals([
-        bValue,
-        cValue,
-      ]);
-
-      expect(skipped).to.equals(0);
-    });
-
-    it('should be able to retrieve data using `rangeTo`', async () => {
-      const query = {
-        path: itemTreePath,
-        query: {
-          query: {
-            items: [
-              {
-                type: 'rangeTo',
-                to: cKey,
-              },
-            ],
-          },
-          leftToRight: true,
-        },
-      };
-
-      const result = await groveDb.getPathQuery(query);
-
-      expect(result).to.have.a.lengthOf(2);
-
-      const [elementValues, skipped] = result;
-
-      expect(elementValues).to.deep.equals([
-        aValue,
-        bValue,
-      ]);
-
-      expect(skipped).to.equals(0);
-    });
-
-    it('should be able to retrieve data using `rangeToInclusive`', async () => {
-      const query = {
-        path: itemTreePath,
-        query: {
-          query: {
-            items: [
-              {
-                type: 'rangeToInclusive',
-                to: cKey,
-              },
-            ],
-          },
-          leftToRight: true,
-        },
-      };
-
-      const result = await groveDb.getPathQuery(query);
-
-      expect(result).to.have.a.lengthOf(2);
-
-      const [elementValues, skipped] = result;
-
-      expect(elementValues).to.deep.equals([
-        aValue,
-        bValue,
-        cValue,
-      ]);
-
-      expect(skipped).to.equals(0);
-    });
-
-    it('should be able to retrieve data using `rangeAfter`', async () => {
-      const query = {
-        path: itemTreePath,
-        query: {
-          query: {
-            items: [
-              {
-                type: 'rangeAfter',
-                after: aKey,
-              },
-            ],
-          },
-          leftToRight: true,
-        },
-      };
-
-      const result = await groveDb.getPathQuery(query);
-
-      expect(result).to.have.a.lengthOf(2);
-
-      const [elementValues, skipped] = result;
-
-      expect(elementValues).to.deep.equals([
-        bValue,
-        cValue,
-      ]);
-
-      expect(skipped).to.equals(0);
-    });
-
-    it('should be able to retrieve data using `rangeAfterTo`', async () => {
-      const query = {
-        path: itemTreePath,
-        query: {
-          query: {
-            items: [
-              {
-                type: 'rangeAfterTo',
-                after: aKey,
-                to: cKey,
-              },
-            ],
-          },
-          leftToRight: true,
-        },
-      };
-
-      const result = await groveDb.getPathQuery(query);
-
-      expect(result).to.have.a.lengthOf(2);
-
-      const [elementValues, skipped] = result;
-
-      expect(elementValues).to.deep.equals([
-        bValue,
-      ]);
-
-      expect(skipped).to.equals(0);
-    });
-
-    it('should be able to retrieve data using `rangeAfterToInclusive`', async () => {
-      const query = {
-        path: itemTreePath,
-        query: {
-          query: {
-            items: [
-              {
-                type: 'rangeAfterToInclusive',
-                after: aKey,
-                to: cKey,
-              },
-            ],
-          },
-          leftToRight: true,
-        },
-      };
-
-      const result = await groveDb.getPathQuery(query);
-
-      expect(result).to.have.a.lengthOf(2);
-
-      const [elementValues, skipped] = result;
-
-      expect(elementValues).to.deep.equals([
-        bValue,
-        cValue,
-      ]);
-
-      expect(skipped).to.equals(0);
-    });
-
     it('should be able to retrieve data with subquery', async () => {
       // This should give us only last subtree and apply subquery to it
       const query = {
@@ -894,16 +964,15 @@ describe('GroveDB', () => {
                 after: dKey,
               },
             ],
-          },
-          leftToRight: true,
-        },
-        subquery: {
-          items: [
-            {
-              type: 'rangeAfter',
-              after: eaKey,
+            subquery: {
+              items: [
+                {
+                  type: 'rangeAfter',
+                  after: eaKey,
+                },
+              ],
             },
-          ],
+          },
         },
       };
 
