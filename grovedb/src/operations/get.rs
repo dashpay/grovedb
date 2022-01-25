@@ -156,7 +156,6 @@ impl GroveDb {
             .into_iter()
             .map(|element| match element {
                 Element::Reference(reference_path) => {
-                    dbg!("ref");
                     let maybe_item = self.follow_reference(reference_path, transaction)?;
                     if let Element::Item(item) = maybe_item {
                         Ok(item)

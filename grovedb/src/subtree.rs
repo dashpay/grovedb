@@ -88,7 +88,6 @@ impl Element {
         limit: &mut Option<u16>,
         offset: &mut Option<u16>,
     ) -> Result<(), Error> {
-        dbg!("basic push");
         if offset.is_none() || offset.is_some() && offset.unwrap() == 0 {
             results.push(element);
             if limit.is_some() {
@@ -113,7 +112,6 @@ impl Element {
         limit: &mut Option<u16>,
         offset: &mut Option<u16>,
     ) -> Result<(), Error> {
-        dbg!("path query push");
         match element {
             Element::Tree(_) => {
                 if subtrees_option.is_none() && subquery.is_none() {
@@ -278,7 +276,6 @@ impl Element {
         } else {
             0
         };
-        dbg!("results {}", results.len());
         Ok((results, skipped))
     }
 

@@ -103,9 +103,7 @@ impl GroveDb {
         if root_leaf_keys.get(&key.to_vec()).is_none() {
             root_leaf_keys.insert(key.to_vec(), root_tree.leaves_len());
         }
-        dbg!("propagating after adding root");
         self.propagate_changes(&[key], transaction)?;
-        dbg!("done propagating after adding root");
         Ok(())
     }
 

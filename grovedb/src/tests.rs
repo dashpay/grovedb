@@ -807,8 +807,6 @@ fn transaction_insert_item_with_transaction_should_use_transaction() {
     let result_with_transaction = db
         .get(&[TEST_LEAF], &item_key, Some(&transaction))
         .expect("Expected to work");
-    dbg!("We got here");
-    dbg!(&result_with_transaction);
     assert_eq!(result_with_transaction, Element::Item(b"ayy".to_vec()));
 
     // Test that commit works
@@ -1707,7 +1705,6 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
 fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
     let mut db = make_grovedb();
     populate_tree_by_reference_for_non_unique_range_subquery(&mut db);
-    dbg!("failed when populating");
 
     let path = vec![TEST_LEAF, b"1"];
     let mut query = Query::new();

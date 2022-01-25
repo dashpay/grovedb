@@ -87,7 +87,6 @@ impl Subtrees<'_> {
             // if parent path is empty, we are dealing with root leaf node
             // we can confirm validity of a root leaf node by checking root_leaf_keys
             if parent_path.is_empty() {
-                // dbg!("parent path is empty, checking the root tree");
                 let root_key = path[0].to_vec();
                 return if self.root_leaf_keys.contains_key(&root_key) {
                     Ok(subtree)
