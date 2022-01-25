@@ -55,9 +55,9 @@ impl GroveDb {
                     .get(path, transaction)
                     .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
                 element.insert(&mut merk, key, transaction)?;
-                if prefix.is_some(){
+                if let Some(prefix) = prefix{
                     self.get_subtrees()
-                        .insert_temp_tree_with_prefix(prefix.expect("confirmed it's some"), merk, transaction);
+                        .insert_temp_tree_with_prefix(prefix, merk, transaction);
                 } else {
                     self.get_subtrees()
                         .insert_temp_tree(path, merk, transaction);
@@ -124,9 +124,9 @@ impl GroveDb {
 
         // First, check if a subtree exists to create a new subtree under it
         let (parent, prefix) = self.get_subtrees().get(path, transaction)?;
-        if prefix.is_some() {
+        if let Some(prefix) = prefix {
             self.get_subtrees()
-                .insert_temp_tree_with_prefix(prefix.expect("confirmed it's some"), parent, transaction);
+                .insert_temp_tree_with_prefix(prefix, parent, transaction);
         } else {
             self.get_subtrees()
                 .insert_temp_tree(path, parent, transaction);
@@ -147,9 +147,9 @@ impl GroveDb {
 
         // need to mark key as taken in the upper tree
         element.insert(&mut merk, key, transaction)?;
-        if prefix.is_some(){
+        if let Some(prefix) = prefix{
             self.get_subtrees()
-                .insert_temp_tree_with_prefix(prefix.expect("confirmed it's some"), merk, transaction);
+                .insert_temp_tree_with_prefix(prefix, merk, transaction);
         } else {
             self.get_subtrees()
                 .insert_temp_tree(path, merk, transaction);

@@ -145,8 +145,8 @@ impl Element {
                     let (mut sub_elements, skipped) =
                         Element::get_path_query(&inner_merk, &inner_path_query, subtrees_option)?;
 
-                    if prefix.is_some() {
-                        subtrees.insert_temp_tree_with_prefix(prefix.expect("confirmed as some"), inner_merk, None);
+                    if let Some(prefix) = prefix {
+                        subtrees.insert_temp_tree_with_prefix(prefix, inner_merk, None);
                     } else {
                         subtrees.insert_temp_tree(path_vec.as_slice(), inner_merk, None);
                     }
@@ -172,8 +172,8 @@ impl Element {
                             *offset = Some(offset.unwrap() - 1);
                         }
                     }
-                    if prefix.is_some() {
-                        subtrees.insert_temp_tree_with_prefix(prefix.expect("confirmed as some"), inner_merk, None);
+                    if let Some(prefix) = prefix {
+                        subtrees.insert_temp_tree_with_prefix(prefix, inner_merk, None);
                     } else {
                         subtrees.insert_temp_tree(path_vec.as_slice(), inner_merk, None);
                     }

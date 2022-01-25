@@ -211,8 +211,8 @@ impl GroveDb {
                 .get(&[subtree_path.as_slice()], transaction)
                 .expect("`root_leaf_keys` must be in sync with `subtrees`");
             leaf_hashes[*root_leaf_idx] = subtree_merk.root_hash();
-            if prefix.is_some() {
-                subtrees.insert_temp_tree_with_prefix(prefix.expect("confirmed as some"), subtree_merk, transaction);
+            if let Some(prefix) = prefix {
+                subtrees.insert_temp_tree_with_prefix(prefix, subtree_merk, transaction);
             } else {
                 subtrees.insert_temp_tree(&[subtree_path.as_slice()], subtree_merk, transaction);
             }
@@ -258,9 +258,9 @@ impl GroveDb {
             // non root leaf node
             let (subtree, prefix) = subtrees.get(path, transaction)?;
             let element = Element::Tree(subtree.root_hash());
-            if prefix.is_some() {
+            if let Some(prefix) = prefix {
                 self.get_subtrees()
-                    .insert_temp_tree_with_prefix(prefix.expect("confirmed as some"), subtree, transaction);
+                    .insert_temp_tree_with_prefix(prefix, subtree, transaction);
             } else {
                 self.get_subtrees()
                     .insert_temp_tree(path, subtree, transaction);
@@ -269,7 +269,7 @@ impl GroveDb {
             let (key, parent_path) = path.split_last().ok_or(Error::InvalidPath("empty path"))?;
             let (mut upper_tree, prefix) = subtrees.get(parent_path, transaction)?;
             element.insert(&mut upper_tree, key.to_vec(), transaction);
-            if prefix.is_some() {
+            if let Some(prefix) = prefix {
                 self.get_subtrees()
                     .insert_temp_tree(parent_path, upper_tree, transaction);
             } else {

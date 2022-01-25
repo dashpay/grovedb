@@ -77,9 +77,9 @@ impl GroveDb {
 
         let elem = Element::get(&merk, key);
 
-        if prefix.is_some() {
+        if let Some(prefix) = prefix {
             self.get_subtrees()
-                .insert_temp_tree_with_prefix(prefix.expect("confirmed it's some"), merk, transaction);
+                .insert_temp_tree_with_prefix(prefix, merk, transaction);
         } else {
             self.get_subtrees()
                 .insert_temp_tree(path, merk, transaction);
@@ -173,8 +173,8 @@ impl GroveDb {
 
         let elem = Element::get_path_query(&merk, path_query, Some(&subtrees));
 
-        if prefix.is_some(){
-            subtrees.insert_temp_tree_with_prefix(prefix.expect("confirmed it's some"), merk, transaction);
+        if let Some(prefix) = prefix{
+            subtrees.insert_temp_tree_with_prefix(prefix, merk, transaction);
         } else {
             subtrees.insert_temp_tree(path, merk, transaction);
         }

@@ -26,9 +26,9 @@ impl GroveDb {
                 Element::delete(&mut merk, key.clone(), transaction)?;
 
                 // after deletion, if there is a transaction, add the merk back into the hashmap
-                if prefix.is_some(){
+                if let Some(prefix) = prefix{
                     self.get_subtrees()
-                        .insert_temp_tree_with_prefix(prefix.expect("confirmed it's some"), merk, transaction);
+                        .insert_temp_tree_with_prefix(prefix, merk, transaction);
                 } else {
                     self.get_subtrees()
                         .insert_temp_tree(path, merk, transaction);
