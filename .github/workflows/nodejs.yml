@@ -8,6 +8,7 @@ name: Node.JS binding
 
 jobs:
   test:
+    name: Tests
     runs-on: ubuntu-latest
     steps:
       - name: Cancel previous runs
@@ -35,6 +36,7 @@ jobs:
         run: npm test
 
   linting:
+    name: Linting
     runs-on: ubuntu-latest
     steps:
       - name: Cancel previous runs

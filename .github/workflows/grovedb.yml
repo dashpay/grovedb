@@ -8,6 +8,7 @@ name: GroveDB
 
 jobs:
   test:
+    name: Tests
     runs-on: ubuntu-latest
     steps:
       - name: Cancel previous runs
@@ -24,6 +25,7 @@ jobs:
       - run: cargo test
 
   linting:
+    name: Liniting
     runs-on: ubuntu-latest
     steps:
       - name: Cancel previous runs
@@ -45,6 +47,7 @@ jobs:
           args: --all-features
 
   errors:
+    name: Compilation errors
     runs-on: ubuntu-latest
     steps:
       - name: Cancel previous runs
@@ -62,6 +65,7 @@ jobs:
       - run: cargo check
 
   security:
+    name: Dependencies security audit
     runs-on: ubuntu-latest
     steps:
       - name: Cancel previous runs
