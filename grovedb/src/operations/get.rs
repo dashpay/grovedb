@@ -164,17 +164,10 @@ impl GroveDb {
                         Err(Error::InvalidQuery("the reference must result in an item"))
                     }
                 }
-                Element::Item(item) => {
-                    dbg!("item");
-                    Ok(item)
-                }
-                Element::Tree(item) => {
-                    dbg!("tree");
-                    // Err(Error::InvalidQuery(
-                    //     "path_queries can only refer to items and references",
-                    // ))
-                    Ok(item.to_vec())
-                }
+                Element::Item(item) => Ok(item),
+                Element::Tree(_) => Err(Error::InvalidQuery(
+                    "path_queries can only refer to items and references",
+                )),
             })
             .collect::<Result<Vec<Vec<u8>>, Error>>()?;
         Ok((results, skipped))

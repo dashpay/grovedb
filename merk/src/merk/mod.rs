@@ -217,8 +217,8 @@ where
         query: Query,
         limit: Option<u16>,
         offset: Option<u16>,
-        left_to_right: bool,
     ) -> Result<Vec<u8>> {
+        let left_to_right = query.left_to_right;
         self.prove_unchecked(query, limit, offset, left_to_right)
     }
 
