@@ -1297,7 +1297,7 @@ fn populate_tree_for_non_unique_range_subquery(db: &mut TempGroveDb) {
         // Insert some elements into subtree
         db.insert(
             &[TEST_LEAF, i_vec.as_slice()],
-            b"0".to_vec(),
+            b"\0".to_vec(),
             Element::empty_tree(),
             None,
         )
@@ -1308,7 +1308,7 @@ fn populate_tree_for_non_unique_range_subquery(db: &mut TempGroveDb) {
             let mut j_vec = i_vec.clone();
             j_vec.append(&mut (j as u32).to_be_bytes().to_vec());
             db.insert(
-                &[TEST_LEAF, i_vec.clone().as_slice(), b"0"],
+                &[TEST_LEAF, i_vec.clone().as_slice(), b"\0"],
                 // random_key.to_vec(),
                 j_vec.clone(),
                 Element::Item(j_vec),
@@ -1349,7 +1349,7 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &mut TempGroveDb) {
             // Insert some elements into subtree
             db.insert(
                 &[TEST_LEAF, i_vec.as_slice(), b"a", j_vec.clone().as_slice()],
-                b"0".to_vec(),
+                b"\0".to_vec(),
                 Element::empty_tree(),
                 None,
             )
@@ -1363,7 +1363,7 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &mut TempGroveDb) {
                         i_vec.as_slice(),
                         b"a",
                         j_vec.clone().as_slice(),
-                        b"0",
+                        b"\0",
                     ],
                     k_vec.clone(),
                     Element::Item(k_vec),
@@ -1377,7 +1377,7 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &mut TempGroveDb) {
 
 fn populate_tree_by_reference_for_non_unique_range_subquery(db: &mut TempGroveDb) {
     // This subtree will be holding values
-    db.insert(&[TEST_LEAF], b"0".to_vec(), Element::empty_tree(), None)
+    db.insert(&[TEST_LEAF], b"\0".to_vec(), Element::empty_tree(), None)
         .expect("successful subtree insert");
 
     // This subtree will be holding references
@@ -1397,7 +1397,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &mut TempGroveDb
         // Insert some elements into subtree
         db.insert(
             &[TEST_LEAF, b"1", i_vec.as_slice()],
-            b"0".to_vec(),
+            b"\0".to_vec(),
             Element::empty_tree(),
             None,
         )
@@ -1410,7 +1410,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &mut TempGroveDb
 
             // We should insert every item to the tree holding items
             db.insert(
-                &[TEST_LEAF, b"0"],
+                &[TEST_LEAF, b"\0"],
                 random_key.to_vec(),
                 Element::Item(j_vec.clone()),
                 None,
@@ -1418,9 +1418,9 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &mut TempGroveDb
             .expect("successful value insert");
 
             db.insert(
-                &[TEST_LEAF, b"1", i_vec.clone().as_slice(), b"0"],
+                &[TEST_LEAF, b"1", i_vec.clone().as_slice(), b"\0"],
                 random_key.to_vec(),
-                Element::Reference(vec![TEST_LEAF.to_vec(), b"0".to_vec(), random_key.to_vec()]),
+                Element::Reference(vec![TEST_LEAF.to_vec(), b"\0".to_vec(), random_key.to_vec()]),
                 None,
             )
             .expect("successful value insert");
@@ -1437,7 +1437,7 @@ fn populate_tree_for_unique_range_subquery(db: &mut TempGroveDb) {
 
         db.insert(
             &[TEST_LEAF, i_vec.clone().as_slice()],
-            b"0".to_vec(),
+            b"\0".to_vec(),
             Element::Item(i_vec),
             None,
         )
@@ -1447,7 +1447,7 @@ fn populate_tree_for_unique_range_subquery(db: &mut TempGroveDb) {
 
 fn populate_tree_by_reference_for_unique_range_subquery(db: &mut TempGroveDb) {
     // This subtree will be holding values
-    db.insert(&[TEST_LEAF], b"0".to_vec(), Element::empty_tree(), None)
+    db.insert(&[TEST_LEAF], b"\0".to_vec(), Element::empty_tree(), None)
         .expect("successful subtree insert");
 
     // This subtree will be holding references
@@ -1466,7 +1466,7 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &mut TempGroveDb) {
 
         // We should insert every item to the tree holding items
         db.insert(
-            &[TEST_LEAF, b"0"],
+            &[TEST_LEAF, b"\0"],
             i_vec.clone(),
             Element::Item(i_vec.clone()),
             None,
@@ -1476,8 +1476,8 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &mut TempGroveDb) {
         // We should insert a reference to the item
         db.insert(
             &[TEST_LEAF, b"1", i_vec.clone().as_slice()],
-            b"0".to_vec(),
-            Element::Reference(vec![TEST_LEAF.to_vec(), b"0".to_vec(), i_vec.clone()]),
+            b"\0".to_vec(),
+            Element::Reference(vec![TEST_LEAF.to_vec(), b"\0".to_vec(), i_vec.clone()]),
             None,
         )
         .expect("successful value insert");
@@ -1493,7 +1493,7 @@ fn test_get_range_query_with_non_unique_subquery() {
     let mut query = Query::new();
     query.insert_range((1988 as u32).to_be_bytes().to_vec()..(1992 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
     subquery.insert_all();
 
@@ -1526,7 +1526,7 @@ fn test_get_range_query_with_unique_subquery() {
     let mut query = Query::new();
     query.insert_range((1988 as u32).to_be_bytes().to_vec()..(1992 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
 
     query.set_subquery_key(subquery_key);
 
@@ -1554,7 +1554,7 @@ fn test_get_range_query_with_unique_subquery_on_references() {
     let mut query = Query::new();
     query.insert_range((1988 as u32).to_be_bytes().to_vec()..(1992 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
 
     query.set_subquery_key(subquery_key);
 
@@ -1584,7 +1584,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
         (1988 as u32).to_be_bytes().to_vec()..=(1995 as u32).to_be_bytes().to_vec(),
     );
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
     subquery.insert_all();
 
@@ -1619,7 +1619,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
         (1988 as u32).to_be_bytes().to_vec()..=(1995 as u32).to_be_bytes().to_vec(),
     );
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
     subquery.insert_all();
 
@@ -1654,7 +1654,7 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
         (1988 as u32).to_be_bytes().to_vec()..=(1995 as u32).to_be_bytes().to_vec(),
     );
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
 
     query.set_subquery_key(subquery_key);
 
@@ -1682,7 +1682,7 @@ fn test_get_range_from_query_with_non_unique_subquery() {
     let mut query = Query::new();
     query.insert_range_from((1995 as u32).to_be_bytes().to_vec()..);
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
     subquery.insert_all();
 
@@ -1715,7 +1715,7 @@ fn test_get_range_from_query_with_unique_subquery() {
     let mut query = Query::new();
     query.insert_range_from((1995 as u32).to_be_bytes().to_vec()..);
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
 
     query.set_subquery_key(subquery_key);
 
@@ -1743,7 +1743,7 @@ fn test_get_range_to_query_with_non_unique_subquery() {
     let mut query = Query::new();
     query.insert_range_to(..(1995 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
     subquery.insert_all();
 
@@ -1776,7 +1776,7 @@ fn test_get_range_to_query_with_unique_subquery() {
     let mut query = Query::new();
     query.insert_range_to(..(1995 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
 
     query.set_subquery_key(subquery_key);
 
@@ -1804,7 +1804,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
     let mut query = Query::new();
     query.insert_range_to_inclusive(..=(1995 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
     subquery.insert_all();
 
@@ -1837,7 +1837,7 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
     let mut query = Query::new();
     query.insert_range_to_inclusive(..=(1995 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
 
     query.set_subquery_key(subquery_key);
 
@@ -1865,7 +1865,7 @@ fn test_get_range_after_query_with_non_unique_subquery() {
     let mut query = Query::new();
     query.insert_range_after((1995 as u32).to_be_bytes().to_vec()..);
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
     subquery.insert_all();
 
@@ -1900,7 +1900,7 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
         (1995 as u32).to_be_bytes().to_vec()..(1997 as u32).to_be_bytes().to_vec(),
     );
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
     subquery.insert_all();
 
@@ -1935,7 +1935,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
         (1995 as u32).to_be_bytes().to_vec()..=(1997 as u32).to_be_bytes().to_vec(),
     );
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
     subquery.insert_all();
 
@@ -1977,7 +1977,7 @@ fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
         (29 as u32).to_be_bytes().to_vec()..=(31 as u32).to_be_bytes().to_vec(),
     );
 
-    subquery.set_subquery_key(b"0".to_vec());
+    subquery.set_subquery_key(b"\0".to_vec());
 
     let mut subsubquery = Query::new();
     subsubquery.insert_all();
@@ -2010,7 +2010,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let mut query = Query::new_with_direction(true);
     query.insert_range((1990 as u32).to_be_bytes().to_vec()..(1995 as u32).to_be_bytes().to_vec());
 
-    let subquery_key: Vec<u8> = b"0".to_vec();
+    let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
     subquery.insert_all();
 
