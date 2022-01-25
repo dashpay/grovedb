@@ -6,8 +6,10 @@ use std::{
 };
 
 use merk::Merk;
-use storage::RawIterator;
-use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage};
+use storage::{
+    rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage},
+    RawIterator,
+};
 
 use crate::{Element, Error, GroveDb, PathQuery, Subtrees};
 
@@ -82,17 +84,19 @@ impl GroveDb {
         //         let prefix = &Self::compress_subtree_key(path, None);
         //         if self.temp_subtrees.borrow().contains_key(prefix) {
         //             // get the merk out
-        //             merk = self.temp_subtrees.borrow_mut().remove(prefix).expect("confirmed it's in the hashmap");
-        //         } else {
+        //             merk =
+        // self.temp_subtrees.borrow_mut().remove(prefix).expect("confirmed it's in the
+        // hashmap");         } else {
         //             // merk is not in the hash map get it without transaction
-        //             merk = self.get_subtrees().get_subtree_without_transaction(path)?;
-        //         }
+        //             merk =
+        // self.get_subtrees().get_subtree_without_transaction(path)?;         }
         //     }
         // }
 
         let elem = Element::get(&merk, key);
 
-        self.get_subtrees().insert_temp_tree(path, merk, transaction);
+        self.get_subtrees()
+            .insert_temp_tree(path, merk, transaction);
         // match transaction {
         //     None => {},
         //     Some(_) => {
@@ -163,14 +167,14 @@ impl GroveDb {
                 Element::Item(item) => {
                     dbg!("item");
                     Ok(item)
-                },
+                }
                 Element::Tree(item) => {
                     dbg!("tree");
                     // Err(Error::InvalidQuery(
                     //     "path_queries can only refer to items and references",
                     // ))
                     Ok(item.to_vec())
-                },
+                }
             })
             .collect::<Result<Vec<Vec<u8>>, Error>>()?;
         Ok((results, skipped))
@@ -210,16 +214,16 @@ impl GroveDb {
         //         let prefix = &Self::compress_subtree_key(path, None);
         //         if self.temp_subtrees.borrow().contains_key(prefix) {
         //             // get the merk out
-        //             merk = self.temp_subtrees.borrow_mut().remove(prefix).expect("confirmed it's in the hashmap");
-        //         } else {
+        //             merk =
+        // self.temp_subtrees.borrow_mut().remove(prefix).expect("confirmed it's in the
+        // hashmap");         } else {
         //             // merk is not in the hash map get it without transaction
-        //             merk = self.get_subtrees().get_subtree_without_transaction(path)?;
-        //         }
+        //             merk =
+        // self.get_subtrees().get_subtree_without_transaction(path)?;         }
         //     }
         // }
 
         let elem = Element::get_path_query(&merk, path_query, Some(&subtrees));
-
 
         subtrees.insert_temp_tree(path, merk, transaction);
         // match transaction {

@@ -53,9 +53,13 @@ impl GroveDb {
                 // let mut merk = subtrees
                 //     .get_mut(&Self::compress_subtree_key(path, None))
                 //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                let mut merk = self.get_subtrees().get(path, transaction).map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
+                let mut merk = self
+                    .get_subtrees()
+                    .get(path, transaction)
+                    .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
                 element.insert(&mut merk, key, transaction)?;
-                self.get_subtrees().insert_temp_tree(path, merk, transaction);
+                self.get_subtrees()
+                    .insert_temp_tree(path, merk, transaction);
                 self.propagate_changes(path, transaction)?;
             }
         }
@@ -83,7 +87,8 @@ impl GroveDb {
         // compressed path
         let (subtree_prefix, subtree_merk) = create_merk_with_prefix(self.db.clone(), &[], key)?;
         // subtrees.insert(subtree_prefix.clone(), subtree_merk);
-        self.get_subtrees().insert_temp_tree_with_prefix(subtree_prefix, subtree_merk, transaction);
+        self.get_subtrees()
+            .insert_temp_tree_with_prefix(subtree_prefix, subtree_merk, transaction);
 
         let root_leaf_keys = match transaction {
             None => &mut self.root_leaf_keys,
@@ -124,13 +129,15 @@ impl GroveDb {
 
         // First, check if a subtree exists to create a new subtree under it
         let parent = self.get_subtrees().get(path, transaction)?;
-        self.get_subtrees().insert_temp_tree(path, parent, transaction);
+        self.get_subtrees()
+            .insert_temp_tree(path, parent, transaction);
 
         let (subtree_prefix, subtree_merk) = create_merk_with_prefix(self.db.clone(), path, &key)?;
 
         // Set tree value as a a subtree root hash
         let element = Element::Tree(subtree_merk.root_hash());
-        self.get_subtrees().insert_temp_tree_with_prefix(subtree_prefix, subtree_merk, transaction);
+        self.get_subtrees()
+            .insert_temp_tree_with_prefix(subtree_prefix, subtree_merk, transaction);
 
         // Save subtrees, to be removed
         // TODO: Remove this
@@ -150,7 +157,8 @@ impl GroveDb {
 
         // need to mark key as taken in the upper tree
         element.insert(&mut merk, key, transaction)?;
-        self.get_subtrees().insert_temp_tree(path, merk, transaction);
+        self.get_subtrees()
+            .insert_temp_tree(path, merk, transaction);
 
         self.propagate_changes(path, transaction)?;
 

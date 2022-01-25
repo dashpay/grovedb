@@ -5,7 +5,7 @@ mod subtrees;
 mod tests;
 mod transaction;
 
-use std::{collections::HashMap, path::Path, rc::Rc, cell::RefCell};
+use std::{cell::RefCell, collections::HashMap, path::Path, rc::Rc};
 
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
@@ -210,7 +210,8 @@ impl GroveDb {
             HashMap::new()
         };
 
-        let temp_subtrees: RefCell<HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>> = RefCell::new(HashMap::new());
+        let temp_subtrees: RefCell<HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>> =
+            RefCell::new(HashMap::new());
         let subtrees_view = Subtrees {
             root_leaf_keys: &root_leaf_keys,
             temp_subtrees: &temp_subtrees,
@@ -260,21 +261,21 @@ impl GroveDb {
     //
     //     let prefixes: Vec<Vec<u8>> = subtrees.keys().cloned().collect();
     //
-    //     // TODO: make StorageOrTransaction which will has the access to either storage
-    //     // or transaction
+    //     // TODO: make StorageOrTransaction which will has the access to either
+    // storage     // or transaction
     //     match db_transaction {
     //         None => {
     //             self.meta_storage.put_meta(
     //                 SUBTREES_SERIALIZED_KEY,
     //                 &bincode::serialize(&prefixes).map_err(|_| {
-    //                     Error::CorruptedData(String::from("unable to serialize prefixes"))
-    //                 })?,
+    //                     Error::CorruptedData(String::from("unable to serialize
+    // prefixes"))                 })?,
     //             )?;
     //             self.meta_storage.put_meta(
     //                 ROOT_LEAFS_SERIALIZED_KEY,
     //                 &bincode::serialize(&self.temp_root_leaf_keys).map_err(|_| {
-    //                     Error::CorruptedData(String::from("unable to serialize root leafs"))
-    //                 })?,
+    //                     Error::CorruptedData(String::from("unable to serialize
+    // root leafs"))                 })?,
     //             )?;
     //         }
     //         Some(tx) => {
@@ -282,14 +283,14 @@ impl GroveDb {
     //             transaction.put_meta(
     //                 SUBTREES_SERIALIZED_KEY,
     //                 &bincode::serialize(&prefixes).map_err(|_| {
-    //                     Error::CorruptedData(String::from("unable to serialize prefixes"))
-    //                 })?,
+    //                     Error::CorruptedData(String::from("unable to serialize
+    // prefixes"))                 })?,
     //             )?;
     //             transaction.put_meta(
     //                 ROOT_LEAFS_SERIALIZED_KEY,
     //                 &bincode::serialize(&self.root_leaf_keys).map_err(|_| {
-    //                     Error::CorruptedData(String::from("unable to serialize root leafs"))
-    //                 })?,
+    //                     Error::CorruptedData(String::from("unable to serialize
+    // root leafs"))                 })?,
     //             )?;
     //         }
     //     }
@@ -332,8 +333,8 @@ impl GroveDb {
         // // let merk = self
         // //     .get_subtrees()
         // //     .get(path, transaction)
-        // //     .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
-        // Return the raw iter of the merk
+        // //     .map_err(|_| Error::InvalidPath("no subtree found under that
+        // path"))?; Return the raw iter of the merk
         // Ok(Element::iterator(merk.raw_iter()))
     }
 
@@ -363,19 +364,20 @@ impl GroveDb {
             // non root leaf node
             let subtree = subtrees.get(path, transaction)?;
             let element = Element::Tree(subtree.root_hash());
-            self.get_subtrees().insert_temp_tree(path, subtree, transaction);
+            self.get_subtrees()
+                .insert_temp_tree(path, subtree, transaction);
 
             let (key, parent_path) = path.split_last().ok_or(Error::InvalidPath("empty path"))?;
             let mut upper_tree = subtrees.get(parent_path, transaction)?;
             element.insert(&mut upper_tree, key.to_vec(), transaction);
-            self.get_subtrees().insert_temp_tree(parent_path, upper_tree, transaction);
+            self.get_subtrees()
+                .insert_temp_tree(parent_path, upper_tree, transaction);
 
             path = parent_path;
         }
 
         // root leaf nodes
         if path.len() == 1 {
-
             let root_leaf_keys = match transaction {
                 None => &self.root_leaf_keys,
                 Some(_) => &self.temp_root_leaf_keys,

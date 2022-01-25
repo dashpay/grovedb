@@ -38,10 +38,12 @@ impl GroveDb {
                 //         let prefix = &Self::compress_subtree_key(path, None);
                 //         if self.temp_subtrees.borrow().contains_key(prefix) {
                 //             // get the merk out
-                //             merk = self.temp_subtrees.borrow_mut().remove(prefix).expect("confirmed it's in the hashmap");
-                //         } else {
+                //             merk =
+                // self.temp_subtrees.borrow_mut().remove(prefix).expect("confirmed it's in the
+                // hashmap");         } else {
                 //             // merk is not in the hash map get it without transaction
-                //             merk = self.get_subtrees().get_subtree_without_transaction(path)?;
+                //             merk =
+                // self.get_subtrees().get_subtree_without_transaction(path)?;
                 //         }
                 //     }
                 // }
@@ -57,7 +59,8 @@ impl GroveDb {
                 Element::delete(&mut merk, key.clone(), transaction)?;
 
                 // after deletion, if there is a transaction, add the merk back into the hashmap
-                self.get_subtrees().insert_temp_tree(path, merk, transaction);
+                self.get_subtrees()
+                    .insert_temp_tree(path, merk, transaction);
             }
 
             if let Element::Tree(_) = element {
@@ -77,14 +80,19 @@ impl GroveDb {
                     let prefix = Self::compress_subtree_key(&subtree_path_ref, None);
                     // Here we seem to get the subtree, then call clear on it
                     // Seems to only care about subtrees that are non transactional
-                    let subtree = self.get_subtrees().get_subtree_without_transaction(subtree_path_ref.as_slice());
-                    if subtree.is_ok(){
-                        subtree.expect("confirmed it's valid").clear(transaction).map_err(|e| {
-                            Error::CorruptedData(format!(
-                                "unable to cleanup tree from storage: {}",
-                                e
-                            ))
-                        })?;
+                    let subtree = self
+                        .get_subtrees()
+                        .get_subtree_without_transaction(subtree_path_ref.as_slice());
+                    if subtree.is_ok() {
+                        subtree
+                            .expect("confirmed it's valid")
+                            .clear(transaction)
+                            .map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "unable to cleanup tree from storage: {}",
+                                    e
+                                ))
+                            })?;
                     }
                 }
             }

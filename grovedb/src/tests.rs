@@ -1023,7 +1023,10 @@ fn test_subtree_pairs_iterator() {
     // let mut iter = db
     //     .elements_iterator(&[TEST_LEAF, b"subtree1"], None)
     //     .expect("cannot create iterator");
-    let merk = db.get_subtrees().get(&[TEST_LEAF, b"subtree1"], None).unwrap();
+    let merk = db
+        .get_subtrees()
+        .get(&[TEST_LEAF, b"subtree1"], None)
+        .unwrap();
     let mut iter = Element::iterator(merk.raw_iter());
     assert_eq!(iter.next().unwrap(), Some((b"key1".to_vec(), element)));
     assert_eq!(iter.next().unwrap(), Some((b"key2".to_vec(), element2)));
@@ -1222,7 +1225,8 @@ fn test_subtree_deletion() {
         db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3", None),
         Err(Error::InvalidPath(_))
     ));
-    // assert_eq!(db.subtrees.len(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF TEST_LEAF.key4 stay
+    // assert_eq!(db.subtrees.len(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF
+    // TEST_LEAF.key4 stay
     assert!(db.get(&[TEST_LEAF], b"key4", None).is_ok());
     assert_ne!(root_hash, db.root_tree.root().unwrap());
 }

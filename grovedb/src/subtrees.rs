@@ -1,5 +1,5 @@
 //! Module for retrieving subtrees
-use std::{collections::HashMap, rc::Rc, cell::RefCell};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use merk::Merk;
 use storage::{
@@ -17,8 +17,13 @@ pub struct Subtrees<'a> {
 }
 
 impl Subtrees<'_> {
-    pub fn insert_temp_tree(&self, path: &[&[u8]], merk: Merk<PrefixedRocksDbStorage>, transaction: Option<&OptimisticTransactionDBTransaction>) -> Option<Merk<PrefixedRocksDbStorage>> {
-        match transaction{
+    pub fn insert_temp_tree(
+        &self,
+        path: &[&[u8]],
+        merk: Merk<PrefixedRocksDbStorage>,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Option<Merk<PrefixedRocksDbStorage>> {
+        match transaction {
             None => None,
             Some(_) => {
                 let prefix = GroveDb::compress_subtree_key(path, None);
@@ -27,12 +32,15 @@ impl Subtrees<'_> {
         }
     }
 
-    pub fn insert_temp_tree_with_prefix(&self, prefix: Vec<u8>, merk: Merk<PrefixedRocksDbStorage>, transaction: Option<&OptimisticTransactionDBTransaction>) -> Option<Merk<PrefixedRocksDbStorage>> {
-        match transaction{
+    pub fn insert_temp_tree_with_prefix(
+        &self,
+        prefix: Vec<u8>,
+        merk: Merk<PrefixedRocksDbStorage>,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Option<Merk<PrefixedRocksDbStorage>> {
+        match transaction {
             None => None,
-            Some(_) => {
-                self.temp_subtrees.borrow_mut().insert(prefix, merk)
-            }
+            Some(_) => self.temp_subtrees.borrow_mut().insert(prefix, merk),
         }
     }
 
@@ -45,12 +53,16 @@ impl Subtrees<'_> {
         match transaction {
             None => {
                 merk = self.get_subtree_without_transaction(path)?;
-            },
+            }
             Some(_) => {
                 let prefix = &GroveDb::compress_subtree_key(path, None);
                 if self.temp_subtrees.borrow().contains_key(prefix) {
                     // get the merk out
-                    merk = self.temp_subtrees.borrow_mut().remove(prefix).expect("confirmed it's in the hashmap");
+                    merk = self
+                        .temp_subtrees
+                        .borrow_mut()
+                        .remove(prefix)
+                        .expect("confirmed it's in the hashmap");
                 } else {
                     // merk is not in the hash map get it without transaction
                     merk = self.get_subtree_without_transaction(path)?;
@@ -117,8 +129,8 @@ impl Subtrees<'_> {
     //         // // check if it was created before the transaction was started
     //         // let merk = self
     //         //     .get_subtree_without_transaction(path)
-    //         //     .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
-    //         // Ok(merk)
+    //         //     .map_err(|_| Error::InvalidPath("no subtree found under that
+    // path"))?;         // Ok(merk)
     //     }
     // }
 
