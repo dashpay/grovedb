@@ -26,7 +26,7 @@ impl GroveDb {
                 Element::delete(&mut merk, key.clone(), transaction)?;
 
                 // after deletion, if there is a transaction, add the merk back into the hashmap
-                if let Some(prefix) = prefix{
+                if let Some(prefix) = prefix {
                     self.get_subtrees()
                         .insert_temp_tree_with_prefix(prefix, merk, transaction);
                 } else {
@@ -45,21 +45,12 @@ impl GroveDb {
                     // TODO: eventually we need to do something about this nested slices
                     let subtree_path_ref: Vec<&[u8]> =
                         subtree_path.iter().map(|x| x.as_slice()).collect();
-                    let prefix = Self::compress_subtree_key(&subtree_path_ref, None);
-                    let subtree = self
+                    let mut subtree = self
                         .get_subtrees()
-                        .get_subtree_without_transaction(subtree_path_ref.as_slice());
-                    if subtree.is_ok() {
-                        subtree
-                            .expect("confirmed it's valid")
-                            .clear(transaction)
-                            .map_err(|e| {
-                                Error::CorruptedData(format!(
-                                    "unable to cleanup tree from storage: {}",
-                                    e
-                                ))
-                            })?;
-                    }
+                        .get_subtree_without_transaction(subtree_path_ref.as_slice())?;
+                    subtree.clear(transaction).map_err(|e| {
+                        Error::CorruptedData(format!("unable to cleanup tree from storage: {}", e))
+                    })?;
                 }
             }
             self.propagate_changes(path, transaction)?;
