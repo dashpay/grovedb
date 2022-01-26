@@ -122,15 +122,16 @@ jobs:
         id: set-libc
         with:
           script: |
-            let env = null;
+            let env = '';
 
             if (${{ matrix.compiler == 'musl' }}) {
               env = 'musl'
             }
 
-            core.info(`Set LIBC env to ${env}`);
+            core.info(`Set LIBC env to "${env}"`);
 
             return env;
+          result-encoding: string
 
 #      - name: Run tests
 #        run: npm test
