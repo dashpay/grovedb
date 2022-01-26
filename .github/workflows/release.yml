@@ -117,8 +117,6 @@ jobs:
             [build]
             target = "${{ steps.set-target.outputs.result }}"
 
-      - run: cat .cargo/config.toml
-
       - name: Set LIBC env
         uses: actions/github-script@v5
         id: set-libc
