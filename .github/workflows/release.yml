@@ -22,6 +22,7 @@ jobs:
             arch: x86_64
             compiler: gnu
             platform: unknown-linux
+# TODO: Enable build for arm64 linux gnu
 #          - os: ubuntu-latest
 #            arch: aarch64
 #            node_arch: arm64
@@ -37,6 +38,7 @@ jobs:
             platform: unknown-linux
             build_dependencies:
               - musl-tools
+# TODO: Enable build for arm64 linux musl
 #          - os: ubuntu-latest
 #            arch: aarch64
 #            node_arch: arm64
@@ -48,7 +50,7 @@ jobs:
 #              - clang
 #              - musl-tools
 #              - musl
-##              - musl:arm64
+#              - musl:arm64
           - os: macos-11
             arch: x86_64
             platform: apple-darwin
@@ -134,7 +136,8 @@ jobs:
           result-encoding: string
 
       - name: Run tests
-        run: arch -${{ matrix.arch }} npm test
+        run: npm test
+        if: ${{ matrix.os != '' && matrix.arch != 'aarch64' }} # TODO Run test on Apple M1
         env:
           LIBC: ${{ steps.set-libc.outputs.result }}
           ARCH: ${{ matrix.node_arch }} # Overwrite current arch with target one
