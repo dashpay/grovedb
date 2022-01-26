@@ -112,6 +112,7 @@ jobs:
           path: .cargo/config.toml
           write-mode: append
           contents: |
+            
             [build]
             target = "${{ steps.set-target.outputs.result }}"
             
