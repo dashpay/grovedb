@@ -76,11 +76,12 @@ jobs:
         with:
           script: |
             let target = '${{ matrix.arch }}-${{ matrix.platform }}';
+            
             if ('${{ matrix.compiler }}') {
               target += '-${{ matrix.compiler }}';
             }
-            core.info('Set target');
-            core.info(target);
+            
+            core.info(`Set target ${target}`);
             
             return target;
           result-encoding: string
@@ -117,11 +118,22 @@ jobs:
             target = "${{ steps.set-target.outputs.result }}"
 
       - run: cat .cargo/config.toml
-            
+
       - name: Set LIBC env
-        if: matrix.compiler != 'musl'
-        run: |
-            echo "LIBC=true" >> $GITHUB_ENV
+        uses: actions/github-script@v5
+        id: set-libc
+        with:
+          script: |
+            let env = null;
+
+            if (${{ matrix.compiler == 'musl' }}) {
+              env = 'musl'
+            }
+
+            core.info(`Set LIBC env to ${env}`);
+
+            return env;
+          result-encoding: string
 
 #      - name: Run tests
 #        run: npm test
