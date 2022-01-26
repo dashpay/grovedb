@@ -134,7 +134,7 @@ jobs:
           result-encoding: string
 
       - name: Run tests
-        run: npm test
+        run: arch -${{ matrix.arch }} npm test
         env:
           LIBC: ${{ steps.set-libc.outputs.result }}
           ARCH: ${{ matrix.node_arch }} # Overwrite current arch with target one
@@ -158,12 +158,12 @@ jobs:
     steps:
       - name: Checkout the repo
         uses: actions/checkout@v2
-#
+
 #      - name: Check package version matches tag
 #        uses: geritol/match-tag-to-package-version@0.2.0
 #        env:
 #          TAG_PREFIX: v
-#
+
       - name: Setup Node.JS
         uses: actions/setup-node@v2
         with:
@@ -178,9 +178,9 @@ jobs:
           name: prebuilds
           path: node-grove/prebuilds
 
-      - name: Check prebuilds
+      - name: List prebuilds
         run: ls -laR node-grove/prebuilds
-
+#
 #      - name: NPM Publish
 #        run: npm publish --access public
 #        env:
