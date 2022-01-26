@@ -1,11 +1,13 @@
 mod operations;
 mod subtree;
+mod subtrees;
 #[cfg(test)]
 mod tests;
 mod transaction;
 
-use std::{collections::HashMap, path::Path, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, path::Path, rc::Rc};
 
+use blake3;
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, Hasher, MerkleTree};
@@ -16,6 +18,7 @@ use storage::{
     Transaction,
 };
 pub use subtree::Element;
+use subtrees::Subtrees;
 
 // use crate::transaction::GroveDbTransaction;
 // pub use transaction::GroveDbTransaction;
@@ -105,7 +108,6 @@ pub struct Proof {
 pub struct GroveDb {
     root_tree: MerkleTree<Sha256>,
     root_leaf_keys: HashMap<Vec<u8>, usize>,
-    subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     meta_storage: PrefixedRocksDbStorage,
     db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
     // Locks the database for writes during the transaction
@@ -113,26 +115,24 @@ pub struct GroveDb {
     // Temp trees used for writes during transaction
     temp_root_tree: MerkleTree<Sha256>,
     temp_root_leaf_keys: HashMap<Vec<u8>, usize>,
-    temp_subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
+    temp_subtrees: RefCell<HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
 }
 
 impl GroveDb {
     pub fn new(
         root_tree: MerkleTree<Sha256>,
         root_leaf_keys: HashMap<Vec<u8>, usize>,
-        subtrees: HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
         meta_storage: PrefixedRocksDbStorage,
         db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
     ) -> Self {
         Self {
             root_tree,
             root_leaf_keys,
-            subtrees,
             meta_storage,
             db,
             temp_root_tree: MerkleTree::new(),
             temp_root_leaf_keys: HashMap::new(),
-            temp_subtrees: HashMap::new(),
+            temp_subtrees: RefCell::new(HashMap::new()),
             is_readonly: false,
         }
     }
@@ -148,21 +148,6 @@ impl GroveDb {
         );
         let meta_storage = PrefixedRocksDbStorage::new(db.clone(), Vec::new())?;
 
-        let mut subtrees = HashMap::new();
-        // TODO: owned `get` is not required for deserialization
-        if let Some(prefixes_serialized) = meta_storage.get_meta(SUBTREES_SERIALIZED_KEY)? {
-            let subtrees_prefixes: Vec<Vec<u8>> = bincode::deserialize(&prefixes_serialized)
-                .map_err(|_| {
-                    Error::CorruptedData(String::from("unable to deserialize prefixes"))
-                })?;
-            for prefix in subtrees_prefixes {
-                let subtree_merk =
-                    Merk::open(PrefixedRocksDbStorage::new(db.clone(), prefix.to_vec())?)
-                        .map_err(|e| Error::CorruptedData(e.to_string()))?;
-                subtrees.insert(prefix.to_vec(), subtree_merk);
-            }
-        }
-
         // TODO: owned `get` is not required for deserialization
         let root_leaf_keys: HashMap<Vec<u8>, usize> = if let Some(root_leaf_keys_serialized) =
             meta_storage.get_meta(ROOT_LEAFS_SERIALIZED_KEY)?
@@ -174,10 +159,17 @@ impl GroveDb {
             HashMap::new()
         };
 
+        let temp_subtrees: RefCell<HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>> =
+            RefCell::new(HashMap::new());
+        let subtrees_view = Subtrees {
+            root_leaf_keys: &root_leaf_keys,
+            temp_subtrees: &temp_subtrees,
+            storage: db.clone(),
+        };
+
         Ok(GroveDb::new(
-            Self::build_root_tree(&subtrees, &root_leaf_keys),
+            Self::build_root_tree(&subtrees_view, &root_leaf_keys, None),
             root_leaf_keys,
-            subtrees,
             meta_storage,
             db,
         ))
@@ -206,83 +198,48 @@ impl GroveDb {
         }
     }
 
-    fn store_subtrees_keys_data(
-        &self,
-        db_transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<(), Error> {
-        let subtrees = match db_transaction {
-            None => &self.subtrees,
-            Some(_) => &self.temp_subtrees,
-        };
-
-        let prefixes: Vec<Vec<u8>> = subtrees.keys().cloned().collect();
-
-        // TODO: make StorageOrTransaction which will has the access to either storage
-        // or transaction
-        match db_transaction {
-            None => {
-                self.meta_storage.put_meta(
-                    SUBTREES_SERIALIZED_KEY,
-                    &bincode::serialize(&prefixes).map_err(|_| {
-                        Error::CorruptedData(String::from("unable to serialize prefixes"))
-                    })?,
-                )?;
-                self.meta_storage.put_meta(
-                    ROOT_LEAFS_SERIALIZED_KEY,
-                    &bincode::serialize(&self.temp_root_leaf_keys).map_err(|_| {
-                        Error::CorruptedData(String::from("unable to serialize root leafs"))
-                    })?,
-                )?;
-            }
-            Some(tx) => {
-                let transaction = self.meta_storage.transaction(tx);
-                transaction.put_meta(
-                    SUBTREES_SERIALIZED_KEY,
-                    &bincode::serialize(&prefixes).map_err(|_| {
-                        Error::CorruptedData(String::from("unable to serialize prefixes"))
-                    })?,
-                )?;
-                transaction.put_meta(
-                    ROOT_LEAFS_SERIALIZED_KEY,
-                    &bincode::serialize(&self.root_leaf_keys).map_err(|_| {
-                        Error::CorruptedData(String::from("unable to serialize root leafs"))
-                    })?,
-                )?;
-            }
-        }
-
-        Ok(())
-    }
-
     fn build_root_tree(
-        subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
+        subtrees: &Subtrees,
         root_leaf_keys: &HashMap<Vec<u8>, usize>,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> MerkleTree<Sha256> {
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
         for (subtree_path, root_leaf_idx) in root_leaf_keys {
-            let subtree_merk = subtrees
-                .get(subtree_path)
+            let (subtree_merk, prefix) = subtrees
+                .get(&[subtree_path.as_slice()], transaction)
                 .expect("`root_leaf_keys` must be in sync with `subtrees`");
             leaf_hashes[*root_leaf_idx] = subtree_merk.root_hash();
+            if let Some(prefix) = prefix {
+                subtrees.insert_temp_tree_with_prefix(prefix, subtree_merk, transaction);
+            } else {
+                subtrees.insert_temp_tree(&[subtree_path.as_slice()], subtree_merk, transaction);
+            }
         }
         MerkleTree::<Sha256>::from_leaves(&leaf_hashes)
     }
 
-    pub fn elements_iterator(
-        &self,
-        path: &[&[u8]],
-        transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<subtree::ElementsIterator, Error> {
-        let subtrees = match transaction {
-            None => &self.subtrees,
-            Some(_) => &self.temp_subtrees,
-        };
-
-        let merk = subtrees
-            .get(&Self::compress_subtree_key(path, None))
-            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-        Ok(Element::iterator(merk.raw_iter()))
-    }
+    // pub fn elements_iterator(
+    //     &self,
+    //     path: &[&[u8]],
+    //     transaction: Option<&OptimisticTransactionDBTransaction>,
+    // ) -> Result<subtree::ElementsIterator, Error> {
+    //     // Get the correct subtrees instance
+    //     // let subtrees = match transaction {
+    //     //     None => &self.subtrees,
+    //     //     Some(_) => &self.temp_subtrees,
+    //     // };
+    //     todo!()
+    //     // Get the merk at the current path
+    //     // let merk = self.get_subtrees()
+    //     //     .get(path, transaction)
+    //     //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+    //     // // let merk = self
+    //     // //     .get_subtrees()
+    //     // //     .get(path, transaction)
+    //     // //     .map_err(|_| Error::InvalidPath("no subtree found under that
+    //     // path"))?; Return the raw iter of the merk
+    //     // Ok(Element::iterator(merk.raw_iter()))
+    // }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
     fn propagate_changes<'a: 'b, 'b>(
@@ -290,43 +247,59 @@ impl GroveDb {
         path: &[&[u8]],
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
-        let subtrees = match transaction {
-            None => &mut self.subtrees,
-            Some(_) => &mut self.temp_subtrees,
-        };
+        let subtrees = self.get_subtrees();
 
-        let root_leaf_keys = match transaction {
-            None => &mut self.root_leaf_keys,
-            Some(_) => &mut self.temp_root_leaf_keys,
-        };
+        let mut path = path;
 
-        let mut split_path = path.split_last();
         // Go up until only one element in path, which means a key of a root tree
-        while let Some((key, path_slice)) = split_path {
-            if path_slice.is_empty() {
-                // Hit the root tree
-                match transaction {
-                    None => self.root_tree = Self::build_root_tree(subtrees, root_leaf_keys),
-                    Some(_) => {
-                        self.temp_root_tree = Self::build_root_tree(subtrees, root_leaf_keys)
-                    }
-                };
-                break;
+        while path.len() > 1 {
+            // non root leaf node
+            let (subtree, prefix) = subtrees.get(path, transaction)?;
+            let element = Element::Tree(subtree.root_hash());
+            if let Some(prefix) = prefix {
+                self.get_subtrees()
+                    .insert_temp_tree_with_prefix(prefix, subtree, transaction);
             } else {
-                let compressed_path_upper_tree = Self::compress_subtree_key(path_slice, None);
-                let compressed_path_subtree = Self::compress_subtree_key(path_slice, Some(key));
-                let subtree = subtrees
-                    .get(&compressed_path_subtree)
-                    .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                let element = Element::Tree(subtree.root_hash());
-                let upper_tree = subtrees
-                    .get_mut(&compressed_path_upper_tree)
-                    .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                element.insert(upper_tree, key.to_vec(), transaction)?;
-                split_path = path_slice.split_last();
+                self.get_subtrees()
+                    .insert_temp_tree(path, subtree, transaction);
+            }
+
+            let (key, parent_path) = path.split_last().ok_or(Error::InvalidPath("empty path"))?;
+            let (mut upper_tree, prefix) = subtrees.get(parent_path, transaction)?;
+            element.insert(&mut upper_tree, key.to_vec(), transaction);
+            if let Some(prefix) = prefix {
+                self.get_subtrees()
+                    .insert_temp_tree(parent_path, upper_tree, transaction);
+            } else {
+                self.get_subtrees()
+                    .insert_temp_tree(path, upper_tree, transaction);
+            }
+
+            path = parent_path;
+        }
+
+        // root leaf nodes
+        if path.len() <= 1 {
+            let root_leaf_keys = match transaction {
+                None => &self.root_leaf_keys,
+                Some(_) => &self.temp_root_leaf_keys,
+            };
+            let root_tree = GroveDb::build_root_tree(&subtrees, root_leaf_keys, transaction);
+            match transaction {
+                None => self.root_tree = root_tree,
+                Some(_) => self.temp_root_tree = root_tree,
             }
         }
+
         Ok(())
+    }
+
+    fn get_subtrees(&self) -> Subtrees {
+        Subtrees {
+            root_leaf_keys: &self.root_leaf_keys,
+            temp_subtrees: &self.temp_subtrees,
+            storage: self.storage(),
+        }
     }
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
@@ -350,7 +323,7 @@ impl GroveDb {
                 acc.extend(p.len().to_ne_bytes());
                 acc
             });
-        res = Sha256::hash(&res).to_vec();
+        res = blake3::hash(&res).as_bytes().to_vec();
         res
     }
 
@@ -420,7 +393,6 @@ impl GroveDb {
         // Cloning all the trees to maintain original state before the transaction
         self.temp_root_tree = self.root_tree.clone();
         self.temp_root_leaf_keys = self.root_leaf_keys.clone();
-        self.temp_subtrees = self.subtrees.clone();
 
         Ok(())
     }
@@ -443,23 +415,12 @@ impl GroveDb {
         //  code can be reworked to account for that
         self.root_tree = self.temp_root_tree.clone();
         self.root_leaf_keys = self.temp_root_leaf_keys.drain().collect();
-        self.subtrees = self.temp_subtrees.drain().collect();
 
         self.cleanup_transactional_data();
 
         Ok(db_transaction
             .commit()
             .map_err(PrefixedRocksDbStorageError::RocksDbError)?)
-    }
-
-    pub fn get_subtrees_for_transaction(
-        &mut self,
-        transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>> {
-        match transaction {
-            None => &self.subtrees,
-            Some(_) => &self.temp_subtrees,
-        }
     }
 
     /// Rollbacks previously started db transaction to initial state.
@@ -472,7 +433,7 @@ impl GroveDb {
         // Cloning all the trees to maintain to rollback transactional changes
         self.temp_root_tree = self.root_tree.clone();
         self.temp_root_leaf_keys = self.root_leaf_keys.clone();
-        self.temp_subtrees = self.subtrees.clone();
+        self.temp_subtrees = RefCell::new(HashMap::new());
 
         Ok(db_transaction
             .rollback()
@@ -500,6 +461,6 @@ impl GroveDb {
         // Free transactional data
         self.temp_root_tree = MerkleTree::new();
         self.temp_root_leaf_keys = HashMap::new();
-        self.temp_subtrees = HashMap::new();
+        self.temp_subtrees = RefCell::new(HashMap::new());
     }
 }

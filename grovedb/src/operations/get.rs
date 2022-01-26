@@ -1,9 +1,16 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+    rc::Rc,
+};
 
 use merk::Merk;
-use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage};
+use storage::{
+    rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage},
+    RawIterator,
+};
 
-use crate::{Element, Error, GroveDb, PathQuery};
+use crate::{Element, Error, GroveDb, PathQuery, Subtrees};
 
 /// Limit of possible indirections
 pub(crate) const MAX_REFERENCE_HOPS: usize = 10;
@@ -66,15 +73,33 @@ impl GroveDb {
         key: &[u8],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Element, Error> {
-        let subtrees = match transaction {
-            None => &self.subtrees,
-            Some(_) => &self.temp_subtrees,
-        };
+        // If path is empty, then we need to combine the provided key and path
+        // then use this to get merk.
+        let merk_result;
+        if path.is_empty() {
+            merk_result = self.get_subtrees().get(&[key], transaction)?;
+        } else {
+            merk_result = self.get_subtrees().get(path, transaction)?;
+        }
 
-        let merk = subtrees
-            .get(&Self::compress_subtree_key(path, None))
-            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-        Element::get(merk, key)
+        let (merk, prefix) = merk_result;
+
+        let elem;
+        if path.is_empty() {
+            elem = Ok(Element::Tree(merk.root_hash()));
+        } else {
+            elem = Element::get(&merk, key);
+        }
+
+        if let Some(prefix) = prefix {
+            self.get_subtrees()
+                .insert_temp_tree_with_prefix(prefix, merk, transaction);
+        } else {
+            self.get_subtrees()
+                .insert_temp_tree(path, merk, transaction);
+        }
+
+        elem
     }
 
     pub fn get_path_queries(
@@ -146,26 +171,32 @@ impl GroveDb {
         path_query: &PathQuery,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(Vec<Element>, u16), Error> {
-        let subtrees = match transaction {
-            None => &self.subtrees,
-            Some(_) => &self.temp_subtrees,
-        };
-        self.get_path_query_on_trees_raw(path_query, subtrees)
+        let subtrees = self.get_subtrees();
+        self.get_path_query_on_trees_raw(path_query, subtrees, transaction)
     }
 
     fn get_path_query_on_trees_raw(
         &self,
         path_query: &PathQuery,
-        subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
+        subtrees: Subtrees,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+        // subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     ) -> Result<(Vec<Element>, u16), Error> {
         let path_slices = path_query
             .path
             .iter()
             .map(|x| x.as_slice())
             .collect::<Vec<_>>();
-        let merk = subtrees
-            .get(&Self::compress_subtree_key(path_slices.as_slice(), None))
-            .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-        Element::get_path_query(merk, path_query, Some(subtrees))
+        let (merk, prefix) = subtrees.get(path_slices.as_slice(), transaction)?;
+
+        let elem = Element::get_path_query(&merk, path_query, Some(&subtrees));
+
+        if let Some(prefix) = prefix {
+            subtrees.insert_temp_tree_with_prefix(prefix, merk, transaction);
+        } else {
+            subtrees.insert_temp_tree(path_slices.as_slice(), merk, transaction);
+        }
+
+        elem
     }
 }
