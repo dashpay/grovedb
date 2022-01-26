@@ -1,7 +1,7 @@
 //! Module for subtrees handling.
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Sub};
 
 use merk::{
     proofs::{query::QueryItem, Query},
@@ -17,7 +17,7 @@ use storage::{
     RawIterator, Storage, Store,
 };
 
-use crate::{Error, GroveDb, Merk, PathQuery, SizedQuery};
+use crate::{Error, GroveDb, Merk, PathQuery, SizedQuery, Subtrees};
 
 /// Variants of GroveDB stored entities
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -68,7 +68,7 @@ impl Element {
     pub fn get_query(
         merk: &Merk<PrefixedRocksDbStorage>,
         query: &Query,
-        subtrees_option: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        subtrees_option: Option<&Subtrees>,
     ) -> Result<Vec<Element>, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
         let (elements, _) = Element::get_sized_query(merk, &sized_query, subtrees_option)?;
@@ -76,7 +76,8 @@ impl Element {
     }
 
     fn basic_push(
-        _subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        // _subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        _subtree: Option<&Subtrees>,
         _key: Option<&[u8]>,
         element: Element,
         _path: Option<&[&[u8]]>,
@@ -99,7 +100,8 @@ impl Element {
     }
 
     fn path_query_push(
-        subtrees_option: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        // subtrees_option: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        subtrees_option: Option<&Subtrees>,
         key: Option<&[u8]>,
         element: Element,
         path: Option<&[&[u8]]>,
@@ -135,13 +137,20 @@ impl Element {
                     if let Some(subquery_key) = &subquery_key_option {
                         path_vec.push(subquery_key.as_slice());
                     }
-                    let inner_merk = subtrees
-                        .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
-                        .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                    let (inner_merk, prefix) = subtrees
+                        .get(path_vec.as_slice(), None)
+                        .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
                     let inner_query = SizedQuery::new(subquery, *limit, *offset);
                     let inner_path_query = PathQuery::new(path_vec.as_slice(), inner_query);
                     let (mut sub_elements, skipped) =
-                        Element::get_path_query(inner_merk, &inner_path_query, subtrees_option)?;
+                        Element::get_path_query(&inner_merk, &inner_path_query, subtrees_option)?;
+
+                    if let Some(prefix) = prefix {
+                        subtrees.insert_temp_tree_with_prefix(prefix, inner_merk, None);
+                    } else {
+                        subtrees.insert_temp_tree(path_vec.as_slice(), inner_merk, None);
+                    }
+
                     if let Some(limit) = limit {
                         *limit = *limit - sub_elements.len() as u16;
                     }
@@ -150,11 +159,11 @@ impl Element {
                     }
                     results.append(&mut sub_elements);
                 } else if let Some(subquery_key) = subquery_key_option {
-                    let inner_merk = subtrees
-                        .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
-                        .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                    let (inner_merk, prefix) = subtrees
+                        .get(path_vec.as_slice(), None)
+                        .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
                     if offset.is_none() || offset.is_some() && offset.unwrap() == 0 {
-                        results.push(Element::get(inner_merk, subquery_key.as_slice())?);
+                        results.push(Element::get(&inner_merk, subquery_key.as_slice())?);
                         if limit.is_some() {
                             *limit = Some(limit.unwrap() - 1);
                         }
@@ -162,6 +171,11 @@ impl Element {
                         if offset.is_some() {
                             *offset = Some(offset.unwrap() - 1);
                         }
+                    }
+                    if let Some(prefix) = prefix {
+                        subtrees.insert_temp_tree_with_prefix(prefix, inner_merk, None);
+                    } else {
+                        subtrees.insert_temp_tree(path_vec.as_slice(), inner_merk, None);
                     }
                 } else {
                     return Err(Error::InvalidPath(
@@ -188,9 +202,10 @@ impl Element {
         merk: &Merk<PrefixedRocksDbStorage>,
         sized_query: &SizedQuery,
         path: Option<&[&[u8]]>,
-        subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        subtrees: Option<&Subtrees>,
         add_element_function: fn(
-            subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+            // subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+            subtrees: Option<&Subtrees>,
             key: Option<&[u8]>,
             element: Element,
             path: Option<&[&[u8]]>,
@@ -278,7 +293,8 @@ impl Element {
     pub fn get_path_query(
         merk: &Merk<PrefixedRocksDbStorage>,
         path_query: &PathQuery,
-        subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        // subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        subtrees: Option<&Subtrees>,
     ) -> Result<(Vec<Element>, u16), Error> {
         Element::get_query_apply_function(
             merk,
@@ -293,7 +309,7 @@ impl Element {
     pub fn get_sized_query(
         merk: &Merk<PrefixedRocksDbStorage>,
         sized_query: &SizedQuery,
-        subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        subtrees: Option<&Subtrees>,
     ) -> Result<(Vec<Element>, u16), Error> {
         Element::get_query_apply_function(
             merk,

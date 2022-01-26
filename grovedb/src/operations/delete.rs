@@ -22,15 +22,17 @@ impl GroveDb {
         } else {
             let element = self.get_raw(path, &key, transaction)?;
             {
-                let subtrees = match transaction {
-                    None => &mut self.subtrees,
-                    Some(_) => &mut self.temp_subtrees,
-                };
+                let (mut merk, prefix) = self.get_subtrees().get(path, transaction)?;
+                Element::delete(&mut merk, key.clone(), transaction)?;
 
-                let mut merk = subtrees
-                    .get_mut(&Self::compress_subtree_key(path, None))
-                    .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                Element::delete(merk, key.clone(), transaction)?;
+                // after deletion, if there is a transaction, add the merk back into the hashmap
+                if let Some(prefix) = prefix {
+                    self.get_subtrees()
+                        .insert_temp_tree_with_prefix(prefix, merk, transaction);
+                } else {
+                    self.get_subtrees()
+                        .insert_temp_tree(path, merk, transaction);
+                }
             }
 
             if let Element::Tree(_) = element {
@@ -38,24 +40,17 @@ impl GroveDb {
                 let mut concat_path: Vec<Vec<u8>> = path.iter().map(|x| x.to_vec()).collect();
                 concat_path.push(key);
                 let subtrees_paths = self.find_subtrees(concat_path, transaction)?;
-                let subtrees = match transaction {
-                    None => &mut self.subtrees,
-                    Some(_) => &mut self.temp_subtrees,
-                };
 
                 for subtree_path in subtrees_paths {
                     // TODO: eventually we need to do something about this nested slices
                     let subtree_path_ref: Vec<&[u8]> =
                         subtree_path.iter().map(|x| x.as_slice()).collect();
-                    let prefix = Self::compress_subtree_key(&subtree_path_ref, None);
-                    if let Some(mut subtree) = subtrees.remove(&prefix) {
-                        subtree.clear(transaction).map_err(|e| {
-                            Error::CorruptedData(format!(
-                                "unable to cleanup tree from storage: {}",
-                                e
-                            ))
-                        })?;
-                    }
+                    let mut subtree = self
+                        .get_subtrees()
+                        .get_subtree_without_transaction(subtree_path_ref.as_slice())?;
+                    subtree.clear(transaction).map_err(|e| {
+                        Error::CorruptedData(format!("unable to cleanup tree from storage: {}", e))
+                    })?;
                 }
             }
             self.propagate_changes(path, transaction)?;
@@ -78,7 +73,10 @@ impl GroveDb {
         while let Some(q) = queue.pop() {
             // TODO: eventually we need to do something about this nested slices
             let q_ref: Vec<&[u8]> = q.iter().map(|x| x.as_slice()).collect();
-            let mut iter = self.elements_iterator(&q_ref, transaction)?;
+            // Get the correct subtree with q_ref as path
+            let (merk, _) = self.get_subtrees().get(&q_ref, transaction)?;
+            let mut iter = Element::iterator(merk.raw_iter());
+            // let mut iter = self.elements_iterator(&q_ref, transaction)?;
             while let Some((key, value)) = iter.next()? {
                 match value {
                     Element::Tree(_) => {
