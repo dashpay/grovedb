@@ -110,16 +110,26 @@ jobs:
         uses: DamianReeves/write-file-action@v1.0
         with:
           path: .cargo/config.toml
+          write-mode: append
           contents: |
             [build]
             target = "${{ steps.set-target.outputs.result }}"
             
-            [target.aarch64-unknown-linux-musl]
-            linker = "aarch64-linux-gnu-gcc"
-            rustflags = [ "-C", "target-feature=+crt-static", "-C", "link-arg=-lgcc" ]
-            
-            [target.x86_64-unknown-linux-musl]
-            rustflags = [ "-C", "target-feature=-crt-static" ]
+      - name: Set LIBC env
+        uses: actions/github-script@v5
+        id: set-libc
+        with:
+          script: |
+            let env = null;
+
+            if (${{ matrix.compiler == 'musl' }}) {
+              env = 'musl'
+            }
+
+            core.info(`Set LIBC env to ${env}`);
+
+            return env;
+          result-encoding: string
 
 #      - name: Run tests
 #        run: npm test
@@ -130,7 +140,7 @@ jobs:
       - name: Build
         run: npm run build:release
         env:
-          LIBC: ${{ matrix.compiler == 'musl' }}
+          LIBC: ${{ steps.set-libc.outputs.result }}
           ARCH: ${{ matrix.node_arch }} # Overwrite current arch with target one
 
       - name: Upload prebuild artifacts
