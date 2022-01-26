@@ -484,7 +484,7 @@ impl GroveDb {
     /// [`GroveDb::start_transaction`]
     pub fn abort_transaction(
         &mut self,
-        db_transaction: OptimisticTransactionDBTransaction,
+        _db_transaction: OptimisticTransactionDBTransaction,
     ) -> Result<(), Error> {
         // Cloning all the trees to maintain to rollback transactional changes
         self.cleanup_transactional_data();
