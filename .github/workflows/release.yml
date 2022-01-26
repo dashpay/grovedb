@@ -77,7 +77,7 @@ jobs:
           script: |
             let target = '${{ matrix.arch }}-${{ matrix.platform }}';
             if ('${{ matrix.compiler }}') {
-              target += `-${{ matrix.compiler }}`;
+              target += '-${{ matrix.compiler }}';
             }
             
             core.info(`Set target ${target}`);
@@ -115,6 +115,8 @@ jobs:
             
             [build]
             target = "${{ steps.set-target.outputs.result }}"
+
+      - run: cat .cargo/config.toml
             
       - name: Set LIBC env
         uses: actions/github-script@v5
