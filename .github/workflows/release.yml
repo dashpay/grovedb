@@ -2,13 +2,9 @@ name: Release
 
 on:
   workflow_dispatch:
-  pull_request:
-    branches:
-      - master
-
-#  release:
-#    types:
-#      - published
+  release:
+    types:
+      - published
 
 jobs:
   build:
@@ -162,10 +158,10 @@ jobs:
       - name: Checkout the repo
         uses: actions/checkout@v2
 
-#      - name: Check package version matches tag
-#        uses: geritol/match-tag-to-package-version@0.2.0
-#        env:
-#          TAG_PREFIX: v
+      - name: Check package version matches tag
+        uses: geritol/match-tag-to-package-version@0.2.0
+        env:
+          TAG_PREFIX: v
 
       - name: Setup Node.JS
         uses: actions/setup-node@v2
@@ -183,8 +179,8 @@ jobs:
 
       - name: List prebuilds
         run: ls -laR node-grove/prebuilds
-#
-#      - name: NPM Publish
-#        run: npm publish --access public
-#        env:
-#          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: NPM Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
