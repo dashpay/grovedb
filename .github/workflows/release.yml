@@ -133,7 +133,6 @@ jobs:
             core.info(`Set LIBC env to ${env}`);
 
             return env;
-          result-encoding: string
 
 #      - name: Run tests
 #        run: npm test
