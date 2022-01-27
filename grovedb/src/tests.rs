@@ -2246,7 +2246,7 @@ fn test_get_range_query_with_limit_and_offset() {
     assert_eq!(elements[0], first_value);
 
     let mut last_value = 1993_u32.to_be_bytes().to_vec();
-    last_value.append(&mut 130_u32.to_be_bytes().to_vec());
+    last_value.append(&mut 119_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 
     query.set_subquery_key(subquery_key.clone());
