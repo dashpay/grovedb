@@ -211,14 +211,14 @@ impl GroveDb {
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
-    fn propagate_changes<'a: 'b, 'b, P>(
+    fn propagate_changes<'a: 'b, 'b, 'c, P, K>(
         &'a mut self,
         path: P,
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error>
     where
-        P: IntoIterator,
-        <P as IntoIterator>::Item: AsRef<[u8]>,
+        P: IntoIterator<Item = &'c K>,
+        K: AsRef<[u8]> + 'c,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let subtrees = self.get_subtrees();
@@ -273,20 +273,23 @@ impl GroveDb {
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
-    fn compress_subtree_key<P, K>(path: P, key: Option<K>) -> Vec<u8>
+    fn compress_subtree_key<'a, P, K>(path: P, key: Option<K>) -> Vec<u8>
     where
-        P: IntoIterator<Item = K>,
-        K: AsRef<[u8]>,
+        P: IntoIterator<Item = &'a K>,
+        K: AsRef<[u8]> + 'a,
     {
-        let segments_iter = path.into_iter().chain(key.into_iter());
+        let segments_iter = path
+            .into_iter()
+            .map(|x| x.as_ref())
+            .chain(key.as_ref().into_iter().map(|x| x.as_ref()));
         let mut segments_count: usize = 0;
         let mut res = Vec::new();
         let mut lengthes = Vec::new();
 
         for s in segments_iter {
             segments_count += 1;
-            res.extend_from_slice(s.as_ref());
-            lengthes.extend(s.as_ref().len().to_ne_bytes());
+            res.extend_from_slice(s);
+            lengthes.extend(s.len().to_ne_bytes());
         }
 
         res.extend(segments_count.to_ne_bytes());
