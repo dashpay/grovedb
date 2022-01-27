@@ -25,7 +25,7 @@ use subtrees::Subtrees;
 
 /// A key to store serialized data about subtree prefixes to restore HADS
 /// structure
-const SUBTREES_SERIALIZED_KEY: &[u8] = b"subtreesSerialized";
+// const SUBTREES_SERIALIZED_KEY: &[u8] = b"subtreesSerialized";
 /// A key to store serialized data about root tree leafs keys and order
 const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
 
