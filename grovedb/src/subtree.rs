@@ -140,7 +140,7 @@ impl Element {
                     }
 
                     let (inner_merk, prefix) = subtrees
-                        .get(path_vec.as_slice(), None)
+                        .get(path_vec.iter().map(|x| *x), None)
                         .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
 
                     let inner_query = SizedQuery::new(subquery, *limit, *offset);
@@ -153,7 +153,7 @@ impl Element {
                     if let Some(prefix) = prefix {
                         subtrees.insert_temp_tree_with_prefix(prefix, inner_merk, None);
                     } else {
-                        subtrees.insert_temp_tree(path_vec.as_slice(), inner_merk, None);
+                        subtrees.insert_temp_tree(path_vec.iter().map(|x| *x), inner_merk, None);
                     }
 
                     if let Some(limit) = limit {
@@ -165,7 +165,7 @@ impl Element {
                     results.append(&mut sub_elements);
                 } else if let Some(subquery_key) = subquery_key_option {
                     let (inner_merk, prefix) = subtrees
-                        .get(path_vec.as_slice(), None)
+                        .get(path_vec.iter().map(|x| *x), None)
                         .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
                     if offset.is_none() || offset.is_some() && offset.unwrap() == 0 {
                         results.push(Element::get(&inner_merk, subquery_key.as_slice())?);
@@ -180,7 +180,7 @@ impl Element {
                     if let Some(prefix) = prefix {
                         subtrees.insert_temp_tree_with_prefix(prefix, inner_merk, None);
                     } else {
-                        subtrees.insert_temp_tree(path_vec.as_slice(), inner_merk, None);
+                        subtrees.insert_temp_tree(path_vec.iter().map(|x| *x), inner_merk, None);
                     }
                 } else {
                     return Err(Error::InvalidPath(
@@ -355,7 +355,7 @@ impl Element {
 
     pub fn iterator(mut raw_iter: RawPrefixedTransactionalIterator) -> ElementsIterator {
         raw_iter.seek_to_first();
-        ElementsIterator { raw_iter }
+        ElementsIterator::new(raw_iter)
     }
 }
 
@@ -371,13 +371,17 @@ pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
 }
 
 impl<'a> ElementsIterator<'a> {
+    pub fn new(raw_iter: RawPrefixedTransactionalIterator<'a>) -> Self {
+        ElementsIterator { raw_iter }
+    }
+
     pub fn next(&mut self) -> Result<Option<(Vec<u8>, Element)>, Error> {
         Ok(if self.raw_iter.valid() {
             if let Some((key, value)) = self.raw_iter.key().zip(self.raw_iter.value()) {
                 let element = raw_decode(value)?;
-                let key = key.to_vec();
+                let key_vec = key.to_vec();
                 self.raw_iter.next();
-                Some((key, element))
+                Some((key_vec, element))
             } else {
                 None
             }

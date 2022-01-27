@@ -17,15 +17,14 @@ pub struct Subtrees<'a> {
 }
 
 impl Subtrees<'_> {
-    pub fn insert_temp_tree<'a, P, K>(
+    pub fn insert_temp_tree<'a, P>(
         &self,
         path: P,
         merk: Merk<PrefixedRocksDbStorage>,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Option<Merk<PrefixedRocksDbStorage>>
     where
-        P: IntoIterator<Item = &'a K>,
-        K: AsRef<[u8]> + 'a,
+        P: IntoIterator<Item = &'a [u8]>,
     {
         match transaction {
             None => None,
@@ -48,15 +47,14 @@ impl Subtrees<'_> {
         }
     }
 
-    pub fn get<'a, P, K>(
+    pub fn get<'a, P>(
         &self,
         path: P,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(Merk<PrefixedRocksDbStorage>, Option<Vec<u8>>), Error>
     where
-        P: IntoIterator<Item = &'a K>,
+        P: IntoIterator<Item = &'a [u8]>,
         <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
-        K: AsRef<[u8]> + 'a,
     {
         let merk;
         let mut prefix: Option<Vec<u8>> = None;
@@ -84,14 +82,13 @@ impl Subtrees<'_> {
         Ok((merk, prefix))
     }
 
-    pub fn get_subtree_without_transaction<'a, P, K>(
+    pub fn get_subtree_without_transaction<'a, P>(
         &self,
         path: P,
     ) -> Result<Merk<PrefixedRocksDbStorage>, Error>
     where
-        P: IntoIterator<Item = &'a K>,
+        P: IntoIterator<Item = &'a [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + Clone,
-        K: AsRef<[u8]> + 'a,
     {
         let mut path_iter = path.into_iter();
         let (subtree, has_keys) = self.get_subtree_with_key_info(path_iter.clone(), None)?;
@@ -133,14 +130,13 @@ impl Subtrees<'_> {
         }
     }
 
-    fn get_subtree_with_key_info<'a, P, K>(
+    fn get_subtree_with_key_info<'a, P>(
         &self,
         path: P,
-        key: Option<K>,
+        key: Option<&'a [u8]>,
     ) -> Result<(Merk<PrefixedRocksDbStorage>, bool), Error>
     where
-        P: IntoIterator<Item = &'a K>,
-        K: AsRef<[u8]> + 'a,
+        P: IntoIterator<Item = &'a [u8]>,
     {
         let subtree_prefix = GroveDb::compress_subtree_key(path, key);
         let merk = Merk::open(PrefixedRocksDbStorage::new(
