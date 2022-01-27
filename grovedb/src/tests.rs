@@ -2097,7 +2097,7 @@ fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
 
     let path_query = PathQuery::new_unsized(path, query.clone());
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
