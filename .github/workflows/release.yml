@@ -180,7 +180,7 @@ jobs:
       - name: List prebuilds
         run: ls -laR node-grove/prebuilds
 
-      - name: NPM Publish
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish NPM package
+        uses: JS-DevTools/npm-publish@v1
+        with:
+          token: ${{ secrets.NPM_TOKEN }}
