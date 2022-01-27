@@ -17,12 +17,16 @@ pub struct Subtrees<'a> {
 }
 
 impl Subtrees<'_> {
-    pub fn insert_temp_tree(
+    pub fn insert_temp_tree<P>(
         &self,
-        path: &[&[u8]],
+        path: P,
         merk: Merk<PrefixedRocksDbStorage>,
         transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Option<Merk<PrefixedRocksDbStorage>> {
+    ) -> Option<Merk<PrefixedRocksDbStorage>>
+    where
+        P: IntoIterator,
+        <P as IntoIterator>::Item: AsRef<[u8]>,
+    {
         match transaction {
             None => None,
             Some(_) => {
@@ -44,11 +48,16 @@ impl Subtrees<'_> {
         }
     }
 
-    pub fn get(
+    pub fn get<P>(
         &self,
-        path: &[&[u8]],
+        path: P,
         transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<(Merk<PrefixedRocksDbStorage>, Option<Vec<u8>>), Error> {
+    ) -> Result<(Merk<PrefixedRocksDbStorage>, Option<Vec<u8>>), Error>
+    where
+        P: IntoIterator,
+        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
+        <P as IntoIterator>::Item: AsRef<[u8]>,
+    {
         let merk;
         let mut prefix: Option<Vec<u8>> = None;
         match transaction {
@@ -56,7 +65,8 @@ impl Subtrees<'_> {
                 merk = self.get_subtree_without_transaction(path)?;
             }
             Some(_) => {
-                let tree_prefix = GroveDb::compress_subtree_key(path, None);
+                let iter = path.into_iter();
+                let tree_prefix = GroveDb::compress_subtree_key(iter.clone(), None);
                 prefix = Some(tree_prefix.clone());
                 if self.temp_subtrees.borrow().contains_key(&tree_prefix) {
                     // get the merk out
@@ -67,29 +77,37 @@ impl Subtrees<'_> {
                         .expect("confirmed it's in the hashmap");
                 } else {
                     // merk is not in the hash map get it without transaction
-                    merk = self.get_subtree_without_transaction(path)?;
+                    merk = self.get_subtree_without_transaction(iter)?;
                 }
             }
         }
         Ok((merk, prefix))
     }
 
-    pub fn get_subtree_without_transaction(
+    pub fn get_subtree_without_transaction<P>(
         &self,
-        path: &[&[u8]],
-    ) -> Result<Merk<PrefixedRocksDbStorage>, Error> {
-        let (subtree, has_keys) = self.get_subtree_with_key_info(path, None)?;
+        path: P,
+    ) -> Result<Merk<PrefixedRocksDbStorage>, Error>
+    where
+        P: IntoIterator,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + Clone,
+        <P as IntoIterator>::Item: AsRef<[u8]>,
+    {
+        let mut path_iter = path.into_iter();
+        let (subtree, has_keys) = self.get_subtree_with_key_info(path_iter.clone(), None)?;
         if !has_keys {
             // if the subtree has no keys, it's either empty or invalid
             // we can confirm that it's an empty tree by checking if it was inserted into
             // the parent tree
-            let (key, parent_path) = path.split_last().ok_or(Error::InvalidPath("empty path"))?;
+            let key = path_iter
+                .next_back()
+                .ok_or(Error::InvalidPath("empty path"))?;
 
             // if parent path is empty, we are dealing with root leaf node
             // we can confirm validity of a root leaf node by checking root_leaf_keys
-            if parent_path.is_empty() {
-                let root_key = path[0].to_vec();
-                return if self.root_leaf_keys.contains_key(&root_key) {
+            let mut parent_path = path_iter.peekable();
+            if parent_path.peek().is_none() {
+                return if self.root_leaf_keys.contains_key(key.as_ref()) {
                     Ok(subtree)
                 } else {
                     Err(Error::InvalidPath("no subtree found under that path"))
@@ -115,12 +133,16 @@ impl Subtrees<'_> {
         }
     }
 
-    fn get_subtree_with_key_info(
+    fn get_subtree_with_key_info<P, K>(
         &self,
-        path: &[&[u8]],
-        key: Option<&[u8]>,
-    ) -> Result<(Merk<PrefixedRocksDbStorage>, bool), Error> {
-        let subtree_prefix = GroveDb::compress_subtree_key(path, key.as_ref());
+        path: P,
+        key: Option<K>,
+    ) -> Result<(Merk<PrefixedRocksDbStorage>, bool), Error>
+    where
+        P: IntoIterator<Item = K>,
+        K: AsRef<[u8]>,
+    {
+        let subtree_prefix = GroveDb::compress_subtree_key(path, key);
         let merk = Merk::open(PrefixedRocksDbStorage::new(
             self.storage.clone(),
             subtree_prefix,

@@ -175,6 +175,7 @@ pub(crate) fn get_next_chunk(
 /// were no abridged nodes (Hash or KVHash) and the proof hashes to
 /// `expected_hash`.
 #[cfg(feature = "full")]
+#[allow(dead_code)] // TODO: remove when proofs will be enabled
 pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op>>>(
     ops: I,
     expected_hash: Hash,
@@ -200,6 +201,7 @@ pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op>>>(
 /// height, and all of its inner nodes are not abridged. Returns the tree and
 /// the height given by the height proof.
 #[cfg(feature = "full")]
+#[allow(dead_code)] // TODO: remove when proofs will be enabled
 pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(ops: I) -> Result<(ProofTree, usize)> {
     fn verify_height_proof(tree: &ProofTree) -> Result<usize> {
         Ok(match tree.child(true) {

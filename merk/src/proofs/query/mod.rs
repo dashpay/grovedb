@@ -716,6 +716,7 @@ where
     }
 
     #[cfg(feature = "full")]
+    #[allow(dead_code)] // TODO: remove when proofs will be enabled
     pub(crate) fn create_full_proof(
         &mut self,
         query: &[QueryItem],
