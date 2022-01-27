@@ -33,7 +33,7 @@ pub fn assert_tree_invariants(tree: &Tree) {
     }
 }
 
-pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch) -> Tree {
+pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     let walker = Walker::<PanicSource>::new(tree, PanicSource {});
     let mut tree = Walker::<PanicSource>::apply_to(Some(walker), batch, PanicSource {})
         .expect("apply failed")
@@ -43,13 +43,13 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch) -> Tree {
     tree
 }
 
-pub fn apply_memonly(tree: Tree, batch: &MerkBatch) -> Tree {
+pub fn apply_memonly(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     let tree = apply_memonly_unchecked(tree, batch);
     assert_tree_invariants(&tree);
     tree
 }
 
-pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch) -> Option<Tree> {
+pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) -> Option<Tree> {
     let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
     Walker::<PanicSource>::apply_to(maybe_walker, batch, PanicSource {})
         .expect("apply failed")
@@ -69,15 +69,15 @@ pub fn seq_key(n: u64) -> Vec<u8> {
     key
 }
 
-pub fn put_entry(n: u64) -> BatchEntry {
+pub fn put_entry(n: u64) -> BatchEntry<Vec<u8>> {
     (seq_key(n), Op::Put(vec![123; 60]))
 }
 
-pub fn del_entry(n: u64) -> BatchEntry {
+pub fn del_entry(n: u64) -> BatchEntry<Vec<u8>> {
     (seq_key(n), Op::Delete)
 }
 
-pub fn make_batch_seq(range: Range<u64>) -> Vec<BatchEntry> {
+pub fn make_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     let mut batch = Vec::with_capacity((range.end - range.start).try_into().unwrap());
     for n in range {
         batch.push(put_entry(n));
@@ -85,7 +85,7 @@ pub fn make_batch_seq(range: Range<u64>) -> Vec<BatchEntry> {
     batch
 }
 
-pub fn make_del_batch_seq(range: Range<u64>) -> Vec<BatchEntry> {
+pub fn make_del_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     let mut batch = Vec::with_capacity((range.end - range.start).try_into().unwrap());
     for n in range {
         batch.push(del_entry(n));
@@ -93,7 +93,7 @@ pub fn make_del_batch_seq(range: Range<u64>) -> Vec<BatchEntry> {
     batch
 }
 
-pub fn make_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry> {
+pub fn make_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(seed);
     let mut batch = Vec::with_capacity(size.try_into().unwrap());
     for _ in 0..size {
@@ -104,7 +104,7 @@ pub fn make_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry> {
     batch
 }
 
-pub fn make_del_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry> {
+pub fn make_del_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(seed);
     let mut batch = Vec::with_capacity(size.try_into().unwrap());
     for _ in 0..size {

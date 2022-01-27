@@ -323,17 +323,14 @@ impl QueryItem {
                     start: start.to_vec(),
                 })
             } else if end_inclusive {
-                QueryItem::RangeAfterToInclusive(RangeInclusive::new(
-                    start.to_vec(),
-                    end.to_vec(),
-                ))
+                QueryItem::RangeAfterToInclusive(RangeInclusive::new(start.to_vec(), end.to_vec()))
             } else {
                 // upper is bounded and not inclusive
                 QueryItem::RangeAfterTo(Range {
                     start: start.to_vec(),
                     end: end.to_vec(),
                 })
-            }
+            };
         }
 
         if lower_unbounded {
@@ -344,7 +341,7 @@ impl QueryItem {
             } else {
                 // upper is bounded and not inclusive
                 QueryItem::RangeTo(RangeTo { end: end.to_vec() })
-            }
+            };
         }
 
         // Lower is bounded
@@ -1507,16 +1504,31 @@ mod test {
         assert!(QueryItem::Key(vec![20]) > QueryItem::Key(vec![10]));
 
         assert!(QueryItem::Key(vec![10]) < QueryItem::Range(vec![20]..vec![30]));
-        assert_eq!(QueryItem::Key(vec![10]), QueryItem::Range(vec![10]..vec![20]));
-        assert_eq!(QueryItem::Key(vec![15]), QueryItem::Range(vec![10]..vec![20]));
+        assert_eq!(
+            QueryItem::Key(vec![10]),
+            QueryItem::Range(vec![10]..vec![20])
+        );
+        assert_eq!(
+            QueryItem::Key(vec![15]),
+            QueryItem::Range(vec![10]..vec![20])
+        );
         assert!(QueryItem::Key(vec![20]) > QueryItem::Range(vec![10]..vec![20]));
-        assert_eq!(QueryItem::Key(vec![20]), QueryItem::RangeInclusive(vec![10]..=vec![20]));
+        assert_eq!(
+            QueryItem::Key(vec![20]),
+            QueryItem::RangeInclusive(vec![10]..=vec![20])
+        );
         assert!(QueryItem::Key(vec![30]) > QueryItem::Range(vec![10]..vec![20]));
 
         assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![30]..vec![40]));
         assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![20]..vec![30]));
-        assert_eq!(QueryItem::RangeInclusive(vec![10]..=vec![20]), QueryItem::Range(vec![20]..vec![30]));
-        assert_eq!(QueryItem::Range(vec![15]..vec![25]), QueryItem::Range(vec![20]..vec![30]));
+        assert_eq!(
+            QueryItem::RangeInclusive(vec![10]..=vec![20]),
+            QueryItem::Range(vec![20]..vec![30])
+        );
+        assert_eq!(
+            QueryItem::Range(vec![15]..vec![25]),
+            QueryItem::Range(vec![20]..vec![30])
+        );
         assert!(QueryItem::Range(vec![20]..vec![30]) > QueryItem::Range(vec![10]..vec![20]));
     }
 

@@ -172,7 +172,6 @@ impl GroveDb {
         path_query: &PathQuery,
         subtrees: Subtrees,
         transaction: Option<&OptimisticTransactionDBTransaction>,
-        // subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     ) -> Result<(Vec<Element>, u16), Error> {
         let path_slices = path_query
             .path
@@ -180,9 +179,7 @@ impl GroveDb {
             .map(|x| x.as_slice())
             .collect::<Vec<_>>();
         let (merk, prefix) = subtrees.get(path_slices.as_slice(), transaction)?;
-
         let elem = Element::get_path_query(&merk, path_query, Some(&subtrees));
-
         if let Some(prefix) = prefix {
             subtrees.insert_temp_tree_with_prefix(prefix, merk, transaction);
         } else {

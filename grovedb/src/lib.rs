@@ -12,8 +12,8 @@ pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 use serde::{Deserialize, Serialize};
-pub use storage::{rocksdb_storage::PrefixedRocksDbStorage, Storage};
 use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorageError};
+pub use storage::{rocksdb_storage::PrefixedRocksDbStorage, Storage};
 pub use subtree::Element;
 use subtrees::Subtrees;
 
@@ -301,25 +301,24 @@ impl GroveDb {
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
-    fn compress_subtree_key(path: &[&[u8]], key: Option<&[u8]>) -> Vec<u8> {
-        let segments_iter = path.iter().copied().chain(key.into_iter());
-        let mut segments_count = path.len();
-        if key.is_some() {
+    fn compress_subtree_key<P, K>(path: P, key: Option<K>) -> Vec<u8>
+    where
+        P: IntoIterator<Item = K>,
+        K: AsRef<[u8]>,
+    {
+        let segments_iter = path.into_iter().chain(key.into_iter());
+        let mut segments_count: usize = 0;
+        let mut res = Vec::new();
+        let mut lengthes = Vec::new();
+
+        for s in segments_iter {
             segments_count += 1;
+            res.extend_from_slice(s.as_ref());
+            lengthes.extend(s.as_ref().len().to_ne_bytes());
         }
-        let mut res = segments_iter.fold(Vec::<u8>::new(), |mut acc, p| {
-            acc.extend(p.iter());
-            acc
-        });
 
         res.extend(segments_count.to_ne_bytes());
-        path.iter()
-            .copied()
-            .chain(key.into_iter())
-            .fold(&mut res, |acc, p| {
-                acc.extend(p.len().to_ne_bytes());
-                acc
-            });
+        res.extend(lengthes);
         res = blake3::hash(&res).as_bytes().to_vec();
         res
     }

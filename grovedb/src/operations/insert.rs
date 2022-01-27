@@ -11,7 +11,7 @@ fn create_merk_with_prefix(
     path: &[&[u8]],
     key: &[u8],
 ) -> Result<(Vec<u8>, Merk<PrefixedRocksDbStorage>), Error> {
-    let subtree_prefix = GroveDb::compress_subtree_key(path, Some(key));
+    let subtree_prefix = GroveDb::compress_subtree_key(path, Some(&key));
     Ok((
         subtree_prefix.clone(),
         Merk::open(PrefixedRocksDbStorage::new(db, subtree_prefix)?)
@@ -111,7 +111,7 @@ impl GroveDb {
         key: Vec<u8>,
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
-        if transaction.is_none() &&  self.is_readonly {
+        if transaction.is_none() && self.is_readonly {
             return Err(Error::DbIsInReadonlyMode);
         }
 

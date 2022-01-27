@@ -731,14 +731,12 @@ fn test_insert_if_not_exists() {
     let mut db = make_grovedb();
 
     // Insert twice at the same path
-    assert!(
-        db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
-            .expect("Provided valid path")
-    );
-    assert!(
-        !db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
-            .expect("Provided valid path")
-    );
+    assert!(db
+        .insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
+        .expect("Provided valid path"));
+    assert!(!db
+        .insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
+        .expect("Provided valid path"));
 
     // Should propagate errors from insertion
     let result = db.insert_if_not_exists(
@@ -763,10 +761,9 @@ fn test_is_empty_tree() {
     )
     .unwrap();
 
-    assert!(
-        db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
-            .expect("path is valid tree")
-    );
+    assert!(db
+        .is_empty_tree(&[TEST_LEAF, b"innertree"], None)
+        .expect("path is valid tree"));
 
     // add an element to the tree to make it non empty
     db.insert(
@@ -776,10 +773,9 @@ fn test_is_empty_tree() {
         None,
     )
     .unwrap();
-    assert!(
-        !db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
-            .expect("path is valid tree")
-    );
+    assert!(!db
+        .is_empty_tree(&[TEST_LEAF, b"innertree"], None)
+        .expect("path is valid tree"));
 }
 
 #[test]
@@ -797,13 +793,8 @@ fn transaction_insert_item_with_transaction_should_use_transaction() {
 
     let element1 = Element::Item(b"ayy".to_vec());
 
-    db.insert(
-        &[TEST_LEAF],
-        item_key.clone(),
-        element1,
-        Some(&transaction),
-    )
-    .expect("cannot insert an item into GroveDB");
+    db.insert(&[TEST_LEAF], item_key.clone(), element1, Some(&transaction))
+        .expect("cannot insert an item into GroveDB");
 
     // The key was inserted inside the transaction, so it shouldn't be possible
     // to get it back without committing or using transaction
@@ -896,12 +887,7 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
 
     let element1 = Element::Item(b"ayy".to_vec());
 
-    let result = db.insert(
-        &[TEST_LEAF],
-        item_key.clone(),
-        element1,
-        Some(&transaction),
-    );
+    let result = db.insert(&[TEST_LEAF], item_key.clone(), element1, Some(&transaction));
 
     assert!(matches!(result, Ok(())));
 
@@ -941,13 +927,8 @@ fn transaction_should_be_aborted() {
     let item_key = b"key3".to_vec();
     let element = Element::Item(b"ayy".to_vec());
 
-    db.insert(
-        &[TEST_LEAF],
-        item_key.clone(),
-        element,
-        Some(&transaction),
-    )
-    .unwrap();
+    db.insert(&[TEST_LEAF], item_key.clone(), element, Some(&transaction))
+        .unwrap();
 
     assert!(db.is_readonly);
     assert!(db.temp_root_tree.leaves_len() > 0);
@@ -1363,13 +1344,8 @@ fn test_aux_with_transaction() {
     db.start_transaction().unwrap();
 
     // Insert a regular data with aux data in the same transaction
-    db.insert(
-        &[TEST_LEAF],
-        key.clone(),
-        element,
-        Some(&db_transaction),
-    )
-    .expect("unable to insert");
+    db.insert(&[TEST_LEAF], key.clone(), element, Some(&db_transaction))
+        .expect("unable to insert");
     db.put_aux(&key, &aux_value, Some(&db_transaction))
         .expect("unable to insert aux value");
     assert_eq!(
@@ -1689,9 +1665,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
 
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
-    query.insert_range_inclusive(
-        1988_u32.to_be_bytes().to_vec()..=1995_u32.to_be_bytes().to_vec(),
-    );
+    query.insert_range_inclusive(1988_u32.to_be_bytes().to_vec()..=1995_u32.to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
@@ -1724,9 +1698,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
 
     let path = vec![TEST_LEAF.to_vec(), b"1".to_vec()];
     let mut query = Query::new();
-    query.insert_range_inclusive(
-        1988_u32.to_be_bytes().to_vec()..=1995_u32.to_be_bytes().to_vec(),
-    );
+    query.insert_range_inclusive(1988_u32.to_be_bytes().to_vec()..=1995_u32.to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
@@ -1759,9 +1731,7 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
 
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
-    query.insert_range_inclusive(
-        1988_u32.to_be_bytes().to_vec()..=1995_u32.to_be_bytes().to_vec(),
-    );
+    query.insert_range_inclusive(1988_u32.to_be_bytes().to_vec()..=1995_u32.to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
 
@@ -2005,9 +1975,7 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
 
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
-    query.insert_range_after_to(
-        1995_u32.to_be_bytes().to_vec()..1997_u32.to_be_bytes().to_vec(),
-    );
+    query.insert_range_after_to(1995_u32.to_be_bytes().to_vec()..1997_u32.to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();

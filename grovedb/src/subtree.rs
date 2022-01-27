@@ -38,22 +38,25 @@ impl Element {
     }
 
     /// Delete an element from Merk under a key
-    pub fn delete(
+    pub fn delete<K: AsRef<[u8]>>(
         merk: &mut Merk<PrefixedRocksDbStorage>,
-        key: Vec<u8>,
+        key: K,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(), Error> {
         // TODO: delete references on this element
         let batch = [(key, Op::Delete)];
-        merk.apply(&batch, &[], transaction)
+        merk.apply::<_, Vec<u8>>(&batch, &[], transaction)
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    pub fn get(merk: &Merk<PrefixedRocksDbStorage>, key: &[u8]) -> Result<Element, Error> {
+    pub fn get<K: AsRef<[u8]>>(
+        merk: &Merk<PrefixedRocksDbStorage>,
+        key: K,
+    ) -> Result<Element, Error> {
         let element = bincode::deserialize(
-            merk.get(key)
+            merk.get(key.as_ref())
                 .map_err(|e| Error::CorruptedData(e.to_string()))?
                 .ok_or(Error::InvalidPathKey(format!(
                     "key not found in Merk: {}",
@@ -76,7 +79,6 @@ impl Element {
     }
 
     fn basic_push(
-        // _subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
         _subtree: Option<&Subtrees>,
         _key: Option<&[u8]>,
         element: Element,
@@ -100,7 +102,6 @@ impl Element {
     }
 
     fn path_query_push(
-        // subtrees_option: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
         subtrees_option: Option<&Subtrees>,
         key: Option<&[u8]>,
         element: Element,
@@ -189,7 +190,18 @@ impl Element {
                 }
             }
             _ => {
-                Element::basic_push(subtrees_option, key, element, path, subquery_key_option, subquery, left_to_right, results, limit, offset)?;
+                Element::basic_push(
+                    subtrees_option,
+                    key,
+                    element,
+                    path,
+                    subquery_key_option,
+                    subquery,
+                    left_to_right,
+                    results,
+                    limit,
+                    offset,
+                )?;
             }
         }
         Ok(())
@@ -201,7 +213,6 @@ impl Element {
         path: Option<&[&[u8]]>,
         subtrees: Option<&Subtrees>,
         add_element_function: fn(
-            // subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
             subtrees: Option<&Subtrees>,
             key: Option<&[u8]>,
             element: Element,
@@ -289,7 +300,6 @@ impl Element {
     pub fn get_path_query(
         merk: &Merk<PrefixedRocksDbStorage>,
         path_query: &PathQuery,
-        // subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
         subtrees: Option<&Subtrees>,
     ) -> Result<(Vec<Element>, u16), Error> {
         let path_slices = path_query
@@ -326,10 +336,10 @@ impl Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert<'a: 'b, 'b>(
+    pub fn insert<'a: 'b, 'b, K: AsRef<[u8]>>(
         &'a self,
         merk: &mut Merk<PrefixedRocksDbStorage>,
-        key: Vec<u8>,
+        key: K,
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
         let batch_operations =
@@ -339,7 +349,7 @@ impl Element {
                     Error::CorruptedData(String::from("unable to serialize element"))
                 })?),
             )];
-        merk.apply(&batch_operations, &[], transaction)
+        merk.apply::<_, Vec<u8>>(&batch_operations, &[], transaction)
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -548,17 +558,14 @@ mod tests {
             if reverse {
                 expected.reverse();
             }
-            assert_eq!(
-                elements,
-                expected
-            );
+            assert_eq!(elements, expected);
             assert_eq!(skipped, 0);
         }
 
         check_elements_no_skipped(
             Element::get_sized_query(&merk, &ascending_query, None)
                 .expect("expected successful get_query"),
-            false
+            false,
         );
 
         query.left_to_right = false;
@@ -567,7 +574,7 @@ mod tests {
         check_elements_no_skipped(
             Element::get_sized_query(&merk, &backwards_query, None)
                 .expect("expected successful get_query"),
-            true
+            true,
         );
 
         // Test range inclusive query
@@ -579,7 +586,7 @@ mod tests {
         check_elements_no_skipped(
             Element::get_sized_query(&merk, &backwards_query, None)
                 .expect("expected successful get_query"),
-            true
+            true,
         );
     }
 

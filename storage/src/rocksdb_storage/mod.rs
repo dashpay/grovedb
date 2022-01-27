@@ -56,8 +56,8 @@ pub fn default_rocksdb(path: &Path) -> Rc<rocksdb::OptimisticTransactionDB> {
     )
 }
 
-fn make_prefixed_key(mut prefix: Vec<u8>, key: &[u8]) -> Vec<u8> {
-    prefix.extend_from_slice(key);
+fn make_prefixed_key<K: AsRef<[u8]>>(mut prefix: Vec<u8>, key: K) -> Vec<u8> {
+    prefix.extend_from_slice(key.as_ref());
     prefix
 }
 
@@ -83,7 +83,7 @@ impl RawIterator for RawPrefixedTransactionalIterator<'_> {
         self.rocksdb_iterator.seek_for_prev(prefix_vec);
     }
 
-    fn seek(&mut self, key: &[u8]) {
+    fn seek<K: AsRef<[u8]>>(&mut self, key: K) {
         self.rocksdb_iterator
             .seek(make_prefixed_key(self.prefix.to_vec(), key));
     }
@@ -144,7 +144,7 @@ impl RawIterator for RawPrefixedIterator<'_> {
         self.rocksdb_iterator.seek_for_prev(prefix_vec);
     }
 
-    fn seek(&mut self, key: &[u8]) {
+    fn seek<K: AsRef<[u8]>>(&mut self, key: K) {
         self.rocksdb_iterator
             .seek(make_prefixed_key(self.prefix.to_vec(), key));
     }

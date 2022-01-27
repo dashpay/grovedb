@@ -12,12 +12,12 @@ pub struct PrefixedRocksDbBatch<'a> {
 }
 
 impl<'a> Batch for PrefixedRocksDbBatch<'a> {
-    fn put(&mut self, key: &[u8], value: &[u8]) {
+    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.batch
             .put(make_prefixed_key(self.prefix.clone(), key), value)
     }
 
-    fn put_aux(&mut self, key: &[u8], value: &[u8]) {
+    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.batch.put_cf(
             self.cf_aux,
             make_prefixed_key(self.prefix.clone(), key),
@@ -25,7 +25,7 @@ impl<'a> Batch for PrefixedRocksDbBatch<'a> {
         )
     }
 
-    fn put_root(&mut self, key: &[u8], value: &[u8]) {
+    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.batch.put_cf(
             self.cf_roots,
             make_prefixed_key(self.prefix.clone(), key),
@@ -33,17 +33,17 @@ impl<'a> Batch for PrefixedRocksDbBatch<'a> {
         )
     }
 
-    fn delete(&mut self, key: &[u8]) {
+    fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
         self.batch
             .delete(make_prefixed_key(self.prefix.clone(), key))
     }
 
-    fn delete_aux(&mut self, key: &[u8]) {
+    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) {
         self.batch
             .delete_cf(self.cf_aux, make_prefixed_key(self.prefix.clone(), key))
     }
 
-    fn delete_root(&mut self, key: &[u8]) {
+    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) {
         self.batch
             .delete_cf(self.cf_roots, make_prefixed_key(self.prefix.clone(), key))
     }
@@ -59,12 +59,12 @@ pub struct PrefixedTransactionalRocksDbBatch<'a> {
 
 // TODO: don't ignore errors
 impl<'a> Batch for PrefixedTransactionalRocksDbBatch<'a> {
-    fn put(&mut self, key: &[u8], value: &[u8]) {
+    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.transaction
             .put(make_prefixed_key(self.prefix.clone(), key), value);
     }
 
-    fn put_aux(&mut self, key: &[u8], value: &[u8]) {
+    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.transaction.put_cf(
             self.cf_aux,
             make_prefixed_key(self.prefix.clone(), key),
@@ -72,7 +72,7 @@ impl<'a> Batch for PrefixedTransactionalRocksDbBatch<'a> {
         );
     }
 
-    fn put_root(&mut self, key: &[u8], value: &[u8]) {
+    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.transaction.put_cf(
             self.cf_roots,
             make_prefixed_key(self.prefix.clone(), key),
@@ -80,17 +80,17 @@ impl<'a> Batch for PrefixedTransactionalRocksDbBatch<'a> {
         );
     }
 
-    fn delete(&mut self, key: &[u8]) {
+    fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
         self.transaction
             .delete(make_prefixed_key(self.prefix.clone(), key));
     }
 
-    fn delete_aux(&mut self, key: &[u8]) {
+    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) {
         self.transaction
             .delete_cf(self.cf_aux, make_prefixed_key(self.prefix.clone(), key));
     }
 
-    fn delete_root(&mut self, key: &[u8]) {
+    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) {
         self.transaction
             .delete_cf(self.cf_roots, make_prefixed_key(self.prefix.clone(), key));
     }
@@ -102,42 +102,42 @@ pub enum OrBatch<'a> {
 }
 
 impl<'a> Batch for OrBatch<'a> {
-    fn put(&mut self, key: &[u8], value: &[u8]) {
+    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         match self {
             Self::TransactionalBatch(batch) => batch.put(key, value),
             Self::Batch(batch) => batch.put(key, value),
         }
     }
 
-    fn put_aux(&mut self, key: &[u8], value: &[u8]) {
+    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         match self {
             Self::TransactionalBatch(batch) => batch.put_aux(key, value),
             Self::Batch(batch) => batch.put_aux(key, value),
         }
     }
 
-    fn put_root(&mut self, key: &[u8], value: &[u8]) {
+    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         match self {
             Self::TransactionalBatch(batch) => batch.put_root(key, value),
             Self::Batch(batch) => batch.put_root(key, value),
         }
     }
 
-    fn delete(&mut self, key: &[u8]) {
+    fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
         match self {
             Self::TransactionalBatch(batch) => batch.delete(key),
             Self::Batch(batch) => batch.delete(key),
         }
     }
 
-    fn delete_aux(&mut self, key: &[u8]) {
+    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) {
         match self {
             Self::TransactionalBatch(batch) => batch.delete_aux(key),
             Self::Batch(batch) => batch.delete_aux(key),
         }
     }
 
-    fn delete_root(&mut self, key: &[u8]) {
+    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) {
         match self {
             Self::TransactionalBatch(batch) => batch.delete_root(key),
             Self::Batch(batch) => batch.delete_root(key),

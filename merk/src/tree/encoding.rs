@@ -15,17 +15,18 @@ impl Store for Tree {
         Decode::decode(bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
     }
 
-    fn get<S>(storage: S, key: &[u8]) -> Result<Option<Self>, Self::Error>
+    fn get<S, K>(storage: S, key: K) -> Result<Option<Self>, Self::Error>
     where
         S: Storage,
+        K: AsRef<[u8]>,
         Self::Error: From<S::Error>,
     {
         let mut tree: Option<Tree> = storage
-            .get(key)?
+            .get(&key)?
             .map(|x| <Self as Store>::decode(&x))
             .transpose()?;
         if let Some(ref mut t) = tree {
-            t.set_key(key.to_vec());
+            t.set_key(key.as_ref().to_vec());
         }
         Ok(tree)
     }

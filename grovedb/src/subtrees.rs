@@ -120,7 +120,7 @@ impl Subtrees<'_> {
         path: &[&[u8]],
         key: Option<&[u8]>,
     ) -> Result<(Merk<PrefixedRocksDbStorage>, bool), Error> {
-        let subtree_prefix = GroveDb::compress_subtree_key(path, key);
+        let subtree_prefix = GroveDb::compress_subtree_key(path, key.as_ref());
         let merk = Merk::open(PrefixedRocksDbStorage::new(
             self.storage.clone(),
             subtree_prefix,

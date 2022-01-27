@@ -3,9 +3,9 @@ use storage::{Storage, Transaction};
 use crate::{Error, GroveDb, PrefixedRocksDbStorage};
 
 impl GroveDb {
-    pub fn put_aux<'a: 'b, 'b>(
+    pub fn put_aux<'a: 'b, 'b, K: AsRef<[u8]>>(
         &'a mut self,
-        key: &[u8],
+        key: K,
         value: &[u8],
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
@@ -21,9 +21,9 @@ impl GroveDb {
         }
     }
 
-    pub fn delete_aux<'a: 'b, 'b>(
+    pub fn delete_aux<'a: 'b, 'b, K: AsRef<[u8]>>(
         &'a mut self,
-        key: &[u8],
+        key: K,
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
         if let Some(tx) = transaction {
@@ -38,9 +38,9 @@ impl GroveDb {
         }
     }
 
-    pub fn get_aux<'a: 'b, 'b>(
+    pub fn get_aux<'a: 'b, 'b, K: AsRef<[u8]>>(
         &'a mut self,
-        key: &[u8],
+        key: K,
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<Option<Vec<u8>>, Error> {
         if let Some(tx) = transaction {

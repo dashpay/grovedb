@@ -193,7 +193,7 @@ mod tests {
     fn len_small() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..256);
-        merk.apply(batch.as_slice(), &[], None).unwrap();
+        merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap();
 
         let chunks = merk.chunks().unwrap();
         assert_eq!(chunks.len(), 1);
@@ -204,7 +204,7 @@ mod tests {
     fn len_big() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..10_000);
-        merk.apply(batch.as_slice(), &[], None).unwrap();
+        merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap();
 
         let chunks = merk.chunks().unwrap();
         assert_eq!(chunks.len(), 129);
@@ -215,7 +215,7 @@ mod tests {
     fn generate_and_verify_chunks() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..10_000);
-        merk.apply(batch.as_slice(), &[], None).unwrap();
+        merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap();
 
         let mut chunks = merk.chunks().unwrap().into_iter().map(Result::unwrap);
 
@@ -241,7 +241,7 @@ mod tests {
             let mut merk =
                 Merk::open(PrefixedRocksDbStorage::new(db, Vec::new()).unwrap()).unwrap();
             let batch = make_batch_seq(1..10);
-            merk.apply(batch.as_slice(), &[], None).unwrap();
+            merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap();
 
             merk.chunks()
                 .unwrap()
@@ -288,7 +288,7 @@ mod tests {
     fn random_access_chunks() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..111);
-        merk.apply(batch.as_slice(), &[], None).unwrap();
+        merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap();
 
         let chunks = merk
             .chunks()
@@ -322,7 +322,7 @@ mod tests {
     fn test_chunk_index_oob() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..42);
-        merk.apply(batch.as_slice(), &[], None).unwrap();
+        merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap();
 
         let mut producer = merk.chunks().unwrap();
         let _chunk = producer.chunk(50000).unwrap();
@@ -332,7 +332,7 @@ mod tests {
     fn test_chunk_index_gt_1_access() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..513);
-        merk.apply(batch.as_slice(), &[], None).unwrap();
+        merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap();
 
         let mut producer = merk.chunks().unwrap();
         println!("length: {}", producer.len());
@@ -413,7 +413,7 @@ mod tests {
     fn test_next_chunk_index_oob() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..42);
-        merk.apply(batch.as_slice(), &[], None).unwrap();
+        merk.apply::<_, Vec<_>>(&batch, &[], None).unwrap();
 
         let mut producer = merk.chunks().unwrap();
         let _chunk1 = producer.next_chunk();
