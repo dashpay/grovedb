@@ -27,10 +27,8 @@ impl GroveDb {
         element: Element,
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
-        if let None = transaction {
-            if self.is_readonly {
-                return Err(Error::DbIsInReadonlyMode);
-            }
+        if transaction.is_none() && self.is_readonly {
+            return Err(Error::DbIsInReadonlyMode);
         }
 
         match element {
@@ -55,7 +53,7 @@ impl GroveDb {
                     .get(path, transaction)
                     .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
                 element.insert(&mut merk, key, transaction)?;
-                if let Some(prefix) = prefix{
+                if let Some(prefix) = prefix {
                     self.get_subtrees()
                         .insert_temp_tree_with_prefix(prefix, merk, transaction);
                 } else {
@@ -79,7 +77,6 @@ impl GroveDb {
                 return Err(Error::DbIsInReadonlyMode);
             }
         }
-
 
         // Open Merk and put handle into `subtrees` dictionary accessible by its
         // compressed path
@@ -147,7 +144,7 @@ impl GroveDb {
 
         // need to mark key as taken in the upper tree
         element.insert(&mut merk, key, transaction)?;
-        if let Some(prefix) = prefix{
+        if let Some(prefix) = prefix {
             self.get_subtrees()
                 .insert_temp_tree_with_prefix(prefix, merk, transaction);
         } else {

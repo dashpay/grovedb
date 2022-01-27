@@ -6,15 +6,15 @@
 // use crate::{Element, Error, GroveDb, PathQuery, Proof, Query};
 //
 // impl GroveDb {
-//     pub fn proof(&mut self, proof_queries: Vec<PathQuery>) -> Result<Vec<u8>, Error> {
-//         // To prove a path we need to return a proof for each node on the path including
-//         // the root. With multiple paths, nodes can overlap i.e two or more paths can
-//         // share the same nodes. We should only have one proof for each node,
-//         // if a node forks into multiple relevant paths then we should create a
-//         // combined proof for that node with all the relevant keys
-//         let mut query_paths = Vec::new();
-//         let mut intermediate_proof_spec: HashMap<Vec<u8>, Query> = HashMap::new();
-//         let mut root_keys: Vec<Vec<u8>> = Vec::new();
+//     pub fn proof(&mut self, proof_queries: Vec<PathQuery>) -> Result<Vec<u8>,
+// Error> {         // To prove a path we need to return a proof for each node
+// on the path including         // the root. With multiple paths, nodes can
+// overlap i.e two or more paths can         // share the same nodes. We should
+// only have one proof for each node,         // if a node forks into multiple
+// relevant paths then we should create a         // combined proof for that
+// node with all the relevant keys         let mut query_paths = Vec::new();
+//         let mut intermediate_proof_spec: HashMap<Vec<u8>, Query> =
+// HashMap::new();         let mut root_keys: Vec<Vec<u8>> = Vec::new();
 //         let mut proofs: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
 //
 //         // For each unique node including the root
@@ -32,17 +32,18 @@
 //             while let Some((key, path_slice)) = split_path {
 //                 if path_slice.is_empty() {
 //                     // We have gotten to the root node
-//                     let compressed_path = GroveDb::compress_subtree_key(&[], Some(key));
-//                     root_keys.push(compressed_path);
+//                     let compressed_path = GroveDb::compress_subtree_key(&[],
+// Some(key));                     root_keys.push(compressed_path);
 //                 } else {
-//                     let compressed_path = GroveDb::compress_subtree_key(path_slice, None);
-//                     if let Some(path_query) = intermediate_proof_spec.get_mut(&compressed_path) {
+//                     let compressed_path =
+// GroveDb::compress_subtree_key(path_slice, None);                     if let
+// Some(path_query) = intermediate_proof_spec.get_mut(&compressed_path) {
 //                         path_query.insert_key(key.to_vec());
 //                     } else {
 //                         let mut path_query = Query::new();
 //                         path_query.insert_key(key.to_vec());
-//                         intermediate_proof_spec.insert(compressed_path, path_query);
-//                     }
+//                         intermediate_proof_spec.insert(compressed_path,
+// path_query);                     }
 //                 }
 //                 split_path = path_slice.split_last();
 //             }
@@ -58,24 +59,25 @@
 //         for proof_query in proof_queries {
 //             let path = proof_query.path;
 //
-//             // If there is a subquery with a limit it's possible that we only need a reduced
-//             // proof for this leaf.
+//             // If there is a subquery with a limit it's possible that we only
+// need a reduced             // proof for this leaf.
 //             let reduced_proof_query = proof_query;
 //
 //             // First we must get elements
 //
-//             if let Some(subquery_key) = reduced_proof_query.query.query.subquery_key.clone() {
-//                 self.get_path_queries_raw(&[&reduced_proof_query], None)?;
+//             if let Some(subquery_key) =
+// reduced_proof_query.query.query.subquery_key.clone() {                 
+// self.get_path_queries_raw(&[&reduced_proof_query], None)?;
 //
 //                 let mut path_vec = path.to_vec();
 //                 path_vec.push(subquery_key.as_slice());
-//                 let compressed_path = GroveDb::compress_subtree_key(path_vec.as_slice(), None);
-//             }
+//                 let compressed_path =
+// GroveDb::compress_subtree_key(path_vec.as_slice(), None);             }
 //
 //             // Now we must insert the final proof for the sub leaves
 //             let compressed_path = GroveDb::compress_subtree_key(path, None);
-//             let proof = self.prove_path_item(&compressed_path, reduced_proof_query)?;
-//             proofs.insert(compressed_path, proof);
+//             let proof = self.prove_path_item(&compressed_path,
+// reduced_proof_query)?;             proofs.insert(compressed_path, proof);
 //         }
 //
 //         // Construct the root proof
@@ -97,7 +99,8 @@
 //         };
 //
 //         let seralized_proof = bincode::serialize(&proof)
-//             .map_err(|_| Error::CorruptedData(String::from("unable to serialize proof")))?;
+//             .map_err(|_| Error::CorruptedData(String::from("unable to
+// serialize proof")))?;
 //
 //         Ok(seralized_proof)
 //     }
@@ -132,8 +135,8 @@
 //         }
 //     }
 //
-//     fn prove_item(&self, path: &Vec<u8>, query: Query) -> Result<Vec<u8>, Error> {
-//         let merk = self
+//     fn prove_item(&self, path: &Vec<u8>, query: Query) -> Result<Vec<u8>,
+// Error> {         let merk = self
 //             .subtrees
 //             .get(path)
 //             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
@@ -145,10 +148,11 @@
 //         Ok(proof_result)
 //     }
 //
-//     pub fn execute_proof(proof: Vec<u8>) -> Result<([u8; 32], HashMap<Vec<u8>, Map>), Error> {
-//         // Deserialize the proof
+//     pub fn execute_proof(proof: Vec<u8>) -> Result<([u8; 32],
+// HashMap<Vec<u8>, Map>), Error> {         // Deserialize the proof
 //         let proof: Proof = bincode::deserialize(&proof)
-//             .map_err(|_| Error::CorruptedData(String::from("unable to deserialize proof")))?;
+//             .map_err(|_| Error::CorruptedData(String::from("unable to
+// deserialize proof")))?;
 //
 //         // Required to execute the root proof
 //         let mut root_keys_index: Vec<usize> = Vec::new();
@@ -162,9 +166,10 @@
 //             // For each query path, get the result map after execution
 //             // and store hash + index for later root proof execution
 //             let root_key = &path[0];
-//             let (hash, proof_result_map) = GroveDb::execute_path(&path, &proof.proofs)?;
-//             let compressed_root_key_path = GroveDb::compress_subtree_key(&[], Some(root_key));
-//             let compressed_query_path = GroveDb::compress_subtree_key(&path, None);
+//             let (hash, proof_result_map) = GroveDb::execute_path(&path,
+// &proof.proofs)?;             let compressed_root_key_path =
+// GroveDb::compress_subtree_key(&[], Some(root_key));             let
+// compressed_query_path = GroveDb::compress_subtree_key(&path, None);
 //
 //             let index = proof
 //                 .root_leaf_keys
@@ -178,14 +183,14 @@
 //             result_map.insert(compressed_query_path, proof_result_map);
 //         }
 //
-//         let root_proof = match MerkleProof::<Sha256>::try_from(proof.root_proof) {
-//             Ok(proof) => Ok(proof),
-//             Err(_) => Err(Error::InvalidProof("Invalid proof element")),
-//         }?;
+//         let root_proof = match
+// MerkleProof::<Sha256>::try_from(proof.root_proof) {             Ok(proof) =>
+// Ok(proof),             Err(_) => Err(Error::InvalidProof("Invalid proof
+// element")),         }?;
 //
 //         let root_hash =
-//             match root_proof.root(&root_keys_index, &root_hashes, proof.root_leaf_keys.len()) {
-//                 Ok(hash) => Ok(hash),
+//             match root_proof.root(&root_keys_index, &root_hashes,
+// proof.root_leaf_keys.len()) {                 Ok(hash) => Ok(hash),
 //                 Err(_) => Err(Error::InvalidProof("Invalid proof element")),
 //             }?;
 //
@@ -194,10 +199,10 @@
 //
 //     // Given a query path and a set of proofs
 //     // execute_path validates that the nodes represented by the paths
-//     // are connected to one another i.e root hash of child node is in parent node
-//     // at the correct key.
-//     // If path is valid, it returns the root hash of topmost merk and result map of
-//     // leaf merk.
+//     // are connected to one another i.e root hash of child node is in parent
+// node     // at the correct key.
+//     // If path is valid, it returns the root hash of topmost merk and result
+// map of     // leaf merk.
 //     fn execute_path(
 //         path: &[&[u8]],
 //         proofs: &HashMap<Vec<u8>, Vec<u8>>,
@@ -208,8 +213,8 @@
 //             .ok_or(Error::InvalidPath("Bad path"))?;
 //
 //         // Execute the leaf merk proof
-//         let (mut last_root_hash, result_map) = match merk::execute_proof(&proof[..]) {
-//             Ok(result) => Ok(result),
+//         let (mut last_root_hash, result_map) = match
+// merk::execute_proof(&proof[..]) {             Ok(result) => Ok(result),
 //             Err(_) => Err(Error::InvalidPath("Invalid proof element")),
 //         }?;
 //
@@ -217,20 +222,21 @@
 //         let mut split_path = path.split_last();
 //         while let Some((key, path_slice)) = split_path {
 //             if !path_slice.is_empty() {
-//                 let compressed_path = GroveDb::compress_subtree_key(path_slice, None);
-//                 let proof = proofs
-//                     .get(&compressed_path)
+//                 let compressed_path =
+// GroveDb::compress_subtree_key(path_slice, None);                 let proof =
+// proofs                     .get(&compressed_path)
 //                     .ok_or(Error::InvalidPath("Bad path"))?;
 //
 //                 let proof_result = match merk::execute_proof(&proof[..]) {
 //                     Ok(result) => Ok(result),
-//                     Err(_) => Err(Error::InvalidPath("Invalid proof element")),
-//                 }?;
+//                     Err(_) => Err(Error::InvalidPath("Invalid proof
+// element")),                 }?;
 //
 //                 let result_map = proof_result.1;
 //                 // TODO: Handle the error better here
 //                 let elem: Element =
-//                     bincode::deserialize(result_map.get(key).unwrap().unwrap()).unwrap();
+//                     
+// bincode::deserialize(result_map.get(key).unwrap().unwrap()).unwrap();
 //                 let merk_root_hash = match elem {
 //                     Element::Tree(hash) => Ok(hash),
 //                     _ => Err(Error::InvalidProof(

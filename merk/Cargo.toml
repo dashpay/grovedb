@@ -15,7 +15,7 @@ anyhow = "1.0.51"
 failure = "0.1.8"
 
 [dependencies.time]
-version = "0.1.42"
+version = "0.3.6"
 optional = true
 
 [dependencies.hex]

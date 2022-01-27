@@ -56,9 +56,10 @@ impl Element {
         let element = bincode::deserialize(
             merk.get(key)
                 .map_err(|e| Error::CorruptedData(e.to_string()))?
-                .ok_or(Error::InvalidPathKey(
-                    format!("key not found in Merk: {}", hex::encode(key)),
-                ))?
+                .ok_or(Error::InvalidPathKey(format!(
+                    "key not found in Merk: {}",
+                    hex::encode(key)
+                )))?
                 .as_slice(),
         )
         .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
@@ -137,11 +138,15 @@ impl Element {
                     if let Some(subquery_key) = &subquery_key_option {
                         path_vec.push(subquery_key.as_slice());
                     }
+
                     let (inner_merk, prefix) = subtrees
                         .get(path_vec.as_slice(), None)
                         .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
+
                     let inner_query = SizedQuery::new(subquery, *limit, *offset);
-                    let inner_path_query = PathQuery::new(path_vec.as_slice(), inner_query);
+                    let path_vec_owned = path_vec.iter().map(|x| x.to_vec()).collect();
+                    let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
+
                     let (mut sub_elements, skipped) =
                         Element::get_path_query(&inner_merk, &inner_path_query, subtrees_option)?;
 
@@ -296,10 +301,15 @@ impl Element {
         // subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
         subtrees: Option<&Subtrees>,
     ) -> Result<(Vec<Element>, u16), Error> {
+        let path_slices = path_query
+            .path
+            .iter()
+            .map(|x| x.as_slice())
+            .collect::<Vec<_>>();
         Element::get_query_apply_function(
             merk,
             &path_query.query,
-            Some(path_query.path),
+            Some(path_slices.as_slice()),
             subtrees,
             Element::path_query_push,
         )

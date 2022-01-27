@@ -77,7 +77,7 @@ impl GroveDb {
         // then use this to get merk.
         let merk_result;
         if path.is_empty() {
-           merk_result = self.get_subtrees().get(&[key], transaction)?;
+            merk_result = self.get_subtrees().get(&[key], transaction)?;
         } else {
             merk_result = self.get_subtrees().get(path, transaction)?;
         }
@@ -85,8 +85,8 @@ impl GroveDb {
         let (merk, prefix) = merk_result;
 
         let elem;
-        if path.is_empty(){
-           elem = Ok(Element::Tree(merk.root_hash()));
+        if path.is_empty() {
+            elem = Ok(Element::Tree(merk.root_hash()));
         } else {
             elem = Element::get(&merk, key);
         }
@@ -182,15 +182,19 @@ impl GroveDb {
         transaction: Option<&OptimisticTransactionDBTransaction>,
         // subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     ) -> Result<(Vec<Element>, u16), Error> {
-        let path = path_query.path;
-        let (merk, prefix) = subtrees.get(path, transaction)?;
+        let path_slices = path_query
+            .path
+            .iter()
+            .map(|x| x.as_slice())
+            .collect::<Vec<_>>();
+        let (merk, prefix) = subtrees.get(path_slices.as_slice(), transaction)?;
 
         let elem = Element::get_path_query(&merk, path_query, Some(&subtrees));
 
-        if let Some(prefix) = prefix{
+        if let Some(prefix) = prefix {
             subtrees.insert_temp_tree_with_prefix(prefix, merk, transaction);
         } else {
-            subtrees.insert_temp_tree(path, merk, transaction);
+            subtrees.insert_temp_tree(path_slices.as_slice(), merk, transaction);
         }
 
         elem

@@ -7,6 +7,7 @@ mod transaction;
 
 use std::{cell::RefCell, collections::HashMap, path::Path, rc::Rc};
 
+use blake3;
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, Hasher, MerkleTree};
@@ -18,7 +19,6 @@ use storage::{
 };
 pub use subtree::Element;
 use subtrees::Subtrees;
-use blake3;
 
 // use crate::transaction::GroveDbTransaction;
 // pub use transaction::GroveDbTransaction;
@@ -58,8 +58,10 @@ pub enum Error {
     DbIsInReadonlyMode,
 }
 
-pub struct PathQuery<'a> {
-    path: &'a [&'a [u8]],
+#[derive(Debug)]
+pub struct PathQuery {
+    // TODO: Make generic over path type
+    path: Vec<Vec<u8>>,
     query: SizedQuery,
 }
 
@@ -67,6 +69,7 @@ pub struct PathQuery<'a> {
 // limit should be applied to the elements returned by the subquery
 // offset should be applied to the first item that will subqueried (first in the
 // case of a range)
+#[derive(Debug)]
 pub struct SizedQuery {
     query: Query,
     limit: Option<u16>,
@@ -74,11 +77,7 @@ pub struct SizedQuery {
 }
 
 impl SizedQuery {
-    pub fn new(
-        query: Query,
-        limit: Option<u16>,
-        offset: Option<u16>,
-    ) -> SizedQuery {
+    pub fn new(query: Query, limit: Option<u16>, offset: Option<u16>) -> SizedQuery {
         SizedQuery {
             query,
             limit,
@@ -87,12 +86,12 @@ impl SizedQuery {
     }
 }
 
-impl PathQuery<'_> {
-    pub fn new<'a>(path: &'a [&'a [u8]], query: SizedQuery) -> PathQuery<'a> {
+impl PathQuery {
+    pub fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> PathQuery {
         PathQuery { path, query }
     }
 
-    pub fn new_unsized<'a>(path: &'a [&'a [u8]], query: Query) -> PathQuery<'a> {
+    pub fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> PathQuery {
         let query = SizedQuery::new(query, None, None);
         PathQuery { path, query }
     }
@@ -272,7 +271,8 @@ impl GroveDb {
                 self.get_subtrees()
                     .insert_temp_tree(parent_path, upper_tree, transaction);
             } else {
-                self.get_subtrees().insert_temp_tree(path, upper_tree, transaction);
+                self.get_subtrees()
+                    .insert_temp_tree(path, upper_tree, transaction);
             }
 
             path = parent_path;
@@ -445,7 +445,7 @@ impl GroveDb {
     /// [`GroveDb::start_transaction`]
     pub fn abort_transaction(
         &mut self,
-        db_transaction: OptimisticTransactionDBTransaction,
+        _db_transaction: OptimisticTransactionDBTransaction,
     ) -> Result<(), Error> {
         // Cloning all the trees to maintain to rollback transactional changes
         self.cleanup_transactional_data();

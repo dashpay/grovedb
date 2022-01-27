@@ -1,6 +1,11 @@
 mod map;
 
-use std::{cmp::{max, min, Ordering}, cmp, collections::BTreeSet, ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive}};
+use std::{
+    cmp,
+    cmp::{max, min, Ordering},
+    collections::BTreeSet,
+    ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
+};
 
 use anyhow::{bail, Result};
 pub use map::*;
@@ -13,7 +18,7 @@ use crate::tree::{Fetch, Hash, Link, RefWalker};
 
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all of the requested values.
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct Query {
     items: BTreeSet<QueryItem>,
     pub subquery_key: Option<Vec<u8>>,
@@ -197,7 +202,7 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
             items,
             subquery_key: None,
             subquery: None,
-            left_to_right: true
+            left_to_right: true,
         }
     }
 }
@@ -470,11 +475,11 @@ impl QueryItem {
         for (ai, bi) in a.iter().zip(b.iter()) {
             match ai.cmp(&bi) {
                 Ordering::Equal => continue,
-                ord => return ord
+                ord => return ord,
             }
         }
 
-        /* if every single element was equal, compare length */
+        // if every single element was equal, compare length
         a.len().cmp(&b.len())
     }
 
@@ -580,14 +585,14 @@ impl QueryItem {
                             match QueryItem::compare(key, end) {
                                 Ordering::Less => true,
                                 Ordering::Equal => true,
-                                Ordering::Greater => false
+                                Ordering::Greater => false,
                             }
                         } else {
                             let start = range_inclusive.start().as_slice();
                             match QueryItem::compare(key, start) {
                                 Ordering::Less => false,
                                 Ordering::Equal => false,
-                                Ordering::Greater => true
+                                Ordering::Greater => true,
                             }
                         }
                     }
