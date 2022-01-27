@@ -1,14 +1,6 @@
-use std::{
-    collections::{HashMap, HashSet},
-    ops::Range,
-    rc::Rc,
-};
+use std::collections::HashSet;
 
-use merk::Merk;
-use storage::{
-    rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage},
-    RawIterator,
-};
+use storage::rocksdb_storage::OptimisticTransactionDBTransaction;
 
 use crate::{Element, Error, GroveDb, PathQuery, Subtrees};
 

@@ -20,7 +20,7 @@ impl MapBuilder {
         })
     }
 
-    /// Adds the node's data to the uncerlying `Map` (if node is type `KV`), or
+    /// Adds the node's data to the underlying `Map` (if node is type `KV`), or
     /// makes a note of non-contiguous data (if node is type `KVHash` or
     /// `Hash`).
     pub fn insert(&mut self, node: &Node) -> Result<()> {
@@ -198,7 +198,7 @@ impl<'a> Iterator for Range<'a> {
 
         // if nodes weren't contiguous, we cannot verify that we have all values
         // in the desired range
-        if !skip_exclusion_check && !contiguous {
+        if !skip_exclusion_check && !*contiguous {
             return Some(Err(anyhow!("Proof is missing data for query")));
         }
 

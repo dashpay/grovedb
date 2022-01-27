@@ -243,10 +243,10 @@ impl QueryItem {
             QueryItem::Key(key) => (key.as_slice(), false),
             QueryItem::Range(range) => (range.start.as_ref(), false),
             QueryItem::RangeInclusive(range) => (range.start().as_ref(), false),
-            QueryItem::RangeFull(range) => (b"", false),
+            QueryItem::RangeFull(_) => (b"", false),
             QueryItem::RangeFrom(range) => (range.start.as_ref(), false),
-            QueryItem::RangeTo(range) => (b"", false),
-            QueryItem::RangeToInclusive(range) => (b"", false),
+            QueryItem::RangeTo(_) => (b"", false),
+            QueryItem::RangeToInclusive(_) => (b"", false),
             QueryItem::RangeAfter(range) => (range.start.as_ref(), true),
             QueryItem::RangeAfterTo(range) => (range.start.as_ref(), true),
             QueryItem::RangeAfterToInclusive(range) => (range.start().as_ref(), true),
@@ -301,12 +301,12 @@ impl QueryItem {
     pub fn contains(&self, key: &[u8]) -> bool {
         let (lower_bound, lower_bound_non_inclusive) = self.lower_bound();
         let (upper_bound, upper_bound_inclusive) = self.upper_bound();
-        return (self.lower_unbounded()
+        (self.lower_unbounded()
             || key > lower_bound
             || (key == lower_bound && !lower_bound_non_inclusive))
             && (self.upper_unbounded()
                 || key < upper_bound
-                || (key == upper_bound && upper_bound_inclusive));
+                || (key == upper_bound && upper_bound_inclusive))
     }
 
     fn merge(self, other: QueryItem) -> QueryItem {
@@ -318,32 +318,32 @@ impl QueryItem {
         let (end, end_inclusive) = max(self.upper_bound(), other.upper_bound());
 
         if start_non_inclusive {
-            if upper_unbounded {
-                return QueryItem::RangeAfter(RangeFrom {
+            return if upper_unbounded {
+                QueryItem::RangeAfter(RangeFrom {
                     start: start.to_vec(),
-                });
+                })
             } else if end_inclusive {
-                return QueryItem::RangeAfterToInclusive(RangeInclusive::new(
+                QueryItem::RangeAfterToInclusive(RangeInclusive::new(
                     start.to_vec(),
                     end.to_vec(),
-                ));
+                ))
             } else {
                 // upper is bounded and not inclusive
-                return QueryItem::RangeAfterTo(Range {
+                QueryItem::RangeAfterTo(Range {
                     start: start.to_vec(),
                     end: end.to_vec(),
-                });
+                })
             }
         }
 
         if lower_unbounded {
-            if upper_unbounded {
-                return QueryItem::RangeFull(RangeFull);
+            return if upper_unbounded {
+                QueryItem::RangeFull(RangeFull)
             } else if end_inclusive {
-                return QueryItem::RangeToInclusive(RangeToInclusive { end: end.to_vec() });
+                QueryItem::RangeToInclusive(RangeToInclusive { end: end.to_vec() })
             } else {
                 // upper is bounded and not inclusive
-                return QueryItem::RangeTo(RangeTo { end: end.to_vec() });
+                QueryItem::RangeTo(RangeTo { end: end.to_vec() })
             }
         }
 
@@ -1503,22 +1503,20 @@ mod test {
     #[test]
     fn query_item_cmp() {
         assert!(QueryItem::Key(vec![10]) < QueryItem::Key(vec![20]));
-        assert!(QueryItem::Key(vec![10]) == QueryItem::Key(vec![10]));
+        assert_eq!(QueryItem::Key(vec![10]), QueryItem::Key(vec![10]));
         assert!(QueryItem::Key(vec![20]) > QueryItem::Key(vec![10]));
 
         assert!(QueryItem::Key(vec![10]) < QueryItem::Range(vec![20]..vec![30]));
-        assert!(QueryItem::Key(vec![10]) == QueryItem::Range(vec![10]..vec![20]));
-        assert!(QueryItem::Key(vec![15]) == QueryItem::Range(vec![10]..vec![20]));
+        assert_eq!(QueryItem::Key(vec![10]), QueryItem::Range(vec![10]..vec![20]));
+        assert_eq!(QueryItem::Key(vec![15]), QueryItem::Range(vec![10]..vec![20]));
         assert!(QueryItem::Key(vec![20]) > QueryItem::Range(vec![10]..vec![20]));
-        assert!(QueryItem::Key(vec![20]) == QueryItem::RangeInclusive(vec![10]..=vec![20]));
+        assert_eq!(QueryItem::Key(vec![20]), QueryItem::RangeInclusive(vec![10]..=vec![20]));
         assert!(QueryItem::Key(vec![30]) > QueryItem::Range(vec![10]..vec![20]));
 
         assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![30]..vec![40]));
         assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![20]..vec![30]));
-        assert!(
-            QueryItem::RangeInclusive(vec![10]..=vec![20]) == QueryItem::Range(vec![20]..vec![30])
-        );
-        assert!(QueryItem::Range(vec![15]..vec![25]) == QueryItem::Range(vec![20]..vec![30]));
+        assert_eq!(QueryItem::RangeInclusive(vec![10]..=vec![20]), QueryItem::Range(vec![20]..vec![30]));
+        assert_eq!(QueryItem::Range(vec![15]..vec![25]), QueryItem::Range(vec![20]..vec![30]));
         assert!(QueryItem::Range(vec![20]..vec![30]) > QueryItem::Range(vec![10]..vec![20]));
     }
 
