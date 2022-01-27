@@ -9,10 +9,8 @@ impl GroveDb {
         key: Vec<u8>,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(), Error> {
-        if let None = transaction {
-            if self.is_readonly {
-                return Err(Error::DbIsInReadonlyMode);
-            }
+        if transaction.is_none() && self.is_readonly {
+            return Err(Error::DbIsInReadonlyMode);
         }
         if path.is_empty() {
             // Attempt to delete a root tree leaf
@@ -78,14 +76,11 @@ impl GroveDb {
             let mut iter = Element::iterator(merk.raw_iter());
             // let mut iter = self.elements_iterator(&q_ref, transaction)?;
             while let Some((key, value)) = iter.next()? {
-                match value {
-                    Element::Tree(_) => {
-                        let mut sub_path = q.clone();
-                        sub_path.push(key);
-                        queue.push(sub_path.clone());
-                        result.push(sub_path);
-                    }
-                    _ => {}
+                if let Element::Tree(_) = value {
+                    let mut sub_path = q.clone();
+                    sub_path.push(key);
+                    queue.push(sub_path.clone());
+                    result.push(sub_path);
                 }
             }
         }

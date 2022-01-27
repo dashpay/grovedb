@@ -63,7 +63,7 @@ fn test_insert_value_to_merk() {
     db.insert(&[TEST_LEAF], b"key".to_vec(), element.clone(), None)
         .expect("successful insert");
     assert_eq!(
-        db.get(&[TEST_LEAF], b"key", None).expect("succesful get"),
+        db.get(&[TEST_LEAF], b"key", None).expect("successful get"),
         element
     );
 }
@@ -86,7 +86,7 @@ fn test_insert_value_to_subtree() {
     .expect("successful value insert");
     assert_eq!(
         db.get(&[TEST_LEAF, b"key1"], b"key2", None)
-            .expect("succesful get"),
+            .expect("successful get"),
         element
     );
 }
@@ -117,7 +117,7 @@ fn test_changes_propagated() {
     .expect("successful value insert");
     assert_eq!(
         db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3", None)
-            .expect("succesful get"),
+            .expect("successful get"),
         element
     );
     assert_ne!(old_hash, db.root_tree.root());
@@ -149,7 +149,7 @@ fn test_follow_references() {
     .expect("successful value insert");
     assert_eq!(
         db.get(&[TEST_LEAF], b"reference_key", None)
-            .expect("succesful get"),
+            .expect("successful get"),
         element
     );
 }
@@ -213,7 +213,7 @@ fn test_too_many_indirections() {
 }
 
 #[test]
-fn test_tree_structure_is_presistent() {
+fn test_tree_structure_is_persistent() {
     let tmp_dir = TempDir::new("db").unwrap();
     let element = Element::Item(b"ayy".to_vec());
     // Create a scoped GroveDB
@@ -241,7 +241,7 @@ fn test_tree_structure_is_presistent() {
         .expect("successful value insert");
         assert_eq!(
             db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3", None)
-                .expect("succesful get 1"),
+                .expect("successful get 1"),
             element
         );
     }
@@ -249,7 +249,7 @@ fn test_tree_structure_is_presistent() {
     let db = GroveDb::open(tmp_dir).unwrap();
     assert_eq!(
         db.get(&[TEST_LEAF, b"key1", b"key2"], b"key3", None)
-            .expect("succesful get 2"),
+            .expect("successful get 2"),
         element
     );
     assert!(db
@@ -406,7 +406,7 @@ fn test_root_tree_leafs_are_noted() {
 //         .proof(vec![
 //             PathQuery::new_unsized(&[TEST_LEAF, b"innertree"],
 // path_one_query),             PathQuery::new_unsized(&[ANOTHER_TEST_LEAF,
-// b"innertree3"], path_two_query),             
+// b"innertree3"], path_two_query),
 // PathQuery::new_unsized(&[ANOTHER_TEST_LEAF, b"innertree2"],
 // path_three_query),         ])
 //         .unwrap();
@@ -731,15 +731,13 @@ fn test_insert_if_not_exists() {
     let mut db = make_grovedb();
 
     // Insert twice at the same path
-    assert_eq!(
+    assert!(
         db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
-            .expect("Provided valid path"),
-        true
+            .expect("Provided valid path")
     );
-    assert_eq!(
-        db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
-            .expect("Provided valid path"),
-        false
+    assert!(
+        !db.insert_if_not_exists(&[TEST_LEAF], b"key1".to_vec(), Element::empty_tree(), None)
+            .expect("Provided valid path")
     );
 
     // Should propagate errors from insertion
@@ -765,10 +763,9 @@ fn test_is_empty_tree() {
     )
     .unwrap();
 
-    assert_eq!(
+    assert!(
         db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
-            .expect("path is valid tree"),
-        true
+            .expect("path is valid tree")
     );
 
     // add an element to the tree to make it non empty
@@ -779,10 +776,9 @@ fn test_is_empty_tree() {
         None,
     )
     .unwrap();
-    assert_eq!(
-        db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
-            .expect("path is valid tree"),
-        false
+    assert!(
+        !db.is_empty_tree(&[TEST_LEAF, b"innertree"], None)
+            .expect("path is valid tree")
     );
 }
 
@@ -804,7 +800,7 @@ fn transaction_insert_item_with_transaction_should_use_transaction() {
     db.insert(
         &[TEST_LEAF],
         item_key.clone(),
-        element1.clone(),
+        element1,
         Some(&transaction),
     )
     .expect("cannot insert an item into GroveDB");
@@ -884,7 +880,7 @@ fn transaction_insert_should_return_error_when_trying_to_insert_while_transactio
     db.commit_transaction(transaction).unwrap();
 
     // Check that writes are unlocked after the transaction is committed
-    let result = db.insert(&[TEST_LEAF], item_key.clone(), element1.clone(), None);
+    let result = db.insert(&[TEST_LEAF], item_key, element1, None);
     assert!(matches!(result, Ok(())));
 }
 
@@ -903,7 +899,7 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
     let result = db.insert(
         &[TEST_LEAF],
         item_key.clone(),
-        element1.clone(),
+        element1,
         Some(&transaction),
     );
 
@@ -911,7 +907,7 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
 
     db.rollback_transaction(&transaction).unwrap();
 
-    let result = db.get(&[TEST_LEAF], &item_key.clone(), Some(&transaction));
+    let result = db.get(&[TEST_LEAF], &item_key, Some(&transaction));
     assert!(matches!(result, Err(Error::InvalidPathKey(_))));
 }
 
@@ -948,7 +944,7 @@ fn transaction_should_be_aborted() {
     db.insert(
         &[TEST_LEAF],
         item_key.clone(),
-        element.clone(),
+        element,
         Some(&transaction),
     )
     .unwrap();
@@ -966,8 +962,8 @@ fn transaction_should_be_aborted() {
     // Transaction should be closed
     assert!(!db.is_transaction_started());
 
-    // Transactional data shouldn't be commited to the main database
-    let result = db.get(&[TEST_LEAF], &item_key.clone(), None);
+    // Transactional data shouldn't be committed to the main database
+    let result = db.get(&[TEST_LEAF], &item_key, None);
     assert!(matches!(result, Err(Error::InvalidPathKey(_))));
 }
 
@@ -1002,7 +998,7 @@ fn test_subtree_pairs_iterator() {
     .expect("successful value insert");
     assert_eq!(
         db.get(&[TEST_LEAF, b"subtree1", b"subtree11"], b"key1", None)
-            .expect("succesful get 1"),
+            .expect("successful get 1"),
         element
     );
     db.insert(
@@ -1025,14 +1021,14 @@ fn test_subtree_pairs_iterator() {
         element.clone(),
         None,
     )
-    .expect("succesful value insert");
+    .expect("successful value insert");
     db.insert(
         &[TEST_LEAF, b"subtree1"],
         b"key2".to_vec(),
         element2.clone(),
         None,
     )
-    .expect("succesful value insert");
+    .expect("successful value insert");
 
     // Iterate over subtree1 to see if keys of other subtrees messed up
     // let mut iter = db
@@ -1072,7 +1068,7 @@ fn test_compress_path_not_possible_collision() {
 fn test_element_deletion() {
     let mut db = make_grovedb();
     let element = Element::Item(b"ayy".to_vec());
-    db.insert(&[TEST_LEAF], b"key".to_vec(), element.clone(), None)
+    db.insert(&[TEST_LEAF], b"key".to_vec(), element, None)
         .expect("successful insert");
     let root_hash = db.root_tree.root().unwrap();
     assert!(db.delete(&[TEST_LEAF], b"key".to_vec(), None).is_ok());
@@ -1101,7 +1097,7 @@ fn test_find_subtrees() {
     db.insert(
         &[TEST_LEAF, b"key1", b"key2"],
         b"key3".to_vec(),
-        element.clone(),
+        element,
         None,
     )
     .expect("successful value insert");
@@ -1222,7 +1218,7 @@ fn test_subtree_deletion() {
     db.insert(
         &[TEST_LEAF, b"key1", b"key2"],
         b"key3".to_vec(),
-        element.clone(),
+        element,
         None,
     )
     .expect("successful value insert");
@@ -1370,7 +1366,7 @@ fn test_aux_with_transaction() {
     db.insert(
         &[TEST_LEAF],
         key.clone(),
-        element.clone(),
+        element,
         Some(&db_transaction),
     )
     .expect("unable to insert");
@@ -1386,12 +1382,12 @@ fn test_aux_with_transaction() {
         db.get_aux(&key, None).expect("unable to get aux value"),
         None
     );
-    // And should be able to get data when commited
+    // And should be able to get data when committed
     db.commit_transaction(db_transaction)
         .expect("unable to commit transaction");
     assert_eq!(
         db.get_aux(&key, None)
-            .expect("unable to get commited aux value"),
+            .expect("unable to get committed aux value"),
         Some(aux_value)
     );
 }
@@ -1604,7 +1600,7 @@ fn test_get_range_query_with_non_unique_subquery() {
 
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
-    query.insert_range((1988 as u32).to_be_bytes().to_vec()..(1992 as u32).to_be_bytes().to_vec());
+    query.insert_range(1988_u32.to_be_bytes().to_vec()..1992_u32.to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
@@ -1621,12 +1617,12 @@ fn test_get_range_query_with_non_unique_subquery() {
 
     assert_eq!(elements.len(), 200);
 
-    let mut first_value = (1988 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    let mut first_value = 1988_u32.to_be_bytes().to_vec();
+    first_value.append(&mut 100_u32.to_be_bytes().to_vec());
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1991 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    let mut last_value = 1991_u32.to_be_bytes().to_vec();
+    last_value.append(&mut 149_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1637,7 +1633,7 @@ fn test_get_range_query_with_unique_subquery() {
 
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
-    query.insert_range((1988 as u32).to_be_bytes().to_vec()..(1992 as u32).to_be_bytes().to_vec());
+    query.insert_range(1988_u32.to_be_bytes().to_vec()..1992_u32.to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
 
@@ -1651,10 +1647,10 @@ fn test_get_range_query_with_unique_subquery() {
 
     assert_eq!(elements.len(), 4);
 
-    let first_value = (1988 as u32).to_be_bytes().to_vec();
+    let first_value = 1988_u32.to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let last_value = (1991 as u32).to_be_bytes().to_vec();
+    let last_value = 1991_u32.to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1665,7 +1661,7 @@ fn test_get_range_query_with_unique_subquery_on_references() {
 
     let path = vec![TEST_LEAF.to_vec(), b"1".to_vec()];
     let mut query = Query::new();
-    query.insert_range((1988 as u32).to_be_bytes().to_vec()..(1992 as u32).to_be_bytes().to_vec());
+    query.insert_range(1988_u32.to_be_bytes().to_vec()..1992_u32.to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
 
@@ -1679,10 +1675,10 @@ fn test_get_range_query_with_unique_subquery_on_references() {
 
     assert_eq!(elements.len(), 4);
 
-    let first_value = (1988 as u32).to_be_bytes().to_vec();
+    let first_value = 1988_u32.to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let last_value = (1991 as u32).to_be_bytes().to_vec();
+    let last_value = 1991_u32.to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1694,7 +1690,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_inclusive(
-        (1988 as u32).to_be_bytes().to_vec()..=(1995 as u32).to_be_bytes().to_vec(),
+        1988_u32.to_be_bytes().to_vec()..=1995_u32.to_be_bytes().to_vec(),
     );
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
@@ -1712,12 +1708,12 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
 
     assert_eq!(elements.len(), 400);
 
-    let mut first_value = (1988 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    let mut first_value = 1988_u32.to_be_bytes().to_vec();
+    first_value.append(&mut 100_u32.to_be_bytes().to_vec());
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1995 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    let mut last_value = 1995_u32.to_be_bytes().to_vec();
+    last_value.append(&mut 149_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1729,7 +1725,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
     let path = vec![TEST_LEAF.to_vec(), b"1".to_vec()];
     let mut query = Query::new();
     query.insert_range_inclusive(
-        (1988 as u32).to_be_bytes().to_vec()..=(1995 as u32).to_be_bytes().to_vec(),
+        1988_u32.to_be_bytes().to_vec()..=1995_u32.to_be_bytes().to_vec(),
     );
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
@@ -1747,12 +1743,12 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
 
     assert_eq!(elements.len(), 400);
 
-    let mut first_value = (1988 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    let mut first_value = 1988_u32.to_be_bytes().to_vec();
+    first_value.append(&mut 100_u32.to_be_bytes().to_vec());
     assert!(elements.contains(&first_value));
 
-    let mut last_value = (1995 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    let mut last_value = 1995_u32.to_be_bytes().to_vec();
+    last_value.append(&mut 149_u32.to_be_bytes().to_vec());
     assert!(elements.contains(&last_value));
 }
 
@@ -1764,7 +1760,7 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_inclusive(
-        (1988 as u32).to_be_bytes().to_vec()..=(1995 as u32).to_be_bytes().to_vec(),
+        1988_u32.to_be_bytes().to_vec()..=1995_u32.to_be_bytes().to_vec(),
     );
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
@@ -1779,10 +1775,10 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
 
     assert_eq!(elements.len(), 8);
 
-    let first_value = (1988 as u32).to_be_bytes().to_vec();
+    let first_value = 1988_u32.to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let last_value = (1995 as u32).to_be_bytes().to_vec();
+    let last_value = 1995_u32.to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1793,7 +1789,7 @@ fn test_get_range_from_query_with_non_unique_subquery() {
 
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
-    query.insert_range_from((1995 as u32).to_be_bytes().to_vec()..);
+    query.insert_range_from(1995_u32.to_be_bytes().to_vec()..);
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
@@ -1810,12 +1806,12 @@ fn test_get_range_from_query_with_non_unique_subquery() {
 
     assert_eq!(elements.len(), 250);
 
-    let mut first_value = (1995 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    let mut first_value = 1995_u32.to_be_bytes().to_vec();
+    first_value.append(&mut 100_u32.to_be_bytes().to_vec());
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1999 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    let mut last_value = 1999_u32.to_be_bytes().to_vec();
+    last_value.append(&mut 149_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1826,7 +1822,7 @@ fn test_get_range_from_query_with_unique_subquery() {
 
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
-    query.insert_range_from((1995 as u32).to_be_bytes().to_vec()..);
+    query.insert_range_from(1995_u32.to_be_bytes().to_vec()..);
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
 
@@ -1840,10 +1836,10 @@ fn test_get_range_from_query_with_unique_subquery() {
 
     assert_eq!(elements.len(), 5);
 
-    let first_value = (1995 as u32).to_be_bytes().to_vec();
+    let first_value = 1995_u32.to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let last_value = (1999 as u32).to_be_bytes().to_vec();
+    let last_value = 1999_u32.to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1854,7 +1850,7 @@ fn test_get_range_to_query_with_non_unique_subquery() {
 
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
-    query.insert_range_to(..(1995 as u32).to_be_bytes().to_vec());
+    query.insert_range_to(..1995_u32.to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
@@ -1871,12 +1867,12 @@ fn test_get_range_to_query_with_non_unique_subquery() {
 
     assert_eq!(elements.len(), 500);
 
-    let mut first_value = (1985 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    let mut first_value = 1985_u32.to_be_bytes().to_vec();
+    first_value.append(&mut 100_u32.to_be_bytes().to_vec());
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1994 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    let mut last_value = 1994_u32.to_be_bytes().to_vec();
+    last_value.append(&mut 149_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1887,7 +1883,7 @@ fn test_get_range_to_query_with_unique_subquery() {
 
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
-    query.insert_range_to(..(1995 as u32).to_be_bytes().to_vec());
+    query.insert_range_to(..1995_u32.to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
 
@@ -1901,10 +1897,10 @@ fn test_get_range_to_query_with_unique_subquery() {
 
     assert_eq!(elements.len(), 10);
 
-    let first_value = (1985 as u32).to_be_bytes().to_vec();
+    let first_value = 1985_u32.to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let last_value = (1994 as u32).to_be_bytes().to_vec();
+    let last_value = 1994_u32.to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1915,7 +1911,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
 
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
-    query.insert_range_to_inclusive(..=(1995 as u32).to_be_bytes().to_vec());
+    query.insert_range_to_inclusive(..=1995_u32.to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
@@ -1932,12 +1928,12 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
 
     assert_eq!(elements.len(), 550);
 
-    let mut first_value = (1985 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    let mut first_value = 1985_u32.to_be_bytes().to_vec();
+    first_value.append(&mut 100_u32.to_be_bytes().to_vec());
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1995 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    let mut last_value = 1995_u32.to_be_bytes().to_vec();
+    last_value.append(&mut 149_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1948,7 +1944,7 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
 
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
-    query.insert_range_to_inclusive(..=(1995 as u32).to_be_bytes().to_vec());
+    query.insert_range_to_inclusive(..=1995_u32.to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
 
@@ -1962,10 +1958,10 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
 
     assert_eq!(elements.len(), 11);
 
-    let first_value = (1985 as u32).to_be_bytes().to_vec();
+    let first_value = 1985_u32.to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let last_value = (1995 as u32).to_be_bytes().to_vec();
+    let last_value = 1995_u32.to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -1976,7 +1972,7 @@ fn test_get_range_after_query_with_non_unique_subquery() {
 
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
-    query.insert_range_after((1995 as u32).to_be_bytes().to_vec()..);
+    query.insert_range_after(1995_u32.to_be_bytes().to_vec()..);
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
@@ -1993,12 +1989,12 @@ fn test_get_range_after_query_with_non_unique_subquery() {
 
     assert_eq!(elements.len(), 200);
 
-    let mut first_value = (1996 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    let mut first_value = 1996_u32.to_be_bytes().to_vec();
+    first_value.append(&mut 100_u32.to_be_bytes().to_vec());
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1999 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    let mut last_value = 1999_u32.to_be_bytes().to_vec();
+    last_value.append(&mut 149_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -2010,7 +2006,7 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_after_to(
-        (1995 as u32).to_be_bytes().to_vec()..(1997 as u32).to_be_bytes().to_vec(),
+        1995_u32.to_be_bytes().to_vec()..1997_u32.to_be_bytes().to_vec(),
     );
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
@@ -2028,12 +2024,12 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
 
     assert_eq!(elements.len(), 50);
 
-    let mut first_value = (1996 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    let mut first_value = 1996_u32.to_be_bytes().to_vec();
+    first_value.append(&mut 100_u32.to_be_bytes().to_vec());
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1996 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    let mut last_value = 1996_u32.to_be_bytes().to_vec();
+    last_value.append(&mut 149_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -2045,7 +2041,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
     query.insert_range_after_to_inclusive(
-        (1995 as u32).to_be_bytes().to_vec()..=(1997 as u32).to_be_bytes().to_vec(),
+        1995_u32.to_be_bytes().to_vec()..=1997_u32.to_be_bytes().to_vec(),
     );
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
@@ -2063,12 +2059,12 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
 
     assert_eq!(elements.len(), 100);
 
-    let mut first_value = (1996 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    let mut first_value = 1996_u32.to_be_bytes().to_vec();
+    first_value.append(&mut 100_u32.to_be_bytes().to_vec());
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1997 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    let mut last_value = 1997_u32.to_be_bytes().to_vec();
+    last_value.append(&mut 149_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -2101,16 +2097,16 @@ fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
 
     let path_query = PathQuery::new_unsized(path, query.clone());
 
-    let (elements, skipped) = db
+    let (elements, _) = db
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
     assert_eq!(elements.len(), 60);
 
-    let mut first_value = (100 as u32).to_be_bytes().to_vec();
+    let first_value = 100_u32.to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (109 as u32).to_be_bytes().to_vec();
+    let last_value = 109_u32.to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
@@ -2121,7 +2117,7 @@ fn test_get_range_query_with_limit_and_offset() {
 
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new_with_direction(true);
-    query.insert_range((1990 as u32).to_be_bytes().to_vec()..(1995 as u32).to_be_bytes().to_vec());
+    query.insert_range(1990_u32.to_be_bytes().to_vec()..1995_u32.to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
     let mut subquery = Query::new();
@@ -2139,12 +2135,12 @@ fn test_get_range_query_with_limit_and_offset() {
 
     assert_eq!(elements.len(), 250);
 
-    let mut first_value = (1990 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    let mut first_value = 1990_u32.to_be_bytes().to_vec();
+    first_value.append(&mut 100_u32.to_be_bytes().to_vec());
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1994 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    let mut last_value = 1994_u32.to_be_bytes().to_vec();
+    last_value.append(&mut 149_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 
     subquery.left_to_right = false;
@@ -2163,12 +2159,12 @@ fn test_get_range_query_with_limit_and_offset() {
 
     assert_eq!(elements.len(), 250);
 
-    let mut first_value = (1994 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (149 as u32).to_be_bytes().to_vec());
+    let mut first_value = 1994_u32.to_be_bytes().to_vec();
+    first_value.append(&mut 149_u32.to_be_bytes().to_vec());
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1990 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    let mut last_value = 1990_u32.to_be_bytes().to_vec();
+    last_value.append(&mut 100_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 
     subquery.left_to_right = true;
@@ -2187,13 +2183,13 @@ fn test_get_range_query_with_limit_and_offset() {
 
     assert_eq!(elements.len(), 55);
 
-    let mut first_value = (1990 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (100 as u32).to_be_bytes().to_vec());
+    let mut first_value = 1990_u32.to_be_bytes().to_vec();
+    first_value.append(&mut 100_u32.to_be_bytes().to_vec());
     assert_eq!(elements[0], first_value);
 
     // Second tree 5 element [100, 101, 102, 103, 104]
-    let mut last_value = (1991 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (104 as u32).to_be_bytes().to_vec());
+    let mut last_value = 1991_u32.to_be_bytes().to_vec();
+    last_value.append(&mut 104_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 
     query.set_subquery_key(subquery_key.clone());
@@ -2213,15 +2209,15 @@ fn test_get_range_query_with_limit_and_offset() {
 
     // Skips the first 14 elements, starts from the 15th
     // i.e skips [100 - 113] starts from 114
-    let mut first_value = (1990 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (114 as u32).to_be_bytes().to_vec());
+    let mut first_value = 1990_u32.to_be_bytes().to_vec();
+    first_value.append(&mut 114_u32.to_be_bytes().to_vec());
     assert_eq!(elements[0], first_value);
 
     // Continues for 60 iterations
     // Takes 36 elements from the first tree (50 - 14)
     // takes the remaining 24 from the second three (60 - 36)
-    let mut last_value = (1991 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (123 as u32).to_be_bytes().to_vec());
+    let mut last_value = 1991_u32.to_be_bytes().to_vec();
+    last_value.append(&mut 123_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 
     query.set_subquery_key(subquery_key.clone());
@@ -2245,12 +2241,12 @@ fn test_get_range_query_with_limit_and_offset() {
     // Skips the first 10 elements from the back
     // last tree and starts from the 11th before the end
     // Underlying subquery is ascending
-    let mut first_value = (1994 as u32).to_be_bytes().to_vec();
-    first_value.append(&mut (110 as u32).to_be_bytes().to_vec());
+    let mut first_value = 1994_u32.to_be_bytes().to_vec();
+    first_value.append(&mut 110_u32.to_be_bytes().to_vec());
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (1993 as u32).to_be_bytes().to_vec();
-    last_value.append(&mut (119 as u32).to_be_bytes().to_vec());
+    let mut last_value = 1993_u32.to_be_bytes().to_vec();
+    last_value.append(&mut 119_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
 
     query.set_subquery_key(subquery_key.clone());
@@ -2290,7 +2286,7 @@ fn test_get_range_query_with_limit_and_offset() {
     populate_tree_for_unique_range_subquery(&mut db);
 
     let mut query = Query::new_with_direction(true);
-    query.insert_range((1990 as u32).to_be_bytes().to_vec()..(2000 as u32).to_be_bytes().to_vec());
+    query.insert_range(1990_u32.to_be_bytes().to_vec()..2000_u32.to_be_bytes().to_vec());
 
     query.set_subquery_key(subquery_key.clone());
 
@@ -2302,10 +2298,10 @@ fn test_get_range_query_with_limit_and_offset() {
 
     assert_eq!(elements.len(), 5);
 
-    let first_value = (1992 as u32).to_be_bytes().to_vec();
+    let first_value = 1992_u32.to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let last_value = (1996 as u32).to_be_bytes().to_vec();
+    let last_value = 1996_u32.to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 

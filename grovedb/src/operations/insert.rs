@@ -72,10 +72,8 @@ impl GroveDb {
         key: &[u8],
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
-        if let None = transaction {
-            if self.is_readonly {
-                return Err(Error::DbIsInReadonlyMode);
-            }
+        if transaction.is_none() && self.is_readonly {
+            return Err(Error::DbIsInReadonlyMode);
         }
 
         // Open Merk and put handle into `subtrees` dictionary accessible by its
@@ -113,10 +111,8 @@ impl GroveDb {
         key: Vec<u8>,
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
-        if let None = transaction {
-            if self.is_readonly {
-                return Err(Error::DbIsInReadonlyMode);
-            }
+        if transaction.is_none() &&  self.is_readonly {
+            return Err(Error::DbIsInReadonlyMode);
         }
 
         // First, check if a subtree exists to create a new subtree under it

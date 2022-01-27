@@ -10,13 +10,10 @@ use std::{cell::RefCell, collections::HashMap, path::Path, rc::Rc};
 use blake3;
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
-use rs_merkle::{algorithms::Sha256, Hasher, MerkleTree};
+use rs_merkle::{algorithms::Sha256, MerkleTree};
 use serde::{Deserialize, Serialize};
 pub use storage::{rocksdb_storage::PrefixedRocksDbStorage, Storage};
-use storage::{
-    rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorageError},
-    Transaction,
-};
+use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorageError};
 pub use subtree::Element;
 use subtrees::Subtrees;
 
@@ -25,7 +22,7 @@ use subtrees::Subtrees;
 
 /// A key to store serialized data about subtree prefixes to restore HADS
 /// structure
-const SUBTREES_SERIALIZED_KEY: &[u8] = b"subtreesSerialized";
+// const SUBTREES_SERIALIZED_KEY: &[u8] = b"subtreesSerialized";
 /// A key to store serialized data about root tree leafs keys and order
 const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
 
@@ -266,8 +263,8 @@ impl GroveDb {
 
             let (key, parent_path) = path.split_last().ok_or(Error::InvalidPath("empty path"))?;
             let (mut upper_tree, prefix) = subtrees.get(parent_path, transaction)?;
-            element.insert(&mut upper_tree, key.to_vec(), transaction);
-            if let Some(prefix) = prefix {
+            element.insert(&mut upper_tree, key.to_vec(), transaction)?;
+            if prefix.is_some() {
                 self.get_subtrees()
                     .insert_temp_tree(parent_path, upper_tree, transaction);
             } else {
