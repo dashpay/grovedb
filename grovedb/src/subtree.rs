@@ -1,7 +1,6 @@
 //! Module for subtrees handling.
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
-use std::{collections::HashMap, ops::Sub};
 
 use merk::{
     proofs::{query::QueryItem, Query},
@@ -17,7 +16,7 @@ use storage::{
     RawIterator, Storage, Store,
 };
 
-use crate::{Error, GroveDb, Merk, PathQuery, SizedQuery, Subtrees};
+use crate::{Error, Merk, PathQuery, SizedQuery, Subtrees};
 
 /// Variants of GroveDB stored entities
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
