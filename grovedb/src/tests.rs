@@ -2103,10 +2103,10 @@ fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
 
     assert_eq!(elements.len(), 60);
 
-    let mut first_value = (100 as u32).to_be_bytes().to_vec();
+    let mut first_value = 100_u32.to_be_bytes().to_vec();
     assert_eq!(elements[0], first_value);
 
-    let mut last_value = (109 as u32).to_be_bytes().to_vec();
+    let mut last_value = 109_u32.to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
 }
 
