@@ -246,7 +246,6 @@ impl Element {
             } else {
                 // this is a query on a range
                 item.seek_for_iter(&mut iter, sized_query.query.left_to_right);
-                let mut work = true;
 
                 while item.iter_is_valid_for_type(&iter, limit, sized_query.query.left_to_right) {
                     let element =
