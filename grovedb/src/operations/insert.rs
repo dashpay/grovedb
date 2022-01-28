@@ -14,7 +14,7 @@ fn create_merk_with_prefix<'a, P>(
 where
     P: IntoIterator<Item = &'a [u8]>,
 {
-    let subtree_prefix = GroveDb::compress_subtree_key(path, Some(&key));
+    let subtree_prefix = GroveDb::compress_subtree_key(path, Some(key));
     Ok((
         subtree_prefix.clone(),
         Merk::open(PrefixedRocksDbStorage::new(db, subtree_prefix)?)
@@ -41,9 +41,9 @@ impl GroveDb {
         match element {
             Element::Tree(_) => {
                 if path_iter.len() == 0 {
-                    self.add_root_leaf(&key, transaction)?;
+                    self.add_root_leaf(key, transaction)?;
                 } else {
-                    self.add_non_root_subtree(path_iter.clone(), key, transaction)?;
+                    self.add_non_root_subtree(path_iter, key, transaction)?;
                 }
             }
             _ => {
@@ -137,7 +137,7 @@ impl GroveDb {
         }
 
         let (subtree_prefix, subtree_merk) =
-            create_merk_with_prefix(self.db.clone(), path_iter.clone(), &key)?;
+            create_merk_with_prefix(self.db.clone(), path_iter.clone(), key)?;
 
         // Set tree value as a a subtree root hash
         let element = Element::Tree(subtree_merk.root_hash());

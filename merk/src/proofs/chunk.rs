@@ -303,7 +303,7 @@ mod tests {
         assert!(!has_more);
 
         println!("{:?}", &proof);
-        let (trunk, _) = verify_trunk(proof.into_iter().map(|op| Ok(op))).unwrap();
+        let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap();
 
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
@@ -318,7 +318,7 @@ mod tests {
 
         let (proof, has_more) = walker.create_trunk_proof().unwrap();
         assert!(has_more);
-        let (trunk, _) = verify_trunk(proof.into_iter().map(|op| Ok(op))).unwrap();
+        let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap();
 
         let counts = count_node_types(trunk);
         // are these formulas correct for all values of `MIN_TRUNK_HEIGHT`? 🤔
@@ -339,7 +339,7 @@ mod tests {
         let (proof, has_more) = walker.create_trunk_proof().unwrap();
         assert!(!has_more);
 
-        let (trunk, _) = verify_trunk(proof.into_iter().map(|op| Ok(op))).unwrap();
+        let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
         assert_eq!(counts.kv, 1);
@@ -358,7 +358,7 @@ mod tests {
         let (proof, has_more) = walker.create_trunk_proof().unwrap();
         assert!(!has_more);
 
-        let (trunk, _) = verify_trunk(proof.into_iter().map(|op| Ok(op))).unwrap();
+        let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
         assert_eq!(counts.kv, 2);
@@ -377,7 +377,7 @@ mod tests {
         let (proof, has_more) = walker.create_trunk_proof().unwrap();
         assert!(!has_more);
 
-        let (trunk, _) = verify_trunk(proof.into_iter().map(|op| Ok(op))).unwrap();
+        let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
         assert_eq!(counts.kv, 2);
@@ -398,7 +398,7 @@ mod tests {
         let (proof, has_more) = walker.create_trunk_proof().unwrap();
         assert!(!has_more);
 
-        let (trunk, _) = verify_trunk(proof.into_iter().map(|op| Ok(op))).unwrap();
+        let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
         assert_eq!(counts.kv, 3);
@@ -420,7 +420,7 @@ mod tests {
         let mut iter = merk.inner.raw_iter();
         iter.seek_to_first();
         let chunk = get_next_chunk(&mut iter, None).unwrap();
-        let ops = chunk.into_iter().map(|op| Ok(op));
+        let ops = chunk.into_iter().map(Ok);
         let chunk = verify_leaf(ops, merk.root_hash()).unwrap();
         let counts = count_node_types(chunk);
         assert_eq!(counts.kv, 31);
@@ -433,7 +433,7 @@ mod tests {
 
         // left leaf
         let chunk = get_next_chunk(&mut iter, Some(root_key.as_slice())).unwrap();
-        let ops = chunk.into_iter().map(|op| Ok(op));
+        let ops = chunk.into_iter().map(Ok);
         let chunk = verify_leaf(
             ops,
             [
@@ -449,7 +449,7 @@ mod tests {
 
         // right leaf
         let chunk = get_next_chunk(&mut iter, None).unwrap();
-        let ops = chunk.into_iter().map(|op| Ok(op));
+        let ops = chunk.into_iter().map(Ok);
         let chunk = verify_leaf(
             ops,
             [

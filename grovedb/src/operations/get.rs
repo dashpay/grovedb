@@ -69,21 +69,19 @@ impl GroveDb {
         let path_iter = path.into_iter();
         // If path is empty, then we need to combine the provided key and path
         // then use this to get merk.
-        let merk_result;
-        if path_iter.len() == 0 {
-            merk_result = self.get_subtrees().get([key.as_ref()], transaction)?;
+        let merk_result = if path_iter.len() == 0 {
+            self.get_subtrees().get([key], transaction)?
         } else {
-            merk_result = self.get_subtrees().get(path_iter.clone(), transaction)?;
-        }
+            self.get_subtrees().get(path_iter.clone(), transaction)?
+        };
 
         let (merk, prefix) = merk_result;
 
-        let elem;
-        if path_iter.len() == 0 {
-            elem = Ok(Element::Tree(merk.root_hash()));
+        let elem = if path_iter.len() == 0 {
+            Ok(Element::Tree(merk.root_hash()))
         } else {
-            elem = Element::get(&merk, key.as_ref());
-        }
+            Element::get(&merk, key)
+        };
 
         if let Some(prefix) = prefix {
             self.get_subtrees()
