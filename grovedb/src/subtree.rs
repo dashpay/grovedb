@@ -1,7 +1,6 @@
 //! Module for subtrees handling.
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
-use std::collections::HashMap;
 
 use merk::{
     proofs::{query::QueryItem, Query},
@@ -17,7 +16,7 @@ use storage::{
     RawIterator, Storage, Store,
 };
 
-use crate::{Error, GroveDb, Merk, PathQuery, SizedQuery};
+use crate::{Error, Merk, PathQuery, SizedQuery, Subtrees};
 
 /// Variants of GroveDB stored entities
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -56,9 +55,10 @@ impl Element {
         let element = bincode::deserialize(
             merk.get(key)
                 .map_err(|e| Error::CorruptedData(e.to_string()))?
-                .ok_or(Error::InvalidPathKey(
-                    format!("key not found in Merk: {}", hex::encode(key)),
-                ))?
+                .ok_or(Error::InvalidPathKey(format!(
+                    "key not found in Merk: {}",
+                    hex::encode(key)
+                )))?
                 .as_slice(),
         )
         .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
@@ -68,7 +68,7 @@ impl Element {
     pub fn get_query(
         merk: &Merk<PrefixedRocksDbStorage>,
         query: &Query,
-        subtrees_option: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        subtrees_option: Option<&Subtrees>,
     ) -> Result<Vec<Element>, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
         let (elements, _) = Element::get_sized_query(merk, &sized_query, subtrees_option)?;
@@ -76,7 +76,8 @@ impl Element {
     }
 
     fn basic_push(
-        _subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        // _subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        _subtree: Option<&Subtrees>,
         _key: Option<&[u8]>,
         element: Element,
         _path: Option<&[&[u8]]>,
@@ -99,7 +100,8 @@ impl Element {
     }
 
     fn path_query_push(
-        subtrees_option: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        // subtrees_option: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        subtrees_option: Option<&Subtrees>,
         key: Option<&[u8]>,
         element: Element,
         path: Option<&[&[u8]]>,
@@ -135,13 +137,24 @@ impl Element {
                     if let Some(subquery_key) = &subquery_key_option {
                         path_vec.push(subquery_key.as_slice());
                     }
-                    let inner_merk = subtrees
-                        .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
-                        .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+
+                    let (inner_merk, prefix) = subtrees
+                        .get(path_vec.as_slice(), None)
+                        .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
+
                     let inner_query = SizedQuery::new(subquery, *limit, *offset);
-                    let inner_path_query = PathQuery::new(path_vec.as_slice(), inner_query);
+                    let path_vec_owned = path_vec.iter().map(|x| x.to_vec()).collect();
+                    let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
+
                     let (mut sub_elements, skipped) =
-                        Element::get_path_query(inner_merk, &inner_path_query, subtrees_option)?;
+                        Element::get_path_query(&inner_merk, &inner_path_query, subtrees_option)?;
+
+                    if let Some(prefix) = prefix {
+                        subtrees.insert_temp_tree_with_prefix(prefix, inner_merk, None);
+                    } else {
+                        subtrees.insert_temp_tree(path_vec.as_slice(), inner_merk, None);
+                    }
+
                     if let Some(limit) = limit {
                         *limit = *limit - sub_elements.len() as u16;
                     }
@@ -150,11 +163,11 @@ impl Element {
                     }
                     results.append(&mut sub_elements);
                 } else if let Some(subquery_key) = subquery_key_option {
-                    let inner_merk = subtrees
-                        .get(&GroveDb::compress_subtree_key(path_vec.as_slice(), None))
-                        .ok_or(Error::InvalidPath("no subtree found under that path"))?;
+                    let (inner_merk, prefix) = subtrees
+                        .get(path_vec.as_slice(), None)
+                        .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
                     if offset.is_none() || offset.is_some() && offset.unwrap() == 0 {
-                        results.push(Element::get(inner_merk, subquery_key.as_slice())?);
+                        results.push(Element::get(&inner_merk, subquery_key.as_slice())?);
                         if limit.is_some() {
                             *limit = Some(limit.unwrap() - 1);
                         }
@@ -162,6 +175,11 @@ impl Element {
                         if offset.is_some() {
                             *offset = Some(offset.unwrap() - 1);
                         }
+                    }
+                    if let Some(prefix) = prefix {
+                        subtrees.insert_temp_tree_with_prefix(prefix, inner_merk, None);
+                    } else {
+                        subtrees.insert_temp_tree(path_vec.as_slice(), inner_merk, None);
                     }
                 } else {
                     return Err(Error::InvalidPath(
@@ -171,14 +189,7 @@ impl Element {
                 }
             }
             _ => {
-                if offset.is_none() || offset.is_some() && offset.unwrap() == 0 {
-                    results.push(element);
-                    if limit.is_some() {
-                        *limit = Some(limit.unwrap() - 1);
-                    }
-                } else if offset.is_some() {
-                    *offset = Some(offset.unwrap() - 1);
-                }
+                Element::basic_push(subtrees_option, key, element, path, subquery_key_option, subquery, left_to_right, results, limit, offset)?;
             }
         }
         Ok(())
@@ -188,9 +199,10 @@ impl Element {
         merk: &Merk<PrefixedRocksDbStorage>,
         sized_query: &SizedQuery,
         path: Option<&[&[u8]]>,
-        subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        subtrees: Option<&Subtrees>,
         add_element_function: fn(
-            subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+            // subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+            subtrees: Option<&Subtrees>,
             key: Option<&[u8]>,
             element: Element,
             path: Option<&[&[u8]]>,
@@ -233,7 +245,6 @@ impl Element {
             } else {
                 // this is a query on a range
                 item.seek_for_iter(&mut iter, sized_query.query.left_to_right);
-                let mut work = true;
 
                 while item.iter_is_valid_for_type(&iter, limit, sized_query.query.left_to_right) {
                     let element =
@@ -266,8 +277,8 @@ impl Element {
                 break;
             }
         }
-        let skipped = if original_offset.is_some() {
-            original_offset.unwrap() - offset.unwrap()
+        let skipped = if let Some(original_offset_unwrapped) = original_offset {
+            original_offset_unwrapped - offset.unwrap()
         } else {
             0
         };
@@ -278,12 +289,18 @@ impl Element {
     pub fn get_path_query(
         merk: &Merk<PrefixedRocksDbStorage>,
         path_query: &PathQuery,
-        subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        // subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        subtrees: Option<&Subtrees>,
     ) -> Result<(Vec<Element>, u16), Error> {
+        let path_slices = path_query
+            .path
+            .iter()
+            .map(|x| x.as_slice())
+            .collect::<Vec<_>>();
         Element::get_query_apply_function(
             merk,
             &path_query.query,
-            Some(path_query.path),
+            Some(path_slices.as_slice()),
             subtrees,
             Element::path_query_push,
         )
@@ -293,7 +310,7 @@ impl Element {
     pub fn get_sized_query(
         merk: &Merk<PrefixedRocksDbStorage>,
         sized_query: &SizedQuery,
-        subtrees: Option<&HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+        subtrees: Option<&Subtrees>,
     ) -> Result<(Vec<Element>, u16), Error> {
         Element::get_query_apply_function(
             merk,
@@ -403,7 +420,7 @@ mod tests {
         query.insert_key(b"c".to_vec());
         query.insert_key(b"a".to_vec());
         assert_eq!(
-            Element::get_query(&mut merk, &query, None).expect("expected successful get_query"),
+            Element::get_query(&merk, &query, None).expect("expected successful get_query"),
             vec![
                 Element::Item(b"ayya".to_vec()),
                 Element::Item(b"ayyc".to_vec())
@@ -415,7 +432,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query(&mut merk, &query, None).expect("expected successful get_query"),
+            Element::get_query(&merk, &query, None).expect("expected successful get_query"),
             vec![
                 Element::Item(b"ayya".to_vec()),
                 Element::Item(b"ayyb".to_vec()),
@@ -428,7 +445,7 @@ mod tests {
         query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query(&mut merk, &query, None).expect("expected successful get_query"),
+            Element::get_query(&merk, &query, None).expect("expected successful get_query"),
             vec![
                 Element::Item(b"ayyb".to_vec()),
                 Element::Item(b"ayyc".to_vec()),
@@ -442,7 +459,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query(&mut merk, &query, None).expect("expected successful get_query"),
+            Element::get_query(&merk, &query, None).expect("expected successful get_query"),
             vec![
                 Element::Item(b"ayya".to_vec()),
                 Element::Item(b"ayyb".to_vec()),
@@ -472,7 +489,7 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"d".to_vec());
 
         let ascending_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, skipped) = Element::get_sized_query(&mut merk, &ascending_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &ascending_query, None)
             .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -487,7 +504,7 @@ mod tests {
         query.left_to_right = false;
 
         let backwards_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, skipped) = Element::get_sized_query(&mut merk, &backwards_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &backwards_query, None)
             .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -521,34 +538,37 @@ mod tests {
         query.insert_range_inclusive(b"a".to_vec()..=b"d".to_vec());
 
         let ascending_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, skipped) = Element::get_sized_query(&mut merk, &ascending_query, None)
-            .expect("expected successful get_query");
-        assert_eq!(
-            elements,
-            vec![
+        fn check_elements_no_skipped((elements, skipped): (Vec<Element>, u16), reverse: bool) {
+            let mut expected = vec![
                 Element::Item(b"ayya".to_vec()),
                 Element::Item(b"ayyb".to_vec()),
                 Element::Item(b"ayyc".to_vec()),
                 Element::Item(b"ayyd".to_vec()),
-            ]
+            ];
+            if reverse {
+                expected.reverse();
+            }
+            assert_eq!(
+                elements,
+                expected
+            );
+            assert_eq!(skipped, 0);
+        }
+
+        check_elements_no_skipped(
+            Element::get_sized_query(&merk, &ascending_query, None)
+                .expect("expected successful get_query"),
+            false
         );
-        assert_eq!(skipped, 0);
 
         query.left_to_right = false;
 
         let backwards_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, skipped) = Element::get_sized_query(&mut merk, &backwards_query, None)
-            .expect("expected successful get_query");
-        assert_eq!(
-            elements,
-            vec![
-                Element::Item(b"ayyd".to_vec()),
-                Element::Item(b"ayyc".to_vec()),
-                Element::Item(b"ayyb".to_vec()),
-                Element::Item(b"ayya".to_vec()),
-            ]
+        check_elements_no_skipped(
+            Element::get_sized_query(&merk, &backwards_query, None)
+                .expect("expected successful get_query"),
+            true
         );
-        assert_eq!(skipped, 0);
 
         // Test range inclusive query
         let mut query = Query::new_with_direction(false);
@@ -556,18 +576,11 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"c".to_vec());
 
         let backwards_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, skipped) = Element::get_sized_query(&mut merk, &backwards_query, None)
-            .expect("expected successful get_query");
-        assert_eq!(
-            elements,
-            vec![
-                Element::Item(b"ayyd".to_vec()),
-                Element::Item(b"ayyc".to_vec()),
-                Element::Item(b"ayyb".to_vec()),
-                Element::Item(b"ayya".to_vec()),
-            ]
+        check_elements_no_skipped(
+            Element::get_sized_query(&merk, &backwards_query, None)
+                .expect("expected successful get_query"),
+            true
         );
-        assert_eq!(skipped, 0);
     }
 
     #[test]
@@ -593,7 +606,7 @@ mod tests {
 
         // since these are just keys a backwards query will keep same order
         let backwards_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, skipped) = Element::get_sized_query(&mut merk, &backwards_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &backwards_query, None)
             .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -606,7 +619,7 @@ mod tests {
 
         // The limit will mean we will only get back 1 item
         let limit_query = SizedQuery::new(query.clone(), Some(1), None);
-        let (elements, skipped) = Element::get_sized_query(&mut merk, &limit_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &limit_query, None)
             .expect("expected successful get_query");
         assert_eq!(elements, vec![Element::Item(b"ayya".to_vec()),]);
         assert_eq!(skipped, 0);
@@ -616,7 +629,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         let limit_query = SizedQuery::new(query.clone(), Some(2), None);
-        let (elements, skipped) = Element::get_sized_query(&mut merk, &limit_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &limit_query, None)
             .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -628,7 +641,7 @@ mod tests {
         assert_eq!(skipped, 0);
 
         let limit_offset_query = SizedQuery::new(query.clone(), Some(2), Some(1));
-        let (elements, skipped) = Element::get_sized_query(&mut merk, &limit_offset_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &limit_offset_query, None)
             .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -646,7 +659,7 @@ mod tests {
 
         let limit_offset_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) =
-            Element::get_sized_query(&mut merk, &limit_offset_backwards_query, None)
+            Element::get_sized_query(&merk, &limit_offset_backwards_query, None)
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -662,7 +675,7 @@ mod tests {
         query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         let limit_full_query = SizedQuery::new(query.clone(), Some(5), Some(0));
-        let (elements, skipped) = Element::get_sized_query(&mut merk, &limit_full_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &limit_full_query, None)
             .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -680,7 +693,7 @@ mod tests {
 
         let limit_offset_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) =
-            Element::get_sized_query(&mut merk, &limit_offset_backwards_query, None)
+            Element::get_sized_query(&merk, &limit_offset_backwards_query, None)
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -697,7 +710,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         let limit_backwards_query = SizedQuery::new(query.clone(), Some(2), None);
-        let (elements, skipped) = Element::get_sized_query(&mut merk, &limit_backwards_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &limit_backwards_query, None)
             .expect("expected successful get_query");
         assert_eq!(
             elements,

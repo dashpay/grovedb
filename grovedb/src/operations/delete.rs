@@ -30,10 +30,8 @@ impl GroveDb {
         only_delete_if_empty_tree: bool,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<bool, Error> {
-        if let None = transaction {
-            if self.is_readonly {
-                return Err(Error::DbIsInReadonlyMode);
-            }
+        if transaction.is_none() && self.is_readonly {
+            return Err(Error::DbIsInReadonlyMode);
         }
         if path.is_empty() {
             // Attempt to delete a root tree leaf
@@ -45,10 +43,21 @@ impl GroveDb {
             let subtrees = self.get_subtrees();
             let (mut merk, prefix) = subtrees.get(path, transaction)?;
 
+            Element::delete(&mut merk, key.clone(), transaction)?;
+
             if let Element::Tree(_) = element {
 
                 if only_delete_if_empty_tree && !merk.is_empty_tree() {
                     return Ok(false);
+                }
+
+                // we need to add the merk trees into the hashmap because we will use them for querying data
+                if let Some(prefix) = prefix {
+                    subtrees
+                        .insert_temp_tree_with_prefix(prefix, merk, transaction);
+                } else {
+                    subtrees
+                        .insert_temp_tree(path, merk, transaction);
                 }
 
                 // TODO: dumb traversal should not be tolerated
@@ -65,17 +74,6 @@ impl GroveDb {
                         Error::CorruptedData(format!("unable to cleanup tree from storage: {}", e))
                     })?;
                 }
-            }
-
-            Element::delete(&mut merk, key.clone(), transaction)?;
-
-            // after deletion, if there is a transaction, add the merk back into the hashmap
-            if let Some(prefix) = prefix {
-                subtrees
-                    .insert_temp_tree_with_prefix(prefix, merk, transaction);
-            } else {
-                subtrees
-                    .insert_temp_tree(path, merk, transaction);
             }
 
             self.propagate_changes(path, transaction)?;
@@ -98,16 +96,16 @@ impl GroveDb {
         while let Some(q) = queue.pop() {
             // TODO: eventually we need to do something about this nested slices
             let q_ref: Vec<&[u8]> = q.iter().map(|x| x.as_slice()).collect();
-            let mut iter = self.elements_iterator(&q_ref, transaction)?;
+            // Get the correct subtree with q_ref as path
+            let (merk, _) = self.get_subtrees().get(&q_ref, transaction)?;
+            let mut iter = Element::iterator(merk.raw_iter());
+            // let mut iter = self.elements_iterator(&q_ref, transaction)?;
             while let Some((key, value)) = iter.next()? {
-                match value {
-                    Element::Tree(_) => {
-                        let mut sub_path = q.clone();
-                        sub_path.push(key);
-                        queue.push(sub_path.clone());
-                        result.push(sub_path);
-                    }
-                    _ => {}
+                if let Element::Tree(_) = value {
+                    let mut sub_path = q.clone();
+                    sub_path.push(key);
+                    queue.push(sub_path.clone());
+                    result.push(sub_path);
                 }
             }
         }

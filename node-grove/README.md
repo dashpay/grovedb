@@ -2,21 +2,21 @@
 
 [![GroveDB npm package](https://img.shields.io/npm/v/@dashevo/node-grove.svg)](https://www.npmjs.com/package/@dashevo/node-grove)
 
-`node-grove` is a GroveDB binding for node.js
+`node-grove` is a GroveDB binding for Node.JS
 
-`node-grove` is [available on npm](https://www.npmjs.com/package/@dashevo/node-grove)
+`node-grove` is [available on npm](https://www.npmjs.com/package/@dashevo/grovedb)
 
 ## Usage
 
-Add the module to your project with `npm install @dashevo/node-grove`.
+Add the module to your project with `npm install @dashevo/grovedb`.
 
 ## Example
 
 ```javascript
-const GroveDB = require('@dashevo/node-grove');
+const GroveDB = require('@dashevo/grovedb');
 
 (async function main() {
-    const groveDb = GroveDB.open('./test.db');
+    const groveDb = new GroveDB('./test.db');
 
     const tree_key = Buffer.from("test_tree");
 
@@ -60,10 +60,10 @@ Run `npm run build` to build the package, `npm test` to test it.
 
 The main file that is used form the node.js side is `index.js`. It contains
 class named `GroveDb`. The actual functions this class makes calls to are
-stored in the `./src/lib.rs`. When building the project, it is compiled to 
-a file called `index.node`, that is imported into the `index.js` file.
+stored in the `./src/lib.rs`. When building the project, it is compiled to
+binary in the `prebuilds` directory. This binary imported into the `index.js` file.
 
-Please note that the binding itself contains a lot of code. This is due to 
+Please note that the binding itself contains a lot of code. This is due to
 the fact that GroveDB is not thread-safe, and needs to live in its own thread.
 It communicates with the main binding thread through messages.
 

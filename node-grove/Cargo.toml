@@ -1,6 +1,6 @@
 [package]
 name = "node-grove"
-version = "0.1.0"
+version = "0.2.0"
 description = "GroveDB node.js bindings"
 edition = "2021"
 license = "MIT"

@@ -212,12 +212,7 @@ where
     /// check adds some overhead, so if you are sure your batch is sorted and
     /// unique you can use the unsafe `prove_unchecked` for a small performance
     /// gain.
-    pub fn prove(
-        &self,
-        query: Query,
-        limit: Option<u16>,
-        offset: Option<u16>,
-    ) -> Result<Vec<u8>> {
+    pub fn prove(&self, query: Query, limit: Option<u16>, offset: Option<u16>) -> Result<Vec<u8>> {
         let left_to_right = query.left_to_right;
         self.prove_unchecked(query, limit, offset, left_to_right)
     }
