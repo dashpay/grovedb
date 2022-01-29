@@ -3,12 +3,33 @@ use storage::rocksdb_storage::OptimisticTransactionDBTransaction;
 use crate::{Element, Error, GroveDb};
 
 impl GroveDb {
+
     pub fn delete(
         &mut self,
         path: &[&[u8]],
         key: Vec<u8>,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(), Error> {
+        self.delete_internal(path, key, false, transaction)?;
+        Ok(())
+    }
+
+    pub fn delete_if_empty_tree(
+        &mut self,
+        path: &[&[u8]],
+        key: Vec<u8>,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<bool, Error> {
+        self.delete_internal(path, key, true, transaction)
+    }
+
+    fn delete_internal(
+        &mut self,
+        path: &[&[u8]],
+        key: Vec<u8>,
+        only_delete_if_empty_tree: bool,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<bool, Error> {
         if let None = transaction {
             if self.is_readonly {
                 return Err(Error::DbIsInReadonlyMode);
@@ -21,45 +42,44 @@ impl GroveDb {
             ))
         } else {
             let element = self.get_raw(path, &key, transaction)?;
-            {
-                let subtrees = match transaction {
-                    None => &mut self.subtrees,
-                    Some(_) => &mut self.temp_subtrees,
-                };
-
-                let mut merk = subtrees
-                    .get_mut(&Self::compress_subtree_key(path, None))
-                    .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-                Element::delete(merk, key.clone(), transaction)?;
-            }
+            let subtrees = self.get_subtrees();
+            let (mut merk, prefix) = subtrees.get(path, transaction)?;
 
             if let Element::Tree(_) = element {
+
+                if only_delete_if_empty_tree && !merk.is_empty_tree() {
+                    return Ok(false);
+                }
+
                 // TODO: dumb traversal should not be tolerated
                 let mut concat_path: Vec<Vec<u8>> = path.iter().map(|x| x.to_vec()).collect();
                 concat_path.push(key);
                 let subtrees_paths = self.find_subtrees(concat_path, transaction)?;
-                let subtrees = match transaction {
-                    None => &mut self.subtrees,
-                    Some(_) => &mut self.temp_subtrees,
-                };
 
                 for subtree_path in subtrees_paths {
                     // TODO: eventually we need to do something about this nested slices
                     let subtree_path_ref: Vec<&[u8]> =
                         subtree_path.iter().map(|x| x.as_slice()).collect();
-                    let prefix = Self::compress_subtree_key(&subtree_path_ref, None);
-                    if let Some(mut subtree) = subtrees.remove(&prefix) {
-                        subtree.clear(transaction).map_err(|e| {
-                            Error::CorruptedData(format!(
-                                "unable to cleanup tree from storage: {}",
-                                e
-                            ))
-                        })?;
-                    }
+                    let mut subtree = subtrees.get_subtree_without_transaction(subtree_path_ref.as_slice())?;
+                    subtree.clear(transaction).map_err(|e| {
+                        Error::CorruptedData(format!("unable to cleanup tree from storage: {}", e))
+                    })?;
                 }
             }
+
+            Element::delete(&mut merk, key.clone(), transaction)?;
+
+            // after deletion, if there is a transaction, add the merk back into the hashmap
+            if let Some(prefix) = prefix {
+                subtrees
+                    .insert_temp_tree_with_prefix(prefix, merk, transaction);
+            } else {
+                subtrees
+                    .insert_temp_tree(path, merk, transaction);
+            }
+
             self.propagate_changes(path, transaction)?;
-            Ok(())
+            Ok(true)
         }
     }
 

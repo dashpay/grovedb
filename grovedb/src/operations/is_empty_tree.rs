@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+use merk::Merk;
 use storage::{rocksdb_storage::OptimisticTransactionDBTransaction, RawIterator};
+use storage::rocksdb_storage::PrefixedRocksDbStorage;
 
 use crate::{Error, GroveDb};
 
@@ -17,9 +20,6 @@ impl GroveDb {
             .get(&Self::compress_subtree_key(path, None))
             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
 
-        let mut iter = merk.raw_iter();
-        iter.seek_to_first();
-
-        Ok(!iter.valid())
+        Ok(merk.is_empty_tree())
     }
 }

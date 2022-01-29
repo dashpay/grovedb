@@ -325,6 +325,13 @@ where
         self.storage.raw_iter()
     }
 
+    pub fn is_empty_tree(&self) -> bool {
+        let mut iter = self.raw_iter();
+        iter.seek_to_first();
+
+        !iter.valid()
+    }
+
     fn source(&self) -> MerkSource<S> {
         MerkSource {
             storage: &self.storage,
