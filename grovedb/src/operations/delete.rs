@@ -15,7 +15,7 @@ impl GroveDb {
                 return Ok(0 as u16);
             }
         }
-        let deleted = self.delete_internal(path, key, false, transaction)?;
+        let deleted = self.delete_internal(path, key, true, transaction)?;
         if !deleted {
             return Ok(0 as u16);
         }
@@ -55,7 +55,7 @@ impl GroveDb {
         &mut self,
         path: &[&[u8]],
         key: Vec<u8>,
-        only_delete_if_empty_tree: bool,
+        only_delete_tree_if_empty: bool,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<bool, Error> {
         if transaction.is_none() && self.is_readonly {
@@ -74,7 +74,7 @@ impl GroveDb {
             if let Element::Tree(_) = element {
                 if merk.is_empty_tree() {
                     Element::delete(&mut merk, key.clone(), transaction)?;
-                } else if only_delete_if_empty_tree {
+                } else if only_delete_tree_if_empty {
                     return Ok(false);
                 } else {
                     Element::delete(&mut merk, key.clone(), transaction)?;
