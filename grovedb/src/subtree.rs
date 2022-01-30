@@ -189,7 +189,18 @@ impl Element {
                 }
             }
             _ => {
-                Element::basic_push(subtrees_option, key, element, path, subquery_key_option, subquery, left_to_right, results, limit, offset)?;
+                Element::basic_push(
+                    subtrees_option,
+                    key,
+                    element,
+                    path,
+                    subquery_key_option,
+                    subquery,
+                    left_to_right,
+                    results,
+                    limit,
+                    offset,
+                )?;
             }
         }
         Ok(())
@@ -548,17 +559,14 @@ mod tests {
             if reverse {
                 expected.reverse();
             }
-            assert_eq!(
-                elements,
-                expected
-            );
+            assert_eq!(elements, expected);
             assert_eq!(skipped, 0);
         }
 
         check_elements_no_skipped(
             Element::get_sized_query(&merk, &ascending_query, None)
                 .expect("expected successful get_query"),
-            false
+            false,
         );
 
         query.left_to_right = false;
@@ -567,7 +575,7 @@ mod tests {
         check_elements_no_skipped(
             Element::get_sized_query(&merk, &backwards_query, None)
                 .expect("expected successful get_query"),
-            true
+            true,
         );
 
         // Test range inclusive query
@@ -579,7 +587,7 @@ mod tests {
         check_elements_no_skipped(
             Element::get_sized_query(&merk, &backwards_query, None)
                 .expect("expected successful get_query"),
-            true
+            true,
         );
     }
 

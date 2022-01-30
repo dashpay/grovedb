@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+
 use merk::Merk;
-use storage::{rocksdb_storage::OptimisticTransactionDBTransaction, RawIterator};
-use storage::rocksdb_storage::PrefixedRocksDbStorage;
+use storage::{
+    rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage},
+    RawIterator,
+};
 
 use crate::{Error, GroveDb};
 

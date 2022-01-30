@@ -3,20 +3,30 @@ use storage::rocksdb_storage::OptimisticTransactionDBTransaction;
 use crate::{Element, Error, GroveDb};
 
 impl GroveDb {
-
     pub fn delete_up_tree_while_empty(
         &mut self,
         path: &[&[u8]],
         key: Vec<u8>,
+        stop_path_height: Option<u16>,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<u16, Error> {
+        if let Some(stop_path_height) = stop_path_height {
+            if stop_path_height == path.len() as u16 {
+                return Ok(0 as u16);
+            }
+        }
         let deleted = self.delete_internal(path, key, false, transaction)?;
         if !deleted {
             return Ok(0 as u16);
         }
         let mut delete_count: u16 = 1;
         if let Some((key, rest_path)) = path.split_last() {
-            let deleted_parent = self.delete_up_tree_while_empty(rest_path, key.to_vec(), transaction)?;
+            let deleted_parent = self.delete_up_tree_while_empty(
+                rest_path,
+                key.to_vec(),
+                stop_path_height,
+                transaction,
+            )?;
             delete_count += deleted_parent;
         }
         Ok(delete_count)
@@ -69,13 +79,12 @@ impl GroveDb {
                 } else {
                     Element::delete(&mut merk, key.clone(), transaction)?;
 
-                    // we need to add the merk trees into the hashmap because we will use them for querying data
+                    // we need to add the merk trees into the hashmap because we will use them for
+                    // querying data
                     if let Some(prefix) = prefix {
-                        subtrees
-                            .insert_temp_tree_with_prefix(prefix, merk, transaction);
+                        subtrees.insert_temp_tree_with_prefix(prefix, merk, transaction);
                     } else {
-                        subtrees
-                            .insert_temp_tree(path, merk, transaction);
+                        subtrees.insert_temp_tree(path, merk, transaction);
                     }
 
                     // TODO: dumb traversal should not be tolerated
@@ -87,9 +96,13 @@ impl GroveDb {
                         // TODO: eventually we need to do something about this nested slices
                         let subtree_path_ref: Vec<&[u8]> =
                             subtree_path.iter().map(|x| x.as_slice()).collect();
-                        let mut subtree = subtrees.get_subtree_without_transaction(subtree_path_ref.as_slice())?;
+                        let mut subtree = subtrees
+                            .get_subtree_without_transaction(subtree_path_ref.as_slice())?;
                         subtree.clear(transaction).map_err(|e| {
-                            Error::CorruptedData(format!("unable to cleanup tree from storage: {}", e))
+                            Error::CorruptedData(format!(
+                                "unable to cleanup tree from storage: {}",
+                                e
+                            ))
                         })?;
                     }
                 }

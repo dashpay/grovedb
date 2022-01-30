@@ -12,8 +12,8 @@ pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 use serde::{Deserialize, Serialize};
-pub use storage::{rocksdb_storage::PrefixedRocksDbStorage, Storage};
 use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorageError};
+pub use storage::{rocksdb_storage::PrefixedRocksDbStorage, Storage};
 pub use subtree::Element;
 use subtrees::Subtrees;
 
