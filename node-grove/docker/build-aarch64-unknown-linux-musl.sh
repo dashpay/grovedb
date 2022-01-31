@@ -9,4 +9,6 @@ sudo apt install -y nodejs
 
 rustup target install aarch64-unknown-linux-musl
 
-sudo npm run build:release
+sudo chmod -R +w /root/.cargo
+
+npm run build:release
