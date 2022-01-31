@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
 
-arch
-
-uname -a
-
 ## Install multilib
 apt update
 apt install -y gcc-multilib
@@ -16,5 +12,9 @@ apt install -y nodejs
 rustup target install aarch64-unknown-linux-musl
 
 #chmod -R 777 /root/.cargo
+
+ls -laR /root/.cargo
+
+who
 
 npm run build:release
