@@ -56,8 +56,8 @@ pub fn default_rocksdb(path: &Path) -> Rc<rocksdb::OptimisticTransactionDB> {
     )
 }
 
-fn make_prefixed_key(mut prefix: Vec<u8>, key: &[u8]) -> Vec<u8> {
-    prefix.extend_from_slice(key);
+fn make_prefixed_key<K: AsRef<[u8]>>(mut prefix: Vec<u8>, key: K) -> Vec<u8> {
+    prefix.extend_from_slice(key.as_ref());
     prefix
 }
 
@@ -83,7 +83,7 @@ impl RawIterator for RawPrefixedTransactionalIterator<'_> {
         self.rocksdb_iterator.seek_for_prev(prefix_vec);
     }
 
-    fn seek(&mut self, key: &[u8]) {
+    fn seek<K: AsRef<[u8]>>(&mut self, key: K) {
         self.rocksdb_iterator
             .seek(make_prefixed_key(self.prefix.to_vec(), key));
     }
@@ -144,7 +144,7 @@ impl RawIterator for RawPrefixedIterator<'_> {
         self.rocksdb_iterator.seek_for_prev(prefix_vec);
     }
 
-    fn seek(&mut self, key: &[u8]) {
+    fn seek<K: AsRef<[u8]>>(&mut self, key: K) {
         self.rocksdb_iterator
             .seek(make_prefixed_key(self.prefix.to_vec(), key));
     }
@@ -379,9 +379,15 @@ mod tests {
     fn test_batch() {
         let storage = TempPrefixedStorage::new();
         let mut batch = storage.new_batch(None).expect("cannot create batch");
-        batch.put(b"key1", b"value1");
-        batch.put(b"key2", b"value2");
-        batch.put_root(b"root", b"yeet");
+        batch
+            .put(b"key1", b"value1")
+            .expect("cannot put into batch");
+        batch
+            .put(b"key2", b"value2")
+            .expect("cannot put into batch");
+        batch
+            .put_root(b"root", b"yeet")
+            .expect("cannot put into batch");
         storage.commit_batch(batch).expect("cannot commit batch");
         assert_eq!(
             storage
@@ -480,7 +486,7 @@ mod tests {
         assert!(!iter.valid());
 
         // Test `seek_to_last` on empty storage
-        let empty_storage = PrefixedRocksDbStorage::new(db.clone(), b"notexist".to_vec())
+        let empty_storage = PrefixedRocksDbStorage::new(db, b"notexist".to_vec())
             .expect("cannot create a prefixed storage");
         let mut iter = empty_storage.raw_iter();
         iter.seek_to_last();

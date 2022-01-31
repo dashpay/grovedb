@@ -26,6 +26,8 @@ pub struct Query {
     pub left_to_right: bool,
 }
 
+type ProofOffsetLimit = (LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>);
+
 impl Query {
     /// Creates a new query which contains no items.
     pub fn new() -> Self {
@@ -33,9 +35,10 @@ impl Query {
     }
 
     pub fn new_with_direction(left_to_right: bool) -> Self {
-        let mut default: Query = Default::default();
-        default.left_to_right = left_to_right;
-        default
+        Query {
+            left_to_right,
+            ..Query::default()
+        }
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -323,17 +326,14 @@ impl QueryItem {
                     start: start.to_vec(),
                 })
             } else if end_inclusive {
-                QueryItem::RangeAfterToInclusive(RangeInclusive::new(
-                    start.to_vec(),
-                    end.to_vec(),
-                ))
+                QueryItem::RangeAfterToInclusive(RangeInclusive::new(start.to_vec(), end.to_vec()))
             } else {
                 // upper is bounded and not inclusive
                 QueryItem::RangeAfterTo(Range {
                     start: start.to_vec(),
                     end: end.to_vec(),
                 })
-            }
+            };
         }
 
         if lower_unbounded {
@@ -344,7 +344,7 @@ impl QueryItem {
             } else {
                 // upper is bounded and not inclusive
                 QueryItem::RangeTo(RangeTo { end: end.to_vec() })
-            }
+            };
         }
 
         // Lower is bounded
@@ -473,7 +473,7 @@ impl QueryItem {
 
     fn compare(a: &[u8], b: &[u8]) -> cmp::Ordering {
         for (ai, bi) in a.iter().zip(b.iter()) {
-            match ai.cmp(&bi) {
+            match ai.cmp(bi) {
                 Ordering::Equal => continue,
                 ord => return ord,
             }
@@ -719,6 +719,7 @@ where
     }
 
     #[cfg(feature = "full")]
+    #[allow(dead_code)] // TODO: remove when proofs will be enabled
     pub(crate) fn create_full_proof(
         &mut self,
         query: &[QueryItem],
@@ -738,7 +739,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> Result<(LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>)> {
+    ) -> Result<ProofOffsetLimit> {
         // TODO: don't copy into vec, support comparing QI to byte slice
         let node_key = QueryItem::Key(self.tree().key().to_vec());
         let search = query.binary_search_by(|key| key.cmp(&node_key));
@@ -854,7 +855,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> Result<(LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>)> {
+    ) -> Result<ProofOffsetLimit> {
         Ok(if !query.is_empty() {
             if let Some(mut child) = self.walk(left)? {
                 child.create_proof(query, limit, offset, left_to_right)?
@@ -1507,16 +1508,31 @@ mod test {
         assert!(QueryItem::Key(vec![20]) > QueryItem::Key(vec![10]));
 
         assert!(QueryItem::Key(vec![10]) < QueryItem::Range(vec![20]..vec![30]));
-        assert_eq!(QueryItem::Key(vec![10]), QueryItem::Range(vec![10]..vec![20]));
-        assert_eq!(QueryItem::Key(vec![15]), QueryItem::Range(vec![10]..vec![20]));
+        assert_eq!(
+            QueryItem::Key(vec![10]),
+            QueryItem::Range(vec![10]..vec![20])
+        );
+        assert_eq!(
+            QueryItem::Key(vec![15]),
+            QueryItem::Range(vec![10]..vec![20])
+        );
         assert!(QueryItem::Key(vec![20]) > QueryItem::Range(vec![10]..vec![20]));
-        assert_eq!(QueryItem::Key(vec![20]), QueryItem::RangeInclusive(vec![10]..=vec![20]));
+        assert_eq!(
+            QueryItem::Key(vec![20]),
+            QueryItem::RangeInclusive(vec![10]..=vec![20])
+        );
         assert!(QueryItem::Key(vec![30]) > QueryItem::Range(vec![10]..vec![20]));
 
         assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![30]..vec![40]));
         assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![20]..vec![30]));
-        assert_eq!(QueryItem::RangeInclusive(vec![10]..=vec![20]), QueryItem::Range(vec![20]..vec![30]));
-        assert_eq!(QueryItem::Range(vec![15]..vec![25]), QueryItem::Range(vec![20]..vec![30]));
+        assert_eq!(
+            QueryItem::RangeInclusive(vec![10]..=vec![20]),
+            QueryItem::Range(vec![20]..vec![30])
+        );
+        assert_eq!(
+            QueryItem::Range(vec![15]..vec![25]),
+            QueryItem::Range(vec![20]..vec![30])
+        );
         assert!(QueryItem::Range(vec![20]..vec![30]) > QueryItem::Range(vec![10]..vec![20]));
     }
 

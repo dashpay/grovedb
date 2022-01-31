@@ -3,26 +3,20 @@ mod subtree;
 mod subtrees;
 #[cfg(test)]
 mod tests;
-mod transaction;
 
 use std::{cell::RefCell, collections::HashMap, path::Path, rc::Rc};
 
-use blake3;
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 use serde::{Deserialize, Serialize};
-pub use storage::{rocksdb_storage::PrefixedRocksDbStorage, Storage};
 use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorageError};
+pub use storage::{rocksdb_storage::PrefixedRocksDbStorage, Storage};
 pub use subtree::Element;
 use subtrees::Subtrees;
 
-// use crate::transaction::GroveDbTransaction;
-// pub use transaction::GroveDbTransaction;
-
 /// A key to store serialized data about subtree prefixes to restore HADS
 /// structure
-// const SUBTREES_SERIALIZED_KEY: &[u8] = b"subtreesSerialized";
 /// A key to store serialized data about root tree leafs keys and order
 const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
 
@@ -203,89 +197,65 @@ impl GroveDb {
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
         for (subtree_path, root_leaf_idx) in root_leaf_keys {
             let (subtree_merk, prefix) = subtrees
-                .get(&[subtree_path.as_slice()], transaction)
+                .get([subtree_path.as_slice()], transaction)
                 .expect("`root_leaf_keys` must be in sync with `subtrees`");
             leaf_hashes[*root_leaf_idx] = subtree_merk.root_hash();
             if let Some(prefix) = prefix {
                 subtrees.insert_temp_tree_with_prefix(prefix, subtree_merk, transaction);
             } else {
-                subtrees.insert_temp_tree(&[subtree_path.as_slice()], subtree_merk, transaction);
+                subtrees.insert_temp_tree([subtree_path.as_slice()], subtree_merk, transaction);
             }
         }
         MerkleTree::<Sha256>::from_leaves(&leaf_hashes)
     }
 
-    // pub fn elements_iterator(
-    //     &self,
-    //     path: &[&[u8]],
-    //     transaction: Option<&OptimisticTransactionDBTransaction>,
-    // ) -> Result<subtree::ElementsIterator, Error> {
-    //     // Get the correct subtrees instance
-    //     // let subtrees = match transaction {
-    //     //     None => &self.subtrees,
-    //     //     Some(_) => &self.temp_subtrees,
-    //     // };
-    //     todo!()
-    //     // Get the merk at the current path
-    //     // let merk = self.get_subtrees()
-    //     //     .get(path, transaction)
-    //     //     .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-    //     // // let merk = self
-    //     // //     .get_subtrees()
-    //     // //     .get(path, transaction)
-    //     // //     .map_err(|_| Error::InvalidPath("no subtree found under that
-    //     // path"))?; Return the raw iter of the merk
-    //     // Ok(Element::iterator(merk.raw_iter()))
-    // }
-
     /// Method to propagate updated subtree root hashes up to GroveDB root
-    fn propagate_changes<'a: 'b, 'b>(
+    fn propagate_changes<'a: 'b, 'b, 'c, P>(
         &'a mut self,
-        path: &[&[u8]],
+        path: P,
         transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        P: IntoIterator<Item = &'c [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
         let subtrees = self.get_subtrees();
 
-        let mut path = path;
-
         // Go up until only one element in path, which means a key of a root tree
-        while path.len() > 1 {
+        let mut path_iter = path.into_iter();
+
+        while path_iter.len() > 1 {
             // non root leaf node
-            let (subtree, prefix) = subtrees.get(path, transaction)?;
+            let (subtree, prefix) = subtrees.get(path_iter.clone(), transaction)?;
             let element = Element::Tree(subtree.root_hash());
             if let Some(prefix) = prefix {
-                self.get_subtrees()
-                    .insert_temp_tree_with_prefix(prefix, subtree, transaction);
+                subtrees.insert_temp_tree_with_prefix(prefix, subtree, transaction);
             } else {
-                self.get_subtrees()
-                    .insert_temp_tree(path, subtree, transaction);
+                subtrees.insert_temp_tree(path_iter.clone(), subtree, transaction);
             }
-
-            let (key, parent_path) = path.split_last().ok_or(Error::InvalidPath("empty path"))?;
-            let (mut upper_tree, prefix) = subtrees.get(parent_path, transaction)?;
-            element.insert(&mut upper_tree, key.to_vec(), transaction)?;
+            let key = path_iter.next_back().expect("next element is `Some`");
+            let (mut upper_tree, prefix) = subtrees.get(path_iter.clone(), transaction)?;
+            element.insert(&mut upper_tree, key.as_ref(), transaction)?;
             if prefix.is_some() {
                 self.get_subtrees()
-                    .insert_temp_tree(parent_path, upper_tree, transaction);
+                    .insert_temp_tree(path_iter.clone(), upper_tree, transaction);
             } else {
-                self.get_subtrees()
-                    .insert_temp_tree(path, upper_tree, transaction);
+                self.get_subtrees().insert_temp_tree(
+                    path_iter.clone().chain(std::iter::once(key)),
+                    upper_tree,
+                    transaction,
+                );
             }
-
-            path = parent_path;
         }
 
-        // root leaf nodes
-        if path.len() <= 1 {
-            let root_leaf_keys = match transaction {
-                None => &self.root_leaf_keys,
-                Some(_) => &self.temp_root_leaf_keys,
-            };
-            let root_tree = GroveDb::build_root_tree(&subtrees, root_leaf_keys, transaction);
-            match transaction {
-                None => self.root_tree = root_tree,
-                Some(_) => self.temp_root_tree = root_tree,
-            }
+        let root_leaf_keys = match transaction {
+            None => &self.root_leaf_keys,
+            Some(_) => &self.temp_root_leaf_keys,
+        };
+        let root_tree = GroveDb::build_root_tree(&subtrees, root_leaf_keys, transaction);
+        match transaction {
+            None => self.root_tree = root_tree,
+            Some(_) => self.temp_root_tree = root_tree,
         }
 
         Ok(())
@@ -301,25 +271,23 @@ impl GroveDb {
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
-    fn compress_subtree_key(path: &[&[u8]], key: Option<&[u8]>) -> Vec<u8> {
-        let segments_iter = path.iter().copied().chain(key.into_iter());
-        let mut segments_count = path.len();
-        if key.is_some() {
+    fn compress_subtree_key<'a, P>(path: P, key: Option<&'a [u8]>) -> Vec<u8>
+    where
+        P: IntoIterator<Item = &'a [u8]>,
+    {
+        let segments_iter = path.into_iter().chain(key.into_iter());
+        let mut segments_count: usize = 0;
+        let mut res = Vec::new();
+        let mut lengthes = Vec::new();
+
+        for s in segments_iter {
             segments_count += 1;
+            res.extend_from_slice(s);
+            lengthes.extend(s.len().to_ne_bytes());
         }
-        let mut res = segments_iter.fold(Vec::<u8>::new(), |mut acc, p| {
-            acc.extend(p.iter());
-            acc
-        });
 
         res.extend(segments_count.to_ne_bytes());
-        path.iter()
-            .copied()
-            .chain(key.into_iter())
-            .fold(&mut res, |acc, p| {
-                acc.extend(p.len().to_ne_bytes());
-                acc
-            });
+        res.extend(lengthes);
         res = blake3::hash(&res).as_bytes().to_vec();
         res
     }
@@ -350,31 +318,31 @@ impl GroveDb {
     ///
     /// let tmp_dir = TempDir::new("db").unwrap();
     /// let mut db = GroveDb::open(tmp_dir.path())?;
-    /// db.insert(&[], TEST_LEAF.to_vec(), Element::empty_tree(), None)?;
+    /// db.insert([], TEST_LEAF, Element::empty_tree(), None)?;
     ///
     /// let storage = db.storage();
     /// let db_transaction = storage.transaction();
     /// db.start_transaction();
     ///
-    /// let subtree_key = b"subtree_key".to_vec();
+    /// let subtree_key = b"subtree_key";
     /// db.insert(
-    ///     &[TEST_LEAF],
-    ///     subtree_key.clone(),
+    ///     [TEST_LEAF],
+    ///     subtree_key,
     ///     Element::empty_tree(),
     ///     Some(&db_transaction),
     /// )?;
     ///
     /// // This action exists only inside the transaction for now
-    /// let result = db.get(&[TEST_LEAF], &subtree_key, None);
+    /// let result = db.get([TEST_LEAF], subtree_key, None);
     /// assert!(matches!(result, Err(Error::InvalidPathKey(_))));
     ///
     /// // To access values inside the transaction, transaction needs to be passed to the `db::get`
-    /// let result_with_transaction = db.get(&[TEST_LEAF], &subtree_key, Some(&db_transaction))?;
+    /// let result_with_transaction = db.get([TEST_LEAF], subtree_key, Some(&db_transaction))?;
     /// assert_eq!(result_with_transaction, Element::empty_tree());
     ///
     /// // After transaction is committed, the value from it can be accessed normally.
     /// db.commit_transaction(db_transaction);
-    /// let result = db.get(&[TEST_LEAF], &subtree_key, None)?;
+    /// let result = db.get([TEST_LEAF], subtree_key, None)?;
     /// assert_eq!(result, Element::empty_tree());
     ///
     /// # Ok(())

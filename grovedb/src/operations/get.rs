@@ -8,12 +8,16 @@ use crate::{Element, Error, GroveDb, PathQuery, Subtrees};
 pub(crate) const MAX_REFERENCE_HOPS: usize = 10;
 
 impl GroveDb {
-    pub fn get(
+    pub fn get<'a, P>(
         &self,
-        path: &[&[u8]],
-        key: &[u8],
+        path: P,
+        key: &'a [u8],
         transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<Element, Error> {
+    ) -> Result<Element, Error>
+    where
+        P: IntoIterator<Item = &'a [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
         match self.get_raw(path, key, transaction)? {
             Element::Reference(reference_path) => {
                 self.follow_reference(reference_path, transaction)
@@ -36,15 +40,8 @@ impl GroveDb {
                 return Err(Error::CyclicReference);
             }
             if let Some((key, path_slice)) = path.split_last() {
-                current_element = self.get_raw(
-                    path_slice
-                        .iter()
-                        .map(|x| x.as_slice())
-                        .collect::<Vec<_>>()
-                        .as_slice(),
-                    key,
-                    transaction,
-                )?;
+                current_element =
+                    self.get_raw(path_slice.iter().map(|x| x.as_slice()), key, transaction)?;
             } else {
                 return Err(Error::InvalidPath("empty path"));
             }
@@ -59,36 +56,39 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(super) fn get_raw(
+    pub(super) fn get_raw<'a, P>(
         &self,
-        path: &[&[u8]],
-        key: &[u8],
+        path: P,
+        key: &'a [u8],
         transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<Element, Error> {
+    ) -> Result<Element, Error>
+    where
+        P: IntoIterator<Item = &'a [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        let path_iter = path.into_iter();
         // If path is empty, then we need to combine the provided key and path
         // then use this to get merk.
-        let merk_result;
-        if path.is_empty() {
-            merk_result = self.get_subtrees().get(&[key], transaction)?;
+        let merk_result = if path_iter.len() == 0 {
+            self.get_subtrees().get([key], transaction)?
         } else {
-            merk_result = self.get_subtrees().get(path, transaction)?;
-        }
+            self.get_subtrees().get(path_iter.clone(), transaction)?
+        };
 
         let (merk, prefix) = merk_result;
 
-        let elem;
-        if path.is_empty() {
-            elem = Ok(Element::Tree(merk.root_hash()));
+        let elem = if path_iter.len() == 0 {
+            Ok(Element::Tree(merk.root_hash()))
         } else {
-            elem = Element::get(&merk, key);
-        }
+            Element::get(&merk, key)
+        };
 
         if let Some(prefix) = prefix {
             self.get_subtrees()
                 .insert_temp_tree_with_prefix(prefix, merk, transaction);
         } else {
             self.get_subtrees()
-                .insert_temp_tree(path, merk, transaction);
+                .insert_temp_tree(path_iter, merk, transaction);
         }
 
         elem
@@ -172,21 +172,14 @@ impl GroveDb {
         path_query: &PathQuery,
         subtrees: Subtrees,
         transaction: Option<&OptimisticTransactionDBTransaction>,
-        // subtrees: &HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>,
     ) -> Result<(Vec<Element>, u16), Error> {
-        let path_slices = path_query
-            .path
-            .iter()
-            .map(|x| x.as_slice())
-            .collect::<Vec<_>>();
-        let (merk, prefix) = subtrees.get(path_slices.as_slice(), transaction)?;
-
+        let path_slices = path_query.path.iter().map(|x| x.as_slice());
+        let (merk, prefix) = subtrees.get(path_slices.clone(), transaction)?;
         let elem = Element::get_path_query(&merk, path_query, Some(&subtrees));
-
         if let Some(prefix) = prefix {
             subtrees.insert_temp_tree_with_prefix(prefix, merk, transaction);
         } else {
-            subtrees.insert_temp_tree(path_slices.as_slice(), merk, transaction);
+            subtrees.insert_temp_tree(path_slices, merk, transaction);
         }
 
         elem
