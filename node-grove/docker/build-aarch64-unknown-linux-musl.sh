@@ -15,4 +15,4 @@ chmod 777 -R /root/.cargo
 mkdir -p /github/workspace/target
 chmod 777 -R /github/workspace/target
 
-ARCH=arm64 LIBC=musl npm run build -- --release --target aarch64-unknown-linux-musl
+ARCH=arm64 LIBC=musl npm run build -- --release --target=aarch64-unknown-linux-musl
