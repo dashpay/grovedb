@@ -5,3 +5,6 @@ members = [
     "node-grove",
     "storage",
 ]
+
+[profile.dev]
+opt-level = 3
