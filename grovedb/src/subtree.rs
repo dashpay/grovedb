@@ -31,6 +31,19 @@ pub enum Element {
     Tree([u8; 32]),
 }
 
+pub struct PathQueryPushArgs<'a> {
+    pub subtrees: Option<&'a Subtrees<'a>>,
+    pub key: Option<&'a [u8]>,
+    pub element: Element,
+    pub path: Option<&'a [&'a [u8]]>,
+    pub subquery_key: Option<Vec<u8>>,
+    pub subquery: Option<Query>,
+    pub left_to_right: bool,
+    pub results: &'a mut Vec<Element>,
+    pub limit: &'a mut Option<u16>,
+    pub offset: &'a mut Option<u16>,
+}
+
 impl Element {
     // TODO: improve API to avoid creation of Tree elements with uncertain state
     pub fn empty_tree() -> Element {
@@ -58,10 +71,9 @@ impl Element {
         let element = bincode::deserialize(
             merk.get(key.as_ref())
                 .map_err(|e| Error::CorruptedData(e.to_string()))?
-                .ok_or(Error::InvalidPathKey(format!(
-                    "key not found in Merk: {}",
-                    hex::encode(key)
-                )))?
+                .ok_or_else(|| {
+                    Error::InvalidPathKey(format!("key not found in Merk: {}", hex::encode(key)))
+                })?
                 .as_slice(),
         )
         .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
@@ -78,49 +90,46 @@ impl Element {
         Ok(elements)
     }
 
-    fn basic_push(
-        _subtree: Option<&Subtrees>,
-        _key: Option<&[u8]>,
-        element: Element,
-        _path: Option<&[&[u8]]>,
-        _subquery_key: Option<Vec<u8>>,
-        _subquery: Option<Query>,
-        _left_to_right: bool,
-        results: &mut Vec<Element>,
-        limit: &mut Option<u16>,
-        offset: &mut Option<u16>,
-    ) -> Result<(), Error> {
-        if offset.is_none() || offset.is_some() && offset.unwrap() == 0 {
+    fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
+        let PathQueryPushArgs {
+            element,
+            results,
+            limit,
+            offset,
+            ..
+        } = args;
+        if offset.unwrap_or(0) == 0 {
             results.push(element);
-            if limit.is_some() {
-                *limit = Some(limit.unwrap() - 1);
+            if let Some(limit) = limit {
+                *limit -= 1;
             }
-        } else if offset.is_some() {
-            *offset = Some(offset.unwrap() - 1);
+        } else if let Some(offset) = offset {
+            *offset -= 1;
         }
         Ok(())
     }
 
-    fn path_query_push(
-        subtrees_option: Option<&Subtrees>,
-        key: Option<&[u8]>,
-        element: Element,
-        path: Option<&[&[u8]]>,
-        subquery_key_option: Option<Vec<u8>>,
-        subquery: Option<Query>,
-        left_to_right: bool,
-        results: &mut Vec<Element>,
-        limit: &mut Option<u16>,
-        offset: &mut Option<u16>,
-    ) -> Result<(), Error> {
+    fn path_query_push(args: PathQueryPushArgs) -> Result<(), Error> {
+        let PathQueryPushArgs {
+            subtrees,
+            key,
+            element,
+            path,
+            subquery_key,
+            subquery,
+            left_to_right,
+            results,
+            limit,
+            offset,
+        } = args;
         match element {
             Element::Tree(_) => {
-                if subtrees_option.is_none() && subquery.is_none() {
+                if subtrees.is_none() && subquery.is_none() {
                     return Err(Error::InvalidPath(
                         "a subtrees_option or a subquery should be provided",
                     ));
                 }
-                let subtrees = subtrees_option.ok_or(Error::MissingParameter(
+                let subtrees = subtrees.ok_or(Error::MissingParameter(
                     "subtrees must be provided when using a subquery key",
                 ))?;
                 // this means that for each element we should get the element at
@@ -135,12 +144,12 @@ impl Element {
                 ))?);
 
                 if let Some(subquery) = subquery {
-                    if let Some(subquery_key) = &subquery_key_option {
+                    if let Some(subquery_key) = &subquery_key {
                         path_vec.push(subquery_key.as_slice());
                     }
 
                     let (inner_merk, prefix) = subtrees
-                        .get(path_vec.iter().map(|x| *x), None)
+                        .get(path_vec.iter().copied(), None)
                         .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
 
                     let inner_query = SizedQuery::new(subquery, *limit, *offset);
@@ -148,39 +157,38 @@ impl Element {
                     let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
 
                     let (mut sub_elements, skipped) =
-                        Element::get_path_query(&inner_merk, &inner_path_query, subtrees_option)?;
+                        Element::get_path_query(&inner_merk, &inner_path_query, Some(subtrees))?;
 
                     if let Some(prefix) = prefix {
                         subtrees.insert_temp_tree_with_prefix(prefix, inner_merk, None);
                     } else {
-                        subtrees.insert_temp_tree(path_vec.iter().map(|x| *x), inner_merk, None);
+                        subtrees.insert_temp_tree(path_vec.iter().copied(), inner_merk, None);
                     }
 
                     if let Some(limit) = limit {
-                        *limit = *limit - sub_elements.len() as u16;
+                        *limit -= sub_elements.len() as u16;
                     }
                     if let Some(offset) = offset {
-                        *offset = *offset - skipped;
+                        *offset -= skipped;
                     }
                     results.append(&mut sub_elements);
-                } else if let Some(subquery_key) = subquery_key_option {
+                } else if let Some(subquery_key) = subquery_key {
                     let (inner_merk, prefix) = subtrees
-                        .get(path_vec.iter().map(|x| *x), None)
+                        .get(path_vec.iter().copied(), None)
                         .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
-                    if offset.is_none() || offset.is_some() && offset.unwrap() == 0 {
+                    if offset.unwrap_or(0) == 0 {
                         results.push(Element::get(&inner_merk, subquery_key.as_slice())?);
-                        if limit.is_some() {
-                            *limit = Some(limit.unwrap() - 1);
+                        if let Some(limit) = limit {
+                            *limit -= 1;
                         }
-                    } else {
-                        if offset.is_some() {
-                            *offset = Some(offset.unwrap() - 1);
-                        }
+                    } else if let Some(offset) = offset {
+                        *offset -= 1;
                     }
+
                     if let Some(prefix) = prefix {
                         subtrees.insert_temp_tree_with_prefix(prefix, inner_merk, None);
                     } else {
-                        subtrees.insert_temp_tree(path_vec.iter().map(|x| *x), inner_merk, None);
+                        subtrees.insert_temp_tree(path_vec.iter().copied(), inner_merk, None);
                     }
                 } else {
                     return Err(Error::InvalidPath(
@@ -190,18 +198,18 @@ impl Element {
                 }
             }
             _ => {
-                Element::basic_push(
-                    subtrees_option,
+                Element::basic_push(PathQueryPushArgs {
+                    subtrees,
                     key,
                     element,
                     path,
-                    subquery_key_option,
+                    subquery_key,
                     subquery,
                     left_to_right,
                     results,
                     limit,
                     offset,
-                )?;
+                })?;
             }
         }
         Ok(())
@@ -212,18 +220,7 @@ impl Element {
         sized_query: &SizedQuery,
         path: Option<&[&[u8]]>,
         subtrees: Option<&Subtrees>,
-        add_element_function: fn(
-            subtrees: Option<&Subtrees>,
-            key: Option<&[u8]>,
-            element: Element,
-            path: Option<&[&[u8]]>,
-            subquery_key: Option<Vec<u8>>,
-            subquery: Option<Query>,
-            left_to_right: bool,
-            &mut Vec<Element>,
-            limit: &mut Option<u16>,
-            offset: &mut Option<u16>,
-        ) -> Result<(), Error>,
+        add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
     ) -> Result<(Vec<Element>, u16), Error> {
         let mut results = Vec::new();
         let mut iter = merk.raw_iter();
@@ -236,22 +233,22 @@ impl Element {
             if !item.is_range() {
                 // this is a query on a key
                 if let QueryItem::Key(key) = item {
-                    add_element_function(
+                    add_element_function(PathQueryPushArgs {
                         subtrees,
-                        Some(key.as_slice()),
-                        Element::get(merk, key)?,
+                        key: Some(key.as_slice()),
+                        element: Element::get(merk, key)?,
                         path,
-                        sized_query.query.subquery_key.clone(),
-                        sized_query
+                        subquery_key: sized_query.query.subquery_key.clone(),
+                        subquery: sized_query
                             .query
                             .subquery
                             .as_ref()
                             .map(|query| *query.clone()),
-                        sized_query.query.left_to_right,
-                        &mut results,
-                        &mut limit,
-                        &mut offset,
-                    )?;
+                        left_to_right: sized_query.query.left_to_right,
+                        results: &mut results,
+                        limit: &mut limit,
+                        offset: &mut offset,
+                    })?;
                 }
             } else {
                 // this is a query on a range
@@ -261,22 +258,22 @@ impl Element {
                     let element =
                         raw_decode(iter.value().expect("if key exists then value should too"))?;
                     let key = iter.key().expect("key should exist");
-                    add_element_function(
+                    add_element_function(PathQueryPushArgs {
                         subtrees,
-                        Some(key),
+                        key: Some(key),
                         element,
                         path,
-                        sized_query.query.subquery_key.clone(),
-                        sized_query
+                        subquery_key: sized_query.query.subquery_key.clone(),
+                        subquery: sized_query
                             .query
                             .subquery
                             .as_ref()
                             .map(|query| *query.clone()),
-                        sized_query.query.left_to_right,
-                        &mut results,
-                        &mut limit,
-                        &mut offset,
-                    )?;
+                        left_to_right: sized_query.query.left_to_right,
+                        results: &mut results,
+                        limit: &mut limit,
+                        offset: &mut offset,
+                    })?;
                     if sized_query.query.left_to_right {
                         iter.next();
                     } else {
@@ -401,10 +398,10 @@ mod tests {
     fn test_success_insert() {
         let mut merk = TempMerk::new();
         Element::empty_tree()
-            .insert(&mut merk, b"mykey".to_vec(), None)
+            .insert(&mut merk, b"mykey", None)
             .expect("expected successful insertion");
         Element::Item(b"value".to_vec())
-            .insert(&mut merk, b"another-key".to_vec(), None)
+            .insert(&mut merk, b"another-key", None)
             .expect("expected successful insertion 2");
 
         assert_eq!(
@@ -417,16 +414,16 @@ mod tests {
     fn test_get_query() {
         let mut merk = TempMerk::new();
         Element::Item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d".to_vec(), None)
+            .insert(&mut merk, b"d", None)
             .expect("expected successful insertion");
         Element::Item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c".to_vec(), None)
+            .insert(&mut merk, b"c", None)
             .expect("expected successful insertion");
         Element::Item(b"ayya".to_vec())
-            .insert(&mut merk, b"a".to_vec(), None)
+            .insert(&mut merk, b"a", None)
             .expect("expected successful insertion");
         Element::Item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b".to_vec(), None)
+            .insert(&mut merk, b"b", None)
             .expect("expected successful insertion");
 
         // Test queries by key
@@ -486,16 +483,16 @@ mod tests {
     fn test_get_range_query() {
         let mut merk = TempMerk::new();
         Element::Item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d".to_vec(), None)
+            .insert(&mut merk, b"d", None)
             .expect("expected successful insertion");
         Element::Item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c".to_vec(), None)
+            .insert(&mut merk, b"c", None)
             .expect("expected successful insertion");
         Element::Item(b"ayya".to_vec())
-            .insert(&mut merk, b"a".to_vec(), None)
+            .insert(&mut merk, b"a", None)
             .expect("expected successful insertion");
         Element::Item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b".to_vec(), None)
+            .insert(&mut merk, b"b", None)
             .expect("expected successful insertion");
 
         // Test range inclusive query
@@ -535,16 +532,16 @@ mod tests {
     fn test_get_range_inclusive_query() {
         let mut merk = TempMerk::new();
         Element::Item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d".to_vec(), None)
+            .insert(&mut merk, b"d", None)
             .expect("expected successful insertion");
         Element::Item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c".to_vec(), None)
+            .insert(&mut merk, b"c", None)
             .expect("expected successful insertion");
         Element::Item(b"ayya".to_vec())
-            .insert(&mut merk, b"a".to_vec(), None)
+            .insert(&mut merk, b"a", None)
             .expect("expected successful insertion");
         Element::Item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b".to_vec(), None)
+            .insert(&mut merk, b"b", None)
             .expect("expected successful insertion");
 
         // Test range inclusive query
@@ -598,16 +595,16 @@ mod tests {
     fn test_get_limit_query() {
         let mut merk = TempMerk::new();
         Element::Item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d".to_vec(), None)
+            .insert(&mut merk, b"d", None)
             .expect("expected successful insertion");
         Element::Item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c".to_vec(), None)
+            .insert(&mut merk, b"c", None)
             .expect("expected successful insertion");
         Element::Item(b"ayya".to_vec())
-            .insert(&mut merk, b"a".to_vec(), None)
+            .insert(&mut merk, b"a", None)
             .expect("expected successful insertion");
         Element::Item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b".to_vec(), None)
+            .insert(&mut merk, b"b", None)
             .expect("expected successful insertion");
 
         // Test queries by key

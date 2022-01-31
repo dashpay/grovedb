@@ -183,7 +183,7 @@ impl Storage for PrefixedRocksDbStorage {
         Ok(())
     }
 
-    fn raw_iter<'a>(&'a self) -> Self::RawIterator<'a> {
+    fn raw_iter(&self) -> Self::RawIterator<'_> {
         RawPrefixedTransactionalIterator {
             rocksdb_iterator: self.db.raw_iterator(),
             prefix: &self.prefix,

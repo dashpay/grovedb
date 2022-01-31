@@ -1050,11 +1050,11 @@ fn test_get_subtree() {
 
     // Returns error is subtree is not valid
     let subtree = db.get_subtrees().get([TEST_LEAF, b"invalid_tree"], None);
-    assert_eq!(subtree.is_err(), true);
+    assert!(subtree.is_err());
 
     // Doesn't return an error for subtree that exists but empty
     let subtree = db.get_subtrees().get([TEST_LEAF], None);
-    assert_eq!(subtree.is_err(), false);
+    assert!(subtree.is_ok());
 
     // Insert some nested subtrees
     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
@@ -1099,7 +1099,7 @@ fn test_get_subtree() {
     db.insert(
         [TEST_LEAF, b"key1", b"innertree"],
         b"key4",
-        element.clone(),
+        element,
         Some(&transaction),
     )
     .expect("successful value insert");
@@ -1950,16 +1950,13 @@ fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
 
     let path = vec![TEST_LEAF.to_vec()];
     let mut query = Query::new();
-    query.insert_range_inclusive(
-        (3 as u32).to_be_bytes().to_vec()..=(4 as u32).to_be_bytes().to_vec(),
-    );
+    query.insert_range_inclusive((3u32).to_be_bytes().to_vec()..=(4u32).to_be_bytes().to_vec());
 
     query.set_subquery_key(b"a".to_vec());
 
     let mut subquery = Query::new();
-    subquery.insert_range_inclusive(
-        (29 as u32).to_be_bytes().to_vec()..=(31 as u32).to_be_bytes().to_vec(),
-    );
+    subquery
+        .insert_range_inclusive((29u32).to_be_bytes().to_vec()..=(31u32).to_be_bytes().to_vec());
 
     subquery.set_subquery_key(b"\0".to_vec());
 
@@ -2163,7 +2160,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let mut query = Query::new_with_direction(true);
     query.insert_range(1990_u32.to_be_bytes().to_vec()..2000_u32.to_be_bytes().to_vec());
 
-    query.set_subquery_key(subquery_key.clone());
+    query.set_subquery_key(subquery_key);
 
     let path_query = PathQuery::new(path, SizedQuery::new(query.clone(), Some(5), Some(2)));
 

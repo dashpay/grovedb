@@ -6,7 +6,6 @@ mod tests;
 
 use std::{cell::RefCell, collections::HashMap, path::Path, rc::Rc};
 
-use blake3;
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
@@ -276,10 +275,7 @@ impl GroveDb {
     where
         P: IntoIterator<Item = &'a [u8]>,
     {
-        let segments_iter = path
-            .into_iter()
-            .map(|x| x.as_ref())
-            .chain(key.as_ref().into_iter().map(|x| x.as_ref()));
+        let segments_iter = path.into_iter().chain(key.into_iter());
         let mut segments_count: usize = 0;
         let mut res = Vec::new();
         let mut lengthes = Vec::new();

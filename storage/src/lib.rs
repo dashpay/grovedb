@@ -74,7 +74,7 @@ pub trait Storage {
     fn flush(&self) -> Result<(), Self::Error>;
 
     /// Get raw iterator over storage
-    fn raw_iter<'a>(&'a self) -> Self::RawIterator<'a>;
+    fn raw_iter(&self) -> Self::RawIterator<'_>;
 
     /// Starts DB transaction
     fn transaction<'a>(&'a self, tx: &'a Self::DBTransaction<'a>) -> Self::StorageTransaction<'a>;
@@ -162,7 +162,7 @@ impl<'b, S: Storage> Storage for &'b S {
         (*self).flush()
     }
 
-    fn raw_iter<'a>(&'a self) -> Self::RawIterator<'a> {
+    fn raw_iter(&self) -> Self::RawIterator<'_> {
         (*self).raw_iter()
     }
 
@@ -175,17 +175,19 @@ impl<'b, S: Storage> Storage for &'b S {
 }
 
 pub trait Batch {
-    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]);
+    type Error: std::error::Error + Send + Sync + 'static;
 
-    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]);
+    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error>;
 
-    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]);
+    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error>;
 
-    fn delete<K: AsRef<[u8]>>(&mut self, key: K);
+    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error>;
 
-    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K);
+    fn delete<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error>;
 
-    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K);
+    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error>;
+
+    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error>;
 }
 
 pub trait RawIterator {
@@ -294,6 +296,6 @@ where
         K: AsRef<[u8]>,
         Self::Error: From<S::Error>,
     {
-        Ok(storage.get(key)?.map(|x| Self::decode(&x)).transpose()?)
+        storage.get(key)?.map(|x| Self::decode(&x)).transpose()
     }
 }

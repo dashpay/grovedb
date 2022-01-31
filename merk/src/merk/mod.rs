@@ -17,7 +17,6 @@ const ROOT_KEY_KEY: &[u8] = b"root";
 pub struct Merk<S>
 where
     S: Storage,
-    // crate::error::Error: From<S::Error>,
 {
     pub(crate) tree: Cell<Option<Tree>>,
     pub(crate) storage: S,
@@ -27,7 +26,6 @@ pub type UseTreeMutResult = Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>;
 
 impl<S: Storage> Merk<S>
 where
-    // crate::error::Error: From<<S as Storage>::Error>,
     <S as Storage>::Error: std::error::Error,
 {
     pub fn open(storage: S) -> Result<Merk<S>> {
@@ -47,7 +45,7 @@ where
         let mut to_delete = self.storage.new_batch(transaction)?;
         while iter.valid() {
             if let Some(key) = iter.key() {
-                to_delete.delete(key);
+                to_delete.delete(key)?;
             }
             iter.next();
         }
@@ -285,12 +283,12 @@ where
                 tree.commit(&mut committer)?;
 
                 // update pointer to root node
-                batch.put_root(ROOT_KEY_KEY, tree.key());
+                batch.put_root(ROOT_KEY_KEY, tree.key())?;
 
                 Ok(committer.batch)
             } else {
                 // empty tree, delete pointer to root
-                batch.delete_root(ROOT_KEY_KEY);
+                batch.delete_root(ROOT_KEY_KEY)?;
                 Ok(vec![])
             }
         })?;
@@ -302,16 +300,16 @@ where
         to_batch.sort_by(|a, b| a.0.cmp(&b.0));
         for (key, maybe_value) in to_batch {
             if let Some(value) = maybe_value {
-                batch.put(&key, &value);
+                batch.put(&key, &value)?;
             } else {
-                batch.delete(&key);
+                batch.delete(&key)?;
             }
         }
 
         for (key, value) in aux {
             match value {
-                Op::Put(value) => batch.put_aux(key, value),
-                Op::Delete => batch.delete_aux(key),
+                Op::Put(value) => batch.put_aux(key, value)?,
+                Op::Delete => batch.delete_aux(key)?,
             };
         }
 
@@ -590,8 +588,12 @@ mod test {
             nodes: &mut Vec<Vec<u8>>,
         ) {
             nodes.push(node.tree().encode());
-            node.walk(true).unwrap().map(|c| collect(c, nodes));
-            node.walk(false).unwrap().map(|c| collect(c, nodes));
+            if let Some(c) = node.walk(true).unwrap() {
+                collect(c, nodes);
+            }
+            if let Some(c) = node.walk(false).unwrap() {
+                collect(c, nodes);
+            }
         }
 
         let tmp_dir = TempDir::new("test_reopen").expect("cannot open tempdir");

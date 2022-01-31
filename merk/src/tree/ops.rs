@@ -412,7 +412,7 @@ mod test {
             .expect("apply errored");
         maybe_walker.expect("should be Some");
         let mut deleted_keys: Vec<&Vec<u8>> = deleted_keys.iter().collect();
-        deleted_keys.sort_by(|a, b| a.cmp(&b));
+        deleted_keys.sort();
         assert_eq!(deleted_keys, vec![&seq_key(7), &seq_key(9)]);
     }
 
