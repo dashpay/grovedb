@@ -19,10 +19,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-#          - os: ubuntu-latest
-#            arch: x86_64
-#            compiler: gnu
-#            platform: unknown-linux
+          - os: ubuntu-latest
+            arch: x86_64
+            compiler: gnu
+            platform: unknown-linux
 # TODO: Enable build for arm64 linux gnu
 #          - os: ubuntu-latest
 #            arch: aarch64
@@ -33,24 +33,24 @@ jobs:
 #              - gcc-aarch64-linux-gnu
 #              - binutils-aarch64-linux-gnu
 #              - clang
-#          - os: ubuntu-latest
-#            arch: x86_64
-#            compiler: musl
-#            platform: unknown-linux
-#            build_dependencies:
-#              - musl-tools
+          - os: ubuntu-latest
+            arch: x86_64
+            compiler: musl
+            platform: unknown-linux
+            build_dependencies:
+              - musl-tools
           - os: ubuntu-latest
             arch: aarch64
             node_arch: arm64
             compiler: musl
             platform: unknown-linux
-#          - os: macos-11
-#            arch: x86_64
-#            platform: apple-darwin
-#          - os: macos-11
-#            arch: aarch64
-#            node_arch: arm64
-#            platform: apple-darwin
+          - os: macos-11
+            arch: x86_64
+            platform: apple-darwin
+          - os: macos-11
+            arch: aarch64
+            node_arch: arm64
+            platform: apple-darwin
 
     runs-on: ${{ matrix.os }}
     steps:

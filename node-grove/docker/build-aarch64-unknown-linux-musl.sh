@@ -11,10 +11,8 @@ apt install -y nodejs
 ## Install build target
 rustup target install aarch64-unknown-linux-musl
 
-#chmod -R 777 /root/.cargo
+chmod 777 -R /root/.cargo
+mkdir -p /github/workspace/target
+chmod 777 -R /github/workspace/target
 
-ls -laR /root/.cargo
-
-who
-
-npm run build:release
+ARCH=arm64 LIBC=musl npm run build -- --release --target aarch64-unknown-linux-musl
