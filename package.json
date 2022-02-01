@@ -1,6 +1,6 @@
 {
   "name": "@dashevo/grovedb",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Node.JS binding for GroveDb",
   "main": "node-grove/index.js",
   "readme": "node-grove/README.md",
