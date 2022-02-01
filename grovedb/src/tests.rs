@@ -1156,27 +1156,33 @@ fn test_subtree_deletion_if_empty() {
     let element = Element::Item(b"value".to_vec());
     let mut db = make_grovedb();
 
-    db.start_transaction().expect("transaction should be started");
+    db.start_transaction()
+        .expect("transaction should be started");
     let storage = db.storage();
     let transaction = storage.transaction();
 
     // Insert some nested subtrees
-    db.insert([TEST_LEAF], b"level1-A", Element::empty_tree(), Some(&transaction))
-        .expect("successful subtree insert A on level 1");
+    db.insert(
+        [TEST_LEAF],
+        b"level1-A",
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("successful subtree insert A on level 1");
     db.insert(
         [TEST_LEAF, b"level1-A"],
         b"level2-A",
         Element::empty_tree(),
         Some(&transaction),
     )
-        .expect("successful subtree insert A on level 2");
+    .expect("successful subtree insert A on level 2");
     db.insert(
         [TEST_LEAF, b"level1-A"],
         b"level2-B",
         Element::empty_tree(),
         Some(&transaction),
     )
-        .expect("successful subtree insert B on level 2");
+    .expect("successful subtree insert B on level 2");
     // Insert an element into subtree
     db.insert(
         [TEST_LEAF, b"level1-A", b"level2-A"],
@@ -1184,9 +1190,14 @@ fn test_subtree_deletion_if_empty() {
         element,
         Some(&transaction),
     )
-        .expect("successful value insert");
-    db.insert([TEST_LEAF], b"level1-B", Element::empty_tree(), Some(&transaction))
-        .expect("successful subtree insert B on level 1");
+    .expect("successful value insert");
+    db.insert(
+        [TEST_LEAF],
+        b"level1-B",
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("successful subtree insert B on level 1");
 
     db.commit_transaction(transaction);
 
@@ -1197,16 +1208,24 @@ fn test_subtree_deletion_if_empty() {
     //                   |
     // Level 3:          A: value
 
-    db.start_transaction().expect("transaction should be started");
+    db.start_transaction()
+        .expect("transaction should be started");
 
     let transaction = storage.transaction();
 
     let root_hash = db.root_tree.root().unwrap();
-    let deleted = db.delete_if_empty_tree([TEST_LEAF], b"level1-A", Some(&transaction))
+    let deleted = db
+        .delete_if_empty_tree([TEST_LEAF], b"level1-A", Some(&transaction))
         .expect("unable to delete subtree");
     assert_eq!(deleted, false);
 
-    let deleted = db.delete_up_tree_while_empty([TEST_LEAF, b"level1-A", b"level2-A"], b"level3-A", Some(0),  Some(&transaction))
+    let deleted = db
+        .delete_up_tree_while_empty(
+            [TEST_LEAF, b"level1-A", b"level2-A"],
+            b"level3-A",
+            Some(0),
+            Some(&transaction),
+        )
         .expect("unable to delete subtree");
     assert_eq!(deleted, 2);
 

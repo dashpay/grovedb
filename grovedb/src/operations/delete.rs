@@ -11,8 +11,8 @@ impl GroveDb {
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<u16, Error>
     where
-    P: IntoIterator<Item = &'a [u8]>,
-    <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+        P: IntoIterator<Item = &'a [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let mut path_iter = path.into_iter();
         if let Some(stop_path_height) = stop_path_height {
@@ -26,12 +26,8 @@ impl GroveDb {
         }
         let mut delete_count: u16 = 1;
         if let Some(first) = path_iter.next() {
-            let deleted_parent = self.delete_up_tree_while_empty(
-                path_iter,
-                first,
-                stop_path_height,
-                transaction,
-            )?;
+            let deleted_parent =
+                self.delete_up_tree_while_empty(path_iter, first, stop_path_height, transaction)?;
             delete_count += deleted_parent;
         }
         Ok(delete_count)
@@ -43,9 +39,9 @@ impl GroveDb {
         key: &'a [u8],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(), Error>
-        where
-            P: IntoIterator<Item = &'a [u8]>,
-            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    where
+        P: IntoIterator<Item = &'a [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         self.delete_internal(path, key, false, transaction)?;
         Ok(())
@@ -57,9 +53,9 @@ impl GroveDb {
         key: &'a [u8],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<bool, Error>
-        where
-            P: IntoIterator<Item = &'a [u8]>,
-            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    where
+        P: IntoIterator<Item = &'a [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         self.delete_internal(path, key, true, transaction)
     }
@@ -72,9 +68,9 @@ impl GroveDb {
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<bool, Error>
     where
-    P: IntoIterator<Item = &'a [u8]>,
-    <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-{
+        P: IntoIterator<Item = &'a [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
         if transaction.is_none() && self.is_readonly {
             return Err(Error::DbIsInReadonlyMode);
         }
@@ -106,8 +102,10 @@ impl GroveDb {
                     }
 
                     // TODO: dumb traversal should not be tolerated
-                    let subtrees_paths =
-                        self.find_subtrees(path_iter.clone().chain(std::iter::once(key)), transaction)?;
+                    let subtrees_paths = self.find_subtrees(
+                        path_iter.clone().chain(std::iter::once(key)),
+                        transaction,
+                    )?;
                     for subtree_path in subtrees_paths {
                         // TODO: eventually we need to do something about this nested slices
                         let mut subtree = subtrees.get_subtree_without_transaction(

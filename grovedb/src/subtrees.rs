@@ -115,14 +115,19 @@ impl Subtrees<'_> {
             let (parent_tree, has_keys) = self.get_subtree_with_key_info(parent_path, None)?;
             if !has_keys {
                 // parent tree can't be empty, hence invalid path
-                Err(Error::InvalidPath("no subtree found as parent in path is empty"))
+                Err(Error::InvalidPath(
+                    "no subtree found as parent in path is empty",
+                ))
             } else {
                 // Check that it contains the child as an empty tree
-                let elem = Element::get(&parent_tree, key)
-                    .map_err(|_| Error::InvalidPath("no subtree found as parent does not contain child"))?;
+                let elem = Element::get(&parent_tree, key).map_err(|_| {
+                    Error::InvalidPath("no subtree found as parent does not contain child")
+                })?;
                 match elem {
                     Element::Tree(_) => Ok(subtree),
-                    _ => Err(Error::InvalidPath("no subtree found as path refers to an element or reference")),
+                    _ => Err(Error::InvalidPath(
+                        "no subtree found as path refers to an element or reference",
+                    )),
                 }
             }
         } else {
