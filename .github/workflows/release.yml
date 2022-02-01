@@ -183,8 +183,8 @@ jobs:
       - name: List prebuilds
         run: ls -laR prebuilds
 
-      - name: Publish NPM package
-        uses: JS-DevTools/npm-publish@v1
-        with:
-          access: public
-          token: ${{ secrets.NPM_TOKEN }}
+#      - name: Publish NPM package
+#        uses: JS-DevTools/npm-publish@v1
+#        with:
+#          access: public
+#          token: ${{ secrets.NPM_TOKEN }}
