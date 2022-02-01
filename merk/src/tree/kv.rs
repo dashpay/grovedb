@@ -57,7 +57,7 @@ impl KV {
 
     /// Returns the hash.
     #[inline]
-    pub fn hash(&self) -> &Hash {
+    pub const fn hash(&self) -> &Hash {
         &self.hash
     }
 

@@ -68,7 +68,7 @@ pub struct SizedQuery {
 }
 
 impl SizedQuery {
-    pub fn new(query: Query, limit: Option<u16>, offset: Option<u16>) -> SizedQuery {
+    pub const fn new(query: Query, limit: Option<u16>, offset: Option<u16>) -> SizedQuery {
         SizedQuery {
             query,
             limit,
@@ -78,11 +78,11 @@ impl SizedQuery {
 }
 
 impl PathQuery {
-    pub fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> PathQuery {
+    pub const fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> PathQuery {
         PathQuery { path, query }
     }
 
-    pub fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> PathQuery {
+    pub const fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> PathQuery {
         let query = SizedQuery::new(query, None, None);
         PathQuery { path, query }
     }
@@ -364,7 +364,7 @@ impl GroveDb {
 
     /// Returns true if transaction is started. For more details on the
     /// transaction usage, please check [`GroveDb::start_transaction`]
-    pub fn is_transaction_started(&self) -> bool {
+    pub const fn is_transaction_started(&self) -> bool {
         self.is_readonly
     }
 

@@ -14,7 +14,7 @@ impl<'a> StackItem<'a> {
     /// Creates a new `StackItem` for the given tree. The `traversed` state will
     /// be `false` since the children and self have not been visited yet, but
     /// will default to `true` for sides that do not have a child.
-    fn new(tree: &'a Tree) -> Self {
+    const fn new(tree: &'a Tree) -> Self {
         StackItem {
             tree,
             traversed: (
