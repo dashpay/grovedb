@@ -55,13 +55,13 @@ impl<'a> PrefixedRocksDbTransaction<'a> {
 impl Transaction for PrefixedRocksDbTransaction<'_> {
     type Error = PrefixedRocksDbStorageError;
 
-    fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+    fn put<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
         self.transaction
             .put(make_prefixed_key(self.prefix.clone(), key), value)?;
         Ok(())
     }
 
-    fn put_aux(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+    fn put_aux<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
         self.transaction.put_cf(
             self.cf_aux()?,
             make_prefixed_key(self.prefix.clone(), key),
@@ -70,7 +70,7 @@ impl Transaction for PrefixedRocksDbTransaction<'_> {
         Ok(())
     }
 
-    fn put_root(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+    fn put_root<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
         self.transaction.put_cf(
             self.cf_roots()?,
             make_prefixed_key(self.prefix.clone(), key),
@@ -79,23 +79,23 @@ impl Transaction for PrefixedRocksDbTransaction<'_> {
         Ok(())
     }
 
-    fn put_meta(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+    fn put_meta<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
         Ok(self.transaction.put_cf(self.cf_meta()?, key, value)?)
     }
 
-    fn delete(&self, key: &[u8]) -> Result<(), Self::Error> {
+    fn delete<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Self::Error> {
         self.transaction
             .delete(make_prefixed_key(self.prefix.clone(), key))?;
         Ok(())
     }
 
-    fn delete_aux(&self, key: &[u8]) -> Result<(), Self::Error> {
+    fn delete_aux<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Self::Error> {
         self.transaction
             .delete_cf(self.cf_aux()?, make_prefixed_key(self.prefix.clone(), key))?;
         Ok(())
     }
 
-    fn delete_root(&self, key: &[u8]) -> Result<(), Self::Error> {
+    fn delete_root<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Self::Error> {
         self.transaction.delete_cf(
             self.cf_roots()?,
             make_prefixed_key(self.prefix.clone(), key),
@@ -103,30 +103,30 @@ impl Transaction for PrefixedRocksDbTransaction<'_> {
         Ok(())
     }
 
-    fn delete_meta(&self, key: &[u8]) -> Result<(), Self::Error> {
+    fn delete_meta<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Self::Error> {
         Ok(self.transaction.delete_cf(self.cf_meta()?, key)?)
     }
 
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+    fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error> {
         Ok(self
             .transaction
             .get(make_prefixed_key(self.prefix.clone(), key))?)
     }
 
-    fn get_aux(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+    fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error> {
         Ok(self
             .transaction
             .get_cf(self.cf_aux()?, make_prefixed_key(self.prefix.clone(), key))?)
     }
 
-    fn get_root(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+    fn get_root<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error> {
         Ok(self.transaction.get_cf(
             self.cf_roots()?,
             make_prefixed_key(self.prefix.clone(), key),
         )?)
     }
 
-    fn get_meta(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+    fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error> {
         Ok(self.transaction.get_cf(self.cf_meta()?, key)?)
     }
 }

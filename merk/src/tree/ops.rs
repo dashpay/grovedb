@@ -25,10 +25,10 @@ impl fmt::Debug for Op {
 }
 
 /// A single `(key, operation)` pair.
-pub type BatchEntry = (Vec<u8>, Op);
+pub type BatchEntry<K> = (K, Op);
 
 /// A mapping of keys and operations. Keys should be sorted and unique.
-pub type MerkBatch = [BatchEntry];
+pub type MerkBatch<K> = [BatchEntry<K>];
 
 /// A source of data which panics when called. Useful when creating a store
 /// which always keeps the state in memory.
@@ -49,9 +49,9 @@ where
     /// not require a non-empty tree.
     ///
     /// Keys in batch must be sorted and unique.
-    pub fn apply_to(
+    pub fn apply_to<K: AsRef<[u8]>>(
         maybe_tree: Option<Self>,
-        batch: &MerkBatch,
+        batch: &MerkBatch<K>,
         source: S,
     ) -> Result<(Option<Tree>, LinkedList<Vec<u8>>)> {
         let (maybe_walker, deleted_keys) = if batch.is_empty() {
@@ -70,7 +70,7 @@ where
     /// Builds a `Tree` from a batch of operations.
     ///
     /// Keys in batch must be sorted and unique.
-    fn build(batch: &MerkBatch, source: S) -> Result<Option<Tree>> {
+    fn build<K: AsRef<[u8]>>(batch: &MerkBatch<K>, source: S) -> Result<Option<Tree>> {
         if batch.is_empty() {
             return Ok(None);
         }
@@ -95,7 +95,7 @@ where
         };
 
         // TODO: take from batch so we don't have to clone
-        let mid_tree = Tree::new(mid_key.to_vec(), mid_value.to_vec());
+        let mid_tree = Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec());
         let mid_walker = Walker::new(mid_tree, PanicSource {});
 
         // use walker, ignore deleted_keys since it should be empty
@@ -109,10 +109,13 @@ where
     /// `Walker<S>::apply`_to, but requires a populated tree.
     ///
     /// Keys in batch must be sorted and unique.
-    fn apply(self, batch: &MerkBatch) -> Result<(Option<Self>, LinkedList<Vec<u8>>)> {
+    fn apply<K: AsRef<[u8]>>(
+        self,
+        batch: &MerkBatch<K>,
+    ) -> Result<(Option<Self>, LinkedList<Vec<u8>>)> {
         // binary search to see if this node's key is in the batch, and to split
         // into left and right batches
-        let search = batch.binary_search_by(|(key, _op)| key.as_slice().cmp(self.tree().key()));
+        let search = batch.binary_search_by(|(key, _op)| key.as_ref().cmp(self.tree().key()));
         let tree = if let Ok(index) = search {
             // a key matches this node's key, apply op to this node
             match &batch[index].1 {
@@ -158,9 +161,9 @@ where
     ///
     /// This recursion executes serially in the same thread, but in the future
     /// will be dispatched to workers in other threads.
-    fn recurse(
+    fn recurse<K: AsRef<[u8]>>(
         self,
-        batch: &MerkBatch,
+        batch: &MerkBatch<K>,
         mid: usize,
         exclusive: bool,
     ) -> Result<(Option<Self>, LinkedList<Vec<u8>>)> {
@@ -409,14 +412,14 @@ mod test {
             .expect("apply errored");
         maybe_walker.expect("should be Some");
         let mut deleted_keys: Vec<&Vec<u8>> = deleted_keys.iter().collect();
-        deleted_keys.sort_by(|a, b| a.cmp(&b));
+        deleted_keys.sort();
         assert_eq!(deleted_keys, vec![&seq_key(7), &seq_key(9)]);
     }
 
     #[test]
     fn apply_empty_none() {
         let (maybe_tree, deleted_keys) =
-            Walker::<PanicSource>::apply_to(None, &vec![], PanicSource {})
+            Walker::<PanicSource>::apply_to::<Vec<u8>>(None, &[], PanicSource {})
                 .expect("apply_to failed");
         assert!(maybe_tree.is_none());
         assert!(deleted_keys.is_empty());

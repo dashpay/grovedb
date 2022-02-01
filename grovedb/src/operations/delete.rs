@@ -3,27 +3,32 @@ use storage::rocksdb_storage::OptimisticTransactionDBTransaction;
 use crate::{Element, Error, GroveDb};
 
 impl GroveDb {
-    pub fn delete_up_tree_while_empty(
+    pub fn delete_up_tree_while_empty<'a, P>(
         &mut self,
-        path: &[&[u8]],
-        key: Vec<u8>,
+        path: P,
+        key: &'a [u8],
         stop_path_height: Option<u16>,
         transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<u16, Error> {
+    ) -> Result<u16, Error>
+    where
+    P: IntoIterator<Item = &'a [u8]>,
+    <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let mut path_iter = path.into_iter();
         if let Some(stop_path_height) = stop_path_height {
-            if stop_path_height == path.len() as u16 {
+            if stop_path_height == path_iter.clone().len() as u16 {
                 return Ok(0 as u16);
             }
         }
-        let deleted = self.delete_internal(path, key, true, transaction)?;
+        let deleted = self.delete_internal(path_iter.clone(), key, true, transaction)?;
         if !deleted {
             return Ok(0 as u16);
         }
         let mut delete_count: u16 = 1;
-        if let Some((key, rest_path)) = path.split_last() {
+        if let Some(first) = path_iter.next() {
             let deleted_parent = self.delete_up_tree_while_empty(
-                rest_path,
-                key.to_vec(),
+                path_iter,
+                first,
                 stop_path_height,
                 transaction,
             )?;
@@ -32,44 +37,57 @@ impl GroveDb {
         Ok(delete_count)
     }
 
-    pub fn delete(
+    pub fn delete<'a, P>(
         &mut self,
-        path: &[&[u8]],
-        key: Vec<u8>,
+        path: P,
+        key: &'a [u8],
         transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+        where
+            P: IntoIterator<Item = &'a [u8]>,
+            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
         self.delete_internal(path, key, false, transaction)?;
         Ok(())
     }
 
-    pub fn delete_if_empty_tree(
+    pub fn delete_if_empty_tree<'a, P>(
         &mut self,
-        path: &[&[u8]],
-        key: Vec<u8>,
+        path: P,
+        key: &'a [u8],
         transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<bool, Error> {
+    ) -> Result<bool, Error>
+        where
+            P: IntoIterator<Item = &'a [u8]>,
+            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
         self.delete_internal(path, key, true, transaction)
     }
 
-    fn delete_internal(
+    fn delete_internal<'a, P>(
         &mut self,
-        path: &[&[u8]],
-        key: Vec<u8>,
+        path: P,
+        key: &'a [u8],
         only_delete_tree_if_empty: bool,
         transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<bool, Error> {
+    ) -> Result<bool, Error>
+    where
+    P: IntoIterator<Item = &'a [u8]>,
+    <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+{
         if transaction.is_none() && self.is_readonly {
             return Err(Error::DbIsInReadonlyMode);
         }
-        if path.is_empty() {
+        let path_iter = path.into_iter();
+        if path_iter.len() == 0 {
             // Attempt to delete a root tree leaf
             Err(Error::InvalidPath(
                 "root tree leafs currently cannot be deleted",
             ))
         } else {
-            let element = self.get_raw(path, &key, transaction)?;
+            let element = self.get_raw(path_iter.clone(), key.as_ref(), transaction)?;
             let subtrees = self.get_subtrees();
-            let (mut merk, prefix) = subtrees.get(path, transaction)?;
+            let (mut merk, prefix) = subtrees.get(path_iter.clone(), transaction)?;
 
             if let Element::Tree(_) = element {
                 if merk.is_empty_tree() {
@@ -84,20 +102,17 @@ impl GroveDb {
                     if let Some(prefix) = prefix {
                         subtrees.insert_temp_tree_with_prefix(prefix, merk, transaction);
                     } else {
-                        subtrees.insert_temp_tree(path, merk, transaction);
+                        subtrees.insert_temp_tree(path_iter.clone(), merk, transaction);
                     }
 
                     // TODO: dumb traversal should not be tolerated
-                    let mut concat_path: Vec<Vec<u8>> = path.iter().map(|x| x.to_vec()).collect();
-                    concat_path.push(key);
-                    let subtrees_paths = self.find_subtrees(concat_path, transaction)?;
-
+                    let subtrees_paths =
+                        self.find_subtrees(path_iter.clone().chain(std::iter::once(key)), transaction)?;
                     for subtree_path in subtrees_paths {
                         // TODO: eventually we need to do something about this nested slices
-                        let subtree_path_ref: Vec<&[u8]> =
-                            subtree_path.iter().map(|x| x.as_slice()).collect();
-                        let mut subtree = subtrees
-                            .get_subtree_without_transaction(subtree_path_ref.as_slice())?;
+                        let mut subtree = subtrees.get_subtree_without_transaction(
+                            subtree_path.iter().map(|x| x.as_slice()),
+                        )?;
                         subtree.clear(transaction).map_err(|e| {
                             Error::CorruptedData(format!(
                                 "unable to cleanup tree from storage: {}",
@@ -109,8 +124,7 @@ impl GroveDb {
             } else {
                 Element::delete(&mut merk, key.clone(), transaction)?;
             }
-
-            self.propagate_changes(path, transaction)?;
+            self.propagate_changes(path_iter, transaction)?;
             Ok(true)
         }
     }
@@ -119,25 +133,36 @@ impl GroveDb {
     /// Finds keys which are trees for a given subtree recursively.
     /// One element means a key of a `merk`, n > 1 elements mean relative path
     /// for a deeply nested subtree.
-    pub(crate) fn find_subtrees(
+    pub(crate) fn find_subtrees<'a, P>(
         &self,
-        path: Vec<Vec<u8>>,
+        path: P,
         transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<Vec<Vec<Vec<u8>>>, Error> {
-        let mut queue: Vec<Vec<Vec<u8>>> = vec![path.clone()];
-        let mut result: Vec<Vec<Vec<u8>>> = vec![path];
+    ) -> Result<Vec<Vec<Vec<u8>>>, Error>
+    where
+        P: IntoIterator<Item = &'a [u8]>,
+    {
+        // TODO: remove conversion to vec;
+        // However, it's not easy for a reason:
+        // new keys to enqueue are taken from raw iterator which returns Vec<u8>;
+        // changing that to slice is hard as cursor should be moved for next iteration
+        // which requires exclusive (&mut) reference, also there is no guarantee that
+        // slice which points into storage internals will remain valid if raw iterator
+        // got altered so why that reference should be exclusive;
+
+        let mut queue: Vec<Vec<Vec<u8>>> =
+            vec![path.into_iter().map(|x| x.as_ref().to_vec()).collect()];
+        let mut result: Vec<Vec<Vec<u8>>> = queue.clone();
 
         while let Some(q) = queue.pop() {
-            // TODO: eventually we need to do something about this nested slices
-            let q_ref: Vec<&[u8]> = q.iter().map(|x| x.as_slice()).collect();
             // Get the correct subtree with q_ref as path
-            let (merk, _) = self.get_subtrees().get(&q_ref, transaction)?;
-            let mut iter = Element::iterator(merk.raw_iter());
-            // let mut iter = self.elements_iterator(&q_ref, transaction)?;
-            while let Some((key, value)) = iter.next()? {
+            let (merk, _) = self
+                .get_subtrees()
+                .get(q.iter().map(|x| x.as_slice()), transaction)?;
+            let mut raw_iter = Element::iterator(merk.raw_iter());
+            while let Some((key, value)) = raw_iter.next()? {
                 if let Element::Tree(_) = value {
                     let mut sub_path = q.clone();
-                    sub_path.push(key);
+                    sub_path.push(key.to_vec());
                     queue.push(sub_path.clone());
                     result.push(sub_path);
                 }

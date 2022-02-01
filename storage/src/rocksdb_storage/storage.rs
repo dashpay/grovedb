@@ -73,13 +73,13 @@ impl Storage for PrefixedRocksDbStorage {
     type RawIterator<'a> = RawPrefixedTransactionalIterator<'a>;
     type StorageTransaction<'a> = PrefixedRocksDbTransaction<'a>;
 
-    fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+    fn put<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
         self.db
             .put(make_prefixed_key(self.prefix.clone(), key), value)?;
         Ok(())
     }
 
-    fn put_aux(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+    fn put_aux<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
         self.db.put_cf(
             self.cf_aux()?,
             make_prefixed_key(self.prefix.clone(), key),
@@ -88,7 +88,7 @@ impl Storage for PrefixedRocksDbStorage {
         Ok(())
     }
 
-    fn put_root(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+    fn put_root<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
         self.db.put_cf(
             self.cf_roots()?,
             make_prefixed_key(self.prefix.clone(), key),
@@ -97,19 +97,19 @@ impl Storage for PrefixedRocksDbStorage {
         Ok(())
     }
 
-    fn delete(&self, key: &[u8]) -> Result<(), Self::Error> {
+    fn delete<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Self::Error> {
         self.db
             .delete(make_prefixed_key(self.prefix.clone(), key))?;
         Ok(())
     }
 
-    fn delete_aux(&self, key: &[u8]) -> Result<(), Self::Error> {
+    fn delete_aux<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Self::Error> {
         self.db
             .delete_cf(self.cf_aux()?, make_prefixed_key(self.prefix.clone(), key))?;
         Ok(())
     }
 
-    fn delete_root(&self, key: &[u8]) -> Result<(), Self::Error> {
+    fn delete_root<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Self::Error> {
         self.db.delete_cf(
             self.cf_roots()?,
             make_prefixed_key(self.prefix.clone(), key),
@@ -117,32 +117,32 @@ impl Storage for PrefixedRocksDbStorage {
         Ok(())
     }
 
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+    fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error> {
         Ok(self.db.get(make_prefixed_key(self.prefix.clone(), key))?)
     }
 
-    fn get_aux(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+    fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error> {
         Ok(self
             .db
             .get_cf(self.cf_aux()?, make_prefixed_key(self.prefix.clone(), key))?)
     }
 
-    fn get_root(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+    fn get_root<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error> {
         Ok(self.db.get_cf(
             self.cf_roots()?,
             make_prefixed_key(self.prefix.clone(), key),
         )?)
     }
 
-    fn put_meta(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+    fn put_meta<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
         Ok(self.db.put_cf(self.cf_meta()?, key, value)?)
     }
 
-    fn delete_meta(&self, key: &[u8]) -> Result<(), Self::Error> {
+    fn delete_meta<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Self::Error> {
         Ok(self.db.delete_cf(self.cf_meta()?, key)?)
     }
 
-    fn get_meta(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+    fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error> {
         Ok(self.db.get_cf(self.cf_meta()?, key)?)
     }
 
@@ -183,7 +183,7 @@ impl Storage for PrefixedRocksDbStorage {
         Ok(())
     }
 
-    fn raw_iter<'a>(&'a self) -> Self::RawIterator<'a> {
+    fn raw_iter(&self) -> Self::RawIterator<'_> {
         RawPrefixedTransactionalIterator {
             rocksdb_iterator: self.db.raw_iterator(),
             prefix: &self.prefix,
