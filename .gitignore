@@ -1,7 +1,7 @@
 /target
 .idea
 Cargo.lock
-node-grove/prebuilds
+prebuilds
 node_modules
 .DS_Store
 .DS_Store?

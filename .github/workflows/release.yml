@@ -1,10 +1,16 @@
 name: Release
 
+#on:
+#  workflow_dispatch:
+#  release:
+#    types:
+#      - published
+
 on:
   workflow_dispatch:
-  release:
-    types:
-      - published
+  pull_request:
+    branches:
+      - master
 
 jobs:
   build:
@@ -145,7 +151,7 @@ jobs:
         uses: actions/upload-artifact@v2
         with:
           name: prebuilds
-          path: node-grove/prebuilds/
+          path: prebuilds/
 
   publish:
     name: Publish NPM Package
@@ -172,10 +178,10 @@ jobs:
         uses: actions/download-artifact@v2
         with:
           name: prebuilds
-          path: node-grove/prebuilds
+          path: prebuilds
 
       - name: List prebuilds
-        run: ls -laR node-grove/prebuilds
+        run: ls -laR prebuilds
 
       - name: Publish NPM package
         uses: JS-DevTools/npm-publish@v1
