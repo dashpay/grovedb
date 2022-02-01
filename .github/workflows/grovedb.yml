@@ -22,7 +22,7 @@ jobs:
         with:
           toolchain: nightly
 
-      - run: cargo test
+      - run: cargo test --profile ci
 
   linting:
     name: Liniting
@@ -44,7 +44,7 @@ jobs:
       - uses: actions-rs/clippy-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-features
+          args: --all-features --profile ci
 
   errors:
     name: Compilation errors
@@ -62,7 +62,7 @@ jobs:
           toolchain: nightly
           default: true
 
-      - run: cargo check
+      - run: cargo check --profile ci
 
   security:
     name: Dependencies security audit

@@ -8,3 +8,7 @@ members = [
 
 [profile.dev]
 opt-level = 3
+
+[profile.ci]
+inherits = "dev"
+opt-level = 0
