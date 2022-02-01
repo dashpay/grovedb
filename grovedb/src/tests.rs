@@ -974,7 +974,7 @@ fn test_subtree_pairs_iterator() {
         .get_subtrees()
         .get([TEST_LEAF, b"subtree1"], None)
         .unwrap();
-    let mut iter = Element::iterator(merk.raw_iter());
+    let mut iter = Element::iterator(merk.raw_iter(None));
     assert_eq!(iter.next().unwrap(), Some((b"key1".to_vec(), element)));
     assert_eq!(iter.next().unwrap(), Some((b"key2".to_vec(), element2)));
     let subtree_element = iter.next().unwrap().unwrap();
@@ -2207,4 +2207,33 @@ fn test_root_hash() {
     assert_eq!(db.root_hash(None).unwrap(), root_hash_outside.unwrap());
     db.commit_transaction(transaction).unwrap();
     assert_ne!(db.root_hash(None).unwrap(), root_hash_outside.unwrap());
+}
+
+#[test]
+fn test_subtree_deletion_with_transaction() {
+    let element = Element::Item(b"ayy".to_vec());
+
+    let mut db = make_grovedb();
+    let storage = db.storage();
+    let transaction = storage.transaction();
+    db.start_transaction().unwrap();
+
+    // Insert some nested subtrees
+    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), Some(&transaction))
+        .expect("successful subtree 1 insert");
+    db.insert([TEST_LEAF, b"key1"], b"key2", Element::empty_tree(), Some(&transaction))
+        .expect("successful subtree 2 insert");
+    // Insert an element into subtree
+    db.insert([TEST_LEAF, b"key1", b"key2"], b"key3", element, Some(&transaction))
+        .expect("successful value insert");
+    db.insert([TEST_LEAF], b"key4", Element::empty_tree(), Some(&transaction))
+        .expect("successful subtree 3 insert");
+
+    db.delete([TEST_LEAF], b"key1", Some(&transaction))
+        .expect("unable to delete subtree");
+    assert!(matches!(
+        db.get([TEST_LEAF, b"key1", b"key2"], b"key3", Some(&transaction)),
+        Err(Error::InvalidPath(_))
+    ));
+
 }

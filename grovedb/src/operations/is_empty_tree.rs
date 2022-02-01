@@ -14,7 +14,7 @@ impl GroveDb {
     {
         let (merk, _) = self.get_subtrees().get(path, transaction)?;
 
-        let mut iter = merk.raw_iter();
+        let mut iter = merk.raw_iter(transaction);
         iter.seek_to_first();
 
         Ok(!iter.valid())

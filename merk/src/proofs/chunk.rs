@@ -417,7 +417,7 @@ mod tests {
         merk.tree.set(root_node);
 
         // whole tree as 1 leaf
-        let mut iter = merk.inner.raw_iter();
+        let mut iter = merk.inner.raw_iter(None);
         iter.seek_to_first();
         let chunk = get_next_chunk(&mut iter, None).unwrap();
         let ops = chunk.into_iter().map(Ok);
@@ -428,7 +428,7 @@ mod tests {
         assert_eq!(counts.kvhash, 0);
         drop(iter);
 
-        let mut iter = merk.inner.raw_iter();
+        let mut iter = merk.inner.raw_iter(None);
         iter.seek_to_first();
 
         // left leaf

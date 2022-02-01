@@ -40,7 +40,7 @@ where
 
     /// Deletes tree data
     pub fn clear<'a>(&'a mut self, transaction: Option<&'a S::DBTransaction<'a>>) -> Result<()> {
-        let mut iter = self.raw_iter();
+        let mut iter = self.raw_iter(transaction);
         iter.seek_to_first();
         let mut to_delete = self.storage.new_batch(transaction)?;
         while iter.valid() {
@@ -329,8 +329,11 @@ where
         res
     }
 
-    pub fn raw_iter(&self) -> S::RawIterator<'_> {
-        self.storage.raw_iter()
+    pub fn raw_iter<'a>(
+        &'a self,
+        transaction: Option<&'a S::DBTransaction<'a>>,
+    ) -> S::RawIterator<'a> {
+        self.storage.raw_iter(transaction)
     }
 
     fn source(&self) -> MerkSource<S> {
@@ -646,14 +649,14 @@ mod test {
                 .unwrap();
 
             let mut nodes = vec![];
-            collect(&mut merk.raw_iter(), &mut nodes);
+            collect(&mut merk.raw_iter(None), &mut nodes);
             nodes
         };
         let db = default_rocksdb(tmp_dir.path());
         let merk = Merk::open(PrefixedRocksDbStorage::new(db, Vec::new()).unwrap()).unwrap();
 
         let mut reopen_nodes = vec![];
-        collect(&mut merk.raw_iter(), &mut reopen_nodes);
+        collect(&mut merk.raw_iter(None), &mut reopen_nodes);
 
         assert_eq!(reopen_nodes, original_nodes);
     }

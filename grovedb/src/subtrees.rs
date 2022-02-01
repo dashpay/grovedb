@@ -146,7 +146,7 @@ impl Subtrees<'_> {
         .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
         let mut has_keys = false;
         {
-            let mut iter = merk.raw_iter();
+            let mut iter = merk.raw_iter(None);
             iter.seek_to_first();
             if iter.valid() {
                 has_keys = true;

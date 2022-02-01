@@ -86,7 +86,7 @@ impl GroveDb {
             let (merk, _) = self
                 .get_subtrees()
                 .get(q.iter().map(|x| x.as_slice()), transaction)?;
-            let mut raw_iter = Element::iterator(merk.raw_iter());
+            let mut raw_iter = Element::iterator(merk.raw_iter(transaction));
             while let Some((key, value)) = raw_iter.next()? {
                 if let Element::Tree(_) = value {
                     let mut sub_path = q.clone();

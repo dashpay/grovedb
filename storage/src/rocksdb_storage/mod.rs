@@ -61,12 +61,12 @@ fn make_prefixed_key<K: AsRef<[u8]>>(mut prefix: Vec<u8>, key: K) -> Vec<u8> {
     prefix
 }
 
-pub struct RawPrefixedTransactionalIterator<'a> {
-    rocksdb_iterator: DBRawIteratorWithThreadMode<'a, OptimisticTransactionDB>,
+pub struct RawPrefixedTransactionalIterator<'a, T: rocksdb::db::DBAccess> {
+    rocksdb_iterator: DBRawIteratorWithThreadMode<'a, T>,
     prefix: &'a [u8],
 }
 
-impl RawIterator for RawPrefixedTransactionalIterator<'_> {
+impl<T: rocksdb::db::DBAccess> RawIterator for RawPrefixedTransactionalIterator<'_, T> {
     fn seek_to_first(&mut self) {
         self.rocksdb_iterator.seek(self.prefix);
     }
@@ -463,7 +463,7 @@ mod tests {
 
         // Test iterator goes forward
 
-        let mut iter = storage.raw_iter();
+        let mut iter = storage.raw_iter(None);
         iter.seek_to_first();
         while iter.valid() {
             assert_eq!(
@@ -476,7 +476,7 @@ mod tests {
 
         // Test `seek_to_last` on a storage with elements
 
-        let mut iter = storage.raw_iter();
+        let mut iter = storage.raw_iter(None);
         iter.seek_to_last();
         assert_eq!(
             (iter.key().unwrap(), iter.value().unwrap()),
@@ -488,7 +488,7 @@ mod tests {
         // Test `seek_to_last` on empty storage
         let empty_storage = PrefixedRocksDbStorage::new(db, b"notexist".to_vec())
             .expect("cannot create a prefixed storage");
-        let mut iter = empty_storage.raw_iter();
+        let mut iter = empty_storage.raw_iter(None);
         iter.seek_to_last();
         assert!(!iter.valid());
         iter.next();
