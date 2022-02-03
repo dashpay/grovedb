@@ -53,7 +53,7 @@ pub enum Link {
 impl Link {
     /// Creates a `Link::Modified` from the given `Tree`.
     #[inline]
-    pub fn from_modified_tree(tree: Tree) -> Self {
+    pub const fn from_modified_tree(tree: Tree) -> Self {
         let pending_writes = 1 + tree.child_pending_writes(true) + tree.child_pending_writes(false);
 
         Link::Modified {
@@ -71,25 +71,25 @@ impl Link {
 
     /// Returns `true` if the link is of the `Link::Reference` variant.
     #[inline]
-    pub fn is_reference(&self) -> bool {
+    pub const fn is_reference(&self) -> bool {
         matches!(self, Link::Reference { .. })
     }
 
     /// Returns `true` if the link is of the `Link::Modified` variant.
     #[inline]
-    pub fn is_modified(&self) -> bool {
+    pub const fn is_modified(&self) -> bool {
         matches!(self, Link::Modified { .. })
     }
 
     /// Returns `true` if the link is of the `Link::Uncommitted` variant.
     #[inline]
-    pub fn is_uncommitted(&self) -> bool {
+    pub const fn is_uncommitted(&self) -> bool {
         matches!(self, Link::Uncommitted { .. })
     }
 
     /// Returns `true` if the link is of the `Link::Loaded` variant.
     #[inline]
-    pub fn is_stored(&self) -> bool {
+    pub const fn is_stored(&self) -> bool {
         matches!(self, Link::Loaded { .. })
     }
 
@@ -107,7 +107,7 @@ impl Link {
     /// Returns the `Tree` instance of the tree referenced by the link. If the
     /// link is of variant `Link::Reference`, the returned value will be `None`.
     #[inline]
-    pub fn tree(&self) -> Option<&Tree> {
+    pub const fn tree(&self) -> Option<&Tree> {
         match self {
             // TODO: panic for Reference, don't return Option?
             Link::Reference { .. } => None,
@@ -121,7 +121,7 @@ impl Link {
     /// of variant `Link::Modified` since we have not yet recomputed the tree's
     /// hash.
     #[inline]
-    pub fn hash(&self) -> &Hash {
+    pub const fn hash(&self) -> &Hash {
         match self {
             Link::Modified { .. } => panic!("Cannot get hash from modified link"),
             Link::Reference { hash, .. } => hash,
@@ -134,7 +134,15 @@ impl Link {
     /// if any (note: not the height of the referenced tree itself). Return
     /// value is `(left_child_height, right_child_height)`.
     #[inline]
-    pub fn height(&self) -> u8 {
+    pub const fn height(&self) -> u8 {
+        const fn max(a: u8, b: u8) -> u8 {
+            if a >= b {
+                a
+            } else {
+                b
+            }
+        }
+
         let (left_height, right_height) = match self {
             Link::Reference { child_heights, .. } => *child_heights,
             Link::Modified { child_heights, .. } => *child_heights,
@@ -146,7 +154,7 @@ impl Link {
 
     /// Returns the balance factor of the tree referenced by the link.
     #[inline]
-    pub fn balance_factor(&self) -> i8 {
+    pub const fn balance_factor(&self) -> i8 {
         let (left_height, right_height) = match self {
             Link::Reference { child_heights, .. } => *child_heights,
             Link::Modified { child_heights, .. } => *child_heights,

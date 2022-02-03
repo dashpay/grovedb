@@ -256,7 +256,7 @@ impl QueryItem {
         }
     }
 
-    pub fn lower_unbounded(&self) -> bool {
+    pub const fn lower_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
             QueryItem::Range(_) => false,
@@ -286,7 +286,7 @@ impl QueryItem {
         }
     }
 
-    pub fn upper_unbounded(&self) -> bool {
+    pub const fn upper_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
             QueryItem::Range(_) => false,
@@ -363,7 +363,7 @@ impl QueryItem {
         }
     }
 
-    pub fn is_range(&self) -> bool {
+    pub const fn is_range(&self) -> bool {
         !matches!(self, QueryItem::Key(_))
     }
 
@@ -685,7 +685,7 @@ impl Link {
     /// Creates a `Node::Hash` from this link. Panics if the link is of variant
     /// `Link::Modified` since its hash has not yet been computed.
     #[cfg(feature = "full")]
-    fn to_hash_node(&self) -> Node {
+    const fn to_hash_node(&self) -> Node {
         let hash = match self {
             Link::Reference { hash, .. } => hash,
             Link::Modified { .. } => {

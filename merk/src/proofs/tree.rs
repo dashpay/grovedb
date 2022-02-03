@@ -93,7 +93,7 @@ impl Tree {
     }
 
     /// Returns an immutable reference to the child on the given side, if any.
-    pub fn child(&self, left: bool) -> Option<&Child> {
+    pub const fn child(&self, left: bool) -> Option<&Child> {
         if left {
             self.left.as_ref()
         } else {
@@ -130,8 +130,11 @@ impl Tree {
     /// given side, if any. If there is no child, returns the null hash
     /// (zero-filled).
     #[inline]
-    fn child_hash(&self, left: bool) -> Hash {
-        self.child(left).map_or(NULL_HASH, |c| c.hash)
+    const fn child_hash(&self, left: bool) -> Hash {
+        match self.child(left){
+            Some(c) => c.hash,
+            _ => NULL_HASH,
+        }
     }
 
     /// Consumes the tree node, calculates its hash, and returns a `Node::Hash`
