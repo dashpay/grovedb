@@ -3,7 +3,7 @@ use std::rc::Rc;
 use rocksdb::WriteBatchWithTransaction;
 
 use super::{
-    make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbTransaction,
+    make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbTransaction, RawIteratorVariant,
     RawPrefixedTransactionalIterator, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME,
 };
 use crate::{
@@ -70,7 +70,7 @@ impl Storage for PrefixedRocksDbStorage {
     type Batch<'a> = OrBatch<'a>;
     type DBTransaction<'a> = OptimisticTransactionDBTransaction<'a>;
     type Error = PrefixedRocksDbStorageError;
-    type RawIterator<'a, T> where T: 'a = RawPrefixedTransactionalIterator<'a, T>;
+    type RawIterator<'a> = RawPrefixedTransactionalIterator<'a>;
     type StorageTransaction<'a> = PrefixedRocksDbTransaction<'a>;
 
     fn put<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
@@ -183,20 +183,17 @@ impl Storage for PrefixedRocksDbStorage {
         Ok(())
     }
 
-    fn raw_iter(
-        &self,
-        db_transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Self::RawIterator<'_> {
-        if let Some(tx) = db_transaction {
-            RawPrefixedTransactionalIterator {
-                rocksdb_iterator: tx.raw_iterator(),
-                prefix: &self.prefix,
-            }
-        } else {
-            todo!()
+    fn raw_iter<'a>(
+        &'a self,
+        db_transaction: Option<&'a OptimisticTransactionDBTransaction>,
+    ) -> Self::RawIterator<'a> {
+        let rocksdb_iterator = db_transaction
+            .map(|tx| RawIteratorVariant::TransactionIterator(tx.raw_iterator()))
+            .unwrap_or_else(|| RawIteratorVariant::StorageIterator(self.db.raw_iterator()));
+        RawPrefixedTransactionalIterator {
+            rocksdb_iterator,
+            prefix: &self.prefix,
         }
-        // let rocksdb_iterator = db_transaction.map(|tx|
-        // tx.raw_iterator()).unwrap_or(self.db_raw_iterator());
     }
 
     fn transaction<'a>(

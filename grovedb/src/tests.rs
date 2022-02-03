@@ -2219,15 +2219,35 @@ fn test_subtree_deletion_with_transaction() {
     db.start_transaction().unwrap();
 
     // Insert some nested subtrees
-    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), Some(&transaction))
-        .expect("successful subtree 1 insert");
-    db.insert([TEST_LEAF, b"key1"], b"key2", Element::empty_tree(), Some(&transaction))
-        .expect("successful subtree 2 insert");
+    db.insert(
+        [TEST_LEAF],
+        b"key1",
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("successful subtree 1 insert");
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"key2",
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("successful subtree 2 insert");
     // Insert an element into subtree
-    db.insert([TEST_LEAF, b"key1", b"key2"], b"key3", element, Some(&transaction))
-        .expect("successful value insert");
-    db.insert([TEST_LEAF], b"key4", Element::empty_tree(), Some(&transaction))
-        .expect("successful subtree 3 insert");
+    db.insert(
+        [TEST_LEAF, b"key1", b"key2"],
+        b"key3",
+        element,
+        Some(&transaction),
+    )
+    .expect("successful value insert");
+    db.insert(
+        [TEST_LEAF],
+        b"key4",
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("successful subtree 3 insert");
 
     db.delete([TEST_LEAF], b"key1", Some(&transaction))
         .expect("unable to delete subtree");
@@ -2235,5 +2255,4 @@ fn test_subtree_deletion_with_transaction() {
         db.get([TEST_LEAF, b"key1", b"key2"], b"key3", Some(&transaction)),
         Err(Error::InvalidPath(_))
     ));
-
 }
