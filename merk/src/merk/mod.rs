@@ -1,7 +1,7 @@
 pub mod chunks;
 // TODO
 // pub mod restore;
-use std::{cell::Cell, cmp::Ordering, collections::LinkedList};
+use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt};
 
 use anyhow::{anyhow, bail, Result};
 use storage::{self, rocksdb_storage::PrefixedRocksDbStorage, Batch, RawIterator, Storage, Store};
@@ -20,6 +20,12 @@ where
 {
     pub(crate) tree: Cell<Option<Tree>>,
     pub(crate) storage: S,
+}
+
+impl<S: Storage> fmt::Debug for Merk<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Merk").finish()
+    }
 }
 
 pub type UseTreeMutResult = Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>;

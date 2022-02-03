@@ -4,7 +4,12 @@ mod subtrees;
 #[cfg(test)]
 mod tests;
 
-use std::{cell::RefCell, collections::HashMap, path::Path, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    path::Path,
+    rc::Rc,
+};
 
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
@@ -107,6 +112,7 @@ pub struct GroveDb {
     temp_root_tree: MerkleTree<Sha256>,
     temp_root_leaf_keys: HashMap<Vec<u8>, usize>,
     temp_subtrees: RefCell<HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+    temp_deleted_subtrees: RefCell<HashSet<Vec<u8>>>,
 }
 
 impl GroveDb {
@@ -124,6 +130,7 @@ impl GroveDb {
             temp_root_tree: MerkleTree::new(),
             temp_root_leaf_keys: HashMap::new(),
             temp_subtrees: RefCell::new(HashMap::new()),
+            temp_deleted_subtrees: RefCell::new(HashSet::new()),
             is_readonly: false,
         }
     }
@@ -155,6 +162,7 @@ impl GroveDb {
         let subtrees_view = Subtrees {
             root_leaf_keys: &root_leaf_keys,
             temp_subtrees: &temp_subtrees,
+            deleted_subtrees: &RefCell::new(HashSet::new()),
             storage: db.clone(),
         };
 
@@ -265,6 +273,7 @@ impl GroveDb {
         Subtrees {
             root_leaf_keys: &self.root_leaf_keys,
             temp_subtrees: &self.temp_subtrees,
+            deleted_subtrees: &self.temp_deleted_subtrees,
             storage: self.storage(),
         }
     }

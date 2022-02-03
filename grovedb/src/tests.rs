@@ -2233,6 +2233,7 @@ fn test_subtree_deletion_with_transaction() {
         Some(&transaction),
     )
     .expect("successful subtree 2 insert");
+
     // Insert an element into subtree
     db.insert(
         [TEST_LEAF, b"key1", b"key2"],
@@ -2255,4 +2256,10 @@ fn test_subtree_deletion_with_transaction() {
         db.get([TEST_LEAF, b"key1", b"key2"], b"key3", Some(&transaction)),
         Err(Error::InvalidPath(_))
     ));
+    transaction.commit().expect("cannot commit transaction");
+    assert!(matches!(
+        db.get([TEST_LEAF], b"key1", None),
+        Err(Error::InvalidPathKey(_))
+    ));
+    assert!(matches!(db.get([TEST_LEAF], b"key4", None), Ok(_)));
 }
