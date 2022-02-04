@@ -74,7 +74,7 @@ pub trait Storage {
     fn flush(&self) -> Result<(), Self::Error>;
 
     /// Get raw iterator over storage
-    fn raw_iter(&self) -> Self::RawIterator<'_>;
+    fn raw_iter<'a>(&'a self, tx: Option<&'a Self::DBTransaction<'a>>) -> Self::RawIterator<'a>;
 
     /// Starts DB transaction
     fn transaction<'a>(&'a self, tx: &'a Self::DBTransaction<'a>) -> Self::StorageTransaction<'a>;
@@ -162,8 +162,8 @@ impl<'b, S: Storage> Storage for &'b S {
         (*self).flush()
     }
 
-    fn raw_iter(&self) -> Self::RawIterator<'_> {
-        (*self).raw_iter()
+    fn raw_iter<'a>(&'a self, tx: Option<&'a Self::DBTransaction<'a>>) -> Self::RawIterator<'a> {
+        (*self).raw_iter(tx)
     }
 
     fn transaction<'a>(

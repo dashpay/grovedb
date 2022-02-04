@@ -1,5 +1,9 @@
 //! Module for retrieving subtrees
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 use merk::Merk;
 use storage::{
@@ -13,6 +17,7 @@ use crate::{Element, Error, GroveDb};
 pub struct Subtrees<'a> {
     pub root_leaf_keys: &'a HashMap<Vec<u8>, usize>,
     pub temp_subtrees: &'a RefCell<HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
+    pub deleted_subtrees: &'a RefCell<HashSet<Vec<u8>>>,
     pub storage: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
 }
 
@@ -30,7 +35,7 @@ impl Subtrees<'_> {
             None => None,
             Some(_) => {
                 let prefix = GroveDb::compress_subtree_key(path, None);
-                self.temp_subtrees.borrow_mut().insert(prefix, merk)
+                self.insert_temp_tree_with_prefix(prefix, merk, transaction)
             }
         }
     }
@@ -43,7 +48,18 @@ impl Subtrees<'_> {
     ) -> Option<Merk<PrefixedRocksDbStorage>> {
         match transaction {
             None => None,
-            Some(_) => self.temp_subtrees.borrow_mut().insert(prefix, merk),
+            Some(_) => {
+                // Removed subtree could be inserted again in a scope of a transaction that's
+                // why we need to stop treating it as deleted
+                self.deleted_subtrees.borrow_mut().remove(prefix.as_slice());
+                self.temp_subtrees.borrow_mut().insert(prefix, merk)
+            }
+        }
+    }
+
+    pub fn delete_temp_tree_with_prefix<T>(&self, prefix: Vec<u8>, transaction: Option<T>) {
+        if transaction.is_some() {
+            self.deleted_subtrees.borrow_mut().insert(prefix);
         }
     }
 
@@ -63,9 +79,11 @@ impl Subtrees<'_> {
                 merk = self.get_subtree_without_transaction(path)?;
             }
             Some(_) => {
-                let iter = path.into_iter();
-                let tree_prefix = GroveDb::compress_subtree_key(iter.clone(), None);
-                prefix = Some(tree_prefix.clone());
+                let path_iter = path.into_iter();
+                let tree_prefix = GroveDb::compress_subtree_key(path_iter.clone(), None);
+                if self.deleted_subtrees.borrow().contains(&tree_prefix) {
+                    return Err(Error::InvalidPath("no subtree found under that path"));
+                }
                 if self.temp_subtrees.borrow().contains_key(&tree_prefix) {
                     // get the merk out
                     merk = self
@@ -73,9 +91,10 @@ impl Subtrees<'_> {
                         .borrow_mut()
                         .remove(&tree_prefix)
                         .expect("confirmed it's in the hashmap");
+                    prefix = Some(tree_prefix);
                 } else {
                     // merk is not in the hash map get it without transaction
-                    merk = self.get_subtree_without_transaction(iter)?;
+                    merk = self.get_subtree_without_transaction(path_iter)?;
                 }
             }
         }
@@ -149,7 +168,7 @@ impl Subtrees<'_> {
             subtree_prefix,
         )?)
         .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
-        let has_keys = !merk.is_empty_tree();
+        let has_keys = !merk.is_empty_tree(None);
         Ok((merk, has_keys))
     }
 }

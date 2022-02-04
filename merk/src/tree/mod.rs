@@ -99,14 +99,14 @@ impl Tree {
 
     /// Returns the hash of the root node's key/value pair.
     #[inline]
-    pub fn kv_hash(&self) -> &Hash {
+    pub const fn kv_hash(&self) -> &Hash {
         self.inner.kv.hash()
     }
 
     /// Returns a reference to the root node's `Link` on the given side, if any.
     /// If there is no child, returns `None`.
     #[inline]
-    pub fn link(&self, left: bool) -> Option<&Link> {
+    pub const fn link(&self, left: bool) -> Option<&Link> {
         if left {
             self.inner.left.as_ref()
         } else {
@@ -128,7 +128,7 @@ impl Tree {
     /// Returns a reference to the root node's child on the given side, if any.
     /// If there is no child, returns `None`.
     #[inline]
-    pub fn child(&self, left: bool) -> Option<&Self> {
+    pub const fn child(&self, left: bool) -> Option<&Self> {
         match self.link(left) {
             None => None,
             Some(link) => link.tree(),
@@ -151,8 +151,11 @@ impl Tree {
     /// Returns the hash of the root node's child on the given side, if any. If
     /// there is no child, returns the null hash (zero-filled).
     #[inline]
-    pub fn child_hash(&self, left: bool) -> &Hash {
-        self.link(left).map_or(&NULL_HASH, |link| link.hash())
+    pub const fn child_hash(&self, left: bool) -> &Hash {
+        match self.link(left) {
+            Some(link) => link.hash(),
+            _ => &NULL_HASH,
+        }
     }
 
     /// Computes and returns the hash of the root node.
@@ -168,7 +171,7 @@ impl Tree {
     /// Returns the number of pending writes for the child on the given side, if
     /// any. If there is no child, returns 0.
     #[inline]
-    pub fn child_pending_writes(&self, left: bool) -> usize {
+    pub const fn child_pending_writes(&self, left: bool) -> usize {
         match self.link(left) {
             Some(Link::Modified { pending_writes, .. }) => *pending_writes,
             _ => 0,
@@ -178,12 +181,15 @@ impl Tree {
     /// Returns the height of the child on the given side, if any. If there is
     /// no child, returns 0.
     #[inline]
-    pub fn child_height(&self, left: bool) -> u8 {
-        self.link(left).map_or(0, |child| child.height())
+    pub const fn child_height(&self, left: bool) -> u8 {
+        match self.link(left) {
+            Some(child) => child.height(),
+            _ => 0,
+        }
     }
 
     #[inline]
-    pub fn child_heights(&self) -> (u8, u8) {
+    pub const fn child_heights(&self) -> (u8, u8) {
         (self.child_height(true), self.child_height(false))
     }
 
@@ -200,7 +206,7 @@ impl Tree {
     /// left child (if any). For example, a balance factor of 2 means the right
     /// subtree is 2 levels taller than the left subtree.
     #[inline]
-    pub fn balance_factor(&self) -> i8 {
+    pub const fn balance_factor(&self) -> i8 {
         let left_height = self.child_height(true) as i8;
         let right_height = self.child_height(false) as i8;
         right_height - left_height
@@ -406,7 +412,7 @@ impl Tree {
     }
 }
 
-pub fn side_to_str(left: bool) -> &'static str {
+pub const fn side_to_str(left: bool) -> &'static str {
     if left {
         "left"
     } else {

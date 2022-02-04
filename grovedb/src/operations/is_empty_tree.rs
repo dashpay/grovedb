@@ -18,8 +18,12 @@ impl GroveDb {
         P: IntoIterator<Item = &'a [u8]>,
         <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
     {
-        let (merk, _) = self.get_subtrees().get(path, transaction)?;
-
-        Ok(merk.is_empty_tree())
+        let (merk, prefix) = self.get_subtrees().get(path, transaction)?;
+        let result = merk.is_empty_tree(transaction);
+        if let Some(prefix) = prefix {
+            self.get_subtrees()
+                .insert_temp_tree_with_prefix(prefix, merk, transaction);
+        }
+        Ok(result)
     }
 }

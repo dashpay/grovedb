@@ -25,9 +25,9 @@ impl GroveDb {
             return Ok(0 as u16);
         }
         let mut delete_count: u16 = 1;
-        if let Some(first) = path_iter.next() {
+        if let Some(last) = path_iter.next_back() {
             let deleted_parent =
-                self.delete_up_tree_while_empty(path_iter, first, stop_path_height, transaction)?;
+                self.delete_up_tree_while_empty(path_iter, last, stop_path_height, transaction)?;
             delete_count += deleted_parent;
         }
         Ok(delete_count)
@@ -83,44 +83,51 @@ impl GroveDb {
         } else {
             let element = self.get_raw(path_iter.clone(), key.as_ref(), transaction)?;
             let subtrees = self.get_subtrees();
-            let (mut merk, prefix) = subtrees.get(path_iter.clone(), transaction)?;
+            let delete_element = || -> Result<(), Error> {
+                // TODO: we shouldn't handle this context manually each time
+                let (mut parent_merk, prefix) = subtrees.get(path_iter.clone(), transaction)?;
+                Element::delete(&mut parent_merk, &key, transaction)?;
+                if let Some(prefix) = prefix {
+                    subtrees.insert_temp_tree_with_prefix(prefix, parent_merk, transaction);
+                } else {
+                    subtrees.insert_temp_tree(path_iter.clone(), parent_merk, transaction);
+                }
+                Ok(())
+            };
 
             if let Element::Tree(_) = element {
-                if merk.is_empty_tree() {
-                    Element::delete(&mut merk, key.clone(), transaction)?;
-                } else if only_delete_tree_if_empty {
+                let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
+                let subtrees_paths = self.find_subtrees(subtree_merk_path.clone(), transaction)?;
+                let (subtree_merk, prefix) = subtrees.get(subtree_merk_path, transaction)?;
+
+                let is_empty = subtree_merk.is_empty_tree(transaction);
+
+                if let Some(prefix) = prefix {
+                    subtrees.insert_temp_tree_with_prefix(prefix, subtree_merk, transaction);
+                } else {
+                    subtrees.insert_temp_tree(path_iter.clone(), subtree_merk, transaction);
+                }
+
+                if only_delete_tree_if_empty && !is_empty {
                     return Ok(false);
                 } else {
-                    Element::delete(&mut merk, key.clone(), transaction)?;
-
-                    // we need to add the merk trees into the hashmap because we will use them for
-                    // querying data
+                    delete_element()?;
+                }
+                // TODO: dumb traversal should not be tolerated
+                for subtree_path in subtrees_paths {
+                    let (mut subtree, prefix) = self
+                        .get_subtrees()
+                        .get(subtree_path.iter().map(|x| x.as_slice()), transaction)?;
+                    subtree.clear(transaction).map_err(|e| {
+                        Error::CorruptedData(format!("unable to cleanup tree from storage: {}", e))
+                    })?;
                     if let Some(prefix) = prefix {
-                        subtrees.insert_temp_tree_with_prefix(prefix, merk, transaction);
-                    } else {
-                        subtrees.insert_temp_tree(path_iter.clone(), merk, transaction);
-                    }
-
-                    // TODO: dumb traversal should not be tolerated
-                    let subtrees_paths = self.find_subtrees(
-                        path_iter.clone().chain(std::iter::once(key)),
-                        transaction,
-                    )?;
-                    for subtree_path in subtrees_paths {
-                        // TODO: eventually we need to do something about this nested slices
-                        let mut subtree = subtrees.get_subtree_without_transaction(
-                            subtree_path.iter().map(|x| x.as_slice()),
-                        )?;
-                        subtree.clear(transaction).map_err(|e| {
-                            Error::CorruptedData(format!(
-                                "unable to cleanup tree from storage: {}",
-                                e
-                            ))
-                        })?;
+                        self.get_subtrees()
+                            .delete_temp_tree_with_prefix(prefix, transaction);
                     }
                 }
             } else {
-                Element::delete(&mut merk, key.clone(), transaction)?;
+                delete_element()?;
             }
             self.propagate_changes(path_iter, transaction)?;
             Ok(true)
@@ -153,10 +160,9 @@ impl GroveDb {
 
         while let Some(q) = queue.pop() {
             // Get the correct subtree with q_ref as path
-            let (merk, _) = self
-                .get_subtrees()
-                .get(q.iter().map(|x| x.as_slice()), transaction)?;
-            let mut raw_iter = Element::iterator(merk.raw_iter());
+            let path_iter = q.iter().map(|x| x.as_slice());
+            let (merk, prefix) = self.get_subtrees().get(path_iter.clone(), transaction)?;
+            let mut raw_iter = Element::iterator(merk.raw_iter(transaction));
             while let Some((key, value)) = raw_iter.next()? {
                 if let Element::Tree(_) = value {
                     let mut sub_path = q.clone();
@@ -164,6 +170,15 @@ impl GroveDb {
                     queue.push(sub_path.clone());
                     result.push(sub_path);
                 }
+            }
+            // after deletion, if there is a transaction, add the merk back into the hashmap
+            drop(raw_iter);
+            if let Some(prefix) = prefix {
+                self.get_subtrees()
+                    .insert_temp_tree_with_prefix(prefix, merk, transaction);
+            } else {
+                self.get_subtrees()
+                    .insert_temp_tree(path_iter, merk, transaction);
             }
         }
         Ok(result)

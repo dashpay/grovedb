@@ -3,7 +3,7 @@ use std::rc::Rc;
 use rocksdb::WriteBatchWithTransaction;
 
 use super::{
-    make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbTransaction,
+    make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbTransaction, RawIteratorVariant,
     RawPrefixedTransactionalIterator, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME,
 };
 use crate::{
@@ -183,9 +183,15 @@ impl Storage for PrefixedRocksDbStorage {
         Ok(())
     }
 
-    fn raw_iter(&self) -> Self::RawIterator<'_> {
+    fn raw_iter<'a>(
+        &'a self,
+        db_transaction: Option<&'a OptimisticTransactionDBTransaction>,
+    ) -> Self::RawIterator<'a> {
+        let rocksdb_iterator = db_transaction
+            .map(|tx| RawIteratorVariant::TransactionIterator(tx.raw_iterator()))
+            .unwrap_or_else(|| RawIteratorVariant::StorageIterator(self.db.raw_iterator()));
         RawPrefixedTransactionalIterator {
-            rocksdb_iterator: self.db.raw_iterator(),
+            rocksdb_iterator,
             prefix: &self.prefix,
         }
     }
@@ -197,144 +203,3 @@ impl Storage for PrefixedRocksDbStorage {
         PrefixedRocksDbTransaction::new(db_transaction, self.prefix.clone(), &self.db)
     }
 }
-
-// pub struct TransactionalPrefixedRocksDbStorage<'a> {
-//     storage: &'a PrefixedRocksDbStorage,
-//     transaction: Option<PrefixedRocksDbTransaction<'a>>,
-// }
-//
-// impl<'a> TransactionalPrefixedRocksDbStorage<'a> {
-//     pub fn new(
-//         storage: &'a PrefixedRocksDbStorage,
-//         db_transaction: Option<&'a OptimisticTransactionDBTransaction>,
-//     ) -> Self {
-//         Self {
-//             storage,
-//             transaction: db_transaction.map(|tx| storage.transaction(tx))
-//         }
-//     }
-// }
-//
-// impl<'b> Storage for TransactionalPrefixedRocksDbStorage<'b> {
-//     type Error = PrefixedRocksDbStorageError;
-//     type Batch<'a>
-//         where
-//             'b: 'a,
-//     = PrefixedRocksDbBatch<'a>;
-//     type RawIterator<'a>
-//         where
-//             'b: 'a,
-//     = DBRawTransactionIterator<'a>;
-//     type StorageTransaction<'a>
-//         where
-//             'b: 'a,
-//     = PrefixedRocksDbTransaction<'a>;
-//     type DBTransaction<'a>
-//         where
-//             'b: 'a,
-//     = OptimisticTransactionDBTransaction<'a>;
-//
-//     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
-//         match &self.transaction {
-//             None => self.storage.put(key, value),
-//             Some(tx) => tx.put(key, value),
-//         }
-//     }
-//
-//     fn put_aux(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
-//         match &self.transaction {
-//             None => self.storage.put_aux(key, value),
-//             Some(tx) => tx.put_aux(key, value),
-//         }
-//     }
-//
-//     fn put_root(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
-//         match &self.transaction {
-//             None => self.storage.put_root(key, value),
-//             Some(tx) => tx.put_root(key, value),
-//         }
-//     }
-//
-//     fn put_meta(&self, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
-//         match &self.transaction {
-//             None => self.storage.put_meta(key, value),
-//             Some(tx) => tx.put_meta(key, value),
-//         }
-//     }
-//
-//     fn delete(&self, key: &[u8]) -> Result<(), Self::Error> {
-//         match &self.transaction {
-//             None => self.storage.delete(key),
-//             Some(tx) => tx.delete(key),
-//         }
-//     }
-//
-//     fn delete_aux(&self, key: &[u8]) -> Result<(), Self::Error> {
-//         match &self.transaction {
-//             None => self.storage.delete_aux(key),
-//             Some(tx) => tx.delete_aux(key),
-//         }
-//     }
-//
-//     fn delete_root(&self, key: &[u8]) -> Result<(), Self::Error> {
-//         match &self.transaction {
-//             None => self.storage.delete_root(key),
-//             Some(tx) => tx.delete_root(key),
-//         }
-//     }
-//
-//     fn delete_meta(&self, key: &[u8]) -> Result<(), Self::Error> {
-//         match &self.transaction {
-//             None => self.storage.delete_meta(key),
-//             Some(tx) => tx.delete_meta(key),
-//         }
-//     }
-//
-//     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-//         match &self.transaction {
-//             None => self.storage.get(key),
-//             Some(tx) => tx.get(key),
-//         }
-//     }
-//
-//     fn get_aux(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-//         match &self.transaction {
-//             None => self.storage.get_aux(key),
-//             Some(tx) => tx.get_aux(key),
-//         }
-//     }
-//
-//     fn get_root(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-//         match &self.transaction {
-//             None => self.storage.get_root(key),
-//             Some(tx) => tx.get_root(key),
-//         }
-//     }
-//
-//     fn get_meta(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-//         match &self.transaction {
-//             None => self.storage.get_meta(key),
-//             Some(tx) => tx.get_meta(key),
-//         }
-//     }
-//
-//     fn new_batch<'a>(&'a self) -> Result<Self::Batch<'a>, Self::Error> {
-//         self.storage.new_batch()
-//     }
-//
-//     fn commit_batch<'a>(&'a self, batch: Self::Batch<'a>) -> Result<(),
-// Self::Error> {         self.storage.commit_batch(batch)
-//     }
-//
-//     fn flush(&self) -> Result<(), Self::Error> {
-//         self.storage.flush()
-//     }
-//
-//     fn raw_iter<'a>(&'a self) -> Self::RawIterator<'a> {
-//         self.storage.raw_iter()
-//     }
-//
-//     fn transaction<'a>(&'a self, tx: &'a Self::DBTransaction<'a>) ->
-// Self::StorageTransaction<'a> {         self.storage.transaction(tx)
-//     }
-// }

@@ -1,4 +1,5 @@
 const { promisify } = require('util');
+const { join: pathJoin } = require('path');
 
 // This file is crated when run `npm run build`. The actual source file that
 // exports those functions is ./src/lib.rs
@@ -21,7 +22,7 @@ const {
   groveDbGetPathQuery,
   groveDbRootHash,
 } = require('neon-load-or-build')({
-  dir: __dirname,
+  dir: pathJoin(__dirname, '..'),
 });
 
 // Convert the DB methods from using callbacks to returning promises

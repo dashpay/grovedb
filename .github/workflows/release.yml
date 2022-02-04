@@ -34,19 +34,11 @@ jobs:
             platform: unknown-linux
             build_dependencies:
               - musl-tools
-# TODO: Enable build for arm64 linux musl
-#          - os: ubuntu-latest
-#            arch: aarch64
-#            node_arch: arm64
-#            compiler: musl
-#            platform: unknown-linux
-#            build_dependencies:
-#              - gcc-aarch64-linux-gnu
-#              - binutils-aarch64-linux-gnu
-#              - clang
-#              - musl-tools
-#              - musl
-#              - musl:arm64
+          - os: ubuntu-latest
+            arch: aarch64
+            node_arch: arm64
+            compiler: musl
+            platform: unknown-linux
           - os: macos-11
             arch: x86_64
             platform: apple-darwin
@@ -74,19 +66,15 @@ jobs:
         with:
           script: |
             let target = '${{ matrix.arch }}-${{ matrix.platform }}';
-            
+
             if ('${{ matrix.compiler }}') {
               target += '-${{ matrix.compiler }}';
             }
-            
+
             core.info(`Set target ${target}`);
-            
+
             return target;
           result-encoding: string
-
-#      - name: Add arm64 architecture for apt
-#        if: ${{ matrix.os == 'ubuntu-latest' && matrix.arch == 'aarch64' }}
-#        run: sudo dpkg --add-architecture arm64
 
       - name: Install build deps
         if: ${{ matrix.os == 'ubuntu-latest' && matrix.build_dependencies && matrix.build_dependencies[0] }}
@@ -95,17 +83,18 @@ jobs:
           sudo apt-get install ${{ join(matrix.build_dependencies, ' ') }}
 
       - name: Fix missing "musl-g++" for x86_64-unknown-linux-musl # https://github.com/rust-lang/cargo/issues/3359
-        if: ${{ matrix.os == 'ubuntu-latest' && matrix.arch == 'x86_64' && matrix.compiler == 'musl' }}
+        if: ${{ steps.set-target.outputs.result == 'x86_64-unknown-linux-musl' }}
         run: sudo ln -s /bin/g++ /bin/musl-g++
 
       - name: Setup Rust toolchain and target
+        if: ${{ steps.set-target.outputs.result != 'aarch64-unknown-linux-musl' }}
         uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
           default: true
           target: ${{ steps.set-target.outputs.result }}
 
-      - name: Set defualt target
+      - name: Set defualt target to cargo config
         uses: DamianReeves/write-file-action@v1.0
         with:
           path: .cargo/config.toml
@@ -133,12 +122,20 @@ jobs:
 
       - name: Run tests
         run: npm test
-        if: ${{ matrix.os != '' && matrix.arch != 'aarch64' }} # TODO Run test on Apple M1
+        if: ${{ steps.set-target.outputs.result != 'aarch64-unknown-linux-musl' && steps.set-target.outputs.result != 'aarch64-apple-darwin' }}
         env:
           LIBC: ${{ steps.set-libc.outputs.result }}
           ARCH: ${{ matrix.node_arch }} # Overwrite current arch with target one
 
+      - name: Build aarch64-unknown-linux-musl
+        if: ${{ steps.set-target.outputs.result == 'aarch64-unknown-linux-musl' }}
+        uses: docker://messense/rust-musl-cross:aarch64-musl
+        with:
+          workdir: /github/workspace/
+          entrypoint: node-grove/docker/build-aarch64-unknown-linux-musl.sh
+
       - name: Build
+        if: ${{ steps.set-target.outputs.result != 'aarch64-unknown-linux-musl' }}
         run: npm run build:release
         env:
           LIBC: ${{ steps.set-libc.outputs.result }}
@@ -148,7 +145,7 @@ jobs:
         uses: actions/upload-artifact@v2
         with:
           name: prebuilds
-          path: node-grove/prebuilds/
+          path: prebuilds/
 
   publish:
     name: Publish NPM Package
@@ -175,10 +172,10 @@ jobs:
         uses: actions/download-artifact@v2
         with:
           name: prebuilds
-          path: node-grove/prebuilds
+          path: prebuilds
 
       - name: List prebuilds
-        run: ls -laR node-grove/prebuilds
+        run: ls -laR prebuilds
 
       - name: Publish NPM package
         uses: JS-DevTools/npm-publish@v1
