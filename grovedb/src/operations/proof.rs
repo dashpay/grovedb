@@ -1,261 +1,174 @@
-// use std::collections::HashMap;
-//
-// use merk::proofs::query::Map;
-// use rs_merkle::{algorithms::Sha256, MerkleProof};
-//
-// use crate::{Element, Error, GroveDb, PathQuery, Proof, Query};
-//
-// impl GroveDb {
-//     pub fn proof(&mut self, proof_queries: Vec<PathQuery>) -> Result<Vec<u8>,
-// Error> {         // To prove a path we need to return a proof for each node
-// on the path including         // the root. With multiple paths, nodes can
-// overlap i.e two or more paths can         // share the same nodes. We should
-// only have one proof for each node,         // if a node forks into multiple
-// relevant paths then we should create a         // combined proof for that
-// node with all the relevant keys         let mut query_paths = Vec::new();
-//         let mut intermediate_proof_spec: HashMap<Vec<u8>, Query> =
-// HashMap::new();         let mut root_keys: Vec<Vec<u8>> = Vec::new();
-//         let mut proofs: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
-//
-//         // For each unique node including the root
-//         // determine what keys would need to be included in the proof
-//         for proof_query in proof_queries.iter() {
-//             query_paths.push(
-//                 proof_query
-//                     .path
-//                     .iter()
-//                     .map(|x| x.to_vec())
-//                     .collect::<Vec<_>>(),
-//             );
-//
-//             let mut split_path = proof_query.path.split_last();
-//             while let Some((key, path_slice)) = split_path {
-//                 if path_slice.is_empty() {
-//                     // We have gotten to the root node
-//                     let compressed_path = GroveDb::compress_subtree_key(&[],
-// Some(key));                     root_keys.push(compressed_path);
-//                 } else {
-//                     let compressed_path =
-// GroveDb::compress_subtree_key(path_slice, None);                     if let
-// Some(path_query) = intermediate_proof_spec.get_mut(&compressed_path) {
-//                         path_query.insert_key(key.to_vec());
-//                     } else {
-//                         let mut path_query = Query::new();
-//                         path_query.insert_key(key.to_vec());
-//                         intermediate_proof_spec.insert(compressed_path,
-// path_query);                     }
-//                 }
-//                 split_path = path_slice.split_last();
-//             }
-//         }
-//
-//         // Construct the path proofs
-//         for (path, query) in intermediate_proof_spec {
-//             let proof = self.prove_item(&path, query)?;
-//             proofs.insert(path, proof);
-//         }
-//
-//         // Construct the leaf proofs
-//         for proof_query in proof_queries {
-//             let path = proof_query.path;
-//
-//             // If there is a subquery with a limit it's possible that we only
-// need a reduced             // proof for this leaf.
-//             let reduced_proof_query = proof_query;
-//
-//             // First we must get elements
-//
-//             if let Some(subquery_key) =
-// reduced_proof_query.query.query.subquery_key.clone() {
-// self.get_path_queries_raw(&[&reduced_proof_query], None)?;
-//
-//                 let mut path_vec = path.to_vec();
-//                 path_vec.push(subquery_key.as_slice());
-//                 let compressed_path =
-// GroveDb::compress_subtree_key(path_vec.as_slice(), None);             }
-//
-//             // Now we must insert the final proof for the sub leaves
-//             let compressed_path = GroveDb::compress_subtree_key(path, None);
-//             let proof = self.prove_path_item(&compressed_path,
-// reduced_proof_query)?;             proofs.insert(compressed_path, proof);
-//         }
-//
-//         // Construct the root proof
-//         let mut root_index: Vec<usize> = Vec::new();
-//         for key in root_keys {
-//             let index = self
-//                 .root_leaf_keys
-//                 .get(&key)
-//                 .ok_or(Error::InvalidPath("root key not found"))?;
-//             root_index.push(*index);
-//         }
-//         let root_proof = self.root_tree.proof(&root_index).to_bytes();
-//
-//         let proof = Proof {
-//             query_paths,
-//             proofs,
-//             root_proof,
-//             root_leaf_keys: self.root_leaf_keys.clone(),
-//         };
-//
-//         let serialized_proof = bincode::serialize(&proof)
-//             .map_err(|_| Error::CorruptedData(String::from("unable to
-// serialize proof")))?;
-//
-//         Ok(serialized_proof)
-//     }
-//
-//     fn prove_path_item(
-//         &self,
-//         compressed_path: &[u8],
-//         path_query: PathQuery,
-//     ) -> Result<Vec<u8>, Error> {
-//         let merk = self
-//             .subtrees
-//             .get(compressed_path)
-//             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-//
-//         let sized_query = path_query.query;
-//
-//         if sized_query.query.subquery.is_none() {
-//             // then limit should be applied directly to the proof here
-//             let proof_result = merk
-//                 .prove(
-//                     sized_query.query,
-//                     sized_query.limit,
-//                     sized_query.offset,
-//                 )
-//                 .expect("should prove both inclusion and absence");
-//             Ok(proof_result)
-//         } else {
-//             let proof_result = merk
-//                 .prove(sized_query.query, None, None)
-//                 .expect("should prove both inclusion and absence");
-//             Ok(proof_result)
-//         }
-//     }
-//
-//     fn prove_item(&self, path: &[u8], query: Query) -> Result<Vec<u8>,
-// Error> {         let merk = self
-//             .subtrees
-//             .get(path)
-//             .ok_or(Error::InvalidPath("no subtree found under that path"))?;
-//
-//         // then limit should be applied directly to the proof here
-//         let proof_result = merk
-//             .prove(query, None, None)
-//             .expect("should prove both inclusion and absence");
-//         Ok(proof_result)
-//     }
-//
-//     pub fn execute_proof(proof: Vec<u8>) -> Result<([u8; 32],
-// HashMap<Vec<u8>, Map>), Error> {         // Deserialize the proof
-//         let proof: Proof = bincode::deserialize(&proof)
-//             .map_err(|_| Error::CorruptedData(String::from("unable to
-// deserialize proof")))?;
-//
-//         // Required to execute the root proof
-//         let mut root_keys_index: Vec<usize> = Vec::new();
-//         let mut root_hashes: Vec<[u8; 32]> = Vec::new();
-//
-//         // Collects the result map for each query
-//         let mut result_map: HashMap<Vec<u8>, Map> = HashMap::new();
-//
-//         for path in proof.query_paths {
-//             let path = path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
-//             // For each query path, get the result map after execution
-//             // and store hash + index for later root proof execution
-//             let root_key = &path[0];
-//             let (hash, proof_result_map) = GroveDb::execute_path(&path,
-// &proof.proofs)?;             let compressed_root_key_path =
-// GroveDb::compress_subtree_key(&[], Some(root_key));             let
-// compressed_query_path = GroveDb::compress_subtree_key(&path, None);
-//
-//             let index = proof
-//                 .root_leaf_keys
-//                 .get(&compressed_root_key_path)
-//                 .ok_or(Error::InvalidPath("Bad path"))?;
-//             if !root_keys_index.contains(index) {
-//                 root_keys_index.push(*index);
-//                 root_hashes.push(hash);
-//             }
-//
-//             result_map.insert(compressed_query_path, proof_result_map);
-//         }
-//
-//         let root_proof = match
-// MerkleProof::<Sha256>::try_from(proof.root_proof) {             Ok(proof) =>
-// Ok(proof),             Err(_) => Err(Error::InvalidProof("Invalid proof
-// element")),         }?;
-//
-//         let root_hash =
-//             match root_proof.root(&root_keys_index, &root_hashes,
-// proof.root_leaf_keys.len()) {                 Ok(hash) => Ok(hash),
-//                 Err(_) => Err(Error::InvalidProof("Invalid proof element")),
-//             }?;
-//
-//         Ok((root_hash, result_map))
-//     }
-//
-//     // Given a query path and a set of proofs
-//     // execute_path validates that the nodes represented by the paths
-//     // are connected to one another i.e root hash of child node is in parent
-// node     // at the correct key.
-//     // If path is valid, it returns the root hash of topmost merk and result
-// map of     // leaf merk.
-//     fn execute_path(
-//         path: &[&[u8]],
-//         proofs: &HashMap<Vec<u8>, Vec<u8>>,
-//     ) -> Result<([u8; 32], Map), Error> {
-//         let compressed_path = GroveDb::compress_subtree_key(path, None);
-//         let proof = proofs
-//             .get(&compressed_path)
-//             .ok_or(Error::InvalidPath("Bad path"))?;
-//
-//         // Execute the leaf merk proof
-//         let (mut last_root_hash, result_map) = match
-// merk::execute_proof(&proof[..]) {             Ok(result) => Ok(result),
-//             Err(_) => Err(Error::InvalidPath("Invalid proof element")),
-//         }?;
-//
-//         // Validate the path
-//         let mut split_path = path.split_last();
-//         while let Some((key, path_slice)) = split_path {
-//             if !path_slice.is_empty() {
-//                 let compressed_path =
-// GroveDb::compress_subtree_key(path_slice, None);                 let proof =
-// proofs                     .get(&compressed_path)
-//                     .ok_or(Error::InvalidPath("Bad path"))?;
-//
-//                 let proof_result = match merk::execute_proof(&proof[..]) {
-//                     Ok(result) => Ok(result),
-//                     Err(_) => Err(Error::InvalidPath("Invalid proof
-// element")),                 }?;
-//
-//                 let result_map = proof_result.1;
-//                 // TODO: Handle the error better here
-//                 let elem: Element =
-//
-// bincode::deserialize(result_map.get(key).unwrap().unwrap()).unwrap();
-//                 let merk_root_hash = match elem {
-//                     Element::Tree(hash) => Ok(hash),
-//                     _ => Err(Error::InvalidProof(
-//                         "Intermediate proofs should be for trees",
-//                     )),
-//                 }?;
-//
-//                 if merk_root_hash != last_root_hash {
-//                     return Err(Error::InvalidProof("Bad path"));
-//                 }
-//
-//                 last_root_hash = proof_result.0;
-//             } else {
-//                 break;
-//             }
-//
-//             split_path = path_slice.split_last();
-//         }
-//
-//         Ok((last_root_hash, result_map))
-//     }
-// }
+/*
+use rs_merkle::{algorithms::Sha256, MerkleProof};
+use crate::{Element, Error, GroveDb,PathQuery, Proof, Query};
+*/
+
+/*
+//no need for ProofofMembership struct
+
+struct ProofNonMembership {
+    target: Element,
+    L: Vec<Element>,
+    R: Vec<Element> //optional
+};
+
+struct ProofBoundedRange {
+    L1: Vec<Element>,//optional
+    R1: Vec<Element>,
+    L2: Vec<Element>,
+    R2: Vec<Element> //optional
+};
+
+struct ProofUnboundedRange {
+    L: Vec<Element>,
+    R: Vec<Element>, //optional 
+    E: Vec<Element>
+};
+
+impl GroveDb {
+
+    pub fn GenProof(Element: target) -> Vec<Element>{
+        //check if the element actually exists first                                    
+    }
+    
+    /*
+     * 
+     */
+    pub fn GenProofNonMembership(Element: target, ) -> ProofNonMembership {
+        //check it doesnt exist, pretend to insert it and return proofs of appropriate elements
+        //suppose they are L,R
+        let (a,b) = extremal(target);
+        ProofNonMembership {
+            target: target,
+            L: GenProof(L),
+            R: if a {None} else {GenProof(R)};
+        }
+        return temp;
+    }
+
+    pub fn GenProofBoundedRange(Element: L, Element: R) -> ProofBoundedRange {
+        let (a,b) = extremal(L);
+        let (c,d) = extremal(R);
+        //seek for L-1,R+1
+        ProofBoundedRange {
+            L1: if a {None} else {GenProof(L-1)},
+            R1: GenProof(L),
+            L2: GenProof(R),
+            R2: if c {None} else {GenProof(R+1)}
+        }
+    }
+
+    pub fn GenProofUnboundedRange(Element: target, bool:direction) -> ProofUnboundedRange {
+        //seek for extremal element, left if direction is 0, right if its 1
+        //suppose its called extremal
+        let (a,b) = extremal(target)
+        //seek for pair element, target2
+        ProofUnboundedRange {
+            L: GenProof(target),
+            R: if a {None} else {GenProof(target2)},
+            E: GenProof(Extremal)
+        };
+    }
+
+    //verify functions
+
+
+    /*
+     * classic, atomic primitive
+     */
+    pub fn Verify(proof: Vec<Element>) -> bool {
+
+    } 
+
+
+    /*
+     *Both elements must verify correctly, must be adjacent, and target must be between them OR
+     *Proof is a single extremal item, and the target is beyond it appropriately
+     */
+    pub fn VerifyNonMembership(proof: ProofNonMembership, Element: root) -> bool {
+        if(!proof.edge) { //normal, not extremal
+            return adjacent(proof.L,proof.R) & Verify(proof.L) & Verify(proof.R);
+        }
+        else {
+            let (a,b) = extremal(proof.L);   //a always true if its extremal, b is which way
+            if(proof.R == None) {
+                return Verify(proof.L) //& proof.target > proof.L element
+            }
+            else {
+                return Verify(proof.L) //& proof.target < proof.L  element
+            }
+        }
+    } 
+        
+    /*
+     * Four elements: all verify, and the two pairs must be adjacent
+     * Three elements:all verify, and one pair is adjacent, the other is extremal
+     * Two elements:  all verify, all extremal
+     */
+    pub fn VerifyBoundedRange(proof: BoundedRangeProof, Element: root) -> bool {
+        let mut ans = true;
+        ans &= Verify(proof.R1);
+        ans &= Verify(proof.L2);
+        if (proof.L1 != None) {
+            ans &= adjacent(proof.L1,proof.R1);
+            ans &= Verify(proof.L1);
+        }
+        else {
+            let (a,b) = extremal(proof.R1);
+            ans &= a;
+            ans &= !b;
+        }
+        if (proof.R2 != None) {
+            ans &= adjacent(proof.L2,proof.R2);
+            ans &= Verify(proof.R2);
+        }
+        else {
+            let (a,b) = extremal(proof.L2);
+            ans &= a;
+            ans &= b;
+        }
+        return ans;
+
+    }
+
+    /*
+     * Three elements: all verify, one pair adjacent, other extremal
+     *
+     *
+     */
+    pub fn VerifyUnboundedRange(proof: UnboundedRangeProof, Element: root) -> bool {
+        let mut ans = true;
+        ans &= Verify(proof.L);
+        let (a,b) = extremal(proof.E);
+        ans &= a;
+        if (proof.R != None){
+            ans &= adjacent(proof.L, proof.R);
+        }
+        if (b) { //limit is right
+            //proof.L is left of E
+        }
+        else {  //limit is left
+            //proof.L is right of E
+        }
+        return ans
+    }
+
+
+    //helper functions
+
+    /*
+     *This checks if the element is on an outer most path in the tree, there is no smaller/larger element
+     */
+    fn extremal(target: Element) -> (bool,bool) { 
+    
+    } }
+    /*
+     *Given two elements, are they adjacent? 
+     Being adjacent now doesnt mean they will be forever in the future
+     */
+    fn adjacent(L: Element, R: Element) -> bool {
+
+    }
+}
+
+*/
