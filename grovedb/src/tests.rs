@@ -1214,11 +1214,11 @@ fn test_subtree_deletion_if_empty() {
 
     let transaction = storage.transaction();
 
-    let root_hash = db.root_tree.root().unwrap();
+    let _root_hash = db.root_tree.root().unwrap();
     let deleted = db
         .delete_if_empty_tree([TEST_LEAF], b"level1-A", Some(&transaction))
         .expect("unable to delete subtree");
-    assert_eq!(deleted, false);
+    assert!(!deleted);
 
     let deleted = db
         .delete_up_tree_while_empty(
@@ -1230,7 +1230,8 @@ fn test_subtree_deletion_if_empty() {
         .expect("unable to delete subtree");
     assert_eq!(deleted, 2);
 
-    db.rollback_transaction(&transaction);
+    db.rollback_transaction(&transaction)
+        .expect("cannot rollback transaction");
 
     assert!(matches!(
         db.get([TEST_LEAF, b"key1", b"key2"], b"key3", Some(&transaction)),

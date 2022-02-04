@@ -6,10 +6,7 @@ use std::{
 };
 
 use merk::Merk;
-use storage::{
-    rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage},
-    RawIterator,
-};
+use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage};
 
 use crate::{Element, Error, GroveDb};
 

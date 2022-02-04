@@ -1,7 +1,4 @@
-use std::{
-    cmp::max,
-    io::{Read, Write},
-};
+use std::io::{Read, Write};
 
 use ed::{Decode, Encode, Result, Terminated};
 

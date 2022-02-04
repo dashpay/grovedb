@@ -17,12 +17,12 @@ impl GroveDb {
         let mut path_iter = path.into_iter();
         if let Some(stop_path_height) = stop_path_height {
             if stop_path_height == path_iter.clone().len() as u16 {
-                return Ok(0 as u16);
+                return Ok(0);
             }
         }
         let deleted = self.delete_internal(path_iter.clone(), key, true, transaction)?;
         if !deleted {
-            return Ok(0 as u16);
+            return Ok(0);
         }
         let mut delete_count: u16 = 1;
         if let Some(last) = path_iter.next_back() {
