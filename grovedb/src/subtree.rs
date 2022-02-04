@@ -223,7 +223,7 @@ impl Element {
         add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
     ) -> Result<(Vec<Element>, u16), Error> {
         let mut results = Vec::new();
-        let mut iter = merk.raw_iter();
+        let mut iter = merk.raw_iter(None);
 
         let mut limit = sized_query.limit;
         let original_offset = sized_query.offset;

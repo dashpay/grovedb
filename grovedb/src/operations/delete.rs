@@ -42,14 +42,17 @@ impl GroveDb {
                 // TODO: dumb traversal should not be tolerated
                 let subtrees_paths =
                     self.find_subtrees(path_iter.clone().chain(std::iter::once(key)), transaction)?;
-
                 for subtree_path in subtrees_paths {
-                    let mut subtree = self.get_subtrees().get_subtree_without_transaction(
-                        subtree_path.iter().map(|x| x.as_slice()),
-                    )?;
+                    let (mut subtree, prefix) = self
+                        .get_subtrees()
+                        .get(subtree_path.iter().map(|x| x.as_slice()), transaction)?;
                     subtree.clear(transaction).map_err(|e| {
                         Error::CorruptedData(format!("unable to cleanup tree from storage: {}", e))
                     })?;
+                    if let Some(prefix) = prefix {
+                        self.get_subtrees()
+                            .delete_temp_tree_with_prefix(prefix, transaction);
+                    }
                 }
             }
             self.propagate_changes(path_iter, transaction)?;
@@ -83,10 +86,9 @@ impl GroveDb {
 
         while let Some(q) = queue.pop() {
             // Get the correct subtree with q_ref as path
-            let (merk, _) = self
-                .get_subtrees()
-                .get(q.iter().map(|x| x.as_slice()), transaction)?;
-            let mut raw_iter = Element::iterator(merk.raw_iter());
+            let path_iter = q.iter().map(|x| x.as_slice());
+            let (merk, prefix) = self.get_subtrees().get(path_iter.clone(), transaction)?;
+            let mut raw_iter = Element::iterator(merk.raw_iter(transaction));
             while let Some((key, value)) = raw_iter.next()? {
                 if let Element::Tree(_) = value {
                     let mut sub_path = q.clone();
@@ -94,6 +96,15 @@ impl GroveDb {
                     queue.push(sub_path.clone());
                     result.push(sub_path);
                 }
+            }
+            // after deletion, if there is a transaction, add the merk back into the hashmap
+            drop(raw_iter);
+            if let Some(prefix) = prefix {
+                self.get_subtrees()
+                    .insert_temp_tree_with_prefix(prefix, merk, transaction);
+            } else {
+                self.get_subtrees()
+                    .insert_temp_tree(path_iter, merk, transaction);
             }
         }
         Ok(result)
