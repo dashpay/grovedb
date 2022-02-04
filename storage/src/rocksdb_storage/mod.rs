@@ -2,7 +2,7 @@
 use std::{path::Path, rc::Rc};
 
 pub use rocksdb::{checkpoint::Checkpoint, Error, OptimisticTransactionDB};
-use rocksdb::{ColumnFamilyDescriptor, DBRawIterator, DBRawIteratorWithThreadMode};
+use rocksdb::{ColumnFamilyDescriptor, DBRawIteratorWithThreadMode};
 
 use crate::{DBTransaction, RawIterator};
 
@@ -61,14 +61,39 @@ fn make_prefixed_key<K: AsRef<[u8]>>(mut prefix: Vec<u8>, key: K) -> Vec<u8> {
     prefix
 }
 
+// There is no public API to abstract over raw iterators yet
+enum RawIteratorVariant<'a> {
+    StorageIterator(DBRawIteratorWithThreadMode<'a, OptimisticTransactionDB>),
+    TransactionIterator(
+        DBRawIteratorWithThreadMode<'a, rocksdb::Transaction<'a, OptimisticTransactionDB>>,
+    ),
+}
+
 pub struct RawPrefixedTransactionalIterator<'a> {
-    rocksdb_iterator: DBRawIteratorWithThreadMode<'a, OptimisticTransactionDB>,
+    rocksdb_iterator: RawIteratorVariant<'a>,
     prefix: &'a [u8],
+}
+
+macro_rules! iterator_call {
+    (mut $self:ident, $($call:tt)+) => {
+        iterator_call!(@branches &mut $self.rocksdb_iterator, $($call)+)
+    };
+
+    ($self:ident, $($call:tt)+) => {
+        iterator_call!(@branches &$self.rocksdb_iterator, $($call)+)
+    };
+
+    (@branches $iter:expr, $($call:tt)+) => {
+        match $iter {
+            RawIteratorVariant::StorageIterator(i) => i.$($call)+,
+            RawIteratorVariant::TransactionIterator(i) => i.$($call)+
+        }
+    }
 }
 
 impl RawIterator for RawPrefixedTransactionalIterator<'_> {
     fn seek_to_first(&mut self) {
-        self.rocksdb_iterator.seek(self.prefix);
+        iterator_call!(mut self, seek(self.prefix));
     }
 
     fn seek_to_last(&mut self) {
@@ -80,25 +105,24 @@ impl RawIterator for RawPrefixedTransactionalIterator<'_> {
                 break;
             }
         }
-        self.rocksdb_iterator.seek_for_prev(prefix_vec);
+        iterator_call!(mut self, seek_for_prev(prefix_vec));
     }
 
     fn seek<K: AsRef<[u8]>>(&mut self, key: K) {
-        self.rocksdb_iterator
-            .seek(make_prefixed_key(self.prefix.to_vec(), key));
+        iterator_call!(mut self, seek(make_prefixed_key(self.prefix.to_vec(), key)));
     }
 
     fn next(&mut self) {
-        self.rocksdb_iterator.next();
+        iterator_call!(mut self, next());
     }
 
     fn prev(&mut self) {
-        self.rocksdb_iterator.prev();
+        iterator_call!(mut self, prev());
     }
 
     fn value(&self) -> Option<&[u8]> {
         if self.valid() {
-            self.rocksdb_iterator.value()
+            iterator_call!(self, value())
         } else {
             None
         }
@@ -106,80 +130,17 @@ impl RawIterator for RawPrefixedTransactionalIterator<'_> {
 
     fn key(&self) -> Option<&[u8]> {
         if self.valid() {
-            self.rocksdb_iterator
-                .key()
-                .map(|k| k.split_at(self.prefix.len()).1)
+            iterator_call!(self, key().map(|k| k.split_at(self.prefix.len()).1))
         } else {
             None
         }
     }
 
     fn valid(&self) -> bool {
-        self.rocksdb_iterator
-            .key()
-            .map(|k| k.starts_with(self.prefix))
-            .unwrap_or(false)
-    }
-}
-
-pub struct RawPrefixedIterator<'a> {
-    rocksdb_iterator: DBRawIterator<'a>,
-    prefix: &'a [u8],
-}
-
-impl RawIterator for RawPrefixedIterator<'_> {
-    fn seek_to_first(&mut self) {
-        self.rocksdb_iterator.seek(self.prefix);
-    }
-
-    fn seek_to_last(&mut self) {
-        let mut prefix_vec = self.prefix.to_vec();
-        for i in (0..prefix_vec.len()).rev() {
-            prefix_vec[i] += 1;
-            if prefix_vec[i] != 0 {
-                // if it is == 0 then we need to go to next bit
-                break;
-            }
-        }
-        self.rocksdb_iterator.seek_for_prev(prefix_vec);
-    }
-
-    fn seek<K: AsRef<[u8]>>(&mut self, key: K) {
-        self.rocksdb_iterator
-            .seek(make_prefixed_key(self.prefix.to_vec(), key));
-    }
-
-    fn next(&mut self) {
-        self.rocksdb_iterator.next();
-    }
-
-    fn prev(&mut self) {
-        self.rocksdb_iterator.prev();
-    }
-
-    fn value(&self) -> Option<&[u8]> {
-        if self.valid() {
-            self.rocksdb_iterator.value()
-        } else {
-            None
-        }
-    }
-
-    fn key(&self) -> Option<&[u8]> {
-        if self.valid() {
-            self.rocksdb_iterator
-                .key()
-                .map(|k| k.split_at(self.prefix.len()).1)
-        } else {
-            None
-        }
-    }
-
-    fn valid(&self) -> bool {
-        self.rocksdb_iterator
-            .key()
-            .map(|k| k.starts_with(self.prefix))
-            .unwrap_or(false)
+        iterator_call!(
+            self,
+            key().map(|k| k.starts_with(self.prefix)).unwrap_or(false)
+        )
     }
 }
 
@@ -190,7 +151,7 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::{Batch, Storage};
+    use crate::{Batch, Storage, Transaction};
 
     struct TempPrefixedStorage {
         storage: PrefixedRocksDbStorage,
@@ -463,7 +424,7 @@ mod tests {
 
         // Test iterator goes forward
 
-        let mut iter = storage.raw_iter();
+        let mut iter = storage.raw_iter(None);
         iter.seek_to_first();
         while iter.valid() {
             assert_eq!(
@@ -476,7 +437,7 @@ mod tests {
 
         // Test `seek_to_last` on a storage with elements
 
-        let mut iter = storage.raw_iter();
+        let mut iter = storage.raw_iter(None);
         iter.seek_to_last();
         assert_eq!(
             (iter.key().unwrap(), iter.value().unwrap()),
@@ -488,10 +449,99 @@ mod tests {
         // Test `seek_to_last` on empty storage
         let empty_storage = PrefixedRocksDbStorage::new(db, b"notexist".to_vec())
             .expect("cannot create a prefixed storage");
-        let mut iter = empty_storage.raw_iter();
+        let mut iter = empty_storage.raw_iter(None);
         iter.seek_to_last();
         assert!(!iter.valid());
         iter.next();
         assert!(!iter.valid());
+    }
+
+    #[test]
+    fn test_raw_iterator_with_transaction() {
+        let tmp_dir = TempDir::new("test_raw_iterator").expect("unable to open a tempdir");
+        let db = default_rocksdb(tmp_dir.path());
+
+        let storage = PrefixedRocksDbStorage::new(db.clone(), b"someprefix".to_vec())
+            .expect("cannot create a prefixed storage");
+        storage
+            .put(b"key1", b"value1")
+            .expect("expected successful insertion");
+        storage
+            .put(b"key0", b"value0")
+            .expect("expected successful insertion");
+
+        let db_transaction = db.transaction();
+        let transaction = storage.transaction(&db_transaction);
+
+        transaction
+            .put(b"key3", b"value3")
+            .expect("expected successful insertion with transaction");
+        transaction
+            .put(b"key2", b"value2")
+            .expect("expected successful insertion with transaction");
+
+        let expected: [(&'static [u8], &'static [u8]); 4] = [
+            (b"key0", b"value0"),
+            (b"key1", b"value1"),
+            (b"key2", b"value2"),
+            (b"key3", b"value3"),
+        ];
+        let mut expected_iter = expected.into_iter();
+
+        // Test iterator on transactional data
+        let mut iter_transaction = storage.raw_iter(Some(&db_transaction));
+        iter_transaction.seek_to_first();
+        while iter_transaction.valid() {
+            assert_eq!(
+                (
+                    iter_transaction.key().unwrap(),
+                    iter_transaction.value().unwrap()
+                ),
+                expected_iter.next().unwrap()
+            );
+            iter_transaction.next();
+        }
+        assert!(expected_iter.next().is_none());
+        drop(iter_transaction);
+
+        // Test iterator on commited data
+        let expected: [(&'static [u8], &'static [u8]); 2] =
+            [(b"key0", b"value0"), (b"key1", b"value1")];
+        let mut expected_iter = expected.into_iter();
+
+        let mut iter = storage.raw_iter(None);
+        iter.seek_to_first();
+        while iter.valid() {
+            assert_eq!(
+                (iter.key().unwrap(), iter.value().unwrap()),
+                expected_iter.next().unwrap()
+            );
+            iter.next();
+        }
+        assert!(expected_iter.next().is_none());
+
+        // Commit data and test iterator again
+        db_transaction
+            .commit()
+            .expect("cannot commit the transaction");
+
+        let expected: [(&'static [u8], &'static [u8]); 4] = [
+            (b"key0", b"value0"),
+            (b"key1", b"value1"),
+            (b"key2", b"value2"),
+            (b"key3", b"value3"),
+        ];
+        let mut expected_iter = expected.into_iter();
+
+        let mut iter = storage.raw_iter(None);
+        iter.seek_to_first();
+        while iter.valid() {
+            assert_eq!(
+                (iter.key().unwrap(), iter.value().unwrap()),
+                expected_iter.next().unwrap()
+            );
+            iter.next();
+        }
+        assert!(expected_iter.next().is_none());
     }
 }

@@ -62,19 +62,16 @@ pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) ->
         })
 }
 
-pub fn seq_key(n: u64) -> Vec<u8> {
-    let mut key = vec![0; 0];
-    key.write_u64::<BigEndian>(n)
-        .expect("writing to key failed");
-    key
+pub const fn seq_key(n: u64) -> [u8; 8] {
+    n.to_be_bytes()
 }
 
 pub fn put_entry(n: u64) -> BatchEntry<Vec<u8>> {
-    (seq_key(n), Op::Put(vec![123; 60]))
+    (seq_key(n).to_vec(), Op::Put(vec![123; 60]))
 }
 
 pub fn del_entry(n: u64) -> BatchEntry<Vec<u8>> {
-    (seq_key(n), Op::Delete)
+    (seq_key(n).to_vec(), Op::Delete)
 }
 
 pub fn make_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
