@@ -1237,12 +1237,6 @@ fn test_subtree_deletion_if_empty() {
         db.get([TEST_LEAF, b"key1", b"key2"], b"key3", Some(&transaction)),
         Err(Error::InvalidPath(_))
     ));
-    // assert_eq!(db.subtrees.len(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF
-    // TEST_LEAF.key4 stay
-    // assert!(db.get(&[], TEST_LEAF, Some(&transaction)).is_ok());
-    // assert!(db.get(&[], ANOTHER_TEST_LEAF, Some(&transaction)).is_ok());
-    // assert!(db.get(&[TEST_LEAF], b"key4", Some(&transaction)).is_ok());
-    // assert_ne!(root_hash, db.root_tree.root().unwrap());
 }
 
 #[test]
