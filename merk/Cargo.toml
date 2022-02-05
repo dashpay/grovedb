@@ -13,6 +13,7 @@ thiserror = "1.0.30"
 rocksdb = { git = "https://github.com/yiyuanliu/rust-rocksdb", branch = "transaction" }
 anyhow = "1.0.51"
 failure = "0.1.8"
+integer-encoding = "3.0.2"
 
 [dependencies.time]
 version = "0.3.6"

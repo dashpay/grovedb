@@ -131,7 +131,7 @@ impl Tree {
     /// (zero-filled).
     #[inline]
     const fn child_hash(&self, left: bool) -> Hash {
-        match self.child(left){
+        match self.child(left) {
             Some(c) => c.hash,
             _ => NULL_HASH,
         }
