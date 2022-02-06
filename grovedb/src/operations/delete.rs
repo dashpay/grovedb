@@ -20,8 +20,7 @@ impl GroveDb {
                 return Ok(0);
             }
         }
-        let deleted = self.delete_internal(path_iter.clone(), key, true, transaction)?;
-        if !deleted {
+        if !self.delete_internal(path_iter.clone(), key, true, transaction)? {
             return Ok(0);
         }
         let mut delete_count: u16 = 1;
