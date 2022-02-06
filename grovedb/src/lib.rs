@@ -285,18 +285,12 @@ impl GroveDb {
         P: IntoIterator<Item = &'a [u8]>,
     {
         let segments_iter = path.into_iter().chain(key.into_iter());
-        let mut segments_count: usize = 0;
         let mut res = Vec::new();
-        let mut lengthes = Vec::new();
 
         for s in segments_iter {
-            segments_count += 1;
+            res.extend_from_slice(s.len().to_le_bytes().as_slice());
             res.extend_from_slice(s);
-            lengthes.extend(s.len().to_ne_bytes());
         }
-
-        res.extend(segments_count.to_ne_bytes());
-        res.extend(lengthes);
         res = blake3::hash(&res).as_bytes().to_vec();
         res
     }
