@@ -13,11 +13,11 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
     {
         let (merk, prefix) = self.get_subtrees().get(path, transaction)?;
-        let result = merk.is_empty_tree(transaction);
+        let was_empty = merk.is_empty_tree(transaction);
         if let Some(prefix) = prefix {
             self.get_subtrees()
                 .insert_temp_tree_with_prefix(prefix, merk, transaction);
         }
-        Ok(result)
+        Ok(was_empty)
     }
 }
