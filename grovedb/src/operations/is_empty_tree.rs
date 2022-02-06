@@ -1,4 +1,4 @@
-use storage::{rocksdb_storage::OptimisticTransactionDBTransaction, RawIterator};
+use storage::rocksdb_storage::OptimisticTransactionDBTransaction;
 
 use crate::{Error, GroveDb};
 
@@ -12,11 +12,12 @@ impl GroveDb {
         P: IntoIterator<Item = &'a [u8]>,
         <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
     {
-        let (merk, _) = self.get_subtrees().get(path, transaction)?;
-
-        let mut iter = merk.raw_iter(transaction);
-        iter.seek_to_first();
-
-        Ok(!iter.valid())
+        let (merk, prefix) = self.get_subtrees().get(path, transaction)?;
+        let was_empty = merk.is_empty_tree(transaction);
+        if let Some(prefix) = prefix {
+            self.get_subtrees()
+                .insert_temp_tree_with_prefix(prefix, merk, transaction);
+        }
+        Ok(was_empty)
     }
 }

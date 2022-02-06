@@ -3,12 +3,69 @@ use storage::rocksdb_storage::OptimisticTransactionDBTransaction;
 use crate::{Element, Error, GroveDb};
 
 impl GroveDb {
+    pub fn delete_up_tree_while_empty<'a, P>(
+        &mut self,
+        path: P,
+        key: &'a [u8],
+        stop_path_height: Option<u16>,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<u16, Error>
+    where
+        P: IntoIterator<Item = &'a [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let mut path_iter = path.into_iter();
+        if let Some(stop_path_height) = stop_path_height {
+            if stop_path_height == path_iter.clone().len() as u16 {
+                return Ok(0);
+            }
+        }
+        if !self.delete_internal(path_iter.clone(), key, true, transaction)? {
+            return Ok(0);
+        }
+        let mut delete_count: u16 = 1;
+        if let Some(last) = path_iter.next_back() {
+            let deleted_parent =
+                self.delete_up_tree_while_empty(path_iter, last, stop_path_height, transaction)?;
+            delete_count += deleted_parent;
+        }
+        Ok(delete_count)
+    }
+
     pub fn delete<'a, P>(
         &mut self,
         path: P,
         key: &'a [u8],
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(), Error>
+    where
+        P: IntoIterator<Item = &'a [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        self.delete_internal(path, key, false, transaction)?;
+        Ok(())
+    }
+
+    pub fn delete_if_empty_tree<'a, P>(
+        &mut self,
+        path: P,
+        key: &'a [u8],
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<bool, Error>
+    where
+        P: IntoIterator<Item = &'a [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        self.delete_internal(path, key, true, transaction)
+    }
+
+    fn delete_internal<'a, P>(
+        &mut self,
+        path: P,
+        key: &'a [u8],
+        only_delete_tree_if_empty: bool,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<bool, Error>
     where
         P: IntoIterator<Item = &'a [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -24,24 +81,38 @@ impl GroveDb {
             ))
         } else {
             let element = self.get_raw(path_iter.clone(), key.as_ref(), transaction)?;
-            {
-                let (mut merk, prefix) = self.get_subtrees().get(path_iter.clone(), transaction)?;
-                Element::delete(&mut merk, key, transaction)?;
-
-                // after deletion, if there is a transaction, add the merk back into the hashmap
+            let subtrees = self.get_subtrees();
+            let delete_element = || -> Result<(), Error> {
+                // TODO: we shouldn't handle this context manually each time
+                let (mut parent_merk, prefix) = subtrees.get(path_iter.clone(), transaction)?;
+                Element::delete(&mut parent_merk, &key, transaction)?;
                 if let Some(prefix) = prefix {
-                    self.get_subtrees()
-                        .insert_temp_tree_with_prefix(prefix, merk, transaction);
+                    subtrees.insert_temp_tree_with_prefix(prefix, parent_merk, transaction);
                 } else {
-                    self.get_subtrees()
-                        .insert_temp_tree(path_iter.clone(), merk, transaction);
+                    subtrees.insert_temp_tree(path_iter.clone(), parent_merk, transaction);
                 }
-            }
+                Ok(())
+            };
 
             if let Element::Tree(_) = element {
+                let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
+                let subtrees_paths = self.find_subtrees(subtree_merk_path.clone(), transaction)?;
+                let (subtree_merk, prefix) = subtrees.get(subtree_merk_path, transaction)?;
+
+                let is_empty = subtree_merk.is_empty_tree(transaction);
+
+                if let Some(prefix) = prefix {
+                    subtrees.insert_temp_tree_with_prefix(prefix, subtree_merk, transaction);
+                } else {
+                    subtrees.insert_temp_tree(path_iter.clone(), subtree_merk, transaction);
+                }
+
+                if only_delete_tree_if_empty && !is_empty {
+                    return Ok(false);
+                } else {
+                    delete_element()?;
+                }
                 // TODO: dumb traversal should not be tolerated
-                let subtrees_paths =
-                    self.find_subtrees(path_iter.clone().chain(std::iter::once(key)), transaction)?;
                 for subtree_path in subtrees_paths {
                     let (mut subtree, prefix) = self
                         .get_subtrees()
@@ -54,9 +125,11 @@ impl GroveDb {
                             .delete_temp_tree_with_prefix(prefix, transaction);
                     }
                 }
+            } else {
+                delete_element()?;
             }
             self.propagate_changes(path_iter, transaction)?;
-            Ok(())
+            Ok(true)
         }
     }
 

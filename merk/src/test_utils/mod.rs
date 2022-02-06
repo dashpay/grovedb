@@ -3,7 +3,6 @@ mod temp_merk;
 
 use std::{convert::TryInto, ops::Range};
 
-use byteorder::{BigEndian, WriteBytesExt};
 pub use crash_merk::CrashMerk;
 use rand::prelude::*;
 pub use temp_merk::TempMerk;

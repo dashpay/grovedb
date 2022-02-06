@@ -342,6 +342,13 @@ where
         self.storage.raw_iter(transaction)
     }
 
+    pub fn is_empty_tree<'a>(&'a self, transaction: Option<&'a S::DBTransaction<'a>>) -> bool {
+        let mut iter = self.raw_iter(transaction);
+        iter.seek_to_first();
+
+        !iter.valid()
+    }
+
     fn source(&self) -> MerkSource<S> {
         MerkSource {
             storage: &self.storage,
