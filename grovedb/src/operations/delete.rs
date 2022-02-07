@@ -115,7 +115,10 @@ impl GroveDb {
                             .get_subtrees()
                             .get(subtree_path.iter().map(|x| x.as_slice()), transaction)?;
                         subtree.clear(transaction).map_err(|e| {
-                            Error::CorruptedData(format!("unable to cleanup tree from storage: {}", e))
+                            Error::CorruptedData(format!(
+                                "unable to cleanup tree from storage: {}",
+                                e
+                            ))
                         })?;
                         if let Some(prefix) = prefix {
                             self.get_subtrees()
