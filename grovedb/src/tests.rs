@@ -1230,12 +1230,23 @@ fn test_subtree_deletion_if_empty() {
         .expect("unable to delete subtree");
     assert_eq!(deleted, 2);
 
-    db.rollback_transaction(&transaction)
-        .expect("cannot rollback transaction");
+    assert!(matches!(
+        db.get(
+            [TEST_LEAF, b"level1-A", b"level2-A"],
+            b"level3-A",
+            Some(&transaction)
+        ),
+        Err(Error::InvalidPath(_))
+    ));
 
     assert!(matches!(
-        db.get([TEST_LEAF, b"key1", b"key2"], b"key3", Some(&transaction)),
-        Err(Error::InvalidPath(_))
+        db.get([TEST_LEAF, b"level1-A"], b"level2-A", Some(&transaction)),
+        Err(Error::InvalidPathKey(_))
+    ));
+
+    assert!(matches!(
+        db.get([TEST_LEAF], b"level1-A", Some(&transaction)),
+        Ok(Element::Tree(_)),
     ));
 }
 
