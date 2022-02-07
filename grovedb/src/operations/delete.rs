@@ -110,6 +110,7 @@ impl GroveDb {
                 if only_delete_tree_if_empty && !is_empty {
                     return Ok(false);
                 } else {
+                    // TODO: dumb traversal should not be tolerated
                     for subtree_path in subtrees_paths {
                         let (mut subtree, prefix) = self
                             .get_subtrees()
@@ -127,7 +128,6 @@ impl GroveDb {
                     }
                     delete_element()?;
                 }
-                // TODO: dumb traversal should not be tolerated
             } else {
                 delete_element()?;
             }
