@@ -3,6 +3,8 @@ mod subtree;
 mod subtrees;
 #[cfg(test)]
 mod tests;
+#[cfg(feature = "visualize")]
+mod visualize;
 
 use std::{
     cell::RefCell,
