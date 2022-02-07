@@ -110,21 +110,21 @@ impl GroveDb {
                 if only_delete_tree_if_empty && !is_empty {
                     return Ok(false);
                 } else {
+                    for subtree_path in subtrees_paths {
+                        let (mut subtree, prefix) = self
+                            .get_subtrees()
+                            .get(subtree_path.iter().map(|x| x.as_slice()), transaction)?;
+                        subtree.clear(transaction).map_err(|e| {
+                            Error::CorruptedData(format!("unable to cleanup tree from storage: {}", e))
+                        })?;
+                        if let Some(prefix) = prefix {
+                            self.get_subtrees()
+                                .delete_temp_tree_with_prefix(prefix, transaction);
+                        }
+                    }
                     delete_element()?;
                 }
                 // TODO: dumb traversal should not be tolerated
-                for subtree_path in subtrees_paths {
-                    let (mut subtree, prefix) = self
-                        .get_subtrees()
-                        .get(subtree_path.iter().map(|x| x.as_slice()), transaction)?;
-                    subtree.clear(transaction).map_err(|e| {
-                        Error::CorruptedData(format!("unable to cleanup tree from storage: {}", e))
-                    })?;
-                    if let Some(prefix) = prefix {
-                        self.get_subtrees()
-                            .delete_temp_tree_with_prefix(prefix, transaction);
-                    }
-                }
             } else {
                 delete_element()?;
             }
