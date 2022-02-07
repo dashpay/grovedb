@@ -342,6 +342,13 @@ where
         self.storage.raw_iter(transaction)
     }
 
+    pub fn is_empty_tree<'a>(&'a self, transaction: Option<&'a S::DBTransaction<'a>>) -> bool {
+        let mut iter = self.raw_iter(transaction);
+        iter.seek_to_first();
+
+        !iter.valid()
+    }
+
     fn source(&self) -> MerkSource<S> {
         MerkSource {
             storage: &self.storage,
@@ -482,8 +489,8 @@ mod test {
         assert_eq!(
             merk.root_hash(),
             [
-                99, 81, 104, 29, 169, 195, 53, 48, 134, 74, 250, 47, 77, 121, 157, 227, 139, 241,
-                250, 216, 78, 87, 152, 116, 252, 116, 132, 16, 150, 163, 107, 30
+                126, 168, 96, 201, 59, 225, 123, 33, 206, 154, 87, 23, 139, 143, 136, 52, 103, 9,
+                218, 90, 71, 153, 240, 47, 227, 168, 1, 104, 239, 237, 140, 147
             ]
         );
     }

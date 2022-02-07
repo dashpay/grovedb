@@ -6,10 +6,7 @@ use std::{
 };
 
 use merk::Merk;
-use storage::{
-    rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage},
-    RawIterator,
-};
+use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage};
 
 use crate::{Element, Error, GroveDb};
 
@@ -126,7 +123,7 @@ impl Subtrees<'_> {
                 return if self.root_leaf_keys.contains_key(key.as_ref()) {
                     Ok(subtree)
                 } else {
-                    Err(Error::InvalidPath("no subtree found under that path"))
+                    Err(Error::InvalidPath("no subtree found for root path"))
                 };
             }
 
@@ -134,14 +131,19 @@ impl Subtrees<'_> {
             let (parent_tree, has_keys) = self.get_subtree_with_key_info(parent_path, None)?;
             if !has_keys {
                 // parent tree can't be empty, hence invalid path
-                Err(Error::InvalidPath("no subtree found under that path"))
+                Err(Error::InvalidPath(
+                    "no subtree found as parent in path is empty",
+                ))
             } else {
                 // Check that it contains the child as an empty tree
-                let elem = Element::get(&parent_tree, key)
-                    .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
+                let elem = Element::get(&parent_tree, key).map_err(|_| {
+                    Error::InvalidPath("no subtree found as parent does not contain child")
+                })?;
                 match elem {
                     Element::Tree(_) => Ok(subtree),
-                    _ => Err(Error::InvalidPath("no subtree found under that path")),
+                    _ => Err(Error::InvalidPath(
+                        "no subtree found as path refers to an element or reference",
+                    )),
                 }
             }
         } else {
@@ -163,14 +165,7 @@ impl Subtrees<'_> {
             subtree_prefix,
         )?)
         .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
-        let mut has_keys = false;
-        {
-            let mut iter = merk.raw_iter(None);
-            iter.seek_to_first();
-            if iter.valid() {
-                has_keys = true;
-            }
-        }
+        let has_keys = !merk.is_empty_tree(None);
         Ok((merk, has_keys))
     }
 }
