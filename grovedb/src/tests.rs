@@ -990,10 +990,18 @@ fn test_subtree_pairs_iterator() {
 fn test_compress_path_not_possible_collision() {
     let path_a = [b"aa".as_ref(), b"b"];
     let path_b = [b"a".as_ref(), b"ab"];
+    let empty_key : Vec<u8> = Vec::new();
     assert_ne!(
         GroveDb::compress_subtree_key(path_a, None),
         GroveDb::compress_subtree_key(path_b, None)
     );
+
+    // support empty keys
+    assert_ne!(
+        GroveDb::compress_subtree_key(path_a, None),
+        GroveDb::compress_subtree_key(path_a, Some(empty_key.as_slice()))
+    );
+
     assert_eq!(
         GroveDb::compress_subtree_key(path_a, None),
         GroveDb::compress_subtree_key(path_a, None),
