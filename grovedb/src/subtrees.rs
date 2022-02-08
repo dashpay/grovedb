@@ -4,6 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     rc::Rc,
 };
+use std::collections::BTreeMap;
 
 use merk::Merk;
 use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage};
@@ -12,7 +13,7 @@ use crate::{Element, Error, GroveDb};
 
 // TODO: should take temp_root_leaf_keys also
 pub struct Subtrees<'a> {
-    pub root_leaf_keys: &'a HashMap<Vec<u8>, usize>,
+    pub root_leaf_keys: &'a BTreeMap<Vec<u8>, usize>,
     pub temp_subtrees: &'a RefCell<HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
     pub deleted_subtrees: &'a RefCell<HashSet<Vec<u8>>>,
     pub storage: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
