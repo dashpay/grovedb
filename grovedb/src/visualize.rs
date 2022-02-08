@@ -1,9 +1,6 @@
 use std::io::{Result, Write};
 
 use itertools::Itertools;
-use merk::Merk;
-use serde::de::IntoDeserializer;
-use storage::Storage;
 
 use crate::{subtree::Element, GroveDb};
 
@@ -12,30 +9,30 @@ static STR_LEN: usize = 32;
 static INDENT_SPACES: usize = 4;
 
 /// Pretty visualization of GroveDB components.
-pub(crate) trait Visualize {
+pub trait Visualize {
     fn visualize<'a, W: Write>(&self, drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>>;
 }
 
 /// A `io::Write` proxy to prepend padding and symbols to draw trees
-pub(crate) struct Drawer<'a, W: Write> {
+pub struct Drawer<'a, W: Write> {
     level: usize,
     write: &'a mut W,
 }
 
 impl<'a, W: Write> Drawer<'a, W> {
-    pub(crate) fn new(write: &'a mut W) -> Self {
+    pub fn new(write: &'a mut W) -> Self {
         Drawer { level: 0, write }
     }
 
-    pub(crate) fn down(&mut self) {
+    pub fn down(&mut self) {
         self.level += 1;
     }
 
-    pub(crate) fn up(&mut self) {
+    pub fn up(&mut self) {
         self.level -= 1;
     }
 
-    pub(crate) fn write(&mut self, buf: &[u8]) -> Result<()> {
+    pub fn write(&mut self, buf: &[u8]) -> Result<()> {
         let lines_iter = buf.split(|c| *c == b'\n');
         let sep = if self.level > 0 {
             let mut result = " ".repeat(INDENT_SPACES * self.level - 1);
@@ -44,10 +41,16 @@ impl<'a, W: Write> Drawer<'a, W> {
         } else {
             String::new()
         };
-        let interspersed_lines_iter = lines_iter.intersperse(sep.as_bytes());
+        let interspersed_lines_iter = Itertools::intersperse(lines_iter, sep.as_bytes());
         for line in interspersed_lines_iter {
-            self.write.write(line)?;
+            self.write.write_all(line)?;
         }
+        Ok(())
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        self.write.write_all(b"\n")?;
+        self.write.flush()?;
         Ok(())
     }
 }
@@ -60,9 +63,8 @@ fn to_hex(bytes: &[u8]) -> String {
 
 impl Visualize for [u8] {
     fn visualize<'a, W: Write>(&self, mut drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>> {
-        let value = self.as_ref();
-        let hex_repr = to_hex(value);
-        let str_repr = String::from_utf8(value.to_vec());
+        let hex_repr = to_hex(self);
+        let str_repr = String::from_utf8(self.to_vec());
         drawer.write(format!("[hex: {hex_repr}").as_bytes())?;
         if let Ok(str_repr) = str_repr {
             let str_part = if str_repr.len() > STR_LEN {
@@ -84,17 +86,18 @@ impl Visualize for Element {
                 drawer.write(b"item: ")?;
                 drawer = value.visualize(drawer)?;
             }
-            Element::Reference(path) => {
-                drawer.write(b"ref: [path: ")?;
-                let mut path_iter = path.iter();
-                if let Some(first) = path_iter.next() {
-                    drawer = first.visualize(drawer)?;
-                }
-                for p in path_iter {
-                    drawer.write(b", ")?;
-                    drawer = p.visualize(drawer)?;
-                }
-                drawer.write(b"]")?;
+            Element::Reference(_ref) => {
+                drawer.write(b"ref")?;
+                // drawer.write(b"ref: [path: ")?;
+                // let mut path_iter = path.iter();
+                // if let Some(first) = path_iter.next() {
+                //     drawer = first.visualize(drawer)?;
+                // }
+                // for p in path_iter {
+                //     drawer.write(b", ")?;
+                //     drawer = p.visualize(drawer)?;
+                // }
+                // drawer.write(b"]")?;
             }
             Element::Tree(hash) => {
                 drawer.write(b"tree: ")?;
@@ -150,7 +153,8 @@ impl GroveDb {
         );
         for k in keys {
             drawer.write(b"\n")?;
-            drawer.write(&k)?;
+            drawer = k.visualize(drawer)?;
+            drawer.write(b" tree:")?;
             drawer = self.draw_subtree(drawer, vec![k])?
         }
         drawer.up();
@@ -162,9 +166,25 @@ impl Visualize for GroveDb {
     fn visualize<'a, W: Write>(&self, mut drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>> {
         drawer.write(b"root")?;
         drawer = self.draw_root_tree(drawer)?;
-        drawer.write(b"\n")?;
+        drawer.flush()?;
         Ok(drawer)
     }
+}
+
+pub fn visualize_stderr<T: Visualize>(value: &T) {
+    let mut out = std::io::stderr();
+    let drawer = Drawer::new(&mut out);
+    value
+        .visualize(drawer)
+        .expect("IO error when trying to `visualize`");
+}
+
+pub fn visualize_stdout<T: Visualize>(value: &T) {
+    let mut out = std::io::stdout();
+    let drawer = Drawer::new(&mut out);
+    value
+        .visualize(drawer)
+        .expect("IO error when trying to `visualize`");
 }
 
 #[cfg(test)]
@@ -203,6 +223,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_visualize_reference() {
         let p1 = b"ayy".to_vec();
         let p2 = b"lmao".to_vec();

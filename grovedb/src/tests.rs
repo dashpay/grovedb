@@ -8,7 +8,6 @@ use tempdir::TempDir;
 
 // use test::RunIgnored::No;
 use super::*;
-use crate::visualize::Drawer;
 
 const TEST_LEAF: &[u8] = b"test_leaf";
 const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
@@ -2433,28 +2432,4 @@ fn test_subtree_deletion_with_transaction() {
         Err(Error::InvalidPathKey(_))
     ));
     assert!(matches!(db.get([TEST_LEAF], b"key4", None), Ok(_)));
-}
-
-#[test]
-fn test_kekw() {
-    use crate::visualize::Visualize;
-    let mut db = make_grovedb();
-    // Insert some nested subtrees
-    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
-        .expect("successful subtree 1 insert");
-    db.insert([TEST_LEAF, b"key1"], b"key2", Element::empty_tree(), None)
-        .expect("successful subtree 2 insert");
-    // Insert an element into subtree
-    db.insert(
-        [TEST_LEAF, b"key1", b"key2"],
-        b"key3",
-        Element::Item(b"yeet".to_vec()),
-        None,
-    )
-    .expect("successful value insert");
-    db.insert([TEST_LEAF], b"key4", Element::empty_tree(), None)
-        .expect("successful subtree 3 insert");
-    let mut out = std::io::stdout();
-    let drawer = Drawer::new(&mut out);
-    db.visualize(drawer).expect("lowl");
 }

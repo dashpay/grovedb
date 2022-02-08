@@ -5,7 +5,6 @@ mod subtrees;
 mod tests;
 #[cfg(feature = "visualize")]
 mod visualize;
-
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
@@ -21,6 +20,8 @@ use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocks
 pub use storage::{rocksdb_storage::PrefixedRocksDbStorage, Storage};
 pub use subtree::Element;
 use subtrees::Subtrees;
+#[cfg(feature = "visualize")]
+pub use visualize::{visualize_stderr, visualize_stdout, Drawer, Visualize};
 
 /// A key to store serialized data about subtree prefixes to restore HADS
 /// structure
