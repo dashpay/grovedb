@@ -1,6 +1,7 @@
 use std::io::{Result, Write};
 
 use itertools::Itertools;
+use storage::rocksdb_storage::OptimisticTransactionDBTransaction;
 
 use crate::{subtree::Element, GroveDb};
 
@@ -113,13 +114,14 @@ impl GroveDb {
         &self,
         mut drawer: Drawer<'a, W>,
         path: Vec<Vec<u8>>,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<Drawer<'a, W>> {
+        let subtrees = self.get_subtrees();
         drawer.down();
-        let (merk, _) = self
-            .get_subtrees()
-            .get(path.iter().map(|x| x.as_slice()), None)
+        let (merk, prefix) = subtrees
+            .get(path.iter().map(|x| x.as_slice()), transaction)
             .expect("cannot find Merk");
-        let mut iter = Element::iterator(merk.raw_iter(None));
+        let mut iter = Element::iterator(merk.raw_iter(transaction));
         while let Some((key, element)) = iter.next().expect("cannot get next element") {
             drawer.write(b"\n[key: ")?;
             drawer = key.visualize(drawer)?;
@@ -130,7 +132,7 @@ impl GroveDb {
                     drawer.down();
                     let mut inner_path = path.clone();
                     inner_path.push(key);
-                    drawer = self.draw_subtree(drawer, inner_path)?;
+                    drawer = self.draw_subtree(drawer, inner_path, transaction)?;
                     drawer.up();
                 }
                 other => {
@@ -138,11 +140,21 @@ impl GroveDb {
                 }
             }
         }
+        drop(iter);
+        if let Some(prefix) = prefix {
+            subtrees.insert_temp_tree_with_prefix(prefix, merk, transaction);
+        } else {
+            subtrees.insert_temp_tree(path.iter().map(|x| x.as_slice()), merk, transaction);
+        }
         drawer.up();
         Ok(drawer)
     }
 
-    fn draw_root_tree<'a, W: Write>(&self, mut drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>> {
+    fn draw_root_tree<'a, W: Write>(
+        &self,
+        mut drawer: Drawer<'a, W>,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<Drawer<'a, W>> {
         drawer.down();
         let keys = self.root_leaf_keys.iter().fold(
             vec![Vec::new(); self.root_leaf_keys.len()],
@@ -155,19 +167,34 @@ impl GroveDb {
             drawer.write(b"\n")?;
             drawer = k.visualize(drawer)?;
             drawer.write(b" tree:")?;
-            drawer = self.draw_subtree(drawer, vec![k])?
+            drawer = self.draw_subtree(drawer, vec![k], transaction)?
         }
         drawer.up();
+        Ok(drawer)
+    }
+
+    fn visualize_start<'a, W: Write>(
+        &self,
+        mut drawer: Drawer<'a, W>,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<Drawer<'a, W>> {
+        drawer.write(b"root")?;
+        drawer = self.draw_root_tree(drawer, transaction)?;
+        drawer.flush()?;
         Ok(drawer)
     }
 }
 
 impl Visualize for GroveDb {
-    fn visualize<'a, W: Write>(&self, mut drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>> {
-        drawer.write(b"root")?;
-        drawer = self.draw_root_tree(drawer)?;
-        drawer.flush()?;
-        Ok(drawer)
+    fn visualize<'a, W: Write>(&self, drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>> {
+        self.visualize_start(drawer, None)
+    }
+}
+
+impl Visualize for (&GroveDb, &OptimisticTransactionDBTransaction<'_>) {
+    fn visualize<'a, W: Write>(&self, drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>> {
+        let (grovedb, transaction) = self;
+        grovedb.visualize_start(drawer, Some(transaction))
     }
 }
 
