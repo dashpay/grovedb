@@ -84,13 +84,13 @@ impl GroveDb {
             let subtrees = self.get_subtrees();
             let delete_element = || -> Result<(), Error> {
                 // TODO: we shouldn't handle this context manually each time
-                let (mut parent_merk, _prefix) = subtrees.get(path_iter.clone(), transaction)?;
+                let (mut parent_merk, prefix) = subtrees.get(path_iter.clone(), transaction)?;
                 Element::delete(&mut parent_merk, &key, transaction)?;
-                // if let Some(prefix) = prefix {
-                //     subtrees.insert_temp_tree_with_prefix(prefix, parent_merk, transaction);
-                // } else {
+                if let Some(prefix) = prefix {
+                    subtrees.insert_temp_tree_with_prefix(prefix, parent_merk, transaction);
+                } else {
                     subtrees.insert_temp_tree(path_iter.clone(), parent_merk, transaction);
-                // }
+                }
                 Ok(())
             };
 
