@@ -244,15 +244,10 @@ impl GroveDb {
             let key = path_iter.next_back().expect("next element is `Some`");
             let (mut upper_tree, prefix) = subtrees.get(path_iter.clone(), transaction)?;
             element.insert(&mut upper_tree, key.as_ref(), transaction)?;
-            if prefix.is_some() {
-                self.get_subtrees()
-                    .insert_temp_tree(path_iter.clone(), upper_tree, transaction);
+            if let Some(prefix) = prefix {
+                subtrees.insert_temp_tree_with_prefix(prefix, upper_tree, transaction);
             } else {
-                self.get_subtrees().insert_temp_tree(
-                    path_iter.clone().chain(std::iter::once(key)),
-                    upper_tree,
-                    transaction,
-                );
+                subtrees.insert_temp_tree_with_prefix(path_iter.clone(), upper_tree, transaction);
             }
         }
 
