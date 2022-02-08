@@ -6,11 +6,10 @@ mod tests;
 
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path,
     rc::Rc,
 };
-use std::collections::BTreeMap;
 
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};

@@ -1,10 +1,9 @@
 //! Module for retrieving subtrees
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     rc::Rc,
 };
-use std::collections::BTreeMap;
 
 use merk::Merk;
 use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorage};
