@@ -247,7 +247,7 @@ impl GroveDb {
             if let Some(prefix) = prefix {
                 subtrees.insert_temp_tree_with_prefix(prefix, upper_tree, transaction);
             } else {
-                subtrees.insert_temp_tree_with_prefix(path_iter.clone(), upper_tree, transaction);
+                subtrees.insert_temp_tree(path_iter.clone(), upper_tree, transaction);
             }
         }
 
