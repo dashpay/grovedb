@@ -235,7 +235,7 @@ fn test_tree_structure_is_persistent() {
 #[test]
 fn test_root_tree_leafs_are_noted() {
     let db = make_grovedb();
-    let mut hm = HashMap::new();
+    let mut hm = BTreeMap::new();
     hm.insert(TEST_LEAF.to_vec(), 0);
     hm.insert(ANOTHER_TEST_LEAF.to_vec(), 1);
     assert_eq!(db.root_leaf_keys, hm);
