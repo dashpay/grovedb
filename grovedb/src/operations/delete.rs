@@ -26,7 +26,7 @@ impl GroveDb {
         let mut delete_count: u16 = 1;
         if let Some(last) = path_iter.next_back() {
             let deleted_parent =
-                self.delete_up_tree_while_empty(path_iter, last, stop_path_height, transaction)?;
+                self.delete_up_tree_while_empty(path_iter.collect::<Vec<&[u8]>>(), last, stop_path_height, transaction)?;
             delete_count += deleted_parent;
         }
         Ok(delete_count)
