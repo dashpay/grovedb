@@ -250,8 +250,8 @@ impl GroveDb {
                 self.get_subtrees().insert_temp_tree_with_prefix(prefix, upper_tree, transaction);
             } else {
                 self.get_subtrees().insert_temp_tree(
-                    path_iter.clone().chain(std::iter::once(key)),
-                    // path_iter.clone(),
+                    // path_iter.clone().chain(std::iter::once(key)),
+                    path_iter.clone(),
                     upper_tree,
                     transaction,
                 );
