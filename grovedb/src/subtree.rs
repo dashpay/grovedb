@@ -148,22 +148,13 @@ impl Element {
                         path_vec.push(subquery_key.as_slice());
                     }
 
-                    let (inner_merk, prefix) = subtrees
-                        .get(path_vec.iter().copied(), None)
-                        .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
-
                     let inner_query = SizedQuery::new(subquery, *limit, *offset);
                     let path_vec_owned = path_vec.iter().map(|x| x.to_vec()).collect();
                     let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
 
-                    let (mut sub_elements, skipped) =
-                        Element::get_path_query(&inner_merk, &inner_path_query, Some(subtrees))?;
-
-                    if let Some(prefix) = prefix {
-                        subtrees.insert_temp_tree_with_prefix(prefix, inner_merk, None);
-                    } else {
-                        subtrees.insert_temp_tree(path_vec.iter().copied(), inner_merk, None);
-                    }
+                    let (mut sub_elements, skipped) = subtrees
+                        .borrow_mut(path_vec.iter().copied(), None)?
+                        .apply(|s| Element::get_path_query(s, &inner_path_query, Some(subtrees)))?;
 
                     if let Some(limit) = limit {
                         *limit -= sub_elements.len() as u16;
@@ -173,22 +164,16 @@ impl Element {
                     }
                     results.append(&mut sub_elements);
                 } else if let Some(subquery_key) = subquery_key {
-                    let (inner_merk, prefix) = subtrees
-                        .get(path_vec.iter().copied(), None)
-                        .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
                     if offset.unwrap_or(0) == 0 {
-                        results.push(Element::get(&inner_merk, subquery_key.as_slice())?);
+                        let element = subtrees
+                            .borrow_mut(path_vec.iter().copied(), None)?
+                            .apply(|s| Element::get(s, subquery_key.as_slice()))?;
+                        results.push(element);
                         if let Some(limit) = limit {
                             *limit -= 1;
                         }
                     } else if let Some(offset) = offset {
                         *offset -= 1;
-                    }
-
-                    if let Some(prefix) = prefix {
-                        subtrees.insert_temp_tree_with_prefix(prefix, inner_merk, None);
-                    } else {
-                        subtrees.insert_temp_tree(path_vec.iter().copied(), inner_merk, None);
                     }
                 } else {
                     return Err(Error::InvalidPath(
