@@ -1,5 +1,3 @@
-use std::convert::TryFrom;
-
 use integer_encoding::*;
 
 /// The length of a `Hash` (in bytes).

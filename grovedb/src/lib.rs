@@ -3,10 +3,11 @@ mod subtree;
 mod subtrees;
 #[cfg(test)]
 mod tests;
-
+#[cfg(feature = "visualize")]
+mod visualize;
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path,
     rc::Rc,
 };
@@ -19,6 +20,8 @@ use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocks
 pub use storage::{rocksdb_storage::PrefixedRocksDbStorage, Storage};
 pub use subtree::Element;
 use subtrees::Subtrees;
+#[cfg(feature = "visualize")]
+pub use visualize::{visualize_stderr, visualize_stdout, Drawer, Visualize};
 
 /// A key to store serialized data about subtree prefixes to restore HADS
 /// structure
@@ -103,14 +106,14 @@ pub struct Proof {
 
 pub struct GroveDb {
     root_tree: MerkleTree<Sha256>,
-    root_leaf_keys: HashMap<Vec<u8>, usize>,
+    root_leaf_keys: BTreeMap<Vec<u8>, usize>,
     meta_storage: PrefixedRocksDbStorage,
     db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
     // Locks the database for writes during the transaction
     is_readonly: bool,
     // Temp trees used for writes during transaction
     temp_root_tree: MerkleTree<Sha256>,
-    temp_root_leaf_keys: HashMap<Vec<u8>, usize>,
+    temp_root_leaf_keys: BTreeMap<Vec<u8>, usize>,
     temp_subtrees: RefCell<HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
     temp_deleted_subtrees: RefCell<HashSet<Vec<u8>>>,
 }
@@ -118,7 +121,7 @@ pub struct GroveDb {
 impl GroveDb {
     pub fn new(
         root_tree: MerkleTree<Sha256>,
-        root_leaf_keys: HashMap<Vec<u8>, usize>,
+        root_leaf_keys: BTreeMap<Vec<u8>, usize>,
         meta_storage: PrefixedRocksDbStorage,
         db: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
     ) -> Self {
@@ -128,7 +131,7 @@ impl GroveDb {
             meta_storage,
             db,
             temp_root_tree: MerkleTree::new(),
-            temp_root_leaf_keys: HashMap::new(),
+            temp_root_leaf_keys: BTreeMap::new(),
             temp_subtrees: RefCell::new(HashMap::new()),
             temp_deleted_subtrees: RefCell::new(HashSet::new()),
             is_readonly: false,
@@ -147,14 +150,14 @@ impl GroveDb {
         let meta_storage = PrefixedRocksDbStorage::new(db.clone(), Vec::new())?;
 
         // TODO: owned `get` is not required for deserialization
-        let root_leaf_keys: HashMap<Vec<u8>, usize> = if let Some(root_leaf_keys_serialized) =
+        let root_leaf_keys: BTreeMap<Vec<u8>, usize> = if let Some(root_leaf_keys_serialized) =
             meta_storage.get_meta(ROOT_LEAFS_SERIALIZED_KEY)?
         {
             bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {
                 Error::CorruptedData(String::from("unable to deserialize root leafs"))
             })?
         } else {
-            HashMap::new()
+            BTreeMap::new()
         };
 
         let temp_subtrees: RefCell<HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>> =
@@ -199,7 +202,7 @@ impl GroveDb {
 
     fn build_root_tree(
         subtrees: &Subtrees,
-        root_leaf_keys: &HashMap<Vec<u8>, usize>,
+        root_leaf_keys: &BTreeMap<Vec<u8>, usize>,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> MerkleTree<Sha256> {
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
@@ -383,7 +386,9 @@ impl GroveDb {
         // TODO: root tree actually does support transactions, so this
         //  code can be reworked to account for that
         self.root_tree = self.temp_root_tree.clone();
-        self.root_leaf_keys = self.temp_root_leaf_keys.drain().collect();
+
+        self.root_leaf_keys = self.temp_root_leaf_keys.clone();
+        self.temp_root_leaf_keys.clear();
 
         self.cleanup_transactional_data();
 
@@ -429,7 +434,7 @@ impl GroveDb {
 
         // Free transactional data
         self.temp_root_tree = MerkleTree::new();
-        self.temp_root_leaf_keys = HashMap::new();
+        self.temp_root_leaf_keys = BTreeMap::new();
         self.temp_subtrees = RefCell::new(HashMap::new());
     }
 }
