@@ -17,7 +17,7 @@ use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 use serde::{Deserialize, Serialize};
 use storage::rocksdb_storage::{OptimisticTransactionDBTransaction, PrefixedRocksDbStorageError};
-pub use storage::{rocksdb_storage::PrefixedRocksDbStorage, Storage};
+pub use storage::{rocksdb_storage::PrefixedRocksDbStorage, Storage, Transaction};
 pub use subtree::Element;
 use subtrees::Subtrees;
 #[cfg(feature = "visualize")]
@@ -220,6 +220,33 @@ impl GroveDb {
         MerkleTree::<Sha256>::from_leaves(&leaf_hashes)
     }
 
+    fn store_root_leafs_keys_data(
+        &self,
+        db_transaction: Option<&OptimisticTransactionDBTransaction>,
+    ) -> Result<(), Error> {
+        match db_transaction {
+            None => {
+                self.meta_storage.put_meta(
+                    ROOT_LEAFS_SERIALIZED_KEY,
+                    &bincode::serialize(&self.root_leaf_keys).map_err(|_| {
+                        Error::CorruptedData(String::from("unable to serialize root leaves data"))
+                    })?,
+                )?;
+            }
+            Some(tx) => {
+                let transaction = self.meta_storage.transaction(tx);
+                transaction.put_meta(
+                    ROOT_LEAFS_SERIALIZED_KEY,
+                    &bincode::serialize(&self.temp_root_leaf_keys).map_err(|_| {
+                        Error::CorruptedData(String::from("unable to serialize root leaves data"))
+                    })?,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Method to propagate updated subtree root hashes up to GroveDB root
     fn propagate_changes<'a: 'b, 'b, 'c, P>(
         &'a mut self,
@@ -263,7 +290,7 @@ impl GroveDb {
             None => self.root_tree = root_tree,
             Some(_) => self.temp_root_tree = root_tree,
         }
-
+        self.store_root_leafs_keys_data(transaction)?;
         Ok(())
     }
 
