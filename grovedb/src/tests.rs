@@ -197,7 +197,7 @@ fn test_tree_structure_is_persistent() {
     let tmp_dir = TempDir::new("db").unwrap();
     let element = Element::Item(b"ayy".to_vec());
     // Create a scoped GroveDB
-    {
+    let prev_root_hash = {
         let mut db = GroveDb::open(tmp_dir.path()).unwrap();
         add_test_leafs(&mut db);
 
@@ -219,7 +219,8 @@ fn test_tree_structure_is_persistent() {
                 .expect("successful get 1"),
             element
         );
-    }
+        db.root_hash(None)
+    };
     // Open a persisted GroveDB
     let db = GroveDb::open(tmp_dir).unwrap();
     assert_eq!(
@@ -230,6 +231,7 @@ fn test_tree_structure_is_persistent() {
     assert!(db
         .get([TEST_LEAF, b"key1", b"key2"], b"key4", None)
         .is_err());
+    assert_eq!(prev_root_hash, db.root_hash(None));
 }
 
 #[test]
