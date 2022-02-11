@@ -207,15 +207,10 @@ impl GroveDb {
     ) -> MerkleTree<Sha256> {
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
         for (subtree_path, root_leaf_idx) in root_leaf_keys {
-            let (subtree_merk, prefix) = subtrees
-                .get([subtree_path.as_slice()], transaction)
-                .expect("`root_leaf_keys` must be in sync with `subtrees`");
-            leaf_hashes[*root_leaf_idx] = subtree_merk.root_hash();
-            if let Some(prefix) = prefix {
-                subtrees.insert_temp_tree_with_prefix(prefix, subtree_merk, transaction);
-            } else {
-                subtrees.insert_temp_tree([subtree_path.as_slice()], subtree_merk, transaction);
-            }
+            leaf_hashes[*root_leaf_idx] = subtrees
+                .borrow_mut([subtree_path.as_slice()], transaction)
+                .expect("`root_leaf_keys` must be in sync with `subtrees`")
+                .apply(|s| s.root_hash());
         }
         MerkleTree::<Sha256>::from_leaves(&leaf_hashes)
     }
@@ -264,21 +259,15 @@ impl GroveDb {
 
         while path_iter.len() > 1 {
             // non root leaf node
-            let (subtree, prefix) = subtrees.get(path_iter.clone(), transaction)?;
-            let element = Element::Tree(subtree.root_hash());
-            if let Some(prefix) = prefix {
-                subtrees.insert_temp_tree_with_prefix(prefix, subtree, transaction);
-            } else {
-                subtrees.insert_temp_tree(path_iter.clone(), subtree, transaction);
-            }
+            let element = subtrees
+                .borrow_mut(path_iter.clone(), transaction)?
+                .apply(|s| Element::Tree(s.root_hash()));
+
             let key = path_iter.next_back().expect("next element is `Some`");
-            let (mut upper_tree, prefix) = subtrees.get(path_iter.clone(), transaction)?;
-            element.insert(&mut upper_tree, key.as_ref(), transaction)?;
-            if let Some(prefix) = prefix {
-                subtrees.insert_temp_tree_with_prefix(prefix, upper_tree, transaction);
-            } else {
-                subtrees.insert_temp_tree(path_iter.clone(), upper_tree, transaction);
-            }
+
+            subtrees
+                .borrow_mut(path_iter.clone(), transaction)?
+                .apply(|s| element.insert(s, key.as_ref(), transaction))?;
         }
 
         let root_leaf_keys = match transaction {

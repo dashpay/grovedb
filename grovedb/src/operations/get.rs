@@ -69,27 +69,16 @@ impl GroveDb {
         let path_iter = path.into_iter();
         // If path is empty, then we need to combine the provided key and path
         // then use this to get merk.
-        let (merk, prefix) = if path_iter.len() == 0 {
-            self.get_subtrees().get([key], transaction)?
+        let subtrees = self.get_subtrees();
+        if path_iter.len() == 0 {
+            Ok(subtrees
+                .borrow_mut([key], transaction)?
+                .apply(|s| Element::Tree(s.root_hash())))
         } else {
-            self.get_subtrees().get(path_iter.clone(), transaction)?
-        };
-
-        let elem = if path_iter.len() == 0 {
-            Ok(Element::Tree(merk.root_hash()))
-        } else {
-            Element::get(&merk, key)
-        };
-
-        if let Some(prefix) = prefix {
-            self.get_subtrees()
-                .insert_temp_tree_with_prefix(prefix, merk, transaction);
-        } else {
-            self.get_subtrees()
-                .insert_temp_tree(path_iter, merk, transaction);
+            subtrees
+                .borrow_mut(path_iter, transaction)?
+                .apply(|s| Element::get(s, key))
         }
-
-        elem
     }
 
     pub fn get_path_queries(
@@ -172,14 +161,8 @@ impl GroveDb {
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(Vec<Element>, u16), Error> {
         let path_slices = path_query.path.iter().map(|x| x.as_slice());
-        let (merk, prefix) = subtrees.get(path_slices.clone(), transaction)?;
-        let elem = Element::get_path_query(&merk, path_query, Some(&subtrees));
-        if let Some(prefix) = prefix {
-            subtrees.insert_temp_tree_with_prefix(prefix, merk, transaction);
-        } else {
-            subtrees.insert_temp_tree(path_slices, merk, transaction);
-        }
-
-        elem
+        subtrees
+            .borrow_mut(path_slices.clone(), transaction)?
+            .apply(|s| Element::get_path_query(s, path_query, Some(&subtrees)))
     }
 }

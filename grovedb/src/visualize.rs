@@ -118,8 +118,8 @@ impl GroveDb {
     ) -> Result<Drawer<'a, W>> {
         let subtrees = self.get_subtrees();
         drawer.down();
-        let (merk, prefix) = subtrees
-            .get(path.iter().map(|x| x.as_slice()), transaction)
+        let merk = subtrees
+            .borrow_mut(path.iter().map(|x| x.as_slice()), transaction)
             .expect("cannot find Merk");
         let mut iter = Element::iterator(merk.raw_iter(transaction));
         while let Some((key, element)) = iter.next().expect("cannot get next element") {
@@ -141,11 +141,6 @@ impl GroveDb {
             }
         }
         drop(iter);
-        if let Some(prefix) = prefix {
-            subtrees.insert_temp_tree_with_prefix(prefix, merk, transaction);
-        } else {
-            subtrees.insert_temp_tree(path.iter().map(|x| x.as_slice()), merk, transaction);
-        }
         drawer.up();
         Ok(drawer)
     }
