@@ -32,6 +32,7 @@ pub enum Element {
 }
 
 pub struct PathQueryPushArgs<'a> {
+    pub transaction: Option<&'a OptimisticTransactionDBTransaction<'a>>,
     pub subtrees: Option<&'a Subtrees<'a>>,
     pub key: Option<&'a [u8]>,
     pub element: Element,
@@ -83,10 +84,11 @@ impl Element {
     pub fn get_query(
         merk: &Merk<PrefixedRocksDbStorage>,
         query: &Query,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
         subtrees_option: Option<&Subtrees>,
     ) -> Result<Vec<Element>, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, _) = Element::get_sized_query(merk, &sized_query, subtrees_option)?;
+        let (elements, _) = Element::get_sized_query(merk, &sized_query, transaction, subtrees_option)?;
         Ok(elements)
     }
 
@@ -111,6 +113,7 @@ impl Element {
 
     fn path_query_push(args: PathQueryPushArgs) -> Result<(), Error> {
         let PathQueryPushArgs {
+            transaction,
             subtrees,
             key,
             element,
@@ -120,7 +123,7 @@ impl Element {
             left_to_right,
             results,
             limit,
-            offset,
+            offset
         } = args;
         match element {
             Element::Tree(_) => {
@@ -153,8 +156,8 @@ impl Element {
                     let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
 
                     let (mut sub_elements, skipped) = subtrees
-                        .borrow_mut(path_vec.iter().copied(), None)?
-                        .apply(|s| Element::get_path_query(s, &inner_path_query, Some(subtrees)))?;
+                        .borrow_mut(path_vec.iter().copied(), transaction)?
+                        .apply(|s| Element::get_path_query(s, &inner_path_query, transaction, Some(subtrees)))?;
 
                     if let Some(limit) = limit {
                         *limit -= sub_elements.len() as u16;
@@ -166,7 +169,7 @@ impl Element {
                 } else if let Some(subquery_key) = subquery_key {
                     if offset.unwrap_or(0) == 0 {
                         let element = subtrees
-                            .borrow_mut(path_vec.iter().copied(), None)?
+                            .borrow_mut(path_vec.iter().copied(), transaction)?
                             .apply(|s| Element::get(s, subquery_key.as_slice()))?;
                         results.push(element);
                         if let Some(limit) = limit {
@@ -184,6 +187,7 @@ impl Element {
             }
             _ => {
                 Element::basic_push(PathQueryPushArgs {
+                    transaction,
                     subtrees,
                     key,
                     element,
@@ -193,7 +197,7 @@ impl Element {
                     left_to_right,
                     results,
                     limit,
-                    offset,
+                    offset
                 })?;
             }
         }
@@ -204,6 +208,7 @@ impl Element {
         merk: &Merk<PrefixedRocksDbStorage>,
         sized_query: &SizedQuery,
         path: Option<&[&[u8]]>,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
         subtrees: Option<&Subtrees>,
         add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
     ) -> Result<(Vec<Element>, u16), Error> {
@@ -219,6 +224,7 @@ impl Element {
                 // this is a query on a key
                 if let QueryItem::Key(key) = item {
                     add_element_function(PathQueryPushArgs {
+                        transaction,
                         subtrees,
                         key: Some(key.as_slice()),
                         element: Element::get(merk, key)?,
@@ -244,6 +250,7 @@ impl Element {
                         raw_decode(iter.value().expect("if key exists then value should too"))?;
                     let key = iter.key().expect("key should exist");
                     add_element_function(PathQueryPushArgs {
+                        transaction,
                         subtrees,
                         key: Some(key),
                         element,
@@ -258,6 +265,7 @@ impl Element {
                         results: &mut results,
                         limit: &mut limit,
                         offset: &mut offset,
+
                     })?;
                     if sized_query.query.left_to_right {
                         iter.next();
@@ -282,6 +290,7 @@ impl Element {
     pub fn get_path_query(
         merk: &Merk<PrefixedRocksDbStorage>,
         path_query: &PathQuery,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
         subtrees: Option<&Subtrees>,
     ) -> Result<(Vec<Element>, u16), Error> {
         let path_slices = path_query
@@ -293,6 +302,7 @@ impl Element {
             merk,
             &path_query.query,
             Some(path_slices.as_slice()),
+            transaction,
             subtrees,
             Element::path_query_push,
         )
@@ -302,12 +312,14 @@ impl Element {
     pub fn get_sized_query(
         merk: &Merk<PrefixedRocksDbStorage>,
         sized_query: &SizedQuery,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
         subtrees: Option<&Subtrees>,
     ) -> Result<(Vec<Element>, u16), Error> {
         Element::get_query_apply_function(
             merk,
             sized_query,
             None,
+            transaction,
             subtrees,
             Element::path_query_push,
         )
@@ -416,7 +428,7 @@ mod tests {
         query.insert_key(b"c".to_vec());
         query.insert_key(b"a".to_vec());
         assert_eq!(
-            Element::get_query(&merk, &query, None).expect("expected successful get_query"),
+            Element::get_query(&merk, &query, None, None).expect("expected successful get_query"),
             vec![
                 Element::Item(b"ayya".to_vec()),
                 Element::Item(b"ayyc".to_vec())
@@ -428,7 +440,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query(&merk, &query, None).expect("expected successful get_query"),
+            Element::get_query(&merk, &query, None, None).expect("expected successful get_query"),
             vec![
                 Element::Item(b"ayya".to_vec()),
                 Element::Item(b"ayyb".to_vec()),
@@ -441,7 +453,7 @@ mod tests {
         query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query(&merk, &query, None).expect("expected successful get_query"),
+            Element::get_query(&merk, &query, None, None).expect("expected successful get_query"),
             vec![
                 Element::Item(b"ayyb".to_vec()),
                 Element::Item(b"ayyc".to_vec()),
@@ -455,7 +467,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query(&merk, &query, None).expect("expected successful get_query"),
+            Element::get_query(&merk, &query, None, None).expect("expected successful get_query"),
             vec![
                 Element::Item(b"ayya".to_vec()),
                 Element::Item(b"ayyb".to_vec()),
@@ -485,7 +497,7 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"d".to_vec());
 
         let ascending_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, skipped) = Element::get_sized_query(&merk, &ascending_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &ascending_query, None, None)
             .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -500,7 +512,7 @@ mod tests {
         query.left_to_right = false;
 
         let backwards_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, skipped) = Element::get_sized_query(&merk, &backwards_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &backwards_query, None, None)
             .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -549,7 +561,7 @@ mod tests {
         }
 
         check_elements_no_skipped(
-            Element::get_sized_query(&merk, &ascending_query, None)
+            Element::get_sized_query(&merk, &ascending_query, None, None)
                 .expect("expected successful get_query"),
             false,
         );
@@ -558,7 +570,7 @@ mod tests {
 
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         check_elements_no_skipped(
-            Element::get_sized_query(&merk, &backwards_query, None)
+            Element::get_sized_query(&merk, &backwards_query, None, None)
                 .expect("expected successful get_query"),
             true,
         );
@@ -570,7 +582,7 @@ mod tests {
 
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         check_elements_no_skipped(
-            Element::get_sized_query(&merk, &backwards_query, None)
+            Element::get_sized_query(&merk, &backwards_query, None, None)
                 .expect("expected successful get_query"),
             true,
         );
@@ -599,7 +611,7 @@ mod tests {
 
         // since these are just keys a backwards query will keep same order
         let backwards_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, skipped) = Element::get_sized_query(&merk, &backwards_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &backwards_query, None, None)
             .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -612,7 +624,7 @@ mod tests {
 
         // The limit will mean we will only get back 1 item
         let limit_query = SizedQuery::new(query.clone(), Some(1), None);
-        let (elements, skipped) = Element::get_sized_query(&merk, &limit_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &limit_query, None, None)
             .expect("expected successful get_query");
         assert_eq!(elements, vec![Element::Item(b"ayya".to_vec()),]);
         assert_eq!(skipped, 0);
@@ -622,7 +634,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         let limit_query = SizedQuery::new(query.clone(), Some(2), None);
-        let (elements, skipped) = Element::get_sized_query(&merk, &limit_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &limit_query, None, None)
             .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -634,7 +646,7 @@ mod tests {
         assert_eq!(skipped, 0);
 
         let limit_offset_query = SizedQuery::new(query.clone(), Some(2), Some(1));
-        let (elements, skipped) = Element::get_sized_query(&merk, &limit_offset_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &limit_offset_query, None, None)
             .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -652,7 +664,7 @@ mod tests {
 
         let limit_offset_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) =
-            Element::get_sized_query(&merk, &limit_offset_backwards_query, None)
+            Element::get_sized_query(&merk, &limit_offset_backwards_query, None, None)
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -668,7 +680,7 @@ mod tests {
         query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         let limit_full_query = SizedQuery::new(query.clone(), Some(5), Some(0));
-        let (elements, skipped) = Element::get_sized_query(&merk, &limit_full_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &limit_full_query, None, None)
             .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -686,7 +698,7 @@ mod tests {
 
         let limit_offset_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) =
-            Element::get_sized_query(&merk, &limit_offset_backwards_query, None)
+            Element::get_sized_query(&merk, &limit_offset_backwards_query, None, None)
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -703,7 +715,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         let limit_backwards_query = SizedQuery::new(query.clone(), Some(2), None);
-        let (elements, skipped) = Element::get_sized_query(&merk, &limit_backwards_query, None)
+        let (elements, skipped) = Element::get_sized_query(&merk, &limit_backwards_query, None, None)
             .expect("expected successful get_query");
         assert_eq!(
             elements,

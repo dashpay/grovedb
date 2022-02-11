@@ -163,6 +163,6 @@ impl GroveDb {
         let path_slices = path_query.path.iter().map(|x| x.as_slice());
         subtrees
             .borrow_mut(path_slices.clone(), transaction)?
-            .apply(|s| Element::get_path_query(s, path_query, Some(&subtrees)))
+            .apply(|s| Element::get_path_query(s, path_query, transaction, Some(&subtrees)))
     }
 }
