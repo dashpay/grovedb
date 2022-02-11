@@ -88,7 +88,8 @@ impl Element {
         subtrees_option: Option<&Subtrees>,
     ) -> Result<Vec<Element>, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, _) = Element::get_sized_query(merk, &sized_query, transaction, subtrees_option)?;
+        let (elements, _) =
+            Element::get_sized_query(merk, &sized_query, transaction, subtrees_option)?;
         Ok(elements)
     }
 
@@ -123,7 +124,7 @@ impl Element {
             left_to_right,
             results,
             limit,
-            offset
+            offset,
         } = args;
         match element {
             Element::Tree(_) => {
@@ -157,7 +158,14 @@ impl Element {
 
                     let (mut sub_elements, skipped) = subtrees
                         .borrow_mut(path_vec.iter().copied(), transaction)?
-                        .apply(|s| Element::get_path_query(s, &inner_path_query, transaction, Some(subtrees)))?;
+                        .apply(|s| {
+                            Element::get_path_query(
+                                s,
+                                &inner_path_query,
+                                transaction,
+                                Some(subtrees),
+                            )
+                        })?;
 
                     if let Some(limit) = limit {
                         *limit -= sub_elements.len() as u16;
@@ -197,7 +205,7 @@ impl Element {
                     left_to_right,
                     results,
                     limit,
-                    offset
+                    offset,
                 })?;
             }
         }
@@ -265,7 +273,6 @@ impl Element {
                         results: &mut results,
                         limit: &mut limit,
                         offset: &mut offset,
-
                     })?;
                     if sized_query.query.left_to_right {
                         iter.next();
@@ -715,8 +722,9 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         let limit_backwards_query = SizedQuery::new(query.clone(), Some(2), None);
-        let (elements, skipped) = Element::get_sized_query(&merk, &limit_backwards_query, None, None)
-            .expect("expected successful get_query");
+        let (elements, skipped) =
+            Element::get_sized_query(&merk, &limit_backwards_query, None, None)
+                .expect("expected successful get_query");
         assert_eq!(
             elements,
             vec![
