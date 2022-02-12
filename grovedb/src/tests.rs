@@ -9,11 +9,11 @@ use tempdir::TempDir;
 // use test::RunIgnored::No;
 use super::*;
 
-const TEST_LEAF: &[u8] = b"test_leaf";
+pub(crate) const TEST_LEAF: &[u8] = b"test_leaf";
 const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
 
 /// GroveDB wrapper to keep temp directory alive
-struct TempGroveDb {
+pub(crate) struct TempGroveDb {
     _tmp_dir: TempDir,
     db: GroveDb,
 }
@@ -33,7 +33,7 @@ impl Deref for TempGroveDb {
 }
 
 /// A helper method to create GroveDB with one leaf for a root tree
-fn make_grovedb() -> TempGroveDb {
+pub(crate) fn make_grovedb() -> TempGroveDb {
     let tmp_dir = TempDir::new("db").unwrap();
     let mut db = GroveDb::open(tmp_dir.path()).unwrap();
     add_test_leafs(&mut db);
