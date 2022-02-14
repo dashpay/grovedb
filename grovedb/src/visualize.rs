@@ -193,7 +193,7 @@ impl Visualize for (&GroveDb, &OptimisticTransactionDBTransaction<'_>) {
     }
 }
 
-pub fn visualize_stderr<T: Visualize>(value: &T) {
+pub fn visualize_stderr<T: Visualize + ?Sized>(value: &T) {
     let mut out = std::io::stderr();
     let drawer = Drawer::new(&mut out);
     value
@@ -201,7 +201,7 @@ pub fn visualize_stderr<T: Visualize>(value: &T) {
         .expect("IO error when trying to `visualize`");
 }
 
-pub fn visualize_stdout<T: Visualize>(value: &T) {
+pub fn visualize_stdout<T: Visualize + ?Sized>(value: &T) {
     let mut out = std::io::stdout();
     let drawer = Drawer::new(&mut out);
     value

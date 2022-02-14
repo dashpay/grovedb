@@ -160,9 +160,11 @@ impl GroveDb {
         subtrees: Subtrees,
         transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(Vec<Element>, u16), Error> {
-        let path_slices = path_query.path.iter().map(|x| x.as_slice());
-        subtrees
-            .borrow_mut(path_slices.clone(), transaction)?
-            .apply(|s| Element::get_path_query(s, path_query, Some(&subtrees)))
+        let path_slices = path_query
+            .path
+            .iter()
+            .map(|x| x.as_slice())
+            .collect::<Vec<_>>();
+        Element::get_path_query(&path_slices, path_query, transaction, &subtrees)
     }
 }

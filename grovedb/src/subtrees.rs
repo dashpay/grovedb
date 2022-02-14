@@ -27,8 +27,8 @@ pub enum TempMerk<'a> {
 }
 
 impl TempMerk<'_> {
-    pub fn apply<U>(&mut self, f: impl FnOnce(&mut Merk<PrefixedRocksDbStorage>) -> U) -> U {
-        f(self)
+    pub fn apply<U>(mut self, f: impl FnOnce(&mut Merk<PrefixedRocksDbStorage>) -> U) -> U {
+        f(&mut self)
     }
 
     pub fn get_prefix(&self) -> Option<&[u8]> {
