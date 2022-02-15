@@ -1,7 +1,8 @@
 //! Module for retrieving subtrees
 use std::{
-    cell::RefCell,
+    cell::{RefCell, RefMut},
     collections::{BTreeMap, HashMap, HashSet},
+    ops::{Deref, DerefMut},
     rc::Rc,
 };
 
@@ -16,6 +17,47 @@ pub struct Subtrees<'a> {
     pub temp_subtrees: &'a RefCell<HashMap<Vec<u8>, Merk<PrefixedRocksDbStorage>>>,
     pub deleted_subtrees: &'a RefCell<HashSet<Vec<u8>>>,
     pub storage: Rc<storage::rocksdb_storage::OptimisticTransactionDB>,
+}
+
+/// Can hold an owned Merk or a referenced to temporary transactional Merks
+/// storage
+pub enum TempMerk<'a> {
+    Owned(Merk<PrefixedRocksDbStorage>),
+    Borrowed(RefMut<'a, Merk<PrefixedRocksDbStorage>>, Vec<u8>),
+}
+
+impl TempMerk<'_> {
+    pub fn apply<U>(mut self, f: impl FnOnce(&mut Merk<PrefixedRocksDbStorage>) -> U) -> U {
+        f(&mut self)
+    }
+
+    pub fn get_prefix(&self) -> Option<&[u8]> {
+        if let TempMerk::Borrowed(_, prefix) = self {
+            Some(prefix)
+        } else {
+            None
+        }
+    }
+}
+
+impl Deref for TempMerk<'_> {
+    type Target = Merk<PrefixedRocksDbStorage>;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            TempMerk::Owned(m) => m,
+            TempMerk::Borrowed(m, _) => m,
+        }
+    }
+}
+
+impl DerefMut for TempMerk<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            TempMerk::Owned(m) => m,
+            TempMerk::Borrowed(m, _) => m,
+        }
+    }
 }
 
 impl Subtrees<'_> {
@@ -60,20 +102,19 @@ impl Subtrees<'_> {
         }
     }
 
-    pub fn get<'a, P>(
+    pub fn borrow_mut<'a, P>(
         &self,
         path: P,
         transaction: Option<&OptimisticTransactionDBTransaction>,
-    ) -> Result<(Merk<PrefixedRocksDbStorage>, Option<Vec<u8>>), Error>
+    ) -> Result<TempMerk, Error>
     where
         P: IntoIterator<Item = &'a [u8]>,
         <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
     {
         let merk;
-        let mut prefix: Option<Vec<u8>> = None;
         match transaction {
             None => {
-                merk = self.get_subtree_without_transaction(path)?;
+                merk = TempMerk::Owned(self.get_subtree_without_transaction(path)?);
             }
             Some(_) => {
                 let path_iter = path.into_iter();
@@ -83,19 +124,29 @@ impl Subtrees<'_> {
                 }
                 if self.temp_subtrees.borrow().contains_key(&tree_prefix) {
                     // get the merk out
-                    merk = self
-                        .temp_subtrees
-                        .borrow_mut()
-                        .remove(&tree_prefix)
-                        .expect("confirmed it's in the hashmap");
-                    prefix = Some(tree_prefix);
+                    merk = TempMerk::Borrowed(
+                        RefMut::map(self.temp_subtrees.borrow_mut(), |tmp| {
+                            tmp.get_mut(&tree_prefix)
+                                .expect("confirmed it's in the hashmap")
+                        }),
+                        tree_prefix,
+                    );
                 } else {
                     // merk is not in the hash map get it without transaction
-                    merk = self.get_subtree_without_transaction(path_iter)?;
+                    let owned_merk = self.get_subtree_without_transaction(path_iter)?;
+                    let mut mut_subtrees = self.temp_subtrees.borrow_mut();
+                    mut_subtrees.insert(tree_prefix.clone(), owned_merk);
+                    merk = TempMerk::Borrowed(
+                        RefMut::map(mut_subtrees, |tmp| {
+                            tmp.get_mut(&tree_prefix)
+                                .expect("confirmed it's in the hashmap")
+                        }),
+                        tree_prefix,
+                    );
                 }
             }
         }
-        Ok((merk, prefix))
+        Ok(merk)
     }
 
     pub fn get_subtree_without_transaction<'a, P>(

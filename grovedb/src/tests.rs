@@ -9,11 +9,11 @@ use tempdir::TempDir;
 // use test::RunIgnored::No;
 use super::*;
 
-const TEST_LEAF: &[u8] = b"test_leaf";
+pub(crate) const TEST_LEAF: &[u8] = b"test_leaf";
 const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
 
 /// GroveDB wrapper to keep temp directory alive
-struct TempGroveDb {
+pub(crate) struct TempGroveDb {
     _tmp_dir: TempDir,
     db: GroveDb,
 }
@@ -33,7 +33,7 @@ impl Deref for TempGroveDb {
 }
 
 /// A helper method to create GroveDB with one leaf for a root tree
-fn make_grovedb() -> TempGroveDb {
+pub(crate) fn make_grovedb() -> TempGroveDb {
     let tmp_dir = TempDir::new("db").unwrap();
     let mut db = GroveDb::open(tmp_dir.path()).unwrap();
     add_test_leafs(&mut db);
@@ -197,7 +197,7 @@ fn test_tree_structure_is_persistent() {
     let tmp_dir = TempDir::new("db").unwrap();
     let element = Element::Item(b"ayy".to_vec());
     // Create a scoped GroveDB
-    {
+    let prev_root_hash = {
         let mut db = GroveDb::open(tmp_dir.path()).unwrap();
         add_test_leafs(&mut db);
 
@@ -219,7 +219,8 @@ fn test_tree_structure_is_persistent() {
                 .expect("successful get 1"),
             element
         );
-    }
+        db.root_hash(None)
+    };
     // Open a persisted GroveDB
     let db = GroveDb::open(tmp_dir).unwrap();
     assert_eq!(
@@ -230,6 +231,7 @@ fn test_tree_structure_is_persistent() {
     assert!(db
         .get([TEST_LEAF, b"key1", b"key2"], b"key4", None)
         .is_err());
+    assert_eq!(prev_root_hash, db.root_hash(None));
 }
 
 #[test]
@@ -970,10 +972,8 @@ fn test_subtree_pairs_iterator() {
     // let mut iter = db
     //     .elements_iterator(&[TEST_LEAF, b"subtree1"], None)
     //     .expect("cannot create iterator");
-    let (merk, _) = db
-        .get_subtrees()
-        .get([TEST_LEAF, b"subtree1"], None)
-        .unwrap();
+    let subtrees = db.get_subtrees();
+    let merk = subtrees.borrow_mut([TEST_LEAF, b"subtree1"], None).unwrap();
     let mut iter = Element::iterator(merk.raw_iter(None));
     assert_eq!(iter.next().unwrap(), Some((b"key1".to_vec(), element)));
     assert_eq!(iter.next().unwrap(), Some((b"key2".to_vec(), element2)));
@@ -1049,13 +1049,15 @@ fn test_get_subtree() {
     let element = Element::Item(b"ayy".to_vec());
 
     // Returns error is subtree is not valid
-    let subtree = db.get_subtrees().get([TEST_LEAF, b"invalid_tree"], None);
-    assert!(subtree.is_err());
+    {
+        let subtrees = db.get_subtrees();
+        let subtree = subtrees.borrow_mut([TEST_LEAF, b"invalid_tree"], None);
+        assert!(subtree.is_err());
 
-    // Doesn't return an error for subtree that exists but empty
-    let subtree = db.get_subtrees().get([TEST_LEAF], None);
-    assert!(subtree.is_ok());
-
+        // Doesn't return an error for subtree that exists but empty
+        let subtree = subtrees.borrow_mut([TEST_LEAF], None);
+        assert!(subtree.is_ok());
+    }
     // Insert some nested subtrees
     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
         .expect("successful subtree 1 insert");
@@ -1076,13 +1078,14 @@ fn test_get_subtree() {
 
     // Retrieve subtree instance
     // Check if it returns the same instance that was inserted
-    let (subtree, _) = db
-        .get_subtrees()
-        .get([TEST_LEAF, b"key1", b"key2"], None)
-        .unwrap();
-    let result_element = Element::get(&subtree, b"key3").unwrap();
-    assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
-
+    {
+        let subtrees = db.get_subtrees();
+        let subtree = subtrees
+            .borrow_mut([TEST_LEAF, b"key1", b"key2"], None)
+            .unwrap();
+        let result_element = Element::get(&subtree, b"key3").unwrap();
+        assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
+    }
     // Insert a new tree with transaction
     db.start_transaction().unwrap();
     let storage = db.storage();
@@ -1105,17 +1108,17 @@ fn test_get_subtree() {
     .expect("successful value insert");
 
     // Retrieve subtree instance with transaction
-    let (subtree, _) = db
-        .get_subtrees()
-        .get([TEST_LEAF, b"key1", b"innertree"], Some(&transaction))
+    let subtrees = db.get_subtrees();
+    let subtree = subtrees
+        .borrow_mut([TEST_LEAF, b"key1", b"innertree"], Some(&transaction))
         .unwrap();
     let result_element = Element::get(&subtree, b"key4").unwrap();
     assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
 
     // Should be able to retrieve instances created before transaction
-    let (subtree, _) = db
-        .get_subtrees()
-        .get([TEST_LEAF, b"key1", b"key2"], None)
+    let subtrees = db.get_subtrees();
+    let subtree = subtrees
+        .borrow_mut([TEST_LEAF, b"key1", b"key2"], None)
         .unwrap();
     let result_element = Element::get(&subtree, b"key3").unwrap();
     assert_eq!(result_element, Element::Item(b"ayy".to_vec()));

@@ -19,7 +19,7 @@ where
     S: Storage,
 {
     pub(crate) tree: Cell<Option<Tree>>,
-    pub(crate) storage: S,
+    pub storage: S,
 }
 
 impl<S: Storage> fmt::Debug for Merk<S> {

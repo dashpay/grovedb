@@ -11,28 +11,28 @@ tempdir = "0.3.7"
 storage = { path = "../storage" }
 thiserror = "1.0.30"
 rocksdb = { git = "https://github.com/yiyuanliu/rust-rocksdb", branch = "transaction" }
-anyhow = "1.0.51"
+anyhow = "1.0.53"
 failure = "0.1.8"
 integer-encoding = "3.0.2"
 
 [dependencies.time]
-version = "0.3.6"
+version = "0.3.7"
 optional = true
 
 [dependencies.hex]
-version = "0.4.2"
+version = "0.4.3"
 optional = true
 
 [dependencies.colored]
-version = "1.8.0"
+version = "1.9.3"
 optional = true
 
 [dependencies.num_cpus]
-version = "1.10.0"
+version = "1.13.1"
 optional = true
 
 [dependencies.byteorder]
-version = "1.3.2" 
+version = "1.4.3"
 optional = true
 
 [dependencies.ed]
@@ -40,11 +40,11 @@ version = "0.1.6"
 optional = true
 
 [dependencies.blake3]
-version = "0.3.7"
+version = "1.3.1"
 optional = true
 
 [dependencies.rand]
-version = "0.8.3"
+version = "0.8.4"
 features = ["small_rng"]
 optional = true
 
