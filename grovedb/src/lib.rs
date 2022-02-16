@@ -56,7 +56,6 @@ pub enum Error {
     CorruptedPath(&'static str),
 
     // Query errors
-
     #[error("invalid query: {0}")]
     InvalidQuery(&'static str),
     #[error("missing parameter: {0}")]
