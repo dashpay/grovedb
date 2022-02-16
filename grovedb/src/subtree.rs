@@ -314,7 +314,7 @@ impl Element {
                     &mut limit,
                     &mut offset,
                     add_element_function,
-                );
+                )?;
                 if limit == Some(0) {
                     break;
                 }
@@ -332,7 +332,7 @@ impl Element {
                     &mut limit,
                     &mut offset,
                     add_element_function,
-                );
+                )?;
                 if limit == Some(0) {
                     break;
                 }
