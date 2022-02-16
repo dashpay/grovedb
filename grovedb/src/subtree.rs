@@ -205,7 +205,7 @@ impl Element {
         Ok(())
     }
 
-    fn query_item (
+    fn query_item(
         item: &QueryItem,
         results: &mut Vec<Element>,
         merk_path: &[&[u8]],
@@ -240,7 +240,9 @@ impl Element {
                     offset,
                 })?)
             } else {
-                Err(Error::InternalError("QueryItem must be a Key if not a range"))
+                Err(Error::InternalError(
+                    "QueryItem must be a Key if not a range",
+                ))
             }
         } else {
             // this is a query on a range
@@ -301,14 +303,36 @@ impl Element {
 
         if sized_query.query.left_to_right {
             for item in sized_query.query.iter() {
-                Self::query_item(item, &mut results, merk_path, sized_query, path, transaction, subtrees, &mut limit, &mut offset, add_element_function);
+                Self::query_item(
+                    item,
+                    &mut results,
+                    merk_path,
+                    sized_query,
+                    path,
+                    transaction,
+                    subtrees,
+                    &mut limit,
+                    &mut offset,
+                    add_element_function,
+                );
                 if limit == Some(0) {
                     break;
                 }
             }
         } else {
             for item in sized_query.query.rev_iter() {
-                Self::query_item(item, &mut results, merk_path, sized_query, path, transaction, subtrees, &mut limit, &mut offset, add_element_function);
+                Self::query_item(
+                    item,
+                    &mut results,
+                    merk_path,
+                    sized_query,
+                    path,
+                    transaction,
+                    subtrees,
+                    &mut limit,
+                    &mut offset,
+                    add_element_function,
+                );
                 if limit == Some(0) {
                     break;
                 }
