@@ -35,6 +35,8 @@ pub enum Error {
     CyclicReference,
     #[error("reference hops limit exceeded")]
     ReferenceLimit,
+    #[error("internal error: {0}")]
+    InternalError(&'static str),
     #[error("invalid proof: {0}")]
     InvalidProof(&'static str),
     #[error("invalid path key: {0}")]
