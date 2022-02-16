@@ -39,10 +39,24 @@ pub enum Error {
     InternalError(&'static str),
     #[error("invalid proof: {0}")]
     InvalidProof(&'static str),
+
+    // Path errors
+
+    // The path key not found could represent a valid query, just where the path key isn't there
     #[error("invalid path key: {0}")]
-    InvalidPathKey(String),
+    PathKeyNotFound(String),
+    // The path not found could represent a valid query, just where the path isn't there
+    #[error("path not found: {0}")]
+    PathNotFound(&'static str),
+    // The invalid path represents a logical error from the client library
     #[error("invalid path: {0}")]
     InvalidPath(&'static str),
+    // The corrupted path represents a consistency error in internal groveDB logic
+    #[error("corrupted path: {0}")]
+    CorruptedPath(&'static str),
+
+    // Query errors
+
     #[error("invalid query: {0}")]
     InvalidQuery(&'static str),
     #[error("missing parameter: {0}")]
@@ -359,7 +373,7 @@ impl GroveDb {
     ///
     /// // This action exists only inside the transaction for now
     /// let result = db.get([TEST_LEAF], subtree_key, None);
-    /// assert!(matches!(result, Err(Error::InvalidPathKey(_))));
+    /// assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
     ///
     /// // To access values inside the transaction, transaction needs to be passed to the `db::get`
     /// let result_with_transaction = db.get([TEST_LEAF], subtree_key, Some(&db_transaction))?;

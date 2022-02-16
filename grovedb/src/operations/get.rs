@@ -43,7 +43,7 @@ impl GroveDb {
                 current_element =
                     self.get_raw(path_slice.iter().map(|x| x.as_slice()), key, transaction)?;
             } else {
-                return Err(Error::InvalidPath("empty path"));
+                return Err(Error::CorruptedPath("empty path"));
             }
             visited.insert(path);
             match current_element {
