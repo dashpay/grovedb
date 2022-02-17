@@ -118,7 +118,16 @@ impl GroveDb {
         let subtrees = self.get_subtrees();
         let path_iter = path.into_iter();
         // First, check if a subtree exists to create a new subtree under it
-        subtrees.borrow_mut(path_iter.clone(), transaction)?;
+        subtrees
+            .borrow_mut(path_iter.clone(), transaction)
+            .map_err(|e| {
+                // When adding if the path does not exist, this means it is an invalid path
+                if let Error::PathNotFound(str) = e {
+                    Error::InvalidPath(str)
+                } else {
+                    e
+                }
+            })?;
 
         let (subtree_prefix, subtree_merk) =
             create_merk_with_prefix(self.db.clone(), path_iter.clone(), key)?;

@@ -120,7 +120,7 @@ impl Subtrees<'_> {
                 let path_iter = path.into_iter();
                 let tree_prefix = GroveDb::compress_subtree_key(path_iter.clone(), None);
                 if self.deleted_subtrees.borrow().contains(&tree_prefix) {
-                    return Err(Error::InvalidPath("no subtree found under that path"));
+                    return Err(Error::PathNotFound("no subtree found under that path"));
                 }
                 if self.temp_subtrees.borrow().contains_key(&tree_prefix) {
                     // get the merk out
@@ -174,7 +174,7 @@ impl Subtrees<'_> {
                 return if self.root_leaf_keys.contains_key(key.as_ref()) {
                     Ok(subtree)
                 } else {
-                    Err(Error::InvalidPath("no subtree found for root path"))
+                    Err(Error::PathNotFound("no subtree found for root path"))
                 };
             }
 
@@ -182,13 +182,13 @@ impl Subtrees<'_> {
             let (parent_tree, has_keys) = self.get_subtree_with_key_info(parent_path, None)?;
             if !has_keys {
                 // parent tree can't be empty, hence invalid path
-                Err(Error::InvalidPath(
+                Err(Error::PathNotFound(
                     "no subtree found as parent in path is empty",
                 ))
             } else {
                 // Check that it contains the child as an empty tree
                 let elem = Element::get(&parent_tree, key).map_err(|_| {
-                    Error::InvalidPath("no subtree found as parent does not contain child")
+                    Error::PathNotFound("no subtree found as parent does not contain child")
                 })?;
                 match elem {
                     Element::Tree(_) => Ok(subtree),
@@ -215,7 +215,7 @@ impl Subtrees<'_> {
             self.storage.clone(),
             subtree_prefix,
         )?)
-        .map_err(|_| Error::InvalidPath("no subtree found under that path"))?;
+        .map_err(|_| Error::PathNotFound("no subtree found under that path"))?;
         let has_keys = !merk.is_empty_tree(None);
         Ok((merk, has_keys))
     }
