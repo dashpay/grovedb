@@ -84,7 +84,7 @@ describe('GroveDB', () => {
 
       expect.fail('Expected to throw en error');
     } catch (e) {
-      expect(e.message).to.be.equal('invalid path key: key not found in Merk: 746573745f6b6579');
+      expect(e.message).to.be.equal('path key not found: key not found in Merk: 746573745f6b6579');
     }
   });
 
@@ -147,7 +147,7 @@ describe('GroveDB', () => {
 
         expect.fail('Expected to throw an error');
       } catch (e) {
-        expect(e.message).to.be.equal('invalid path key: key not found in Merk: 746573745f6b6579');
+        expect(e.message).to.be.equal('path key not found: key not found in Merk: 746573745f6b6579');
       }
     });
   });
@@ -177,7 +177,7 @@ describe('GroveDB', () => {
 
         expect.fail('Expected to throw an error');
       } catch (e) {
-        expect(e.message).to.be.equal('invalid path key: key not found in Merk: 746573745f6b6579');
+        expect(e.message).to.be.equal('path key not found: key not found in Merk: 746573745f6b6579');
       }
 
       await groveDb.commitTransaction();
@@ -216,7 +216,7 @@ describe('GroveDB', () => {
 
         expect.fail('Expected to throw an error');
       } catch (e) {
-        expect(e.message).to.be.equal('invalid path key: key not found in Merk: 746573745f6b6579');
+        expect(e.message).to.be.equal('path key not found: key not found in Merk: 746573745f6b6579');
       }
     });
   });
@@ -278,7 +278,7 @@ describe('GroveDB', () => {
 
         expect.fail('Expected to throw an error');
       } catch (e) {
-        expect(e.message).to.be.equal('invalid path key: key not found in Merk: 746573745f6b6579');
+        expect(e.message).to.be.equal('path key not found: key not found in Merk: 746573745f6b6579');
       }
     });
   });
@@ -416,16 +416,6 @@ describe('GroveDB', () => {
     let bKey;
     let cValue;
     let cKey;
-    // let dPath;
-    // let dKey;
-    // let ePath;
-
-    // let daValue;
-    // let dbValue;
-    // let dcValue;
-    // let eaValue;
-    // let eaKey;
-    // let ebValue;
 
     beforeEach(async () => {
       await groveDb.insert(
@@ -440,13 +430,6 @@ describe('GroveDB', () => {
       bKey = Buffer.from('bKey');
       cValue = Buffer.from('c');
       cKey = Buffer.from('cKey');
-      // dKey = Buffer.from('dKey');
-      // daValue = Buffer.from('da');
-      // dbValue = Buffer.from('db');
-      // dcValue = Buffer.from('dc');
-      // eaValue = Buffer.from('ea');
-      // eaKey = Buffer.from('eaKey');
-      // ebValue = Buffer.from('eb');
 
       await groveDb.insert(
         itemTreePath,
@@ -465,53 +448,6 @@ describe('GroveDB', () => {
         cKey,
         { type: 'item', value: cValue },
       );
-
-      // dPath = [...itemTreePath];
-      //   dPath.push(dKey);
-      //   await groveDb.insert(
-      //     itemTreePath,
-      //     dKey,
-      //     { type: 'tree', value: Buffer.alloc(32) },
-      //   );
-
-      //   await groveDb.insert(
-      //     dPath,
-      //     Buffer.from('daKey'),
-      //     { type: 'item', value: daValue },
-      //   );
-
-      //   await groveDb.insert(
-      //     dPath,
-      //     Buffer.from('dbKey'),
-      //     { type: 'item', value: dbValue },
-      //   );
-
-      //   await groveDb.insert(
-      //     dPath,
-      //     Buffer.from('dcKey'),
-      //     { type: 'item', value: dcValue },
-      //   );
-
-      //   const eKey = Buffer.from('eKey');
-      //   ePath = [...itemTreePath];
-      //   ePath.push(eKey);
-      //   await groveDb.insert(
-      //     itemTreePath,
-      //     eKey,
-      //     { type: 'tree', value: Buffer.alloc(32) },
-      //   );
-
-      //   await groveDb.insert(
-      //     ePath,
-      //     Buffer.from('eaKey'),
-      //     { type: 'item', value: eaValue },
-      //   );
-
-      //   await groveDb.insert(
-      //     ePath,
-      //     Buffer.from('ebKey'),
-      //     { type: 'item', value: ebValue },
-      //   );
     });
 
     it('should be able to use limit', async () => {
@@ -1015,45 +951,45 @@ describe('GroveDB', () => {
 
       expect(transactionalResult).to.deep.equal(Buffer.alloc(32));
     });
-  });
 
-  it('should root hash', async () => {
-    // Making a subtree to insert items into
-    await groveDb.insert(
-      rootTreePath,
-      treeKey,
-      { type: 'tree', value: Buffer.alloc(32) },
-    );
+    it('should root hash', async () => {
+      // Making a subtree to insert items into
+      await groveDb.insert(
+        rootTreePath,
+        treeKey,
+        { type: 'tree', value: Buffer.alloc(32) },
+      );
 
-    // Inserting an item into the subtree
-    await groveDb.insert(
-      itemTreePath,
-      itemKey,
-      { type: 'item', value: itemValue },
-    );
+      // Inserting an item into the subtree
+      await groveDb.insert(
+        itemTreePath,
+        itemKey,
+        { type: 'item', value: itemValue },
+      );
 
-    await groveDb.startTransaction();
+      await groveDb.startTransaction();
 
-    // Inserting an item into the subtree
-    await groveDb.insert(
-      itemTreePath,
-      Buffer.from('transactional_test_key'),
-      { type: 'item', value: itemValue },
-      true,
-    );
+      // Inserting an item into the subtree
+      await groveDb.insert(
+        itemTreePath,
+        Buffer.from('transactional_test_key'),
+        { type: 'item', value: itemValue },
+        true,
+      );
 
-    const result = await groveDb.getRootHash();
-    const transactionalResult = await groveDb.getRootHash(true);
+      const result = await groveDb.getRootHash();
+      const transactionalResult = await groveDb.getRootHash(true);
 
-    // Hashes shouldn't be equal
-    expect(result).to.not.deep.equal(transactionalResult);
+      // Hashes shouldn't be equal
+      expect(result).to.not.deep.equal(transactionalResult);
 
-    // Hashes shouldn't be empty
+      // Hashes shouldn't be empty
 
-    // eslint-disable-next-line no-unused-expressions
-    expect(result >= Buffer.alloc(32)).to.be.true;
+      // eslint-disable-next-line no-unused-expressions
+      expect(result >= Buffer.alloc(32)).to.be.true;
 
-    // eslint-disable-next-line no-unused-expressions
-    expect(transactionalResult >= Buffer.alloc(32)).to.be.true;
+      // eslint-disable-next-line no-unused-expressions
+      expect(transactionalResult >= Buffer.alloc(32)).to.be.true;
+    });
   });
 });
