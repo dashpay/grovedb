@@ -43,7 +43,7 @@ pub enum Error {
     // Path errors
 
     // The path key not found could represent a valid query, just where the path key isn't there
-    #[error("invalid path key: {0}")]
+    #[error("path key not found: {0}")]
     PathKeyNotFound(String),
     // The path not found could represent a valid query, just where the path isn't there
     #[error("path not found: {0}")]
