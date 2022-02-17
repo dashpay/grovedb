@@ -8,7 +8,7 @@ license = "MIT"
 
 [dependencies]
 tempdir = "0.3.7"
-storage = { path = "../storage" }
+storage2 = { path = "../storage2" }
 thiserror = "1.0.30"
 rocksdb = { git = "https://github.com/yiyuanliu/rust-rocksdb", branch = "transaction" }
 anyhow = "1.0.53"

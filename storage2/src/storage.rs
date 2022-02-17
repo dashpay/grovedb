@@ -1,18 +1,18 @@
 /// Top-level storage abstraction.
 /// Should be able to hold storage connection and to start transaction when
 /// needed. All query operations will be exposed using [StorageContext].
-pub trait Storage {
+pub trait Storage<'a> {
     type Transaction;
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Starts a new transaction
-    fn start_transaction(&self) -> Self::Transaction;
+    fn start_transaction(&'a self) -> Self::Transaction;
 
     /// Consumes and commits a transaction
-    fn commit_transaction(&self) -> Result<(), Self::Error>;
+    fn commit_transaction(&self, transaction: Self::Transaction) -> Result<(), Self::Error>;
 
     /// Rollback a transaction
-    fn rollback_transaction(&self) -> Result<(), Self::Error>;
+    fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Self::Error>;
 
     /// Forces data to be written
     fn flush(&self) -> Result<(), Self::Error>;
@@ -21,7 +21,7 @@ pub trait Storage {
 /// Storage context.
 /// Provides operations expected from a database abstracting details such as
 /// whether it is a transaction or not.
-pub trait StorageContext {
+pub trait StorageContext<'a> {
     /// Storage error type
     type Error: std::error::Error + Send + Sync + 'static;
 
