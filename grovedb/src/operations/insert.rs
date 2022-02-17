@@ -129,8 +129,20 @@ impl GroveDb {
                 }
             })?;
 
-        let (subtree_prefix, subtree_merk) =
+        let (subtree_prefix, mut subtree_merk) =
             create_merk_with_prefix(self.db.clone(), path_iter.clone(), key)?;
+
+        // If the subtree was deleted previously inside a transaction then we should
+        // insert it as empty
+        // TODO: open Merk on transactional data
+        if transaction.is_some()
+            && self
+                .temp_deleted_subtrees
+                .borrow()
+                .contains(&subtree_prefix)
+        {
+            subtree_merk.clear(transaction).unwrap();
+        }
 
         // Set tree value as a a subtree root hash
         let element = Element::Tree(subtree_merk.root_hash());
