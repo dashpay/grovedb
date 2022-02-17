@@ -451,7 +451,6 @@ impl GroveDb {
         &mut self,
         _db_transaction: OptimisticTransactionDBTransaction,
     ) -> Result<(), Error> {
-
         // Enabling writes again
         self.is_readonly = false;
         // Cloning all the trees to maintain to rollback transactional changes
