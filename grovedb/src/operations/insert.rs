@@ -158,7 +158,7 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let path_iter = path.into_iter();
-        if self.get(path_iter.clone(), key, transaction).is_ok() {
+        if self.get_raw(path_iter.clone(), key, transaction).is_ok() {
             Ok(false)
         } else {
             match self.insert(path_iter, key, element, transaction) {
