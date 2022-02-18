@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use tempfile::TempDir;
 
 use super::*;
@@ -16,21 +18,238 @@ impl TempStorage {
     }
 }
 
+impl Deref for TempStorage {
+    type Target = RocksDbStorage;
+
+    fn deref(&self) -> &Self::Target {
+        &self.storage
+    }
+}
+
 mod no_transaction {
-    #[test]
-    fn test_aux_cf_methods() {}
+    use super::*;
+    use crate::StorageContext;
 
     #[test]
-    fn test_roots_cf_methods() {}
+    fn test_aux_cf_methods() {
+        let storage = TempStorage::new();
+        let context_ayya = storage.get_prefixed_context(b"ayya".to_vec());
+        let context_ayyb = storage.get_prefixed_context(b"ayyb".to_vec());
+
+        context_ayya
+            .put_aux(b"key1", b"ayyavalue1")
+            .expect("cannot insert into aux cf");
+        context_ayya
+            .put_aux(b"key2", b"ayyavalue2")
+            .expect("cannot insert into aux cf");
+        context_ayyb
+            .put_aux(b"key1", b"ayybvalue1")
+            .expect("cannot insert into aux cf");
+        context_ayyb
+            .put_aux(b"key2", b"ayybvalue2")
+            .expect("cannot insert into aux cf");
+
+        assert_eq!(
+            context_ayya
+                .get_aux(b"key1")
+                .ok()
+                .flatten()
+                .expect("cannot get from aux cf"),
+            b"ayyavalue1"
+        );
+
+        context_ayya
+            .delete_aux(b"key1")
+            .expect("cannot delete from aux cf");
+
+        assert!(context_ayya
+            .get_aux(b"key1")
+            .expect("cannot get from aux cf")
+            .is_none());
+        assert_eq!(
+            context_ayya
+                .get_aux(b"key2")
+                .ok()
+                .flatten()
+                .expect("cannot get from aux cf"),
+            b"ayyavalue2"
+        );
+        assert_eq!(
+            context_ayyb
+                .get_aux(b"key1")
+                .ok()
+                .flatten()
+                .expect("cannot get from aux cf"),
+            b"ayybvalue1"
+        );
+    }
 
     #[test]
-    fn test_meta_cf_methods() {}
+    fn test_roots_cf_methods() {
+        let storage = TempStorage::new();
+        let context_ayya = storage.get_prefixed_context(b"ayya".to_vec());
+        let context_ayyb = storage.get_prefixed_context(b"ayyb".to_vec());
+
+        context_ayya
+            .put_root(b"key1", b"ayyavalue1")
+            .expect("cannot insert into roots cf");
+        context_ayya
+            .put_root(b"key2", b"ayyavalue2")
+            .expect("cannot insert into roots cf");
+        context_ayyb
+            .put_root(b"key1", b"ayybvalue1")
+            .expect("cannot insert into roots cf");
+        context_ayyb
+            .put_root(b"key2", b"ayybvalue2")
+            .expect("cannot insert into roots cf");
+
+        assert_eq!(
+            context_ayya
+                .get_root(b"key1")
+                .ok()
+                .flatten()
+                .expect("cannot get from roots cf"),
+            b"ayyavalue1"
+        );
+
+        context_ayya
+            .delete_root(b"key1")
+            .expect("cannot delete from roots cf");
+
+        assert!(context_ayya
+            .get_root(b"key1")
+            .expect("cannot get from roots cf")
+            .is_none());
+        assert_eq!(
+            context_ayya
+                .get_root(b"key2")
+                .ok()
+                .flatten()
+                .expect("cannot get from roots cf"),
+            b"ayyavalue2"
+        );
+        assert_eq!(
+            context_ayyb
+                .get_root(b"key1")
+                .ok()
+                .flatten()
+                .expect("cannot get from roots cf"),
+            b"ayybvalue1"
+        );
+    }
 
     #[test]
-    fn test_default_cf_methods() {}
+    fn test_meta_cf_methods() {
+        let storage = TempStorage::new();
+        let context_ayya = storage.get_prefixed_context(b"ayya".to_vec());
+        let context_ayyb = storage.get_prefixed_context(b"ayyb".to_vec());
+
+        context_ayya
+            .put_meta(b"key1", b"ayyavalue1")
+            .expect("cannot insert into meta cf");
+        context_ayya
+            .put_meta(b"key2", b"ayyavalue2")
+            .expect("cannot insert into meta cf");
+        context_ayyb
+            .put_meta(b"key1", b"ayybvalue1")
+            .expect("cannot insert into meta cf");
+        context_ayyb
+            .put_meta(b"key2", b"ayybvalue2")
+            .expect("cannot insert into meta cf");
+
+        assert_eq!(
+            context_ayya
+                .get_meta(b"key1")
+                .ok()
+                .flatten()
+                .expect("cannot get from meta cf"),
+            b"ayyavalue1"
+        );
+
+        context_ayya
+            .delete_meta(b"key1")
+            .expect("cannot delete from meta cf");
+
+        assert!(context_ayya
+            .get_meta(b"key1")
+            .expect("cannot get from meta cf")
+            .is_none());
+        assert_eq!(
+            context_ayya
+                .get_meta(b"key2")
+                .ok()
+                .flatten()
+                .expect("cannot get from meta cf"),
+            b"ayyavalue2"
+        );
+        assert_eq!(
+            context_ayyb
+                .get_meta(b"key1")
+                .ok()
+                .flatten()
+                .expect("cannot get from meta cf"),
+            b"ayybvalue1"
+        );
+    }
+
+    #[test]
+    fn test_default_cf_methods() {
+        let storage = TempStorage::new();
+        let context_ayya = storage.get_prefixed_context(b"ayya".to_vec());
+        let context_ayyb = storage.get_prefixed_context(b"ayyb".to_vec());
+
+        context_ayya
+            .put(b"key1", b"ayyavalue1")
+            .expect("cannot insert into storage");
+        context_ayya
+            .put(b"key2", b"ayyavalue2")
+            .expect("cannot insert into storage");
+        context_ayyb
+            .put(b"key1", b"ayybvalue1")
+            .expect("cannot insert into storage");
+        context_ayyb
+            .put(b"key2", b"ayybvalue2")
+            .expect("cannot insert into storage");
+
+        assert_eq!(
+            context_ayya
+                .get(b"key1")
+                .ok()
+                .flatten()
+                .expect("cannot get from storage"),
+            b"ayyavalue1"
+        );
+
+        context_ayya
+            .delete(b"key1")
+            .expect("cannot delete from storage");
+
+        assert!(context_ayya
+            .get(b"key1")
+            .expect("cannot get from storage")
+            .is_none());
+        assert_eq!(
+            context_ayya
+                .get(b"key2")
+                .ok()
+                .flatten()
+                .expect("cannot get from storage"),
+            b"ayyavalue2"
+        );
+        assert_eq!(
+            context_ayyb
+                .get(b"key1")
+                .ok()
+                .flatten()
+                .expect("cannot get from storage"),
+            b"ayybvalue1"
+        );
+    }
 }
 
 mod transaction {
+    use super::*;
+
     #[test]
     fn test_aux_cf_methods() {}
 

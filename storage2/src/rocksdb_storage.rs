@@ -5,4 +5,4 @@ mod storage_context;
 mod tests;
 
 pub use storage::RocksDbStorage;
-pub use storage_context::PrefixedRocksDbStorageContext;
+pub use storage_context::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};

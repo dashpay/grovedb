@@ -4,6 +4,7 @@ use std::path::Path;
 use lazy_static::lazy_static;
 use rocksdb::{ColumnFamilyDescriptor, Error, OptimisticTransactionDB, Transaction};
 
+use super::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 use crate::Storage;
 
 /// Name of column family used to store auxiliary data
@@ -44,6 +45,18 @@ impl RocksDbStorage {
         )?;
 
         Ok(RocksDbStorage { db })
+    }
+
+    pub fn get_prefixed_context(&self, prefix: Vec<u8>) -> PrefixedRocksDbStorageContext {
+        PrefixedRocksDbStorageContext::new(&self.db, prefix)
+    }
+
+    pub fn get_prefixed_transactional_context<'a>(
+        &'a self,
+        prefix: Vec<u8>,
+        transaction: &'a <Self as Storage>::Transaction,
+    ) -> PrefixedRocksDbTransactionContext {
+        PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix)
     }
 }
 

@@ -93,7 +93,8 @@ impl<'a> StorageContext<'a> for PrefixedRocksDbStorageContext<'a> {
     }
 
     fn delete_meta<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Self::Error> {
-        self.storage.delete_cf(self.cf_meta(), key)
+        self.storage
+            .delete_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
     }
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error> {
@@ -112,7 +113,8 @@ impl<'a> StorageContext<'a> for PrefixedRocksDbStorageContext<'a> {
     }
 
     fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error> {
-        self.storage.get_cf(self.cf_meta(), key)
+        self.storage
+            .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
     }
 
     fn new_batch(&self) -> Result<Self::Batch, Self::Error> {
