@@ -3,8 +3,8 @@ use std::convert::Infallible;
 
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
-use crate::Batch;
 use super::make_prefixed_key;
+use crate::Batch;
 
 /// Wrapper to RocksDB batch
 pub struct PrefixedRocksDbBatch<'a> {
@@ -72,14 +72,14 @@ impl<'a> Batch for PrefixedRocksDbBatch<'a> {
 // impl<'a> Batch for PrefixedTransactionalRocksDbBatch<'a> {
 //     type Error = PrefixedRocksDbStorageError;
 
-//     fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
-//         self.transaction
+//     fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(),
+// Self::Error> {         self.transaction
 //             .put(make_prefixed_key(self.prefix.clone(), key), value)?;
 //         Ok(())
 //     }
 
-//     fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
-//         self.transaction.put_cf(
+//     fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(),
+// Self::Error> {         self.transaction.put_cf(
 //             self.cf_aux,
 //             make_prefixed_key(self.prefix.clone(), key),
 //             value,
@@ -87,8 +87,8 @@ impl<'a> Batch for PrefixedRocksDbBatch<'a> {
 //         Ok(())
 //     }
 
-//     fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
-//         self.transaction.put_cf(
+//     fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) ->
+// Result<(), Self::Error> {         self.transaction.put_cf(
 //             self.cf_roots,
 //             make_prefixed_key(self.prefix.clone(), key),
 //             value,
@@ -102,16 +102,16 @@ impl<'a> Batch for PrefixedRocksDbBatch<'a> {
 //         Ok(())
 //     }
 
-//     fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
-//         self.transaction
-//             .delete_cf(self.cf_aux, make_prefixed_key(self.prefix.clone(), key))?;
-//         Ok(())
+//     fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(),
+// Self::Error> {         self.transaction
+//             .delete_cf(self.cf_aux, make_prefixed_key(self.prefix.clone(),
+// key))?;         Ok(())
 //     }
 
-//     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
-//         self.transaction
-//             .delete_cf(self.cf_roots, make_prefixed_key(self.prefix.clone(), key))?;
-//         Ok(())
+//     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(),
+// Self::Error> {         self.transaction
+//             .delete_cf(self.cf_roots, make_prefixed_key(self.prefix.clone(),
+// key))?;         Ok(())
 //     }
 // }
 
@@ -123,27 +123,27 @@ impl<'a> Batch for PrefixedRocksDbBatch<'a> {
 // impl<'a> Batch for OrBatch<'a> {
 //     type Error = PrefixedRocksDbStorageError;
 
-//     fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
-//         match self {
+//     fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(),
+// Self::Error> {         match self {
 //             Self::TransactionalBatch(batch) => batch.put(key, value)?,
 //             Self::Batch(batch) => batch.put(key, value).unwrap_or_default(),
 //         }
 //         Ok(())
 //     }
 
-//     fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
-//         match self {
+//     fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(),
+// Self::Error> {         match self {
 //             Self::TransactionalBatch(batch) => batch.put_aux(key, value)?,
-//             Self::Batch(batch) => batch.put_aux(key, value).unwrap_or_default(),
-//         }
+//             Self::Batch(batch) => batch.put_aux(key,
+// value).unwrap_or_default(),         }
 //         Ok(())
 //     }
 
-//     fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
-//         match self {
+//     fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) ->
+// Result<(), Self::Error> {         match self {
 //             Self::TransactionalBatch(batch) => batch.put_root(key, value)?,
-//             Self::Batch(batch) => batch.put_root(key, value).unwrap_or_default(),
-//         }
+//             Self::Batch(batch) => batch.put_root(key,
+// value).unwrap_or_default(),         }
 //         Ok(())
 //     }
 
@@ -155,16 +155,16 @@ impl<'a> Batch for PrefixedRocksDbBatch<'a> {
 //         Ok(())
 //     }
 
-//     fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
-//         match self {
+//     fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(),
+// Self::Error> {         match self {
 //             Self::TransactionalBatch(batch) => batch.delete_aux(key)?,
 //             Self::Batch(batch) => batch.delete_aux(key).unwrap_or_default(),
 //         }
 //         Ok(())
 //     }
 
-//     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
-//         match self {
+//     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(),
+// Self::Error> {         match self {
 //             Self::TransactionalBatch(batch) => batch.delete_root(key)?,
 //             Self::Batch(batch) => batch.delete_root(key).unwrap_or_default(),
 //         }

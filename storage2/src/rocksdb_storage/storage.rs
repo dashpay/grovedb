@@ -7,11 +7,11 @@ use rocksdb::{ColumnFamilyDescriptor, Error, OptimisticTransactionDB, Transactio
 use crate::Storage;
 
 /// Name of column family used to store auxiliary data
-const AUX_CF_NAME: &str = "aux";
+pub(super) const AUX_CF_NAME: &str = "aux";
 /// Name of column family used to store subtrees roots data
-const ROOTS_CF_NAME: &str = "roots";
+pub(super) const ROOTS_CF_NAME: &str = "roots";
 /// Name of column family used to store metadata
-const META_CF_NAME: &str = "meta";
+pub(super) const META_CF_NAME: &str = "meta";
 
 lazy_static! {
     static ref DEFAULT_OPTS: rocksdb::Options = {
