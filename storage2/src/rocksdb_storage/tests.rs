@@ -5,7 +5,7 @@ use tempfile::TempDir;
 use super::*;
 
 struct TempStorage {
-    dir: TempDir,
+    _dir: TempDir,
     storage: RocksDbStorage,
 }
 
@@ -14,7 +14,7 @@ impl TempStorage {
         let dir = TempDir::new().expect("cannot create tempir");
         let storage = RocksDbStorage::default_rocksdb_with_path(dir.path())
             .expect("cannot open RocksDB storage");
-        TempStorage { dir, storage }
+        TempStorage { _dir: dir, storage }
     }
 }
 
@@ -28,7 +28,7 @@ impl Deref for TempStorage {
 
 mod no_transaction {
     use super::*;
-    use crate::StorageContext;
+    use crate::{Batch, StorageContext};
 
     #[test]
     fn test_aux_cf_methods() {
@@ -244,6 +244,50 @@ mod no_transaction {
                 .expect("cannot get from storage"),
             b"ayybvalue1"
         );
+    }
+
+    #[test]
+    fn test_batch() {
+        let storage = TempStorage::new();
+        let context_ayya = storage.get_prefixed_context(b"ayya".to_vec());
+
+        context_ayya
+            .put(b"key1", b"ayyavalue1")
+            .expect("cannot insert into storage");
+        context_ayya
+            .put(b"key2", b"ayyavalue2")
+            .expect("cannot insert into storage");
+
+        assert!(context_ayya
+            .get(b"key3")
+            .expect("cannot get from storage")
+            .is_none());
+
+        let mut batch = context_ayya.new_batch();
+        batch.delete(b"key1").expect("infallible");
+        batch.put(b"key3", b"ayyavalue3").expect("infallible");
+
+        assert!(context_ayya
+            .get(b"key3")
+            .expect("cannot get from storage")
+            .is_none());
+
+        context_ayya
+            .commit_batch(batch)
+            .expect("cannot commit a batch");
+
+        assert_eq!(
+            context_ayya
+                .get(b"key3")
+                .ok()
+                .flatten()
+                .expect("cannot get from storage"),
+            b"ayyavalue3"
+        );
+        assert!(context_ayya
+            .get(b"key1")
+            .expect("cannot get from storage")
+            .is_none());
     }
 }
 
@@ -497,5 +541,50 @@ mod transaction {
                 .expect("cannot get from storage"),
             b"ayybvalue1"
         );
+    }
+
+    #[test]
+    fn test_batch() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let context_ayya = storage.get_prefixed_transactional_context(b"ayya".to_vec(), &tx);
+
+        context_ayya
+            .put(b"key1", b"ayyavalue1")
+            .expect("cannot insert into storage");
+        context_ayya
+            .put(b"key2", b"ayyavalue2")
+            .expect("cannot insert into storage");
+
+        assert!(context_ayya
+            .get(b"key3")
+            .expect("cannot get from storage")
+            .is_none());
+
+        let batch = context_ayya.new_batch();
+        batch.delete(b"key1").expect("infallible");
+        batch.put(b"key3", b"ayyavalue3").expect("infallible");
+
+        context_ayya
+            .commit_batch(batch)
+            .expect("cannot commit a batch");
+
+        storage
+            .commit_transaction(tx)
+            .expect("cannot commit transaction");
+
+        let context_ayya = storage.get_prefixed_context(b"ayya".to_vec());
+        assert_eq!(
+            context_ayya
+                .get(b"key3")
+                .ok()
+                .flatten()
+                .expect("cannot get from storage"),
+            b"ayyavalue3"
+        );
+        assert!(context_ayya
+            .get(b"key1")
+            .expect("cannot get from storage")
+            .is_none());
     }
 }

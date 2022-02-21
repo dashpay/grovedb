@@ -1,4 +1,4 @@
-use rocksdb::{ColumnFamily, Error};
+use rocksdb::{ColumnFamily, Error, WriteBatchWithTransaction};
 
 use super::{make_prefixed_key, Db, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator};
 use crate::{
@@ -44,7 +44,7 @@ impl<'a> PrefixedRocksDbStorageContext<'a> {
 }
 
 impl<'a> StorageContext<'a> for PrefixedRocksDbStorageContext<'a> {
-    type Batch = PrefixedRocksDbBatch<'a>;
+    type Batch = PrefixedRocksDbBatch<'a, WriteBatchWithTransaction<true>>;
     type Error = Error;
     type RawIterator = PrefixedRocksDbRawIterator;
 
@@ -117,12 +117,17 @@ impl<'a> StorageContext<'a> for PrefixedRocksDbStorageContext<'a> {
             .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
     }
 
-    fn new_batch(&self) -> Result<Self::Batch, Self::Error> {
-        todo!()
+    fn new_batch(&'a self) -> Self::Batch {
+        PrefixedRocksDbBatch {
+            prefix: self.prefix.clone(),
+            batch: WriteBatchWithTransaction::<true>::default(),
+            cf_aux: self.cf_aux(),
+            cf_roots: self.cf_roots(),
+        }
     }
 
     fn commit_batch(&self, batch: Self::Batch) -> Result<(), Self::Error> {
-        todo!()
+        self.storage.write(batch.batch)
     }
 
     fn raw_iter(&self) -> Self::RawIterator {

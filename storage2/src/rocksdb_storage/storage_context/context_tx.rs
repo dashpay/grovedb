@@ -1,6 +1,7 @@
+//! Storage context implementation with a transaction.
 use rocksdb::{ColumnFamily, Error, OptimisticTransactionDB, Transaction};
 
-use super::{make_prefixed_key, Db, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator};
+use super::{make_prefixed_key, Db, PrefixedRocksDbRawIterator};
 use crate::{
     rocksdb_storage::storage::{AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
     StorageContext,
@@ -52,7 +53,7 @@ impl<'a> PrefixedRocksDbTransactionContext<'a> {
 }
 
 impl<'a> StorageContext<'a> for PrefixedRocksDbTransactionContext<'a> {
-    type Batch = PrefixedRocksDbBatch<'a>;
+    type Batch = &'a Self;
     type Error = Error;
     type RawIterator = PrefixedRocksDbRawIterator;
 
@@ -123,12 +124,12 @@ impl<'a> StorageContext<'a> for PrefixedRocksDbTransactionContext<'a> {
         self.transaction.get_cf(self.cf_meta(), key)
     }
 
-    fn new_batch(&self) -> Result<Self::Batch, Self::Error> {
-        todo!()
+    fn new_batch(&'a self) -> Self::Batch {
+        self
     }
 
-    fn commit_batch(&self, batch: Self::Batch) -> Result<(), Self::Error> {
-        todo!()
+    fn commit_batch(&self, _batch: Self::Batch) -> Result<(), Self::Error> {
+        Ok(())
     }
 
     fn raw_iter(&self) -> Self::RawIterator {

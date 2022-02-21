@@ -69,7 +69,7 @@ pub trait StorageContext<'a> {
     fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error>;
 
     /// Initialize a new batch
-    fn new_batch(&self) -> Result<Self::Batch, Self::Error>;
+    fn new_batch(&'a self) -> Self::Batch;
 
     /// Commits changes from batch into storage
     fn commit_batch(&self, batch: Self::Batch) -> Result<(), Self::Error>;
