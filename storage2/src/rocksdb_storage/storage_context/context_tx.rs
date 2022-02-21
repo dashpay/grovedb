@@ -1,14 +1,11 @@
 //! Storage context implementation with a transaction.
-use rocksdb::{ColumnFamily, Error, OptimisticTransactionDB, Transaction};
+use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error};
 
-use super::{make_prefixed_key, Db, PrefixedRocksDbRawIterator};
+use super::{make_prefixed_key, Db, PrefixedRocksDbRawIterator, Tx};
 use crate::{
     rocksdb_storage::storage::{AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
     StorageContext,
 };
-
-/// Type alias for a transaction
-type Tx<'a> = Transaction<'a, OptimisticTransactionDB>;
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
 /// transaction.
@@ -55,7 +52,7 @@ impl<'a> PrefixedRocksDbTransactionContext<'a> {
 impl<'a> StorageContext<'a> for PrefixedRocksDbTransactionContext<'a> {
     type Batch = &'a Self;
     type Error = Error;
-    type RawIterator = PrefixedRocksDbRawIterator;
+    type RawIterator = PrefixedRocksDbRawIterator<'a, DBRawIteratorWithThreadMode<'a, Tx<'a>>>;
 
     fn put<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
         self.transaction

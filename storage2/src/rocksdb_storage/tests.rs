@@ -28,7 +28,7 @@ impl Deref for TempStorage {
 
 mod no_transaction {
     use super::*;
-    use crate::{Batch, StorageContext};
+    use crate::{Batch, RawIterator, StorageContext};
 
     #[test]
     fn test_aux_cf_methods() {
@@ -288,6 +288,82 @@ mod no_transaction {
             .get(b"key1")
             .expect("cannot get from storage")
             .is_none());
+    }
+
+    #[test]
+    fn test_raw_iterator() {
+        let storage = TempStorage::new();
+        let context = storage.get_prefixed_context(b"someprefix".to_vec());
+
+        context
+            .put(b"key1", b"value1")
+            .expect("expected successful insertion");
+        context
+            .put(b"key0", b"value0")
+            .expect("expected successful insertion");
+        context
+            .put(b"key3", b"value3")
+            .expect("expected successful insertion");
+        context
+            .put(b"key2", b"value2")
+            .expect("expected successful insertion");
+
+        // Other storages are required to put something into rocksdb with other prefix
+        // to see if there will be any conflicts and boundaries are met
+        let context_before = storage.get_prefixed_context(b"anothersomeprefix".to_vec());
+        context_before
+            .put(b"key1", b"value1")
+            .expect("expected successful insertion");
+        context_before
+            .put(b"key5", b"value5")
+            .expect("expected successful insertion");
+        let context_after = storage.get_prefixed_context(b"zanothersomeprefix".to_vec());
+        context_after
+            .put(b"key1", b"value1")
+            .expect("expected successful insertion");
+        context_after
+            .put(b"key5", b"value5")
+            .expect("expected successful insertion");
+
+        let expected: [(&'static [u8], &'static [u8]); 4] = [
+            (b"key0", b"value0"),
+            (b"key1", b"value1"),
+            (b"key2", b"value2"),
+            (b"key3", b"value3"),
+        ];
+        let mut expected_iter = expected.into_iter();
+
+        // Test iterator goes forward
+
+        let mut iter = context.raw_iter();
+        iter.seek_to_first();
+        while iter.valid() {
+            assert_eq!(
+                (iter.key().unwrap(), iter.value().unwrap()),
+                expected_iter.next().unwrap()
+            );
+            iter.next();
+        }
+        assert!(expected_iter.next().is_none());
+
+        // Test `seek_to_last` on a storage with elements
+
+        let mut iter = context.raw_iter();
+        iter.seek_to_last();
+        assert_eq!(
+            (iter.key().unwrap(), iter.value().unwrap()),
+            expected.last().unwrap().clone(),
+        );
+        iter.next();
+        assert!(!iter.valid());
+
+        // Test `seek_to_last` on empty storage
+        let empty_storage = storage.get_prefixed_context(b"notexist".to_vec());
+        let mut iter = empty_storage.raw_iter();
+        iter.seek_to_last();
+        assert!(!iter.valid());
+        iter.next();
+        assert!(!iter.valid());
     }
 }
 

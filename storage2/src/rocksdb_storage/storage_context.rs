@@ -8,10 +8,13 @@ use batch::PrefixedRocksDbBatch;
 pub use context_no_tx::PrefixedRocksDbStorageContext;
 pub use context_tx::PrefixedRocksDbTransactionContext;
 use raw_iterator::PrefixedRocksDbRawIterator;
-use rocksdb::OptimisticTransactionDB;
+use rocksdb::{OptimisticTransactionDB, Transaction};
 
 /// Type alias for a database
 type Db = OptimisticTransactionDB;
+
+/// Type alias for a transaction
+type Tx<'a> = Transaction<'a, Db>;
 
 fn make_prefixed_key<K: AsRef<[u8]>>(mut prefix: Vec<u8>, key: K) -> Vec<u8> {
     prefix.extend_from_slice(key.as_ref());
