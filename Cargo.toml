@@ -4,5 +4,4 @@ members = [
     "merk",
     "node-grove",
     "storage",
-    "storage2",
 ]
