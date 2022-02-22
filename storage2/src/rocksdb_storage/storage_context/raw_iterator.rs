@@ -8,14 +8,14 @@ use crate::{
 };
 
 /// Raw iterator over prefixed storage.
-pub struct PrefixedRocksDbRawIterator<'a, I> {
-    prefix: &'a [u8],
-    raw_iterator: I,
+pub struct PrefixedRocksDbRawIterator<I> {
+    pub(super) prefix: Vec<u8>,
+    pub(super) raw_iterator: I,
 }
 
-impl<'a> RawIterator for PrefixedRocksDbRawIterator<'a, DBRawIteratorWithThreadMode<'a, Db>> {
+impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'a, Db>> {
     fn seek_to_first(&mut self) {
-        self.raw_iterator.seek(self.prefix)
+        self.raw_iterator.seek(&self.prefix)
     }
 
     fn seek_to_last(&mut self) {
@@ -64,14 +64,14 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<'a, DBRawIteratorWithThreadM
     fn valid(&self) -> bool {
         self.raw_iterator
             .key()
-            .map(|k| k.starts_with(self.prefix))
+            .map(|k| k.starts_with(&self.prefix))
             .unwrap_or(false)
     }
 }
 
-impl<'a> RawIterator for PrefixedRocksDbRawIterator<'a, DBRawIteratorWithThreadMode<'a, Tx<'a>>> {
+impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'a, Tx<'a>>> {
     fn seek_to_first(&mut self) {
-        self.raw_iterator.seek(self.prefix)
+        self.raw_iterator.seek(&self.prefix)
     }
 
     fn seek_to_last(&mut self) {
@@ -120,7 +120,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<'a, DBRawIteratorWithThreadM
     fn valid(&self) -> bool {
         self.raw_iterator
             .key()
-            .map(|k| k.starts_with(self.prefix))
+            .map(|k| k.starts_with(&self.prefix))
             .unwrap_or(false)
     }
 }

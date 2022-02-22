@@ -52,7 +52,7 @@ impl<'a> PrefixedRocksDbTransactionContext<'a> {
 impl<'a> StorageContext<'a> for PrefixedRocksDbTransactionContext<'a> {
     type Batch = &'a Self;
     type Error = Error;
-    type RawIterator = PrefixedRocksDbRawIterator<'a, DBRawIteratorWithThreadMode<'a, Tx<'a>>>;
+    type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'a, Tx<'a>>>;
 
     fn put<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
         self.transaction
@@ -130,6 +130,9 @@ impl<'a> StorageContext<'a> for PrefixedRocksDbTransactionContext<'a> {
     }
 
     fn raw_iter(&self) -> Self::RawIterator {
-        todo!()
+        PrefixedRocksDbRawIterator {
+            prefix: self.prefix.clone(),
+            raw_iterator: self.transaction.raw_iterator(),
+        }
     }
 }
