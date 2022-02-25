@@ -7,15 +7,15 @@ use super::{make_prefixed_key, PrefixedRocksDbTransactionContext};
 use crate::{Batch, StorageContext};
 
 /// Wrapper to RocksDB batch
-pub struct PrefixedRocksDbBatch<'a, B> {
+pub struct PrefixedRocksDbBatch<'db, B> {
     pub prefix: Vec<u8>,
     pub batch: B,
-    pub cf_aux: &'a ColumnFamily,
-    pub cf_roots: &'a ColumnFamily,
+    pub cf_aux: &'db ColumnFamily,
+    pub cf_roots: &'db ColumnFamily,
 }
 
 /// Implementation of a batch ouside a transaction
-impl<'a> Batch for PrefixedRocksDbBatch<'a, WriteBatchWithTransaction<true>> {
+impl<'db> Batch for PrefixedRocksDbBatch<'db, WriteBatchWithTransaction<true>> {
     type Error = Infallible;
 
     fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
@@ -63,8 +63,8 @@ impl<'a> Batch for PrefixedRocksDbBatch<'a, WriteBatchWithTransaction<true>> {
 
 /// Implementation of a batch inside a transaction.
 /// Basically just proxies all calls to the underlying transaction.
-impl<'a> Batch for &'a PrefixedRocksDbTransactionContext<'a> {
-    type Error = <PrefixedRocksDbTransactionContext<'a> as StorageContext<'a>>::Error;
+impl<'db, 'ctx> Batch for &'ctx PrefixedRocksDbTransactionContext<'db> {
+    type Error = <PrefixedRocksDbTransactionContext<'db> as StorageContext<'db, 'ctx>>::Error;
 
     fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
         StorageContext::put(*self, key, value)

@@ -1,12 +1,12 @@
 /// Top-level storage abstraction.
 /// Should be able to hold storage connection and to start transaction when
 /// needed. All query operations will be exposed using [StorageContext].
-pub trait Storage<'a> {
+pub trait Storage<'db> {
     type Transaction;
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Starts a new transaction
-    fn start_transaction(&'a self) -> Self::Transaction;
+    fn start_transaction(&'db self) -> Self::Transaction;
 
     /// Consumes and commits a transaction
     fn commit_transaction(&self, transaction: Self::Transaction) -> Result<(), Self::Error>;
@@ -21,7 +21,10 @@ pub trait Storage<'a> {
 /// Storage context.
 /// Provides operations expected from a database abstracting details such as
 /// whether it is a transaction or not.
-pub trait StorageContext<'a> {
+pub trait StorageContext<'db, 'ctx>
+where
+    'db: 'ctx,
+{
     /// Storage error type
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -69,10 +72,10 @@ pub trait StorageContext<'a> {
     fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error>;
 
     /// Initialize a new batch
-    fn new_batch(&'a self) -> Self::Batch;
+    fn new_batch(&'ctx self) -> Self::Batch;
 
     /// Commits changes from batch into storage
-    fn commit_batch(&self, batch: Self::Batch) -> Result<(), Self::Error>;
+    fn commit_batch(&'ctx self, batch: Self::Batch) -> Result<(), Self::Error>;
 
     /// Get raw iterator over storage
     fn raw_iter(&self) -> Self::RawIterator;

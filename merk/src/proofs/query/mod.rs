@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{bail, Result};
 pub use map::*;
-use storage::{rocksdb_storage::RawPrefixedTransactionalIterator, RawIterator};
+use storage::RawIterator;
 #[cfg(feature = "full")]
 use {super::Op, std::collections::LinkedList};
 
@@ -367,7 +367,7 @@ impl QueryItem {
         !matches!(self, QueryItem::Key(_))
     }
 
-    pub fn seek_for_iter(&self, iter: &mut RawPrefixedTransactionalIterator, left_to_right: bool) {
+    pub fn seek_for_iter<I: RawIterator>(&self, iter: &mut I, left_to_right: bool) {
         match self {
             QueryItem::Key(_) => {}
             QueryItem::Range(Range { start, end }) => {
@@ -483,9 +483,9 @@ impl QueryItem {
         a.len().cmp(&b.len())
     }
 
-    pub fn iter_is_valid_for_type(
+    pub fn iter_is_valid_for_type<I: RawIterator>(
         &self,
-        iter: &RawPrefixedTransactionalIterator,
+        iter: &I,
         limit: Option<u16>,
         left_to_right: bool,
     ) -> bool {

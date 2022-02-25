@@ -9,15 +9,15 @@ use crate::{
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
 /// transaction.
-pub struct PrefixedRocksDbTransactionContext<'a> {
-    storage: &'a Db,
-    transaction: &'a Tx<'a>,
+pub struct PrefixedRocksDbTransactionContext<'db> {
+    storage: &'db Db,
+    transaction: &'db Tx<'db>,
     prefix: Vec<u8>,
 }
 
-impl<'a> PrefixedRocksDbTransactionContext<'a> {
+impl<'db> PrefixedRocksDbTransactionContext<'db> {
     /// Create a new prefixed transaction context instance
-    pub fn new(storage: &'a Db, transaction: &'a Tx<'a>, prefix: Vec<u8>) -> Self {
+    pub fn new(storage: &'db Db, transaction: &'db Tx<'db>, prefix: Vec<u8>) -> Self {
         PrefixedRocksDbTransactionContext {
             storage,
             transaction,
@@ -26,33 +26,36 @@ impl<'a> PrefixedRocksDbTransactionContext<'a> {
     }
 }
 
-impl<'a> PrefixedRocksDbTransactionContext<'a> {
+impl<'db> PrefixedRocksDbTransactionContext<'db> {
     /// Get auxiliary data column family
-    fn cf_aux(&self) -> &ColumnFamily {
+    fn cf_aux(&self) -> &'db ColumnFamily {
         self.storage
             .cf_handle(AUX_CF_NAME)
             .expect("aux column family must exist")
     }
 
     /// Get trees roots data column family
-    fn cf_roots(&self) -> &ColumnFamily {
+    fn cf_roots(&self) -> &'db ColumnFamily {
         self.storage
             .cf_handle(ROOTS_CF_NAME)
             .expect("roots column family must exist")
     }
 
     /// Get metadata column family
-    fn cf_meta(&self) -> &ColumnFamily {
+    fn cf_meta(&self) -> &'db ColumnFamily {
         self.storage
             .cf_handle(META_CF_NAME)
             .expect("meta column family must exist")
     }
 }
 
-impl<'a> StorageContext<'a> for PrefixedRocksDbTransactionContext<'a> {
-    type Batch = &'a Self;
+impl<'db, 'ctx> StorageContext<'db, 'ctx> for PrefixedRocksDbTransactionContext<'db>
+where
+    'db: 'ctx,
+{
+    type Batch = &'ctx Self;
     type Error = Error;
-    type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'a, Tx<'a>>>;
+    type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Tx<'db>>>;
 
     fn put<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
         self.transaction
@@ -121,11 +124,11 @@ impl<'a> StorageContext<'a> for PrefixedRocksDbTransactionContext<'a> {
         self.transaction.get_cf(self.cf_meta(), key)
     }
 
-    fn new_batch(&'a self) -> Self::Batch {
+    fn new_batch(&'ctx self) -> Self::Batch {
         self
     }
 
-    fn commit_batch(&self, _batch: Self::Batch) -> Result<(), Self::Error> {
+    fn commit_batch(&'ctx self, _batch: Self::Batch) -> Result<(), Self::Error> {
         Ok(())
     }
 

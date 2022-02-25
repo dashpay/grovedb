@@ -8,45 +8,48 @@ use crate::{
 
 /// Storage context with a prefix applied to be used in a subtree to be used
 /// outside of transaction.
-pub struct PrefixedRocksDbStorageContext<'a> {
-    storage: &'a Db,
+pub struct PrefixedRocksDbStorageContext<'db> {
+    storage: &'db Db,
     prefix: Vec<u8>,
 }
 
-impl<'a> PrefixedRocksDbStorageContext<'a> {
+impl<'db> PrefixedRocksDbStorageContext<'db> {
     /// Create a new prefixed storage context instance
-    pub fn new(storage: &'a Db, prefix: Vec<u8>) -> Self {
+    pub fn new(storage: &'db Db, prefix: Vec<u8>) -> Self {
         PrefixedRocksDbStorageContext { storage, prefix }
     }
 }
 
-impl<'a> PrefixedRocksDbStorageContext<'a> {
+impl<'db> PrefixedRocksDbStorageContext<'db> {
     /// Get auxiliary data column family
-    fn cf_aux(&self) -> &ColumnFamily {
+    fn cf_aux(&self) -> &'db ColumnFamily {
         self.storage
             .cf_handle(AUX_CF_NAME)
             .expect("aux column family must exist")
     }
 
     /// Get trees roots data column family
-    fn cf_roots(&self) -> &ColumnFamily {
+    fn cf_roots(&self) -> &'db ColumnFamily {
         self.storage
             .cf_handle(ROOTS_CF_NAME)
             .expect("roots column family must exist")
     }
 
     /// Get metadata column family
-    fn cf_meta(&self) -> &ColumnFamily {
+    fn cf_meta(&self) -> &'db ColumnFamily {
         self.storage
             .cf_handle(META_CF_NAME)
             .expect("meta column family must exist")
     }
 }
 
-impl<'a> StorageContext<'a> for PrefixedRocksDbStorageContext<'a> {
-    type Batch = PrefixedRocksDbBatch<'a, WriteBatchWithTransaction<true>>;
+impl<'db, 'ctx> StorageContext<'db, 'ctx> for PrefixedRocksDbStorageContext<'db>
+where
+    'db: 'ctx,
+{
+    type Batch = PrefixedRocksDbBatch<'db, WriteBatchWithTransaction<true>>;
     type Error = Error;
-    type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'a, Db>>;
+    type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Db>>;
 
     fn put<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
         self.storage
@@ -117,7 +120,7 @@ impl<'a> StorageContext<'a> for PrefixedRocksDbStorageContext<'a> {
             .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
     }
 
-    fn new_batch(&'a self) -> Self::Batch {
+    fn new_batch(&self) -> Self::Batch {
         PrefixedRocksDbBatch {
             prefix: self.prefix.clone(),
             batch: WriteBatchWithTransaction::<true>::default(),

@@ -4,7 +4,7 @@ use std::error::Error;
 
 use anyhow::{anyhow, bail, Result};
 use ed::Encode;
-use storage::{RawIterator, Storage};
+use storage::{RawIterator, StorageContext};
 
 use super::Merk;
 use crate::proofs::{chunk::get_next_chunk, Node, Op};
@@ -12,25 +12,24 @@ use crate::proofs::{chunk::get_next_chunk, Node, Op};
 /// A `ChunkProducer` allows the creation of chunk proofs, used for trustlessly
 /// replicating entire Merk trees. Chunks can be generated on the fly in a
 /// random order, or iterated in order for slightly better performance.
-pub struct ChunkProducer<'a, S: Storage + 'a>
+pub struct ChunkProducer<'db, 'b, S: StorageContext<'db, 'b>>
 where
-    S: Storage,
-    <S as Storage>::Error: Error + Sync + Send + 'static,
+    <S as StorageContext<'db, 'b>>::Error: Error + Sync + Send + 'static,
 {
     trunk: Vec<Op>,
     chunk_boundaries: Vec<Vec<u8>>,
-    raw_iter: S::RawIterator<'a>,
+    raw_iter: S::RawIterator,
     index: usize,
 }
 
-impl<'a, S> ChunkProducer<'a, S>
+impl<'db, 'b, S> ChunkProducer<'db, 'b, S>
 where
-    S: Storage,
-    <S as Storage>::Error: Error + Sync + Send + 'static,
+    S: StorageContext<'db, 'b> + 'static,
+    <S as StorageContext<'db, 'b>>::Error: Error + Sync + Send + 'static,
 {
     /// Creates a new `ChunkProducer` for the given `Merk` instance. In the
     /// constructor, the first chunk (the "trunk") will be created.
-    pub fn new(merk: &'a Merk<S>) -> Result<Self> {
+    pub fn new(merk: &'b Merk<S>) -> Result<Self> {
         let (trunk, has_more) = merk.walk(|maybe_walker| match maybe_walker {
             Some(mut walker) => walker.create_trunk_proof(),
             None => Ok((vec![], false)),
@@ -48,7 +47,7 @@ where
             vec![]
         };
 
-        let mut raw_iter = merk.raw_iter(None);
+        let mut raw_iter = merk.storage.raw_iter();
         raw_iter.seek_to_first();
 
         Ok(ChunkProducer {
@@ -122,13 +121,13 @@ where
     }
 }
 
-impl<'a, S> IntoIterator for ChunkProducer<'a, S>
+impl<'db, 'b, S> IntoIterator for ChunkProducer<'db, 'b, S>
 where
-    S: Storage,
-    <S as Storage>::Error: Error + Sync + Send + 'static,
+    S: StorageContext<'db, 'b> + 'static,
+    <S as StorageContext<'db, 'b>>::Error: Error + Sync + Send + 'static,
 {
-    type IntoIter = ChunkIter<'a, S>;
-    type Item = <ChunkIter<'a, S> as Iterator>::Item;
+    type IntoIter = ChunkIter<'db, 'b, S>;
+    type Item = <ChunkIter<'db, 'b, S> as Iterator>::Item;
 
     fn into_iter(self) -> Self::IntoIter {
         ChunkIter(self)
@@ -138,15 +137,15 @@ where
 /// A `ChunkIter` iterates through all the chunks for the underlying `Merk`
 /// instance in order (the first chunk is the "trunk" chunk). Yields `None`
 /// after all chunks have been yielded.
-pub struct ChunkIter<'a, S>(ChunkProducer<'a, S>)
+pub struct ChunkIter<'db, 'b, S>(ChunkProducer<'db, 'b, S>)
 where
-    S: Storage,
-    <S as Storage>::Error: Error + Sync + Send + 'static;
+    S: StorageContext<'db, 'b>,
+    <S as StorageContext<'db, 'b>>::Error: Error + Sync + Send + 'static;
 
-impl<'a, S> Iterator for ChunkIter<'a, S>
+impl<'db, 'b, S> Iterator for ChunkIter<'db, 'b, S>
 where
-    S: Storage,
-    <S as Storage>::Error: Error + Sync + Send + 'static,
+    S: StorageContext<'db, 'b> + 'static,
+    <S as StorageContext<'db, 'b>>::Error: Error + Sync + Send + 'static,
 {
     type Item = Result<Vec<u8>>;
 
@@ -163,14 +162,15 @@ where
     }
 }
 
-impl<S> Merk<S>
+impl<'db, 'b, S> Merk<S>
 where
-    S: Storage,
-    <S as Storage>::Error: Error + Sync + Send + 'static,
+    S: StorageContext<'db, 'b> + 'static,
+    <S as StorageContext<'db, 'b>>::Error: Error + Sync + Send + 'static,
+    'db: 'b,
 {
     /// Creates a `ChunkProducer` which can return chunk proofs for replicating
     /// the entire Merk tree.
-    pub fn chunks(&self) -> Result<ChunkProducer<S>> {
+    pub fn chunks(&'b self) -> Result<ChunkProducer<'db, 'b, S>> {
         ChunkProducer::new(self)
     }
 }

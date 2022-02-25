@@ -1,10 +1,10 @@
 pub mod chunks;
 // TODO
 // pub mod restore;
-use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt};
+use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt, marker::PhantomData};
 
 use anyhow::{anyhow, bail, Result};
-use storage::{self, rocksdb_storage::PrefixedRocksDbStorage, Batch, RawIterator, Storage, Store};
+use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
     proofs::{encode_into, query::QueryItem, Query},
@@ -14,15 +14,12 @@ use crate::{
 const ROOT_KEY_KEY: &[u8] = b"root";
 
 /// A handle to a Merkle key/value store backed by RocksDB.
-pub struct Merk<S>
-where
-    S: Storage,
-{
+pub struct Merk<S> {
     pub(crate) tree: Cell<Option<Tree>>,
     pub storage: S,
 }
 
-impl<S: Storage> fmt::Debug for Merk<S> {
+impl<S> fmt::Debug for Merk<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Merk").finish()
     }
@@ -30,9 +27,10 @@ impl<S: Storage> fmt::Debug for Merk<S> {
 
 pub type UseTreeMutResult = Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>;
 
-impl<S: Storage> Merk<S>
+impl<'db, 'b, S: StorageContext<'db, 'b> + 'static> Merk<S>
 where
-    <S as Storage>::Error: std::error::Error,
+    <S as StorageContext<'db, 'b>>::Error: std::error::Error,
+    'db: 'b,
 {
     pub fn open(storage: S) -> Result<Merk<S>> {
         let mut merk = Merk {
@@ -45,10 +43,10 @@ where
     }
 
     /// Deletes tree data
-    pub fn clear<'a>(&'a mut self, transaction: Option<&'a S::DBTransaction<'a>>) -> Result<()> {
-        let mut iter = self.raw_iter(transaction);
+    pub fn clear(&'b mut self) -> Result<()> {
+        let mut iter = self.storage.raw_iter();
         iter.seek_to_first();
-        let mut to_delete = self.storage.new_batch(transaction)?;
+        let mut to_delete = self.storage.new_batch();
         while iter.valid() {
             if let Some(key) = iter.key() {
                 to_delete.delete(key)?;
@@ -142,12 +140,7 @@ where
     /// ];
     /// store.apply::<_, Vec<_>>(batch, &[], None).unwrap();
     /// ```
-    pub fn apply<'a: 'b, 'b, KB, KA>(
-        &'a mut self,
-        batch: &MerkBatch<KB>,
-        aux: &MerkBatch<KA>,
-        transaction: Option<&'b S::DBTransaction<'b>>,
-    ) -> Result<()>
+    pub fn apply<KB, KA>(&'b mut self, batch: &MerkBatch<KB>, aux: &MerkBatch<KA>) -> Result<()>
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
@@ -165,7 +158,7 @@ where
             maybe_prev_key = Some(key);
         }
 
-        unsafe { self.apply_unchecked(batch, aux, transaction) }
+        unsafe { self.apply_unchecked(batch, aux) }
     }
 
     /// Applies a batch of operations (puts and deletes) to the tree.
@@ -193,27 +186,28 @@ where
     ///         .unwrap()
     /// };
     /// ```
-    pub unsafe fn apply_unchecked<'a: 'b, 'b, KB, KA>(
-        &'a mut self,
+    pub unsafe fn apply_unchecked<'a, KB, KA>(
+        &'b mut self,
         batch: &MerkBatch<KB>,
         aux: &MerkBatch<KA>,
-        transaction: Option<&'b S::DBTransaction<'b>>,
     ) -> Result<()>
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
     {
-        let maybe_walker = self
-            .tree
-            .take()
-            .take()
-            .map(|tree| Walker::new(tree, self.source()));
+        let (maybe_tree, deleted_keys) = {
+            let maybe_walker = self
+                .tree
+                .take()
+                .take()
+                .map(|tree| Walker::new(tree, self.source()));
 
-        let (maybe_tree, deleted_keys) = Walker::apply_to(maybe_walker, batch, self.source())?;
+            Walker::apply_to(maybe_walker, batch, self.source())?
+        };
         self.tree.set(maybe_tree);
 
         // commit changes to db
-        self.commit(deleted_keys, aux, transaction)
+        self.commit(deleted_keys, aux)
     }
 
     /// Creates a Merkle proof for the list of queried keys. For each key in the
@@ -228,7 +222,12 @@ where
     /// check adds some overhead, so if you are sure your batch is sorted and
     /// unique you can use the unsafe `prove_unchecked` for a small performance
     /// gain.
-    pub fn prove(&self, query: Query, limit: Option<u16>, offset: Option<u16>) -> Result<Vec<u8>> {
+    pub fn prove(
+        &'b self,
+        query: Query,
+        limit: Option<u16>,
+        offset: Option<u16>,
+    ) -> Result<Vec<u8>> {
         let left_to_right = query.left_to_right;
         self.prove_unchecked(query, limit, offset, left_to_right)
     }
@@ -246,7 +245,7 @@ where
     /// of this method which checks to ensure the batch is sorted and
     /// unique, see `prove`.
     pub fn prove_unchecked<Q, I>(
-        &self,
+        &'b self,
         query: I,
         limit: Option<u16>,
         offset: Option<u16>,
@@ -271,16 +270,15 @@ where
         })
     }
 
-    pub fn commit<'a: 'b, 'b, K>(
-        &'a mut self,
+    pub fn commit<K>(
+        &'b mut self,
         deleted_keys: LinkedList<Vec<u8>>,
         aux: &MerkBatch<K>,
-        transaction: Option<&'b S::DBTransaction<'b>>,
     ) -> Result<()>
     where
         K: AsRef<[u8]>,
     {
-        let mut batch = self.storage.new_batch(transaction)?;
+        let mut batch = self.storage.new_batch();
         let mut to_batch = self.use_tree_mut(|maybe_tree| -> UseTreeMutResult {
             // TODO: concurrent commit
             if let Some(tree) = maybe_tree {
@@ -325,7 +323,10 @@ where
         Ok(())
     }
 
-    pub fn walk<T>(&self, f: impl FnOnce(Option<RefWalker<MerkSource<S>>>) -> T) -> T {
+    pub fn walk<'s, T>(
+        &'s self,
+        f: impl FnOnce(Option<RefWalker<MerkSource<'s, 'db, 'b, S>>>) -> T,
+    ) -> T {
         let mut tree = self.tree.take();
         let maybe_walker = tree
             .as_mut()
@@ -335,23 +336,18 @@ where
         res
     }
 
-    pub fn raw_iter<'a>(
-        &'a self,
-        transaction: Option<&'a S::DBTransaction<'a>>,
-    ) -> S::RawIterator<'a> {
-        self.storage.raw_iter(transaction)
-    }
-
-    pub fn is_empty_tree<'a>(&'a self, transaction: Option<&'a S::DBTransaction<'a>>) -> bool {
-        let mut iter = self.raw_iter(transaction);
+    pub fn is_empty_tree(&self) -> bool {
+        let mut iter = self.storage.raw_iter();
         iter.seek_to_first();
 
         !iter.valid()
     }
 
-    fn source(&self) -> MerkSource<S> {
+    fn source<'s>(&'s self) -> MerkSource<'s, 'db, 'b, S> {
         MerkSource {
             storage: &self.storage,
+            _phantom: PhantomData,
+            _phantom2: PhantomData,
         }
     }
 
@@ -382,45 +378,50 @@ where
     }
 }
 
-impl Clone for Merk<PrefixedRocksDbStorage> {
-    fn clone(&self) -> Self {
-        let tree_clone = match self.tree.take() {
-            None => None,
-            Some(tree) => {
-                let clone = tree.clone();
-                self.tree.set(Some(tree));
-                Some(clone)
-            }
-        };
-        Self {
-            tree: Cell::new(tree_clone),
-            storage: self.storage.clone(),
-        }
-    }
-}
+// impl Clone for Merk<S> {
+//     fn clone(&self) -> Self {
+//         let tree_clone = match self.tree.take() {
+//             None => None,
+//             Some(tree) => {
+//                 let clone = tree.clone();
+//                 self.tree.set(Some(tree));
+//                 Some(clone)
+//             }
+//         };
+//         Self {
+//             tree: Cell::new(tree_clone),
+//             storage: self.storage.clone(),
+//         }
+//     }
+// }
 
-// TODO: get rid of Fetch/source and use GroveDB storage abstraction
+// // TODO: get rid of Fetch/source and use GroveDB storage abstraction
 #[derive(Debug)]
-pub struct MerkSource<'a, S: Storage> {
-    storage: &'a S,
+pub struct MerkSource<'s, 'db, 'b, S: StorageContext<'db, 'b>>
+where
+    'db: 'b,
+{
+    storage: &'s S,
+    _phantom: PhantomData<&'db S>,
+    _phantom2: PhantomData<&'b S>,
 }
 
-impl<'a, S: Storage> Clone for MerkSource<'a, S> {
+impl<'s, 'db, 'b, S: StorageContext<'db, 'b>> Clone for MerkSource<'s, 'db, 'b, S> {
     fn clone(&self) -> Self {
         MerkSource {
             storage: self.storage,
+            _phantom: PhantomData,
+            _phantom2: PhantomData,
         }
     }
 }
 
-impl<'a, S: Storage> Fetch for MerkSource<'a, S>
+impl<'s, 'db, 'b, S: StorageContext<'db, 'b>> Fetch for MerkSource<'s, 'db, 'b, S>
 where
-    //    crate::error::Error: From<<S as
-    // Storage>::Error>,
-    <S as Storage>::Error: std::error::Error,
+    <S as StorageContext<'db, 'b>>::Error: std::error::Error,
 {
     fn fetch(&self, link: &Link) -> Result<Tree> {
-        Tree::get(&self.storage, link.key())?.ok_or(anyhow!("Key not found"))
+        Tree::get(self.storage, link.key())?.ok_or(anyhow!("Key not found"))
     }
 }
 

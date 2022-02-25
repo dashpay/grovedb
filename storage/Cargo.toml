@@ -13,7 +13,6 @@ branch = "transaction"
 optional = true
 
 [features]
-default = ["rocksdb_storage"]
 rocksdb_storage = ["rocksdb", "num_cpus", "lazy_static"]
 
 [dev-dependencies]

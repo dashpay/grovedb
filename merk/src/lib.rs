@@ -11,6 +11,7 @@ pub mod owner;
 /// Algorithms for generating and verifying Merkle proofs.
 pub mod proofs;
 
+#[cfg(test)]
 /// Various helpers useful for tests or benchmarks.
 pub mod test_utils;
 /// The core tree data structure.

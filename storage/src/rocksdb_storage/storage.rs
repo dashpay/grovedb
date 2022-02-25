@@ -60,11 +60,11 @@ impl RocksDbStorage {
     }
 }
 
-impl<'a> Storage<'a> for RocksDbStorage {
+impl<'db> Storage<'db> for RocksDbStorage {
     type Error = Error;
-    type Transaction = Transaction<'a, OptimisticTransactionDB>;
+    type Transaction = Transaction<'db, OptimisticTransactionDB>;
 
-    fn start_transaction(&'a self) -> Self::Transaction {
+    fn start_transaction(&'db self) -> Self::Transaction {
         self.db.transaction()
     }
 

@@ -2,6 +2,8 @@
 mod storage;
 mod storage_context;
 #[cfg(test)]
+pub mod test_utils;
+#[cfg(test)]
 mod tests;
 
 pub use storage_context::{
