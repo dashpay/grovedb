@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 
-use ed::{Decode, Encode, Result};
+use ed::{Decode, Encode, Result, Terminated};
 
 use super::hash::{kv_hash, Hash, HASH_LENGTH, NULL_HASH};
 
@@ -107,6 +107,8 @@ impl Decode for KV {
         Ok(())
     }
 }
+
+impl Terminated for KV {}
 
 #[cfg(test)]
 mod test {
