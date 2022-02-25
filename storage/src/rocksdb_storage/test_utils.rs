@@ -1,11 +1,11 @@
-use std::ops::Deref;
+use std::{cell::Cell, ops::Deref};
 
 use tempfile::TempDir;
 
 use super::*;
 
 pub struct TempStorage {
-    _dir: TempDir,
+    dir: Cell<TempDir>,
     storage: RocksDbStorage,
 }
 
@@ -14,7 +14,17 @@ impl TempStorage {
         let dir = TempDir::new().expect("cannot create tempir");
         let storage = RocksDbStorage::default_rocksdb_with_path(dir.path())
             .expect("cannot open RocksDB storage");
-        TempStorage { _dir: dir, storage }
+        TempStorage {
+            dir: Cell::new(dir),
+            storage,
+        }
+    }
+
+    pub fn crash(&self) {
+        drop(
+            self.dir
+                .replace(TempDir::new().expect("cannot create tempdir")),
+        )
     }
 }
 

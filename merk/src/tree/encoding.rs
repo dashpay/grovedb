@@ -9,12 +9,11 @@ impl Tree {
         Decode::decode(bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
     }
 
-    pub(crate) fn get<'db, 'b, S, K>(storage: &S, key: K) -> Result<Option<Self>, Error>
+    pub(crate) fn get<'db, 'ctx, S, K>(storage: &S, key: K) -> Result<Option<Self>, Error>
     where
-        S: StorageContext<'db, 'b>,
+        S: StorageContext<'db, 'ctx>,
         K: AsRef<[u8]>,
         Error: From<S::Error>,
-        'db: 'b,
     {
         let mut tree: Option<Tree> = storage
             .get(&key)?

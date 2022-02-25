@@ -21,10 +21,7 @@ pub trait Storage<'db> {
 /// Storage context.
 /// Provides operations expected from a database abstracting details such as
 /// whether it is a transaction or not.
-pub trait StorageContext<'db, 'ctx>
-where
-    'db: 'ctx,
-{
+pub trait StorageContext<'db, 'ctx> {
     /// Storage error type
     type Error: std::error::Error + Send + Sync + 'static;
 

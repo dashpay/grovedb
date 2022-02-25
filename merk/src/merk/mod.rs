@@ -1,7 +1,7 @@
 pub mod chunks;
 // TODO
 // pub mod restore;
-use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt, marker::PhantomData};
+use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt};
 
 use anyhow::{anyhow, bail, Result};
 use storage::{self, Batch, RawIterator, StorageContext};
@@ -27,10 +27,11 @@ impl<S> fmt::Debug for Merk<S> {
 
 pub type UseTreeMutResult = Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>;
 
-impl<'db, 'b, S: StorageContext<'db, 'b> + 'static> Merk<S>
+impl<'db, 'ctx, S> Merk<S>
 where
-    <S as StorageContext<'db, 'b>>::Error: std::error::Error,
-    'db: 'b,
+    S: StorageContext<'db, 'ctx> + 'ctx,
+    <S as StorageContext<'db, 'ctx>>::Error: std::error::Error,
+    //    'db: 'b,
 {
     pub fn open(storage: S) -> Result<Merk<S>> {
         let mut merk = Merk {
@@ -43,7 +44,7 @@ where
     }
 
     /// Deletes tree data
-    pub fn clear(&'b mut self) -> Result<()> {
+    pub fn clear(&'ctx mut self) -> Result<()> {
         let mut iter = self.storage.raw_iter();
         iter.seek_to_first();
         let mut to_delete = self.storage.new_batch();
@@ -130,7 +131,7 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[], None).unwrap();
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[]).unwrap();
     ///
     /// use merk::Op;
     ///
@@ -138,9 +139,9 @@ where
     ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
     ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
-    /// store.apply::<_, Vec<_>>(batch, &[], None).unwrap();
+    /// store.apply::<_, Vec<_>>(batch, &[]).unwrap();
     /// ```
-    pub fn apply<KB, KA>(&'b mut self, batch: &MerkBatch<KB>, aux: &MerkBatch<KA>) -> Result<()>
+    pub fn apply<KB, KA>(&'ctx mut self, batch: &MerkBatch<KB>, aux: &MerkBatch<KA>) -> Result<()>
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
@@ -172,7 +173,7 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[], None).unwrap();
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[]).unwrap();
     ///
     /// use merk::Op;
     ///
@@ -180,14 +181,10 @@ where
     ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key [1,2,3]
     ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
-    /// unsafe {
-    ///     store
-    ///         .apply_unchecked::<_, Vec<_>>(batch, &[], None)
-    ///         .unwrap()
-    /// };
+    /// unsafe { store.apply_unchecked::<_, Vec<_>>(batch, &[]).unwrap() };
     /// ```
     pub unsafe fn apply_unchecked<'a, KB, KA>(
-        &'b mut self,
+        &'ctx mut self,
         batch: &MerkBatch<KB>,
         aux: &MerkBatch<KA>,
     ) -> Result<()>
@@ -223,7 +220,7 @@ where
     /// unique you can use the unsafe `prove_unchecked` for a small performance
     /// gain.
     pub fn prove(
-        &'b self,
+        &'ctx self,
         query: Query,
         limit: Option<u16>,
         offset: Option<u16>,
@@ -245,7 +242,7 @@ where
     /// of this method which checks to ensure the batch is sorted and
     /// unique, see `prove`.
     pub fn prove_unchecked<Q, I>(
-        &'b self,
+        &'ctx self,
         query: I,
         limit: Option<u16>,
         offset: Option<u16>,
@@ -271,7 +268,7 @@ where
     }
 
     pub fn commit<K>(
-        &'b mut self,
+        &'ctx mut self,
         deleted_keys: LinkedList<Vec<u8>>,
         aux: &MerkBatch<K>,
     ) -> Result<()>
@@ -323,10 +320,7 @@ where
         Ok(())
     }
 
-    pub fn walk<'s, T>(
-        &'s self,
-        f: impl FnOnce(Option<RefWalker<MerkSource<'s, 'db, 'b, S>>>) -> T,
-    ) -> T {
+    pub fn walk<'s, T>(&'s self, f: impl FnOnce(Option<RefWalker<MerkSource<'s, S>>>) -> T) -> T {
         let mut tree = self.tree.take();
         let maybe_walker = tree
             .as_mut()
@@ -343,11 +337,9 @@ where
         !iter.valid()
     }
 
-    fn source<'s>(&'s self) -> MerkSource<'s, 'db, 'b, S> {
+    fn source<'s>(&'s self) -> MerkSource<'s, S> {
         MerkSource {
             storage: &self.storage,
-            _phantom: PhantomData,
-            _phantom2: PhantomData,
         }
     }
 
@@ -397,28 +389,21 @@ where
 
 // // TODO: get rid of Fetch/source and use GroveDB storage abstraction
 #[derive(Debug)]
-pub struct MerkSource<'s, 'db, 'b, S: StorageContext<'db, 'b>>
-where
-    'db: 'b,
-{
+pub struct MerkSource<'s, S> {
     storage: &'s S,
-    _phantom: PhantomData<&'db S>,
-    _phantom2: PhantomData<&'b S>,
 }
 
-impl<'s, 'db, 'b, S: StorageContext<'db, 'b>> Clone for MerkSource<'s, 'db, 'b, S> {
+impl<'s, S> Clone for MerkSource<'s, S> {
     fn clone(&self) -> Self {
         MerkSource {
             storage: self.storage,
-            _phantom: PhantomData,
-            _phantom2: PhantomData,
         }
     }
 }
 
-impl<'s, 'db, 'b, S: StorageContext<'db, 'b>> Fetch for MerkSource<'s, 'db, 'b, S>
+impl<'s, 'db, 'ctx, S> Fetch for MerkSource<'s, S>
 where
-    <S as StorageContext<'db, 'b>>::Error: std::error::Error,
+    S: StorageContext<'db, 'ctx>,
 {
     fn fetch(&self, link: &Link) -> Result<Tree> {
         Tree::get(self.storage, link.key())?.ok_or(anyhow!("Key not found"))
@@ -459,12 +444,10 @@ impl Commit for MerkCommitter {
 #[cfg(test)]
 mod test {
     use storage::{
-        rocksdb_storage::{
-            default_rocksdb, PrefixedRocksDbStorage, RawPrefixedTransactionalIterator,
-        },
-        RawIterator,
+        rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
+        RawIterator, StorageContext,
     };
-    use tempdir::TempDir;
+    use tempfile::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};
     use crate::{test_utils::*, Op};
@@ -483,8 +466,7 @@ mod test {
         let batch_size = 20;
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(0..batch_size);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
-            .expect("apply failed");
+        merk.apply::<_, Vec<_>>(&batch, &[]).expect("apply failed");
 
         assert_invariants(&merk);
         assert_eq!(
@@ -502,13 +484,11 @@ mod test {
         let mut merk = TempMerk::new();
 
         let batch = make_batch_seq(0..batch_size);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
-            .expect("apply failed");
+        merk.apply::<_, Vec<_>>(&batch, &[]).expect("apply failed");
         assert_invariants(&merk);
 
         let batch = make_batch_seq(batch_size..(batch_size * 2));
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
-            .expect("apply failed");
+        merk.apply::<_, Vec<_>>(&batch, &[]).expect("apply failed");
         assert_invariants(&merk);
     }
 
@@ -521,8 +501,7 @@ mod test {
         for i in 0..(tree_size / batch_size) {
             println!("i:{}", i);
             let batch = make_batch_rand(batch_size, i);
-            merk.apply::<_, Vec<_>>(&batch, &[], None)
-                .expect("apply failed");
+            merk.apply::<_, Vec<_>>(&batch, &[]).expect("apply failed");
         }
     }
 
@@ -531,21 +510,20 @@ mod test {
         let mut merk = TempMerk::new();
 
         let batch = make_batch_rand(10, 1);
-        merk.apply::<_, Vec<_>>(&batch, &[], None)
-            .expect("apply failed");
+        merk.apply::<_, Vec<_>>(&batch, &[]).expect("apply failed");
 
         let key = batch.first().unwrap().0.clone();
-        merk.apply::<_, Vec<_>>(&[(key.clone(), Op::Delete)], &[], None)
+        merk.apply::<_, Vec<_>>(&[(key.clone(), Op::Delete)], &[])
             .unwrap();
 
-        let value = merk.inner.get(key.as_slice()).unwrap();
+        let value = merk.storage.get(key.as_slice()).unwrap();
         assert!(value.is_none());
     }
 
     #[test]
     fn aux_data() {
         let mut merk = TempMerk::new();
-        merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], None)
+        merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))])
             .expect("apply failed");
         let val = merk.get_aux(&[1, 2, 3]).unwrap();
         assert_eq!(val, Some(vec![4, 5, 6]));
@@ -558,13 +536,12 @@ mod test {
         merk.apply::<_, Vec<_>>(
             &[(vec![0], Op::Put(vec![1]))],
             &[(vec![2], Op::Put(vec![3]))],
-            None,
         )
         .expect("apply failed");
 
         // make enough changes so that main column family gets auto-flushed
         for i in 0..250 {
-            merk.apply::<_, Vec<_>>(&make_batch_seq(i * 2_000..(i + 1) * 2_000), &[], None)
+            merk.apply::<_, Vec<_>>(&make_batch_seq(i * 2_000..(i + 1) * 2_000), &[])
                 .expect("apply failed");
         }
         merk.crash();
@@ -580,7 +557,7 @@ mod test {
         assert!(merk.get(&[1, 2, 3]).unwrap().is_none());
 
         // cached
-        merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![]))], &[], None)
+        merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![]))], &[])
             .unwrap();
         assert!(merk.get(&[1, 2, 3]).unwrap().is_none());
 
@@ -592,7 +569,6 @@ mod test {
                 (vec![2, 2, 2], Op::Put(vec![])),
             ],
             &[],
-            None,
         )
         .unwrap();
         assert!(merk.get(&[3, 3, 3]).unwrap().is_none());
@@ -601,7 +577,7 @@ mod test {
     #[test]
     fn reopen() {
         fn collect(
-            mut node: RefWalker<MerkSource<PrefixedRocksDbStorage>>,
+            mut node: RefWalker<MerkSource<PrefixedRocksDbStorageContext>>,
             nodes: &mut Vec<Vec<u8>>,
         ) {
             nodes.push(node.tree().encode());
@@ -613,15 +589,15 @@ mod test {
             }
         }
 
-        let tmp_dir = TempDir::new("test_reopen").expect("cannot open tempdir");
+        let tmp_dir = TempDir::new().expect("cannot open tempdir");
 
         let original_nodes = {
-            let db = default_rocksdb(tmp_dir.path());
+            let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+                .expect("cannot open rocksdb storage");
             let mut merk =
-                Merk::open(PrefixedRocksDbStorage::new(db, Vec::new()).unwrap()).unwrap();
+                Merk::open(storage.get_prefixed_context(b"".to_vec())).expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
-            merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
-                .unwrap();
+            merk.apply::<_, Vec<_>>(batch.as_slice(), &[]).unwrap();
             let mut tree = merk.tree.take().unwrap();
             let walker = RefWalker::new(&mut tree, merk.source());
 
@@ -630,8 +606,10 @@ mod test {
             nodes
         };
 
-        let db = default_rocksdb(tmp_dir.path());
-        let merk = Merk::open(PrefixedRocksDbStorage::new(db, Vec::new()).unwrap()).unwrap();
+        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+            .expect("cannot open rocksdb storage");
+        let merk =
+            Merk::open(storage.get_prefixed_context(b"".to_vec())).expect("cannot open merk");
         let mut tree = merk.tree.take().unwrap();
         let walker = RefWalker::new(&mut tree, merk.source());
 
@@ -641,10 +619,13 @@ mod test {
         assert_eq!(reopen_nodes, original_nodes);
     }
 
+    type PrefixedStorageIter<'db, 'ctx> =
+        &'ctx mut <PrefixedRocksDbStorageContext<'db> as StorageContext<'db, 'ctx>>::RawIterator;
+
     #[test]
     fn reopen_iter() {
-        fn collect(
-            iter: &mut RawPrefixedTransactionalIterator,
+        fn collect<'db, 'ctx>(
+            iter: PrefixedStorageIter<'db, 'ctx>,
             nodes: &mut Vec<(Vec<u8>, Vec<u8>)>,
         ) {
             while iter.valid() {
@@ -652,25 +633,27 @@ mod test {
                 iter.next();
             }
         }
-        let tmp_dir = TempDir::new("reopen_iter_test").expect("cannot open tempdir");
+        let tmp_dir = TempDir::new().expect("cannot open tempdir");
 
         let original_nodes = {
-            let db = default_rocksdb(tmp_dir.path());
+            let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+                .expect("cannot open rocksdb storage");
             let mut merk =
-                Merk::open(PrefixedRocksDbStorage::new(db, Vec::new()).unwrap()).unwrap();
+                Merk::open(storage.get_prefixed_context(b"".to_vec())).expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
-            merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
-                .unwrap();
+            merk.apply::<_, Vec<_>>(batch.as_slice(), &[]).unwrap();
 
             let mut nodes = vec![];
-            collect(&mut merk.raw_iter(None), &mut nodes);
+            collect(&mut merk.storage.raw_iter(), &mut nodes);
             nodes
         };
-        let db = default_rocksdb(tmp_dir.path());
-        let merk = Merk::open(PrefixedRocksDbStorage::new(db, Vec::new()).unwrap()).unwrap();
+        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+            .expect("cannot open rocksdb storage");
+        let merk =
+            Merk::open(storage.get_prefixed_context(b"".to_vec())).expect("cannot open merk");
 
         let mut reopen_nodes = vec![];
-        collect(&mut merk.raw_iter(None), &mut reopen_nodes);
+        collect(&mut merk.storage.raw_iter(), &mut reopen_nodes);
 
         assert_eq!(reopen_nodes, original_nodes);
     }
