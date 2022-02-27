@@ -107,7 +107,7 @@ pub struct Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
-    pub fn new(proof_bytes: &'a [u8]) -> Self {
+    pub const fn new(proof_bytes: &'a [u8]) -> Self {
         Decoder {
             offset: 0,
             bytes: proof_bytes,

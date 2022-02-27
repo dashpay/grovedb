@@ -426,7 +426,7 @@ pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
 }
 
 impl<'a> ElementsIterator<'a> {
-    pub fn new(raw_iter: RawPrefixedTransactionalIterator<'a>) -> Self {
+    pub const fn new(raw_iter: RawPrefixedTransactionalIterator<'a>) -> Self {
         ElementsIterator { raw_iter }
     }
 

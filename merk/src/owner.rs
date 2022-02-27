@@ -8,7 +8,7 @@ pub struct Owner<T> {
 
 impl<T> Owner<T> {
     /// Creates a new `Owner` which holds the given value.
-    pub fn new(value: T) -> Self {
+    pub const fn new(value: T) -> Self {
         Self { inner: Some(value) }
     }
 

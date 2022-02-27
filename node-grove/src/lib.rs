@@ -195,9 +195,9 @@ impl Finalize for GroveDbWrapper {}
 impl GroveDbWrapper {
     // Create a new instance of `Database` and place it inside a `JsBox`
     // JavaScript can hold a reference to a `JsBox`, but the contents are opaque
-    fn js_open(mut cx: FunctionContext) -> JsResult<JsBox<GroveDbWrapper>> {
+    fn js_open(mut cx: FunctionContext) -> JsResult<JsBox<Self>> {
         let grove_db_wrapper =
-            GroveDbWrapper::new(&mut cx).or_else(|err| cx.throw_error(err.to_string()))?;
+            Self::new(&mut cx).or_else(|err| cx.throw_error(err.to_string()))?;
 
         Ok(cx.boxed(grove_db_wrapper))
     }
@@ -207,7 +207,7 @@ impl GroveDbWrapper {
 
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
 
         db.start_transaction(|channel| {
             channel.send(move |mut task_context| {
@@ -230,7 +230,7 @@ impl GroveDbWrapper {
 
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
 
         db.commit_transaction(|channel| {
             channel.send(move |mut task_context| {
@@ -253,7 +253,7 @@ impl GroveDbWrapper {
 
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
 
         db.rollback_transaction(|channel| {
             channel.send(move |mut task_context| {
@@ -276,7 +276,7 @@ impl GroveDbWrapper {
 
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
 
         db.send_to_db_thread(move |grove_db: &mut GroveDb, _transaction, channel| {
             let result = grove_db.is_transaction_started();
@@ -306,7 +306,7 @@ impl GroveDbWrapper {
 
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
 
         db.abort_transaction(|channel| {
             channel.send(move |mut task_context| {
@@ -336,7 +336,7 @@ impl GroveDbWrapper {
         // Get the `this` value as a `JsBox<Database>`
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let using_transaction = js_using_transaction.value(&mut cx);
 
         db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
@@ -385,7 +385,7 @@ impl GroveDbWrapper {
 
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let using_transaction = js_using_transaction.value(&mut cx);
 
         db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
@@ -434,7 +434,7 @@ impl GroveDbWrapper {
         // Get the `this` value as a `JsBox<Database>`
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
 
         db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
             let path_slice = path.iter().map(|fragment| fragment.as_slice());
@@ -477,7 +477,7 @@ impl GroveDbWrapper {
         // Get the `this` value as a `JsBox<Database>`
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
 
         db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
             let path_slice = path.iter().map(|fragment| fragment.as_slice());
@@ -521,7 +521,7 @@ impl GroveDbWrapper {
 
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let using_transaction = js_using_transaction.value(&mut cx);
 
         db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
@@ -563,7 +563,7 @@ impl GroveDbWrapper {
 
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let using_transaction = js_using_transaction.value(&mut cx);
 
         db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
@@ -602,7 +602,7 @@ impl GroveDbWrapper {
 
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let using_transaction = js_using_transaction.value(&mut cx);
 
         db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
@@ -647,7 +647,7 @@ impl GroveDbWrapper {
 
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let using_transaction = js_using_transaction.value(&mut cx);
 
         db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
@@ -697,7 +697,7 @@ impl GroveDbWrapper {
 
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
 
         db.close(|channel| {
             channel.send(move |mut task_context| {
@@ -722,7 +722,7 @@ impl GroveDbWrapper {
 
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
 
         db.flush(|channel| {
             channel.send(move |mut task_context| {
@@ -747,7 +747,7 @@ impl GroveDbWrapper {
 
         let db = cx
             .this()
-            .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
+            .downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
 
         let using_transaction = js_using_transaction.value(&mut cx);
 
