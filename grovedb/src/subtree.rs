@@ -65,10 +65,7 @@ impl Element {
 
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    pub fn get<K: AsRef<[u8]>>(
-        merk: &Merk<PrefixedRocksDbStorage>,
-        key: K,
-    ) -> Result<Self, Error> {
+    pub fn get<K: AsRef<[u8]>>(merk: &Merk<PrefixedRocksDbStorage>, key: K) -> Result<Self, Error> {
         let element = bincode::deserialize(
             merk.get(key.as_ref())
                 .map_err(|e| Error::CorruptedData(e.to_string()))?
@@ -88,8 +85,7 @@ impl Element {
         subtrees: &Subtrees,
     ) -> Result<Vec<Self>, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, _) =
-            Self::get_sized_query(merk_path, &sized_query, transaction, subtrees)?;
+        let (elements, _) = Self::get_sized_query(merk_path, &sized_query, transaction, subtrees)?;
         Ok(elements)
     }
 
@@ -153,12 +149,8 @@ impl Element {
                     let path_vec_owned = path_vec.iter().map(|x| x.to_vec()).collect();
                     let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
 
-                    let (mut sub_elements, skipped) = Self::get_path_query(
-                        &path_vec,
-                        &inner_path_query,
-                        transaction,
-                        subtrees,
-                    )?;
+                    let (mut sub_elements, skipped) =
+                        Self::get_path_query(&path_vec, &inner_path_query, transaction, subtrees)?;
 
                     if let Some(limit) = limit {
                         *limit -= sub_elements.len() as u16;
