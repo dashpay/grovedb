@@ -8,8 +8,8 @@ pub struct Owner<T> {
 
 impl<T> Owner<T> {
     /// Creates a new `Owner` which holds the given value.
-    pub fn new(value: T) -> Owner<T> {
-        Owner { inner: Some(value) }
+    pub fn new(value: T) -> Self {
+        Self { inner: Some(value) }
     }
 
     /// Takes temporary ownership of the contained value by passing it to `f`.

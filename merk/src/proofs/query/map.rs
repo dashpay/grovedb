@@ -9,12 +9,12 @@ use super::super::Node;
 
 /// `MapBuilder` allows a consumer to construct a `Map` by inserting the nodes
 /// contained in a proof, in key-order.
-pub(crate) struct MapBuilder(Map);
+pub struct MapBuilder(Map);
 
 impl MapBuilder {
     /// Creates a new `MapBuilder` with an empty internal `Map`.
     pub fn new() -> Self {
-        MapBuilder(Map {
+        Self(Map {
             entries: Default::default(),
             right_edge: true,
         })

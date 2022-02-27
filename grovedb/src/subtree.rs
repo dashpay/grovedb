@@ -47,8 +47,8 @@ pub struct PathQueryPushArgs<'a> {
 
 impl Element {
     // TODO: improve API to avoid creation of Tree elements with uncertain state
-    pub fn empty_tree() -> Element {
-        Element::Tree(Default::default())
+    pub fn empty_tree() -> Self {
+        Self::Tree(Default::default())
     }
 
     /// Delete an element from Merk under a key
@@ -68,7 +68,7 @@ impl Element {
     pub fn get<K: AsRef<[u8]>>(
         merk: &Merk<PrefixedRocksDbStorage>,
         key: K,
-    ) -> Result<Element, Error> {
+    ) -> Result<Self, Error> {
         let element = bincode::deserialize(
             merk.get(key.as_ref())
                 .map_err(|e| Error::CorruptedData(e.to_string()))?
@@ -86,10 +86,10 @@ impl Element {
         query: &Query,
         transaction: Option<&OptimisticTransactionDBTransaction>,
         subtrees: &Subtrees,
-    ) -> Result<Vec<Element>, Error> {
+    ) -> Result<Vec<Self>, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
         let (elements, _) =
-            Element::get_sized_query(merk_path, &sized_query, transaction, subtrees)?;
+            Self::get_sized_query(merk_path, &sized_query, transaction, subtrees)?;
         Ok(elements)
     }
 
@@ -153,7 +153,7 @@ impl Element {
                     let path_vec_owned = path_vec.iter().map(|x| x.to_vec()).collect();
                     let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
 
-                    let (mut sub_elements, skipped) = Element::get_path_query(
+                    let (mut sub_elements, skipped) = Self::get_path_query(
                         &path_vec,
                         &inner_path_query,
                         transaction,
@@ -171,7 +171,7 @@ impl Element {
                     if offset.unwrap_or(0) == 0 {
                         let element = subtrees
                             .borrow_mut(path_vec.iter().copied(), transaction)?
-                            .apply(|s| Element::get(s, subquery_key.as_slice()))?;
+                            .apply(|s| Self::get(s, subquery_key.as_slice()))?;
                         results.push(element);
                         if let Some(limit) = limit {
                             *limit -= 1;
@@ -187,7 +187,7 @@ impl Element {
                 }
             }
             _ => {
-                Element::basic_push(PathQueryPushArgs {
+                Self::basic_push(PathQueryPushArgs {
                     transaction,
                     subtrees,
                     key,
@@ -207,7 +207,7 @@ impl Element {
 
     fn query_item(
         item: &QueryItem,
-        results: &mut Vec<Element>,
+        results: &mut Vec<Self>,
         merk_path: &[&[u8]],
         sized_query: &SizedQuery,
         path: Option<&[&[u8]]>,
@@ -226,7 +226,7 @@ impl Element {
                     key: Some(key.as_slice()),
                     element: subtrees
                         .borrow_mut(merk_path.iter().copied(), transaction)?
-                        .apply(|s| Element::get(s, key))?,
+                        .apply(|s| Self::get(s, key))?,
                     path,
                     subquery_key: sized_query.query.subquery_key.clone(),
                     subquery: sized_query
@@ -294,7 +294,7 @@ impl Element {
         transaction: Option<&OptimisticTransactionDBTransaction>,
         subtrees: &Subtrees,
         add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
-    ) -> Result<(Vec<Element>, u16), Error> {
+    ) -> Result<(Vec<Self>, u16), Error> {
         let mut results = Vec::new();
 
         let mut limit = sized_query.limit;
@@ -353,19 +353,19 @@ impl Element {
         path_query: &PathQuery,
         transaction: Option<&OptimisticTransactionDBTransaction>,
         subtrees: &Subtrees,
-    ) -> Result<(Vec<Element>, u16), Error> {
+    ) -> Result<(Vec<Self>, u16), Error> {
         let path_slices = path_query
             .path
             .iter()
             .map(|x| x.as_slice())
             .collect::<Vec<_>>();
-        Element::get_query_apply_function(
+        Self::get_query_apply_function(
             merk_path,
             &path_query.query,
             Some(path_slices.as_slice()),
             transaction,
             subtrees,
-            Element::path_query_push,
+            Self::path_query_push,
         )
     }
 
@@ -375,14 +375,14 @@ impl Element {
         sized_query: &SizedQuery,
         transaction: Option<&OptimisticTransactionDBTransaction>,
         subtrees: &Subtrees,
-    ) -> Result<(Vec<Element>, u16), Error> {
-        Element::get_query_apply_function(
+    ) -> Result<(Vec<Self>, u16), Error> {
+        Self::get_query_apply_function(
             merk_path,
             sized_query,
             None,
             transaction,
             subtrees,
-            Element::path_query_push,
+            Self::path_query_push,
         )
     }
 
