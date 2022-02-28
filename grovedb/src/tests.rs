@@ -1997,7 +1997,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bou
     query.insert_range_to_inclusive(..=5000_u32.to_be_bytes().to_vec());
 
     let subquery_key: Vec<u8> = b"\0".to_vec();
-    let mut subquery = Query::new();
+    let mut subquery = Query::new_with_direction(false);
     subquery.insert_all();
 
     query.set_subquery_key(subquery_key);

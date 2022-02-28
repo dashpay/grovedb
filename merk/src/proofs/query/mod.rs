@@ -415,8 +415,12 @@ impl QueryItem {
                     // if the key is not the same as the end we should go back one
                     if let Some(key) = iter.key() {
                         if key != end {
-                            iter.prev()
+                            iter.prev();
                         }
+                    } else {
+                        // key was not found, end is greater than all keys
+                        // use the largest valid key i.e last
+                        iter.seek_to_last();
                     }
                 }
             }
