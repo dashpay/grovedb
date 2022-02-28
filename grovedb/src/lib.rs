@@ -35,12 +35,27 @@ pub enum Error {
     CyclicReference,
     #[error("reference hops limit exceeded")]
     ReferenceLimit,
+    #[error("internal error: {0}")]
+    InternalError(&'static str),
     #[error("invalid proof: {0}")]
     InvalidProof(&'static str),
-    #[error("invalid path key: {0}")]
-    InvalidPathKey(String),
+
+    // Path errors
+
+    // The path key not found could represent a valid query, just where the path key isn't there
+    #[error("path key not found: {0}")]
+    PathKeyNotFound(String),
+    // The path not found could represent a valid query, just where the path isn't there
+    #[error("path not found: {0}")]
+    PathNotFound(&'static str),
+    // The invalid path represents a logical error from the client library
     #[error("invalid path: {0}")]
     InvalidPath(&'static str),
+    // The corrupted path represents a consistency error in internal groveDB logic
+    #[error("corrupted path: {0}")]
+    CorruptedPath(&'static str),
+
+    // Query errors
     #[error("invalid query: {0}")]
     InvalidQuery(&'static str),
     #[error("missing parameter: {0}")]
@@ -357,7 +372,7 @@ impl GroveDb {
     ///
     /// // This action exists only inside the transaction for now
     /// let result = db.get([TEST_LEAF], subtree_key, None);
-    /// assert!(matches!(result, Err(Error::InvalidPathKey(_))));
+    /// assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
     ///
     /// // To access values inside the transaction, transaction needs to be passed to the `db::get`
     /// let result_with_transaction = db.get([TEST_LEAF], subtree_key, Some(&db_transaction))?;
@@ -404,7 +419,8 @@ impl GroveDb {
         self.root_tree = self.temp_root_tree.clone();
 
         self.root_leaf_keys = self.temp_root_leaf_keys.clone();
-        self.temp_root_leaf_keys.clear();
+
+        self.is_readonly = false;
 
         self.cleanup_transactional_data();
 
@@ -421,9 +437,7 @@ impl GroveDb {
         db_transaction: &OptimisticTransactionDBTransaction,
     ) -> Result<(), Error> {
         // Cloning all the trees to maintain to rollback transactional changes
-        self.temp_root_tree = self.root_tree.clone();
-        self.temp_root_leaf_keys = self.root_leaf_keys.clone();
-        self.temp_subtrees = RefCell::new(HashMap::new());
+        self.cleanup_transactional_data();
 
         Ok(db_transaction
             .rollback()
@@ -437,6 +451,8 @@ impl GroveDb {
         &mut self,
         _db_transaction: OptimisticTransactionDBTransaction,
     ) -> Result<(), Error> {
+        // Enabling writes again
+        self.is_readonly = false;
         // Cloning all the trees to maintain to rollback transactional changes
         self.cleanup_transactional_data();
 
@@ -445,12 +461,10 @@ impl GroveDb {
 
     /// Cleanup transactional data after commit or abort
     fn cleanup_transactional_data(&mut self) {
-        // Enabling writes again
-        self.is_readonly = false;
-
         // Free transactional data
         self.temp_root_tree = MerkleTree::new();
         self.temp_root_leaf_keys = BTreeMap::new();
         self.temp_subtrees = RefCell::new(HashMap::new());
+        self.temp_deleted_subtrees = RefCell::new(HashSet::new());
     }
 }

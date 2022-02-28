@@ -73,7 +73,7 @@ impl Element {
             merk.get(key.as_ref())
                 .map_err(|e| Error::CorruptedData(e.to_string()))?
                 .ok_or_else(|| {
-                    Error::InvalidPathKey(format!("key not found in Merk: {}", hex::encode(key)))
+                    Error::PathKeyNotFound(format!("key not found in Merk: {}", hex::encode(key)))
                 })?
                 .as_slice(),
         )
@@ -205,6 +205,88 @@ impl Element {
         Ok(())
     }
 
+    fn query_item(
+        item: &QueryItem,
+        results: &mut Vec<Element>,
+        merk_path: &[&[u8]],
+        sized_query: &SizedQuery,
+        path: Option<&[&[u8]]>,
+        transaction: Option<&OptimisticTransactionDBTransaction>,
+        subtrees: &Subtrees,
+        limit: &mut Option<u16>,
+        offset: &mut Option<u16>,
+        add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        if !item.is_range() {
+            // this is a query on a key
+            if let QueryItem::Key(key) = item {
+                Ok(add_element_function(PathQueryPushArgs {
+                    transaction,
+                    subtrees,
+                    key: Some(key.as_slice()),
+                    element: subtrees
+                        .borrow_mut(merk_path.iter().copied(), transaction)?
+                        .apply(|s| Element::get(s, key))?,
+                    path,
+                    subquery_key: sized_query.query.subquery_key.clone(),
+                    subquery: sized_query
+                        .query
+                        .subquery
+                        .as_ref()
+                        .map(|query| *query.clone()),
+                    left_to_right: sized_query.query.left_to_right,
+                    results,
+                    limit,
+                    offset,
+                })?)
+            } else {
+                Err(Error::InternalError(
+                    "QueryItem must be a Key if not a range",
+                ))
+            }
+        } else {
+            // this is a query on a range
+
+            // TODO: no better way until storage refactoring
+            let storage = subtrees
+                .borrow_mut(merk_path.iter().copied(), transaction)?
+                .apply(|s| s.storage.clone());
+
+            let mut iter = storage.raw_iter(transaction);
+
+            item.seek_for_iter(&mut iter, sized_query.query.left_to_right);
+
+            while item.iter_is_valid_for_type(&iter, *limit, sized_query.query.left_to_right) {
+                let element =
+                    raw_decode(iter.value().expect("if key exists then value should too"))?;
+                let key = iter.key().expect("key should exist");
+                add_element_function(PathQueryPushArgs {
+                    transaction,
+                    subtrees,
+                    key: Some(key),
+                    element,
+                    path,
+                    subquery_key: sized_query.query.subquery_key.clone(),
+                    subquery: sized_query
+                        .query
+                        .subquery
+                        .as_ref()
+                        .map(|query| *query.clone()),
+                    left_to_right: sized_query.query.left_to_right,
+                    results,
+                    limit,
+                    offset,
+                })?;
+                if sized_query.query.left_to_right {
+                    iter.next();
+                } else {
+                    iter.prev();
+                }
+            }
+            Ok(())
+        }
+    }
+
     pub fn get_query_apply_function(
         merk_path: &[&[u8]],
         sized_query: &SizedQuery,
@@ -219,74 +301,44 @@ impl Element {
         let original_offset = sized_query.offset;
         let mut offset = original_offset;
 
-        for item in sized_query.query.iter() {
-            if !item.is_range() {
-                // this is a query on a key
-                if let QueryItem::Key(key) = item {
-                    add_element_function(PathQueryPushArgs {
-                        transaction,
-                        subtrees,
-                        key: Some(key.as_slice()),
-                        element: subtrees
-                            .borrow_mut(merk_path.iter().copied(), transaction)?
-                            .apply(|s| Element::get(s, key))?,
-                        path,
-                        subquery_key: sized_query.query.subquery_key.clone(),
-                        subquery: sized_query
-                            .query
-                            .subquery
-                            .as_ref()
-                            .map(|query| *query.clone()),
-                        left_to_right: sized_query.query.left_to_right,
-                        results: &mut results,
-                        limit: &mut limit,
-                        offset: &mut offset,
-                    })?;
-                }
-            } else {
-                // this is a query on a range
-
-                // TODO: no better way until storage refactoring
-                let storage = subtrees
-                    .borrow_mut(merk_path.iter().copied(), transaction)?
-                    .apply(|s| s.storage.clone());
-
-                let mut iter = storage.raw_iter(transaction);
-
-                item.seek_for_iter(&mut iter, sized_query.query.left_to_right);
-
-                while item.iter_is_valid_for_type(&iter, limit, sized_query.query.left_to_right) {
-                    let element =
-                        raw_decode(iter.value().expect("if key exists then value should too"))?;
-                    let key = iter.key().expect("key should exist");
-                    add_element_function(PathQueryPushArgs {
-                        transaction,
-                        subtrees,
-                        key: Some(key),
-                        element,
-                        path,
-                        subquery_key: sized_query.query.subquery_key.clone(),
-                        subquery: sized_query
-                            .query
-                            .subquery
-                            .as_ref()
-                            .map(|query| *query.clone()),
-                        left_to_right: sized_query.query.left_to_right,
-                        results: &mut results,
-                        limit: &mut limit,
-                        offset: &mut offset,
-                    })?;
-                    if sized_query.query.left_to_right {
-                        iter.next();
-                    } else {
-                        iter.prev();
-                    }
+        if sized_query.query.left_to_right {
+            for item in sized_query.query.iter() {
+                Self::query_item(
+                    item,
+                    &mut results,
+                    merk_path,
+                    sized_query,
+                    path,
+                    transaction,
+                    subtrees,
+                    &mut limit,
+                    &mut offset,
+                    add_element_function,
+                )?;
+                if limit == Some(0) {
+                    break;
                 }
             }
-            if limit == Some(0) {
-                break;
+        } else {
+            for item in sized_query.query.rev_iter() {
+                Self::query_item(
+                    item,
+                    &mut results,
+                    merk_path,
+                    sized_query,
+                    path,
+                    transaction,
+                    subtrees,
+                    &mut limit,
+                    &mut offset,
+                    add_element_function,
+                )?;
+                if limit == Some(0) {
+                    break;
+                }
             }
         }
+
         let skipped = if let Some(original_offset_unwrapped) = original_offset {
             original_offset_unwrapped - offset.unwrap()
         } else {
@@ -649,7 +701,7 @@ mod tests {
             });
 
         // Test queries by key
-        let mut query = Query::new_with_direction(false);
+        let mut query = Query::new_with_direction(true);
         query.insert_key(b"c".to_vec());
         query.insert_key(b"a".to_vec());
 
@@ -667,12 +719,31 @@ mod tests {
         );
         assert_eq!(skipped, 0);
 
+        // Test queries by key
+        let mut query = Query::new_with_direction(false);
+        query.insert_key(b"c".to_vec());
+        query.insert_key(b"a".to_vec());
+
+        // since these are just keys a backwards query will keep same order
+        let backwards_query = SizedQuery::new(query.clone(), None, None);
+        let (elements, skipped) =
+            Element::get_sized_query(&[TEST_LEAF], &backwards_query, None, &subtrees)
+                .expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayyc".to_vec()),
+                Element::Item(b"ayya".to_vec()),
+            ]
+        );
+        assert_eq!(skipped, 0);
+
         // The limit will mean we will only get back 1 item
         let limit_query = SizedQuery::new(query.clone(), Some(1), None);
         let (elements, skipped) =
             Element::get_sized_query(&[TEST_LEAF], &limit_query, None, &subtrees)
                 .expect("expected successful get_query");
-        assert_eq!(elements, vec![Element::Item(b"ayya".to_vec()),]);
+        assert_eq!(elements, vec![Element::Item(b"ayyc".to_vec()),]);
         assert_eq!(skipped, 0);
 
         // Test range query
@@ -763,17 +834,17 @@ mod tests {
         query.insert_key(b"a".to_vec());
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
-        let limit_backwards_query = SizedQuery::new(query.clone(), Some(2), None);
+        let limit_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) =
             Element::get_sized_query(&[TEST_LEAF], &limit_backwards_query, None, &subtrees)
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
             vec![
+                Element::Item(b"ayyb".to_vec()),
                 Element::Item(b"ayya".to_vec()),
-                Element::Item(b"ayyc".to_vec()),
             ]
         );
-        assert_eq!(skipped, 0);
+        assert_eq!(skipped, 1);
     }
 }

@@ -761,7 +761,7 @@ fn transaction_insert_item_with_transaction_should_use_transaction() {
 
     // Check that there's no such key in the DB
     let result = db.get([TEST_LEAF], item_key, None);
-    assert!(matches!(result, Err(Error::InvalidPathKey(_))));
+    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 
     let element1 = Element::Item(b"ayy".to_vec());
 
@@ -771,7 +771,7 @@ fn transaction_insert_item_with_transaction_should_use_transaction() {
     // The key was inserted inside the transaction, so it shouldn't be possible
     // to get it back without committing or using transaction
     let result = db.get([TEST_LEAF], item_key, None);
-    assert!(matches!(result, Err(Error::InvalidPathKey(_))));
+    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
     // Check that the element can be retrieved when transaction is passed
     let result_with_transaction = db
         .get([TEST_LEAF], item_key, Some(&transaction))
@@ -800,7 +800,7 @@ fn transaction_insert_tree_with_transaction_should_use_transaction() {
 
     // Check that there's no such key in the DB
     let result = db.get([TEST_LEAF], subtree_key, None);
-    assert!(matches!(result, Err(Error::InvalidPathKey(_))));
+    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 
     db.insert(
         [TEST_LEAF],
@@ -811,7 +811,7 @@ fn transaction_insert_tree_with_transaction_should_use_transaction() {
     .expect("cannot insert an item into GroveDB");
 
     let result = db.get([TEST_LEAF], subtree_key, None);
-    assert!(matches!(result, Err(Error::InvalidPathKey(_))));
+    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 
     let result_with_transaction = db
         .get([TEST_LEAF], subtree_key, Some(&db_transaction))
@@ -866,7 +866,7 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
     db.rollback_transaction(&transaction).unwrap();
 
     let result = db.get([TEST_LEAF], item_key, Some(&transaction));
-    assert!(matches!(result, Err(Error::InvalidPathKey(_))));
+    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 }
 
 #[test]
@@ -917,7 +917,7 @@ fn transaction_should_be_aborted() {
 
     // Transactional data shouldn't be committed to the main database
     let result = db.get([TEST_LEAF], item_key, None);
-    assert!(matches!(result, Err(Error::InvalidPathKey(_))));
+    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 }
 
 #[test]
@@ -1010,7 +1010,7 @@ fn test_element_deletion() {
     assert!(db.delete([TEST_LEAF], b"key", None).is_ok());
     assert!(matches!(
         db.get([TEST_LEAF], b"key", None),
-        Err(Error::InvalidPathKey(_))
+        Err(Error::PathKeyNotFound(_))
     ));
     assert_ne!(root_hash, db.root_tree.root().unwrap());
 }
@@ -1144,7 +1144,7 @@ fn test_subtree_deletion() {
         .expect("unable to delete subtree");
     assert!(matches!(
         db.get([TEST_LEAF, b"key1", b"key2"], b"key3", None),
-        Err(Error::InvalidPath(_))
+        Err(Error::PathNotFound(_))
     ));
     // assert_eq!(db.subtrees.len(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF
     // TEST_LEAF.key4 stay
@@ -1239,12 +1239,12 @@ fn test_subtree_deletion_if_empty() {
             b"level3-A",
             Some(&transaction)
         ),
-        Err(Error::InvalidPath(_))
+        Err(Error::PathNotFound(_))
     ));
 
     assert!(matches!(
         db.get([TEST_LEAF, b"level1-A"], b"level2-A", Some(&transaction)),
-        Err(Error::InvalidPathKey(_))
+        Err(Error::PathKeyNotFound(_))
     ));
 
     assert!(matches!(
@@ -1310,12 +1310,12 @@ fn test_subtree_deletion_if_empty_without_transaction() {
 
     assert!(matches!(
         db.get([TEST_LEAF, b"level1-A", b"level2-A"], b"level3-A", None,),
-        Err(Error::InvalidPath(_))
+        Err(Error::PathNotFound(_))
     ));
 
     assert!(matches!(
         db.get([TEST_LEAF, b"level1-A"], b"level2-A", None),
-        Err(Error::InvalidPathKey(_))
+        Err(Error::PathKeyNotFound(_))
     ));
 
     assert!(matches!(
@@ -2427,12 +2427,12 @@ fn test_subtree_deletion_with_transaction() {
         .expect("unable to delete subtree");
     assert!(matches!(
         db.get([TEST_LEAF, b"key1", b"key2"], b"key3", Some(&transaction)),
-        Err(Error::InvalidPath(_))
+        Err(Error::PathNotFound(_))
     ));
     transaction.commit().expect("cannot commit transaction");
     assert!(matches!(
         db.get([TEST_LEAF], b"key1", None),
-        Err(Error::InvalidPathKey(_))
+        Err(Error::PathKeyNotFound(_))
     ));
     assert!(matches!(db.get([TEST_LEAF], b"key4", None), Ok(_)));
 }
