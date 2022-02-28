@@ -2173,7 +2173,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery_and_key_out_
         .get_path_query(&path_query, None)
         .expect("expected successful get_path_query");
 
-    assert_eq!(elements.len(), 600);
+    assert_eq!(elements.len(), 200);
 
     let mut first_value = 1999_u32.to_be_bytes().to_vec();
     first_value.append(&mut 149_u32.to_be_bytes().to_vec());
