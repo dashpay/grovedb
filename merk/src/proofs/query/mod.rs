@@ -411,17 +411,7 @@ impl QueryItem {
                 if left_to_right {
                     iter.seek_to_first();
                 } else {
-                    iter.seek(end);
-                    // if the key is not the same as the end we should go back one
-                    if let Some(key) = iter.key() {
-                        if key != end {
-                            iter.prev();
-                        }
-                    } else {
-                        // key was not found, end is greater than all keys
-                        // use the largest valid key i.e last
-                        iter.seek_to_last();
-                    }
+                    iter.seek_for_prev(end);
                 }
             }
             QueryItem::RangeAfter(RangeFrom { start }) => {
@@ -463,17 +453,7 @@ impl QueryItem {
                     }
                 } else {
                     let end = range_inclusive.end();
-                    iter.seek(end);
-                    // if the key is not the same as the end we should go back one
-                    if let Some(key) = iter.key() {
-                        if key != end {
-                            iter.prev();
-                        }
-                    } else {
-                        // key was not found, end is greater than all keys
-                        // use the largest valid key i.e last
-                        iter.seek_to_last();
-                    }
+                    iter.seek_for_prev(end);
                 }
             }
         };
