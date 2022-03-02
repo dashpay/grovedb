@@ -150,7 +150,11 @@ impl GroveDb {
             BTreeMap::new()
         };
 
-        Ok(GroveDb::new(Self::get_root_tree(&db)?, root_leaf_keys, db))
+        Ok(GroveDb::new(
+            Self::get_root_tree(&db, None)?,
+            root_leaf_keys,
+            db,
+        ))
     }
 
     // TODO: Checkpoints are currently not implemented for the transactional DB
@@ -165,17 +169,15 @@ impl GroveDb {
 
     /// Returns root hash of GroveDb.
     /// Will be `None` if GroveDb is empty.
-    pub fn root_hash(&self, transaction: TransactionArg) -> Option<[u8; 32]> {
-        todo!()
-        // if db_transaction.is_some() {
-        //     self.temp_root_tree.root()
-        // } else {
-        //     self.root_tree.root()
-        // }
+    pub fn root_hash(&self, transaction: TransactionArg) -> Result<Option<[u8; 32]>, Error> {
+        Ok(Self::get_root_tree(&self.db, transaction)?.root())
     }
 
-    fn get_root_tree(db: &RocksDbStorage) -> Result<MerkleTree<Sha256>, Error> {
-        let meta_storage = db.get_prefixed_context(Vec::new());
+    fn get_root_leaf_keys<'db, 'ctx, S>(meta_storage: S) -> Result<BTreeMap<Vec<u8>, usize>, Error>
+    where
+        S: StorageContext<'db, 'ctx>,
+        Error: From<<S as StorageContext<'db, 'ctx>>::Error>,
+    {
         let root_leaf_keys: BTreeMap<Vec<u8>, usize> = if let Some(root_leaf_keys_serialized) =
             meta_storage.get_meta(ROOT_LEAFS_SERIALIZED_KEY)?
         {
@@ -184,6 +186,20 @@ impl GroveDb {
             })?
         } else {
             BTreeMap::new()
+        };
+        Ok(root_leaf_keys)
+    }
+
+    fn get_root_tree(
+        db: &RocksDbStorage,
+        transaction: TransactionArg,
+    ) -> Result<MerkleTree<Sha256>, Error> {
+        let root_leaf_keys = if let Some(tx) = transaction {
+            let meta_storage = db.get_prefixed_transactional_context(Vec::new(), tx);
+            Self::get_root_leaf_keys(meta_storage)?
+        } else {
+            let meta_storage = db.get_prefixed_context(Vec::new());
+            Self::get_root_leaf_keys(meta_storage)?
         };
 
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
