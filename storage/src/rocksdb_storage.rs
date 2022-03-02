@@ -5,6 +5,7 @@ pub mod test_utils;
 #[cfg(test)]
 mod tests;
 
+pub use rocksdb::Error;
 pub use storage_context::{
     PrefixedRocksDbBatch, PrefixedRocksDbRawIterator, PrefixedRocksDbStorageContext,
     PrefixedRocksDbTransactionContext,

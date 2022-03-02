@@ -8,15 +8,9 @@ use merk::{
     Op,
 };
 use serde::{Deserialize, Serialize};
-use storage::{
-    rocksdb_storage::{
-        OptimisticTransactionDBTransaction, PrefixedRocksDbStorage,
-        RawPrefixedTransactionalIterator,
-    },
-    RawIterator, Storage, Store,
-};
+use storage::{RawIterator, StorageContext};
 
-use crate::{Error, Merk, PathQuery, SizedQuery, Subtrees};
+use crate::{Error, Merk, PathQuery, SizedQuery};
 
 /// Variants of GroveDB stored entities
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -32,8 +26,6 @@ pub enum Element {
 }
 
 pub struct PathQueryPushArgs<'a> {
-    pub transaction: Option<&'a OptimisticTransactionDBTransaction<'a>>,
-    pub subtrees: &'a Subtrees<'a>,
     pub key: Option<&'a [u8]>,
     pub element: Element,
     pub path: Option<&'a [&'a [u8]]>,
@@ -52,21 +44,20 @@ impl Element {
     }
 
     /// Delete an element from Merk under a key
-    pub fn delete<K: AsRef<[u8]>>(
-        merk: &mut Merk<PrefixedRocksDbStorage>,
+    pub fn delete<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx> + 'ctx>(
+        merk: &'ctx mut Merk<S>,
         key: K,
-        transaction: Option<&OptimisticTransactionDBTransaction>,
     ) -> Result<(), Error> {
         // TODO: delete references on this element
         let batch = [(key, Op::Delete)];
-        merk.apply::<_, Vec<u8>>(&batch, &[], transaction)
+        merk.apply::<_, Vec<u8>>(&batch, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    pub fn get<K: AsRef<[u8]>>(
-        merk: &Merk<PrefixedRocksDbStorage>,
+    pub fn get<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx> + 'ctx>(
+        merk: &Merk<S>,
         key: K,
     ) -> Result<Element, Error> {
         let element = bincode::deserialize(
@@ -81,321 +72,314 @@ impl Element {
         Ok(element)
     }
 
-    pub fn get_query(
-        merk_path: &[&[u8]],
-        query: &Query,
-        transaction: Option<&OptimisticTransactionDBTransaction>,
-        subtrees: &Subtrees,
-    ) -> Result<Vec<Element>, Error> {
-        let sized_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, _) =
-            Element::get_sized_query(merk_path, &sized_query, transaction, subtrees)?;
-        Ok(elements)
-    }
+    // pub fn get_query(
+    //     merk_path: &[&[u8]],
+    //     query: &Query,
+    //     transaction: Option<&OptimisticTransactionDBTransaction>,
+    //     subtrees: &Subtrees,
+    // ) -> Result<Vec<Element>, Error> {
+    //     let sized_query = SizedQuery::new(query.clone(), None, None);
+    //     let (elements, _) =
+    //         Element::get_sized_query(merk_path, &sized_query, transaction,
+    // subtrees)?;     Ok(elements)
+    // }
 
-    fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
-        let PathQueryPushArgs {
-            element,
-            results,
-            limit,
-            offset,
-            ..
-        } = args;
-        if offset.unwrap_or(0) == 0 {
-            results.push(element);
-            if let Some(limit) = limit {
-                *limit -= 1;
-            }
-        } else if let Some(offset) = offset {
-            *offset -= 1;
-        }
-        Ok(())
-    }
+    // fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
+    //     let PathQueryPushArgs {
+    //         element,
+    //         results,
+    //         limit,
+    //         offset,
+    //         ..
+    //     } = args;
+    //     if offset.unwrap_or(0) == 0 {
+    //         results.push(element);
+    //         if let Some(limit) = limit {
+    //             *limit -= 1;
+    //         }
+    //     } else if let Some(offset) = offset {
+    //         *offset -= 1;
+    //     }
+    //     Ok(())
+    // }
 
-    fn path_query_push(args: PathQueryPushArgs) -> Result<(), Error> {
-        let PathQueryPushArgs {
-            transaction,
-            subtrees,
-            key,
-            element,
-            path,
-            subquery_key,
-            subquery,
-            left_to_right,
-            results,
-            limit,
-            offset,
-        } = args;
-        match element {
-            Element::Tree(_) => {
-                // if subquery.is_none() {
-                //     return Err(Error::InvalidPath(
-                //         "a subtrees_option or a subquery should be provided",
-                //     ));
-                // }
-                // this means that for each element we should get the element at
-                // the subquery_key or just the directly with the subquery
-                let mut path_vec = path
-                    .ok_or(Error::MissingParameter(
-                        "the path must be provided when using a subquery key",
-                    ))?
-                    .to_vec();
-                path_vec.push(key.ok_or(Error::MissingParameter(
-                    "the key must be provided when using a subquery key",
-                ))?);
+    // fn path_query_push(args: PathQueryPushArgs) -> Result<(), Error> {
+    //     let PathQueryPushArgs {
+    //         transaction,
+    //         subtrees,
+    //         key,
+    //         element,
+    //         path,
+    //         subquery_key,
+    //         subquery,
+    //         left_to_right,
+    //         results,
+    //         limit,
+    //         offset,
+    //     } = args;
+    //     match element {
+    //         Element::Tree(_) => {
+    //             let mut path_vec = path
+    //                 .ok_or(Error::MissingParameter(
+    //                     "the path must be provided when using a subquery key",
+    //                 ))?
+    //                 .to_vec();
+    //             path_vec.push(key.ok_or(Error::MissingParameter(
+    //                 "the key must be provided when using a subquery key",
+    //             ))?);
 
-                if let Some(subquery) = subquery {
-                    if let Some(subquery_key) = &subquery_key {
-                        path_vec.push(subquery_key.as_slice());
-                    }
+    //             if let Some(subquery) = subquery {
+    //                 if let Some(subquery_key) = &subquery_key {
+    //                     path_vec.push(subquery_key.as_slice());
+    //                 }
 
-                    let inner_query = SizedQuery::new(subquery, *limit, *offset);
-                    let path_vec_owned = path_vec.iter().map(|x| x.to_vec()).collect();
-                    let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
+    //                 let inner_query = SizedQuery::new(subquery, *limit, *offset);
+    //                 let path_vec_owned = path_vec.iter().map(|x|
+    // x.to_vec()).collect();                 let inner_path_query =
+    // PathQuery::new(path_vec_owned, inner_query);
 
-                    let (mut sub_elements, skipped) = Element::get_path_query(
-                        &path_vec,
-                        &inner_path_query,
-                        transaction,
-                        subtrees,
-                    )?;
+    //                 let (mut sub_elements, skipped) = Element::get_path_query(
+    //                     &path_vec,
+    //                     &inner_path_query,
+    //                     transaction,
+    //                     subtrees,
+    //                 )?;
 
-                    if let Some(limit) = limit {
-                        *limit -= sub_elements.len() as u16;
-                    }
-                    if let Some(offset) = offset {
-                        *offset -= skipped;
-                    }
-                    results.append(&mut sub_elements);
-                } else if let Some(subquery_key) = subquery_key {
-                    if offset.unwrap_or(0) == 0 {
-                        let element = subtrees
-                            .borrow_mut(path_vec.iter().copied(), transaction)?
-                            .apply(|s| Element::get(s, subquery_key.as_slice()))?;
-                        results.push(element);
-                        if let Some(limit) = limit {
-                            *limit -= 1;
-                        }
-                    } else if let Some(offset) = offset {
-                        *offset -= 1;
-                    }
-                } else {
-                    return Err(Error::InvalidPath(
-                        "you must provide a subquery or a subquery_key when interacting with a \
-                         tree of trees",
-                    ));
-                }
-            }
-            _ => {
-                Element::basic_push(PathQueryPushArgs {
-                    transaction,
-                    subtrees,
-                    key,
-                    element,
-                    path,
-                    subquery_key,
-                    subquery,
-                    left_to_right,
-                    results,
-                    limit,
-                    offset,
-                })?;
-            }
-        }
-        Ok(())
-    }
+    //                 if let Some(limit) = limit {
+    //                     *limit -= sub_elements.len() as u16;
+    //                 }
+    //                 if let Some(offset) = offset {
+    //                     *offset -= skipped;
+    //                 }
+    //                 results.append(&mut sub_elements);
+    //             } else if let Some(subquery_key) = subquery_key {
+    //                 if offset.unwrap_or(0) == 0 {
+    //                     let element = subtrees
+    //                         .borrow_mut(path_vec.iter().copied(), transaction)?
+    //                         .apply(|s| Element::get(s,
+    // subquery_key.as_slice()))?;                     results.push(element);
+    //                     if let Some(limit) = limit {
+    //                         *limit -= 1;
+    //                     }
+    //                 } else if let Some(offset) = offset {
+    //                     *offset -= 1;
+    //                 }
+    //             } else {
+    //                 return Err(Error::InvalidPath(
+    //                     "you must provide a subquery or a subquery_key when
+    // interacting with a \                      tree of trees",
+    //                 ));
+    //             }
+    //         }
+    //         _ => {
+    //             Element::basic_push(PathQueryPushArgs {
+    //                 transaction,
+    //                 subtrees,
+    //                 key,
+    //                 element,
+    //                 path,
+    //                 subquery_key,
+    //                 subquery,
+    //                 left_to_right,
+    //                 results,
+    //                 limit,
+    //                 offset,
+    //             })?;
+    //         }
+    //     }
+    //     Ok(())
+    // }
 
-    fn query_item(
-        item: &QueryItem,
-        results: &mut Vec<Element>,
-        merk_path: &[&[u8]],
-        sized_query: &SizedQuery,
-        path: Option<&[&[u8]]>,
-        transaction: Option<&OptimisticTransactionDBTransaction>,
-        subtrees: &Subtrees,
-        limit: &mut Option<u16>,
-        offset: &mut Option<u16>,
-        add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
-    ) -> Result<(), Error> {
-        if !item.is_range() {
-            // this is a query on a key
-            if let QueryItem::Key(key) = item {
-                Ok(add_element_function(PathQueryPushArgs {
-                    transaction,
-                    subtrees,
-                    key: Some(key.as_slice()),
-                    element: subtrees
-                        .borrow_mut(merk_path.iter().copied(), transaction)?
-                        .apply(|s| Element::get(s, key))?,
-                    path,
-                    subquery_key: sized_query.query.subquery_key.clone(),
-                    subquery: sized_query
-                        .query
-                        .subquery
-                        .as_ref()
-                        .map(|query| *query.clone()),
-                    left_to_right: sized_query.query.left_to_right,
-                    results,
-                    limit,
-                    offset,
-                })?)
-            } else {
-                Err(Error::InternalError(
-                    "QueryItem must be a Key if not a range",
-                ))
-            }
-        } else {
-            // this is a query on a range
+    // fn query_item(
+    //     item: &QueryItem,
+    //     results: &mut Vec<Element>,
+    //     merk_path: &[&[u8]],
+    //     sized_query: &SizedQuery,
+    //     path: Option<&[&[u8]]>,
+    //     transaction: Option<&OptimisticTransactionDBTransaction>,
+    //     subtrees: &Subtrees,
+    //     limit: &mut Option<u16>,
+    //     offset: &mut Option<u16>,
+    //     add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
+    // ) -> Result<(), Error> {
+    //     if !item.is_range() {
+    //         // this is a query on a key
+    //         if let QueryItem::Key(key) = item {
+    //             Ok(add_element_function(PathQueryPushArgs {
+    //                 transaction,
+    //                 subtrees,
+    //                 key: Some(key.as_slice()),
+    //                 element: subtrees
+    //                     .borrow_mut(merk_path.iter().copied(), transaction)?
+    //                     .apply(|s| Element::get(s, key))?,
+    //                 path,
+    //                 subquery_key: sized_query.query.subquery_key.clone(),
+    //                 subquery: sized_query
+    //                     .query
+    //                     .subquery
+    //                     .as_ref()
+    //                     .map(|query| *query.clone()),
+    //                 left_to_right: sized_query.query.left_to_right,
+    //                 results,
+    //                 limit,
+    //                 offset,
+    //             })?)
+    //         } else {
+    //             Err(Error::InternalError(
+    //                 "QueryItem must be a Key if not a range",
+    //             ))
+    //         }
+    //     } else {
+    //         // this is a query on a range
 
-            // TODO: no better way until storage refactoring
-            let storage = subtrees
-                .borrow_mut(merk_path.iter().copied(), transaction)?
-                .apply(|s| s.storage.clone());
+    //         // TODO: no better way until storage refactoring
+    //         let storage = subtrees
+    //             .borrow_mut(merk_path.iter().copied(), transaction)?
+    //             .apply(|s| s.storage.clone());
 
-            let mut iter = storage.raw_iter(transaction);
+    //         let mut iter = storage.raw_iter(transaction);
 
-            item.seek_for_iter(&mut iter, sized_query.query.left_to_right);
+    //         item.seek_for_iter(&mut iter, sized_query.query.left_to_right);
 
-            while item.iter_is_valid_for_type(&iter, *limit, sized_query.query.left_to_right) {
-                let element =
-                    raw_decode(iter.value().expect("if key exists then value should too"))?;
-                let key = iter.key().expect("key should exist");
-                add_element_function(PathQueryPushArgs {
-                    transaction,
-                    subtrees,
-                    key: Some(key),
-                    element,
-                    path,
-                    subquery_key: sized_query.query.subquery_key.clone(),
-                    subquery: sized_query
-                        .query
-                        .subquery
-                        .as_ref()
-                        .map(|query| *query.clone()),
-                    left_to_right: sized_query.query.left_to_right,
-                    results,
-                    limit,
-                    offset,
-                })?;
-                if sized_query.query.left_to_right {
-                    iter.next();
-                } else {
-                    iter.prev();
-                }
-            }
-            Ok(())
-        }
-    }
+    //         while item.iter_is_valid_for_type(&iter, *limit,
+    // sized_query.query.left_to_right) {             let element =
+    //                 raw_decode(iter.value().expect("if key exists then value
+    // should too"))?;             let key = iter.key().expect("key should
+    // exist");             add_element_function(PathQueryPushArgs {
+    //                 transaction,
+    //                 subtrees,
+    //                 key: Some(key),
+    //                 element,
+    //                 path,
+    //                 subquery_key: sized_query.query.subquery_key.clone(),
+    //                 subquery: sized_query
+    //                     .query
+    //                     .subquery
+    //                     .as_ref()
+    //                     .map(|query| *query.clone()),
+    //                 left_to_right: sized_query.query.left_to_right,
+    //                 results,
+    //                 limit,
+    //                 offset,
+    //             })?;
+    //             if sized_query.query.left_to_right {
+    //                 iter.next();
+    //             } else {
+    //                 iter.prev();
+    //             }
+    //         }
+    //         Ok(())
+    //     }
+    // }
 
-    pub fn get_query_apply_function(
-        merk_path: &[&[u8]],
-        sized_query: &SizedQuery,
-        path: Option<&[&[u8]]>,
-        transaction: Option<&OptimisticTransactionDBTransaction>,
-        subtrees: &Subtrees,
-        add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
-    ) -> Result<(Vec<Element>, u16), Error> {
-        let mut results = Vec::new();
+    // pub fn get_query_apply_function(
+    //     merk_path: &[&[u8]],
+    //     sized_query: &SizedQuery,
+    //     path: Option<&[&[u8]]>,
+    //     transaction: Option<&OptimisticTransactionDBTransaction>,
+    //     subtrees: &Subtrees,
+    //     add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
+    // ) -> Result<(Vec<Element>, u16), Error> {
+    //     let mut results = Vec::new();
 
-        let mut limit = sized_query.limit;
-        let original_offset = sized_query.offset;
-        let mut offset = original_offset;
+    //     let mut limit = sized_query.limit;
+    //     let original_offset = sized_query.offset;
+    //     let mut offset = original_offset;
 
-        if sized_query.query.left_to_right {
-            for item in sized_query.query.iter() {
-                Self::query_item(
-                    item,
-                    &mut results,
-                    merk_path,
-                    sized_query,
-                    path,
-                    transaction,
-                    subtrees,
-                    &mut limit,
-                    &mut offset,
-                    add_element_function,
-                )?;
-                if limit == Some(0) {
-                    break;
-                }
-            }
-        } else {
-            for item in sized_query.query.rev_iter() {
-                Self::query_item(
-                    item,
-                    &mut results,
-                    merk_path,
-                    sized_query,
-                    path,
-                    transaction,
-                    subtrees,
-                    &mut limit,
-                    &mut offset,
-                    add_element_function,
-                )?;
-                if limit == Some(0) {
-                    break;
-                }
-            }
-        }
+    //     if sized_query.query.left_to_right {
+    //         for item in sized_query.query.iter() {
+    //             Self::query_item(
+    //                 item,
+    //                 &mut results,
+    //                 merk_path,
+    //                 sized_query,
+    //                 path,
+    //                 transaction,
+    //                 subtrees,
+    //                 &mut limit,
+    //                 &mut offset,
+    //                 add_element_function,
+    //             )?;
+    //             if limit == Some(0) {
+    //                 break;
+    //             }
+    //         }
+    //     } else {
+    //         for item in sized_query.query.rev_iter() {
+    //             Self::query_item(
+    //                 item,
+    //                 &mut results,
+    //                 merk_path,
+    //                 sized_query,
+    //                 path,
+    //                 transaction,
+    //                 subtrees,
+    //                 &mut limit,
+    //                 &mut offset,
+    //                 add_element_function,
+    //             )?;
+    //             if limit == Some(0) {
+    //                 break;
+    //             }
+    //         }
+    //     }
 
-        let skipped = if let Some(original_offset_unwrapped) = original_offset {
-            original_offset_unwrapped - offset.unwrap()
-        } else {
-            0
-        };
-        Ok((results, skipped))
-    }
+    //     let skipped = if let Some(original_offset_unwrapped) = original_offset {
+    //         original_offset_unwrapped - offset.unwrap()
+    //     } else {
+    //         0
+    //     };
+    //     Ok((results, skipped))
+    // }
 
-    // Returns a vector of elements, and the number of skipped elements
-    pub fn get_path_query(
-        merk_path: &[&[u8]],
-        path_query: &PathQuery,
-        transaction: Option<&OptimisticTransactionDBTransaction>,
-        subtrees: &Subtrees,
-    ) -> Result<(Vec<Element>, u16), Error> {
-        let path_slices = path_query
-            .path
-            .iter()
-            .map(|x| x.as_slice())
-            .collect::<Vec<_>>();
-        Element::get_query_apply_function(
-            merk_path,
-            &path_query.query,
-            Some(path_slices.as_slice()),
-            transaction,
-            subtrees,
-            Element::path_query_push,
-        )
-    }
+    // // Returns a vector of elements, and the number of skipped elements
+    // pub fn get_path_query(
+    //     merk_path: &[&[u8]],
+    //     path_query: &PathQuery,
+    //     transaction: Option<&OptimisticTransactionDBTransaction>,
+    //     subtrees: &Subtrees,
+    // ) -> Result<(Vec<Element>, u16), Error> {
+    //     let path_slices = path_query
+    //         .path
+    //         .iter()
+    //         .map(|x| x.as_slice())
+    //         .collect::<Vec<_>>();
+    //     Element::get_query_apply_function(
+    //         merk_path,
+    //         &path_query.query,
+    //         Some(path_slices.as_slice()),
+    //         transaction,
+    //         subtrees,
+    //         Element::path_query_push,
+    //     )
+    // }
 
-    // Returns a vector of elements, and the number of skipped elements
-    pub fn get_sized_query(
-        merk_path: &[&[u8]],
-        sized_query: &SizedQuery,
-        transaction: Option<&OptimisticTransactionDBTransaction>,
-        subtrees: &Subtrees,
-    ) -> Result<(Vec<Element>, u16), Error> {
-        Element::get_query_apply_function(
-            merk_path,
-            sized_query,
-            None,
-            transaction,
-            subtrees,
-            Element::path_query_push,
-        )
-    }
+    // /// Returns a vector of elements, and the number of skipped elements
+    // pub fn get_sized_query(
+    //     merk_path: &[&[u8]],
+    //     sized_query: &SizedQuery,
+    //     transaction: Option<&OptimisticTransactionDBTransaction>,
+    //     subtrees: &Subtrees,
+    // ) -> Result<(Vec<Element>, u16), Error> {
+    //     Element::get_query_apply_function(
+    //         merk_path,
+    //         sized_query,
+    //         None,
+    //         transaction,
+    //         subtrees,
+    //         Element::path_query_push,
+    //     )
+    // }
 
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert<'a: 'b, 'b, K: AsRef<[u8]>>(
+    pub fn insert<'db, 'ctx, 'a: 'b, 'b, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx>>(
         &'a self,
-        merk: &mut Merk<PrefixedRocksDbStorage>,
+        merk: &'ctx mut Merk<S>,
         key: K,
-        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
     ) -> Result<(), Error> {
         let batch_operations =
             [(
@@ -404,29 +388,29 @@ impl Element {
                     Error::CorruptedData(String::from("unable to serialize element"))
                 })?),
             )];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[], transaction)
+        merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    pub fn iterator(mut raw_iter: RawPrefixedTransactionalIterator) -> ElementsIterator {
+    pub fn iterator<I: RawIterator>(mut raw_iter: I) -> ElementsIterator<I> {
         raw_iter.seek_to_first();
         ElementsIterator::new(raw_iter)
     }
 }
 
-pub struct ElementsIterator<'a> {
-    raw_iter: RawPrefixedTransactionalIterator<'a>,
+pub struct ElementsIterator<I: RawIterator> {
+    raw_iter: I,
 }
 
 pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
-    let tree = <Tree as Store>::decode(bytes).map_err(|e| Error::CorruptedData(e.to_string()))?;
+    let tree = Tree::decode_raw(bytes).map_err(|e| Error::CorruptedData(e.to_string()))?;
     let element: Element = bincode::deserialize(tree.value())
         .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
     Ok(element)
 }
 
-impl<'a> ElementsIterator<'a> {
-    pub fn new(raw_iter: RawPrefixedTransactionalIterator<'a>) -> Self {
+impl<I: RawIterator> ElementsIterator<I> {
+    pub fn new(raw_iter: I) -> Self {
         ElementsIterator { raw_iter }
     }
 

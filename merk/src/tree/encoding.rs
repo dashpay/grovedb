@@ -5,7 +5,7 @@ use storage::StorageContext;
 use super::Tree;
 
 impl Tree {
-    fn decode_internal(bytes: &[u8]) -> Result<Self, Error> {
+    pub fn decode_raw(bytes: &[u8]) -> Result<Self, Error> {
         Decode::decode(bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
     }
 
@@ -17,7 +17,7 @@ impl Tree {
     {
         let mut tree: Option<Tree> = storage
             .get(&key)?
-            .map(|x| Tree::decode_internal(&x))
+            .map(|x| Tree::decode_raw(&x))
             .transpose()?;
         if let Some(ref mut t) = tree {
             t.set_key(key.as_ref().to_vec());
