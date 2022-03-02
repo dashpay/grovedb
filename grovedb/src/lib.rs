@@ -419,7 +419,8 @@ impl GroveDb {
         self.root_tree = self.temp_root_tree.clone();
 
         self.root_leaf_keys = self.temp_root_leaf_keys.clone();
-        self.temp_root_leaf_keys.clear();
+
+        self.is_readonly = false;
 
         self.cleanup_transactional_data();
 
@@ -436,9 +437,7 @@ impl GroveDb {
         db_transaction: &OptimisticTransactionDBTransaction,
     ) -> Result<(), Error> {
         // Cloning all the trees to maintain to rollback transactional changes
-        self.temp_root_tree = self.root_tree.clone();
-        self.temp_root_leaf_keys = self.root_leaf_keys.clone();
-        self.temp_subtrees = RefCell::new(HashMap::new());
+        self.cleanup_transactional_data();
 
         Ok(db_transaction
             .rollback()
@@ -452,6 +451,8 @@ impl GroveDb {
         &mut self,
         _db_transaction: OptimisticTransactionDBTransaction,
     ) -> Result<(), Error> {
+        // Enabling writes again
+        self.is_readonly = false;
         // Cloning all the trees to maintain to rollback transactional changes
         self.cleanup_transactional_data();
 
@@ -460,12 +461,10 @@ impl GroveDb {
 
     /// Cleanup transactional data after commit or abort
     fn cleanup_transactional_data(&mut self) {
-        // Enabling writes again
-        self.is_readonly = false;
-
         // Free transactional data
         self.temp_root_tree = MerkleTree::new();
         self.temp_root_leaf_keys = BTreeMap::new();
         self.temp_subtrees = RefCell::new(HashMap::new());
+        self.temp_deleted_subtrees = RefCell::new(HashSet::new());
     }
 }

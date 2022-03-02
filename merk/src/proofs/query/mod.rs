@@ -411,13 +411,7 @@ impl QueryItem {
                 if left_to_right {
                     iter.seek_to_first();
                 } else {
-                    iter.seek(end);
-                    // if the key is not the same as the end we should go back one
-                    if let Some(key) = iter.key() {
-                        if key != end {
-                            iter.prev()
-                        }
-                    }
+                    iter.seek_for_prev(end);
                 }
             }
             QueryItem::RangeAfter(RangeFrom { start }) => {
@@ -454,18 +448,12 @@ impl QueryItem {
                     // if the key is the same as start we should go to next
                     if let Some(key) = iter.key() {
                         if key == start {
-                            iter.next()
+                            iter.next();
                         }
                     }
                 } else {
                     let end = range_inclusive.end();
-                    iter.seek(end);
-                    // if the key is not the same as the end we should go back one
-                    if let Some(key) = iter.key() {
-                        if key != end {
-                            iter.prev()
-                        }
-                    }
+                    iter.seek_for_prev(end);
                 }
             }
         };

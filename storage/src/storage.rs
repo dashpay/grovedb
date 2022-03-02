@@ -101,6 +101,8 @@ pub trait RawIterator {
 
     fn seek<K: AsRef<[u8]>>(&mut self, key: K);
 
+    fn seek_for_prev<K: AsRef<[u8]>>(&mut self, key: K);
+
     fn next(&mut self);
 
     fn prev(&mut self);

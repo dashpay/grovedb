@@ -35,6 +35,11 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
             .seek(make_prefixed_key(self.prefix.to_vec(), key))
     }
 
+    fn seek_for_prev<K: AsRef<[u8]>>(&mut self, key: K) {
+        self.raw_iterator
+            .seek_for_prev(make_prefixed_key(self.prefix.to_vec(), key))
+    }
+
     fn next(&mut self) {
         self.raw_iterator.next()
     }
