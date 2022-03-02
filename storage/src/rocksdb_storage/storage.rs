@@ -51,9 +51,9 @@ impl RocksDbStorage {
         PrefixedRocksDbStorageContext::new(&self.db, prefix)
     }
 
-    pub fn get_prefixed_context_from_path<'a, P>(&self, path: P) -> PrefixedRocksDbStorageContext
+    pub fn get_prefixed_context_from_path<'p, P>(&self, path: P) -> PrefixedRocksDbStorageContext
     where
-        P: IntoIterator<Item = &'a [u8]>
+        P: IntoIterator<Item = &'p [u8]>,
     {
         let prefix = Self::build_prefix(path);
         PrefixedRocksDbStorageContext::new(&self.db, prefix)
@@ -64,6 +64,18 @@ impl RocksDbStorage {
         prefix: Vec<u8>,
         transaction: &'a <Self as Storage>::Transaction,
     ) -> PrefixedRocksDbTransactionContext {
+        PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix)
+    }
+
+    pub fn get_prefixed_transactional_context_from_path<'a, 'p, P>(
+        &'a self,
+        path: P,
+        transaction: &'a <Self as Storage>::Transaction,
+    ) -> PrefixedRocksDbTransactionContext
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+    {
+        let prefix = Self::build_prefix(path);
         PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix)
     }
 
@@ -89,7 +101,6 @@ impl RocksDbStorage {
         res = blake3::hash(&res).as_bytes().to_vec();
         res
     }
-
 }
 
 impl<'db> Storage<'db> for RocksDbStorage {
