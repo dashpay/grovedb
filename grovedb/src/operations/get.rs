@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use merk::Merk;
 
 use crate::{Element, Error, GroveDb, PathQuery, TransactionArg};
+use crate::merk_optional_tx;
 
 /// Limit of possible indirections
 pub(crate) const MAX_REFERENCE_HOPS: usize = 10;
@@ -68,37 +69,13 @@ impl GroveDb {
     {
         let path_iter = path.into_iter();
         if path_iter.len() == 0 {
-            if let Some(tx) = transaction {
-                let subtree_storage = self
-                    .db
-                    .get_prefixed_transactional_context_from_path([key], tx);
-                let subtree = Merk::open(subtree_storage)
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
+            merk_optional_tx!(self.db, [key], transaction, subtree, {
                 Ok(Element::Tree(subtree.root_hash()))
-            } else {
-                let subtree_storage = self
-                    .db
-                    .get_prefixed_context_from_path([key]);
-                let subtree = Merk::open(subtree_storage)
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                Ok(Element::Tree(subtree.root_hash()))
-            }
+            })
         } else {
-            if let Some(tx) = transaction {
-                let subtree_storage = self
-                    .db
-                    .get_prefixed_transactional_context_from_path(path_iter, tx);
-                let subtree = Merk::open(subtree_storage)
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                Ok(Element::get(&subtree, key)?)
-            } else {
-                let subtree_storage = self
-                    .db
-                    .get_prefixed_context_from_path(path_iter);
-                let subtree = Merk::open(subtree_storage)
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                Ok(Element::get(&subtree, key)?)
-            }
+            merk_optional_tx!(self.db, path_iter, transaction, subtree, {
+                Ok(Element::Tree(subtree.root_hash()))
+            })
         }
     }
 

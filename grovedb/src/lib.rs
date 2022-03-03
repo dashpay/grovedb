@@ -1,5 +1,6 @@
 mod operations;
 mod subtree;
+mod util;
 // mod subtrees;
 #[cfg(test)]
 mod tests;
@@ -240,11 +241,7 @@ impl GroveDb {
     // }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
-    fn propagate_changes<'p, P>(
-        &self,
-        path: P,
-        transaction: TransactionArg,
-    ) -> Result<(), Error>
+    fn propagate_changes<'p, P>(&self, path: P, transaction: TransactionArg) -> Result<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
