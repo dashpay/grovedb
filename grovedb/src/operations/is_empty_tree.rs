@@ -1,5 +1,4 @@
-use crate::{Error, GroveDb, TransactionArg};
-use crate::merk_optional_tx;
+use crate::{merk_optional_tx, Error, GroveDb, TransactionArg};
 
 impl GroveDb {
     pub fn is_empty_tree<'p, P>(&self, path: P, transaction: TransactionArg) -> Result<bool, Error>

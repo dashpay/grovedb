@@ -116,8 +116,8 @@ pub struct Proof {
 }
 
 pub struct GroveDb {
-    root_tree: MerkleTree<Sha256>,
-    root_leaf_keys: BTreeMap<Vec<u8>, usize>,
+    // root_tree: MerkleTree<Sha256>,
+    // root_leaf_keys: BTreeMap<Vec<u8>, usize>,
     db: RocksDbStorage,
 }
 
@@ -125,37 +125,38 @@ type Transaction<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
 type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
 
 impl GroveDb {
-    pub fn new(
-        root_tree: MerkleTree<Sha256>,
-        root_leaf_keys: BTreeMap<Vec<u8>, usize>,
-        db: RocksDbStorage,
-    ) -> Self {
-        Self {
-            root_tree,
-            root_leaf_keys,
-            db,
-        }
-    }
+    // pub fn new(
+    //     // root_tree: MerkleTree<Sha256>,
+    //     // root_leaf_keys: BTreeMap<Vec<u8>, usize>,
+    //     db: RocksDbStorage,
+    // ) -> Self {
+    //     Self {
+    //         // root_tree,
+    //         // root_leaf_keys,
+    //         db,
+    //     }
+    // }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = RocksDbStorage::default_rocksdb_with_path(path)?;
         // TODO: owned `get` is not required for deserialization
-        let meta_storage = db.get_prefixed_context(Vec::new());
-        let root_leaf_keys: BTreeMap<Vec<u8>, usize> = if let Some(root_leaf_keys_serialized) =
-            meta_storage.get_meta(ROOT_LEAFS_SERIALIZED_KEY)?
-        {
-            bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {
-                Error::CorruptedData(String::from("unable to deserialize root leafs"))
-            })?
-        } else {
-            BTreeMap::new()
-        };
+        // let meta_storage = db.get_prefixed_context(Vec::new());
+        // let root_leaf_keys: BTreeMap<Vec<u8>, usize> = if let
+        // Some(root_leaf_keys_serialized) =     meta_storage.
+        // get_meta(ROOT_LEAFS_SERIALIZED_KEY)? {
+        //     bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {
+        //         Error::CorruptedData(String::from("unable to deserialize root
+        // leafs"))     })?
+        // } else {
+        //     BTreeMap::new()
+        // };
 
-        Ok(GroveDb::new(
-            Self::get_root_tree(&db, None)?,
-            root_leaf_keys,
-            db,
-        ))
+        // Ok(GroveDb::new(
+        //     Self::get_root_tree(&db, None)?,
+        //     root_leaf_keys,
+        //     db,
+        // ))
+        Ok(GroveDb { db })
     }
 
     // TODO: Checkpoints are currently not implemented for the transactional DB

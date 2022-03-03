@@ -2,8 +2,7 @@ use std::collections::HashSet;
 
 use merk::Merk;
 
-use crate::{Element, Error, GroveDb, PathQuery, TransactionArg};
-use crate::merk_optional_tx;
+use crate::{merk_optional_tx, Element, Error, GroveDb, PathQuery, TransactionArg};
 
 /// Limit of possible indirections
 pub(crate) const MAX_REFERENCE_HOPS: usize = 10;
