@@ -246,10 +246,10 @@ impl Encode for Link {
         debug_assert!(self.key().len() <= 1024, "Key length must be less than or equal 1024");
 
         Ok(match self {
-            Link::Reference { key, .. } => 1 + key.len() + 32 + 2,
+            Link::Reference { key, .. } => 2 + key.len() + 32 + 2,
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
-            Link::Uncommitted { tree, .. } => 1 + tree.key().len() + 32 + 2,
-            Link::Loaded { tree, .. } => 1 + tree.key().len() + 32 + 2,
+            Link::Uncommitted { tree, .. } => 2 + tree.key().len() + 32 + 2,
+            Link::Loaded { tree, .. } => 2 + tree.key().len() + 32 + 2,
         })
     }
 }
