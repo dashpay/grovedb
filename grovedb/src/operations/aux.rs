@@ -1,6 +1,8 @@
+use std::iter::empty;
+
 use storage::StorageContext;
 
-use crate::{Error, GroveDb, TransactionArg};
+use crate::{util::storage_context_optional_tx, Error, GroveDb, TransactionArg};
 
 impl GroveDb {
     pub fn put_aux<K: AsRef<[u8]>>(
@@ -9,13 +11,9 @@ impl GroveDb {
         value: &[u8],
         transaction: TransactionArg,
     ) -> Result<(), Error> {
-        if let Some(tx) = transaction {
-            let aux_storage = self.db.get_prefixed_transactional_context(Vec::new(), tx);
+        storage_context_optional_tx!(self.db, empty(), transaction, aux_storage, {
             aux_storage.put_aux(key, value)?;
-        } else {
-            let aux_storage = self.db.get_prefixed_context(Vec::new());
-            aux_storage.put_aux(key, value)?;
-        }
+        });
         Ok(())
     }
 
@@ -24,13 +22,9 @@ impl GroveDb {
         key: K,
         transaction: TransactionArg,
     ) -> Result<(), Error> {
-        if let Some(tx) = transaction {
-            let aux_storage = self.db.get_prefixed_transactional_context(Vec::new(), tx);
+        storage_context_optional_tx!(self.db, empty(), transaction, aux_storage, {
             aux_storage.delete_aux(key)?;
-        } else {
-            let aux_storage = self.db.get_prefixed_context(Vec::new());
-            aux_storage.delete_aux(key)?;
-        }
+        });
         Ok(())
     }
 
@@ -39,12 +33,8 @@ impl GroveDb {
         key: K,
         transaction: TransactionArg,
     ) -> Result<Option<Vec<u8>>, Error> {
-        if let Some(tx) = transaction {
-            let aux_storage = self.db.get_prefixed_transactional_context(Vec::new(), tx);
+        storage_context_optional_tx!(self.db, empty(), transaction, aux_storage, {
             Ok(aux_storage.get_aux(key)?)
-        } else {
-            let aux_storage = self.db.get_prefixed_context(Vec::new());
-            Ok(aux_storage.get_aux(key)?)
-        }
+        })
     }
 }

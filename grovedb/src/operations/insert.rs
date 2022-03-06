@@ -1,6 +1,6 @@
 use merk::Merk;
 
-use crate::{merk_optional_tx, Element, Error, GroveDb, TransactionArg};
+use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
 
 impl GroveDb {
     pub fn insert<'p, P>(

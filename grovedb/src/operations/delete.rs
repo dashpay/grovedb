@@ -1,6 +1,6 @@
 use storage::StorageContext;
 
-use crate::{merk_optional_tx, Element, Error, GroveDb, TransactionArg};
+use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
 
 impl GroveDb {
     pub fn delete_up_tree_while_empty<'p, P>(

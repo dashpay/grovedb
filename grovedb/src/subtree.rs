@@ -8,9 +8,12 @@ use merk::{
     Op,
 };
 use serde::{Deserialize, Serialize};
-use storage::{RawIterator, StorageContext};
+use storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
 
-use crate::{Error, Merk, PathQuery, SizedQuery};
+use crate::{
+    util::{merk_optional_tx, storage_context_optional_tx},
+    Error, Merk, PathQuery, SizedQuery, TransactionArg,
+};
 
 /// Variants of GroveDB stored entities
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -25,7 +28,11 @@ pub enum Element {
     Tree([u8; 32]),
 }
 
-pub struct PathQueryPushArgs<'a> {
+pub struct PathQueryPushArgs<'db, 'ctx, 'a>
+where
+    'db: 'ctx,
+{
+    pub transaction: TransactionArg<'db, 'ctx>,
     pub key: Option<&'a [u8]>,
     pub element: Element,
     pub path: Option<&'a [&'a [u8]]>,
@@ -84,29 +91,28 @@ impl Element {
     // subtrees)?;     Ok(elements)
     // }
 
-    // fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
-    //     let PathQueryPushArgs {
-    //         element,
-    //         results,
-    //         limit,
-    //         offset,
-    //         ..
-    //     } = args;
-    //     if offset.unwrap_or(0) == 0 {
-    //         results.push(element);
-    //         if let Some(limit) = limit {
-    //             *limit -= 1;
-    //         }
-    //     } else if let Some(offset) = offset {
-    //         *offset -= 1;
-    //     }
-    //     Ok(())
-    // }
+    fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
+        let PathQueryPushArgs {
+            element,
+            results,
+            limit,
+            offset,
+            ..
+        } = args;
+        if offset.unwrap_or(0) == 0 {
+            results.push(element);
+            if let Some(limit) = limit {
+                *limit -= 1;
+            }
+        } else if let Some(offset) = offset {
+            *offset -= 1;
+        }
+        Ok(())
+    }
 
     // fn path_query_push(args: PathQueryPushArgs) -> Result<(), Error> {
     //     let PathQueryPushArgs {
     //         transaction,
-    //         subtrees,
     //         key,
     //         element,
     //         path,
@@ -174,7 +180,6 @@ impl Element {
     //         _ => {
     //             Element::basic_push(PathQueryPushArgs {
     //                 transaction,
-    //                 subtrees,
     //                 key,
     //                 element,
     //                 path,
@@ -190,147 +195,145 @@ impl Element {
     //     Ok(())
     // }
 
-    // fn query_item(
-    //     item: &QueryItem,
-    //     results: &mut Vec<Element>,
-    //     merk_path: &[&[u8]],
-    //     sized_query: &SizedQuery,
-    //     path: Option<&[&[u8]]>,
-    //     transaction: Option<&OptimisticTransactionDBTransaction>,
-    //     subtrees: &Subtrees,
-    //     limit: &mut Option<u16>,
-    //     offset: &mut Option<u16>,
-    //     add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
-    // ) -> Result<(), Error> {
-    //     if !item.is_range() {
-    //         // this is a query on a key
-    //         if let QueryItem::Key(key) = item {
-    //             Ok(add_element_function(PathQueryPushArgs {
-    //                 transaction,
-    //                 subtrees,
-    //                 key: Some(key.as_slice()),
-    //                 element: subtrees
-    //                     .borrow_mut(merk_path.iter().copied(), transaction)?
-    //                     .apply(|s| Element::get(s, key))?,
-    //                 path,
-    //                 subquery_key: sized_query.query.subquery_key.clone(),
-    //                 subquery: sized_query
-    //                     .query
-    //                     .subquery
-    //                     .as_ref()
-    //                     .map(|query| *query.clone()),
-    //                 left_to_right: sized_query.query.left_to_right,
-    //                 results,
-    //                 limit,
-    //                 offset,
-    //             })?)
-    //         } else {
-    //             Err(Error::InternalError(
-    //                 "QueryItem must be a Key if not a range",
-    //             ))
-    //         }
-    //     } else {
-    //         // this is a query on a range
+    fn query_item(
+        storage: &RocksDbStorage,
+        item: &QueryItem,
+        results: &mut Vec<Element>,
+        merk_path: &[&[u8]],
+        sized_query: &SizedQuery,
+        path: Option<&[&[u8]]>,
+        transaction: TransactionArg,
+        limit: &mut Option<u16>,
+        offset: &mut Option<u16>,
+        add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        if !item.is_range() {
+            // this is a query on a key
+            if let QueryItem::Key(key) = item {
+                Ok(add_element_function(PathQueryPushArgs {
+                    transaction,
+                    key: Some(key.as_slice()),
+                    element: merk_optional_tx!(
+                        storage,
+                        merk_path.iter().copied(),
+                        transaction,
+                        subtree,
+                        { Element::get(&subtree, key)? }
+                    ),
+                    path,
+                    subquery_key: sized_query.query.subquery_key.clone(),
+                    subquery: sized_query
+                        .query
+                        .subquery
+                        .as_ref()
+                        .map(|query| *query.clone()),
+                    left_to_right: sized_query.query.left_to_right,
+                    results,
+                    limit,
+                    offset,
+                })?)
+            } else {
+                Err(Error::InternalError(
+                    "QueryItem must be a Key if not a range",
+                ))
+            }
+        } else {
+            // this is a query on a range
+            storage_context_optional_tx!(storage, merk_path.iter().copied(), transaction, ctx, {
+                let mut iter = ctx.raw_iter();
 
-    //         // TODO: no better way until storage refactoring
-    //         let storage = subtrees
-    //             .borrow_mut(merk_path.iter().copied(), transaction)?
-    //             .apply(|s| s.storage.clone());
+                item.seek_for_iter(&mut iter, sized_query.query.left_to_right);
 
-    //         let mut iter = storage.raw_iter(transaction);
+                while item.iter_is_valid_for_type(&iter, *limit, sized_query.query.left_to_right) {
+                    let element =
+                        raw_decode(iter.value().expect("if key exists then value should too"))?;
+                    let key = iter.key().expect("key should exist");
+                    add_element_function(PathQueryPushArgs {
+                        transaction,
+                        key: Some(key),
+                        element,
+                        path,
+                        subquery_key: sized_query.query.subquery_key.clone(),
+                        subquery: sized_query
+                            .query
+                            .subquery
+                            .as_ref()
+                            .map(|query| *query.clone()),
+                        left_to_right: sized_query.query.left_to_right,
+                        results,
+                        limit,
+                        offset,
+                    })?;
+                    if sized_query.query.left_to_right {
+                        iter.next();
+                    } else {
+                        iter.prev();
+                    }
+                }
+                Ok(())
+            })
+        }
+    }
 
-    //         item.seek_for_iter(&mut iter, sized_query.query.left_to_right);
+    pub fn get_query_apply_function(
+        storage: &RocksDbStorage,
+        merk_path: &[&[u8]],
+        sized_query: &SizedQuery,
+        path: Option<&[&[u8]]>,
+        transaction: TransactionArg,
+        add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
+    ) -> Result<(Vec<Element>, u16), Error> {
+        let mut results = Vec::new();
 
-    //         while item.iter_is_valid_for_type(&iter, *limit,
-    // sized_query.query.left_to_right) {             let element =
-    //                 raw_decode(iter.value().expect("if key exists then value
-    // should too"))?;             let key = iter.key().expect("key should
-    // exist");             add_element_function(PathQueryPushArgs {
-    //                 transaction,
-    //                 subtrees,
-    //                 key: Some(key),
-    //                 element,
-    //                 path,
-    //                 subquery_key: sized_query.query.subquery_key.clone(),
-    //                 subquery: sized_query
-    //                     .query
-    //                     .subquery
-    //                     .as_ref()
-    //                     .map(|query| *query.clone()),
-    //                 left_to_right: sized_query.query.left_to_right,
-    //                 results,
-    //                 limit,
-    //                 offset,
-    //             })?;
-    //             if sized_query.query.left_to_right {
-    //                 iter.next();
-    //             } else {
-    //                 iter.prev();
-    //             }
-    //         }
-    //         Ok(())
-    //     }
-    // }
+        let mut limit = sized_query.limit;
+        let original_offset = sized_query.offset;
+        let mut offset = original_offset;
 
-    // pub fn get_query_apply_function(
-    //     merk_path: &[&[u8]],
-    //     sized_query: &SizedQuery,
-    //     path: Option<&[&[u8]]>,
-    //     transaction: Option<&OptimisticTransactionDBTransaction>,
-    //     subtrees: &Subtrees,
-    //     add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
-    // ) -> Result<(Vec<Element>, u16), Error> {
-    //     let mut results = Vec::new();
+        if sized_query.query.left_to_right {
+            for item in sized_query.query.iter() {
+                Self::query_item(
+                    storage,
+                    item,
+                    &mut results,
+                    merk_path,
+                    sized_query,
+                    path,
+                    transaction,
+                    &mut limit,
+                    &mut offset,
+                    add_element_function,
+                )?;
+                if limit == Some(0) {
+                    break;
+                }
+            }
+        } else {
+            for item in sized_query.query.rev_iter() {
+                Self::query_item(
+                    storage,
+                    item,
+                    &mut results,
+                    merk_path,
+                    sized_query,
+                    path,
+                    transaction,
+                    &mut limit,
+                    &mut offset,
+                    add_element_function,
+                )?;
+                if limit == Some(0) {
+                    break;
+                }
+            }
+        }
 
-    //     let mut limit = sized_query.limit;
-    //     let original_offset = sized_query.offset;
-    //     let mut offset = original_offset;
-
-    //     if sized_query.query.left_to_right {
-    //         for item in sized_query.query.iter() {
-    //             Self::query_item(
-    //                 item,
-    //                 &mut results,
-    //                 merk_path,
-    //                 sized_query,
-    //                 path,
-    //                 transaction,
-    //                 subtrees,
-    //                 &mut limit,
-    //                 &mut offset,
-    //                 add_element_function,
-    //             )?;
-    //             if limit == Some(0) {
-    //                 break;
-    //             }
-    //         }
-    //     } else {
-    //         for item in sized_query.query.rev_iter() {
-    //             Self::query_item(
-    //                 item,
-    //                 &mut results,
-    //                 merk_path,
-    //                 sized_query,
-    //                 path,
-    //                 transaction,
-    //                 subtrees,
-    //                 &mut limit,
-    //                 &mut offset,
-    //                 add_element_function,
-    //             )?;
-    //             if limit == Some(0) {
-    //                 break;
-    //             }
-    //         }
-    //     }
-
-    //     let skipped = if let Some(original_offset_unwrapped) = original_offset {
-    //         original_offset_unwrapped - offset.unwrap()
-    //     } else {
-    //         0
-    //     };
-    //     Ok((results, skipped))
-    // }
+        let skipped = if let Some(original_offset_unwrapped) = original_offset {
+            original_offset_unwrapped - offset.unwrap()
+        } else {
+            0
+        };
+        Ok((results, skipped))
+    }
 
     // // Returns a vector of elements, and the number of skipped elements
     // pub fn get_path_query(
@@ -376,8 +379,8 @@ impl Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert<'db, 'ctx, 'a: 'b, 'b, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx>>(
-        &'a self,
+    pub fn insert<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx>>(
+        &self,
         merk: &'ctx mut Merk<S>,
         key: K,
     ) -> Result<(), Error> {
