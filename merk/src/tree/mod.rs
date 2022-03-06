@@ -47,7 +47,7 @@ impl Tree {
     ///
     /// Hashes the key/value pair and initializes the `kv_hash` field.
     pub fn new(key: Vec<u8>, value: Vec<u8>) -> Self {
-        Tree {
+        Self {
             inner: Box::new(TreeInner {
                 kv: KV::new(key, value),
                 left: None,
@@ -64,8 +64,8 @@ impl Tree {
         kv_hash: Hash,
         left: Option<Link>,
         right: Option<Link>,
-    ) -> Tree {
-        Tree {
+    ) -> Self {
+        Self {
             inner: Box::new(TreeInner {
                 kv: KV::from_fields(key, value, kv_hash),
                 left,

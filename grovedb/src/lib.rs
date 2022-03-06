@@ -91,8 +91,8 @@ pub struct SizedQuery {
 }
 
 impl SizedQuery {
-    pub const fn new(query: Query, limit: Option<u16>, offset: Option<u16>) -> SizedQuery {
-        SizedQuery {
+    pub const fn new(query: Query, limit: Option<u16>, offset: Option<u16>) -> Self {
+        Self {
             query,
             limit,
             offset,
@@ -101,13 +101,13 @@ impl SizedQuery {
 }
 
 impl PathQuery {
-    pub const fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> PathQuery {
-        PathQuery { path, query }
+    pub const fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> Self {
+        Self { path, query }
     }
 
-    pub const fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> PathQuery {
+    pub const fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> Self {
         let query = SizedQuery::new(query, None, None);
-        PathQuery { path, query }
+        Self { path, query }
     }
 }
 
@@ -184,7 +184,7 @@ impl GroveDb {
             storage: db.clone(),
         };
 
-        Ok(GroveDb::new(
+        Ok(Self::new(
             Self::build_root_tree(&subtrees_view, &root_leaf_keys, None),
             root_leaf_keys,
             meta_storage,
@@ -289,7 +289,7 @@ impl GroveDb {
             None => &self.root_leaf_keys,
             Some(_) => &self.temp_root_leaf_keys,
         };
-        let root_tree = GroveDb::build_root_tree(&subtrees, root_leaf_keys, transaction);
+        let root_tree = Self::build_root_tree(&subtrees, root_leaf_keys, transaction);
         match transaction {
             None => self.root_tree = root_tree,
             Some(_) => self.temp_root_tree = root_tree,

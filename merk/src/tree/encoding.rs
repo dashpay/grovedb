@@ -21,7 +21,7 @@ impl Store for Tree {
         K: AsRef<[u8]>,
         Self::Error: From<S::Error>,
     {
-        let mut tree: Option<Tree> = storage
+        let mut tree: Option<Self> = storage
             .get(&key)?
             .map(|x| <Self as Store>::decode(&x))
             .transpose()?;
@@ -59,10 +59,10 @@ impl Tree {
     }
 
     #[inline]
-    pub fn decode(key: Vec<u8>, input: &[u8]) -> Tree {
+    pub fn decode(key: Vec<u8>, input: &[u8]) -> Self {
         // operation is infallible so it's ok to unwrap
         // TODO: how said that its infallible?
-        let mut tree: Tree = Decode::decode(input).unwrap();
+        let mut tree: Self = Decode::decode(input).unwrap();
         tree.inner.kv.key = key;
         tree
     }

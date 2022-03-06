@@ -34,8 +34,8 @@ impl<S: Storage> Merk<S>
 where
     <S as Storage>::Error: std::error::Error,
 {
-    pub fn open(storage: S) -> Result<Merk<S>> {
-        let mut merk = Merk {
+    pub fn open(storage: S) -> Result<Self> {
+        let mut merk = Self {
             tree: Cell::new(None),
             storage,
         };
@@ -432,7 +432,7 @@ struct MerkCommitter {
 
 impl MerkCommitter {
     fn new(height: u8, levels: u8) -> Self {
-        MerkCommitter {
+        Self {
             batch: Vec::with_capacity(10000),
             height,
             levels,

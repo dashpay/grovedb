@@ -35,7 +35,7 @@ impl PrefixedRocksDbStorage {
         db: Rc<rocksdb::OptimisticTransactionDB>,
         prefix: Vec<u8>,
     ) -> Result<Self, PrefixedRocksDbStorageError> {
-        Ok(PrefixedRocksDbStorage { prefix, db })
+        Ok(Self { prefix, db })
     }
 
     /// Get auxiliary data column family
