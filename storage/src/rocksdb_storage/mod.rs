@@ -173,7 +173,7 @@ mod tests {
     impl TempPrefixedStorage {
         fn new() -> Self {
             let tmp_dir = TempDir::new("db").expect("cannot open tempdir");
-            TempPrefixedStorage {
+            Self {
                 storage: PrefixedRocksDbStorage::new(
                     default_rocksdb(tmp_dir.path()),
                     b"test".to_vec(),

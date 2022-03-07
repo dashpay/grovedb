@@ -53,7 +53,7 @@ impl Link {
     pub const fn from_modified_tree(tree: Tree) -> Self {
         let pending_writes = 1 + tree.child_pending_writes(true) + tree.child_pending_writes(false);
 
-        Link::Modified {
+        Self::Modified {
             pending_writes,
             child_heights: tree.child_heights(),
             tree,
@@ -63,7 +63,7 @@ impl Link {
     /// Creates a `Link::Modified` from the given tree, if any. If `None`,
     /// returns `None`.
     pub fn maybe_from_modified_tree(maybe_tree: Option<Tree>) -> Option<Self> {
-        maybe_tree.map(Link::from_modified_tree)
+        maybe_tree.map(Self::from_modified_tree)
     }
 
     /// Returns `true` if the link is of the `Link::Reference` variant.
@@ -173,7 +173,7 @@ impl Link {
                 hash,
                 child_heights,
                 tree,
-            } => Link::Reference {
+            } => Self::Reference {
                 hash,
                 child_heights,
                 key: tree.take_key(),
@@ -256,7 +256,7 @@ impl Encode for Link {
 impl Link {
     #[inline]
     fn default_reference() -> Self {
-        Link::Reference {
+        Self::Reference {
             key: Vec::with_capacity(64),
             hash: Default::default(),
             child_heights: (0, 0),
@@ -266,9 +266,9 @@ impl Link {
 
 impl Decode for Link {
     #[inline]
-    fn decode<R: Read>(input: R) -> Result<Link> {
-        let mut link = Link::default_reference();
-        Link::decode_into(&mut link, input)?;
+    fn decode<R: Read>(input: R) -> Result<Self> {
+        let mut link = Self::default_reference();
+        Self::decode_into(&mut link, input)?;
         Ok(link)
     }
 
@@ -277,7 +277,7 @@ impl Decode for Link {
         if !self.is_reference() {
             // don't create new struct if self is already Link::Reference,
             // so we can re-use the key vec
-            *self = Link::default_reference();
+            *self = Self::default_reference();
         }
 
         if let Link::Reference {

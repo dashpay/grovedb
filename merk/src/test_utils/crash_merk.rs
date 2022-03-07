@@ -20,11 +20,11 @@ pub struct CrashMerk {
 impl CrashMerk {
     /// Opens a `CrashMerk` at the given file path, creating a new one if it
     /// does not exist.
-    pub fn open() -> Result<CrashMerk> {
+    pub fn open() -> Result<Self> {
         let path = TempDir::new("db").expect("cannot create tempdir");
         let db = default_rocksdb(path.path());
         let merk = Merk::open(PrefixedRocksDbStorage::new(db.clone(), Vec::new()).unwrap())?;
-        Ok(CrashMerk {
+        Ok(Self {
             merk,
             path: Some(path),
             _db: db,

@@ -5,7 +5,7 @@ use storage::rocksdb_storage::OptimisticTransactionDBTransaction;
 use crate::{Element, Error, GroveDb, PathQuery, Subtrees};
 
 /// Limit of possible indirections
-pub(crate) const MAX_REFERENCE_HOPS: usize = 10;
+pub const MAX_REFERENCE_HOPS: usize = 10;
 
 impl GroveDb {
     pub fn get<'a, P>(
