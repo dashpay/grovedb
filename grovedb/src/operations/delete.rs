@@ -7,7 +7,7 @@ use crate::{
 
 impl GroveDb {
     pub fn delete_up_tree_while_empty<'p, P>(
-        &mut self,
+        &self,
         path: P,
         key: &'p [u8],
         stop_path_height: Option<u16>,
@@ -36,7 +36,7 @@ impl GroveDb {
     }
 
     pub fn delete<'p, P>(
-        &mut self,
+        &self,
         path: P,
         key: &'p [u8],
         transaction: TransactionArg,
@@ -50,7 +50,7 @@ impl GroveDb {
     }
 
     pub fn delete_if_empty_tree<'p, P>(
-        &mut self,
+        &self,
         path: P,
         key: &'p [u8],
         transaction: TransactionArg,
@@ -63,7 +63,7 @@ impl GroveDb {
     }
 
     fn delete_internal<'p, P>(
-        &mut self,
+        &self,
         path: P,
         key: &'p [u8],
         only_delete_tree_if_empty: bool,

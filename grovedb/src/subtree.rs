@@ -472,7 +472,7 @@ mod tests {
     fn test_get_query() {
         let db = make_grovedb();
 
-        let storage = db.get_storage();
+        let storage = &db.db;
         let storage_context = storage.get_prefixed_context_from_path([TEST_LEAF]);
         let mut merk = Merk::open(storage_context).expect("cannot open Merk");
 
@@ -502,183 +502,179 @@ mod tests {
             ]
         );
 
-        // // Test range query
-        // let mut query = Query::new();
-        // query.insert_range(b"b".to_vec()..b"d".to_vec());
-        // query.insert_range(b"a".to_vec()..b"c".to_vec());
-        // assert_eq!(
-        //     Element::get_query(&storage, &[TEST_LEAF], &query, None)
-        //         .expect("expected successful get_query"),
-        //     vec![
-        //         Element::Item(b"ayya".to_vec()),
-        //         Element::Item(b"ayyb".to_vec()),
-        //         Element::Item(b"ayyc".to_vec())
-        //     ]
-        // );
+        // Test range query
+        let mut query = Query::new();
+        query.insert_range(b"b".to_vec()..b"d".to_vec());
+        query.insert_range(b"a".to_vec()..b"c".to_vec());
+        assert_eq!(
+            Element::get_query(&storage, &[TEST_LEAF], &query, None)
+                .expect("expected successful get_query"),
+            vec![
+                Element::Item(b"ayya".to_vec()),
+                Element::Item(b"ayyb".to_vec()),
+                Element::Item(b"ayyc".to_vec())
+            ]
+        );
 
-        // // Test range inclusive query
-        // let mut query = Query::new();
-        // query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
-        // query.insert_range(b"b".to_vec()..b"c".to_vec());
-        // assert_eq!(
-        //     Element::get_query(&storage, &[TEST_LEAF], &query, None)
-        //         .expect("expected successful get_query"),
-        //     vec![
-        //         Element::Item(b"ayyb".to_vec()),
-        //         Element::Item(b"ayyc".to_vec()),
-        //         Element::Item(b"ayyd".to_vec())
-        //     ]
-        // );
+        // Test range inclusive query
+        let mut query = Query::new();
+        query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
+        query.insert_range(b"b".to_vec()..b"c".to_vec());
+        assert_eq!(
+            Element::get_query(&storage, &[TEST_LEAF], &query, None)
+                .expect("expected successful get_query"),
+            vec![
+                Element::Item(b"ayyb".to_vec()),
+                Element::Item(b"ayyc".to_vec()),
+                Element::Item(b"ayyd".to_vec())
+            ]
+        );
 
-        // // Test overlaps
-        // let mut query = Query::new();
-        // query.insert_key(b"a".to_vec());
-        // query.insert_range(b"b".to_vec()..b"d".to_vec());
-        // query.insert_range(b"a".to_vec()..b"c".to_vec());
-        // assert_eq!(
-        //     Element::get_query(&storage, &[TEST_LEAF], &query, None)
-        //         .expect("expected successful get_query"),
-        //     vec![
-        //         Element::Item(b"ayya".to_vec()),
-        //         Element::Item(b"ayyb".to_vec()),
-        //         Element::Item(b"ayyc".to_vec())
-        //     ]
-        // );
+        // Test overlaps
+        let mut query = Query::new();
+        query.insert_key(b"a".to_vec());
+        query.insert_range(b"b".to_vec()..b"d".to_vec());
+        query.insert_range(b"a".to_vec()..b"c".to_vec());
+        assert_eq!(
+            Element::get_query(&storage, &[TEST_LEAF], &query, None)
+                .expect("expected successful get_query"),
+            vec![
+                Element::Item(b"ayya".to_vec()),
+                Element::Item(b"ayyb".to_vec()),
+                Element::Item(b"ayyc".to_vec())
+            ]
+        );
     }
 
-    // #[test]
-    // fn test_get_range_query() {
-    //     let db = make_grovedb();
-    //     let subtrees = db.get_subtrees();
+    #[test]
+    fn test_get_range_query() {
+        let db = make_grovedb();
 
-    //     subtrees
-    //         .borrow_mut([TEST_LEAF], None)
-    //         .expect("cannot borrow a subtree")
-    //         .apply(|merk| {
-    //             Element::Item(b"ayyd".to_vec())
-    //                 .insert(merk, b"d", None)
-    //                 .expect("expected successful insertion");
-    //             Element::Item(b"ayyc".to_vec())
-    //                 .insert(merk, b"c", None)
-    //                 .expect("expected successful insertion");
-    //             Element::Item(b"ayya".to_vec())
-    //                 .insert(merk, b"a", None)
-    //                 .expect("expected successful insertion");
-    //             Element::Item(b"ayyb".to_vec())
-    //                 .insert(merk, b"b", None)
-    //                 .expect("expected successful insertion");
-    //         });
+        let storage = &db.db;
+        let storage_context = storage.get_prefixed_context_from_path([TEST_LEAF]);
+        let mut merk = Merk::open(storage_context).expect("cannot open Merk");
 
-    //     // Test range inclusive query
-    //     let mut query = Query::new();
-    //     query.insert_range(b"a".to_vec()..b"d".to_vec());
+        Element::Item(b"ayyd".to_vec())
+            .insert(&mut merk, b"d")
+            .expect("expected successful insertion");
+        Element::Item(b"ayyc".to_vec())
+            .insert(&mut merk, b"c")
+            .expect("expected successful insertion");
+        Element::Item(b"ayya".to_vec())
+            .insert(&mut merk, b"a")
+            .expect("expected successful insertion");
+        Element::Item(b"ayyb".to_vec())
+            .insert(&mut merk, b"b")
+            .expect("expected successful insertion");
 
-    //     let ascending_query = SizedQuery::new(query.clone(), None, None);
-    //     let (elements, skipped) =
-    //         Element::get_sized_query(&[TEST_LEAF], &ascending_query, None,
-    // &subtrees)             .expect("expected successful get_query");
-    //     assert_eq!(
-    //         elements,
-    //         vec![
-    //             Element::Item(b"ayya".to_vec()),
-    //             Element::Item(b"ayyb".to_vec()),
-    //             Element::Item(b"ayyc".to_vec()),
-    //         ]
-    //     );
-    //     assert_eq!(skipped, 0);
+        // Test range inclusive query
+        let mut query = Query::new();
+        query.insert_range(b"a".to_vec()..b"d".to_vec());
 
-    //     query.left_to_right = false;
+        let ascending_query = SizedQuery::new(query.clone(), None, None);
+        let (elements, skipped) =
+            Element::get_sized_query(&storage, &[TEST_LEAF], &ascending_query, None)
+                .expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayya".to_vec()),
+                Element::Item(b"ayyb".to_vec()),
+                Element::Item(b"ayyc".to_vec()),
+            ]
+        );
+        assert_eq!(skipped, 0);
 
-    //     let backwards_query = SizedQuery::new(query.clone(), None, None);
-    //     let (elements, skipped) =
-    //         Element::get_sized_query(&[TEST_LEAF], &backwards_query, None,
-    // &subtrees)             .expect("expected successful get_query");
-    //     assert_eq!(
-    //         elements,
-    //         vec![
-    //             Element::Item(b"ayyc".to_vec()),
-    //             Element::Item(b"ayyb".to_vec()),
-    //             Element::Item(b"ayya".to_vec()),
-    //         ]
-    //     );
-    //     assert_eq!(skipped, 0);
-    // }
+        query.left_to_right = false;
 
-    // #[test]
-    // fn test_get_range_inclusive_query() {
-    //     let db = make_grovedb();
-    //     let subtrees = db.get_subtrees();
+        let backwards_query = SizedQuery::new(query.clone(), None, None);
+        let (elements, skipped) =
+            Element::get_sized_query(&storage, &[TEST_LEAF], &backwards_query, None)
+                .expect("expected successful get_query");
+        assert_eq!(
+            elements,
+            vec![
+                Element::Item(b"ayyc".to_vec()),
+                Element::Item(b"ayyb".to_vec()),
+                Element::Item(b"ayya".to_vec()),
+            ]
+        );
+        assert_eq!(skipped, 0);
+    }
 
-    //     subtrees
-    //         .borrow_mut([TEST_LEAF], None)
-    //         .expect("cannot borrow a subtree")
-    //         .apply(|merk| {
-    //             Element::Item(b"ayyd".to_vec())
-    //                 .insert(merk, b"d", None)
-    //                 .expect("expected successful insertion");
-    //             Element::Item(b"ayyc".to_vec())
-    //                 .insert(merk, b"c", None)
-    //                 .expect("expected successful insertion");
-    //             Element::Item(b"ayya".to_vec())
-    //                 .insert(merk, b"a", None)
-    //                 .expect("expected successful insertion");
-    //             Element::Item(b"ayyb".to_vec())
-    //                 .insert(merk, b"b", None)
-    //                 .expect("expected successful insertion");
-    //         });
+    #[test]
+    fn test_get_range_inclusive_query() {
+        let db = make_grovedb();
 
-    //     // Test range inclusive query
-    //     let mut query = Query::new_with_direction(true);
-    //     query.insert_range_inclusive(b"a".to_vec()..=b"d".to_vec());
+        let storage = &db.db;
+        let storage_context = storage.get_prefixed_context_from_path([TEST_LEAF]);
+        let mut merk = Merk::open(storage_context).expect("cannot open Merk");
 
-    //     let ascending_query = SizedQuery::new(query.clone(), None, None);
-    //     fn check_elements_no_skipped((elements, skipped): (Vec<Element>, u16),
-    // reverse: bool) {         let mut expected = vec![
-    //             Element::Item(b"ayya".to_vec()),
-    //             Element::Item(b"ayyb".to_vec()),
-    //             Element::Item(b"ayyc".to_vec()),
-    //             Element::Item(b"ayyd".to_vec()),
-    //         ];
-    //         if reverse {
-    //             expected.reverse();
-    //         }
-    //         assert_eq!(elements, expected);
-    //         assert_eq!(skipped, 0);
-    //     }
+        Element::Item(b"ayyd".to_vec())
+            .insert(&mut merk, b"d")
+            .expect("expected successful insertion");
+        Element::Item(b"ayyc".to_vec())
+            .insert(&mut merk, b"c")
+            .expect("expected successful insertion");
+        Element::Item(b"ayya".to_vec())
+            .insert(&mut merk, b"a")
+            .expect("expected successful insertion");
+        Element::Item(b"ayyb".to_vec())
+            .insert(&mut merk, b"b")
+            .expect("expected successful insertion");
 
-    //     check_elements_no_skipped(
-    //         Element::get_sized_query(&[TEST_LEAF], &ascending_query, None,
-    // &subtrees)             .expect("expected successful get_query"),
-    //         false,
-    //     );
+        // Test range inclusive query
+        let mut query = Query::new_with_direction(true);
+        query.insert_range_inclusive(b"a".to_vec()..=b"d".to_vec());
 
-    //     query.left_to_right = false;
+        let ascending_query = SizedQuery::new(query.clone(), None, None);
+        fn check_elements_no_skipped((elements, skipped): (Vec<Element>, u16), reverse: bool) {
+            let mut expected = vec![
+                Element::Item(b"ayya".to_vec()),
+                Element::Item(b"ayyb".to_vec()),
+                Element::Item(b"ayyc".to_vec()),
+                Element::Item(b"ayyd".to_vec()),
+            ];
+            if reverse {
+                expected.reverse();
+            }
+            assert_eq!(elements, expected);
+            assert_eq!(skipped, 0);
+        }
 
-    //     let backwards_query = SizedQuery::new(query.clone(), None, None);
-    //     check_elements_no_skipped(
-    //         Element::get_sized_query(&[TEST_LEAF], &backwards_query, None,
-    // &subtrees)             .expect("expected successful get_query"),
-    //         true,
-    //     );
+        check_elements_no_skipped(
+            Element::get_sized_query(&storage, &[TEST_LEAF], &ascending_query, None)
+                .expect("expected successful get_query"),
+            false,
+        );
 
-    //     // Test range inclusive query
-    //     let mut query = Query::new_with_direction(false);
-    //     query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
-    //     query.insert_range(b"a".to_vec()..b"c".to_vec());
+        query.left_to_right = false;
 
-    //     let backwards_query = SizedQuery::new(query.clone(), None, None);
-    //     check_elements_no_skipped(
-    //         Element::get_sized_query(&[TEST_LEAF], &backwards_query, None,
-    // &subtrees)             .expect("expected successful get_query"),
-    //         true,
-    //     );
-    // }
+        let backwards_query = SizedQuery::new(query.clone(), None, None);
+        check_elements_no_skipped(
+            Element::get_sized_query(&storage, &[TEST_LEAF], &backwards_query, None)
+                .expect("expected successful get_query"),
+            true,
+        );
+
+        // Test range inclusive query
+        let mut query = Query::new_with_direction(false);
+        query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
+        query.insert_range(b"a".to_vec()..b"c".to_vec());
+
+        let backwards_query = SizedQuery::new(query.clone(), None, None);
+        check_elements_no_skipped(
+            Element::get_sized_query(&storage, &[TEST_LEAF], &backwards_query, None)
+                .expect("expected successful get_query"),
+            true,
+        );
+    }
 
     #[test]
     fn test_get_limit_query() {
         let db = make_grovedb();
 
-        let storage = db.get_storage();
+        let storage = &db.db;
         let storage_context = storage.get_prefixed_context_from_path([TEST_LEAF]);
         let mut merk = Merk::open(storage_context).expect("cannot open Merk");
 
@@ -831,9 +827,8 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         let limit_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) =
-            Element::get_sized_query(&storage, &[TEST_LEAF], &limit_backwards_query, None).expect(
-                "expected successful get_query",
-            );
+            Element::get_sized_query(&storage, &[TEST_LEAF], &limit_backwards_query, None)
+                .expect("expected successful get_query");
         assert_eq!(
             elements,
             vec![

@@ -254,19 +254,6 @@ impl GroveDb {
         Ok(())
     }
 
-    fn get_storage(&self) -> &RocksDbStorage {
-        &self.db
-    }
-
-    // fn get_subtrees(&self) -> Subtrees {
-    //     Subtrees {
-    //         root_leaf_keys: &self.root_leaf_keys,
-    //         temp_subtrees: &self.temp_subtrees,
-    //         deleted_subtrees: &self.temp_deleted_subtrees,
-    //         storage: self.storage(),
-    //     }
-    // }
-
     pub fn flush(&self) -> Result<(), Error> {
         Ok(self.db.flush()?)
     }
@@ -288,16 +275,14 @@ impl GroveDb {
     /// let mut db = GroveDb::open(tmp_dir.path())?;
     /// db.insert([], TEST_LEAF, Element::empty_tree(), None)?;
     ///
-    /// let storage = db.storage();
-    /// let db_transaction = storage.transaction();
-    /// db.start_transaction();
+    /// let tx = db.start_transaction();
     ///
     /// let subtree_key = b"subtree_key";
     /// db.insert(
     ///     [TEST_LEAF],
     ///     subtree_key,
     ///     Element::empty_tree(),
-    ///     Some(&db_transaction),
+    ///     Some(&tx),
     /// )?;
     ///
     /// // This action exists only inside the transaction for now
@@ -305,11 +290,11 @@ impl GroveDb {
     /// assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
     ///
     /// // To access values inside the transaction, transaction needs to be passed to the `db::get`
-    /// let result_with_transaction = db.get([TEST_LEAF], subtree_key, Some(&db_transaction))?;
+    /// let result_with_transaction = db.get([TEST_LEAF], subtree_key, Some(&tx))?;
     /// assert_eq!(result_with_transaction, Element::empty_tree());
     ///
     /// // After transaction is committed, the value from it can be accessed normally.
-    /// db.commit_transaction(db_transaction);
+    /// db.commit_transaction(tx);
     /// let result = db.get([TEST_LEAF], subtree_key, None)?;
     /// assert_eq!(result, Element::empty_tree());
     ///

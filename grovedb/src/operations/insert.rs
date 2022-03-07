@@ -8,7 +8,7 @@ use crate::{
 
 impl GroveDb {
     pub fn insert<'p, P>(
-        &mut self,
+        &self,
         path: P,
         key: &'p [u8],
         element: Element,
@@ -46,7 +46,7 @@ impl GroveDb {
     }
 
     /// Add subtree to the root tree
-    fn add_root_leaf(&mut self, key: &[u8], transaction: TransactionArg) -> Result<(), Error> {
+    fn add_root_leaf(&self, key: &[u8], transaction: TransactionArg) -> Result<(), Error> {
         meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
             let mut root_leaf_keys = Self::get_root_leaf_keys(&meta_storage)?;
             if root_leaf_keys.get(&key.to_vec()).is_none() {
@@ -67,7 +67,7 @@ impl GroveDb {
     /// if it exists, then create merk to be inserted, and get root hash
     /// we only care about root hash of merk to be inserted
     fn add_non_root_subtree<'p, P>(
-        &mut self,
+        &self,
         path: P,
         key: &'p [u8],
         transaction: TransactionArg,
