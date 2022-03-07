@@ -1,9 +1,9 @@
 use std::io::{Result, Write};
 
 use itertools::Itertools;
-use storage::rocksdb_storage::OptimisticTransactionDBTransaction;
+use storage::StorageContext;
 
-use crate::{subtree::Element, GroveDb};
+use crate::{GroveDb, TransactionArg, subtree::Element, util::{meta_storage_context_optional_tx, storage_context_optional_tx}};
 
 static HEX_LEN: usize = 8;
 static STR_LEN: usize = 32;
@@ -114,33 +114,38 @@ impl GroveDb {
         &self,
         mut drawer: Drawer<'a, W>,
         path: Vec<Vec<u8>>,
-        transaction: Option<&OptimisticTransactionDBTransaction>,
+        transaction: TransactionArg,
     ) -> Result<Drawer<'a, W>> {
-        let subtrees = self.get_subtrees();
         drawer.down();
-        let merk = subtrees
-            .borrow_mut(path.iter().map(|x| x.as_slice()), transaction)
-            .expect("cannot find Merk");
-        let mut iter = Element::iterator(merk.raw_iter(transaction));
-        while let Some((key, element)) = iter.next().expect("cannot get next element") {
-            drawer.write(b"\n[key: ")?;
-            drawer = key.visualize(drawer)?;
-            drawer.write(b" ")?;
-            match element {
-                Element::Tree(_) => {
-                    drawer.write(b"tree:")?;
-                    drawer.down();
-                    let mut inner_path = path.clone();
-                    inner_path.push(key);
-                    drawer = self.draw_subtree(drawer, inner_path, transaction)?;
-                    drawer.up();
-                }
-                other => {
-                    drawer = other.visualize(drawer)?;
+
+        storage_context_optional_tx!(
+            self.db,
+            path.iter().map(|x| x.as_slice()),
+            transaction,
+            storage,
+            {
+                let mut iter = Element::iterator(storage.raw_iter());
+                while let Some((key, element)) = iter.next().expect("cannot get next element") {
+                    drawer.write(b"\n[key: ")?;
+                    drawer = key.visualize(drawer)?;
+                    drawer.write(b" ")?;
+                    match element {
+                        Element::Tree(_) => {
+                            drawer.write(b"tree:")?;
+                            drawer.down();
+                            let mut inner_path = path.clone();
+                            inner_path.push(key);
+                            drawer = self.draw_subtree(drawer, inner_path, transaction)?;
+                            drawer.up();
+                        }
+                        other => {
+                            drawer = other.visualize(drawer)?;
+                        }
+                    }
                 }
             }
-        }
-        drop(iter);
+        );
+
         drawer.up();
         Ok(drawer)
     }
@@ -148,16 +153,21 @@ impl GroveDb {
     fn draw_root_tree<'a, W: Write>(
         &self,
         mut drawer: Drawer<'a, W>,
-        transaction: Option<&OptimisticTransactionDBTransaction>,
+        transaction: TransactionArg,
     ) -> Result<Drawer<'a, W>> {
         drawer.down();
-        let keys = self.root_leaf_keys.iter().fold(
-            vec![Vec::new(); self.root_leaf_keys.len()],
-            |mut acc, (key, idx)| {
-                acc[*idx] = key.clone();
-                acc
-            },
-        );
+        let keys =
+            meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
+                let root_leaf_keys =
+                    Self::get_root_leaf_keys(&meta_storage).expect("cannot get root leaf keys");
+                root_leaf_keys.iter().fold(
+                    vec![Vec::new(); root_leaf_keys.len()],
+                    |mut acc, (key, idx)| {
+                        acc[*idx] = key.clone();
+                        acc
+                    },
+                )
+            });
         for k in keys {
             drawer.write(b"\n")?;
             drawer = k.visualize(drawer)?;
@@ -171,7 +181,7 @@ impl GroveDb {
     fn visualize_start<'a, W: Write>(
         &self,
         mut drawer: Drawer<'a, W>,
-        transaction: Option<&OptimisticTransactionDBTransaction>,
+        transaction: TransactionArg,
     ) -> Result<Drawer<'a, W>> {
         drawer.write(b"root")?;
         drawer = self.draw_root_tree(drawer, transaction)?;
@@ -186,12 +196,12 @@ impl Visualize for GroveDb {
     }
 }
 
-impl Visualize for (&GroveDb, &OptimisticTransactionDBTransaction<'_>) {
-    fn visualize<'a, W: Write>(&self, drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>> {
-        let (grovedb, transaction) = self;
-        grovedb.visualize_start(drawer, Some(transaction))
-    }
-}
+// impl Visualize for (&GroveDb, &OptimisticTransactionDBTransaction<'_>) {
+//     fn visualize<'a, W: Write>(&self, drawer: Drawer<'a, W>) ->
+// Result<Drawer<'a, W>> {         let (grovedb, transaction) = self;
+//         grovedb.visualize_start(drawer, Some(transaction))
+//     }
+// }
 
 pub fn visualize_stderr<T: Visualize + ?Sized>(value: &T) {
     let mut out = std::io::stderr();

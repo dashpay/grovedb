@@ -1,5 +1,5 @@
 /// Macro to execute same piece of code on different storage contexts
-/// (transactional or not).
+/// (transactional or not) using path argument.
 macro_rules! storage_context_optional_tx {
     ($db:expr, $path:expr, $transaction:ident, $storage:ident, { $($body:tt)* }) => {
         if let Some(tx) = $transaction {
@@ -9,6 +9,21 @@ macro_rules! storage_context_optional_tx {
         } else {
             let $storage = $db
                 .get_prefixed_context_from_path($path);
+            $($body)*
+        }
+    };
+}
+
+/// Macro to execute same piece of code on different storage contexts with empty prefix.
+macro_rules! meta_storage_context_optional_tx {
+    ($db:expr, $transaction:ident, $storage:ident, { $($body:tt)* }) => {
+        if let Some(tx) = $transaction {
+            let $storage = $db
+                .get_prefixed_transactional_context(Vec::new(), tx);
+            $($body)*
+        } else {
+            let $storage = $db
+                .get_prefixed_context(Vec::new());
             $($body)*
         }
     };
@@ -41,3 +56,4 @@ macro_rules! merk_optional_tx {
 
 pub(crate) use merk_optional_tx;
 pub(crate) use storage_context_optional_tx;
+pub(crate) use meta_storage_context_optional_tx;

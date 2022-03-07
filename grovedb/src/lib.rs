@@ -4,8 +4,8 @@ mod util;
 // mod subtrees;
 #[cfg(test)]
 mod tests;
-// #[cfg(feature = "visualize")]
-// mod visualize;
+#[cfg(feature = "visualize")]
+mod visualize;
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
@@ -21,8 +21,8 @@ use storage::{
 };
 pub use subtree::Element;
 // use subtrees::Subtrees;
-// #[cfg(feature = "visualize")]
-// pub use visualize::{visualize_stderr, visualize_stdout, Drawer, Visualize};
+#[cfg(feature = "visualize")]
+pub use visualize::{visualize_stderr, visualize_stdout, Drawer, Visualize};
 
 /// A key to store serialized data about subtree prefixes to restore HADS
 /// structure
@@ -175,7 +175,7 @@ impl GroveDb {
         Ok(Self::get_root_tree(&self.db, transaction)?.root())
     }
 
-    fn get_root_leaf_keys<'db, 'ctx, S>(meta_storage: S) -> Result<BTreeMap<Vec<u8>, usize>, Error>
+    fn get_root_leaf_keys<'db, 'ctx, S>(meta_storage: &S) -> Result<BTreeMap<Vec<u8>, usize>, Error>
     where
         S: StorageContext<'db, 'ctx>,
         Error: From<<S as StorageContext<'db, 'ctx>>::Error>,
@@ -198,10 +198,10 @@ impl GroveDb {
     ) -> Result<MerkleTree<Sha256>, Error> {
         let root_leaf_keys = if let Some(tx) = transaction {
             let meta_storage = db.get_prefixed_transactional_context(Vec::new(), tx);
-            Self::get_root_leaf_keys(meta_storage)?
+            Self::get_root_leaf_keys(&meta_storage)?
         } else {
             let meta_storage = db.get_prefixed_context(Vec::new());
-            Self::get_root_leaf_keys(meta_storage)?
+            Self::get_root_leaf_keys(&meta_storage)?
         };
 
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
@@ -213,33 +213,6 @@ impl GroveDb {
         }
         Ok(MerkleTree::<Sha256>::from_leaves(&leaf_hashes))
     }
-
-    // fn store_root_leafs_keys_data<'db, 'ctx, S>(&self, meta_storage: S) ->
-    // Result<(), Error> where
-    //     S: StorageContext<'db, 'ctx>,
-    //     Error: From<<S as StorageContext<'db, 'ctx>>::Error>,
-    // {
-    //     meta_storage.put_meta(ROOT_LEAFS_SERIALIZE_KEY, )
-    //     match db_transaction {
-    //         None => {
-    //             self.meta_storage.put_meta(
-    //                 ROOT_LEAFS_SERIALIZED_KEY,
-    //                 &bincode::serialize(&self.root_leaf_keys).map_err(|_| {
-    //                     Error::CorruptedData(String::from("unable to serialize
-    // root leaves data"))             })?,             )?;
-    //         }
-    //         Some(tx) => {
-    //             let transaction = self.meta_storage.transaction(tx);
-    //             transaction.put_meta(
-    //                 ROOT_LEAFS_SERIALIZED_KEY,
-    //            // &bincode::serialize(&self.temp_root_leaf_keys).map_err(|_|
-    //     {                 Error::CorruptedData(String::from("unable to serialize
-    // root leaves data"))             })?,             )?;
-    //         }
-    //     }
-
-    //     Ok(())
-    // }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
     fn propagate_changes<'p, P>(&self, path: P, transaction: TransactionArg) -> Result<(), Error>
@@ -279,6 +252,10 @@ impl GroveDb {
         }
 
         Ok(())
+    }
+
+    fn get_storage(&self) -> &RocksDbStorage {
+        &self.db
     }
 
     // fn get_subtrees(&self) -> Subtrees {

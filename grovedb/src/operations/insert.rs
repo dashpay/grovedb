@@ -1,6 +1,10 @@
 use merk::Merk;
+use storage::StorageContext;
 
-use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
+use crate::{
+    util::{merk_optional_tx, meta_storage_context_optional_tx},
+    Element, Error, GroveDb, TransactionArg, ROOT_LEAFS_SERIALIZED_KEY,
+};
 
 impl GroveDb {
     pub fn insert<'p, P>(
@@ -43,16 +47,17 @@ impl GroveDb {
 
     /// Add subtree to the root tree
     fn add_root_leaf(&mut self, key: &[u8], transaction: TransactionArg) -> Result<(), Error> {
-        let mut root_leaf_keys = if let Some(tx) = transaction {
-            let meta_storage = self.db.get_prefixed_transactional_context(Vec::new(), tx);
-            Self::get_root_leaf_keys(meta_storage)?
-        } else {
-            let meta_storage = self.db.get_prefixed_context(Vec::new());
-            Self::get_root_leaf_keys(meta_storage)?
-        };
-        if root_leaf_keys.get(&key.to_vec()).is_none() {
-            root_leaf_keys.insert(key.to_vec(), root_leaf_keys.len());
-        }
+        meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
+            let mut root_leaf_keys = Self::get_root_leaf_keys(&meta_storage)?;
+            if root_leaf_keys.get(&key.to_vec()).is_none() {
+                root_leaf_keys.insert(key.to_vec(), root_leaf_keys.len());
+            }
+            let value = bincode::serialize(&root_leaf_keys).map_err(|_| {
+                Error::CorruptedData(String::from("unable to serialize root leaves data"))
+            })?;
+            meta_storage.put_meta(ROOT_LEAFS_SERIALIZED_KEY, &value)?;
+        });
+
         Ok(())
     }
 
