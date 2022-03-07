@@ -328,7 +328,7 @@ impl GroveDb {
     /// Rollbacks previously started db transaction to initial state.
     /// For more details on the transaction usage, please check
     /// [`GroveDb::start_transaction`]
-    pub fn rollback_transaction(&mut self, transaction: &Transaction) -> Result<(), Error> {
+    pub fn rollback_transaction(&self, transaction: &Transaction) -> Result<(), Error> {
         Ok(self.db.rollback_transaction(transaction)?)
     }
 }

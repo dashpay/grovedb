@@ -734,534 +734,453 @@ fn test_insert_if_not_exists() {
     assert!(matches!(result, Err(Error::PathNotFound(_))));
 }
 
-// #[test]
-// fn test_is_empty_tree() {
-//     let mut db = make_grovedb();
-
-//     // Create an empty tree with no elements
-//     db.insert([TEST_LEAF], b"innertree", Element::empty_tree(), None)
-//         .unwrap();
-
-//     assert!(db
-//         .is_empty_tree([TEST_LEAF, b"innertree"], None)
-//         .expect("path is valid tree"));
-
-//     // add an element to the tree to make it non empty
-//     db.insert(
-//         [TEST_LEAF, b"innertree"],
-//         b"key1",
-//         Element::Item(b"hello".to_vec()),
-//         None,
-//     )
-//     .unwrap();
-//     assert!(!db
-//         .is_empty_tree([TEST_LEAF, b"innertree"], None)
-//         .expect("path is valid tree"));
-// }
-
-// #[test]
-// fn transaction_insert_item_with_transaction_should_use_transaction() {
-//     let item_key = b"key3";
-
-//     let mut db = make_grovedb();
-//     db.start_transaction().unwrap();
-//     let storage = db.storage();
-//     let transaction = storage.transaction();
-
-//     // Check that there's no such key in the DB
-//     let result = db.get([TEST_LEAF], item_key, None);
-//     assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
-
-//     let element1 = Element::Item(b"ayy".to_vec());
-
-//     db.insert([TEST_LEAF], item_key, element1, Some(&transaction))
-//         .expect("cannot insert an item into GroveDB");
-
-//     // The key was inserted inside the transaction, so it shouldn't be
-// possible     // to get it back without committing or using transaction
-//     let result = db.get([TEST_LEAF], item_key, None);
-//     assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
-//     // Check that the element can be retrieved when transaction is passed
-//     let result_with_transaction = db
-//         .get([TEST_LEAF], item_key, Some(&transaction))
-//         .expect("Expected to work");
-//     assert_eq!(result_with_transaction, Element::Item(b"ayy".to_vec()));
-
-//     // Test that commit works
-//     // transaction.commit();
-//     db.commit_transaction(transaction).unwrap();
-
-//     // Check that the change was committed
-//     let result = db
-//         .get([TEST_LEAF], item_key, None)
-//         .expect("Expected transaction to work");
-//     assert_eq!(result, Element::Item(b"ayy".to_vec()));
-// }
-
-// #[test]
-// fn transaction_insert_tree_with_transaction_should_use_transaction() {
-//     let subtree_key = b"subtree_key";
-
-//     let mut db = make_grovedb();
-//     let storage = db.storage();
-//     let db_transaction = storage.transaction();
-//     db.start_transaction().unwrap();
-
-//     // Check that there's no such key in the DB
-//     let result = db.get([TEST_LEAF], subtree_key, None);
-//     assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
-
-//     db.insert(
-//         [TEST_LEAF],
-//         subtree_key,
-//         Element::empty_tree(),
-//         Some(&db_transaction),
-//     )
-//     .expect("cannot insert an item into GroveDB");
-
-//     let result = db.get([TEST_LEAF], subtree_key, None);
-//     assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
-
-//     let result_with_transaction = db
-//         .get([TEST_LEAF], subtree_key, Some(&db_transaction))
-//         .expect("Expected to work");
-//     assert_eq!(result_with_transaction, Element::empty_tree());
-
-//     db.commit_transaction(db_transaction).unwrap();
-
-//     let result = db
-//         .get([TEST_LEAF], subtree_key, None)
-//         .expect("Expected transaction to work");
-//     assert_eq!(result, Element::empty_tree());
-// }
-
-// #[test]
-// fn transaction_insert_should_return_error_when_trying_to_insert_while_transaction_is_in_process() {
-//     let item_key = b"key3";
-
-//     let mut db = make_grovedb();
-//     db.start_transaction().unwrap();
-//     let storage = db.storage();
-//     let transaction = storage.transaction();
-
-//     let element1 = Element::Item(b"ayy".to_vec());
-
-//     let result = db.insert([TEST_LEAF], item_key, element1.clone(), None);
-//     assert!(matches!(result, Err(Error::DbIsInReadonlyMode)));
-
-//     db.commit_transaction(transaction).unwrap();
-
-//     // Check that writes are unlocked after the transaction is committed
-//     let result = db.insert([TEST_LEAF], item_key, element1, None);
-//     assert!(matches!(result, Ok(())));
-// }
-
-// #[test]
-// fn transaction_should_be_aborted_when_rollback_is_called() {
-//     let item_key = b"key3";
-
-//     let mut db = make_grovedb();
-
-//     db.start_transaction().unwrap();
-//     let storage = db.storage();
-//     let transaction = storage.transaction();
-
-//     let element1 = Element::Item(b"ayy".to_vec());
-
-//     let result = db.insert([TEST_LEAF], item_key, element1,
-// Some(&transaction));
-
-//     assert!(matches!(result, Ok(())));
-
-//     db.rollback_transaction(&transaction).unwrap();
-
-//     let result = db.get([TEST_LEAF], item_key, Some(&transaction));
-//     assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
-// }
-
-// #[test]
-// fn transaction_is_started_should_return_true_if_transaction_was_started() {
-//     let mut db = make_grovedb();
-
-//     db.start_transaction().unwrap();
-
-//     let result = db.is_transaction_started();
-//     assert!(result, "transaction is not started");
-// }
-
-// #[test]
-// fn transaction_is_started_should_return_false_if_transaction_was_not_started() {
-//     let db = make_grovedb();
-
-//     let result = db.is_transaction_started();
-
-//     assert!(!result, "transaction is started");
-// }
-
-// #[test]
-// fn transaction_should_be_aborted() {
-//     let mut db = make_grovedb();
-
-//     db.start_transaction().unwrap();
-//     let storage = db.storage();
-//     let transaction = storage.transaction();
-
-//     let item_key = b"key3";
-//     let element = Element::Item(b"ayy".to_vec());
-
-//     db.insert([TEST_LEAF], item_key, element, Some(&transaction))
-//         .unwrap();
-
-//     assert!(db.is_readonly);
-//     assert!(db.temp_root_tree.leaves_len() > 0);
-//     assert!(!db.temp_root_leaf_keys.is_empty());
-//     assert!(!db.temp_subtrees.borrow().is_empty());
-//     db.abort_transaction(transaction).unwrap();
-//     assert!(!db.is_readonly);
-//     assert_eq!(db.temp_root_tree.leaves_len(), 0);
-//     assert!(db.temp_root_leaf_keys.is_empty());
-//     assert!(db.temp_subtrees.borrow().is_empty());
-
-//     // Transaction should be closed
-//     assert!(!db.is_transaction_started());
-
-//     // Transactional data shouldn't be committed to the main database
-//     let result = db.get([TEST_LEAF], item_key, None);
-//     assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
-// }
-
-// #[test]
-// fn test_subtree_pairs_iterator() {
-//     let mut db = make_grovedb();
-//     let element = Element::Item(b"ayy".to_vec());
-//     let element2 = Element::Item(b"lmao".to_vec());
-
-//     // Insert some nested subtrees
-//     db.insert([TEST_LEAF], b"subtree1", Element::empty_tree(), None)
-//         .expect("successful subtree 1 insert");
-//     db.insert(
-//         [TEST_LEAF, b"subtree1"],
-//         b"subtree11",
-//         Element::empty_tree(),
-//         None,
-//     )
-//     .expect("successful subtree 2 insert");
-//     // Insert an element into subtree
-//     db.insert(
-//         [TEST_LEAF, b"subtree1", b"subtree11"],
-//         b"key1",
-//         element.clone(),
-//         None,
-//     )
-//     .expect("successful value insert");
-//     assert_eq!(
-//         db.get([TEST_LEAF, b"subtree1", b"subtree11"], b"key1", None)
-//             .expect("successful get 1"),
-//         element
-//     );
-//     db.insert(
-//         [TEST_LEAF, b"subtree1", b"subtree11"],
-//         b"key0",
-//         element.clone(),
-//         None,
-//     )
-//     .expect("successful value insert");
-//     db.insert(
-//         [TEST_LEAF, b"subtree1"],
-//         b"subtree12",
-//         Element::empty_tree(),
-//         None,
-//     )
-//     .expect("successful subtree 3 insert");
-//     db.insert([TEST_LEAF, b"subtree1"], b"key1", element.clone(), None)
-//         .expect("successful value insert");
-//     db.insert([TEST_LEAF, b"subtree1"], b"key2", element2.clone(), None)
-//         .expect("successful value insert");
-
-//     // Iterate over subtree1 to see if keys of other subtrees messed up
-//     // let mut iter = db
-//     //     .elements_iterator(&[TEST_LEAF, b"subtree1"], None)
-//     //     .expect("cannot create iterator");
-//     let subtrees = db.get_subtrees();
-//     let merk = subtrees.borrow_mut([TEST_LEAF, b"subtree1"], None).unwrap();
-//     let mut iter = Element::iterator(merk.raw_iter(None));
-//     assert_eq!(iter.next().unwrap(), Some((b"key1".to_vec(), element)));
-//     assert_eq!(iter.next().unwrap(), Some((b"key2".to_vec(), element2)));
-//     let subtree_element = iter.next().unwrap().unwrap();
-//     assert_eq!(subtree_element.0, b"subtree11".to_vec());
-//     assert!(matches!(subtree_element.1, Element::Tree(_)));
-//     let subtree_element = iter.next().unwrap().unwrap();
-//     assert_eq!(subtree_element.0, b"subtree12".to_vec());
-//     assert!(matches!(subtree_element.1, Element::Tree(_)));
-//     assert!(matches!(iter.next(), Ok(None)));
-// }
-
-// #[test]
-// fn test_compress_path_not_possible_collision() {
-//     let path_a = [b"aa".as_ref(), b"b"];
-//     let path_b = [b"a".as_ref(), b"ab"];
-//     assert_ne!(
-//         GroveDb::compress_subtree_key(path_a, None),
-//         GroveDb::compress_subtree_key(path_b, None)
-//     );
-//     assert_eq!(
-//         GroveDb::compress_subtree_key(path_a, None),
-//         GroveDb::compress_subtree_key(path_a, None),
-//     );
-// }
-
-// #[test]
-// fn test_element_deletion() {
-//     let mut db = make_grovedb();
-//     let element = Element::Item(b"ayy".to_vec());
-//     db.insert([TEST_LEAF], b"key", element, None)
-//         .expect("successful insert");
-//     let root_hash = db.root_tree.root().unwrap();
-//     assert!(db.delete([TEST_LEAF], b"key", None).is_ok());
-//     assert!(matches!(
-//         db.get([TEST_LEAF], b"key", None),
-//         Err(Error::PathKeyNotFound(_))
-//     ));
-//     assert_ne!(root_hash, db.root_tree.root().unwrap());
-// }
-
-// #[test]
-// fn test_find_subtrees() {
-//     let element = Element::Item(b"ayy".to_vec());
-//     let mut db = make_grovedb();
-//     // Insert some nested subtrees
-//     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
-//         .expect("successful subtree 1 insert");
-//     db.insert([TEST_LEAF, b"key1"], b"key2", Element::empty_tree(), None)
-//         .expect("successful subtree 2 insert");
-//     // Insert an element into subtree
-//     db.insert([TEST_LEAF, b"key1", b"key2"], b"key3", element, None)
-//         .expect("successful value insert");
-//     db.insert([TEST_LEAF], b"key4", Element::empty_tree(), None)
-//         .expect("successful subtree 3 insert");
-//     let subtrees = db
-//         .find_subtrees(vec![TEST_LEAF], None)
-//         .expect("cannot get subtrees");
-//     assert_eq!(
-//         vec![
-//             vec![TEST_LEAF],
-//             vec![TEST_LEAF, b"key1"],
-//             vec![TEST_LEAF, b"key4"],
-//             vec![TEST_LEAF, b"key1", b"key2"],
-//         ],
-//         subtrees
-//     );
-// }
-
-// #[test]
-// fn test_get_subtree() {
-//     let mut db = make_grovedb();
-//     let element = Element::Item(b"ayy".to_vec());
-
-//     // Returns error is subtree is not valid
-//     {
-//         let subtrees = db.get_subtrees();
-//         let subtree = subtrees.borrow_mut([TEST_LEAF, b"invalid_tree"],
-// None);         assert!(subtree.is_err());
-
-//         // Doesn't return an error for subtree that exists but empty
-//         let subtree = subtrees.borrow_mut([TEST_LEAF], None);
-//         assert!(subtree.is_ok());
-//     }
-//     // Insert some nested subtrees
-//     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
-//         .expect("successful subtree 1 insert");
-
-//     db.insert([TEST_LEAF, b"key1"], b"key2", Element::empty_tree(), None)
-//         .expect("successful subtree 2 insert");
-
-//     // Insert an element into subtree
-//     db.insert(
-//         [TEST_LEAF, b"key1", b"key2"],
-//         b"key3",
-//         element.clone(),
-//         None,
-//     )
-//     .expect("successful value insert");
-//     db.insert([TEST_LEAF], b"key4", Element::empty_tree(), None)
-//         .expect("successful subtree 3 insert");
-
-//     // Retrieve subtree instance
-//     // Check if it returns the same instance that was inserted
-//     {
-//         let subtrees = db.get_subtrees();
-//         let subtree = subtrees
-//             .borrow_mut([TEST_LEAF, b"key1", b"key2"], None)
-//             .unwrap();
-//         let result_element = Element::get(&subtree, b"key3").unwrap();
-//         assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
-//     }
-//     // Insert a new tree with transaction
-//     db.start_transaction().unwrap();
-//     let storage = db.storage();
-//     let transaction = storage.transaction();
-
-//     db.insert(
-//         [TEST_LEAF, b"key1"],
-//         b"innertree",
-//         Element::empty_tree(),
-//         Some(&transaction),
-//     )
-//     .expect("successful subtree insert");
-
-//     db.insert(
-//         [TEST_LEAF, b"key1", b"innertree"],
-//         b"key4",
-//         element,
-//         Some(&transaction),
-//     )
-//     .expect("successful value insert");
-
-//     // Retrieve subtree instance with transaction
-//     let subtrees = db.get_subtrees();
-//     let subtree = subtrees
-//         .borrow_mut([TEST_LEAF, b"key1", b"innertree"], Some(&transaction))
-//         .unwrap();
-//     let result_element = Element::get(&subtree, b"key4").unwrap();
-//     assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
-
-//     // Should be able to retrieve instances created before transaction
-//     let subtrees = db.get_subtrees();
-//     let subtree = subtrees
-//         .borrow_mut([TEST_LEAF, b"key1", b"key2"], None)
-//         .unwrap();
-//     let result_element = Element::get(&subtree, b"key3").unwrap();
-//     assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
-// }
-
-// #[test]
-// fn test_subtree_deletion() {
-//     let element = Element::Item(b"ayy".to_vec());
-//     let mut db = make_grovedb();
-//     // Insert some nested subtrees
-//     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
-//         .expect("successful subtree 1 insert");
-//     db.insert([TEST_LEAF, b"key1"], b"key2", Element::empty_tree(), None)
-//         .expect("successful subtree 2 insert");
-//     // Insert an element into subtree
-//     db.insert([TEST_LEAF, b"key1", b"key2"], b"key3", element, None)
-//         .expect("successful value insert");
-//     db.insert([TEST_LEAF], b"key4", Element::empty_tree(), None)
-//         .expect("successful subtree 3 insert");
-
-//     let root_hash = db.root_tree.root().unwrap();
-//     db.delete([TEST_LEAF], b"key1", None)
-//         .expect("unable to delete subtree");
-//     assert!(matches!(
-//         db.get([TEST_LEAF, b"key1", b"key2"], b"key3", None),
-//         Err(Error::PathNotFound(_))
-//     ));
-//     // assert_eq!(db.subtrees.len(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF
-//     // TEST_LEAF.key4 stay
-//     assert!(db.get([], TEST_LEAF, None).is_ok());
-//     assert!(db.get([], ANOTHER_TEST_LEAF, None).is_ok());
-//     assert!(db.get([TEST_LEAF], b"key4", None).is_ok());
-//     assert_ne!(root_hash, db.root_tree.root().unwrap());
-// }
-
-// #[test]
-// fn test_subtree_deletion_if_empty() {
-//     let element = Element::Item(b"value".to_vec());
-//     let mut db = make_grovedb();
-
-//     db.start_transaction()
-//         .expect("transaction should be started");
-//     let storage = db.storage();
-//     let transaction = storage.transaction();
-
-//     // Insert some nested subtrees
-//     db.insert(
-//         [TEST_LEAF],
-//         b"level1-A",
-//         Element::empty_tree(),
-//         Some(&transaction),
-//     )
-//     .expect("successful subtree insert A on level 1");
-//     db.insert(
-//         [TEST_LEAF, b"level1-A"],
-//         b"level2-A",
-//         Element::empty_tree(),
-//         Some(&transaction),
-//     )
-//     .expect("successful subtree insert A on level 2");
-//     db.insert(
-//         [TEST_LEAF, b"level1-A"],
-//         b"level2-B",
-//         Element::empty_tree(),
-//         Some(&transaction),
-//     )
-//     .expect("successful subtree insert B on level 2");
-//     // Insert an element into subtree
-//     db.insert(
-//         [TEST_LEAF, b"level1-A", b"level2-A"],
-//         b"level3-A",
-//         element,
-//         Some(&transaction),
-//     )
-//     .expect("successful value insert");
-//     db.insert(
-//         [TEST_LEAF],
-//         b"level1-B",
-//         Element::empty_tree(),
-//         Some(&transaction),
-//     )
-//     .expect("successful subtree insert B on level 1");
-
-//     db.commit_transaction(transaction)
-//         .expect("cannot commit changes");
-
-//     // Currently we have:
-//     // Level 1:            A
-//     //                    / \
-//     // Level 2:          A   B
-//     //                   |
-//     // Level 3:          A: value
-
-//     db.start_transaction()
-//         .expect("transaction should be started");
-
-//     let transaction = storage.transaction();
-
-//     let _root_hash = db.root_tree.root().unwrap();
-//     let deleted = db
-//         .delete_if_empty_tree([TEST_LEAF], b"level1-A", Some(&transaction))
-//         .expect("unable to delete subtree");
-//     assert!(!deleted);
-
-//     let deleted = db
-//         .delete_up_tree_while_empty(
-//             [TEST_LEAF, b"level1-A", b"level2-A"],
-//             b"level3-A",
-//             Some(0),
-//             Some(&transaction),
-//         )
-//         .expect("unable to delete subtree");
-//     assert_eq!(deleted, 2);
-
-//     assert!(matches!(
-//         db.get(
-//             [TEST_LEAF, b"level1-A", b"level2-A"],
-//             b"level3-A",
-//             Some(&transaction)
-//         ),
-//         Err(Error::PathNotFound(_))
-//     ));
-
-//     assert!(matches!(
-//         db.get([TEST_LEAF, b"level1-A"], b"level2-A", Some(&transaction)),
-//         Err(Error::PathKeyNotFound(_))
-//     ));
-
-//     assert!(matches!(
-//         db.get([TEST_LEAF], b"level1-A", Some(&transaction)),
-//         Ok(Element::Tree(_)),
-//     ));
-// }
+#[test]
+fn test_is_empty_tree() {
+    let db = make_grovedb();
+
+    // Create an empty tree with no elements
+    db.insert([TEST_LEAF], b"innertree", Element::empty_tree(), None)
+        .unwrap();
+
+    assert!(db
+        .is_empty_tree([TEST_LEAF, b"innertree"], None)
+        .expect("path is valid tree"));
+
+    // add an element to the tree to make it non empty
+    db.insert(
+        [TEST_LEAF, b"innertree"],
+        b"key1",
+        Element::Item(b"hello".to_vec()),
+        None,
+    )
+    .unwrap();
+    assert!(!db
+        .is_empty_tree([TEST_LEAF, b"innertree"], None)
+        .expect("path is valid tree"));
+}
+
+#[test]
+fn transaction_insert_item_with_transaction_should_use_transaction() {
+    let item_key = b"key3";
+
+    let db = make_grovedb();
+    let transaction = db.start_transaction();
+
+    // Check that there's no such key in the DB
+    let result = db.get([TEST_LEAF], item_key, None);
+    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
+
+    let element1 = Element::Item(b"ayy".to_vec());
+
+    db.insert([TEST_LEAF], item_key, element1, Some(&transaction))
+        .expect("cannot insert an item into GroveDB");
+
+    // The key was inserted inside the transaction, so it shouldn't be
+    // possible to get it back without committing or using transaction
+    let result = db.get([TEST_LEAF], item_key, None);
+    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
+    // Check that the element can be retrieved when transaction is passed
+    let result_with_transaction = db
+        .get([TEST_LEAF], item_key, Some(&transaction))
+        .expect("Expected to work");
+    assert_eq!(result_with_transaction, Element::Item(b"ayy".to_vec()));
+
+    // Test that commit works
+    // transaction.commit();
+    db.commit_transaction(transaction).unwrap();
+
+    // Check that the change was committed
+    let result = db
+        .get([TEST_LEAF], item_key, None)
+        .expect("Expected transaction to work");
+    assert_eq!(result, Element::Item(b"ayy".to_vec()));
+}
+
+#[test]
+fn transaction_insert_tree_with_transaction_should_use_transaction() {
+    let subtree_key = b"subtree_key";
+
+    let db = make_grovedb();
+    let transaction = db.start_transaction();
+
+    // Check that there's no such key in the DB
+    let result = db.get([TEST_LEAF], subtree_key, None);
+    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
+
+    db.insert(
+        [TEST_LEAF],
+        subtree_key,
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("cannot insert an item into GroveDB");
+
+    let result = db.get([TEST_LEAF], subtree_key, None);
+    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
+
+    let result_with_transaction = db
+        .get([TEST_LEAF], subtree_key, Some(&transaction))
+        .expect("Expected to work");
+    assert_eq!(result_with_transaction, Element::empty_tree());
+
+    db.commit_transaction(transaction).unwrap();
+
+    let result = db
+        .get([TEST_LEAF], subtree_key, None)
+        .expect("Expected transaction to work");
+    assert_eq!(result, Element::empty_tree());
+}
+
+#[test]
+fn transaction_should_be_aborted_when_rollback_is_called() {
+    let item_key = b"key3";
+
+    let db = make_grovedb();
+    let transaction = db.start_transaction();
+
+    let element1 = Element::Item(b"ayy".to_vec());
+
+    let result = db.insert([TEST_LEAF], item_key, element1, Some(&transaction));
+
+    assert!(matches!(result, Ok(())));
+
+    db.rollback_transaction(&transaction).unwrap();
+
+    let result = db.get([TEST_LEAF], item_key, Some(&transaction));
+    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
+}
+
+#[test]
+fn transaction_should_be_aborted() {
+    let db = make_grovedb();
+    let transaction = db.start_transaction();
+
+    let item_key = b"key3";
+    let element = Element::Item(b"ayy".to_vec());
+
+    db.insert([TEST_LEAF], item_key, element, Some(&transaction))
+        .unwrap();
+
+    drop(transaction);
+
+    // Transactional data shouldn't be committed to the main database
+    let result = db.get([TEST_LEAF], item_key, None);
+    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
+}
+
+#[test]
+fn test_subtree_pairs_iterator() {
+    let db = make_grovedb();
+    let element = Element::Item(b"ayy".to_vec());
+    let element2 = Element::Item(b"lmao".to_vec());
+
+    // Insert some nested subtrees
+    db.insert([TEST_LEAF], b"subtree1", Element::empty_tree(), None)
+        .expect("successful subtree 1 insert");
+    db.insert(
+        [TEST_LEAF, b"subtree1"],
+        b"subtree11",
+        Element::empty_tree(),
+        None,
+    )
+    .expect("successful subtree 2 insert");
+    // Insert an element into subtree
+    db.insert(
+        [TEST_LEAF, b"subtree1", b"subtree11"],
+        b"key1",
+        element.clone(),
+        None,
+    )
+    .expect("successful value insert");
+    assert_eq!(
+        db.get([TEST_LEAF, b"subtree1", b"subtree11"], b"key1", None)
+            .expect("successful get 1"),
+        element
+    );
+    db.insert(
+        [TEST_LEAF, b"subtree1", b"subtree11"],
+        b"key0",
+        element.clone(),
+        None,
+    )
+    .expect("successful value insert");
+    db.insert(
+        [TEST_LEAF, b"subtree1"],
+        b"subtree12",
+        Element::empty_tree(),
+        None,
+    )
+    .expect("successful subtree 3 insert");
+    db.insert([TEST_LEAF, b"subtree1"], b"key1", element.clone(), None)
+        .expect("successful value insert");
+    db.insert([TEST_LEAF, b"subtree1"], b"key2", element2.clone(), None)
+        .expect("successful value insert");
+
+    // Iterate over subtree1 to see if keys of other subtrees messed up
+    // let mut iter = db
+    //     .elements_iterator(&[TEST_LEAF, b"subtree1"], None)
+    //     .expect("cannot create iterator");
+    let storage_context = db
+        .db
+        .db
+        .get_prefixed_context_from_path([TEST_LEAF, b"subtree1"]);
+    let mut iter = Element::iterator(storage_context.raw_iter());
+    assert_eq!(iter.next().unwrap(), Some((b"key1".to_vec(), element)));
+    assert_eq!(iter.next().unwrap(), Some((b"key2".to_vec(), element2)));
+    let subtree_element = iter.next().unwrap().unwrap();
+    assert_eq!(subtree_element.0, b"subtree11".to_vec());
+    assert!(matches!(subtree_element.1, Element::Tree(_)));
+    let subtree_element = iter.next().unwrap().unwrap();
+    assert_eq!(subtree_element.0, b"subtree12".to_vec());
+    assert!(matches!(subtree_element.1, Element::Tree(_)));
+    assert!(matches!(iter.next(), Ok(None)));
+}
+
+#[test]
+fn test_element_deletion() {
+    let db = make_grovedb();
+    let element = Element::Item(b"ayy".to_vec());
+    db.insert([TEST_LEAF], b"key", element, None)
+        .expect("successful insert");
+    let root_hash = db.root_hash(None).unwrap();
+    assert!(db.delete([TEST_LEAF], b"key", None).is_ok());
+    assert!(matches!(
+        db.get([TEST_LEAF], b"key", None),
+        Err(Error::PathKeyNotFound(_))
+    ));
+    assert_ne!(root_hash, db.root_hash(None).unwrap());
+}
+
+#[test]
+fn test_find_subtrees() {
+    let element = Element::Item(b"ayy".to_vec());
+    let db = make_grovedb();
+    // Insert some nested subtrees
+    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
+        .expect("successful subtree 1 insert");
+    db.insert([TEST_LEAF, b"key1"], b"key2", Element::empty_tree(), None)
+        .expect("successful subtree 2 insert");
+    // Insert an element into subtree
+    db.insert([TEST_LEAF, b"key1", b"key2"], b"key3", element, None)
+        .expect("successful value insert");
+    db.insert([TEST_LEAF], b"key4", Element::empty_tree(), None)
+        .expect("successful subtree 3 insert");
+    let subtrees = db
+        .find_subtrees(vec![TEST_LEAF], None)
+        .expect("cannot get subtrees");
+    assert_eq!(
+        vec![
+            vec![TEST_LEAF],
+            vec![TEST_LEAF, b"key1"],
+            vec![TEST_LEAF, b"key4"],
+            vec![TEST_LEAF, b"key1", b"key2"],
+        ],
+        subtrees
+    );
+}
+
+#[test]
+fn test_get_subtree() {
+    let db = make_grovedb();
+    let element = Element::Item(b"ayy".to_vec());
+
+    // Returns error is subtree is not valid
+    {
+        let subtree = db.get([TEST_LEAF], b"invalid_tree", None);
+        assert!(subtree.is_err());
+
+        // Doesn't return an error for subtree that exists but empty
+        let subtree = db.get([], TEST_LEAF, None);
+        assert!(subtree.is_ok());
+    }
+    // Insert some nested subtrees
+    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
+        .expect("successful subtree 1 insert");
+
+    db.insert([TEST_LEAF, b"key1"], b"key2", Element::empty_tree(), None)
+        .expect("successful subtree 2 insert");
+
+    // Insert an element into subtree
+    db.insert(
+        [TEST_LEAF, b"key1", b"key2"],
+        b"key3",
+        element.clone(),
+        None,
+    )
+    .expect("successful value insert");
+    db.insert([TEST_LEAF], b"key4", Element::empty_tree(), None)
+        .expect("successful subtree 3 insert");
+
+    // Retrieve subtree instance
+    // Check if it returns the same instance that was inserted
+    {
+        let subtree_storage = db
+            .db
+            .db
+            .get_prefixed_context_from_path([TEST_LEAF, b"key1", b"key2"]);
+        let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+        let result_element = Element::get(&subtree, b"key3").unwrap();
+        assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
+    }
+    // Insert a new tree with transaction
+    let transaction = db.start_transaction();
+
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"innertree",
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("successful subtree insert");
+
+    db.insert(
+        [TEST_LEAF, b"key1", b"innertree"],
+        b"key4",
+        element,
+        Some(&transaction),
+    )
+    .expect("successful value insert");
+
+    // Retrieve subtree instance with transaction
+    let subtree_storage = db.db.db.get_prefixed_transactional_context_from_path(
+        [TEST_LEAF, b"key1", b"innertree"],
+        &transaction,
+    );
+    let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+    let result_element = Element::get(&subtree, b"key4").unwrap();
+    assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
+
+    // Should be able to retrieve instances created before transaction
+    let subtree_storage = db
+        .db
+        .db
+        .get_prefixed_context_from_path([TEST_LEAF, b"key1", b"key2"]);
+    let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+    let result_element = Element::get(&subtree, b"key3").unwrap();
+    assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
+}
+
+#[test]
+fn test_subtree_deletion() {
+    let element = Element::Item(b"ayy".to_vec());
+    let db = make_grovedb();
+    // Insert some nested subtrees
+    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
+        .expect("successful subtree 1 insert");
+    db.insert([TEST_LEAF, b"key1"], b"key2", Element::empty_tree(), None)
+        .expect("successful subtree 2 insert");
+    // Insert an element into subtree
+    db.insert([TEST_LEAF, b"key1", b"key2"], b"key3", element, None)
+        .expect("successful value insert");
+    db.insert([TEST_LEAF], b"key4", Element::empty_tree(), None)
+        .expect("successful subtree 3 insert");
+
+    let root_hash = db.root_hash(None).unwrap();
+    db.delete([TEST_LEAF], b"key1", None)
+        .expect("unable to delete subtree");
+    assert!(matches!(
+        db.get([TEST_LEAF, b"key1", b"key2"], b"key3", None),
+        Err(Error::PathNotFound(_))
+    ));
+    // assert_eq!(db.subtrees.len(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF
+    // TEST_LEAF.key4 stay
+    assert!(db.get([], TEST_LEAF, None).is_ok());
+    assert!(db.get([], ANOTHER_TEST_LEAF, None).is_ok());
+    assert!(db.get([TEST_LEAF], b"key4", None).is_ok());
+    assert_ne!(root_hash, db.root_hash(None).unwrap());
+}
+
+#[test]
+fn test_subtree_deletion_if_empty() {
+    let element = Element::Item(b"value".to_vec());
+    let db = make_grovedb();
+
+    let transaction = db.start_transaction();
+
+    // Insert some nested subtrees
+    db.insert(
+        [TEST_LEAF],
+        b"level1-A",
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("successful subtree insert A on level 1");
+    db.insert(
+        [TEST_LEAF, b"level1-A"],
+        b"level2-A",
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("successful subtree insert A on level 2");
+    db.insert(
+        [TEST_LEAF, b"level1-A"],
+        b"level2-B",
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("successful subtree insert B on level 2");
+    // Insert an element into subtree
+    db.insert(
+        [TEST_LEAF, b"level1-A", b"level2-A"],
+        b"level3-A",
+        element,
+        Some(&transaction),
+    )
+    .expect("successful value insert");
+    db.insert(
+        [TEST_LEAF],
+        b"level1-B",
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("successful subtree insert B on level 1");
+
+    db.commit_transaction(transaction)
+        .expect("cannot commit changes");
+
+    // Currently we have:
+    // Level 1:            A
+    //                    / \
+    // Level 2:          A   B
+    //                   |
+    // Level 3:          A: value
+
+    let transaction = db.start_transaction();
+
+    let deleted = db
+        .delete_if_empty_tree([TEST_LEAF], b"level1-A", Some(&transaction))
+        .expect("unable to delete subtree");
+    assert!(!deleted);
+
+    let deleted = db
+        .delete_up_tree_while_empty(
+            [TEST_LEAF, b"level1-A", b"level2-A"],
+            b"level3-A",
+            Some(0),
+            Some(&transaction),
+        )
+        .expect("unable to delete subtree");
+    assert_eq!(deleted, 2);
+
+    assert!(matches!(
+        db.get(
+            [TEST_LEAF, b"level1-A", b"level2-A"],
+            b"level3-A",
+            Some(&transaction)
+        ),
+        Err(Error::PathNotFound(_))
+    ));
+
+    assert!(matches!(
+        db.get([TEST_LEAF, b"level1-A"], b"level2-A", Some(&transaction)),
+        Err(Error::PathKeyNotFound(_))
+    ));
+
+    assert!(matches!(
+        db.get([TEST_LEAF], b"level1-A", Some(&transaction)),
+        Ok(Element::Tree(_)),
+    ));
+}
 
 // #[test]
 // fn test_subtree_deletion_if_empty_without_transaction() {

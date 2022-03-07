@@ -1,7 +1,5 @@
 use std::collections::HashSet;
 
-use merk::Merk;
-
 use crate::{
     util::{merk_optional_tx, meta_storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
@@ -70,6 +68,7 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
         let path_iter = path.into_iter();
+        self.check_subtree_exists(path_iter.clone(), transaction)?;
         if path_iter.len() == 0 {
             merk_optional_tx!(self.db, [key], transaction, subtree, {
                 Ok(Element::Tree(subtree.root_hash()))
@@ -168,6 +167,9 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let mut path_iter = path.into_iter();
+        if path_iter.len() == 0 {
+            return Ok(());
+        }
         if path_iter.len() == 1 {
             meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
                 let root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;

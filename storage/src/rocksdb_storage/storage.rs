@@ -81,7 +81,7 @@ impl RocksDbStorage {
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
-    fn build_prefix<'a, P>(path: P) -> Vec<u8>
+    pub fn build_prefix<'a, P>(path: P) -> Vec<u8>
     where
         P: IntoIterator<Item = &'a [u8]>,
     {
@@ -121,5 +121,24 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn flush(&self) -> Result<(), Self::Error> {
         self.db.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_prefix() {
+        let path_a = [b"aa".as_ref(), b"b"];
+        let path_b = [b"a".as_ref(), b"ab"];
+        assert_ne!(
+            RocksDbStorage::build_prefix(path_a),
+            RocksDbStorage::build_prefix(path_b),
+        );
+        assert_eq!(
+            RocksDbStorage::build_prefix(path_a),
+            RocksDbStorage::build_prefix(path_a),
+        );
     }
 }
