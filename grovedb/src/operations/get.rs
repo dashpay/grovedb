@@ -71,7 +71,7 @@ impl GroveDb {
             })
         } else {
             merk_optional_tx!(self.db, path_iter, transaction, subtree, {
-                Ok(Element::Tree(subtree.root_hash()))
+                Element::get(&subtree, key)
             })
         }
     }

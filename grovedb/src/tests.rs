@@ -62,17 +62,17 @@ fn test_init() {
     GroveDb::open(tmp_dir).expect("empty tree is ok");
 }
 
-// #[test]
-// fn test_insert_value_to_merk() {
-//     let mut db = make_grovedb();
-//     let element = Element::Item(b"ayy".to_vec());
-//     db.insert([TEST_LEAF], b"key", element.clone(), None)
-//         .expect("successful insert");
-//     assert_eq!(
-//         db.get([TEST_LEAF], b"key", None).expect("successful get"),
-//         element
-//     );
-// }
+#[test]
+fn test_insert_value_to_merk() {
+    let db = make_grovedb();
+    let element = Element::Item(b"ayy".to_vec());
+    db.insert([TEST_LEAF], b"key", element.clone(), None)
+      .expect("successful insert");
+    assert_eq!(
+        dbg!(db.get([TEST_LEAF], b"key", None).expect("successful get")),
+        element
+    );
+}
 
 // #[test]
 // fn test_insert_value_to_subtree() {
