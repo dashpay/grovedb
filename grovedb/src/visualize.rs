@@ -3,7 +3,7 @@ use std::io::{Result, Write};
 use itertools::Itertools;
 use storage::StorageContext;
 
-use crate::{GroveDb, TransactionArg, subtree::Element, util::{meta_storage_context_optional_tx, storage_context_optional_tx}};
+use crate::{subtree::Element, util::storage_context_optional_tx, GroveDb, TransactionArg};
 
 static HEX_LEN: usize = 8;
 static STR_LEN: usize = 32;
@@ -156,18 +156,17 @@ impl GroveDb {
         transaction: TransactionArg,
     ) -> Result<Drawer<'a, W>> {
         drawer.down();
-        let keys =
-            meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
-                let root_leaf_keys =
-                    Self::get_root_leaf_keys(&meta_storage).expect("cannot get root leaf keys");
-                root_leaf_keys.iter().fold(
-                    vec![Vec::new(); root_leaf_keys.len()],
-                    |mut acc, (key, idx)| {
-                        acc[*idx] = key.clone();
-                        acc
-                    },
-                )
-            });
+        let root_leaf_keys = self
+            .get_root_leaf_keys(transaction)
+            .expect("cannot get root leaf keys");
+        let keys = root_leaf_keys.iter().fold(
+            vec![Vec::new(); root_leaf_keys.len()],
+            |mut acc, (key, idx)| {
+                acc[*idx] = key.clone();
+                acc
+            },
+        );
+
         for k in keys {
             drawer.write(b"\n")?;
             drawer = k.visualize(drawer)?;

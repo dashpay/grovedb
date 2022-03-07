@@ -4,9 +4,11 @@ impl GroveDb {
     pub fn is_empty_tree<'p, P>(&self, path: P, transaction: TransactionArg) -> Result<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
+        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator + ExactSizeIterator,
     {
-        merk_optional_tx!(self.db, path, transaction, subtree, {
+        let path_iter = path.into_iter();
+        self.check_subtree_exists(path_iter.clone(), transaction)?;
+        merk_optional_tx!(self.db, path_iter, transaction, subtree, {
             Ok(subtree.is_empty_tree())
         })
     }

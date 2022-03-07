@@ -24,6 +24,8 @@ pub use subtree::Element;
 #[cfg(feature = "visualize")]
 pub use visualize::{visualize_stderr, visualize_stdout, Drawer, Visualize};
 
+use crate::util::meta_storage_context_optional_tx;
+
 /// A key to store serialized data about subtree prefixes to restore HADS
 /// structure
 /// A key to store serialized data about root tree leafs keys and order
@@ -172,10 +174,12 @@ impl GroveDb {
     /// Returns root hash of GroveDb.
     /// Will be `None` if GroveDb is empty.
     pub fn root_hash(&self, transaction: TransactionArg) -> Result<Option<[u8; 32]>, Error> {
-        Ok(Self::get_root_tree(&self.db, transaction)?.root())
+        Ok(Self::get_root_tree_internal(&self.db, transaction)?.root())
     }
 
-    fn get_root_leaf_keys<'db, 'ctx, S>(meta_storage: &S) -> Result<BTreeMap<Vec<u8>, usize>, Error>
+    fn get_root_leaf_keys_internal<'db, 'ctx, S>(
+        meta_storage: &S,
+    ) -> Result<BTreeMap<Vec<u8>, usize>, Error>
     where
         S: StorageContext<'db, 'ctx>,
         Error: From<<S as StorageContext<'db, 'ctx>>::Error>,
@@ -192,17 +196,22 @@ impl GroveDb {
         Ok(root_leaf_keys)
     }
 
-    fn get_root_tree(
+    fn get_root_leaf_keys(
+        &self,
+        transaction: TransactionArg,
+    ) -> Result<BTreeMap<Vec<u8>, usize>, Error> {
+        meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
+            Self::get_root_leaf_keys_internal(&meta_storage)
+        })
+    }
+
+    fn get_root_tree_internal(
         db: &RocksDbStorage,
         transaction: TransactionArg,
     ) -> Result<MerkleTree<Sha256>, Error> {
-        let root_leaf_keys = if let Some(tx) = transaction {
-            let meta_storage = db.get_prefixed_transactional_context(Vec::new(), tx);
-            Self::get_root_leaf_keys(&meta_storage)?
-        } else {
-            let meta_storage = db.get_prefixed_context(Vec::new());
-            Self::get_root_leaf_keys(&meta_storage)?
-        };
+        let root_leaf_keys = meta_storage_context_optional_tx!(db, transaction, meta_storage, {
+            Self::get_root_leaf_keys_internal(&meta_storage)?
+        });
 
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
         for (subtree_path, root_leaf_idx) in root_leaf_keys {
@@ -212,6 +221,10 @@ impl GroveDb {
             leaf_hashes[root_leaf_idx] = subtree.root_hash();
         }
         Ok(MerkleTree::<Sha256>::from_leaves(&leaf_hashes))
+    }
+
+    pub fn get_root_tree(&self, transaction: TransactionArg) -> Result<MerkleTree<Sha256>, Error> {
+        Self::get_root_tree_internal(&self.db, transaction)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
@@ -278,12 +291,7 @@ impl GroveDb {
     /// let tx = db.start_transaction();
     ///
     /// let subtree_key = b"subtree_key";
-    /// db.insert(
-    ///     [TEST_LEAF],
-    ///     subtree_key,
-    ///     Element::empty_tree(),
-    ///     Some(&tx),
-    /// )?;
+    /// db.insert([TEST_LEAF], subtree_key, Element::empty_tree(), Some(&tx))?;
     ///
     /// // This action exists only inside the transaction for now
     /// let result = db.get([TEST_LEAF], subtree_key, None);

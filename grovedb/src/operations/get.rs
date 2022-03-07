@@ -1,6 +1,11 @@
 use std::collections::HashSet;
 
-use crate::{util::merk_optional_tx, Element, Error, GroveDb, PathQuery, TransactionArg};
+use merk::Merk;
+
+use crate::{
+    util::{merk_optional_tx, meta_storage_context_optional_tx},
+    Element, Error, GroveDb, PathQuery, TransactionArg,
+};
 
 /// Limit of possible indirections
 pub(crate) const MAX_REFERENCE_HOPS: usize = 10;
@@ -151,5 +156,37 @@ impl GroveDb {
             .map(|x| x.as_slice())
             .collect::<Vec<_>>();
         Element::get_path_query(&self.db, &path_slices, path_query, transaction)
+    }
+
+    pub fn check_subtree_exists<'p, P>(
+        &self,
+        path: P,
+        transaction: TransactionArg,
+    ) -> Result<(), Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let mut path_iter = path.into_iter();
+        if path_iter.len() == 1 {
+            meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
+                let root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;
+                if !root_leaf_keys.contains_key(path_iter.next().expect("is not empty")) {
+                    return Err(Error::PathNotFound("subtree doesn't exist"));
+                }
+            });
+        } else {
+            let mut parent_iter = path_iter.clone();
+            let parent_key = parent_iter.next_back().expect("path is not empty");
+            merk_optional_tx!(self.db, parent_iter, transaction, parent, {
+                if matches!(
+                    Element::get(&parent, parent_key),
+                    Err(Error::PathKeyNotFound(_))
+                ) {
+                    return Err(Error::PathNotFound("subtree doesn't exist"));
+                }
+            });
+        }
+        Ok(())
     }
 }

@@ -31,7 +31,6 @@ impl<'db, 'ctx, S> Merk<S>
 where
     S: StorageContext<'db, 'ctx> + 'ctx,
     <S as StorageContext<'db, 'ctx>>::Error: std::error::Error,
-    //    'db: 'b,
 {
     pub fn open(storage: S) -> Result<Merk<S>> {
         let mut merk = Merk {

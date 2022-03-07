@@ -36,6 +36,7 @@ impl GroveDb {
                         "only subtrees are allowed as root tree's leafs",
                     ));
                 }
+                self.check_subtree_exists(path_iter.clone(), transaction)?;
                 merk_optional_tx!(self.db, path_iter.clone(), transaction, mut subtree, {
                     element.insert(&mut subtree, key)?;
                 });
@@ -48,7 +49,7 @@ impl GroveDb {
     /// Add subtree to the root tree
     fn add_root_leaf(&self, key: &[u8], transaction: TransactionArg) -> Result<(), Error> {
         meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
-            let mut root_leaf_keys = Self::get_root_leaf_keys(&meta_storage)?;
+            let mut root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;
             if root_leaf_keys.get(&key.to_vec()).is_none() {
                 root_leaf_keys.insert(key.to_vec(), root_leaf_keys.len());
             }
@@ -77,6 +78,7 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let path_iter = path.into_iter();
+        self.check_subtree_exists(path_iter.clone(), transaction)?;
         if let Some(tx) = transaction {
             let parent_storage = self
                 .db

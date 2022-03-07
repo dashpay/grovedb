@@ -14,7 +14,8 @@ macro_rules! storage_context_optional_tx {
     };
 }
 
-/// Macro to execute same piece of code on different storage contexts with empty prefix.
+/// Macro to execute same piece of code on different storage contexts with empty
+/// prefix.
 macro_rules! meta_storage_context_optional_tx {
     ($db:expr, $transaction:ident, $storage:ident, { $($body:tt)* }) => {
         if let Some(tx) = $transaction {
@@ -55,5 +56,5 @@ macro_rules! merk_optional_tx {
 }
 
 pub(crate) use merk_optional_tx;
-pub(crate) use storage_context_optional_tx;
 pub(crate) use meta_storage_context_optional_tx;
+pub(crate) use storage_context_optional_tx;
