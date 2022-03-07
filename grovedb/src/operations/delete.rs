@@ -1,6 +1,9 @@
 use storage::StorageContext;
 
-use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
+use crate::{
+    util::{merk_optional_tx, storage_context_optional_tx},
+    Element, Error, GroveDb, TransactionArg,
+};
 
 impl GroveDb {
     pub fn delete_up_tree_while_empty<'p, P>(
@@ -150,11 +153,8 @@ impl GroveDb {
         while let Some(q) = queue.pop() {
             // Get the correct subtree with q_ref as path
             let path_iter = q.iter().map(|x| x.as_slice());
-            let merk = if let Some(tx) = transaction {
-                let subtree_storage = self
-                    .db
-                    .get_prefixed_transactional_context_from_path(path_iter.clone(), tx);
-                let mut raw_iter = Element::iterator(subtree_storage.raw_iter());
+            storage_context_optional_tx!(self.db, path_iter.clone(), transaction, storage, {
+                let mut raw_iter = Element::iterator(storage.raw_iter());
                 while let Some((key, value)) = raw_iter.next()? {
                     if let Element::Tree(_) = value {
                         let mut sub_path = q.clone();
@@ -163,18 +163,7 @@ impl GroveDb {
                         result.push(sub_path);
                     }
                 }
-            } else {
-                let subtree_storage = self.db.get_prefixed_context_from_path(path_iter.clone());
-                let mut raw_iter = Element::iterator(subtree_storage.raw_iter());
-                while let Some((key, value)) = raw_iter.next()? {
-                    if let Element::Tree(_) = value {
-                        let mut sub_path = q.clone();
-                        sub_path.push(key.to_vec());
-                        queue.push(sub_path.clone());
-                        result.push(sub_path);
-                    }
-                }
-            };
+            })
         }
         Ok(result)
     }

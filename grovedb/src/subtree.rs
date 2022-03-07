@@ -8,7 +8,7 @@ use merk::{
     Op,
 };
 use serde::{Deserialize, Serialize};
-use storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
+use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
 use crate::{
     util::{merk_optional_tx, storage_context_optional_tx},
@@ -32,6 +32,7 @@ pub struct PathQueryPushArgs<'db, 'ctx, 'a>
 where
     'db: 'ctx,
 {
+    pub storage: &'db RocksDbStorage,
     pub transaction: TransactionArg<'db, 'ctx>,
     pub key: Option<&'a [u8]>,
     pub element: Element,
@@ -79,17 +80,17 @@ impl Element {
         Ok(element)
     }
 
-    // pub fn get_query(
-    //     merk_path: &[&[u8]],
-    //     query: &Query,
-    //     transaction: Option<&OptimisticTransactionDBTransaction>,
-    //     subtrees: &Subtrees,
-    // ) -> Result<Vec<Element>, Error> {
-    //     let sized_query = SizedQuery::new(query.clone(), None, None);
-    //     let (elements, _) =
-    //         Element::get_sized_query(merk_path, &sized_query, transaction,
-    // subtrees)?;     Ok(elements)
-    // }
+    pub fn get_query(
+        storage: &RocksDbStorage,
+        merk_path: &[&[u8]],
+        query: &Query,
+        transaction: TransactionArg,
+    ) -> Result<Vec<Element>, Error> {
+        let sized_query = SizedQuery::new(query.clone(), None, None);
+        let (elements, _) =
+            Element::get_sized_query(storage, merk_path, &sized_query, transaction)?;
+        Ok(elements)
+    }
 
     fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
         let PathQueryPushArgs {
@@ -110,90 +111,96 @@ impl Element {
         Ok(())
     }
 
-    // fn path_query_push(args: PathQueryPushArgs) -> Result<(), Error> {
-    //     let PathQueryPushArgs {
-    //         transaction,
-    //         key,
-    //         element,
-    //         path,
-    //         subquery_key,
-    //         subquery,
-    //         left_to_right,
-    //         results,
-    //         limit,
-    //         offset,
-    //     } = args;
-    //     match element {
-    //         Element::Tree(_) => {
-    //             let mut path_vec = path
-    //                 .ok_or(Error::MissingParameter(
-    //                     "the path must be provided when using a subquery key",
-    //                 ))?
-    //                 .to_vec();
-    //             path_vec.push(key.ok_or(Error::MissingParameter(
-    //                 "the key must be provided when using a subquery key",
-    //             ))?);
+    fn path_query_push(args: PathQueryPushArgs) -> Result<(), Error> {
+        let PathQueryPushArgs {
+            storage,
+            transaction,
+            key,
+            element,
+            path,
+            subquery_key,
+            subquery,
+            left_to_right,
+            results,
+            limit,
+            offset,
+        } = args;
+        match element {
+            Element::Tree(_) => {
+                let mut path_vec = path
+                    .ok_or(Error::MissingParameter(
+                        "the path must be provided when using a subquery key",
+                    ))?
+                    .to_vec();
+                path_vec.push(key.ok_or(Error::MissingParameter(
+                    "the key must be provided when using a subquery key",
+                ))?);
 
-    //             if let Some(subquery) = subquery {
-    //                 if let Some(subquery_key) = &subquery_key {
-    //                     path_vec.push(subquery_key.as_slice());
-    //                 }
+                if let Some(subquery) = subquery {
+                    if let Some(subquery_key) = &subquery_key {
+                        path_vec.push(subquery_key.as_slice());
+                    }
 
-    //                 let inner_query = SizedQuery::new(subquery, *limit, *offset);
-    //                 let path_vec_owned = path_vec.iter().map(|x|
-    // x.to_vec()).collect();                 let inner_path_query =
-    // PathQuery::new(path_vec_owned, inner_query);
+                    let inner_query = SizedQuery::new(subquery, *limit, *offset);
+                    let path_vec_owned = path_vec.iter().map(|x| x.to_vec()).collect();
+                    let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
 
-    //                 let (mut sub_elements, skipped) = Element::get_path_query(
-    //                     &path_vec,
-    //                     &inner_path_query,
-    //                     transaction,
-    //                     subtrees,
-    //                 )?;
+                    let (mut sub_elements, skipped) = Element::get_path_query(
+                        storage,
+                        &path_vec,
+                        &inner_path_query,
+                        transaction,
+                    )?;
 
-    //                 if let Some(limit) = limit {
-    //                     *limit -= sub_elements.len() as u16;
-    //                 }
-    //                 if let Some(offset) = offset {
-    //                     *offset -= skipped;
-    //                 }
-    //                 results.append(&mut sub_elements);
-    //             } else if let Some(subquery_key) = subquery_key {
-    //                 if offset.unwrap_or(0) == 0 {
-    //                     let element = subtrees
-    //                         .borrow_mut(path_vec.iter().copied(), transaction)?
-    //                         .apply(|s| Element::get(s,
-    // subquery_key.as_slice()))?;                     results.push(element);
-    //                     if let Some(limit) = limit {
-    //                         *limit -= 1;
-    //                     }
-    //                 } else if let Some(offset) = offset {
-    //                     *offset -= 1;
-    //                 }
-    //             } else {
-    //                 return Err(Error::InvalidPath(
-    //                     "you must provide a subquery or a subquery_key when
-    // interacting with a \                      tree of trees",
-    //                 ));
-    //             }
-    //         }
-    //         _ => {
-    //             Element::basic_push(PathQueryPushArgs {
-    //                 transaction,
-    //                 key,
-    //                 element,
-    //                 path,
-    //                 subquery_key,
-    //                 subquery,
-    //                 left_to_right,
-    //                 results,
-    //                 limit,
-    //                 offset,
-    //             })?;
-    //         }
-    //     }
-    //     Ok(())
-    // }
+                    if let Some(limit) = limit {
+                        *limit -= sub_elements.len() as u16;
+                    }
+                    if let Some(offset) = offset {
+                        *offset -= skipped;
+                    }
+                    results.append(&mut sub_elements);
+                } else if let Some(subquery_key) = subquery_key {
+                    if offset.unwrap_or(0) == 0 {
+                        merk_optional_tx!(
+                            storage,
+                            path_vec.iter().copied(),
+                            transaction,
+                            subtree,
+                            {
+                                results.push(Element::get(&subtree, subquery_key.as_slice())?);
+                            }
+                        );
+                        if let Some(limit) = limit {
+                            *limit -= 1;
+                        }
+                    } else if let Some(offset) = offset {
+                        *offset -= 1;
+                    }
+                } else {
+                    return Err(Error::InvalidPath(
+                        "you must provide a subquery or a subquery_key when interacting with a \
+                         tree of trees",
+                    ));
+                }
+            }
+            _ => {
+                Element::basic_push(PathQueryPushArgs {
+                    storage,
+                    transaction,
+                    key,
+                    element,
+                    path,
+                    subquery_key,
+                    subquery,
+                    left_to_right,
+                    results,
+                    limit,
+                    offset,
+                })?;
+            }
+        }
+        Ok(())
+    }
 
     fn query_item(
         storage: &RocksDbStorage,
@@ -211,6 +218,7 @@ impl Element {
             // this is a query on a key
             if let QueryItem::Key(key) = item {
                 Ok(add_element_function(PathQueryPushArgs {
+                    storage,
                     transaction,
                     key: Some(key.as_slice()),
                     element: merk_optional_tx!(
@@ -249,6 +257,7 @@ impl Element {
                         raw_decode(iter.value().expect("if key exists then value should too"))?;
                     let key = iter.key().expect("key should exist");
                     add_element_function(PathQueryPushArgs {
+                        storage,
                         transaction,
                         key: Some(key),
                         element,
@@ -335,44 +344,44 @@ impl Element {
         Ok((results, skipped))
     }
 
-    // // Returns a vector of elements, and the number of skipped elements
-    // pub fn get_path_query(
-    //     merk_path: &[&[u8]],
-    //     path_query: &PathQuery,
-    //     transaction: Option<&OptimisticTransactionDBTransaction>,
-    //     subtrees: &Subtrees,
-    // ) -> Result<(Vec<Element>, u16), Error> {
-    //     let path_slices = path_query
-    //         .path
-    //         .iter()
-    //         .map(|x| x.as_slice())
-    //         .collect::<Vec<_>>();
-    //     Element::get_query_apply_function(
-    //         merk_path,
-    //         &path_query.query,
-    //         Some(path_slices.as_slice()),
-    //         transaction,
-    //         subtrees,
-    //         Element::path_query_push,
-    //     )
-    // }
+    // Returns a vector of elements, and the number of skipped elements
+    pub fn get_path_query(
+        storage: &RocksDbStorage,
+        merk_path: &[&[u8]],
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+    ) -> Result<(Vec<Element>, u16), Error> {
+        let path_slices = path_query
+            .path
+            .iter()
+            .map(|x| x.as_slice())
+            .collect::<Vec<_>>();
+        Element::get_query_apply_function(
+            storage,
+            merk_path,
+            &path_query.query,
+            Some(path_slices.as_slice()),
+            transaction,
+            Element::path_query_push,
+        )
+    }
 
-    // /// Returns a vector of elements, and the number of skipped elements
-    // pub fn get_sized_query(
-    //     merk_path: &[&[u8]],
-    //     sized_query: &SizedQuery,
-    //     transaction: Option<&OptimisticTransactionDBTransaction>,
-    //     subtrees: &Subtrees,
-    // ) -> Result<(Vec<Element>, u16), Error> {
-    //     Element::get_query_apply_function(
-    //         merk_path,
-    //         sized_query,
-    //         None,
-    //         transaction,
-    //         subtrees,
-    //         Element::path_query_push,
-    //     )
-    // }
+    /// Returns a vector of elements, and the number of skipped elements
+    pub fn get_sized_query(
+        storage: &RocksDbStorage,
+        merk_path: &[&[u8]],
+        sized_query: &SizedQuery,
+        transaction: TransactionArg,
+    ) -> Result<(Vec<Element>, u16), Error> {
+        Element::get_query_apply_function(
+            storage,
+            merk_path,
+            sized_query,
+            None,
+            transaction,
+            Element::path_query_push,
+        )
+    }
 
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment
