@@ -28,6 +28,12 @@ impl TempStorage {
     }
 }
 
+impl Default for TempStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Deref for TempStorage {
     type Target = RocksDbStorage;
 

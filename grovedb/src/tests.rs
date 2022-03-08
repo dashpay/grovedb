@@ -714,7 +714,7 @@ fn test_root_tree_leafs_are_noted() {
 
 #[test]
 fn test_insert_if_not_exists() {
-    let mut db = make_grovedb();
+    let db = make_grovedb();
 
     // Insert twice at the same path
     assert!(db

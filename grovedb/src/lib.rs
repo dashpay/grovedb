@@ -14,7 +14,7 @@ pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 use serde::{Deserialize, Serialize};
-use storage::{
+pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
     Storage, StorageContext,
 };
@@ -121,8 +121,8 @@ pub struct GroveDb {
     db: RocksDbStorage,
 }
 
-type Transaction<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
-type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
+pub type Transaction<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
+pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
 
 impl GroveDb {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {

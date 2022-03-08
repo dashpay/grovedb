@@ -89,33 +89,6 @@ describe('GroveDB', () => {
   });
 
   describe('#startTransaction', () => {
-    it('should not allow to insert data to main database after it called', async () => {
-      // Making a subtree to insert items into
-      await groveDb.insert(
-        rootTreePath,
-        treeKey,
-        { type: 'tree', value: Buffer.alloc(32) },
-      );
-
-      await groveDb.startTransaction();
-
-      try {
-        // Inserting an item into the subtree without transaction
-        await groveDb.insert(
-          itemTreePath,
-          itemKey,
-          {
-            type: 'item',
-            value: itemValue,
-          },
-        );
-
-        expect.fail('should throw an error');
-      } catch (e) {
-        expect(e.message).to.equal('db is in readonly mode due to the active transaction. Please provide transaction or commit it');
-      }
-    });
-
     it('should not allow to read transactional data from main database until it\'s committed', async () => {
       // Making a subtree to insert items into
       await groveDb.insert(

@@ -110,7 +110,7 @@ impl GroveDb {
     }
 
     pub fn insert_if_not_exists<'p, P>(
-        &mut self,
+        &self,
         path: P,
         key: &'p [u8],
         element: Element,

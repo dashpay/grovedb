@@ -2,16 +2,10 @@ mod converter;
 
 use std::{option::Option::None, path::Path, sync::mpsc, thread};
 
-use grovedb::{GroveDb, PrefixedRocksDbStorage, Storage};
+use grovedb::{GroveDb, Transaction, TransactionArg};
 use neon::prelude::*;
 
-type DbCallback = Box<
-    dyn for<'a> FnOnce(
-            &'a mut GroveDb,
-            Option<&<PrefixedRocksDbStorage as Storage>::DBTransaction<'a>>,
-            &Channel,
-        ) + Send,
->;
+type DbCallback = Box<dyn for<'a> FnOnce(&'a GroveDb, TransactionArg, &Channel) + Send>;
 type UnitCallback = Box<dyn FnOnce(&Channel) + Send>;
 
 // Messages sent on the database channel
@@ -60,11 +54,9 @@ impl GroveDbWrapper {
             let path = Path::new(&path_string);
             // Open a connection to groveDb, this will be moved to a separate thread
             // TODO: think how to pass this error to JS
-            let mut grove_db = GroveDb::open(path).unwrap();
-            let storage = grove_db.storage();
+            let grove_db = GroveDb::open(path).unwrap();
 
-            let mut transaction: Option<<PrefixedRocksDbStorage as Storage>::DBTransaction<'_>> =
-                None;
+            let mut transaction: Option<Transaction> = None;
 
             // Blocks until a callback is available
             // When the instance of `Database` is dropped, the channel will be closed
@@ -76,12 +68,11 @@ impl GroveDbWrapper {
                         // The connection and channel are owned by the thread, but _lent_ to
                         // the callback. The callback has exclusive access to the connection
                         // for the duration of the callback.
-                        callback(&mut grove_db, transaction.as_ref(), &channel);
+                        callback(&grove_db, transaction.as_ref(), &channel);
                     }
                     // Immediately close the connection, even if there are pending messages
                     DbMessage::Close(callback) => {
                         drop(transaction);
-                        drop(storage);
                         drop(grove_db);
                         callback(&channel);
                         break;
@@ -93,8 +84,7 @@ impl GroveDbWrapper {
                         callback(&channel);
                     }
                     DbMessage::StartTransaction(callback) => {
-                        grove_db.start_transaction().unwrap();
-                        transaction = Some(storage.transaction());
+                        transaction = Some(grove_db.start_transaction());
                         callback(&channel);
                     }
                     DbMessage::CommitTransaction(callback) => {
@@ -110,9 +100,7 @@ impl GroveDbWrapper {
                         callback(&channel);
                     }
                     DbMessage::AbortTransaction(callback) => {
-                        grove_db
-                            .abort_transaction(transaction.take().unwrap())
-                            .unwrap();
+                        drop(transaction.take().unwrap());
                         callback(&channel);
                     }
                 }
@@ -144,12 +132,7 @@ impl GroveDbWrapper {
 
     fn send_to_db_thread(
         &self,
-        callback: impl for<'a> FnOnce(
-                &'a mut GroveDb,
-                Option<&<PrefixedRocksDbStorage as Storage>::DBTransaction<'a>>,
-                &Channel,
-            ) + Send
-            + 'static,
+        callback: impl for<'a> FnOnce(&'a GroveDb, TransactionArg, &Channel) + Send + 'static,
     ) -> Result<(), mpsc::SendError<DbMessage>> {
         self.tx.send(DbMessage::Callback(Box::new(callback)))
     }
@@ -278,8 +261,8 @@ impl GroveDbWrapper {
             .this()
             .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
 
-        db.send_to_db_thread(move |grove_db: &mut GroveDb, _transaction, channel| {
-            let result = grove_db.is_transaction_started();
+        db.send_to_db_thread(move |_grove_db: &GroveDb, transaction, channel| {
+            let result = transaction.is_some();
 
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);
@@ -339,7 +322,7 @@ impl GroveDbWrapper {
             .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
         let using_transaction = js_using_transaction.value(&mut cx);
 
-        db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
+        db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let path_slice = path.iter().map(|fragment| fragment.as_slice());
             let result = grove_db.get(
                 path_slice,
@@ -388,7 +371,7 @@ impl GroveDbWrapper {
             .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
         let using_transaction = js_using_transaction.value(&mut cx);
 
-        db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
+        db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let path_slice = path.iter().map(|fragment| fragment.as_slice());
             let result = grove_db.delete(
                 path_slice,
@@ -436,7 +419,7 @@ impl GroveDbWrapper {
             .this()
             .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
 
-        db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
+        db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let path_slice = path.iter().map(|fragment| fragment.as_slice());
             let result = grove_db.insert(
                 path_slice,
@@ -479,7 +462,7 @@ impl GroveDbWrapper {
             .this()
             .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
 
-        db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
+        db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let path_slice = path.iter().map(|fragment| fragment.as_slice());
             let result = grove_db.insert_if_not_exists(
                 path_slice,
@@ -524,7 +507,7 @@ impl GroveDbWrapper {
             .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
         let using_transaction = js_using_transaction.value(&mut cx);
 
-        db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
+        db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let result = grove_db.put_aux(
                 &key,
                 &value,
@@ -566,7 +549,7 @@ impl GroveDbWrapper {
             .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
         let using_transaction = js_using_transaction.value(&mut cx);
 
-        db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
+        db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let result =
                 grove_db.delete_aux(&key, using_transaction.then(|| transaction).flatten());
 
@@ -605,7 +588,7 @@ impl GroveDbWrapper {
             .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
         let using_transaction = js_using_transaction.value(&mut cx);
 
-        db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
+        db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let result = grove_db.get_aux(&key, using_transaction.then(|| transaction).flatten());
 
             channel.send(move |mut task_context| {
@@ -650,7 +633,7 @@ impl GroveDbWrapper {
             .downcast_or_throw::<JsBox<GroveDbWrapper>, _>(&mut cx)?;
         let using_transaction = js_using_transaction.value(&mut cx);
 
-        db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
+        db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let result = grove_db.get_path_query(
                 &path_query,
                 using_transaction.then(|| transaction).flatten(),
@@ -751,20 +734,24 @@ impl GroveDbWrapper {
 
         let using_transaction = js_using_transaction.value(&mut cx);
 
-        db.send_to_db_thread(move |grove_db: &mut GroveDb, transaction, channel| {
+        db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let result = grove_db.root_hash(using_transaction.then(|| transaction).flatten());
 
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);
                 let this = task_context.undefined();
 
-                let hash = match result {
-                    Some(hash) => JsBuffer::external(&mut task_context, hash),
-                    None => task_context.buffer(32)?,
+                let callback_arguments: Vec<Handle<JsValue>> = match result {
+                    Ok(Some(hash)) => vec![
+                        task_context.null().upcast(),
+                        JsBuffer::external(&mut task_context, hash).upcast(),
+                    ],
+                    Ok(None) => vec![
+                        task_context.null().upcast(),
+                        task_context.buffer(32)?.upcast(),
+                    ],
+                    Err(err) => vec![task_context.error(err.to_string())?.upcast()],
                 };
-
-                let callback_arguments: Vec<Handle<JsValue>> =
-                    vec![task_context.null().upcast(), hash.upcast()];
 
                 callback.call(&mut task_context, this, callback_arguments)?;
 

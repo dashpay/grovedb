@@ -182,7 +182,7 @@ where
     /// ];
     /// unsafe { store.apply_unchecked::<_, Vec<_>>(batch, &[]).unwrap() };
     /// ```
-    pub unsafe fn apply_unchecked<'a, KB, KA>(
+    pub unsafe fn apply_unchecked<KB, KA>(
         &'ctx mut self,
         batch: &MerkBatch<KB>,
         aux: &MerkBatch<KA>,
@@ -336,7 +336,7 @@ where
         !iter.valid()
     }
 
-    fn source<'s>(&'s self) -> MerkSource<'s, S> {
+    fn source(&self) -> MerkSource<S> {
         MerkSource {
             storage: &self.storage,
         }
