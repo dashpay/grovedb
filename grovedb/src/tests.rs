@@ -2372,57 +2372,55 @@ fn test_root_hash() {
     assert_ne!(db.root_hash(None).unwrap(), root_hash_outside);
 }
 
-// #[test]
-// fn test_subtree_deletion_with_transaction() {
-//     let element = Element::Item(b"ayy".to_vec());
+#[test]
+fn test_subtree_deletion_with_transaction() {
+    let element = Element::Item(b"ayy".to_vec());
 
-//     let mut db = make_grovedb();
-//     let storage = db.storage();
-//     let transaction = storage.transaction();
-//     db.start_transaction().unwrap();
+    let db = make_grovedb();
+    let transaction = db.start_transaction();
 
-//     // Insert some nested subtrees
-//     db.insert(
-//         [TEST_LEAF],
-//         b"key1",
-//         Element::empty_tree(),
-//         Some(&transaction),
-//     )
-//     .expect("successful subtree 1 insert");
-//     db.insert(
-//         [TEST_LEAF, b"key1"],
-//         b"key2",
-//         Element::empty_tree(),
-//         Some(&transaction),
-//     )
-//     .expect("successful subtree 2 insert");
+    // Insert some nested subtrees
+    db.insert(
+        [TEST_LEAF],
+        b"key1",
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("successful subtree 1 insert");
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"key2",
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("successful subtree 2 insert");
 
-//     // Insert an element into subtree
-//     db.insert(
-//         [TEST_LEAF, b"key1", b"key2"],
-//         b"key3",
-//         element,
-//         Some(&transaction),
-//     )
-//     .expect("successful value insert");
-//     db.insert(
-//         [TEST_LEAF],
-//         b"key4",
-//         Element::empty_tree(),
-//         Some(&transaction),
-//     )
-//     .expect("successful subtree 3 insert");
+    // Insert an element into subtree
+    db.insert(
+        [TEST_LEAF, b"key1", b"key2"],
+        b"key3",
+        element,
+        Some(&transaction),
+    )
+    .expect("successful value insert");
+    db.insert(
+        [TEST_LEAF],
+        b"key4",
+        Element::empty_tree(),
+        Some(&transaction),
+    )
+    .expect("successful subtree 3 insert");
 
-//     db.delete([TEST_LEAF], b"key1", Some(&transaction))
-//         .expect("unable to delete subtree");
-//     assert!(matches!(
-//         db.get([TEST_LEAF, b"key1", b"key2"], b"key3", Some(&transaction)),
-//         Err(Error::PathNotFound(_))
-//     ));
-//     transaction.commit().expect("cannot commit transaction");
-//     assert!(matches!(
-//         db.get([TEST_LEAF], b"key1", None),
-//         Err(Error::PathKeyNotFound(_))
-//     ));
-//     assert!(matches!(db.get([TEST_LEAF], b"key4", None), Ok(_)));
-// }
+    db.delete([TEST_LEAF], b"key1", Some(&transaction))
+        .expect("unable to delete subtree");
+    assert!(matches!(
+        db.get([TEST_LEAF, b"key1", b"key2"], b"key3", Some(&transaction)),
+        Err(Error::PathNotFound(_))
+    ));
+    transaction.commit().expect("cannot commit transaction");
+    assert!(matches!(
+        db.get([TEST_LEAF], b"key1", None),
+        Err(Error::PathKeyNotFound(_))
+    ));
+    assert!(matches!(db.get([TEST_LEAF], b"key4", None), Ok(_)));
+}

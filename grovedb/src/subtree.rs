@@ -447,10 +447,7 @@ mod tests {
     use merk::test_utils::TempMerk;
 
     use super::*;
-    use crate::{
-        tests::{make_grovedb, TEST_LEAF},
-        visualize_stderr, Visualize,
-    };
+    use crate::tests::{make_grovedb, TEST_LEAF};
 
     #[test]
     fn test_success_insert() {
