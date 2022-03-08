@@ -20,6 +20,3 @@ rand = "0.8.4"
 [features]
 default = ["visualize"]
 visualize = ["itertools"]
-
-[lib]
-doctest = false

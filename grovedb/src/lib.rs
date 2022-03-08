@@ -87,8 +87,8 @@ pub struct SizedQuery {
 }
 
 impl SizedQuery {
-    pub const fn new(query: Query, limit: Option<u16>, offset: Option<u16>) -> SizedQuery {
-        SizedQuery {
+    pub const fn new(query: Query, limit: Option<u16>, offset: Option<u16>) -> Self {
+        Self {
             query,
             limit,
             offset,
@@ -97,13 +97,13 @@ impl SizedQuery {
 }
 
 impl PathQuery {
-    pub const fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> PathQuery {
-        PathQuery { path, query }
+    pub const fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> Self {
+        Self { path, query }
     }
 
-    pub const fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> PathQuery {
+    pub const fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> Self {
         let query = SizedQuery::new(query, None, None);
-        PathQuery { path, query }
+        Self { path, query }
     }
 }
 
@@ -116,8 +116,6 @@ pub struct Proof {
 }
 
 pub struct GroveDb {
-    // root_tree: MerkleTree<Sha256>,
-    // root_leaf_keys: BTreeMap<Vec<u8>, usize>,
     db: RocksDbStorage,
 }
 
