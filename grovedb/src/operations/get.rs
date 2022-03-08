@@ -81,7 +81,7 @@ impl GroveDb {
     }
 
     pub fn get_path_queries(
-        &mut self,
+        &self,
         path_queries: &[&PathQuery],
         transaction: TransactionArg,
     ) -> Result<Vec<Vec<u8>>, Error> {
@@ -106,7 +106,7 @@ impl GroveDb {
     }
 
     pub fn get_path_queries_raw(
-        &mut self,
+        &self,
         path_queries: &[&PathQuery],
         transaction: TransactionArg,
     ) -> Result<Vec<Element>, Error> {
@@ -119,7 +119,7 @@ impl GroveDb {
     }
 
     pub fn get_path_query(
-        &mut self,
+        &self,
         path_query: &PathQuery,
         transaction: TransactionArg,
     ) -> Result<(Vec<Vec<u8>>, u16), Error> {

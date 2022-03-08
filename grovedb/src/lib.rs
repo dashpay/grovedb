@@ -24,7 +24,7 @@ pub use subtree::Element;
 #[cfg(feature = "visualize")]
 pub use visualize::{visualize_stderr, visualize_stdout, Drawer, Visualize};
 
-use crate::util::meta_storage_context_optional_tx;
+use crate::util::{merk_optional_tx, meta_storage_context_optional_tx};
 
 /// A key to store serialized data about subtree prefixes to restore HADS
 /// structure
@@ -215,10 +215,9 @@ impl GroveDb {
 
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
         for (subtree_path, root_leaf_idx) in root_leaf_keys {
-            let subtree_storage = db.get_prefixed_context_from_path([subtree_path.as_slice()]);
-            let subtree = Merk::open(subtree_storage)
-                .map_err(|_| Error::CorruptedData("cannot open root leaf".to_owned()))?;
-            leaf_hashes[root_leaf_idx] = subtree.root_hash();
+            merk_optional_tx!(db, [subtree_path.as_slice()], transaction, subtree, {
+                leaf_hashes[root_leaf_idx] = subtree.root_hash();
+            });
         }
         Ok(MerkleTree::<Sha256>::from_leaves(&leaf_hashes))
     }
