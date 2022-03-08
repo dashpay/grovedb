@@ -24,7 +24,7 @@ where
 {
     /// Creates a `Walker` with the given tree and source.
     pub fn new(tree: Tree, source: S) -> Self {
-        Walker {
+        Self {
             tree: Owner::new(tree),
             source,
         }
@@ -111,7 +111,7 @@ where
     /// Takes a `Tree` and returns a `Walker` which fetches from the same source
     /// as `self`.
     fn wrap(&self, tree: Tree) -> Self {
-        Walker::new(tree, self.source.clone())
+        Self::new(tree, self.source.clone())
     }
 
     /// Returns a clone of this `Walker`'s source.
@@ -141,7 +141,7 @@ impl<S> From<Walker<S>> for Tree
 where
     S: Fetch + Sized + Clone,
 {
-    fn from(walker: Walker<S>) -> Tree {
+    fn from(walker: Walker<S>) -> Self {
         walker.into_inner()
     }
 }

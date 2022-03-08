@@ -217,29 +217,31 @@ impl Element {
         if !item.is_range() {
             // this is a query on a key
             if let QueryItem::Key(key) = item {
-                Ok(add_element_function(PathQueryPushArgs {
-                    storage,
-                    transaction,
-                    key: Some(key.as_slice()),
-                    element: merk_optional_tx!(
+                let element_res =
+                    merk_optional_tx!(storage, merk_path.iter().copied(), transaction, subtree, {
+                        Element::get(&subtree, key)
+                    });
+                match element_res {
+                    Ok(element) => add_element_function(PathQueryPushArgs {
                         storage,
-                        merk_path.iter().copied(),
                         transaction,
-                        subtree,
-                        { Element::get(&subtree, key)? }
-                    ),
-                    path,
-                    subquery_key: sized_query.query.subquery_key.clone(),
-                    subquery: sized_query
-                        .query
-                        .subquery
-                        .as_ref()
-                        .map(|query| *query.clone()),
-                    left_to_right: sized_query.query.left_to_right,
-                    results,
-                    limit,
-                    offset,
-                })?)
+                        key: Some(key.as_slice()),
+                        element,
+                        path,
+                        subquery_key: sized_query.query.subquery_key.clone(),
+                        subquery: sized_query
+                            .query
+                            .subquery
+                            .as_ref()
+                            .map(|query| *query.clone()),
+                        left_to_right: sized_query.query.left_to_right,
+                        results,
+                        limit,
+                        offset,
+                    }),
+                    Err(Error::PathKeyNotFound(_)) => Ok(()),
+                    Err(e) => Err(e),
+                }
             } else {
                 Err(Error::InternalError(
                     "QueryItem must be a Key if not a range",

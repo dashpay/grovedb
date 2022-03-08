@@ -6,7 +6,7 @@ use crate::{
 };
 
 /// Limit of possible indirections
-pub(crate) const MAX_REFERENCE_HOPS: usize = 10;
+pub const MAX_REFERENCE_HOPS: usize = 10;
 
 impl GroveDb {
     pub fn get<'p, P>(

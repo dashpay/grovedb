@@ -51,12 +51,12 @@ impl Decode for Op {
             0x01 => {
                 let mut hash = [0; HASH_LENGTH];
                 input.read_exact(&mut hash)?;
-                Op::Push(Node::Hash(hash))
+                Self::Push(Node::Hash(hash))
             }
             0x02 => {
                 let mut hash = [0; HASH_LENGTH];
                 input.read_exact(&mut hash)?;
-                Op::Push(Node::KVHash(hash))
+                Self::Push(Node::KVHash(hash))
             }
             0x03 => {
                 let key_len: u8 = Decode::decode(&mut input)?;
@@ -67,10 +67,10 @@ impl Decode for Op {
                 let mut value = vec![0; value_len as usize];
                 input.read_exact(value.as_mut_slice())?;
 
-                Op::Push(Node::KV(key, value))
+                Self::Push(Node::KV(key, value))
             }
-            0x10 => Op::Parent,
-            0x11 => Op::Child,
+            0x10 => Self::Parent,
+            0x11 => Self::Child,
             // TODO: get rid of `failure` with improvements to ed API (or removing dependency on ed)
             _ => failure::bail!("Proof has unexpected value"),
         })
@@ -107,7 +107,7 @@ pub struct Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
-    pub fn new(proof_bytes: &'a [u8]) -> Self {
+    pub const fn new(proof_bytes: &'a [u8]) -> Self {
         Decoder {
             offset: 0,
             bytes: proof_bytes,

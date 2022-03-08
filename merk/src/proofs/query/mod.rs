@@ -31,13 +31,13 @@ type ProofOffsetLimit = (LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>)
 impl Query {
     /// Creates a new query which contains no items.
     pub fn new() -> Self {
-        Query::new_with_direction(true)
+        Self::new_with_direction(true)
     }
 
     pub fn new_with_direction(left_to_right: bool) -> Self {
-        Query {
+        Self {
             left_to_right,
-            ..Query::default()
+            ..Self::default()
         }
     }
 
@@ -62,7 +62,7 @@ impl Query {
     /// Sets the subquery for the query. This causes every element that is
     /// returned by the query to be subqueried or subqueried to the
     /// subquery_key/subquery if a subquery is present.
-    pub fn set_subquery(&mut self, subquery: Query) {
+    pub fn set_subquery(&mut self, subquery: Self) {
         self.subquery = Some(Box::new(subquery));
     }
 
@@ -201,7 +201,7 @@ impl Query {
 impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
     fn from(other: Vec<Q>) -> Self {
         let items = other.into_iter().map(Into::into).collect();
-        Query {
+        Self {
             items,
             subquery_key: None,
             subquery: None,
@@ -211,7 +211,7 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
 }
 
 impl From<Query> for Vec<QueryItem> {
-    fn from(q: Query) -> Vec<QueryItem> {
+    fn from(q: Query) -> Self {
         q.into_iter().collect()
     }
 }
@@ -312,7 +312,7 @@ impl QueryItem {
                 || (key == upper_bound && upper_bound_inclusive))
     }
 
-    fn merge(self, other: QueryItem) -> QueryItem {
+    fn merge(self, other: Self) -> Self {
         // TODO: don't copy into new vecs
         let lower_unbounded = self.lower_unbounded() || other.lower_unbounded();
         let upper_unbounded = self.upper_unbounded() || other.upper_unbounded();
@@ -322,14 +322,14 @@ impl QueryItem {
 
         if start_non_inclusive {
             return if upper_unbounded {
-                QueryItem::RangeAfter(RangeFrom {
+                Self::RangeAfter(RangeFrom {
                     start: start.to_vec(),
                 })
             } else if end_inclusive {
-                QueryItem::RangeAfterToInclusive(RangeInclusive::new(start.to_vec(), end.to_vec()))
+                Self::RangeAfterToInclusive(RangeInclusive::new(start.to_vec(), end.to_vec()))
             } else {
                 // upper is bounded and not inclusive
-                QueryItem::RangeAfterTo(Range {
+                Self::RangeAfterTo(Range {
                     start: start.to_vec(),
                     end: end.to_vec(),
                 })
@@ -338,25 +338,25 @@ impl QueryItem {
 
         if lower_unbounded {
             return if upper_unbounded {
-                QueryItem::RangeFull(RangeFull)
+                Self::RangeFull(RangeFull)
             } else if end_inclusive {
-                QueryItem::RangeToInclusive(RangeToInclusive { end: end.to_vec() })
+                Self::RangeToInclusive(RangeToInclusive { end: end.to_vec() })
             } else {
                 // upper is bounded and not inclusive
-                QueryItem::RangeTo(RangeTo { end: end.to_vec() })
+                Self::RangeTo(RangeTo { end: end.to_vec() })
             };
         }
 
         // Lower is bounded
         if upper_unbounded {
-            QueryItem::RangeFrom(RangeFrom {
+            Self::RangeFrom(RangeFrom {
                 start: start.to_vec(),
             })
         } else if end_inclusive {
-            QueryItem::RangeInclusive(RangeInclusive::new(start.to_vec(), end.to_vec()))
+            Self::RangeInclusive(RangeInclusive::new(start.to_vec(), end.to_vec()))
         } else {
             // upper is bounded and not inclusive
-            QueryItem::Range(Range {
+            Self::Range(Range {
                 start: start.to_vec(),
                 end: end.to_vec(),
             })
@@ -570,14 +570,14 @@ impl QueryItem {
                     Some(key) => {
                         if left_to_right {
                             let end = range_inclusive.end().as_slice();
-                            match QueryItem::compare(key, end) {
+                            match Self::compare(key, end) {
                                 Ordering::Less => true,
                                 Ordering::Equal => true,
                                 Ordering::Greater => false,
                             }
                         } else {
                             let start = range_inclusive.start().as_slice();
-                            match QueryItem::compare(key, start) {
+                            match Self::compare(key, start) {
                                 Ordering::Less => false,
                                 Ordering::Equal => false,
                                 Ordering::Greater => true,
@@ -592,7 +592,7 @@ impl QueryItem {
 }
 
 impl PartialEq for QueryItem {
-    fn eq(&self, other: &QueryItem) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
@@ -606,7 +606,7 @@ impl PartialEq<&[u8]> for QueryItem {
 impl Eq for QueryItem {}
 
 impl Ord for QueryItem {
-    fn cmp(&self, other: &QueryItem) -> Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         let cmp_lu = if self.lower_unbounded() {
             if other.lower_unbounded() {
                 Ordering::Equal
@@ -651,21 +651,21 @@ impl Ord for QueryItem {
 }
 
 impl PartialOrd for QueryItem {
-    fn partial_cmp(&self, other: &QueryItem) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl PartialOrd<&[u8]> for QueryItem {
     fn partial_cmp(&self, other: &&[u8]) -> Option<Ordering> {
-        let other = QueryItem::Key(other.to_vec());
+        let other = Self::Key(other.to_vec());
         Some(self.cmp(&other))
     }
 }
 
 impl From<Vec<u8>> for QueryItem {
     fn from(key: Vec<u8>) -> Self {
-        QueryItem::Key(key)
+        Self::Key(key)
     }
 }
 

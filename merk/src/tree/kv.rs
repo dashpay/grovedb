@@ -23,14 +23,14 @@ impl KV {
     pub fn new(key: Vec<u8>, value: Vec<u8>) -> Self {
         // TODO: length checks?
         let hash = kv_hash(key.as_slice(), value.as_slice());
-        KV { key, value, hash }
+        Self { key, value, hash }
     }
 
     /// Creates a new `KV` with the given key, value, and hash. The hash is not
     /// checked to be correct for the given key/value.
     #[inline]
     pub fn from_fields(key: Vec<u8>, value: Vec<u8>, hash: Hash) -> Self {
-        KV { key, value, hash }
+        Self { key, value, hash }
     }
 
     /// Replaces the `KV`'s value with the given value, updates the hash, and
@@ -86,12 +86,12 @@ impl Encode for KV {
 impl Decode for KV {
     #[inline]
     fn decode<R: Read>(input: R) -> Result<Self> {
-        let mut kv = KV {
+        let mut kv = Self {
             key: Vec::with_capacity(0),
             value: Vec::with_capacity(128),
             hash: NULL_HASH,
         };
-        KV::decode_into(&mut kv, input)?;
+        Self::decode_into(&mut kv, input)?;
         Ok(kv)
     }
 

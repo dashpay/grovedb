@@ -24,7 +24,7 @@ pub struct Tree {
 impl From<Node> for Tree {
     /// Creates a childless tree with the target node as the `node` field.
     fn from(node: Node) -> Self {
-        Tree {
+        Self {
             node,
             left: None,
             right: None,
@@ -80,7 +80,7 @@ impl Tree {
 
     /// Does an in-order traversal over references to all the nodes in the tree,
     /// calling `visit_node` for each.
-    pub fn visit_refs<F: FnMut(&Tree)>(&self, visit_node: &mut F) {
+    pub fn visit_refs<F: FnMut(&Self)>(&self, visit_node: &mut F) {
         if let Some(child) = &self.left {
             child.tree.visit_refs(visit_node);
         }
@@ -112,7 +112,7 @@ impl Tree {
 
     /// Attaches the child to the `Tree`'s given side. Panics if there is
     /// already a child attached to this side.
-    pub(crate) fn attach(&mut self, left: bool, child: Tree) -> Result<()> {
+    pub(crate) fn attach(&mut self, left: bool, child: Self) -> Result<()> {
         if self.child(left).is_some() {
             bail!("Tried to attach to left child, but it is already Some");
         }
@@ -139,7 +139,7 @@ impl Tree {
 
     /// Consumes the tree node, calculates its hash, and returns a `Node::Hash`
     /// variant.
-    fn into_hash(self) -> Tree {
+    fn into_hash(self) -> Self {
         Node::Hash(self.hash()).into()
     }
 
