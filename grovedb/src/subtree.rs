@@ -212,25 +212,32 @@ impl Element {
         if !item.is_range() {
             // this is a query on a key
             if let QueryItem::Key(key) = item {
-                Ok(add_element_function(PathQueryPushArgs {
-                    transaction,
-                    subtrees,
-                    key: Some(key.as_slice()),
-                    element: subtrees
-                        .borrow_mut(merk_path.iter().copied(), transaction)?
-                        .apply(|s| Self::get(s, key))?,
-                    path,
-                    subquery_key: sized_query.query.subquery_key.clone(),
-                    subquery: sized_query
-                        .query
-                        .subquery
-                        .as_ref()
-                        .map(|query| *query.clone()),
-                    left_to_right: sized_query.query.left_to_right,
-                    results,
-                    limit,
-                    offset,
-                })?)
+                match subtrees
+                    .borrow_mut(merk_path.iter().copied(), transaction)?
+                    .apply(|s| Self::get(s, key))
+                {
+                    Ok(element) => Ok(add_element_function(PathQueryPushArgs {
+                        transaction,
+                        subtrees,
+                        key: Some(key.as_slice()),
+                        element,
+                        path,
+                        subquery_key: sized_query.query.subquery_key.clone(),
+                        subquery: sized_query
+                            .query
+                            .subquery
+                            .as_ref()
+                            .map(|query| *query.clone()),
+                        left_to_right: sized_query.query.left_to_right,
+                        results,
+                        limit,
+                        offset,
+                    })?),
+                    Err(e) => match e {
+                        Error::PathKeyNotFound(_) => Ok(()),
+                        _ => Err(e),
+                    },
+                }
             } else {
                 Err(Error::InternalError(
                     "QueryItem must be a Key if not a range",
