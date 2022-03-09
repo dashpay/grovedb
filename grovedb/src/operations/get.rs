@@ -68,7 +68,7 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
         let path_iter = path.into_iter();
-        self.check_subtree_exists(path_iter.clone(), transaction)?;
+        self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)?;
         if path_iter.len() == 0 {
             merk_optional_tx!(self.db, [key], transaction, subtree, {
                 Ok(Element::Tree(subtree.root_hash()))
@@ -157,10 +157,11 @@ impl GroveDb {
         Element::get_path_query(&self.db, &path_slices, path_query, transaction)
     }
 
-    pub fn check_subtree_exists<'p, P>(
+    fn check_subtree_exists<'p, P>(
         &self,
         path: P,
         transaction: TransactionArg,
+        error: Error,
     ) -> Result<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -174,7 +175,7 @@ impl GroveDb {
             meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
                 let root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;
                 if !root_leaf_keys.contains_key(path_iter.next().expect("is not empty")) {
-                    return Err(Error::PathNotFound("subtree doesn't exist"));
+                    return Err(error);
                 }
             });
         } else {
@@ -185,10 +186,42 @@ impl GroveDb {
                     Element::get(&parent, parent_key),
                     Err(Error::PathKeyNotFound(_))
                 ) {
-                    return Err(Error::PathNotFound("subtree doesn't exist"));
+                    return Err(error);
                 }
             });
         }
         Ok(())
+    }
+
+    pub fn check_subtree_exists_path_not_found<'p, P>(
+        &self,
+        path: P,
+        transaction: TransactionArg,
+    ) -> Result<(), Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        self.check_subtree_exists(
+            path,
+            transaction,
+            Error::PathNotFound("subtree doesn't exist"),
+        )
+    }
+
+    pub fn check_subtree_exists_invalid_path<'p, P>(
+        &self,
+        path: P,
+        transaction: TransactionArg,
+    ) -> Result<(), Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        self.check_subtree_exists(
+            path,
+            transaction,
+            Error::InvalidPath("subtree doesn't exist"),
+        )
     }
 }

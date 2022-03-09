@@ -18,7 +18,7 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let mut path_iter = path.into_iter();
-        self.check_subtree_exists(path_iter.clone(), transaction)?;
+        self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)?;
         if let Some(stop_path_height) = stop_path_height {
             if stop_path_height == path_iter.clone().len() as u16 {
                 return Ok(0);
@@ -81,7 +81,7 @@ impl GroveDb {
                 "root tree leafs currently cannot be deleted",
             ))
         } else {
-            self.check_subtree_exists(path_iter.clone(), transaction)?;
+            self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)?;
             let element = self.get_raw(path_iter.clone(), key.as_ref(), transaction)?;
             let delete_element = || -> Result<(), Error> {
                 merk_optional_tx!(self.db, path_iter.clone(), transaction, mut parent_merk, {

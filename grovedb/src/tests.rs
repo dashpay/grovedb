@@ -731,7 +731,7 @@ fn test_insert_if_not_exists() {
         Element::empty_tree(),
         None,
     );
-    assert!(matches!(result, Err(Error::PathNotFound(_))));
+    assert!(matches!(result, Err(Error::InvalidPath(_))));
 }
 
 #[test]
