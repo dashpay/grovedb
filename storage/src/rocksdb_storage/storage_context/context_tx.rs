@@ -102,7 +102,8 @@ where
     }
 
     fn delete_meta<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Self::Error> {
-        self.transaction.delete_cf(self.cf_meta(), key)
+        self.transaction
+            .delete_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
     }
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error> {
@@ -121,7 +122,8 @@ where
     }
 
     fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error> {
-        self.transaction.get_cf(self.cf_meta(), key)
+        self.transaction
+            .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
     }
 
     fn new_batch(&'ctx self) -> Self::Batch {
