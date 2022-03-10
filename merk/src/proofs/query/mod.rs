@@ -1010,10 +1010,10 @@ mod test {
         *,
     };
     use crate::{
+        proofs::query::QueryItem::RangeAfter,
         test_utils::make_tree_seq,
         tree::{NoopCommit, PanicSource, RefWalker, Tree},
     };
-    use crate::proofs::query::QueryItem::RangeAfter;
 
     fn make_3_node_tree() -> Tree {
         let mut tree = Tree::new(vec![5], vec![5])
@@ -1893,6 +1893,40 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![5]..vec![7])];
+        let (proof, absence) = walker
+            .create_full_proof(queryitems.as_slice())
+            .expect("create_proof errored");
+
+        let mut iter = proof.iter();
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::Hash([
+                85, 217, 56, 226, 204, 53, 103, 145, 201, 33, 178, 80, 207, 194, 104, 128, 199,
+                145, 156, 208, 152, 255, 209, 24, 140, 222, 204, 193, 211, 26, 118, 58
+            ])))
+        );
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVHash([
+                236, 141, 96, 8, 244, 103, 232, 110, 117, 105, 162, 111, 148, 9, 59, 195, 2, 250,
+                165, 180, 215, 137, 202, 221, 38, 98, 93, 247, 54, 180, 242, 116
+            ])))
+        );
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(iter.next(), Some(&Op::Child));
+        assert!(iter.next().is_none());
+        assert_eq!(absence, (false, false));
+    }
+
+    #[test]
+    fn range_after_to_proof_inclusive() {
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![5]..=vec![7])];
         let (proof, absence) = walker
             .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
