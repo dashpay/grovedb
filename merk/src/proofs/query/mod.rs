@@ -1956,6 +1956,33 @@ mod test {
     }
 
     #[test]
+    fn range_full_proof() {
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::RangeFull(..)];
+        let (proof, absence) = walker
+            .create_full_proof(queryitems.as_slice())
+            .expect("create_proof errored");
+
+        let mut iter = proof.iter();
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![2], vec![2]))));
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
+        assert_eq!(iter.next(), Some(&Op::Child));
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![8], vec![8]))));
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(iter.next(), Some(&Op::Child));
+
+        assert!(iter.next().is_none());
+        assert_eq!(absence, (true, true));
+    }
+
+    #[test]
     fn range_proof_missing_upper_bound() {
         let mut tree = make_tree_seq(10);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
