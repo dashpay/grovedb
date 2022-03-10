@@ -1028,12 +1028,15 @@ mod test {
         let mut three_tree = Tree::new(vec![3], vec![3])
             .attach(true, Some(two_tree))
             .attach(false, Some(four_tree));
-        three_tree.commit(&mut NoopCommit {}).expect("commit failed");
+        three_tree
+            .commit(&mut NoopCommit {})
+            .expect("commit failed");
 
         let seven_tree = Tree::new(vec![7], vec![7]);
-        let mut eight_tree = Tree::new(vec![8], vec![8])
-            .attach(true, Some(seven_tree));
-        eight_tree.commit(&mut NoopCommit {}).expect("commit failed");
+        let mut eight_tree = Tree::new(vec![8], vec![8]).attach(true, Some(seven_tree));
+        eight_tree
+            .commit(&mut NoopCommit {})
+            .expect("commit failed");
 
         let mut root_tree = Tree::new(vec![5], vec![5])
             .attach(true, Some(three_tree))
@@ -1768,9 +1771,7 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeFrom(
-            vec![5]..
-        )];
+        let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence) = walker
             .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
@@ -1779,35 +1780,18 @@ mod test {
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::Hash([
-                85, 217, 56, 226, 204, 53, 103, 145, 201, 33, 178, 80, 207, 194, 104, 128, 199, 145,
-                156, 208, 152, 255, 209, 24, 140, 222, 204, 193, 211, 26, 118, 58
+                85, 217, 56, 226, 204, 53, 103, 145, 201, 33, 178, 80, 207, 194, 104, 128, 199,
+                145, 156, 208, 152, 255, 209, 24, 140, 222, 204, 193, 211, 26, 118, 58
             ])))
         );
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KV(
-                vec![5],
-                vec![5],
-            )))
-        );
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KV(
-                vec![7],
-                vec![7],
-            )))
-        );
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KV(
-                vec![8],
-                vec![8],
-            )))
-        );
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![8], vec![8]))));
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(iter.next(), Some(&Op::Child));
         assert!(iter.next().is_none());
+        assert_eq!(absence, (false, true));
     }
 
     #[test]
@@ -1821,44 +1805,14 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KV(
-                vec![2],
-                vec![2],
-            )))
-        );
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KV(
-                vec![3],
-                vec![3],
-            )))
-        );
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![2], vec![2]))));
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KV(
-                vec![4],
-                vec![4],
-            )))
-        );
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
         assert_eq!(iter.next(), Some(&Op::Child));
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KV(
-                vec![5],
-                vec![5],
-            )))
-        );
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KV(
-                vec![7],
-                vec![7],
-            )))
-        );
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVHash([
@@ -1869,6 +1823,7 @@ mod test {
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(iter.next(), Some(&Op::Child));
         assert!(iter.next().is_none());
+        assert_eq!(absence, (true, false));
     }
 
     #[test]
