@@ -301,6 +301,48 @@ impl QueryItem {
         }
     }
 
+    pub fn to_inclusive(&self) -> Self {
+        fn increment_byte_array(input: Vec<u8>) -> Vec<u8> {
+            let mut input = input.clone();
+            if let Some(item) = input.iter_mut().rfind(|x| **x < u8::MAX) {
+                *item += 1;
+            }
+            input
+        }
+
+        fn decrement_byte_array(input: Vec<u8>) -> Vec<u8> {
+            let mut input = input.clone();
+            if let Some(item) = input.iter_mut().rfind(|x| **x > u8::MIN) {
+                *item -= 1;
+            }
+            input
+        }
+
+        match self{
+            QueryItem::Range(Range{ start, end}) => {
+                let actual_end = decrement_byte_array(end.clone());
+                QueryItem::RangeInclusive(start.to_vec()..=actual_end)
+            },
+            QueryItem::RangeTo(RangeTo{ end}) => {
+                let actual_end = decrement_byte_array(end.clone());
+                QueryItem::RangeToInclusive(..=actual_end)
+            }
+            QueryItem::RangeAfter(RangeFrom{ start}) => {
+                let actual_start = increment_byte_array(start.clone());
+                QueryItem::RangeFrom(actual_start..)
+            }
+            QueryItem::RangeAfterTo(Range{ start, end}) => {
+                let actual_start = increment_byte_array(start.clone());
+                QueryItem::RangeInclusive(RangeInclusive::new(actual_start, end.clone()))
+            }
+            QueryItem::RangeAfterToInclusive(range)=> {
+                let actual_start = increment_byte_array(range.start().clone());
+                QueryItem::RangeInclusive(RangeInclusive::new(actual_start, range.end().to_vec()))
+            }
+            _ => self.clone()
+        }
+    }
+
     pub fn contains(&self, key: &[u8]) -> bool {
         let (lower_bound, lower_bound_non_inclusive) = self.lower_bound();
         let (upper_bound, upper_bound_inclusive) = self.upper_bound();
