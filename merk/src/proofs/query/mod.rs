@@ -318,28 +318,29 @@ impl QueryItem {
             input
         }
 
-        match self{
-            QueryItem::Range(Range{ start, end}) => {
+        match self {
+            QueryItem::Range(Range { start, end }) => {
                 let actual_end = decrement_byte_array(end.clone());
                 QueryItem::RangeInclusive(start.to_vec()..=actual_end)
-            },
-            QueryItem::RangeTo(RangeTo{ end}) => {
+            }
+            QueryItem::RangeTo(RangeTo { end }) => {
                 let actual_end = decrement_byte_array(end.clone());
                 QueryItem::RangeToInclusive(..=actual_end)
             }
-            QueryItem::RangeAfter(RangeFrom{ start}) => {
+            QueryItem::RangeAfter(RangeFrom { start }) => {
                 let actual_start = increment_byte_array(start.clone());
                 QueryItem::RangeFrom(actual_start..)
             }
-            QueryItem::RangeAfterTo(Range{ start, end}) => {
+            QueryItem::RangeAfterTo(Range { start, end }) => {
                 let actual_start = increment_byte_array(start.clone());
-                QueryItem::RangeInclusive(RangeInclusive::new(actual_start, end.clone()))
+                let actual_end = decrement_byte_array(end.clone());
+                QueryItem::RangeInclusive(RangeInclusive::new(actual_start, actual_end))
             }
-            QueryItem::RangeAfterToInclusive(range)=> {
+            QueryItem::RangeAfterToInclusive(range) => {
                 let actual_start = increment_byte_array(range.start().clone());
                 QueryItem::RangeInclusive(RangeInclusive::new(actual_start, range.end().to_vec()))
             }
-            _ => self.clone()
+            _ => self.clone(),
         }
     }
 
@@ -2297,6 +2298,34 @@ mod test {
 
         let expected = QueryItem::Key(vec![42]);
         assert_eq!(query, expected);
+    }
+
+    #[test]
+    fn non_inclusive_query_into_inclusive() {
+        let query_item = QueryItem::Range(vec![5]..vec![8]);
+        let inclusive_query_item = query_item.to_inclusive();
+        assert_eq!(inclusive_query_item.lower_bound().0, &[5]);
+        assert_eq!(inclusive_query_item.upper_bound().0, &[7]);
+
+        let query_item = QueryItem::RangeTo(..vec![8]);
+        let inclusive_query_item = query_item.to_inclusive();
+        assert_eq!(inclusive_query_item.lower_bound().0, b"");
+        assert_eq!(inclusive_query_item.upper_bound().0, &[7]);
+
+        let query_item = QueryItem::RangeAfter(vec![8]..);
+        let inclusive_query_item = query_item.to_inclusive();
+        assert_eq!(inclusive_query_item.lower_bound().0, vec![9]);
+        assert_eq!(inclusive_query_item.upper_bound().0, b"");
+
+        let query_item = QueryItem::RangeAfterTo(vec![8]..vec![15]);
+        let inclusive_query_item = query_item.to_inclusive();
+        assert_eq!(inclusive_query_item.lower_bound().0, vec![9]);
+        assert_eq!(inclusive_query_item.upper_bound().0, vec![14]);
+
+        let query_item = QueryItem::RangeAfterToInclusive(vec![8]..=vec![15]);
+        let inclusive_query_item = query_item.to_inclusive();
+        assert_eq!(inclusive_query_item.lower_bound().0, vec![9]);
+        assert_eq!(inclusive_query_item.upper_bound().0, vec![15]);
     }
 
     #[test]
