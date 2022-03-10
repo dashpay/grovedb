@@ -1022,6 +1022,27 @@ mod test {
         tree
     }
 
+    fn make_6_node_tree() -> Tree {
+        let two_tree = Tree::new(vec![2], vec![2]);
+        let four_tree = Tree::new(vec![4], vec![4]);
+        let mut three_tree = Tree::new(vec![3], vec![3])
+            .attach(true, Some(two_tree))
+            .attach(false, Some(four_tree));
+        three_tree.commit(&mut NoopCommit {}).expect("commit failed");
+
+        let seven_tree = Tree::new(vec![7], vec![7]);
+        let mut eight_tree = Tree::new(vec![8], vec![8])
+            .attach(true, Some(seven_tree));
+        eight_tree.commit(&mut NoopCommit {}).expect("commit failed");
+
+        let mut root_tree = Tree::new(vec![5], vec![5])
+            .attach(true, Some(three_tree))
+            .attach(false, Some(eight_tree));
+        root_tree.commit(&mut NoopCommit {}).expect("commit failed");
+
+        root_tree
+    }
+
     fn verify_keys_test(keys: Vec<Vec<u8>>, expected_result: Vec<Option<Vec<u8>>>) {
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -1740,6 +1761,52 @@ mod test {
                 (vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60]),
             ]
         );
+    }
+
+    #[test]
+    fn range_from_proof() {
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::RangeFrom(
+            vec![5]..
+        )];
+        let (proof, absence) = walker
+            .create_full_proof(queryitems.as_slice())
+            .expect("create_proof errored");
+
+        let mut iter = proof.iter();
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::Hash([
+                85, 217, 56, 226, 204, 53, 103, 145, 201, 33, 178, 80, 207, 194, 104, 128, 199, 145,
+                156, 208, 152, 255, 209, 24, 140, 222, 204, 193, 211, 26, 118, 58
+            ])))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KV(
+                vec![5],
+                vec![5],
+            )))
+        );
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KV(
+                vec![7],
+                vec![7],
+            )))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KV(
+                vec![8],
+                vec![8],
+            )))
+        );
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(iter.next(), Some(&Op::Child));
     }
 
     #[test]
