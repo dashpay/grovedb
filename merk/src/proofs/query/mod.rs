@@ -943,7 +943,7 @@ pub fn verify_query(
                     }
                 }
 
-                if key.as_slice() >= query_item.upper_bound().0 {
+                if query_item.upper_bound().0 != b"" && key.as_slice() >= query_item.upper_bound().0 {
                     // at or past upper bound of range (or this was an exact
                     // match on a single-key queryitem), advance to next query
                     // item
@@ -1793,6 +1793,22 @@ mod test {
         assert_eq!(iter.next(), Some(&Op::Child));
         assert!(iter.next().is_none());
         assert_eq!(absence, (false, true));
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, tree.hash()).unwrap();
+        assert_eq!(
+            res,
+            vec![
+                (vec![5], vec![5]),
+                (vec![7], vec![7]),
+                (vec![8], vec![8]),
+            ]
+        );
     }
 
     #[test]
