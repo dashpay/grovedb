@@ -738,12 +738,9 @@ where
                 let left_bound = item.lower_bound().0;
                 let right_bound = item.upper_bound().0;
 
-                dbg!(left_bound == b"");
-                dbg!(right_bound == b"");
-
                 // if range starts before this node's key, include it in left
                 // child's query
-                let left_query = if left_bound < self.tree().key() {
+                let left_query = if left_bound < self.tree().key() || left_bound == b"" {
                     &query[..=index]
                 } else {
                     &query[..index]
