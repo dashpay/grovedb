@@ -1013,6 +1013,7 @@ mod test {
         test_utils::make_tree_seq,
         tree::{NoopCommit, PanicSource, RefWalker, Tree},
     };
+    use crate::proofs::query::QueryItem::RangeAfter;
 
     fn make_3_node_tree() -> Tree {
         let mut tree = Tree::new(vec![5], vec![5])
@@ -1856,6 +1857,34 @@ mod test {
         assert_eq!(iter.next(), Some(&Op::Child));
         assert!(iter.next().is_none());
         assert_eq!(absence, (true, false));
+    }
+
+    #[test]
+    fn range_after_proof() {
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![RangeAfter(vec![5]..)];
+        let (proof, absence) = walker
+            .create_full_proof(queryitems.as_slice())
+            .expect("create_proof errored");
+
+        let mut iter = proof.iter();
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::Hash([
+                85, 217, 56, 226, 204, 53, 103, 145, 201, 33, 178, 80, 207, 194, 104, 128, 199,
+                145, 156, 208, 152, 255, 209, 24, 140, 222, 204, 193, 211, 26, 118, 58
+            ])))
+        );
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![8], vec![8]))));
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(iter.next(), Some(&Op::Child));
+        assert!(iter.next().is_none());
+        assert_eq!(absence, (false, true));
     }
 
     #[test]
