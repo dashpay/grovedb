@@ -777,7 +777,7 @@ where
 
         let (left_items, right_items) = match search {
             Ok(index) => {
-                let item = &query[index];
+                let item = &query[index].to_inclusive();
                 let left_bound = item.lower_bound().0;
                 let right_bound = item.upper_bound().0;
 
