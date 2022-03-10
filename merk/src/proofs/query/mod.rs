@@ -956,9 +956,9 @@ pub fn verify_query(
         if let Node::KV(key, value) = node {
             while let Some(item) = query.peek() {
                 // get next item in query
-                let query_item = *item;
+                let query_item = (*item).to_inclusive();
                 // we have not reached next queried part of tree
-                if *query_item > key.as_slice() {
+                if query_item > key.as_slice() {
                     // continue to next push
                     break;
                 }
@@ -1860,7 +1860,6 @@ mod test {
         let (proof, absence) = walker
             .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
-        dbg!(&proof);
 
         let mut iter = proof.iter();
         assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![2], vec![2]))));
@@ -1975,21 +1974,20 @@ mod test {
         assert!(iter.next().is_none());
         assert_eq!(absence, (false, true));
 
-        // let mut bytes = vec![];
-        // encode_into(proof.iter(), &mut bytes);
-        // let mut query = Query::new();
-        // for item in queryitems {
-        //     query.insert_item(item);
-        // }
-        // let res = verify_query(bytes.as_slice(), &query,
-        // tree.hash()).unwrap(); assert_eq!(
-        //     res,
-        //     vec![
-        //         (vec![5], vec![5]),
-        //         (vec![7], vec![7]),
-        //         (vec![8], vec![8]),
-        //     ]
-        // );
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query,
+        tree.hash()).unwrap(); assert_eq!(
+            res,
+            vec![
+                (vec![7], vec![7]),
+                (vec![8], vec![8]),
+            ]
+        );
     }
 
     #[test]
