@@ -22,7 +22,7 @@ jobs:
         with:
           toolchain: nightly
 
-      - run: cargo test
+      - run: cargo test --workspace --all-features
 
   linting:
     name: Linting

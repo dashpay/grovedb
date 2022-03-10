@@ -1,29 +1,23 @@
 use anyhow::{anyhow, Error};
 use ed::{Decode, Encode};
-use storage::{Storage, Store};
+use storage::StorageContext;
 
 use super::Tree;
 
-impl Store for Tree {
-    type Error = Error;
-
-    fn encode(&self) -> Vec<u8> {
-        self.encode()
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, Self::Error> {
+impl Tree {
+    pub fn decode_raw(bytes: &[u8]) -> Result<Self, Error> {
         Decode::decode(bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
     }
 
-    fn get<S, K>(storage: S, key: K) -> Result<Option<Self>, Self::Error>
+    pub(crate) fn get<'db, 'ctx, S, K>(storage: &S, key: K) -> Result<Option<Self>, Error>
     where
-        S: Storage,
+        S: StorageContext<'db, 'ctx>,
         K: AsRef<[u8]>,
-        Self::Error: From<S::Error>,
+        Error: From<S::Error>,
     {
         let mut tree: Option<Self> = storage
             .get(&key)?
-            .map(|x| <Self as Store>::decode(&x))
+            .map(|x| Tree::decode_raw(&x))
             .transpose()?;
         if let Some(ref mut t) = tree {
             t.set_key(key.as_ref().to_vec());

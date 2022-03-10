@@ -267,6 +267,8 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(ops: I) -> Result<(Pr
 mod tests {
     use std::usize;
 
+    use storage::StorageContext;
+
     use super::{super::tree::Tree, *};
     use crate::{
         test_utils::*,
@@ -409,15 +411,14 @@ mod tests {
     fn leaf_chunk_roundtrip() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(0..31);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
-            .unwrap();
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[]).unwrap();
 
         let root_node = merk.tree.take();
         let root_key = root_node.as_ref().unwrap().key().to_vec();
         merk.tree.set(root_node);
 
         // whole tree as 1 leaf
-        let mut iter = merk.inner.raw_iter(None);
+        let mut iter = merk.storage.raw_iter();
         iter.seek_to_first();
         let chunk = get_next_chunk(&mut iter, None).unwrap();
         let ops = chunk.into_iter().map(Ok);
@@ -428,7 +429,7 @@ mod tests {
         assert_eq!(counts.kvhash, 0);
         drop(iter);
 
-        let mut iter = merk.inner.raw_iter(None);
+        let mut iter = merk.storage.raw_iter();
         iter.seek_to_first();
 
         // left leaf
