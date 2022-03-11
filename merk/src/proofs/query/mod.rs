@@ -1616,6 +1616,11 @@ mod test {
             QueryItem::Range(vec![20]..vec![30])
         );
         assert!(QueryItem::Range(vec![20]..vec![30]) > QueryItem::Range(vec![10]..vec![20]));
+        assert_eq!(
+            QueryItem::RangeToInclusive(..=vec![15]),
+            QueryItem::Key(vec![5]),
+        );
+        assert!(QueryItem::RangeAfter(vec![5]..) > QueryItem::RangeInclusive(vec![1]..=vec![5]));
     }
 
     #[test]
