@@ -650,45 +650,70 @@ impl Eq for QueryItem {}
 
 impl Ord for QueryItem {
     fn cmp(&self, other: &Self) -> Ordering {
-        let cmp_lu = if self.lower_unbounded() {
-            if other.lower_unbounded() {
+        // Given two range values A = (a1, a2) and B = (b1, b2)
+        // to check if they do not intersect, we need to verify
+        // that A is completely to the right of B, or that A is
+        // completely to the left of B.
+        // if A is completely to the right of B, then it's starting
+        // point (a1) must be greater than the maximum value in b (b2)
+        // i.e a1 > b2
+        // if A is to the left of B, then it's maximum value a2 must
+        // be less than the minimum value in B (b1)
+        //  i.e a2 < b1
+        // Hence you can verify that they don't intersect by computing
+        // does not intersect = (a1 > b2) || (a2 < b1)
+        // To verify that they do intersect you just invert the above
+        // intersect = not [(a1 > b2) || (a2 < b1)]
+        // applying de morgan's law
+        // intersect = not (a1 > b2) and not (a2 < b1)
+        // intersect = a1 <= b2 and a2 >= b1
+        // lower bound of A must be less than or equal to upper bound of B
+        // and upper bound of A must be greater than or equal to lower bound
+        // of B for there to be an overlap
+        let range_a = self.to_inclusive();
+        let range_b = other.to_inclusive();
+
+        // compare the lower bound of A and upper bound of B
+        let cmp_lu = if range_a.lower_unbounded() {
+            if range_b.lower_unbounded() {
                 Ordering::Equal
             } else {
                 Ordering::Less
             }
-        } else if other.lower_unbounded() {
+        } else if range_b.lower_unbounded() {
             Ordering::Greater
         } else {
-            self.lower_bound().0.cmp(other.upper_bound().0)
+            range_a.lower_bound().0.cmp(range_b.upper_bound().0)
         };
 
-        let cmp_ul = if self.upper_unbounded() {
-            if other.upper_unbounded() {
+        // compare the upper bound of A and lower bound of B
+        let cmp_ul = if range_a.upper_unbounded() {
+            if range_b.upper_unbounded() {
                 Ordering::Equal
             } else {
                 Ordering::Greater
             }
-        } else if other.upper_unbounded() {
+        } else if range_b.upper_unbounded() {
             Ordering::Less
         } else {
-            self.upper_bound().0.cmp(other.lower_bound().0)
+            range_a.upper_bound().0.cmp(range_b.lower_bound().0)
         };
 
-        let self_inclusive = self.upper_bound().1;
-        let other_inclusive = other.upper_bound().1;
-
         match (cmp_lu, cmp_ul) {
-            (Ordering::Less, Ordering::Less) => Ordering::Less,
-            (Ordering::Less, Ordering::Equal) => match self_inclusive {
-                true => Ordering::Equal,
-                false => Ordering::Less,
-            },
-            (Ordering::Less, Ordering::Greater) => Ordering::Equal,
-            (Ordering::Equal, _) => match other_inclusive {
-                true => Ordering::Equal,
-                false => Ordering::Greater,
-            },
-            (Ordering::Greater, _) => Ordering::Greater,
+            // (a1 <= b2) && (a2 >= b1) - overlap hence equal
+            (Ordering::Less | Ordering::Equal, Ordering::Equal | Ordering::Greater) => {
+                Ordering::Equal
+            }
+            // (a2 >= b1) failed instead we got a2 < b1 (which means A is to the left of B hence
+            // less)
+            (Ordering::Less | Ordering::Equal, Ordering::Less) => Ordering::Less,
+            // (a1 <= b2) failed instead we got a1 > b2 (which means A is to the right of B hence
+            // greater)
+            (Ordering::Greater, Ordering::Equal | Ordering::Greater) => Ordering::Greater,
+            // both false so (a1 > b2) && (a2 < b1) (which means A is simultaneously to the right
+            // and left of B) this can occur if there is a descending range e.g 6..=3
+            // TODO: is this safe??
+            (Ordering::Greater, Ordering::Less) => panic!("invalid range"),
         }
     }
 }
@@ -1952,10 +1977,11 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfter(vec![4]..)];
+        let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence) = walker
             .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
+        dbg!(&proof);
 
         let mut iter = proof.iter();
         assert_eq!(
@@ -1980,14 +2006,10 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query,
-        tree.hash()).unwrap(); assert_eq!(
+        let res = verify_query(bytes.as_slice(), &query, tree.hash()).unwrap();
+        assert_eq!(
             res,
-            vec![
-                (vec![5], vec![5]),
-                (vec![7], vec![7]),
-                (vec![8], vec![8]),
-            ]
+            vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8]),]
         );
     }
 
