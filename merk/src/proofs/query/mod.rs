@@ -1952,7 +1952,7 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![RangeAfter(vec![5]..)];
+        let queryitems = vec![QueryItem::RangeAfter(vec![4]..)];
         let (proof, absence) = walker
             .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
@@ -1984,6 +1984,7 @@ mod test {
         tree.hash()).unwrap(); assert_eq!(
             res,
             vec![
+                (vec![5], vec![5]),
                 (vec![7], vec![7]),
                 (vec![8], vec![8]),
             ]
