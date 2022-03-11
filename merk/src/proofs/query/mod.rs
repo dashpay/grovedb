@@ -2153,6 +2153,25 @@ mod test {
 
         assert!(iter.next().is_none());
         assert_eq!(absence, (true, true));
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, tree.hash()).unwrap();
+        assert_eq!(
+            res,
+            vec![
+                (vec![2], vec![2]),
+                (vec![3], vec![3]),
+                (vec![4], vec![4]),
+                (vec![5], vec![5]),
+                (vec![7], vec![7]),
+                (vec![8], vec![8])
+            ]
+        );
     }
 
     #[test]
