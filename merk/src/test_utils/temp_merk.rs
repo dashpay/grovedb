@@ -1,6 +1,12 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    iter::empty,
+    ops::{Deref, DerefMut},
+};
 
-use storage::rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext};
+use storage::{
+    rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
+    Storage,
+};
 
 use crate::Merk;
 
@@ -15,7 +21,7 @@ impl TempMerk {
     /// does not exist.
     pub fn new() -> Self {
         let storage = Box::leak(Box::new(TempStorage::new()));
-        let context = storage.get_prefixed_context(b"".to_vec());
+        let context = storage.get_storage_context(empty());
         let merk = Merk::open(context).unwrap();
         TempMerk { storage, merk }
     }

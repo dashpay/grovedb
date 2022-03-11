@@ -442,9 +442,11 @@ impl Commit for MerkCommitter {
 
 #[cfg(test)]
 mod test {
+    use std::iter::empty;
+
     use storage::{
         rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
-        RawIterator, StorageContext,
+        RawIterator, Storage, StorageContext,
     };
     use tempfile::TempDir;
 
@@ -594,7 +596,7 @@ mod test {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
             let mut merk =
-                Merk::open(storage.get_prefixed_context(b"".to_vec())).expect("cannot open merk");
+                Merk::open(storage.get_storage_context(empty())).expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
             merk.apply::<_, Vec<_>>(batch.as_slice(), &[]).unwrap();
             let mut tree = merk.tree.take().unwrap();
@@ -607,8 +609,7 @@ mod test {
 
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let merk =
-            Merk::open(storage.get_prefixed_context(b"".to_vec())).expect("cannot open merk");
+        let merk = Merk::open(storage.get_storage_context(empty())).expect("cannot open merk");
         let mut tree = merk.tree.take().unwrap();
         let walker = RefWalker::new(&mut tree, merk.source());
 
@@ -638,7 +639,7 @@ mod test {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
             let mut merk =
-                Merk::open(storage.get_prefixed_context(b"".to_vec())).expect("cannot open merk");
+                Merk::open(storage.get_storage_context(empty())).expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
             merk.apply::<_, Vec<_>>(batch.as_slice(), &[]).unwrap();
 
@@ -648,8 +649,7 @@ mod test {
         };
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let merk =
-            Merk::open(storage.get_prefixed_context(b"".to_vec())).expect("cannot open merk");
+        let merk = Merk::open(storage.get_storage_context(empty())).expect("cannot open merk");
 
         let mut reopen_nodes = vec![];
         collect(&mut merk.storage.raw_iter(), &mut reopen_nodes);

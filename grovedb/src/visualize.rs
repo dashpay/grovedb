@@ -195,12 +195,12 @@ impl Visualize for GroveDb {
     }
 }
 
-// impl Visualize for (&GroveDb, &OptimisticTransactionDBTransaction<'_>) {
-//     fn visualize<'a, W: Write>(&self, drawer: Drawer<'a, W>) ->
-// Result<Drawer<'a, W>> {         let (grovedb, transaction) = self;
-//         grovedb.visualize_start(drawer, Some(transaction))
-//     }
-// }
+impl<'db, 'ctx> Visualize for (&'db GroveDb, TransactionArg<'db, 'ctx>) {
+    fn visualize<'a, W: Write>(&self, drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>> {
+        let (grovedb, transaction) = self;
+        grovedb.visualize_start(drawer, *transaction)
+    }
+}
 
 pub fn visualize_stderr<T: Visualize + ?Sized>(value: &T) {
     let mut out = std::io::stderr();

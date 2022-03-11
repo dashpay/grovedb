@@ -47,38 +47,6 @@ impl RocksDbStorage {
         Ok(RocksDbStorage { db })
     }
 
-    pub fn get_prefixed_context(&self, prefix: Vec<u8>) -> PrefixedRocksDbStorageContext {
-        PrefixedRocksDbStorageContext::new(&self.db, prefix)
-    }
-
-    pub fn get_prefixed_context_from_path<'p, P>(&self, path: P) -> PrefixedRocksDbStorageContext
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-    {
-        let prefix = Self::build_prefix(path);
-        PrefixedRocksDbStorageContext::new(&self.db, prefix)
-    }
-
-    pub fn get_prefixed_transactional_context<'a>(
-        &'a self,
-        prefix: Vec<u8>,
-        transaction: &'a <Self as Storage>::Transaction,
-    ) -> PrefixedRocksDbTransactionContext {
-        PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix)
-    }
-
-    pub fn get_prefixed_transactional_context_from_path<'a, 'p, P>(
-        &'a self,
-        path: P,
-        transaction: &'a <Self as Storage>::Transaction,
-    ) -> PrefixedRocksDbTransactionContext
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-    {
-        let prefix = Self::build_prefix(path);
-        PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix)
-    }
-
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
     pub fn build_prefix<'a, P>(path: P) -> Vec<u8>
@@ -105,7 +73,9 @@ impl RocksDbStorage {
 
 impl<'db> Storage<'db> for RocksDbStorage {
     type Error = Error;
+    type StorageContext = PrefixedRocksDbStorageContext<'db>;
     type Transaction = Transaction<'db, OptimisticTransactionDB>;
+    type TransactionalStorageContext = PrefixedRocksDbTransactionContext<'db>;
 
     fn start_transaction(&'db self) -> Self::Transaction {
         self.db.transaction()
@@ -121,6 +91,26 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
     fn flush(&self) -> Result<(), Self::Error> {
         self.db.flush()
+    }
+
+    fn get_storage_context<'p, P>(&'db self, path: P) -> Self::StorageContext
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+    {
+        let prefix = Self::build_prefix(path);
+        PrefixedRocksDbStorageContext::new(&self.db, prefix)
+    }
+
+    fn get_transactional_storage_context<'p, P>(
+        &'db self,
+        path: P,
+        transaction: &'db Self::Transaction,
+    ) -> Self::TransactionalStorageContext
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+    {
+        let prefix = Self::build_prefix(path);
+        PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix)
     }
 }
 

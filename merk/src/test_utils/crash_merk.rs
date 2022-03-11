@@ -1,7 +1,13 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    iter::empty,
+    ops::{Deref, DerefMut},
+};
 
 use anyhow::Result;
-use storage::rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext};
+use storage::{
+    rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
+    Storage,
+};
 
 use crate::Merk;
 
@@ -17,7 +23,7 @@ impl CrashMerk {
     /// does not exist.
     pub fn open() -> Result<CrashMerk> {
         let storage = Box::leak(Box::new(TempStorage::new()));
-        let context = storage.get_prefixed_context(b"".to_vec());
+        let context = storage.get_storage_context(empty());
         let merk = Merk::open(context).unwrap();
         Ok(CrashMerk { merk, storage })
     }
