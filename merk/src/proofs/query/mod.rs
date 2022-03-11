@@ -1719,10 +1719,10 @@ mod test {
         assert_eq!(iter.next(), Some(&Op::Child));
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KV(
-                vec![0, 0, 0, 0, 0, 0, 0, 7],
-                vec![123; 60]
-            )))
+            Some(&Op::Push(Node::KVHash([
+                38, 213, 80, 36, 8, 4, 244, 209, 26, 114, 140, 196, 141, 53, 145, 149, 195, 48,
+                104, 86, 66, 93, 141, 180, 22, 229, 231, 250, 58, 27, 167, 97
+            ])))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
