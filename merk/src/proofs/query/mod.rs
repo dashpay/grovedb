@@ -800,8 +800,19 @@ where
         let node_key = QueryItem::Key(self.tree().key().to_vec());
         let search = query.binary_search_by(|key| key.cmp(&node_key));
 
+        if let Some(current_limit) = limit {
+            if current_limit == 0 {
+                return Ok((LinkedList::new(), (false, false), Some(0), offset));
+            }
+        }
+
+        let current_node_in_query: bool;
+
         let (left_items, right_items) = match search {
             Ok(index) => {
+                // set a flag here to signify that the current node is requested in the query
+                current_node_in_query = true;
+
                 let item = &query[index].to_inclusive();
                 let left_bound = item.lower_bound().0;
                 let right_bound = item.upper_bound().0;
@@ -824,27 +835,67 @@ where
 
                 (left_query, right_query)
             }
-            Err(index) => (&query[..index], &query[index..]),
+            Err(index) => {
+                current_node_in_query = false;
+                (&query[..index], &query[index..])
+            }
         };
 
-        // if left_to_right {
-        let (mut proof, left_absence, new_limit, new_offset) =
+        let (mut proof, left_absence, mut new_limit, new_offset) =
             self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
-        let (mut right_proof, right_absence, new_limit, new_offset) =
+
+        if current_node_in_query {
+            // reserve limit slot for current node, before constructing right subtree proof
+            if let Some(current_limit) = new_limit {
+                new_limit = Some(current_limit - 1);
+            }
+        }
+
+        // Might not make sense to do the right proof immediately
+        // we need to reduce the limit at that point, if the current node is in the
+        // batch based on the set flag
+        // if limit is zero at this point, no point in checking the right edge (result
+        // set is complete)
+
+        // hence this is conditional on the new limit
+        let (mut right_proof, right_absence, new_limit, mut new_offset) =
             self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
 
         let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
 
-        proof.push_back(match search {
-            Ok(_) => Op::Push(self.to_kv_node()),
-            Err(_) => {
-                if left_absence.1 || right_absence.0 {
-                    Op::Push(self.to_kv_node())
+        // Not going to push into proofs all the time
+        // need to return a an option for the op code
+        // check if the option exists and then push_back
+        // based on that
+
+        let proof_op = match search {
+            Ok(_) => {
+                // always add here, as the limit has been checked already
+                // only reason not to perform this operation is if the offset is not zero
+                // decrement the offset everytime you call here, if it is not already zero
+                if let Some(current_offset) = new_offset {
+                    if current_offset != 0 {
+                        new_offset = Some(current_offset - 1);
+                        None
+                    } else {
+                        Some(Op::Push(self.to_kv_node()))
+                    }
                 } else {
-                    Op::Push(self.to_kvhash_node())
+                    Some(Op::Push(self.to_kv_node()))
                 }
             }
-        });
+            Err(_) => {
+                if left_absence.1 || right_absence.0 {
+                    Some(Op::Push(self.to_kv_node()))
+                } else {
+                    Some(Op::Push(self.to_kvhash_node()))
+                }
+            }
+        };
+
+        if let Some(op) = proof_op {
+            proof.push_back(op);
+        }
 
         if has_left {
             proof.push_back(Op::Parent);
@@ -861,44 +912,6 @@ where
             new_limit,
             new_offset,
         ))
-        // } else {
-        //     let (mut proof, left_absence, new_limit, new_offset) =
-        //         self.create_child_proof(true, left_items, limit, offset,
-        // left_to_right)?;     let (mut right_proof, right_absence,
-        // new_limit, new_offset) =         self.
-        // create_child_proof(false, right_items, new_limit, new_offset,
-        // left_to_right)?;
-        //
-        //     let (has_left, has_right) = (!proof.is_empty(),
-        // !right_proof.is_empty());
-        //
-        //     proof.push_back(match search {
-        //         Ok(_) => Op::Push(self.to_kv_node()),
-        //         Err(_) => {
-        //             if left_absence.1 || right_absence.0 {
-        //                 Op::Push(self.to_kv_node())
-        //             } else {
-        //                 Op::Push(self.to_kvhash_node())
-        //             }
-        //         }
-        //     });
-        //
-        //     if has_left {
-        //         proof.push_back(Op::Parent);
-        //     }
-        //
-        //     if has_right {
-        //         proof.append(&mut right_proof);
-        //         proof.push_back(Op::Child);
-        //     }
-        //
-        //     Ok((
-        //         proof,
-        //         (left_absence.0, right_absence.1),
-        //         new_limit,
-        //         new_offset,
-        //     ))
-        // }
     }
 
     /// Similar to `create_proof`. Recurses into the child on the given side and
