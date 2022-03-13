@@ -846,10 +846,15 @@ where
         let (mut proof, left_absence, mut new_limit, new_offset) =
             self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
 
+        let mut skip_current_node = false;
         if current_node_in_query {
             // reserve limit slot for current node, before constructing right subtree proof
             if let Some(current_limit) = new_limit {
-                new_limit = Some(current_limit - 1);
+                if current_limit == 0 {
+                    skip_current_node = true;
+                } else {
+                    new_limit = Some(current_limit - 1);
+                }
             }
         }
 
@@ -860,7 +865,7 @@ where
         // set is complete)
 
         // hence this is conditional on the new limit
-        let (mut right_proof, right_absence, new_limit, mut new_offset) =
+        let (mut right_proof, right_absence, new_limit, new_offset) =
             self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
 
         let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
@@ -872,20 +877,27 @@ where
 
         let proof_op = match search {
             Ok(_) => {
-                // always add here, as the limit has been checked already
-                // only reason not to perform this operation is if the offset is not zero
-                // decrement the offset everytime you call here, if it is not already zero
-                if let Some(current_offset) = new_offset {
-                    if current_offset != 0 {
-                        new_offset = Some(current_offset - 1);
-                        None
-                    } else {
-                        Some(Op::Push(self.to_kv_node()))
-                    }
+                if skip_current_node {
+                    None
                 } else {
                     Some(Op::Push(self.to_kv_node()))
                 }
             }
+            // Ok(_) => {
+            //     // always add here, as the limit has been checked already
+            //     // only reason not to perform this operation is if the offset is not zero
+            //     // decrement the offset everytime you call here, if it is not already zero
+            //     if let Some(current_offset) = new_offset {
+            //         if current_offset != 0 {
+            //             new_offset = Some(current_offset - 1);
+            //             None
+            //         } else {
+            //             Some(Op::Push(self.to_kv_node()))
+            //         }
+            //     } else {
+            //         Some(Op::Push(self.to_kv_node()))
+            //     }
+            // }
             Err(_) => {
                 if left_absence.1 || right_absence.0 {
                     Some(Op::Push(self.to_kv_node()))
@@ -897,16 +909,23 @@ where
 
         if let Some(op) = proof_op {
             proof.push_back(op);
+            if has_left {
+                proof.push_back(Op::Parent)
+            }
+            if has_right {
+                proof.append(&mut right_proof);
+                proof.push_back(Op::Child);
+            }
         }
 
-        if has_left {
-            proof.push_back(Op::Parent);
-        }
+        // if has_left {
+        //     proof.push_back(Op::Parent);
+        // }
 
-        if has_right {
-            proof.append(&mut right_proof);
-            proof.push_back(Op::Child);
-        }
+        // if has_right {
+        //     proof.append(&mut right_proof);
+        //     proof.push_back(Op::Child);
+        // }
 
         Ok((
             proof,
