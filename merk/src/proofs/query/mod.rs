@@ -931,14 +931,14 @@ where
             if let Some(mut child) = self.walk(left)? {
                 child.create_proof(query, limit, offset, left_to_right)?
             } else {
-                (LinkedList::new(), (true, true), None, None)
+                (LinkedList::new(), (true, true), limit, offset)
             }
         } else if let Some(link) = self.tree().link(left) {
             let mut proof = LinkedList::new();
             proof.push_back(Op::Push(link.to_hash_node()));
-            (proof, (false, false), None, None)
+            (proof, (false, false), limit, offset)
         } else {
-            (LinkedList::new(), (false, false), None, None)
+            (LinkedList::new(), (false, false), limit, offset)
         })
     }
 }
