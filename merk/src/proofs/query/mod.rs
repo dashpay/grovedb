@@ -241,18 +241,18 @@ pub enum QueryItem {
 }
 
 impl QueryItem {
-    pub fn lower_bound(&self) -> (&[u8], bool) {
+    pub fn lower_bound(&self) -> (Option<&[u8]>, bool) {
         match self {
-            QueryItem::Key(key) => (key.as_slice(), false),
-            QueryItem::Range(range) => (range.start.as_ref(), false),
-            QueryItem::RangeInclusive(range) => (range.start().as_ref(), false),
-            QueryItem::RangeFull(_) => (b"", false),
-            QueryItem::RangeFrom(range) => (range.start.as_ref(), false),
-            QueryItem::RangeTo(_) => (b"", false),
-            QueryItem::RangeToInclusive(_) => (b"", false),
-            QueryItem::RangeAfter(range) => (range.start.as_ref(), true),
-            QueryItem::RangeAfterTo(range) => (range.start.as_ref(), true),
-            QueryItem::RangeAfterToInclusive(range) => (range.start().as_ref(), true),
+            QueryItem::Key(key) => (Some(key.as_slice()), false),
+            QueryItem::Range(range) => (Some(range.start.as_ref()), false),
+            QueryItem::RangeInclusive(range) => (Some(range.start().as_ref()), false),
+            QueryItem::RangeFull(_) => (None, false),
+            QueryItem::RangeFrom(range) => (Some(range.start.as_ref()), false),
+            QueryItem::RangeTo(_) => (None, false),
+            QueryItem::RangeToInclusive(_) => (None, false),
+            QueryItem::RangeAfter(range) => (Some(range.start.as_ref()), true),
+            QueryItem::RangeAfterTo(range) => (Some(range.start.as_ref()), true),
+            QueryItem::RangeAfterToInclusive(range) => (Some(range.start().as_ref()), true),
         }
     }
 
@@ -271,18 +271,18 @@ impl QueryItem {
         }
     }
 
-    pub fn upper_bound(&self) -> (&[u8], bool) {
+    pub fn upper_bound(&self) -> (Option<&[u8]>, bool) {
         match self {
-            QueryItem::Key(key) => (key.as_slice(), true),
-            QueryItem::Range(range) => (range.end.as_ref(), false),
-            QueryItem::RangeInclusive(range) => (range.end().as_ref(), true),
-            QueryItem::RangeFull(_) => (b"", true),
-            QueryItem::RangeFrom(_) => (b"", true),
-            QueryItem::RangeTo(range) => (range.end.as_ref(), false),
-            QueryItem::RangeToInclusive(range) => (range.end.as_ref(), true),
-            QueryItem::RangeAfter(_) => (b"", true),
-            QueryItem::RangeAfterTo(range) => (range.end.as_ref(), false),
-            QueryItem::RangeAfterToInclusive(range) => (range.end().as_ref(), true),
+            QueryItem::Key(key) => (Some(key.as_slice()), true),
+            QueryItem::Range(range) => (Some(range.end.as_ref()), false),
+            QueryItem::RangeInclusive(range) => (Some(range.end().as_ref()), true),
+            QueryItem::RangeFull(_) => (None, true),
+            QueryItem::RangeFrom(_) => (None, true),
+            QueryItem::RangeTo(range) => (Some(range.end.as_ref()), false),
+            QueryItem::RangeToInclusive(range) => (Some(range.end.as_ref()), true),
+            QueryItem::RangeAfter(_) => (None, true),
+            QueryItem::RangeAfterTo(range) => (Some(range.end.as_ref()), false),
+            QueryItem::RangeAfterToInclusive(range) => (Some(range.end().as_ref()), true),
         }
     }
 
@@ -305,11 +305,11 @@ impl QueryItem {
         let (lower_bound, lower_bound_non_inclusive) = self.lower_bound();
         let (upper_bound, upper_bound_inclusive) = self.upper_bound();
         (self.lower_unbounded()
-            || key > lower_bound
-            || (key == lower_bound && !lower_bound_non_inclusive))
+            || Some(key) > lower_bound
+            || (Some(key) == lower_bound && !lower_bound_non_inclusive))
             && (self.upper_unbounded()
-                || key < upper_bound
-                || (key == upper_bound && upper_bound_inclusive))
+                || Some(key) < upper_bound
+                || (Some(key) == upper_bound && upper_bound_inclusive))
     }
 
     fn merge(self, other: Self) -> Self {
@@ -323,15 +323,18 @@ impl QueryItem {
         if start_non_inclusive {
             return if upper_unbounded {
                 Self::RangeAfter(RangeFrom {
-                    start: start.to_vec(),
+                    start: start.expect("start should be bounded").to_vec(),
                 })
             } else if end_inclusive {
-                Self::RangeAfterToInclusive(RangeInclusive::new(start.to_vec(), end.to_vec()))
+                Self::RangeAfterToInclusive(RangeInclusive::new(
+                    start.expect("start should be bounded").to_vec(),
+                    end.expect("end should be bounded").to_vec(),
+                ))
             } else {
                 // upper is bounded and not inclusive
                 Self::RangeAfterTo(Range {
-                    start: start.to_vec(),
-                    end: end.to_vec(),
+                    start: start.expect("start should be bounded").to_vec(),
+                    end: end.expect("end should be bounded").to_vec(),
                 })
             };
         }
@@ -340,25 +343,32 @@ impl QueryItem {
             return if upper_unbounded {
                 Self::RangeFull(RangeFull)
             } else if end_inclusive {
-                Self::RangeToInclusive(RangeToInclusive { end: end.to_vec() })
+                Self::RangeToInclusive(RangeToInclusive {
+                    end: end.expect("end should be bounded").to_vec(),
+                })
             } else {
                 // upper is bounded and not inclusive
-                Self::RangeTo(RangeTo { end: end.to_vec() })
+                Self::RangeTo(RangeTo {
+                    end: end.expect("end should be bounded").to_vec(),
+                })
             };
         }
 
         // Lower is bounded
         if upper_unbounded {
             Self::RangeFrom(RangeFrom {
-                start: start.to_vec(),
+                start: start.expect("start should be bounded").to_vec(),
             })
         } else if end_inclusive {
-            Self::RangeInclusive(RangeInclusive::new(start.to_vec(), end.to_vec()))
+            Self::RangeInclusive(RangeInclusive::new(
+                start.expect("start should be bounded").to_vec(),
+                end.expect("end should be bounded").to_vec(),
+            ))
         } else {
             // upper is bounded and not inclusive
             Self::Range(Range {
-                start: start.to_vec(),
-                end: end.to_vec(),
+                start: start.expect("start should be bounded").to_vec(),
+                end: end.expect("end should be bounded").to_vec(),
             })
         }
     }
@@ -616,7 +626,12 @@ impl Ord for QueryItem {
         } else if other.lower_unbounded() {
             Ordering::Greater
         } else {
-            self.lower_bound().0.cmp(other.upper_bound().0)
+            // confirmed the bounds are not unbounded, hence safe to unwrap
+            // as bound cannot be None
+            self.lower_bound()
+                .0
+                .expect("should be bounded")
+                .cmp(other.upper_bound().0.expect("should be bounded"))
         };
 
         let cmp_ul = if self.upper_unbounded() {
@@ -628,7 +643,12 @@ impl Ord for QueryItem {
         } else if other.upper_unbounded() {
             Ordering::Less
         } else {
-            self.upper_bound().0.cmp(other.lower_bound().0)
+            // confirmed the bounds are not unbounded, hence safe to unwrap
+            // as bound cannot be None
+            self.upper_bound()
+                .0
+                .expect("should be bounded")
+                .cmp(other.lower_bound().0.expect("should be bounded"))
         };
 
         let self_inclusive = self.upper_bound().1;
@@ -740,7 +760,7 @@ where
 
                 // if range starts before this node's key, include it in left
                 // child's query
-                let left_query = if left_bound < self.tree().key() || left_bound == b"" {
+                let left_query = if left_bound == None || left_bound < Some(self.tree().key()) {
                     &query[..=index]
                 } else {
                     &query[..index]
@@ -748,7 +768,7 @@ where
 
                 // if range ends after this node's key, include it in right
                 // child's query
-                let right_query = if right_bound > self.tree().key() || right_bound == b"" {
+                let right_query = if right_bound == None || right_bound > Some(self.tree().key()) {
                     &query[index..]
                 } else {
                     &query[index + 1..]
@@ -925,7 +945,10 @@ pub fn verify_query(
                     // item. ensure lower bound of query item is proven
                     match last_push {
                         // lower bound is proven - we have an exact match
-                        _ if key == query_item.lower_bound().0 => {}
+                        // ignoring the case when the lower bound is unbounded
+                        // as it's not possible the get an exact key match for
+                        // an unbounded value
+                        _ if Some(key.as_slice()) == query_item.lower_bound().0 => {}
 
                         // lower bound is proven - this is the leftmost node
                         // in the tree
@@ -943,7 +966,8 @@ pub fn verify_query(
                     }
                 }
 
-                if query_item.upper_bound().0 != b"" && key.as_slice() >= query_item.upper_bound().0
+                if query_item.upper_bound().0 != None
+                    && Some(key.as_slice()) >= query_item.upper_bound().0
                 {
                     // at or past upper bound of range (or this was an exact
                     // match on a single-key queryitem), advance to next query
