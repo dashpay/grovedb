@@ -302,16 +302,14 @@ impl QueryItem {
     }
 
     pub fn to_inclusive(&self) -> Self {
-        fn increment_byte_array(input: Vec<u8>) -> Vec<u8> {
-            let mut input = input.clone();
+        fn increment_byte_array(mut input: Vec<u8>) -> Vec<u8> {
             if let Some(item) = input.iter_mut().rfind(|x| **x < u8::MAX) {
                 *item += 1;
             }
             input
         }
 
-        fn decrement_byte_array(input: Vec<u8>) -> Vec<u8> {
-            let mut input = input.clone();
+        fn decrement_byte_array(mut input: Vec<u8>) -> Vec<u8> {
             if let Some(item) = input.iter_mut().rfind(|x| **x > u8::MIN) {
                 *item -= 1;
             }
@@ -1079,7 +1077,6 @@ mod test {
         *,
     };
     use crate::{
-        proofs::query::QueryItem::RangeAfter,
         test_utils::make_tree_seq,
         tree::{NoopCommit, PanicSource, RefWalker, Tree},
     };
