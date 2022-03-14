@@ -1,14 +1,18 @@
 use super::test_utils::TempStorage;
 
+fn to_path(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    std::iter::once(bytes)
+}
+
 mod no_transaction {
     use super::*;
-    use crate::{Batch, RawIterator, StorageContext};
+    use crate::{Batch, RawIterator, Storage, StorageContext};
 
     #[test]
     fn test_aux_cf_methods() {
         let storage = TempStorage::new();
-        let context_ayya = storage.get_prefixed_context(b"ayya".to_vec());
-        let context_ayyb = storage.get_prefixed_context(b"ayyb".to_vec());
+        let context_ayya = storage.get_storage_context(to_path(b"ayya"));
+        let context_ayyb = storage.get_storage_context(to_path(b"ayyb"));
 
         context_ayya
             .put_aux(b"key1", b"ayyavalue1")
@@ -61,8 +65,8 @@ mod no_transaction {
     #[test]
     fn test_roots_cf_methods() {
         let storage = TempStorage::new();
-        let context_ayya = storage.get_prefixed_context(b"ayya".to_vec());
-        let context_ayyb = storage.get_prefixed_context(b"ayyb".to_vec());
+        let context_ayya = storage.get_storage_context(to_path(b"ayya"));
+        let context_ayyb = storage.get_storage_context(to_path(b"ayyb"));
 
         context_ayya
             .put_root(b"key1", b"ayyavalue1")
@@ -115,8 +119,8 @@ mod no_transaction {
     #[test]
     fn test_meta_cf_methods() {
         let storage = TempStorage::new();
-        let context_ayya = storage.get_prefixed_context(b"ayya".to_vec());
-        let context_ayyb = storage.get_prefixed_context(b"ayyb".to_vec());
+        let context_ayya = storage.get_storage_context(to_path(b"ayya"));
+        let context_ayyb = storage.get_storage_context(to_path(b"ayyb"));
 
         context_ayya
             .put_meta(b"key1", b"ayyavalue1")
@@ -169,8 +173,8 @@ mod no_transaction {
     #[test]
     fn test_default_cf_methods() {
         let storage = TempStorage::new();
-        let context_ayya = storage.get_prefixed_context(b"ayya".to_vec());
-        let context_ayyb = storage.get_prefixed_context(b"ayyb".to_vec());
+        let context_ayya = storage.get_storage_context(to_path(b"ayya"));
+        let context_ayyb = storage.get_storage_context(to_path(b"ayyb"));
 
         context_ayya
             .put(b"key1", b"ayyavalue1")
@@ -223,7 +227,7 @@ mod no_transaction {
     #[test]
     fn test_batch() {
         let storage = TempStorage::new();
-        let context_ayya = storage.get_prefixed_context(b"ayya".to_vec());
+        let context_ayya = storage.get_storage_context(to_path(b"ayya"));
 
         context_ayya
             .put(b"key1", b"ayyavalue1")
@@ -267,7 +271,7 @@ mod no_transaction {
     #[test]
     fn test_raw_iterator() {
         let storage = TempStorage::new();
-        let context = storage.get_prefixed_context(b"someprefix".to_vec());
+        let context = storage.get_storage_context(to_path(b"someprefix"));
 
         context
             .put(b"key1", b"value1")
@@ -284,14 +288,14 @@ mod no_transaction {
 
         // Other storages are required to put something into rocksdb with other prefix
         // to see if there will be any conflicts and boundaries are met
-        let context_before = storage.get_prefixed_context(b"anothersomeprefix".to_vec());
+        let context_before = storage.get_storage_context(to_path(b"anothersomeprefix"));
         context_before
             .put(b"key1", b"value1")
             .expect("expected successful insertion");
         context_before
             .put(b"key5", b"value5")
             .expect("expected successful insertion");
-        let context_after = storage.get_prefixed_context(b"zanothersomeprefix".to_vec());
+        let context_after = storage.get_storage_context(to_path(b"zanothersomeprefix"));
         context_after
             .put(b"key1", b"value1")
             .expect("expected successful insertion");
@@ -332,7 +336,7 @@ mod no_transaction {
         assert!(!iter.valid());
 
         // Test `seek_to_last` on empty storage
-        let empty_storage = storage.get_prefixed_context(b"notexist".to_vec());
+        let empty_storage = storage.get_storage_context(to_path(b"notexist"));
         let mut iter = empty_storage.raw_iter();
         iter.seek_to_last();
         assert!(!iter.valid());
@@ -349,8 +353,8 @@ mod transaction {
     fn test_aux_cf_methods() {
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
-        let context_ayya = storage.get_prefixed_transactional_context(b"ayya".to_vec(), &tx);
-        let context_ayyb = storage.get_prefixed_transactional_context(b"ayyb".to_vec(), &tx);
+        let context_ayya = storage.get_transactional_storage_context(to_path(b"ayya"), &tx);
+        let context_ayyb = storage.get_transactional_storage_context(to_path(b"ayyb"), &tx);
 
         context_ayya
             .put_aux(b"key1", b"ayyavalue1")
@@ -380,8 +384,8 @@ mod transaction {
 
         let tx2 = storage.start_transaction();
         let context_ayya_after_tx =
-            storage.get_prefixed_transactional_context(b"ayya".to_vec(), &tx2);
-        let context_ayya_after_no_tx = storage.get_prefixed_context(b"ayya".to_vec());
+            storage.get_transactional_storage_context(to_path(b"ayya"), &tx2);
+        let context_ayya_after_no_tx = storage.get_storage_context(to_path(b"ayya"));
 
         context_ayya_after_tx
             .delete_aux(b"key1")
@@ -419,8 +423,8 @@ mod transaction {
     fn test_roots_cf_methods() {
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
-        let context_ayya = storage.get_prefixed_transactional_context(b"ayya".to_vec(), &tx);
-        let context_ayyb = storage.get_prefixed_transactional_context(b"ayyb".to_vec(), &tx);
+        let context_ayya = storage.get_transactional_storage_context(to_path(b"ayya"), &tx);
+        let context_ayyb = storage.get_transactional_storage_context(to_path(b"ayyb"), &tx);
 
         context_ayya
             .put_root(b"key1", b"ayyavalue1")
@@ -450,8 +454,8 @@ mod transaction {
 
         let tx2 = storage.start_transaction();
         let context_ayya_after_tx =
-            storage.get_prefixed_transactional_context(b"ayya".to_vec(), &tx2);
-        let context_ayya_after_no_tx = storage.get_prefixed_context(b"ayya".to_vec());
+            storage.get_transactional_storage_context(to_path(b"ayya"), &tx2);
+        let context_ayya_after_no_tx = storage.get_storage_context(to_path(b"ayya"));
 
         context_ayya_after_tx
             .delete_root(b"key1")
@@ -488,8 +492,8 @@ mod transaction {
     #[test]
     fn test_meta_cf_methods() {
         let storage = TempStorage::new();
-        let context_ayya = storage.get_prefixed_context(b"ayya".to_vec());
-        let context_ayyb = storage.get_prefixed_context(b"ayyb".to_vec());
+        let context_ayya = storage.get_storage_context(to_path(b"ayya"));
+        let context_ayyb = storage.get_storage_context(to_path(b"ayyb"));
 
         context_ayya
             .put_meta(b"key1", b"ayyavalue1")
@@ -542,8 +546,8 @@ mod transaction {
     #[test]
     fn test_default_cf_methods() {
         let storage = TempStorage::new();
-        let context_ayya = storage.get_prefixed_context(b"ayya".to_vec());
-        let context_ayyb = storage.get_prefixed_context(b"ayyb".to_vec());
+        let context_ayya = storage.get_storage_context(to_path(b"ayya"));
+        let context_ayyb = storage.get_storage_context(to_path(b"ayyb"));
 
         context_ayya
             .put(b"key1", b"ayyavalue1")
@@ -597,7 +601,7 @@ mod transaction {
     fn test_batch() {
         let storage = TempStorage::new();
         let tx = storage.start_transaction();
-        let context_ayya = storage.get_prefixed_transactional_context(b"ayya".to_vec(), &tx);
+        let context_ayya = storage.get_transactional_storage_context(to_path(b"ayya"), &tx);
 
         context_ayya
             .put(b"key1", b"ayyavalue1")
@@ -623,7 +627,7 @@ mod transaction {
             .commit_transaction(tx)
             .expect("cannot commit transaction");
 
-        let context_ayya = storage.get_prefixed_context(b"ayya".to_vec());
+        let context_ayya = storage.get_storage_context(to_path(b"ayya"));
         assert_eq!(
             context_ayya
                 .get(b"key3")
@@ -641,7 +645,7 @@ mod transaction {
     #[test]
     fn test_raw_iterator() {
         let storage = TempStorage::new();
-        let context = storage.get_prefixed_context(b"someprefix".to_vec());
+        let context = storage.get_storage_context(to_path(b"someprefix"));
 
         context
             .put(b"key1", b"value1")
@@ -658,14 +662,14 @@ mod transaction {
 
         // Other storages are required to put something into rocksdb with other prefix
         // to see if there will be any conflicts and boundaries are met
-        let context_before = storage.get_prefixed_context(b"anothersomeprefix".to_vec());
+        let context_before = storage.get_storage_context(to_path(b"anothersomeprefix"));
         context_before
             .put(b"key1", b"value1")
             .expect("expected successful insertion");
         context_before
             .put(b"key5", b"value5")
             .expect("expected successful insertion");
-        let context_after = storage.get_prefixed_context(b"zanothersomeprefix".to_vec());
+        let context_after = storage.get_storage_context(to_path(b"zanothersomeprefix"));
         context_after
             .put(b"key1", b"value1")
             .expect("expected successful insertion");
@@ -676,8 +680,7 @@ mod transaction {
         // Test uncommited changes
         {
             let tx = storage.start_transaction();
-            let context_tx =
-                storage.get_prefixed_transactional_context(b"someprefix".to_vec(), &tx);
+            let context_tx = storage.get_transactional_storage_context(to_path(b"someprefix"), &tx);
 
             context_tx
                 .delete(b"key1")

@@ -8,7 +8,7 @@ use merk::{
     Op,
 };
 use serde::{Deserialize, Serialize};
-use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+use storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
 
 use crate::{
     util::{merk_optional_tx, storage_context_optional_tx},
@@ -472,7 +472,7 @@ mod tests {
         let db = make_grovedb();
 
         let storage = &db.db;
-        let storage_context = storage.get_prefixed_context_from_path([TEST_LEAF]);
+        let storage_context = storage.get_storage_context([TEST_LEAF]);
         let mut merk = Merk::open(storage_context).expect("cannot open Merk");
 
         Element::Item(b"ayyd".to_vec())
@@ -550,7 +550,7 @@ mod tests {
         let db = make_grovedb();
 
         let storage = &db.db;
-        let storage_context = storage.get_prefixed_context_from_path([TEST_LEAF]);
+        let storage_context = storage.get_storage_context([TEST_LEAF]);
         let mut merk = Merk::open(storage_context).expect("cannot open Merk");
 
         Element::Item(b"ayyd".to_vec())
@@ -606,7 +606,7 @@ mod tests {
         let db = make_grovedb();
 
         let storage = &db.db;
-        let storage_context = storage.get_prefixed_context_from_path([TEST_LEAF]);
+        let storage_context = storage.get_storage_context([TEST_LEAF]);
         let mut merk = Merk::open(storage_context).expect("cannot open Merk");
 
         Element::Item(b"ayyd".to_vec())
@@ -674,7 +674,7 @@ mod tests {
         let db = make_grovedb();
 
         let storage = &db.db;
-        let storage_context = storage.get_prefixed_context_from_path([TEST_LEAF]);
+        let storage_context = storage.get_storage_context([TEST_LEAF]);
         let mut merk = Merk::open(storage_context).expect("cannot open Merk");
 
         Element::Item(b"ayyd".to_vec())

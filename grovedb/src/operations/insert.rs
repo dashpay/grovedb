@@ -1,5 +1,5 @@
 use merk::Merk;
-use storage::StorageContext;
+use storage::{Storage, StorageContext};
 
 use crate::{
     util::{merk_optional_tx, meta_storage_context_optional_tx},
@@ -82,10 +82,10 @@ impl GroveDb {
         if let Some(tx) = transaction {
             let parent_storage = self
                 .db
-                .get_prefixed_transactional_context_from_path(path_iter.clone(), tx);
+                .get_transactional_storage_context(path_iter.clone(), tx);
             let mut parent_subtree = Merk::open(parent_storage)
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
-            let child_storage = self.db.get_prefixed_transactional_context_from_path(
+            let child_storage = self.db.get_transactional_storage_context(
                 path_iter.clone().chain(std::iter::once(key)),
                 tx,
             );
@@ -94,12 +94,12 @@ impl GroveDb {
             let element = Element::Tree(child_subtree.root_hash());
             element.insert(&mut parent_subtree, key)?;
         } else {
-            let parent_storage = self.db.get_prefixed_context_from_path(path_iter.clone());
+            let parent_storage = self.db.get_storage_context(path_iter.clone());
             let mut parent_subtree = Merk::open(parent_storage)
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
             let child_storage = self
                 .db
-                .get_prefixed_context_from_path(path_iter.clone().chain(std::iter::once(key)));
+                .get_storage_context(path_iter.clone().chain(std::iter::once(key)));
             let child_subtree = Merk::open(child_storage)
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
             let element = Element::Tree(child_subtree.root_hash());

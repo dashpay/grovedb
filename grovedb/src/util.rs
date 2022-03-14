@@ -2,14 +2,17 @@
 /// (transactional or not) using path argument.
 macro_rules! storage_context_optional_tx {
     ($db:expr, $path:expr, $transaction:ident, $storage:ident, { $($body:tt)* }) => {
-        if let Some(tx) = $transaction {
-            let $storage = $db
-                .get_prefixed_transactional_context_from_path($path, tx);
-            $($body)*
-        } else {
-            let $storage = $db
-                .get_prefixed_context_from_path($path);
-            $($body)*
+        {
+            use ::storage::Storage;
+            if let Some(tx) = $transaction {
+                let $storage = $db
+                    .get_transactional_storage_context($path, tx);
+                $($body)*
+            } else {
+                let $storage = $db
+                    .get_storage_context($path);
+                $($body)*
+            }
         }
     };
 }
@@ -18,14 +21,17 @@ macro_rules! storage_context_optional_tx {
 /// prefix.
 macro_rules! meta_storage_context_optional_tx {
     ($db:expr, $transaction:ident, $storage:ident, { $($body:tt)* }) => {
-        if let Some(tx) = $transaction {
-            let $storage = $db
-                .get_prefixed_transactional_context(Vec::new(), tx);
-            $($body)*
-        } else {
-            let $storage = $db
-                .get_prefixed_context(Vec::new());
-            $($body)*
+        {
+            use ::storage::Storage;
+            if let Some(tx) = $transaction {
+                let $storage = $db
+                    .get_transactional_storage_context(::std::iter::empty(), tx);
+                $($body)*
+            } else {
+                let $storage = $db
+                    .get_storage_context(::std::iter::empty());
+                $($body)*
+            }
         }
     };
 }

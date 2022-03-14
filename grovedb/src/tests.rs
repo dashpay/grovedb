@@ -920,10 +920,7 @@ fn test_subtree_pairs_iterator() {
     // let mut iter = db
     //     .elements_iterator(&[TEST_LEAF, b"subtree1"], None)
     //     .expect("cannot create iterator");
-    let storage_context = db
-        .db
-        .db
-        .get_prefixed_context_from_path([TEST_LEAF, b"subtree1"]);
+    let storage_context = db.db.db.get_storage_context([TEST_LEAF, b"subtree1"]);
     let mut iter = Element::iterator(storage_context.raw_iter());
     assert_eq!(iter.next().unwrap(), Some((b"key1".to_vec(), element)));
     assert_eq!(iter.next().unwrap(), Some((b"key2".to_vec(), element2)));
@@ -1014,10 +1011,7 @@ fn test_get_subtree() {
     // Retrieve subtree instance
     // Check if it returns the same instance that was inserted
     {
-        let subtree_storage = db
-            .db
-            .db
-            .get_prefixed_context_from_path([TEST_LEAF, b"key1", b"key2"]);
+        let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"key1", b"key2"]);
         let subtree = Merk::open(subtree_storage).expect("cannot open merk");
         let result_element = Element::get(&subtree, b"key3").unwrap();
         assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
@@ -1042,19 +1036,16 @@ fn test_get_subtree() {
     .expect("successful value insert");
 
     // Retrieve subtree instance with transaction
-    let subtree_storage = db.db.db.get_prefixed_transactional_context_from_path(
-        [TEST_LEAF, b"key1", b"innertree"],
-        &transaction,
-    );
+    let subtree_storage = db
+        .db
+        .db
+        .get_transactional_storage_context([TEST_LEAF, b"key1", b"innertree"], &transaction);
     let subtree = Merk::open(subtree_storage).expect("cannot open merk");
     let result_element = Element::get(&subtree, b"key4").unwrap();
     assert_eq!(result_element, Element::Item(b"ayy".to_vec()));
 
     // Should be able to retrieve instances created before transaction
-    let subtree_storage = db
-        .db
-        .db
-        .get_prefixed_context_from_path([TEST_LEAF, b"key1", b"key2"]);
+    let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"key1", b"key2"]);
     let subtree = Merk::open(subtree_storage).expect("cannot open merk");
     let result_element = Element::get(&subtree, b"key3").unwrap();
     assert_eq!(result_element, Element::Item(b"ayy".to_vec()));

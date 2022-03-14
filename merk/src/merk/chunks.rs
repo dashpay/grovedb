@@ -176,7 +176,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use storage::rocksdb_storage::RocksDbStorage;
+    use std::iter::empty;
+
+    use storage::{rocksdb_storage::RocksDbStorage, Storage};
     use tempfile::TempDir;
 
     use super::*;
@@ -239,7 +241,7 @@ mod tests {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
 
-            let mut merk = Merk::open(storage.get_prefixed_context(b"".to_vec())).unwrap();
+            let mut merk = Merk::open(storage.get_storage_context(empty())).unwrap();
             let batch = make_batch_seq(1..10);
             merk.apply::<_, Vec<_>>(&batch, &[]).unwrap();
 
@@ -252,7 +254,7 @@ mod tests {
         };
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let merk = Merk::open(storage.get_prefixed_context(b"".to_vec())).unwrap();
+        let merk = Merk::open(storage.get_storage_context(empty())).unwrap();
         let reopen_chunks = merk.chunks().unwrap().into_iter().map(Result::unwrap);
 
         for (original, checkpoint) in original_chunks.zip(reopen_chunks) {
