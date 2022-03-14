@@ -800,7 +800,7 @@ where
     ) -> Result<ProofOffsetLimit> {
         // TODO: don't copy into vec, support comparing QI to byte slice
         let node_key = QueryItem::Key(self.tree().key().to_vec());
-        let search = query.binary_search_by(|key| key.cmp(&node_key));
+        let mut search = query.binary_search_by(|key| key.cmp(&node_key));
 
         if let Some(current_limit) = limit {
             if current_limit == 0 {
@@ -810,7 +810,7 @@ where
 
         let current_node_in_query: bool;
 
-        let (left_items, right_items) = match search {
+        let (left_items, mut right_items) = match search {
             Ok(index) => {
                 // set a flag here to signify that the current node is requested in the query
                 current_node_in_query = true;
@@ -852,6 +852,7 @@ where
             if let Some(current_limit) = new_limit {
                 if current_limit == 0 {
                     skip_current_node = true;
+                    search = Err(5);
                 } else {
                     new_limit = Some(current_limit - 1);
                 }
@@ -877,6 +878,7 @@ where
 
         let proof_op = match search {
             Ok(_) => {
+                dbg!(skip_current_node);
                 if skip_current_node {
                     None
                 } else {
@@ -2206,6 +2208,40 @@ mod test {
                 (vec![5], vec![5]),
                 (vec![7], vec![7]),
                 (vec![8], vec![8])
+            ]
+        );
+    }
+
+    #[test]
+    fn range_full_proof_with_limit(){
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        // let queryitems = vec![QueryItem::RangeFull(..)];
+        // let queryitems = vec![QueryItem::Key(vec![2])];
+        let queryitems = vec![];
+        let (proof, absence) = walker
+            .create_full_proof(queryitems.as_slice(), Some(1), None)
+            .expect("create_proof errored");
+
+        dbg!(&proof);
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, tree.hash()).unwrap();
+        assert_eq!(
+            res,
+            vec![
+                (vec![2], vec![2]),
+                (vec![3], vec![3]),
+                // (vec![4], vec![4]),
+                // (vec![5], vec![5]),
+                // (vec![7], vec![7]),
+                // (vec![8], vec![8])
             ]
         );
     }
