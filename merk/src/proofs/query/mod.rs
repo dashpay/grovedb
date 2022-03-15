@@ -752,10 +752,13 @@ where
     ) -> Result<ProofOffsetLimit> {
         // TODO: don't copy into vec, support comparing QI to byte slice
         let node_key = QueryItem::Key(self.tree().key().to_vec());
-        let search = query.binary_search_by(|key| key.cmp(&node_key));
+        let mut search = query.binary_search_by(|key| key.cmp(&node_key));
 
-        let (left_items, right_items) = match search {
+        let mut current_node_in_query: bool;
+
+        let (mut left_items, mut right_items) = match search {
             Ok(index) => {
+                current_node_in_query = true;
                 let item = &query[index];
                 let left_bound = item.lower_bound().0;
                 let right_bound = item.upper_bound().0;
@@ -778,11 +781,43 @@ where
 
                 (left_query, right_query)
             }
-            Err(index) => (&query[..index], &query[index..]),
+            Err(index) => {
+                current_node_in_query = false;
+                (&query[..index], &query[index..])
+            }
         };
 
-        let (mut proof, left_absence, new_limit, new_offset) =
+        // when the limit hits zero, the rest of the query batch should be cleared
+        // so empty the left, right query batch, and set the current node to not found
+        if let Some(current_limit) = limit {
+            if current_limit == 0 {
+                left_items = &[];
+                search = Err(Default::default());
+                right_items = &[];
+            }
+        }
+
+        let (mut proof, left_absence, mut new_limit, new_offset) =
             self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
+
+        if let Some(current_limit) = new_limit {
+            // if after generating proof for the left subtree, the limit becomes 0
+            // clear the current node and clear the right batch
+            if current_limit == 0 {
+                right_items = &[];
+                search = Err(Default::default());
+            } else if current_node_in_query {
+                // if limit is not zero, reserve a limit slot for the current node
+                // before generating proof for the right subtree
+                new_limit = Some(current_limit - 1);
+                // if after limit slot reservation, limit becomes 0, right query
+                // should be cleared
+                if current_limit - 1 == 0 {
+                    right_items = &[];
+                }
+            }
+        }
+
         let (mut right_proof, right_absence, new_limit, new_offset) =
             self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
 
@@ -831,14 +866,14 @@ where
             if let Some(mut child) = self.walk(left)? {
                 child.create_proof(query, limit, offset, left_to_right)?
             } else {
-                (LinkedList::new(), (true, true), None, None)
+                (LinkedList::new(), (true, true), limit, offset)
             }
         } else if let Some(link) = self.tree().link(left) {
             let mut proof = LinkedList::new();
             proof.push_back(Op::Push(link.to_hash_node()));
-            (proof, (false, false), None, None)
+            (proof, (false, false), limit, offset)
         } else {
-            (LinkedList::new(), (false, false), None, None)
+            (LinkedList::new(), (false, false), limit, offset)
         })
     }
 }
@@ -2107,10 +2142,7 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Push(Node::KV(vec![2], vec![2])))
-        );
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![2], vec![2]))));
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVHash([
@@ -2118,10 +2150,7 @@ mod test {
                 61, 95, 230, 75, 145, 218, 178, 227, 63, 137, 79, 153, 182, 12
             ])))
         );
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Parent)
-        );
+        assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::Hash([
@@ -2129,10 +2158,7 @@ mod test {
                 131, 89, 204, 90, 128, 199, 164, 25, 3, 146, 39, 127, 12, 105
             ])))
         );
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Child)
-        );
+        assert_eq!(iter.next(), Some(&Op::Child));
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVHash([
@@ -2140,21 +2166,16 @@ mod test {
                 68, 142, 211, 110, 161, 111, 220, 108, 11, 17, 31, 88, 197
             ])))
         );
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Parent)
-        );
+        assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::Hash([
-               133, 188, 175, 131, 60, 89, 221, 135, 133, 53, 205, 110, 58, 56, 128, 58, 1, 227, 75,
-                122, 83, 20, 125, 44, 149, 44, 62, 130, 252, 134, 105, 200
+                133, 188, 175, 131, 60, 89, 221, 135, 133, 53, 205, 110, 58, 56, 128, 58, 1, 227,
+                75, 122, 83, 20, 125, 44, 149, 44, 62, 130, 252, 134, 105, 200
             ])))
         );
-        assert_eq!(
-            iter.next(),
-            Some(&Op::Child)
-        );
+        assert_eq!(iter.next(), Some(&Op::Child));
+        assert!(iter.next().is_none());
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
@@ -2162,13 +2183,10 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, tree.hash()).unwrap();
-        assert_eq!(
-            res,
-            vec![
-                (vec![2], vec![2]),
-            ]
-        );
+        let res = verify(bytes.as_slice(), tree.hash()).unwrap();
+        let mut m = res.all();
+        assert_eq!(m.next(), Some((&vec![2], &(true, vec![2]))));
+        assert_eq!(m.next(), None);
     }
 
     #[test]
