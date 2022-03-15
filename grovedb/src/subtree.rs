@@ -8,7 +8,7 @@ use merk::{
     Op,
 };
 use serde::{Deserialize, Serialize};
-use storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
+use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
 use crate::{
     util::{merk_optional_tx, storage_context_optional_tx},
@@ -447,6 +447,7 @@ impl<I: RawIterator> ElementsIterator<I> {
 #[cfg(test)]
 mod tests {
     use merk::test_utils::TempMerk;
+    use storage::Storage;
 
     use super::*;
     use crate::tests::{make_grovedb, TEST_LEAF};

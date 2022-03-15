@@ -34,7 +34,7 @@ version = "1.4.3"
 optional = true
 
 [dependencies.ed]
-version = "0.1.6"
+version = "0.2.2"
 optional = true
 
 [dependencies.blake3]
