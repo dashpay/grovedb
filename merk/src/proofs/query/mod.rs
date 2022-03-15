@@ -2032,13 +2032,7 @@ mod test {
             query.insert_item(item);
         }
         let res = verify_query(bytes.as_slice(), &query, tree.hash()).unwrap();
-        assert_eq!(
-            res,
-            vec![
-                (vec![4], vec![4]),
-                (vec![5], vec![5]),
-            ]
-        );
+        assert_eq!(res, vec![(vec![4], vec![4]), (vec![5], vec![5]),]);
     }
 
     #[test]
@@ -2046,19 +2040,23 @@ mod test {
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![5]..=vec![7])];
+        let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence) = walker
             .create_full_proof(queryitems.as_slice())
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        assert_eq!(
+        (
             iter.next(),
             Some(&Op::Push(Node::Hash([
-                85, 217, 56, 226, 204, 53, 103, 145, 201, 33, 178, 80, 207, 194, 104, 128, 199,
-                145, 156, 208, 152, 255, 209, 24, 140, 222, 204, 193, 211, 26, 118, 58
-            ])))
+                121, 235, 207, 195, 143, 58, 159, 120, 166, 33, 151, 45, 178, 124, 91, 233, 201, 4,
+                241, 127, 41, 198, 197, 228, 19, 190, 36, 173, 183, 73, 104, 30,
+            ]))),
         );
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
+        assert_eq!(iter.next(), Some(&Op::Child));
         assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
@@ -2073,6 +2071,18 @@ mod test {
         assert_eq!(iter.next(), Some(&Op::Child));
         assert!(iter.next().is_none());
         assert_eq!(absence, (false, false));
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, tree.hash()).unwrap();
+        assert_eq!(
+            res,
+            vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])]
+        );
     }
 
     #[test]
