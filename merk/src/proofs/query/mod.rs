@@ -491,7 +491,8 @@ impl QueryItem {
                 valid
             }
             QueryItem::RangeInclusive(range_inclusive) => {
-                let basic_valid = iter.valid() && iter.key().is_some();
+                let basic_valid =
+                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
                 let valid = basic_valid
                     && if left_to_right {
                         iter.key() <= Some(range_inclusive.end())
