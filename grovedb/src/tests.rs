@@ -4,7 +4,7 @@ use std::{
 };
 
 use rand::Rng;
-use tempdir::TempDir;
+use tempfile::TempDir;
 
 // use test::RunIgnored::No;
 use super::*;
@@ -43,7 +43,7 @@ impl Visualize for TempGroveDb {
 
 /// A helper method to create GroveDB with one leaf for a root tree
 pub fn make_grovedb() -> TempGroveDb {
-    let tmp_dir = TempDir::new("db").unwrap();
+    let tmp_dir = TempDir::new().unwrap();
     let mut db = GroveDb::open(tmp_dir.path()).unwrap();
     add_test_leafs(&mut db);
     TempGroveDb {
@@ -61,7 +61,7 @@ fn add_test_leafs(db: &mut GroveDb) {
 
 #[test]
 fn test_init() {
-    let tmp_dir = TempDir::new("db").unwrap();
+    let tmp_dir = TempDir::new().unwrap();
     GroveDb::open(tmp_dir).expect("empty tree is ok");
 }
 
@@ -203,7 +203,7 @@ fn test_too_many_indirections() {
 
 #[test]
 fn test_tree_structure_is_persistent() {
-    let tmp_dir = TempDir::new("db").unwrap();
+    let tmp_dir = TempDir::new().unwrap();
     let element = Element::Item(b"ayy".to_vec());
     // Create a scoped GroveDB
     let prev_root_hash = {
