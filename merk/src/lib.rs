@@ -1,5 +1,3 @@
-#![feature(map_first_last)]
-
 /// The top-level store API.
 #[cfg(feature = "full")]
 mod merk;

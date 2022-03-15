@@ -72,7 +72,7 @@ impl Decode for Op {
             0x10 => Op::Parent,
             0x11 => Op::Child,
             // TODO: Remove dependency on ed and throw an internal error
-            _ => return Err(ed::Error::UnexpectedByte(variant))
+            _ => return Err(ed::Error::UnexpectedByte(variant)),
         })
     }
 }
@@ -81,15 +81,15 @@ impl Terminated for Op {}
 
 impl Op {
     fn encode_into<W: Write>(&self, dest: &mut W) -> Result<()> {
-        Encode::encode_into(self, dest)
-            .map_err(|e| {
-                match e
-                {
-                    Error::UnexpectedByte(byte) => anyhow!("failed to encode an proofs::Op structure (UnexpectedByte: {})", byte),
-                    Error::IOError(error) => anyhow!("failed to encode an proofs::Op structure ({})", error)
-                }
-            })
-
+        Encode::encode_into(self, dest).map_err(|e| match e {
+            Error::UnexpectedByte(byte) => anyhow!(
+                "failed to encode an proofs::Op structure (UnexpectedByte: {})",
+                byte
+            ),
+            Error::IOError(error) => {
+                anyhow!("failed to encode an proofs::Op structure ({})", error)
+            }
+        })
     }
 
     fn encoding_length(&self) -> usize {
@@ -97,14 +97,15 @@ impl Op {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        Decode::decode(bytes)
-            .map_err(|e| {
-                match e
-                {
-                    Error::UnexpectedByte(byte) => anyhow!("failed to decode an proofs::Op structure (UnexpectedByte: {})", byte),
-                    Error::IOError(error) => anyhow!("failed to decode an proofs::Op structure ({})", error)
-                }
-            })
+        Decode::decode(bytes).map_err(|e| match e {
+            Error::UnexpectedByte(byte) => anyhow!(
+                "failed to decode an proofs::Op structure (UnexpectedByte: {})",
+                byte
+            ),
+            Error::IOError(error) => {
+                anyhow!("failed to decode an proofs::Op structure ({})", error)
+            }
+        })
     }
 }
 
