@@ -1839,6 +1839,84 @@ mod test {
             res,
             vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])]
         );
+
+        // Limit result set to 1 item
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
+        let (proof, absence) = walker
+            .create_full_proof(queryitems.as_slice(), Some(1), None)
+            .expect("create_proof errored");
+
+        let equivalent_queryitems = vec![QueryItem::Key(vec![5])];
+        let (equivalent_proof, equivalent_absence) = walker
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .expect("create_proof errored");
+
+        assert_eq!(proof, equivalent_proof);
+        assert_eq!(absence, equivalent_absence);
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let res = verify(bytes.as_slice(), tree.hash()).unwrap();
+        let mut iter = res.all();
+        assert_eq!(iter.next(), Some((&vec![5], &(false, vec![5]))));
+        assert_eq!(iter.next(), None,);
+
+        // Limit result set to 2 items
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
+        let (proof, absence) = walker
+            .create_full_proof(queryitems.as_slice(), Some(2), None)
+            .expect("create_proof errored");
+
+        let equivalent_queryitems = vec![
+            QueryItem::Key(vec![5]),
+            QueryItem::Key(vec![6]),
+            QueryItem::Key(vec![7]),
+        ];
+        let (equivalent_proof, equivalent_absence) = walker
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .expect("create_proof errored");
+
+        assert_eq!(proof, equivalent_proof);
+        assert_eq!(absence, equivalent_absence);
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let res = verify(bytes.as_slice(), tree.hash()).unwrap();
+        let mut iter = res.all();
+        assert_eq!(iter.next(), Some((&vec![5], &(false, vec![5]))));
+        assert_eq!(iter.next(), Some((&vec![7], &(true, vec![7]))),);
+        assert_eq!(iter.next(), None,);
+
+        // Limit result set to 100 items
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
+        let (proof, absence) = walker
+            .create_full_proof(queryitems.as_slice(), Some(100), None)
+            .expect("create_proof errored");
+
+        let equivalent_queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
+        let (equivalent_proof, equivalent_absence) = walker
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .expect("create_proof errored");
+
+        assert_eq!(proof, equivalent_proof);
+        assert_eq!(absence, equivalent_absence);
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let res = verify(bytes.as_slice(), tree.hash()).unwrap();
+        let mut iter = res.all();
+        assert_eq!(iter.next(), Some((&vec![5], &(false, vec![5]))));
+        assert_eq!(iter.next(), Some((&vec![7], &(true, vec![7]))),);
+        assert_eq!(iter.next(), Some((&vec![8], &(true, vec![8]))),);
     }
 
     #[test]
