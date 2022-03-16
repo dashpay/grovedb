@@ -15,7 +15,7 @@ use std::cmp::max;
 use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
 use ed::{Decode, Encode};
-pub use hash::{kv_hash, node_hash, Hash, HASH_LENGTH, NULL_HASH};
+pub use hash::{kv_hash, node_hash, kv_digest_to_kv_hash, Hash, HASH_LENGTH, NULL_HASH};
 use kv::KV;
 pub use link::Link;
 pub use ops::{BatchEntry, MerkBatch, Op, PanicSource};

@@ -44,6 +44,22 @@ pub fn kv_hash(key: &[u8], value: &[u8]) -> Hash {
     hash
 }
 
+/// Computes the kv hash given a kv digest
+pub fn kv_digest_to_kv_hash(key: &[u8], value_hash: &Hash) -> Hash {
+    let mut hasher = blake3::Hasher::new();
+
+    let key_length = key.len().encode_var_vec();
+    hasher.update(key_length.as_slice());
+    hasher.update(key);
+
+    hasher.update(value_hash.as_slice());
+
+    let res = hasher.finalize();
+    let mut hash: Hash = Default::default();
+    hash.copy_from_slice(res.as_bytes());
+    hash
+}
+
 /// Hashes a node based on the hash of its key/value pair, the hash of its left
 /// child (if any), and the hash of its right child (if any).
 pub fn node_hash(kv: &Hash, left: &Hash, right: &Hash) -> Hash {
