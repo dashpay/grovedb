@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{bail, Result};
+use indexmap::IndexMap;
 pub use map::*;
 use storage::{rocksdb_storage::RawPrefixedTransactionalIterator, RawIterator};
 #[cfg(feature = "full")]
@@ -16,13 +17,19 @@ use {super::Op, std::collections::LinkedList};
 use super::{tree::execute, Decoder, Node};
 use crate::tree::{Fetch, Hash, Link, RefWalker};
 
+#[derive(Debug, Default, Clone)]
+pub struct SubqueryBranch {
+    pub subquery_key: Option<Vec<u8>>,
+    pub subquery: Option<Box<Query>>,
+}
+
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all of the requested values.
 #[derive(Debug, Default, Clone)]
 pub struct Query {
     items: BTreeSet<QueryItem>,
-    pub subquery_key: Option<Vec<u8>>,
-    pub subquery: Option<Box<Query>>,
+    pub default_subquery_branch: SubqueryBranch,
+    pub conditional_subquery_branches: IndexMap<QueryItem, SubqueryBranch>,
     pub left_to_right: bool,
 }
 
@@ -56,14 +63,14 @@ impl Query {
     /// Sets the subquery_key for the query. This causes every element that is
     /// returned by the query to be subqueried to the subquery_key.
     pub fn set_subquery_key(&mut self, key: Vec<u8>) {
-        self.subquery_key = Some(key);
+        self.default_subquery_branch.subquery_key = Some(key);
     }
 
     /// Sets the subquery for the query. This causes every element that is
     /// returned by the query to be subqueried or subqueried to the
     /// subquery_key/subquery if a subquery is present.
     pub fn set_subquery(&mut self, subquery: Self) {
-        self.subquery = Some(Box::new(subquery));
+        self.default_subquery_branch.subquery = Some(Box::new(subquery));
     }
 
     /// Adds an individual key to the query, so that its value (or its absence)
@@ -203,8 +210,11 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
         let items = other.into_iter().map(Into::into).collect();
         Self {
             items,
-            subquery_key: None,
-            subquery: None,
+            default_subquery_branch: SubqueryBranch {
+                subquery_key: None,
+                subquery: None,
+            },
+            conditional_subquery_branches: IndexMap::new(),
             left_to_right: true,
         }
     }
