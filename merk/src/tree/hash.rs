@@ -9,6 +9,7 @@ pub const NULL_HASH: Hash = [0; HASH_LENGTH];
 /// A cryptographic hash digest.
 pub type Hash = [u8; HASH_LENGTH];
 
+/// Hashes a value
 pub fn value_hash(value: &[u8]) -> Hash {
     // TODO: make generic to allow other hashers
     let mut hasher = blake3::Hasher::new();
