@@ -1174,6 +1174,35 @@ mod test {
     }
 
     #[test]
+    fn node_variant_conversion() {
+        let mut tree = make_6_node_tree();
+        let walker = RefWalker::new(&mut tree, PanicSource {});
+
+        assert_eq!(walker.to_kv_node(), Node::KV(vec![5], vec![5]));
+        assert_eq!(
+            walker.to_kvhash_node(),
+            Node::KVHash([
+                61, 233, 169, 61, 231, 15, 78, 53, 219, 99, 131, 45, 44, 165, 68, 87, 7, 52, 238,
+                68, 142, 211, 110, 161, 111, 220, 108, 11, 17, 31, 88, 197
+            ])
+        );
+        assert_eq!(
+            walker.to_kvdigest_node(),
+            Node::KVDigest(
+                vec![5],
+                [
+                    116, 30, 0, 135, 25, 118, 86, 14, 12, 107, 215, 214, 133, 122, 48, 45, 180, 21,
+                    158, 223, 88, 148, 181, 149, 189, 65, 121, 19, 81, 118, 11, 106
+                ]
+            ),
+        );
+        assert_eq!(walker.to_hash_node(), Node::Hash([
+            47, 88, 45, 83, 28, 53, 123, 233, 238, 140, 130, 174, 250, 220, 210, 37, 3, 215, 82, 177,
+            190, 30, 154, 156, 35, 214, 144, 79, 40, 41, 218, 142
+        ]));
+    }
+
+    #[test]
     fn empty_proof() {
         let mut tree = make_3_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
