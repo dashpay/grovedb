@@ -16,7 +16,7 @@ pub struct KV {
     pub(super) key: Vec<u8>,
     pub(super) value: Vec<u8>,
     pub(super) hash: Hash,
-    // pub(super) value_hash: Hash,
+    pub(super) value_hash: Hash,
 }
 
 impl KV {
@@ -25,23 +25,34 @@ impl KV {
     pub fn new(key: Vec<u8>, value: Vec<u8>) -> Self {
         // TODO: length checks?
         let hash = kv_hash(key.as_slice(), value.as_slice());
-        // let value_hash =  value_hash(value.as_slice());
-        Self { key, value, hash }
+        let value_hash = value_hash(value.as_slice());
+        Self {
+            key,
+            value,
+            hash,
+            value_hash,
+        }
     }
 
     /// Creates a new `KV` with the given key, value, and hash. The hash is not
     /// checked to be correct for the given key/value.
     #[inline]
-    pub fn from_fields(key: Vec<u8>, value: Vec<u8>, hash: Hash) -> Self {
-        Self { key, value, hash }
+    pub fn from_fields(key: Vec<u8>, value: Vec<u8>, hash: Hash, value_hash: Hash) -> Self {
+        Self {
+            key,
+            value,
+            hash,
+            value_hash,
+        }
     }
 
-    /// Replaces the `KV`'s value with the given value, updates the hash, and
-    /// returns the modified `KV`.
+    /// Replaces the `KV`'s value with the given value, updates the hash,
+    /// value hash and returns the modified `KV`.
     #[inline]
     pub fn with_value(mut self, value: Vec<u8>) -> Self {
         // TODO: length check?
         self.value = value;
+        self.value_hash = value_hash(self.value());
         self.hash = kv_hash(self.key(), self.value());
         self
     }
@@ -56,6 +67,12 @@ impl KV {
     #[inline]
     pub fn value(&self) -> &[u8] {
         self.value.as_slice()
+    }
+
+    /// Returns the value hash
+    #[inline]
+    pub const fn value_hash(&self) -> &Hash {
+        &self.value_hash
     }
 
     /// Returns the hash.
@@ -93,6 +110,7 @@ impl Decode for KV {
             key: Vec::with_capacity(0),
             value: Vec::with_capacity(128),
             hash: NULL_HASH,
+            value_hash: NULL_HASH,
         };
         Self::decode_into(&mut kv, input)?;
         Ok(kv)

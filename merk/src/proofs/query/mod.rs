@@ -721,6 +721,12 @@ where
         Node::KVHash(*self.tree().kv_hash())
     }
 
+    /// Creates a `Node::KVDigest` from the key/value_hash pair of the root
+    /// node.
+    pub(crate) fn to_kvdigest_node(&self) -> Node {
+        Node::KVDigest(self.tree().key().to_vec(), *self.tree().value_hash())
+    }
+
     /// Creates a `Node::Hash` from the hash of the node.
     pub(crate) fn to_hash_node(&self) -> Node {
         Node::Hash(self.tree().hash())
