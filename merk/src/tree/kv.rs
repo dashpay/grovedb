@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use ed::{Decode, Encode, Result};
 
 use super::hash::{kv_hash, Hash, HASH_LENGTH, NULL_HASH};
+use crate::tree::hash::value_hash;
 
 // TODO: maybe use something similar to Vec but without capacity field,
 //       (should save 16 bytes per entry). also, maybe a shorter length
@@ -15,6 +16,7 @@ pub struct KV {
     pub(super) key: Vec<u8>,
     pub(super) value: Vec<u8>,
     pub(super) hash: Hash,
+    // pub(super) value_hash: Hash,
 }
 
 impl KV {
@@ -23,6 +25,7 @@ impl KV {
     pub fn new(key: Vec<u8>, value: Vec<u8>) -> Self {
         // TODO: length checks?
         let hash = kv_hash(key.as_slice(), value.as_slice());
+        // let value_hash =  value_hash(value.as_slice());
         Self { key, value, hash }
     }
 

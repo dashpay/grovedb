@@ -54,6 +54,8 @@ impl Tree {
                 let kv_hash = kv_hash(key.as_slice(), value.as_slice());
                 compute_hash(self, kv_hash)
             }
+            // todo: update this to do something useful
+            Node::KVDigest(_, val) => *val,
         }
     }
 
