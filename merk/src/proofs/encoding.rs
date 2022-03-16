@@ -196,7 +196,6 @@ mod test {
 
         let mut bytes = vec![];
         op.encode_into(&mut bytes).unwrap();
-        dbg!(&bytes);
         assert_eq!(
             bytes,
             vec![
@@ -263,6 +262,20 @@ mod test {
         ];
         let op = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(op, Op::Push(Node::KVHash([123; HASH_LENGTH])));
+    }
+
+    #[test]
+    fn decode_push_kvdigest() {
+        let bytes = [
+            0x04, 3, 1, 2, 3, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
+            123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
+            123,
+        ];
+        let op = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(
+            op,
+            Op::Push(Node::KVDigest(vec![1, 2, 3], [123; HASH_LENGTH]))
+        );
     }
 
     #[test]
