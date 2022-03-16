@@ -3,7 +3,7 @@ mod map;
 use std::{
     cmp,
     cmp::{max, min, Ordering},
-    collections::{BTreeSet, HashMap},
+    collections::BTreeSet,
     hash::Hash,
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
@@ -30,7 +30,7 @@ pub struct SubqueryBranch {
 pub struct Query {
     items: BTreeSet<QueryItem>,
     pub default_subquery_branch: SubqueryBranch,
-    pub conditional_subquery_branches: HashMap<QueryItem, SubqueryBranch>,
+    pub conditional_subquery_branches: IndexMap<QueryItem, SubqueryBranch>,
     pub left_to_right: bool,
 }
 
@@ -234,7 +234,7 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
                 subquery_key: None,
                 subquery: None,
             },
-            conditional_subquery_branches: HashMap::new(),
+            conditional_subquery_branches: IndexMap::new(),
             left_to_right: true,
         }
     }

@@ -1807,7 +1807,7 @@ fn test_get_range_query_with_unique_subquery_ignore_non_unique_null_values() {
 
     query.set_subquery_key(subquery_key);
 
-    let mut subquery = Query::new();
+    let subquery = Query::new();
 
     query.add_conditional_subquery(
         QueryItem::Key(b"".to_vec()),
