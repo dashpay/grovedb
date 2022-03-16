@@ -245,12 +245,12 @@ impl GroveDb {
     /// # use grovedb::{Element, Error, GroveDb};
     /// # use rs_merkle::{MerkleTree, MerkleProof, algorithms::Sha256, Hasher, utils};
     /// # use std::convert::TryFrom;
-    /// # use tempdir::TempDir;
+    /// # use tempfile::TempDir;
     /// #
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// const TEST_LEAF: &[u8] = b"test_leaf";
     ///
-    /// let tmp_dir = TempDir::new("db").unwrap();
+    /// let tmp_dir = TempDir::new().unwrap();
     /// let mut db = GroveDb::open(tmp_dir.path())?;
     /// db.insert([], TEST_LEAF, Element::empty_tree(), None)?;
     ///
