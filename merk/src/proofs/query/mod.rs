@@ -1964,10 +1964,14 @@ mod test {
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
-        let res = verify(bytes.as_slice(), tree.hash()).unwrap();
-        let mut iter = res.all();
-        assert_eq!(iter.next(), Some((&vec![5], &(false, vec![5]))));
-        assert_eq!(iter.next(), None,);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, Some(1), tree.hash()).unwrap();
+        assert_eq!(res, vec![
+            (vec![5], vec![5])
+        ]);
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
