@@ -797,8 +797,8 @@ where
             Ok(_) => Op::Push(self.to_kv_node()),
             Err(_) => {
                 if left_absence.1 || right_absence.0 {
-                    // Op::Push(self.to_kvdigest_node())
-                    Op::Push(self.to_kv_node())
+                    Op::Push(self.to_kvdigest_node())
+                    // Op::Push(self.to_kv_node())
                 } else {
                     Op::Push(self.to_kvhash_node())
                 }
@@ -1006,7 +1006,7 @@ pub fn verify_query(
                         // continue to next push
                         break;
                     } else {
-                        bail!("Proof is missing data for query");
+                        bail!("Proof is missing data for query cons");
                     }
                 }
                 // continue to next queried item
@@ -1016,10 +1016,12 @@ pub fn verify_query(
 
         if let Node::KV(key, value) = node {
             execute_node(key, Some(value))?;
+        } else if let Node::KVDigest(key, _) = node {
+            execute_node(key, None)?;
         } else if in_range {
             // we encountered a queried range but the proof was abridged (saw a
             // non-KV push), we are missing some part of the range
-            bail!("Proof is missing data for query");
+            bail!("Proof is missing data for query bam");
         }
 
         last_push = Some(node.clone());
@@ -1033,10 +1035,11 @@ pub fn verify_query(
         match last_push {
             // last node in tree was less than queried item
             Some(Node::KV(..)) => {}
+            Some(Node::KVDigest(..)) => {}
 
             // proof contains abridged data so we cannot verify absence of
             // remaining query items
-            _ => bail!("Proof is missing data for query"),
+            _ => bail!("Proof is missing data for query last"),
         }
     }
 
@@ -1436,19 +1439,19 @@ mod test {
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
         // assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
-        // assert_eq!(
-        //     iter.next(),
-        //     Some(&Op::Push(Node::KVDigest(
-        //         vec![7],
-        //         [
-        //             63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
-        //             51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
-        //         ]
-        //     )))
-        // );
-        // assert_eq!(iter.next(), Some(&Op::Child));
-        // assert!(iter.next().is_none());
-        // assert_eq!(absence, (false, true));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVDigest(
+                vec![7],
+                [
+                    63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
+                    51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
+                ]
+            )))
+        );
+        assert_eq!(iter.next(), Some(&Op::Child));
+        assert!(iter.next().is_none());
+        assert_eq!(absence, (false, true));
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
