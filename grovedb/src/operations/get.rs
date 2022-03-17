@@ -68,7 +68,7 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
         let path_iter = path.into_iter();
-        self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)?;
+        self.check_subtree_exists_path_not_found(path_iter.clone(), Some(key), transaction)?;
         if path_iter.len() == 0 {
             merk_optional_tx!(self.db, [key], transaction, subtree, {
                 Ok(Element::Tree(subtree.root_hash()))
@@ -160,6 +160,7 @@ impl GroveDb {
     fn check_subtree_exists<'p, P>(
         &self,
         path: P,
+        key: Option<&'p [u8]>,
         transaction: TransactionArg,
         error: Error,
     ) -> Result<(), Error>
@@ -169,17 +170,21 @@ impl GroveDb {
     {
         let mut path_iter = path.into_iter();
         if path_iter.len() == 0 {
-            return Ok(());
-        }
-        if path_iter.len() == 1 {
             meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
                 let root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;
-                if !root_leaf_keys.contains_key(path_iter.next().expect("is not empty")) {
+                if !root_leaf_keys.contains_key(key.ok_or(Error::MissingParameter("key"))?) {
+                    return Err(error);
+                }
+            });
+        } else if path_iter.len() == 1 {
+            meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
+                let root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;
+                if !root_leaf_keys.contains_key(path_iter.next().expect("must contain an item")) {
                     return Err(error);
                 }
             });
         } else {
-            let mut parent_iter = path_iter.clone();
+            let mut parent_iter = path_iter;
             let parent_key = parent_iter.next_back().expect("path is not empty");
             merk_optional_tx!(self.db, parent_iter, transaction, parent, {
                 if matches!(
@@ -196,6 +201,7 @@ impl GroveDb {
     pub fn check_subtree_exists_path_not_found<'p, P>(
         &self,
         path: P,
+        key: Option<&'p [u8]>,
         transaction: TransactionArg,
     ) -> Result<(), Error>
     where
@@ -204,6 +210,7 @@ impl GroveDb {
     {
         self.check_subtree_exists(
             path,
+            key,
             transaction,
             Error::PathNotFound("subtree doesn't exist"),
         )
@@ -212,6 +219,7 @@ impl GroveDb {
     pub fn check_subtree_exists_invalid_path<'p, P>(
         &self,
         path: P,
+        key: Option<&'p [u8]>,
         transaction: TransactionArg,
     ) -> Result<(), Error>
     where
@@ -220,6 +228,7 @@ impl GroveDb {
     {
         self.check_subtree_exists(
             path,
+            key,
             transaction,
             Error::InvalidPath("subtree doesn't exist"),
         )

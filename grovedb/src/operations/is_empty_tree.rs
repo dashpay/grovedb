@@ -7,7 +7,7 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator + ExactSizeIterator,
     {
         let path_iter = path.into_iter();
-        self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)?;
+        self.check_subtree_exists_path_not_found(path_iter.clone(), None, transaction)?;
         merk_optional_tx!(self.db, path_iter, transaction, subtree, {
             Ok(subtree.is_empty_tree())
         })

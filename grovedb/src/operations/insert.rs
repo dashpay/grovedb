@@ -36,7 +36,7 @@ impl GroveDb {
                         "only subtrees are allowed as root tree's leafs",
                     ));
                 }
-                self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)?;
+                self.check_subtree_exists_invalid_path(path_iter.clone(), Some(key), transaction)?;
                 merk_optional_tx!(self.db, path_iter.clone(), transaction, mut subtree, {
                     element.insert(&mut subtree, key)?;
                 });
@@ -78,7 +78,7 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let path_iter = path.into_iter();
-        self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)?;
+        self.check_subtree_exists_invalid_path(path_iter.clone(), Some(key), transaction)?;
         if let Some(tx) = transaction {
             let parent_storage = self
                 .db

@@ -2415,3 +2415,9 @@ fn test_subtree_deletion_with_transaction() {
     ));
     assert!(matches!(db.get([TEST_LEAF], b"key4", None), Ok(_)));
 }
+
+#[test]
+fn test_get_non_existing_root_leaf() {
+    let db = make_grovedb();
+    assert!(matches!(db.get([], b"ayy", None), Err(_)));
+}
