@@ -15,11 +15,13 @@ use std::cmp::max;
 use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
 use ed::{Decode, Encode};
-pub use hash::{kv_hash, node_hash, Hash, HASH_LENGTH, NULL_HASH};
+pub use hash::{kv_digest_to_kv_hash, kv_hash, node_hash, Hash, HASH_LENGTH, NULL_HASH};
 use kv::KV;
 pub use link::Link;
 pub use ops::{BatchEntry, MerkBatch, Op, PanicSource};
 pub use walk::{Fetch, RefWalker, Walker};
+
+use crate::tree::hash::value_hash;
 
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
@@ -65,9 +67,10 @@ impl Tree {
         left: Option<Link>,
         right: Option<Link>,
     ) -> Self {
+        let vh = value_hash(value.as_slice());
         Self {
             inner: Box::new(TreeInner {
-                kv: KV::from_fields(key, value, kv_hash),
+                kv: KV::from_fields(key, value, kv_hash, vh),
                 left,
                 right,
             }),
@@ -101,6 +104,12 @@ impl Tree {
     #[inline]
     pub const fn kv_hash(&self) -> &Hash {
         self.inner.kv.hash()
+    }
+
+    /// Returns the hash of the node's value
+    #[inline]
+    pub const fn value_hash(&self) -> &Hash {
+        self.inner.kv.value_hash()
     }
 
     /// Returns a reference to the root node's `Link` on the given side, if any.

@@ -36,6 +36,9 @@ pub enum Node {
     /// Represents the hash of the key/value pair of a tree node.
     KVHash(Hash),
 
+    /// Represents the key/value_hash pair of a tree node
+    KVDigest(Vec<u8>, Hash),
+
     /// Represents the key and value of a tree node.
     KV(Vec<u8>, Vec<u8>),
 }
