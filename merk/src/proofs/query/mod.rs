@@ -4,25 +4,33 @@ use std::{
     cmp,
     cmp::{max, min, Ordering},
     collections::BTreeSet,
+    hash::Hash,
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
 use anyhow::{bail, Result};
+use indexmap::IndexMap;
 pub use map::*;
 use storage::{rocksdb_storage::RawPrefixedTransactionalIterator, RawIterator};
 #[cfg(feature = "full")]
 use {super::Op, std::collections::LinkedList};
 
 use super::{tree::execute, Decoder, Node};
-use crate::tree::{Fetch, Hash, Link, RefWalker};
+use crate::tree::{Fetch, Hash as MerkHash, Link, RefWalker};
+
+#[derive(Debug, Default, Clone)]
+pub struct SubqueryBranch {
+    pub subquery_key: Option<Vec<u8>>,
+    pub subquery: Option<Box<Query>>,
+}
 
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all of the requested values.
 #[derive(Debug, Default, Clone)]
 pub struct Query {
     items: BTreeSet<QueryItem>,
-    pub subquery_key: Option<Vec<u8>>,
-    pub subquery: Option<Box<Query>>,
+    pub default_subquery_branch: SubqueryBranch,
+    pub conditional_subquery_branches: IndexMap<QueryItem, SubqueryBranch>,
     pub left_to_right: bool,
 }
 
@@ -56,14 +64,33 @@ impl Query {
     /// Sets the subquery_key for the query. This causes every element that is
     /// returned by the query to be subqueried to the subquery_key.
     pub fn set_subquery_key(&mut self, key: Vec<u8>) {
-        self.subquery_key = Some(key);
+        self.default_subquery_branch.subquery_key = Some(key);
     }
 
     /// Sets the subquery for the query. This causes every element that is
     /// returned by the query to be subqueried or subqueried to the
     /// subquery_key/subquery if a subquery is present.
     pub fn set_subquery(&mut self, subquery: Self) {
-        self.subquery = Some(Box::new(subquery));
+        self.default_subquery_branch.subquery = Some(Box::new(subquery));
+    }
+
+    /// Adds a conditional subquery. A conditional subquery replaces the default
+    /// subquery and subquery_key if the item matches for the key. If
+    /// multiple conditional subquery items match, then the first one that
+    /// matches is used (in order that they were added).
+    pub fn add_conditional_subquery(
+        &mut self,
+        item: QueryItem,
+        subquery_key: Option<Vec<u8>>,
+        subquery: Option<Self>,
+    ) {
+        self.conditional_subquery_branches.insert(
+            item,
+            SubqueryBranch {
+                subquery_key,
+                subquery: subquery.map(Box::new),
+            },
+        );
     }
 
     /// Adds an individual key to the query, so that its value (or its absence)
@@ -203,8 +230,11 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
         let items = other.into_iter().map(Into::into).collect();
         Self {
             items,
-            subquery_key: None,
-            subquery: None,
+            default_subquery_branch: SubqueryBranch {
+                subquery_key: None,
+                subquery: None,
+            },
+            conditional_subquery_branches: IndexMap::new(),
             left_to_right: true,
         }
     }
@@ -238,6 +268,13 @@ pub enum QueryItem {
     RangeAfter(RangeFrom<Vec<u8>>),
     RangeAfterTo(Range<Vec<u8>>),
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
+}
+
+impl std::hash::Hash for QueryItem {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.enum_value().hash(state);
+        self.value_hash(state);
+    }
 }
 
 impl QueryItem {
@@ -360,6 +397,36 @@ impl QueryItem {
                 start: start.to_vec(),
                 end: end.to_vec(),
             })
+        }
+    }
+
+    fn enum_value(&self) -> u32 {
+        match self {
+            QueryItem::Key(_) => 0,
+            QueryItem::Range(_) => 1,
+            QueryItem::RangeInclusive(_) => 2,
+            QueryItem::RangeFull(_) => 3,
+            QueryItem::RangeFrom(_) => 4,
+            QueryItem::RangeTo(_) => 5,
+            QueryItem::RangeToInclusive(_) => 6,
+            QueryItem::RangeAfter(_) => 7,
+            QueryItem::RangeAfterTo(_) => 8,
+            QueryItem::RangeAfterToInclusive(_) => 9,
+        }
+    }
+
+    fn value_hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            QueryItem::Key(key) => key.hash(state),
+            QueryItem::Range(range) => range.hash(state),
+            QueryItem::RangeInclusive(range) => range.hash(state),
+            QueryItem::RangeFull(range) => range.hash(state),
+            QueryItem::RangeFrom(range) => range.hash(state),
+            QueryItem::RangeTo(range) => range.hash(state),
+            QueryItem::RangeToInclusive(range) => range.hash(state),
+            QueryItem::RangeAfter(range) => range.hash(state),
+            QueryItem::RangeAfterTo(range) => range.hash(state),
+            QueryItem::RangeAfterToInclusive(range) => range.hash(state),
         }
     }
 
@@ -861,7 +928,7 @@ where
     }
 }
 
-pub fn verify(bytes: &[u8], expected_hash: Hash) -> Result<Map> {
+pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> Result<Map> {
     let ops = Decoder::new(bytes);
     let mut map_builder = MapBuilder::new();
 
@@ -878,7 +945,7 @@ pub fn verify(bytes: &[u8], expected_hash: Hash) -> Result<Map> {
     Ok(map_builder.build())
 }
 
-pub fn execute_proof(bytes: &[u8]) -> Result<(Hash, Map)> {
+pub fn execute_proof(bytes: &[u8]) -> Result<(MerkHash, Map)> {
     let ops = Decoder::new(bytes);
     let mut map_builder = MapBuilder::new();
 
@@ -901,7 +968,7 @@ pub fn execute_proof(bytes: &[u8]) -> Result<(Hash, Map)> {
 pub fn verify_query(
     bytes: &[u8],
     query: &Query,
-    expected_hash: Hash,
+    expected_hash: MerkHash,
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let mut output = Vec::with_capacity(query.len());
     let mut last_push = None;
