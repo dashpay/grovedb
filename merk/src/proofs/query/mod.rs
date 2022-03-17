@@ -1007,7 +1007,7 @@ pub fn verify_query(
                         // continue to next push
                         break;
                     } else {
-                        bail!("Proof is missing data for query cons");
+                        bail!("Proof is missing data for query");
                     }
                 }
                 // continue to next queried item
@@ -1022,7 +1022,7 @@ pub fn verify_query(
         } else if in_range {
             // we encountered a queried range but the proof was abridged (saw a
             // non-KV push), we are missing some part of the range
-            bail!("Proof is missing data for query bam");
+            bail!("Proof is missing data for query");
         }
 
         last_push = Some(node.clone());
@@ -1040,7 +1040,7 @@ pub fn verify_query(
 
             // proof contains abridged data so we cannot verify absence of
             // remaining query items
-            _ => bail!("Proof is missing data for query last"),
+            _ => bail!("Proof is missing data for query"),
         }
     }
 
