@@ -202,6 +202,34 @@ impl Element {
         Ok(())
     }
 
+    fn subquery_paths_for_sized_query(
+        sized_query: &SizedQuery,
+        key: &[u8],
+    ) -> (Option<Vec<u8>>, Option<Query>) {
+        for (query_item, subquery_branch) in &sized_query.query.conditional_subquery_branches {
+            if query_item.contains(key) {
+                let subquery_key = subquery_branch.subquery_key.clone();
+                let subquery = subquery_branch
+                    .subquery
+                    .as_ref()
+                    .map(|query| *query.clone());
+                return (subquery_key, subquery);
+            }
+        }
+        let subquery_key = sized_query
+            .query
+            .default_subquery_branch
+            .subquery_key
+            .clone();
+        let subquery = sized_query
+            .query
+            .default_subquery_branch
+            .subquery
+            .as_ref()
+            .map(|query| *query.clone());
+        (subquery_key, subquery)
+    }
+
     fn query_item(
         storage: &RocksDbStorage,
         item: &QueryItem,
@@ -222,23 +250,23 @@ impl Element {
                         Element::get(&subtree, key)
                     });
                 match element_res {
-                    Ok(element) => add_element_function(PathQueryPushArgs {
-                        storage,
-                        transaction,
-                        key: Some(key.as_slice()),
-                        element,
-                        path,
-                        subquery_key: sized_query.query.subquery_key.clone(),
-                        subquery: sized_query
-                            .query
-                            .subquery
-                            .as_ref()
-                            .map(|query| *query.clone()),
-                        left_to_right: sized_query.query.left_to_right,
-                        results,
-                        limit,
-                        offset,
-                    }),
+                    Ok(element) => {
+                        let (subquery_key, subquery) =
+                            Self::subquery_paths_for_sized_query(sized_query, key);
+                        add_element_function(PathQueryPushArgs {
+                            storage,
+                            transaction,
+                            key: Some(key.as_slice()),
+                            element,
+                            path,
+                            subquery_key,
+                            subquery,
+                            left_to_right: sized_query.query.left_to_right,
+                            results,
+                            limit,
+                            offset,
+                        })
+                    },
                     Err(Error::PathKeyNotFound(_)) => Ok(()),
                     Err(e) => Err(e),
                 }
@@ -258,18 +286,16 @@ impl Element {
                     let element =
                         raw_decode(iter.value().expect("if key exists then value should too"))?;
                     let key = iter.key().expect("key should exist");
+                    let (subquery_key, subquery) =
+                            Self::subquery_paths_for_sized_query(sized_query, key);
                     add_element_function(PathQueryPushArgs {
                         storage,
                         transaction,
                         key: Some(key),
                         element,
                         path,
-                        subquery_key: sized_query.query.subquery_key.clone(),
-                        subquery: sized_query
-                            .query
-                            .subquery
-                            .as_ref()
-                            .map(|query| *query.clone()),
+                        subquery_key,
+                        subquery,
                         left_to_right: sized_query.query.left_to_right,
                         results,
                         limit,
