@@ -762,7 +762,7 @@ where
 
         let current_node_in_query: bool;
         let mut node_on_non_inclusive_bounds = false;
-        // becomes true if the offset is exists and is non zero
+        // becomes true if the offset exists and is non zero
         let mut skip_current_node = false;
 
         let (mut left_items, mut right_items) = match search {
@@ -823,6 +823,8 @@ where
 
         if let Some(current_offset) = new_offset {
             if current_offset > 0 && !node_on_non_inclusive_bounds {
+                // reserve offset slot for current node before generating proof for right
+                // subtree
                 new_offset = Some(current_offset - 1);
                 skip_current_node = true;
             }
@@ -1033,7 +1035,7 @@ pub fn verify_query(
                 if query_item.contains(key) {
                     // if there are still offset slots, and node is of type kvdigest
                     // reduce the offset counter
-                    // verify that a kv node was not pushed before offset is exhausted
+                    // also, verify that a kv node was not pushed before offset is exhausted
                     if let Some(offset) = current_offset {
                         if offset > 0 && value == None {
                             current_offset = Some(offset - 1);
