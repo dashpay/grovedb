@@ -804,33 +804,37 @@ where
             }
         };
 
-        // when the limit hits zero, the rest of the query batch should be cleared
-        // so empty the left, right query batch, and set the current node to not found
-        if let Some(current_limit) = limit {
-            if current_limit == 0 {
-                left_items = &[];
-                search = Err(Default::default());
-                right_items = &[];
+        if offset == None || offset == Some(0) {
+            // when the limit hits zero, the rest of the query batch should be cleared
+            // so empty the left, right query batch, and set the current node to not found
+            if let Some(current_limit) = limit {
+                if current_limit == 0 {
+                    left_items = &[];
+                    search = Err(Default::default());
+                    right_items = &[];
+                }
             }
         }
 
         let (mut proof, left_absence, mut new_limit, new_offset) =
             self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
 
-        if let Some(current_limit) = new_limit {
-            // if after generating proof for the left subtree, the limit becomes 0
-            // clear the current node and clear the right batch
-            if current_limit == 0 {
-                right_items = &[];
-                search = Err(Default::default());
-            } else if current_node_in_query && !node_on_non_inclusive_bounds {
-                // if limit is not zero, reserve a limit slot for the current node
-                // before generating proof for the right subtree
-                new_limit = Some(current_limit - 1);
-                // if after limit slot reservation, limit becomes 0, right query
-                // should be cleared
-                if current_limit - 1 == 0 {
+        if offset == None || offset == Some(0) {
+            if let Some(current_limit) = new_limit {
+                // if after generating proof for the left subtree, the limit becomes 0
+                // clear the current node and clear the right batch
+                if current_limit == 0 {
                     right_items = &[];
+                    search = Err(Default::default());
+                } else if current_node_in_query && !node_on_non_inclusive_bounds {
+                    // if limit is not zero, reserve a limit slot for the current node
+                    // before generating proof for the right subtree
+                    new_limit = Some(current_limit - 1);
+                    // if after limit slot reservation, limit becomes 0, right query
+                    // should be cleared
+                    if current_limit - 1 == 0 {
+                        right_items = &[];
+                    }
                 }
             }
         }
