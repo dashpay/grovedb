@@ -2000,11 +2000,12 @@ mod test {
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
-        let res = verify(bytes.as_slice(), tree.hash()).unwrap();
-        let mut iter = res.all();
-        assert_eq!(iter.next(), Some((&vec![5], &(false, vec![5]))));
-        assert_eq!(iter.next(), Some((&vec![7], &(true, vec![7]))),);
-        assert_eq!(iter.next(), None,);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, Some(2), tree.hash()).unwrap();
+        assert_eq!(res, vec![(vec![5], vec![5]), (vec![7], vec![7]),]);
 
         // Limit result set to 100 items
         let mut tree = make_6_node_tree();
@@ -2025,11 +2026,15 @@ mod test {
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
-        let res = verify(bytes.as_slice(), tree.hash()).unwrap();
-        let mut iter = res.all();
-        assert_eq!(iter.next(), Some((&vec![5], &(false, vec![5]))));
-        assert_eq!(iter.next(), Some((&vec![7], &(true, vec![7]))),);
-        assert_eq!(iter.next(), Some((&vec![8], &(true, vec![8]))),);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, Some(100), tree.hash()).unwrap();
+        assert_eq!(
+            res,
+            vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])]
+        );
     }
 
     #[test]
