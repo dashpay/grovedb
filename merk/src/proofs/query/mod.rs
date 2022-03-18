@@ -761,13 +761,24 @@ where
         let mut search = query.binary_search_by(|key| key.cmp(&node_key));
 
         let current_node_in_query: bool;
+        let mut node_on_non_inclusive_bounds = false;
 
         let (mut left_items, mut right_items) = match search {
             Ok(index) => {
                 current_node_in_query = true;
                 let item = &query[index];
-                let left_bound = item.lower_bound().0;
-                let right_bound = item.upper_bound().0;
+                let (left_bound, left_not_inclusive) = item.lower_bound();
+                let (right_bound, right_inclusive) = item.upper_bound();
+
+                if left_bound.is_some()
+                    && left_bound.unwrap() == self.tree().key()
+                    && left_not_inclusive
+                    || right_bound.is_some()
+                        && right_bound.unwrap() == self.tree().key()
+                        && !right_inclusive
+                {
+                    node_on_non_inclusive_bounds = true;
+                }
 
                 // if range starts before this node's key, include it in left
                 // child's query
@@ -812,7 +823,7 @@ where
             if current_limit == 0 {
                 right_items = &[];
                 search = Err(Default::default());
-            } else if current_node_in_query {
+            } else if current_node_in_query && !node_on_non_inclusive_bounds {
                 // if limit is not zero, reserve a limit slot for the current node
                 // before generating proof for the right subtree
                 new_limit = Some(current_limit - 1);
@@ -830,17 +841,8 @@ where
         let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
 
         proof.push_back(match search {
-            Ok(index) => {
-                // if the current key is part of the non inclusive bounds of the query
-                // push the KVDigest
-                let item = &query[index];
-                let (start_key, start_not_inclusive) = item.lower_bound();
-                let (end_key, end_inclusive) = item.upper_bound();
-                if start_key.is_some()
-                    && start_key.unwrap() == self.tree().key()
-                    && start_not_inclusive
-                    || end_key.is_some() && end_key.unwrap() == self.tree().key() && !end_inclusive
-                {
+            Ok(_) => {
+                if node_on_non_inclusive_bounds {
                     Op::Push(self.to_kvdigest_node())
                 } else {
                     Op::Push(self.to_kv_node())
@@ -2379,6 +2381,93 @@ mod test {
                 (vec![5], vec![5]),
                 (vec![7], vec![7]),
                 (vec![8], vec![8]),
+            ]
+        );
+
+        // Limit result set to 1 item
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
+        let (proof, absence) = walker
+            .create_full_proof(queryitems.as_slice(), Some(1), None)
+            .expect("create_proof errored");
+        dbg!(&proof);
+
+        let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
+        let (equivalent_proof, equivalent_absence) = walker
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .expect("create_proof errored");
+
+        assert_eq!(proof, equivalent_proof);
+        assert_eq!(absence, equivalent_absence);
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, Some(1), tree.hash()).unwrap();
+        assert_eq!(res, vec![(vec![4], vec![4])]);
+
+        // Limit result set to 2 items
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
+        let (proof, absence) = walker
+            .create_full_proof(queryitems.as_slice(), Some(2), None)
+            .expect("create_proof errored");
+
+        let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![3])];
+        let (equivalent_proof, equivalent_absence) = walker
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .expect("create_proof errored");
+
+        assert_eq!(proof, equivalent_proof);
+        assert_eq!(absence, equivalent_absence);
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, Some(2), tree.hash()).unwrap();
+        assert_eq!(res, vec![(vec![2], vec![2]), (vec![3], vec![3]),]);
+
+        // Limit result set to 100 items
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
+        let (proof, absence) = walker
+            .create_full_proof(queryitems.as_slice(), Some(100), None)
+            .expect("create_proof errored");
+
+        let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
+        let (equivalent_proof, equivalent_absence) = walker
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .expect("create_proof errored");
+
+        assert_eq!(proof, equivalent_proof);
+        assert_eq!(absence, equivalent_absence);
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, Some(100), tree.hash()).unwrap();
+        assert_eq!(
+            res,
+            vec![
+                (vec![2], vec![2]),
+                (vec![3], vec![3]),
+                (vec![4], vec![4]),
+                (vec![5], vec![5])
             ]
         );
     }
