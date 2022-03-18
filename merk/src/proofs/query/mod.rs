@@ -963,6 +963,7 @@ pub fn verify_query(
     let mut query = query.iter().peekable();
     let mut in_range = false;
     let mut current_limit = limit;
+    let mut current_offset = offset;
 
     let ops = Decoder::new(bytes);
 
@@ -1030,6 +1031,20 @@ pub fn verify_query(
 
                 // this push matches the queried item
                 if query_item.contains(key) {
+                    // if there are still offset slots, and node is of type kvdigest
+                    // reduce the offset counter
+                    // verify that a kv node was not pushed before offset is exhausted
+                    if let Some(offset) = current_offset {
+                        if offset > 0 && value == None {
+                            current_offset = Some(offset - 1);
+                            break;
+                        } else if offset > 0 && value != None {
+                            // inserting a kv node before exhausting offset
+                            bail!("Proof returns data before offset is exhausted");
+                        }
+                    }
+
+                    // offset is equal to zero or none
                     if let Some(val) = value {
                         if let Some(limit) = current_limit {
                             if limit == 0 {
@@ -2965,7 +2980,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![2]..)];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(2))
             .expect("create_proof errored");
         dbg!(&proof);
 
@@ -2975,8 +2990,8 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), None, tree.hash()).unwrap();
-        assert_eq!(res, vec![(vec![3], vec![3])]);
+        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(2), tree.hash()).unwrap();
+        assert_eq!(res, vec![(vec![4], vec![4])]);
     }
 
     #[test]
