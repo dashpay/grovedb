@@ -1855,6 +1855,66 @@ mod test {
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
             ]
         );
+
+        // skip 1 element
+        let mut tree = make_tree_seq(10);
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::Range(
+            vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
+        )];
+        let (proof, _) = walker
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(1))
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(1), tree.hash()).unwrap();
+        assert_eq!(res, vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 32])]);
+
+        // skip 2 elements
+        let mut tree = make_tree_seq(10);
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::Range(
+            vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
+        )];
+        let (proof, _) = walker
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(2))
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(2), tree.hash()).unwrap();
+        assert_eq!(res, vec![(vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 32])]);
+
+        // skip all elements
+        let mut tree = make_tree_seq(10);
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::Range(
+            vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
+        )];
+        let (proof, _) = walker
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(200))
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(200), tree.hash()).unwrap();
+        assert_eq!(res, vec![]);
     }
 
     #[test]
