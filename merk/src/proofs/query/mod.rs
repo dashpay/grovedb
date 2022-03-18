@@ -2925,7 +2925,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let queryitems = vec![QueryItem::RangeFrom(vec![2]..)];
-        let (proof, absence) = walker
+        let (proof, _) = walker
             .create_full_proof(queryitems.as_slice(), Some(1), None)
             .expect("create_proof errored");
 
@@ -2981,10 +2981,51 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let queryitems = vec![QueryItem::RangeFrom(vec![2]..)];
-        let (proof, absence) = walker
+        let (proof, _) = walker
             .create_full_proof(queryitems.as_slice(), Some(1), Some(2))
             .expect("create_proof errored");
-        dbg!(&proof);
+
+        let mut iter = proof.iter();
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVDigest(
+                vec![2],
+                [
+                    183, 215, 112, 4, 15, 120, 14, 157, 239, 246, 188, 3, 138, 190, 166, 110, 16,
+                    139, 136, 208, 152, 209, 109, 36, 205, 116, 134, 235, 103, 16, 96, 178
+                ]
+            )))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVDigest(
+                vec![3],
+                [
+                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
+                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
+                ]
+            )))
+        );
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
+        assert_eq!(iter.next(), Some(&Op::Child));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVHash([
+                61, 233, 169, 61, 231, 15, 78, 53, 219, 99, 131, 45, 44, 165, 68, 87, 7, 52, 238,
+                68, 142, 211, 110, 161, 111, 220, 108, 11, 17, 31, 88, 197
+            ])))
+        );
+        assert_eq!(iter.next(), Some(&Op::Parent));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::Hash([
+                133, 188, 175, 131, 60, 89, 221, 135, 133, 53, 205, 110, 58, 56, 128, 58, 1, 227,
+                75, 122, 83, 20, 125, 44, 149, 44, 62, 130, 252, 134, 105, 200
+            ])))
+        );
+        assert_eq!(iter.next(), Some(&Op::Child));
+        assert!(iter.next().is_none());
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
