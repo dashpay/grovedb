@@ -822,7 +822,7 @@ where
             self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
 
         if let Some(current_offset) = new_offset {
-            if current_offset > 0 && !node_on_non_inclusive_bounds {
+            if current_offset > 0 && current_node_in_query && !node_on_non_inclusive_bounds {
                 // reserve offset slot for current node before generating proof for right
                 // subtree
                 new_offset = Some(current_offset - 1);
@@ -1874,7 +1874,7 @@ mod test {
             query.insert_item(item);
         }
         let res = verify_query(bytes.as_slice(), &query, Some(1), Some(1), tree.hash()).unwrap();
-        assert_eq!(res, vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 32])]);
+        assert_eq!(res, vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])]);
 
         // skip 2 elements
         let mut tree = make_tree_seq(10);
@@ -1894,7 +1894,7 @@ mod test {
             query.insert_item(item);
         }
         let res = verify_query(bytes.as_slice(), &query, Some(1), Some(2), tree.hash()).unwrap();
-        assert_eq!(res, vec![(vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 32])]);
+        assert_eq!(res, vec![]);
 
         // skip all elements
         let mut tree = make_tree_seq(10);
