@@ -1020,6 +1020,9 @@ pub fn verify_query(
                                 bail!("Proof returns more data than limit");
                             } else {
                                 current_limit = Some(limit - 1);
+                                if current_limit == Some(0) {
+                                    in_range = false;
+                                }
                             }
                         }
                         // add data to output
@@ -1054,14 +1057,17 @@ pub fn verify_query(
     // we have remaining query items, check absence proof against right edge of
     // tree
     if query.peek().is_some() {
-        match last_push {
-            // last node in tree was less than queried item
-            Some(Node::KV(..)) => {}
-            Some(Node::KVDigest(..)) => {}
+        if current_limit == Some(0) {
+        } else {
+            match last_push {
+                // last node in tree was less than queried item
+                Some(Node::KV(..)) => {}
+                Some(Node::KVDigest(..)) => {}
 
-            // proof contains abridged data so we cannot verify absence of
-            // remaining query items
-            _ => bail!("Proof is missing data for query"),
+                // proof contains abridged data so we cannot verify absence of
+                // remaining query items
+                _ => bail!("Proof is missing data for query"),
+            }
         }
     }
 
@@ -1969,9 +1975,7 @@ mod test {
             query.insert_item(item);
         }
         let res = verify_query(bytes.as_slice(), &query, Some(1), tree.hash()).unwrap();
-        assert_eq!(res, vec![
-            (vec![5], vec![5])
-        ]);
+        assert_eq!(res, vec![(vec![5], vec![5])]);
 
         // Limit result set to 2 items
         let mut tree = make_6_node_tree();
