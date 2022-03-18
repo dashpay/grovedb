@@ -762,6 +762,8 @@ where
 
         let current_node_in_query: bool;
         let mut node_on_non_inclusive_bounds = false;
+        // becomes true if the offset is exists and is non zero
+        let mut skip_current_node = false;
 
         let (mut left_items, mut right_items) = match search {
             Ok(index) => {
@@ -816,10 +818,17 @@ where
             }
         }
 
-        let (mut proof, left_absence, mut new_limit, new_offset) =
+        let (mut proof, left_absence, mut new_limit, mut new_offset) =
             self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
 
-        if offset == None || offset == Some(0) {
+        if let Some(current_offset) = new_offset {
+            if current_offset > 0 && !node_on_non_inclusive_bounds {
+                new_offset = Some(current_offset - 1);
+                skip_current_node = true;
+            }
+        }
+
+        if !skip_current_node && (new_offset == None || new_offset == Some(0)) {
             if let Some(current_limit) = new_limit {
                 // if after generating proof for the left subtree, the limit becomes 0
                 // clear the current node and clear the right batch
@@ -846,7 +855,7 @@ where
 
         proof.push_back(match search {
             Ok(_) => {
-                if node_on_non_inclusive_bounds {
+                if node_on_non_inclusive_bounds || skip_current_node {
                     Op::Push(self.to_kvdigest_node())
                 } else {
                     Op::Push(self.to_kv_node())
