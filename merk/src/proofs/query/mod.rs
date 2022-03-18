@@ -2940,10 +2940,29 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify(bytes.as_slice(), tree.hash()).unwrap();
-        let mut m = res.all();
-        assert_eq!(m.next(), Some((&vec![2], &(true, vec![2]))));
-        assert_eq!(m.next(), None);
+        let res = verify_query(bytes.as_slice(), &query, Some(1), tree.hash()).unwrap();
+        assert_eq!(res, vec![(vec![2], vec![2])]);
+    }
+
+    #[test]
+    fn proof_with_offset() {
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::RangeFrom(vec![2]..)];
+        let (proof, absence) = walker
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(1))
+            .expect("create_proof errored");
+        dbg!(&proof);
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, Some(1), tree.hash()).unwrap();
+        assert_eq!(res, vec![(vec![3], vec![3])]);
     }
 
     #[test]
