@@ -2266,6 +2266,60 @@ mod test {
                 (vec![5], vec![5])
             ]
         );
+
+        // skip 1 element
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::RangeTo(..vec![6])];
+        let (proof, _) = walker
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(1))
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(1), tree.hash()).unwrap();
+        assert_eq!(res, vec![(vec![3], vec![3])]);
+
+        // skip 2 elements
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::RangeTo(..vec![6])];
+        let (proof, _) = walker
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(2))
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(2), tree.hash()).unwrap();
+        assert_eq!(res, vec![(vec![4], vec![4])]);
+
+        // skip all elements
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::RangeTo(..vec![6])];
+        let (proof, _) = walker
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(200))
+            .expect("create_proof errored");
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(200), tree.hash()).unwrap();
+        assert_eq!(res, vec![]);
     }
 
     #[test]
