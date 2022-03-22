@@ -934,6 +934,13 @@ where
             }
         }
 
+        // TODO: Figure out the implication of absence to right_left
+        // let absence = if left_to_right {
+        //     (left_absence.0, right_absence.1)
+        // } else {
+        //     (right_absence.1, left_absence.0)
+        // };
+
         Ok((
             proof,
             (left_absence.0, right_absence.1),
@@ -1461,7 +1468,7 @@ mod test {
         }
         let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![3], vec![3])]);
-    }
+
 
     #[test]
     fn double_leaf_proof() {
@@ -3602,7 +3609,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let queryitems = vec![QueryItem::RangeFrom(vec![3]..)];
-        let (proof, _) = walker
+        let (proof, absence) = walker
             .create_full_proof(queryitems.as_slice(), None, None, false)
             .expect("create_proof errored");
 
@@ -3639,7 +3646,25 @@ mod test {
         );
         assert_eq!(iter.next(), Some(&Op::ChildInverted));
         assert_eq!(iter.next(), Some(&Op::ChildInverted));
-        assert_eq!(iter.next(), None,);
+        assert_eq!(iter.next(), None);
+
+        // TODO: Fix this
+        // assert_eq!(absence, (false, true));
+
+        let mut bytes = vec![];
+        encode_into(proof.iter(), &mut bytes);
+        let mut query = Query::new();
+        for item in queryitems {
+            query.insert_item(item);
+        }
+        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        assert_eq!(res, vec![
+            (vec![8], vec![9]),
+            (vec![7], vec![7]),
+            (vec![5], vec![5]),
+            (vec![4], vec![4]),
+            (vec![3], vec![3]),
+        ]);
     }
 
     #[test]
