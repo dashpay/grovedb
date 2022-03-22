@@ -66,7 +66,7 @@ impl Element {
         }
     }
 
-    /// Get the size of an element in bytes
+    /// Get the size of the serialization of an element in bytes
     pub fn serialized_byte_size(&self) -> usize {
         match self {
             Element::Item(item) => {
@@ -88,6 +88,21 @@ impl Element {
         }
     }
 
+    /// Get the size that the element will occupy on disk
+    pub fn node_byte_size(&self, key: &[u8]) -> usize {
+        // todo v23: this is just an approximation for now
+        let serialized_value_size = self.serialized_byte_size();
+        let node_value_size = serialized_value_size + serialized_value_size.required_space();
+        let key_len = key.len();
+        let node_key_size = key_len + key_len.required_space();
+        // Each node stores the key and value, the value hash and the key_value hash
+        let node_size = node_value_size + node_key_size + 32 + 32;
+        // The node will be a child of another node which stores it's key and hash
+        let parent_additions = node_key_size + 32;
+        let child_sizes = 2 as usize;
+        node_size + parent_additions + child_sizes
+    }
+
     /// Delete an element from Merk under a key
     pub fn delete<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx> + 'ctx>(
         merk: &'ctx mut Merk<S>,
@@ -105,21 +120,15 @@ impl Element {
         merk: &Merk<S>,
         key: K,
     ) -> Result<Element, Error> {
-        let element = bincode::DefaultOptions::default()
-            .with_varint_encoding()
-            .reject_trailing_bytes()
-            .deserialize(
-                merk.get(key.as_ref())
-                    .map_err(|e| Error::CorruptedData(e.to_string()))?
-                    .ok_or_else(|| {
-                        Error::PathKeyNotFound(format!(
-                            "key not found in Merk: {}",
-                            hex::encode(key)
-                        ))
-                    })?
-                    .as_slice(),
-            )
-            .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
+        let element = Self::deserialize(
+            merk.get(key.as_ref())
+                .map_err(|e| Error::CorruptedData(e.to_string()))?
+                .ok_or_else(|| {
+                    Error::PathKeyNotFound(format!("key not found in Merk: {}", hex::encode(key)))
+                })?
+                .as_slice(),
+        )
+        .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
         Ok(element)
     }
 
