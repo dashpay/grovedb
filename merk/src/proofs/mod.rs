@@ -13,7 +13,12 @@ use crate::tree::Hash;
 #[derive(Debug, PartialEq)]
 pub enum Op {
     /// Pushes a node on the stack.
+    /// Signifies ascending node keys
     Push(Node),
+
+    /// Pushes a node on the stack
+    /// Signifies descending node keys
+    // PushInverted(Node),
 
     /// Pops the top stack item as `parent`. Pops the next top stack item as
     /// `child`. Attaches `child` as the left child of `parent`. Pushes the
@@ -24,6 +29,16 @@ pub enum Op {
     /// `parent`. Attaches `child` as the right child of `parent`. Pushes the
     /// updated `parent` back on the stack.
     Child,
+
+    /// Pops the top stack item as `parent`. Pops the next top stack item as
+    /// `child`. Attaches `child` as the right child of `parent`. Pushes the
+    /// updated `parent` back on the stack.
+    ParentInverted,
+
+    /// Pops the top stack item as `child`. Pops the next top stack item as
+    /// `parent`. Attaches `child` as the left child of `parent`. Pushes the
+    /// updated `parent` back on the stack.
+    ChildInverted,
 }
 
 /// A selected piece of data about a single tree node, to be contained in a

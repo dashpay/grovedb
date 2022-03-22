@@ -35,6 +35,8 @@ impl Encode for Op {
             }
             Op::Parent => dest.write_all(&[0x10])?,
             Op::Child => dest.write_all(&[0x11])?,
+            Op::ParentInverted => dest.write_all(&[0x12])?,
+            Op::ChildInverted => dest.write_all(&[0x13])?,
         };
         Ok(())
     }
@@ -47,6 +49,8 @@ impl Encode for Op {
             Op::Push(Node::KV(key, value)) => 4 + key.len() + value.len(),
             Op::Parent => 1,
             Op::Child => 1,
+            Op::ParentInverted => 1,
+            Op::ChildInverted => 1,
         })
     }
 }
@@ -89,6 +93,8 @@ impl Decode for Op {
             }
             0x10 => Self::Parent,
             0x11 => Self::Child,
+            0x12 => Self::ParentInverted,
+            0x13 => Self::ChildInverted,
             // TODO: get rid of `failure` with improvements to ed API (or removing dependency on ed)
             _ => failure::bail!("Proof has unexpected value"),
         })
@@ -237,6 +243,26 @@ mod test {
     }
 
     #[test]
+    fn encode_parent_inverted() {
+        let op = Op::ParentInverted;
+        assert_eq!(op.encoding_length(), 1);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(bytes, vec![0x12]);
+    }
+
+    #[test]
+    fn encode_child_inverted() {
+        let op = Op::ChildInverted;
+        assert_eq!(op.encoding_length(), 1);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(bytes, vec![0x13]);
+    }
+
+    #[test]
     #[should_panic]
     fn encode_push_kv_long_key() {
         let op = Op::Push(Node::KV(vec![123; 300], vec![4, 5, 6]));
@@ -297,6 +323,20 @@ mod test {
         let bytes = [0x11];
         let op = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(op, Op::Child);
+    }
+
+    #[test]
+    fn decode_parent_inverted() {
+        let bytes = [0x12];
+        let op = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(op, Op::ParentInverted);
+    }
+
+    #[test]
+    fn decode_child_inverted() {
+        let bytes = [0x13];
+        let op = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(op, Op::ChildInverted);
     }
 
     #[test]

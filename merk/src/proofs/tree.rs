@@ -281,6 +281,7 @@ where
                 let tree: Tree = node.into();
                 stack.push(tree);
             }
+            _ => panic!("bam"),
         }
     }
 
