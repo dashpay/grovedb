@@ -3,6 +3,7 @@
 //! Merk API to GroveDB needs.
 
 use bincode::Options;
+use integer_encoding::VarInt;
 use merk::{
     proofs::{query::QueryItem, Query},
     tree::Tree,
@@ -66,8 +67,25 @@ impl Element {
     }
 
     /// Get the size of an element in bytes
-    pub fn node_byte_size(&self) -> usize {
-        self.byte_size()
+    pub fn serialized_byte_size(&self) -> usize {
+        match self {
+            Element::Item(item) => {
+                let len = item.len();
+                len + len.required_space() + 1 // 1 for enum
+            }
+            Element::Reference(path_reference) => {
+                path_reference
+                    .iter()
+                    .map(|inner| {
+                        let inner_len = inner.len();
+                        inner_len + inner_len.required_space()
+                    })
+                    .sum::<usize>()
+                    + path_reference.len().required_space()
+                    + 1 // for the enum
+            }
+            Element::Tree(_) => 33, // 32 + 1 for enum
+        }
     }
 
     /// Delete an element from Merk under a key
@@ -533,6 +551,7 @@ mod tests {
         let empty_tree = Element::empty_tree();
         let serialized = empty_tree.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 33);
+        assert_eq!(serialized.len(), empty_tree.serialized_byte_size());
         // The tree is fixed length 32 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(
             hex::encode(serialized),
@@ -542,6 +561,7 @@ mod tests {
         let item = Element::Item(hex::decode("abcdef").expect("expected to decode"));
         let serialized = item.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 5);
+        assert_eq!(serialized.len(), item.serialized_byte_size());
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "0003abcdef");
 
@@ -552,6 +572,7 @@ mod tests {
         ]);
         let serialized = reference.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 9);
+        assert_eq!(serialized.len(), reference.serialized_byte_size());
         // The item is variable length 2 bytes, so it's enum 1 then 1 byte for length,
         // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
         assert_eq!(hex::encode(serialized), "0103010002abcd0105");
