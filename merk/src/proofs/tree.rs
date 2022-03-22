@@ -264,6 +264,16 @@ where
                 parent.attach(false, if collapse { child.into_hash() } else { child })?;
                 stack.push(parent);
             }
+            Op::ParentInverted => {
+                let (mut parent, child) = (try_pop(&mut stack)?, try_pop(&mut stack)?);
+                parent.attach(false, if collapse { child.into_hash() } else { child })?;
+                stack.push(parent);
+            }
+            Op::ChildInverted => {
+                let (child, mut parent) = (try_pop(&mut stack)?, try_pop(&mut stack)?);
+                parent.attach(true, if collapse { child.into_hash() } else { child })?;
+                stack.push(parent);
+            }
             Op::Push(node) => {
                 if let Node::KV(key, _) = &node {
                     // keys should always increase
@@ -281,7 +291,23 @@ where
                 let tree: Tree = node.into();
                 stack.push(tree);
             }
-            _ => panic!("bam"),
+            Op::PushInverted(node) => {
+                if let Node::KV(key, _) = &node {
+                    // keys should always increase
+                    if let Some(last_key) = &maybe_last_key {
+                        if key >= last_key {
+                            bail!("Incorrect key ordering");
+                        }
+                    }
+
+                    maybe_last_key = Some(key.clone());
+                }
+
+                visit_node(&node)?;
+
+                let tree: Tree = node.into();
+                stack.push(tree);
+            }
         }
     }
 
