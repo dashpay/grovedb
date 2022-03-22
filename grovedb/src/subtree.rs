@@ -2,10 +2,7 @@
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
 
-use bincode::{
-    config::{RejectTrailing, VarintEncoding, WithOtherIntEncoding, WithOtherTrailing},
-    DefaultOptions, Options,
-};
+use bincode::Options;
 use merk::{
     proofs::{query::QueryItem, Query},
     tree::Tree,
@@ -509,7 +506,6 @@ impl<I: RawIterator> ElementsIterator<I> {
 
 #[cfg(test)]
 mod tests {
-    use bincode::Options;
     use merk::test_utils::TempMerk;
     use storage::Storage;
 
