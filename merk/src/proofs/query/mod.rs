@@ -818,8 +818,11 @@ where
             }
         }
 
-        let (mut proof, left_absence, mut new_limit, mut new_offset) =
-            self.create_child_proof(true, left_items, limit, offset, left_to_right)?;
+        let (mut proof, left_absence, mut new_limit, mut new_offset) = if left_to_right {
+            self.create_child_proof(left_to_right, left_items, limit, offset, left_to_right)?
+        } else {
+            self.create_child_proof(left_to_right, right_items, limit, offset, left_to_right)?
+        };
 
         if let Some(current_offset) = new_offset {
             if current_offset > 0 && current_node_in_query && !node_on_non_inclusive_bounds {
@@ -835,7 +838,11 @@ where
                 // if after generating proof for the left subtree, the limit becomes 0
                 // clear the current node and clear the right batch
                 if current_limit == 0 {
-                    right_items = &[];
+                    if left_to_right {
+                        right_items = &[];
+                    } else {
+                        left_items = &[];
+                    }
                     search = Err(Default::default());
                 } else if current_node_in_query && !node_on_non_inclusive_bounds {
                     // if limit is not zero, reserve a limit slot for the current node
@@ -844,41 +851,85 @@ where
                     // if after limit slot reservation, limit becomes 0, right query
                     // should be cleared
                     if current_limit - 1 == 0 {
-                        right_items = &[];
+                        if left_to_right {
+                            right_items = &[];
+                        } else {
+                            left_items = &[];
+                        }
                     }
                 }
             }
         }
 
-        let (mut right_proof, right_absence, new_limit, new_offset) =
-            self.create_child_proof(false, right_items, new_limit, new_offset, left_to_right)?;
+        let (mut right_proof, right_absence, new_limit, new_offset) = if left_to_right {
+            self.create_child_proof(
+                !left_to_right,
+                right_items,
+                new_limit,
+                new_offset,
+                left_to_right,
+            )?
+        } else {
+            self.create_child_proof(
+                !left_to_right,
+                left_items,
+                new_limit,
+                new_offset,
+                left_to_right,
+            )?
+        };
 
         let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
 
         proof.push_back(match search {
             Ok(_) => {
                 if node_on_non_inclusive_bounds || skip_current_node {
-                    Op::Push(self.to_kvdigest_node())
+                    if left_to_right {
+                        Op::Push(self.to_kvdigest_node())
+                    } else {
+                        Op::PushInverted(self.to_kvdigest_node())
+                    }
                 } else {
-                    Op::Push(self.to_kv_node())
+                    if left_to_right {
+                        Op::Push(self.to_kv_node())
+                    } else {
+                        Op::PushInverted(self.to_kv_node())
+                    }
                 }
             }
             Err(_) => {
+                // TODO: Verify that this logic is correct for right_to_left proofs
                 if left_absence.1 || right_absence.0 {
-                    Op::Push(self.to_kvdigest_node())
+                    if left_to_right {
+                        Op::Push(self.to_kvdigest_node())
+                    } else {
+                        Op::PushInverted(self.to_kvdigest_node())
+                    }
                 } else {
-                    Op::Push(self.to_kvhash_node())
+                    if left_to_right {
+                        Op::Push(self.to_kvhash_node())
+                    } else {
+                        Op::PushInverted(self.to_kvhash_node())
+                    }
                 }
             }
         });
 
         if has_left {
-            proof.push_back(Op::Parent);
+            if left_to_right {
+                proof.push_back(Op::Parent);
+            } else {
+                proof.push_back(Op::ParentInverted);
+            }
         }
 
         if has_right {
             proof.append(&mut right_proof);
-            proof.push_back(Op::Child);
+            if left_to_right {
+                proof.push_back(Op::Child);
+            } else {
+                proof.push_back(Op::ChildInverted);
+            }
         }
 
         Ok((
