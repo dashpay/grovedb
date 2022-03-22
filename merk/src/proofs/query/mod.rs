@@ -961,7 +961,11 @@ where
             }
         } else if let Some(link) = self.tree().link(left) {
             let mut proof = LinkedList::new();
-            proof.push_back(Op::Push(link.to_hash_node()));
+            proof.push_back(if left_to_right {
+                Op::Push(link.to_hash_node())
+            } else {
+                Op::PushInverted(link.to_hash_node())
+            });
             (proof, (false, false), limit, offset)
         } else {
             (LinkedList::new(), (false, false), limit, offset)
@@ -3590,6 +3594,52 @@ mod test {
         }
         let res = verify_query(bytes.as_slice(), &query, Some(1), Some(2), tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![4], vec![4])]);
+    }
+
+    #[test]
+    fn right_to_left_proof() {
+        let mut tree = make_6_node_tree();
+        let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+        let queryitems = vec![QueryItem::RangeFrom(vec![3]..)];
+        let (proof, _) = walker
+            .create_full_proof(queryitems.as_slice(), None, None, false)
+            .expect("create_proof errored");
+
+        let mut iter = proof.iter();
+        assert_eq!(
+            iter.next(),
+            Some(&Op::PushInverted(Node::KV(vec![8], vec![8])))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::PushInverted(Node::KV(vec![7], vec![7])))
+        );
+        assert_eq!(iter.next(), Some(&Op::ChildInverted));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::PushInverted(Node::KV(vec![5], vec![5])))
+        );
+        assert_eq!(iter.next(), Some(&Op::ParentInverted));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::PushInverted(Node::KV(vec![4], vec![4])))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::PushInverted(Node::KV(vec![3], vec![3])))
+        );
+        assert_eq!(iter.next(), Some(&Op::ParentInverted));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::PushInverted(Node::Hash([
+                121, 235, 207, 195, 143, 58, 159, 120, 166, 33, 151, 45, 178, 124, 91, 233, 201, 4,
+                241, 127, 41, 198, 197, 228, 19, 190, 36, 173, 183, 73, 104, 30
+            ])))
+        );
+        assert_eq!(iter.next(), Some(&Op::ChildInverted));
+        assert_eq!(iter.next(), Some(&Op::ChildInverted));
+        assert_eq!(iter.next(), None,);
     }
 
     #[test]
