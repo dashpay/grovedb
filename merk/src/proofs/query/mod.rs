@@ -739,8 +739,10 @@ where
         query: &[QueryItem],
         limit: Option<u16>,
         offset: Option<u16>,
+        left_to_right: bool,
     ) -> Result<(LinkedList<Op>, (bool, bool))> {
-        let (linked_list, (left, right), ..) = self.create_proof(query, limit, offset, true)?;
+        let (linked_list, (left, right), ..) =
+            self.create_proof(query, limit, offset, left_to_right)?;
         Ok((linked_list, (left, right)))
     }
 
@@ -1224,6 +1226,7 @@ mod test {
                     .as_slice(),
                 None,
                 None,
+                true,
             )
             .expect("failed to create proof");
         let mut bytes = vec![];
@@ -1338,7 +1341,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, absence) = walker
-            .create_full_proof(vec![].as_slice(), None, None)
+            .create_full_proof(vec![].as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1381,7 +1384,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![5])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1422,7 +1425,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![3])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1463,7 +1466,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![3]), QueryItem::Key(vec![7])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1502,7 +1505,7 @@ mod test {
             QueryItem::Key(vec![7]),
         ];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1534,7 +1537,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![8])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1584,7 +1587,7 @@ mod test {
 
         let queryitems = vec![QueryItem::Key(vec![6])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1679,7 +1682,7 @@ mod test {
             QueryItem::Key(vec![4]),
         ];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1827,7 +1830,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -1915,7 +1918,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -1935,7 +1938,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -1955,7 +1958,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -1977,7 +1980,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -2063,7 +2066,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2083,7 +2086,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2103,7 +2106,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..=vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2123,7 +2126,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -2161,12 +2164,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None)
+            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::Key(vec![5])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -2187,7 +2190,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None)
+            .create_full_proof(queryitems.as_slice(), Some(2), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![
@@ -2196,7 +2199,7 @@ mod test {
             QueryItem::Key(vec![7]),
         ];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -2217,12 +2220,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), None)
+            .create_full_proof(queryitems.as_slice(), Some(100), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -2246,7 +2249,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2264,7 +2267,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2282,7 +2285,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![5]..)];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2302,7 +2305,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -2358,12 +2361,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None)
+            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![2])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -2384,12 +2387,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None)
+            .create_full_proof(queryitems.as_slice(), Some(2), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![3])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -2410,12 +2413,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), None)
+            .create_full_proof(queryitems.as_slice(), Some(100), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -2444,7 +2447,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2462,7 +2465,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2480,7 +2483,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeTo(..vec![6])];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2500,7 +2503,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -2556,12 +2559,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None)
+            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![2])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -2582,12 +2585,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None)
+            .create_full_proof(queryitems.as_slice(), Some(2), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![3])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -2608,12 +2611,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), None)
+            .create_full_proof(queryitems.as_slice(), Some(100), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -2642,7 +2645,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2660,7 +2663,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2678,7 +2681,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeToInclusive(..=vec![6])];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2698,7 +2701,7 @@ mod test {
 
         let queryitems = vec![RangeAfter(vec![3]..)];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -2754,12 +2757,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None)
+            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -2780,12 +2783,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None)
+            .create_full_proof(queryitems.as_slice(), Some(2), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -2806,12 +2809,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), None)
+            .create_full_proof(queryitems.as_slice(), Some(100), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -2840,7 +2843,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2858,7 +2861,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2876,7 +2879,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfter(vec![3]..)];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -2896,7 +2899,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -2959,12 +2962,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None)
+            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -2985,12 +2988,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None)
+            .create_full_proof(queryitems.as_slice(), Some(2), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -3011,12 +3014,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), None)
+            .create_full_proof(queryitems.as_slice(), Some(100), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -3037,7 +3040,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -3055,7 +3058,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -3073,7 +3076,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterTo(vec![3]..vec![7])];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -3093,7 +3096,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -3150,12 +3153,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None)
+            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![4])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -3176,12 +3179,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None)
+            .create_full_proof(queryitems.as_slice(), Some(2), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![5])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -3202,12 +3205,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), None)
+            .create_full_proof(queryitems.as_slice(), Some(100), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -3231,7 +3234,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(1))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(1), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -3249,7 +3252,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -3267,7 +3270,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -3287,7 +3290,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -3331,12 +3334,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None)
+            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![2])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -3357,12 +3360,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), None)
+            .create_full_proof(queryitems.as_slice(), Some(2), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeToInclusive(..=vec![3])];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -3383,12 +3386,12 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), Some(100), None)
+            .create_full_proof(queryitems.as_slice(), Some(100), None, true)
             .expect("create_proof errored");
 
         let equivalent_queryitems = vec![QueryItem::RangeFull(..)];
         let (equivalent_proof, equivalent_absence) = walker
-            .create_full_proof(equivalent_queryitems.as_slice(), None, None)
+            .create_full_proof(equivalent_queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         assert_eq!(proof, equivalent_proof);
@@ -3419,7 +3422,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(3), Some(1))
+            .create_full_proof(queryitems.as_slice(), Some(3), Some(1), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -3440,7 +3443,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(2), Some(2))
+            .create_full_proof(queryitems.as_slice(), Some(2), Some(2), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -3458,7 +3461,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFull(..)];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(200))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(200), true)
             .expect("create_proof errored");
 
         let mut bytes = vec![];
@@ -3478,7 +3481,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![2]..)];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), None)
+            .create_full_proof(queryitems.as_slice(), Some(1), None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -3534,7 +3537,7 @@ mod test {
 
         let queryitems = vec![QueryItem::RangeFrom(vec![2]..)];
         let (proof, _) = walker
-            .create_full_proof(queryitems.as_slice(), Some(1), Some(2))
+            .create_full_proof(queryitems.as_slice(), Some(1), Some(2), true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -3598,7 +3601,7 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 0, 5]..vec![0, 0, 0, 0, 0, 0, 0, 6, 5],
         )];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -3689,7 +3692,7 @@ mod test {
             QueryItem::Range(vec![0, 0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7]),
         ];
         let (proof, absence) = walker
-            .create_full_proof(queryitems.as_slice(), None, None)
+            .create_full_proof(queryitems.as_slice(), None, None, true)
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
@@ -3819,7 +3822,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, _) = walker
-            .create_full_proof(vec![QueryItem::Key(vec![5])].as_slice(), None, None)
+            .create_full_proof(vec![QueryItem::Key(vec![5])].as_slice(), None, None, true)
             .expect("failed to create proof");
         let mut bytes = vec![];
 
@@ -3841,7 +3844,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let (proof, _) = walker
-            .create_full_proof(vec![QueryItem::Key(vec![5])].as_slice(), None, None)
+            .create_full_proof(vec![QueryItem::Key(vec![5])].as_slice(), None, None, true)
             .expect("failed to create proof");
         let mut bytes = vec![];
 
@@ -3865,6 +3868,7 @@ mod test {
                     .as_slice(),
                 None,
                 None,
+                true,
             )
             .expect("failed to create proof");
         let mut bytes = vec![];
