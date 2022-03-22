@@ -18,7 +18,7 @@ pub enum Op {
 
     /// Pushes a node on the stack
     /// Signifies descending node keys
-    // PushInverted(Node),
+    PushInverted(Node),
 
     /// Pops the top stack item as `parent`. Pops the next top stack item as
     /// `child`. Attaches `child` as the left child of `parent`. Pushes the
