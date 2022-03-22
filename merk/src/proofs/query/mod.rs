@@ -1022,6 +1022,7 @@ pub fn verify_query(
     query: &Query,
     limit: Option<u16>,
     offset: Option<u16>,
+    left_to_right: bool,
     expected_hash: Hash,
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let mut output = Vec::with_capacity(query.len());
@@ -1128,7 +1129,7 @@ pub fn verify_query(
                         // continue to next push
                         break;
                     } else {
-                        bail!("Proof is missing data for query");
+                        bail!("Proof is missing data for query a");
                     }
                 }
                 // continue to next queried item
@@ -1143,7 +1144,7 @@ pub fn verify_query(
         } else if in_range {
             // we encountered a queried range but the proof was abridged (saw a
             // non-KV push), we are missing some part of the range
-            bail!("Proof is missing data for query");
+            bail!("Proof is missing data for query b");
         }
 
         last_push = Some(node.clone());
@@ -1253,7 +1254,7 @@ mod test {
             query.insert_key(key.clone());
         }
 
-        let result = verify_query(bytes.as_slice(), &query, None, None, expected_hash)
+        let result = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
             .expect("verify failed");
 
         let mut values = std::collections::HashMap::new();
@@ -1384,7 +1385,15 @@ mod test {
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
-        let res = verify_query(bytes.as_slice(), &Query::new(), None, None, tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &Query::new(),
+            None,
+            None,
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert!(res.is_empty());
     }
 
@@ -1425,7 +1434,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![5], vec![5])]);
     }
 
@@ -1466,9 +1475,9 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![3], vec![3])]);
-
+    }
 
     #[test]
     fn double_leaf_proof() {
@@ -1501,7 +1510,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![3], vec![3]), (vec![7], vec![7]),]);
     }
 
@@ -1534,7 +1543,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![(vec![3], vec![3]), (vec![5], vec![5]), (vec![7], vec![7]),]
@@ -1587,7 +1596,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![]);
     }
 
@@ -1640,7 +1649,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![]);
     }
 
@@ -1742,7 +1751,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![
@@ -1912,7 +1921,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![
@@ -1938,7 +1947,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(1), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(1),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])]);
 
         // skip 2 elements
@@ -1958,7 +1975,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(2), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(2),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![]);
 
         // skip all elements
@@ -1978,7 +2003,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(200), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(200),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![]);
     }
 
@@ -2059,7 +2092,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![
@@ -2086,7 +2119,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(1), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(1),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])]);
 
         // skip 2 elements
@@ -2106,7 +2147,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(2), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(2),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60])]);
 
         // skip all elements
@@ -2126,7 +2175,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(200), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(200),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![]);
     }
 
@@ -2163,7 +2220,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])]
@@ -2192,7 +2249,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(1), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![5], vec![5])]);
 
         // Limit result set to 2 items
@@ -2222,7 +2279,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(2), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(2), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![5], vec![5]), (vec![7], vec![7]),]);
 
         // Limit result set to 100 items
@@ -2248,7 +2305,8 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(100), None, tree.hash()).unwrap();
+        let res =
+            verify_query(bytes.as_slice(), &query, Some(100), None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])]
@@ -2269,7 +2327,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(1), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(1),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![7], vec![7])]);
 
         // skip 2 elements
@@ -2287,7 +2353,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(2), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(2),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![8], vec![8])]);
 
         // skip all elements
@@ -2305,7 +2379,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(200), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(200),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![]);
     }
 
@@ -2355,7 +2437,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![
@@ -2389,7 +2471,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(1), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![2], vec![2])]);
 
         // Limit result set to 2 items
@@ -2415,7 +2497,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(2), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(2), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![2], vec![2]), (vec![3], vec![3]),]);
 
         // Limit result set to 100 items
@@ -2441,7 +2523,8 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(100), None, tree.hash()).unwrap();
+        let res =
+            verify_query(bytes.as_slice(), &query, Some(100), None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![
@@ -2467,7 +2550,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(1), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(1),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![3], vec![3])]);
 
         // skip 2 elements
@@ -2485,7 +2576,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(2), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(2),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![4], vec![4])]);
 
         // skip all elements
@@ -2503,7 +2602,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(200), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(200),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![]);
     }
 
@@ -2553,7 +2660,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![
@@ -2587,7 +2694,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(1), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![2], vec![2])]);
 
         // Limit result set to 2 items
@@ -2613,7 +2720,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(2), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(2), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![2], vec![2]), (vec![3], vec![3]),]);
 
         // Limit result set to 100 items
@@ -2639,7 +2746,8 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(100), None, tree.hash()).unwrap();
+        let res =
+            verify_query(bytes.as_slice(), &query, Some(100), None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![
@@ -2665,7 +2773,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(1), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(1),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![3], vec![3])]);
 
         // skip 2 elements
@@ -2683,7 +2799,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(2), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(2),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![4], vec![4])]);
 
         // skip all elements
@@ -2701,7 +2825,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(200), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(200),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![]);
     }
 
@@ -2751,7 +2883,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![
@@ -2785,7 +2917,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(1), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![4], vec![4])]);
 
         // Limit result set to 2 items
@@ -2811,7 +2943,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(2), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(2), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![4], vec![4]), (vec![5], vec![5]),]);
 
         // Limit result set to 100 items
@@ -2837,7 +2969,8 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(100), None, tree.hash()).unwrap();
+        let res =
+            verify_query(bytes.as_slice(), &query, Some(100), None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![
@@ -2863,7 +2996,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(1), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(1),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![5], vec![5])]);
 
         // skip 2 elements
@@ -2881,7 +3022,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(2), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(2),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![7], vec![7])]);
 
         // skip all elements
@@ -2899,7 +3048,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(200), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(200),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![]);
     }
 
@@ -2964,7 +3121,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![4], vec![4]), (vec![5], vec![5]),]);
 
         // Limit result set to 1 item
@@ -2990,7 +3147,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(1), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![4], vec![4])]);
 
         // Limit result set to 2 items
@@ -3016,7 +3173,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(2), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(2), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![4], vec![4]), (vec![5], vec![5]),]);
 
         // Limit result set to 100 items
@@ -3042,7 +3199,8 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(100), None, tree.hash()).unwrap();
+        let res =
+            verify_query(bytes.as_slice(), &query, Some(100), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![4], vec![4]), (vec![5], vec![5]),]);
 
         // skip 1 element
@@ -3060,7 +3218,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(1), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(1),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![5], vec![5])]);
 
         // skip 2 elements
@@ -3078,7 +3244,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(2), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(2),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![]);
 
         // skip all elements
@@ -3096,7 +3270,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(200), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(200),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![]);
     }
 
@@ -3152,7 +3334,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])]
@@ -3181,7 +3363,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(1), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![4], vec![4])]);
 
         // Limit result set to 2 items
@@ -3207,7 +3389,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(2), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(2), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![4], vec![4]), (vec![5], vec![5]),]);
 
         // Limit result set to 100 items
@@ -3233,7 +3415,8 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(100), None, tree.hash()).unwrap();
+        let res =
+            verify_query(bytes.as_slice(), &query, Some(100), None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])]
@@ -3254,7 +3437,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(1), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(1),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![5], vec![5])]);
 
         // skip 2 elements
@@ -3272,7 +3463,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(2), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(2),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![7], vec![7])]);
 
         // skip all elements
@@ -3290,7 +3489,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(200), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(200),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![]);
     }
 
@@ -3326,7 +3533,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![
@@ -3362,7 +3569,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(1), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![2], vec![2])]);
 
         // Limit result set to 2 items
@@ -3388,7 +3595,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(2), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(2), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![2], vec![2]), (vec![3], vec![3]),]);
 
         // Limit result set to 100 items
@@ -3414,7 +3621,8 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(100), None, tree.hash()).unwrap();
+        let res =
+            verify_query(bytes.as_slice(), &query, Some(100), None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![
@@ -3442,7 +3650,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(3), Some(1), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(3),
+            Some(1),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(
             res,
             vec![(vec![3], vec![3]), (vec![4], vec![4]), (vec![5], vec![5]),]
@@ -3463,7 +3679,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(2), Some(2), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(2),
+            Some(2),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![4], vec![4]), (vec![5], vec![5]),]);
 
         // skip all elements
@@ -3481,7 +3705,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(200), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(200),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![]);
     }
 
@@ -3537,7 +3769,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, Some(1), None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![2], vec![2])]);
     }
 
@@ -3599,7 +3831,15 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, Some(1), Some(2), tree.hash()).unwrap();
+        let res = verify_query(
+            bytes.as_slice(),
+            &query,
+            Some(1),
+            Some(2),
+            true,
+            tree.hash(),
+        )
+        .unwrap();
         assert_eq!(res, vec![(vec![4], vec![4])]);
     }
 
@@ -3657,14 +3897,17 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
-        assert_eq!(res, vec![
-            (vec![8], vec![9]),
-            (vec![7], vec![7]),
-            (vec![5], vec![5]),
-            (vec![4], vec![4]),
-            (vec![3], vec![3]),
-        ]);
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
+        assert_eq!(
+            res,
+            vec![
+                (vec![8], vec![9]),
+                (vec![7], vec![7]),
+                (vec![5], vec![5]),
+                (vec![4], vec![4]),
+                (vec![3], vec![3]),
+            ]
+        );
     }
 
     #[test]
@@ -3747,7 +3990,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![
@@ -3841,7 +4084,7 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
         assert_eq!(res, vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),]);
     }
 
@@ -3954,7 +4197,7 @@ mod test {
             query.insert_key(key.clone());
         }
 
-        let _result =
-            verify_query(bytes.as_slice(), &query, None, None, [42; 32]).expect("verify failed");
+        let _result = verify_query(bytes.as_slice(), &query, None, None, true, [42; 32])
+            .expect("verify failed");
     }
 }
