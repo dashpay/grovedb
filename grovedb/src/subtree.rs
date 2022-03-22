@@ -2,6 +2,10 @@
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
 
+use bincode::{
+    config::{RejectTrailing, VarintEncoding, WithOtherIntEncoding, WithOtherTrailing},
+    DefaultOptions, Options,
+};
 use merk::{
     proofs::{query::QueryItem, Query},
     tree::Tree,
@@ -16,6 +20,8 @@ use crate::{
 };
 
 /// Variants of GroveDB stored entities
+/// ONLY APPEND TO THIS LIST!!! Because
+/// of how serialization works.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Element {
     /// An ordinary value
@@ -51,6 +57,22 @@ impl Element {
         Element::Tree(Default::default())
     }
 
+    /// Get the size of an element in bytes
+    pub fn byte_size(&self) -> usize {
+        match self {
+            Element::Item(item) => item.len(),
+            Element::Reference(path_reference) => {
+                path_reference.iter().map(|inner| inner.len()).sum()
+            }
+            Element::Tree(_) => 32,
+        }
+    }
+
+    /// Get the size of an element in bytes
+    pub fn node_byte_size(&self) -> usize {
+        self.byte_size()
+    }
+
     /// Delete an element from Merk under a key
     pub fn delete<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx> + 'ctx>(
         merk: &'ctx mut Merk<S>,
@@ -68,15 +90,21 @@ impl Element {
         merk: &Merk<S>,
         key: K,
     ) -> Result<Element, Error> {
-        let element = bincode::deserialize(
-            merk.get(key.as_ref())
-                .map_err(|e| Error::CorruptedData(e.to_string()))?
-                .ok_or_else(|| {
-                    Error::PathKeyNotFound(format!("key not found in Merk: {}", hex::encode(key)))
-                })?
-                .as_slice(),
-        )
-        .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
+        let element = bincode::DefaultOptions::default()
+            .with_varint_encoding()
+            .reject_trailing_bytes()
+            .deserialize(
+                merk.get(key.as_ref())
+                    .map_err(|e| Error::CorruptedData(e.to_string()))?
+                    .ok_or_else(|| {
+                        Error::PathKeyNotFound(format!(
+                            "key not found in Merk: {}",
+                            hex::encode(key)
+                        ))
+                    })?
+                    .as_slice(),
+            )
+            .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
         Ok(element)
     }
 
@@ -266,7 +294,7 @@ impl Element {
                             limit,
                             offset,
                         })
-                    },
+                    }
                     Err(Error::PathKeyNotFound(_)) => Ok(()),
                     Err(e) => Err(e),
                 }
@@ -287,7 +315,7 @@ impl Element {
                         raw_decode(iter.value().expect("if key exists then value should too"))?;
                     let key = iter.key().expect("key should exist");
                     let (subquery_key, subquery) =
-                            Self::subquery_paths_for_sized_query(sized_query, key);
+                        Self::subquery_paths_for_sized_query(sized_query, key);
                     add_element_function(PathQueryPushArgs {
                         storage,
                         transaction,
@@ -421,15 +449,25 @@ impl Element {
         merk: &'ctx mut Merk<S>,
         key: K,
     ) -> Result<(), Error> {
-        let batch_operations =
-            [(
-                key,
-                Op::Put(bincode::serialize(self).map_err(|_| {
-                    Error::CorruptedData(String::from("unable to serialize element"))
-                })?),
-            )];
+        let batch_operations = [(key, Op::Put(self.serialize()?))];
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    pub fn serialize(&self) -> Result<Vec<u8>, Error> {
+        bincode::DefaultOptions::default()
+            .with_varint_encoding()
+            .reject_trailing_bytes()
+            .serialize(self)
+            .map_err(|_| Error::CorruptedData(String::from("unable to serialize element")))
+    }
+
+    pub fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
+        bincode::DefaultOptions::default()
+            .with_varint_encoding()
+            .reject_trailing_bytes()
+            .deserialize(bytes)
+            .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
     }
 
     pub fn iterator<I: RawIterator>(mut raw_iter: I) -> ElementsIterator<I> {
@@ -444,8 +482,7 @@ pub struct ElementsIterator<I: RawIterator> {
 
 pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
     let tree = Tree::decode_raw(bytes).map_err(|e| Error::CorruptedData(e.to_string()))?;
-    let element: Element = bincode::deserialize(tree.value())
-        .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
+    let element: Element = Element::deserialize(tree.value())?;
     Ok(element)
 }
 
@@ -472,6 +509,7 @@ impl<I: RawIterator> ElementsIterator<I> {
 
 #[cfg(test)]
 mod tests {
+    use bincode::Options;
     use merk::test_utils::TempMerk;
     use storage::Storage;
 
@@ -492,6 +530,35 @@ mod tests {
             Element::get(&merk, b"another-key").expect("expected successful get"),
             Element::Item(b"value".to_vec()),
         );
+    }
+
+    #[test]
+    fn test_serialization() {
+        let empty_tree = Element::empty_tree();
+        let serialized = empty_tree.serialize().expect("expected to serialize");
+        assert_eq!(serialized.len(), 33);
+        // The tree is fixed length 32 bytes, so it's enum 2 then 32 bytes of zeroes
+        assert_eq!(
+            hex::encode(serialized),
+            "020000000000000000000000000000000000000000000000000000000000000000"
+        );
+
+        let item = Element::Item(hex::decode("abcdef").expect("expected to decode"));
+        let serialized = item.serialize().expect("expected to serialize");
+        assert_eq!(serialized.len(), 5);
+        // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
+        assert_eq!(hex::encode(serialized), "0003abcdef");
+
+        let reference = Element::Reference(vec![
+            vec![0],
+            hex::decode("abcd").expect("expected to decode"),
+            vec![5],
+        ]);
+        let serialized = reference.serialize().expect("expected to serialize");
+        assert_eq!(serialized.len(), 9);
+        // The item is variable length 2 bytes, so it's enum 1 then 1 byte for length,
+        // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
+        assert_eq!(hex::encode(serialized), "0103010002abcd0105");
     }
 
     #[test]
