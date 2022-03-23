@@ -49,6 +49,10 @@ impl Query {
         self.items.iter()
     }
 
+    pub fn range(&self) -> std::collections::btree_set::Range<'_, QueryItem> {
+        self.items.range(..)
+    }
+
     pub fn rev_iter(&self) -> impl Iterator<Item = &QueryItem> {
         self.items.iter().rev()
     }
@@ -1025,9 +1029,20 @@ pub fn verify_query(
     left_to_right: bool,
     expected_hash: Hash,
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    pub fn get_query_iter(
+        query: &Query,
+        left_to_right: bool,
+    ) -> Box<dyn Iterator<Item = &QueryItem> + '_> {
+        if left_to_right {
+            Box::new(query.iter())
+        } else {
+            Box::new(query.rev_iter())
+        }
+    }
+
     let mut output = Vec::with_capacity(query.len());
     let mut last_push = None;
-    let mut query = query.iter().peekable();
+    let mut query = get_query_iter(query, left_to_right).peekable();
     let mut in_range = false;
     let mut current_limit = limit;
     let mut current_offset = offset;
@@ -1040,60 +1055,118 @@ pub fn verify_query(
                 // get next item in query
                 let query_item = *item;
                 let (lower_bound, start_non_inclusive) = query_item.lower_bound();
+                let (upper_bound, end_inclusive) = query_item.upper_bound();
 
-                // we have not reached next queried part of tree
-                if *query_item > key.as_slice() {
-                    // continue to next push
-                    break;
-                } else if start_non_inclusive
-                    && lower_bound.is_some()
-                    && lower_bound.unwrap() == key.as_slice()
-                {
-                    // we intersect with the query_item but at the start which is non inclusive
-                    // continue to the next push
-                    break;
+                if left_to_right {
+                    // we have not reached next queried part of tree
+                    if *query_item > key.as_slice() {
+                        // continue to next push
+                        break;
+                    } else if start_non_inclusive
+                        && lower_bound.is_some()
+                        && lower_bound.unwrap() == key.as_slice()
+                    {
+                        // we intersect with the query_item but at the start which is non inclusive
+                        // continue to the next push
+                        break;
+                    }
+                } else {
+                    if *query_item < key.as_slice() {
+                        // continue to next push
+                        break;
+                    } else if !end_inclusive
+                        && upper_bound.is_some()
+                        && upper_bound.unwrap() == key.as_slice()
+                    {
+                        // we intersect with the query_item but at the end which is non inclusive
+                        // continue to the next push
+                        break;
+                    }
                 }
 
                 if !in_range {
-                    // this is the first data we have encountered for this query
-                    // item. ensure lower bound of query item is proven
-                    match last_push {
-                        // lower bound is proven - we have an exact match
-                        // ignoring the case when the lower bound is unbounded
-                        // as it's not possible the get an exact key match for
-                        // an unbounded value
-                        _ if Some(key.as_slice()) == query_item.lower_bound().0 => {}
+                    // this is the first data we have encountered for this query item
+                    if left_to_right {
+                        // ensure lower bound of query item is proven
+                        match last_push {
+                            // lower bound is proven - we have an exact match
+                            // ignoring the case when the lower bound is unbounded
+                            // as it's not possible the get an exact key match for
+                            // an unbounded value
+                            _ if Some(key.as_slice()) == query_item.lower_bound().0 => {}
 
-                        // lower bound is proven - this is the leftmost node
-                        // in the tree
-                        None => {}
+                            // lower bound is proven - this is the leftmost node
+                            // in the tree
+                            None => {}
 
-                        // lower bound is proven - the preceding tree node
-                        // is lower than the bound
-                        Some(Node::KV(..)) => {}
-                        Some(Node::KVDigest(..)) => {}
+                            // lower bound is proven - the preceding tree node
+                            // is lower than the bound
+                            Some(Node::KV(..)) => {}
+                            Some(Node::KVDigest(..)) => {}
 
-                        // cannot verify lower bound - we have an abridged
-                        // tree so we cannot tell what the preceding key was
-                        Some(_) => {
-                            bail!("Cannot verify lower bound of queried range");
+                            // cannot verify lower bound - we have an abridged
+                            // tree so we cannot tell what the preceding key was
+                            Some(_) => {
+                                bail!("Cannot verify lower bound of queried range");
+                            }
+                        }
+                    } else {
+                        // ensure upper bound of query item is proven
+                        match last_push {
+                            // upper bound is proven - we have an exact match
+                            // ignoring the case when the upper bound is unbounded
+                            // as it's not possible the get an exact key match for
+                            // an unbounded value
+                            _ if Some(key.as_slice()) == query_item.upper_bound().0 => {}
+
+                            // lower bound is proven - this is the rightmost node
+                            // in the tree
+                            None => {}
+
+                            // upper bound is proven - the preceding tree node
+                            // is greater than the bound
+                            Some(Node::KV(..)) => {}
+                            Some(Node::KVDigest(..)) => {}
+
+                            // cannot verify upper bound - we have an abridged
+                            // tree so we cannot tell what the previous key was
+                            Some(_) => {
+                                bail!("Cannot verify upper bound of queried range");
+                            }
                         }
                     }
                 }
 
-                if query_item.upper_bound().0 != None
-                    && Some(key.as_slice()) >= query_item.upper_bound().0
-                {
-                    // at or past upper bound of range (or this was an exact
-                    // match on a single-key queryitem), advance to next query
-                    // item
-                    query.next();
-                    in_range = false;
+                if left_to_right {
+                    if query_item.upper_bound().0 != None
+                        && Some(key.as_slice()) >= query_item.upper_bound().0
+                    {
+                        // at or past upper bound of range (or this was an exact
+                        // match on a single-key queryitem), advance to next query
+                        // item
+                        query.next();
+                        in_range = false;
+                    } else {
+                        // have not reached upper bound, we expect more values
+                        // to be proven in the range (and all pushes should be
+                        // unabridged until we reach end of range)
+                        in_range = true;
+                    }
                 } else {
-                    // have not reached upper bound, we expect more values
-                    // to be proven in the range (and all pushes should be
-                    // unabridged until we reach end of range)
-                    in_range = true;
+                    if query_item.lower_bound().0 != None
+                        && Some(key.as_slice()) <= query_item.lower_bound().0
+                    {
+                        // at or before lower bound of range (or this was an exact
+                        // match on a single-key queryitem), advance to next query
+                        // item
+                        query.next();
+                        in_range = false;
+                    } else {
+                        // have not reached lower bound, we expect more values
+                        // to be proven in the range (and all pushes should be
+                        // unabridged until we reach end of range)
+                        in_range = true;
+                    }
                 }
 
                 // this push matches the queried item
@@ -3849,7 +3922,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let queryitems = vec![QueryItem::RangeFrom(vec![3]..)];
-        let (proof, absence) = walker
+        let (proof, _) = walker
             .create_full_proof(queryitems.as_slice(), None, None, false)
             .expect("create_proof errored");
 
@@ -3897,11 +3970,11 @@ mod test {
         for item in queryitems {
             query.insert_item(item);
         }
-        let res = verify_query(bytes.as_slice(), &query, None, None, true, tree.hash()).unwrap();
+        let res = verify_query(bytes.as_slice(), &query, None, None, false, tree.hash()).unwrap();
         assert_eq!(
             res,
             vec![
-                (vec![8], vec![9]),
+                (vec![8], vec![8]),
                 (vec![7], vec![7]),
                 (vec![5], vec![5]),
                 (vec![4], vec![4]),
