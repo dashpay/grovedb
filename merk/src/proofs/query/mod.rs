@@ -750,6 +750,8 @@ where
     /// containing the generated proof operators, and a tuple representing if
     /// any keys were queried were less than the left edge or greater than the
     /// right edge, respectively.
+    ///
+    /// TODO: Generalize logic and get code to better represent logic
     #[cfg(feature = "full")]
     pub(crate) fn create_proof(
         &mut self,
@@ -820,10 +822,11 @@ where
             }
         }
 
+        let proof_direction = left_to_right; // signifies what direction the DFS should go
         let (mut proof, left_absence, mut new_limit, mut new_offset) = if left_to_right {
-            self.create_child_proof(left_to_right, left_items, limit, offset, left_to_right)?
+            self.create_child_proof(proof_direction, left_items, limit, offset, left_to_right)?
         } else {
-            self.create_child_proof(left_to_right, right_items, limit, offset, left_to_right)?
+            self.create_child_proof(proof_direction, right_items, limit, offset, left_to_right)?
         };
 
         if let Some(current_offset) = new_offset {
@@ -863,9 +866,10 @@ where
             }
         }
 
+        let proof_direction = !proof_direction; // search the opposite path on second pass
         let (mut right_proof, right_absence, new_limit, new_offset) = if left_to_right {
             self.create_child_proof(
-                !left_to_right,
+                proof_direction,
                 right_items,
                 new_limit,
                 new_offset,
@@ -873,7 +877,7 @@ where
             )?
         } else {
             self.create_child_proof(
-                !left_to_right,
+                proof_direction,
                 left_items,
                 new_limit,
                 new_offset,
