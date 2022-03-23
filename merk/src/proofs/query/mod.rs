@@ -2535,6 +2535,8 @@ mod test {
             .create_full_proof(queryitems.as_slice(), None, None, false)
             .expect("create_proof errored");
 
+        assert_eq!(absence, (true, false));
+
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
@@ -2554,6 +2556,8 @@ mod test {
         let (proof, absence) = walker
             .create_full_proof(queryitems.as_slice(), Some(2), Some(1), false)
             .expect("create_proof errored");
+
+        assert_eq!(absence, (true, false));
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
@@ -2804,6 +2808,8 @@ mod test {
             .create_full_proof(queryitems.as_slice(), None, None, false)
             .expect("create_proof errored");
 
+        assert_eq!(absence, (false, true));
+
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
@@ -2828,6 +2834,8 @@ mod test {
         let (proof, absence) = walker
             .create_full_proof(queryitems.as_slice(), Some(2), None, false)
             .expect("create_proof errored");
+
+        assert_eq!(absence, (false, false));
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
@@ -3071,6 +3079,8 @@ mod test {
             .create_full_proof(queryitems.as_slice(), None, None, false)
             .expect("create_proof errored");
 
+        assert_eq!(absence, (false, true));
+
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
@@ -3095,6 +3105,8 @@ mod test {
         let (proof, absence) = walker
             .create_full_proof(queryitems.as_slice(), Some(1), Some(1), false)
             .expect("create_proof errored");
+
+        assert_eq!(absence, (false, false));
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
@@ -3345,6 +3357,8 @@ mod test {
             .create_full_proof(queryitems.as_slice(), None, None, false)
             .expect("create_proof errored");
 
+        assert_eq!(absence, (true, false));
+
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
@@ -3369,6 +3383,8 @@ mod test {
         let (proof, absence) = walker
             .create_full_proof(queryitems.as_slice(), Some(3), None, false)
             .expect("create_proof errored");
+
+        assert_eq!(absence, (true, false));
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
@@ -3614,6 +3630,8 @@ mod test {
             .create_full_proof(queryitems.as_slice(), None, None, false)
             .expect("create_proof errored");
 
+        assert_eq!(absence, (false, false));
+
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
@@ -3630,6 +3648,8 @@ mod test {
         let (proof, absence) = walker
             .create_full_proof(queryitems.as_slice(), Some(300), Some(1), false)
             .expect("create_proof errored");
+
+        assert_eq!(absence, (false, false));
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
@@ -3876,6 +3896,8 @@ mod test {
             .create_full_proof(queryitems.as_slice(), None, None, false)
             .expect("create_proof errored");
 
+        assert_eq!(absence, (false, false));
+
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
@@ -4113,6 +4135,8 @@ mod test {
             .create_full_proof(queryitems.as_slice(), None, None, false)
             .expect("create_proof errored");
 
+        assert_eq!(absence, (true, true));
+
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
         let mut query = Query::new();
@@ -4139,6 +4163,8 @@ mod test {
         let (proof, absence) = walker
             .create_full_proof(queryitems.as_slice(), Some(2), Some(2), false)
             .expect("create_proof errored");
+
+        assert_eq!(absence, (true, false));
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
