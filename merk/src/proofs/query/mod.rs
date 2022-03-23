@@ -49,10 +49,6 @@ impl Query {
         self.items.iter()
     }
 
-    pub fn range(&self) -> std::collections::btree_set::Range<'_, QueryItem> {
-        self.items.range(..)
-    }
-
     pub fn rev_iter(&self) -> impl Iterator<Item = &QueryItem> {
         self.items.iter().rev()
     }
@@ -904,7 +900,6 @@ where
                 }
             }
             Err(_) => {
-                // TODO: Verify that this logic is correct for right_to_left proofs
                 if left_absence.1 || right_absence.0 {
                     if left_to_right {
                         Op::Push(self.to_kvdigest_node())
@@ -937,13 +932,6 @@ where
                 proof.push_back(Op::ChildInverted);
             }
         }
-
-        // TODO: Figure out the implication of absence to right_left
-        // let absence = if left_to_right {
-        //     (left_absence.0, right_absence.1)
-        // } else {
-        //     (right_absence.1, left_absence.0)
-        // };
 
         Ok((
             proof,
@@ -3922,7 +3910,7 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let queryitems = vec![QueryItem::RangeFrom(vec![3]..)];
-        let (proof, _) = walker
+        let (proof, absence) = walker
             .create_full_proof(queryitems.as_slice(), None, None, false)
             .expect("create_proof errored");
 
@@ -3961,8 +3949,7 @@ mod test {
         assert_eq!(iter.next(), Some(&Op::ChildInverted));
         assert_eq!(iter.next(), None);
 
-        // TODO: Fix this
-        // assert_eq!(absence, (false, true));
+        assert_eq!(absence, (true, false));
 
         let mut bytes = vec![];
         encode_into(proof.iter(), &mut bytes);
