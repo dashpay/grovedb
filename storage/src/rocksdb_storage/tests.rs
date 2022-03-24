@@ -745,3 +745,190 @@ mod transaction {
         }
     }
 }
+
+mod batch_no_transaction {
+    use super::*;
+    use crate::{Batch, Storage, StorageBatch, StorageContext};
+
+    #[test]
+    fn test_various_cf_methods() {
+        let storage = TempStorage::new();
+        let batch = StorageBatch::new();
+        let context_ayya = storage.get_batch_storage_context(to_path(b"ayya"), &batch);
+        let context_ayyb = storage.get_batch_storage_context(to_path(b"ayyb"), &batch);
+
+        context_ayya
+            .put_aux(b"key1", b"ayyavalue1")
+            .expect("cannot insert into aux cf");
+        context_ayya
+            .put_meta(b"key2", b"ayyavalue2")
+            .expect("cannot insert into meta cf");
+        context_ayya
+            .put_root(b"key3", b"ayyavalue3")
+            .expect("cannot insert into roots cf");
+        context_ayya
+            .put(b"key4", b"ayyavalue4")
+            .expect("cannot insert data");
+        context_ayyb
+            .put_aux(b"key1", b"ayybvalue1")
+            .expect("cannot insert into aux cf");
+        context_ayyb
+            .put_meta(b"key2", b"ayybvalue2")
+            .expect("cannot insert into meta cf");
+        context_ayyb
+            .put_root(b"key3", b"ayybvalue3")
+            .expect("cannot insert into roots cf");
+        context_ayyb
+            .put(b"key4", b"ayybvalue4")
+            .expect("cannot insert data");
+
+        // There is no "staging" data for batch contexts: `get` will access only
+        // pre-batch data (thus `None` until commit).
+        assert!(context_ayya
+            .get_aux(b"key1")
+            .expect("cannot get from aux cf")
+            .is_none());
+
+        assert_eq!(batch.len(), 8);
+
+        storage
+            .commit_multi_context_batch(batch)
+            .expect("cannot commit batch");
+
+        let context_ayya = storage.get_storage_context(to_path(b"ayya"));
+        let context_ayyb = storage.get_storage_context(to_path(b"ayyb"));
+
+        assert_eq!(
+            context_ayya
+                .get_aux(b"key1")
+                .ok()
+                .flatten()
+                .expect("cannot get from aux cf"),
+            b"ayyavalue1",
+        );
+        assert_eq!(
+            context_ayya
+                .get_meta(b"key2")
+                .ok()
+                .flatten()
+                .expect("cannot get from meta cf"),
+            b"ayyavalue2",
+        );
+        assert_eq!(
+            context_ayya
+                .get_root(b"key3")
+                .ok()
+                .flatten()
+                .expect("cannot get from roots cf"),
+            b"ayyavalue3",
+        );
+        assert_eq!(
+            context_ayya
+                .get(b"key4")
+                .ok()
+                .flatten()
+                .expect("cannot get data"),
+            b"ayyavalue4",
+        );
+
+        assert_eq!(
+            context_ayyb
+                .get_aux(b"key1")
+                .ok()
+                .flatten()
+                .expect("cannot get from aux cf"),
+            b"ayybvalue1",
+        );
+        assert_eq!(
+            context_ayyb
+                .get_meta(b"key2")
+                .ok()
+                .flatten()
+                .expect("cannot get from meta cf"),
+            b"ayybvalue2",
+        );
+        assert_eq!(
+            context_ayyb
+                .get_root(b"key3")
+                .ok()
+                .flatten()
+                .expect("cannot get from roots cf"),
+            b"ayybvalue3",
+        );
+        assert_eq!(
+            context_ayyb
+                .get(b"key4")
+                .ok()
+                .flatten()
+                .expect("cannot get data"),
+            b"ayybvalue4",
+        );
+    }
+
+    #[test]
+    fn test_with_db_batches() {
+        let storage = TempStorage::new();
+        let batch = StorageBatch::new();
+        let context_ayya = storage.get_batch_storage_context(to_path(b"ayya"), &batch);
+        let context_ayyb = storage.get_batch_storage_context(to_path(b"ayyb"), &batch);
+
+        context_ayya
+            .put(b"key1", b"ayyavalue1")
+            .expect("cannot insert data");
+        let mut db_batch_ayya = context_ayya.new_batch();
+        db_batch_ayya
+            .put(b"key2", b"ayyavalue2")
+            .expect("cannot push into db batch");
+        db_batch_ayya
+            .put(b"key3", b"ayyavalue3")
+            .expect("cannot push into db batch");
+
+        context_ayyb
+            .put(b"key1", b"ayybvalue1")
+            .expect("cannot insert data");
+        let mut db_batch_ayyb = context_ayyb.new_batch();
+        db_batch_ayyb
+            .put(b"key2", b"ayybvalue2")
+            .expect("cannot push into db batch");
+        db_batch_ayyb
+            .put(b"key3", b"ayybvalue3")
+            .expect("cannot push into db batch");
+
+        // DB batches are not commited yet
+        assert_eq!(batch.len(), 2);
+
+        context_ayya
+            .commit_batch(db_batch_ayya)
+            .expect("cannot commit db batch");
+        context_ayyb
+            .commit_batch(db_batch_ayyb)
+            .expect("cannot commit db batch");
+
+        assert_eq!(batch.len(), 6);
+
+        assert!(context_ayya
+            .get(b"key1")
+            .expect("cannot get data")
+            .is_none());
+        assert!(context_ayya
+            .get(b"key3")
+            .expect("cannot get data")
+            .is_none());
+
+        storage
+            .commit_multi_context_batch(batch)
+            .expect("cannot commit multi context batch");
+
+        let context_ayya = storage.get_storage_context(to_path(b"ayya"));
+        assert_eq!(
+            context_ayya
+                .get(b"key3")
+                .ok()
+                .flatten()
+                .expect("cannot get data"),
+            b"ayyavalue3"
+        );
+    }
+}
+
+mod batch_transaction {}

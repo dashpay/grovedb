@@ -1,9 +1,9 @@
 //! Storage context implementation with a transaction.
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error};
 
-use super::{make_prefixed_key, Db, PrefixedRocksDbRawIterator, Tx};
+use super::{make_prefixed_key, PrefixedRocksDbRawIterator};
 use crate::{
-    rocksdb_storage::storage::{AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
+    rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
     StorageContext,
 };
 

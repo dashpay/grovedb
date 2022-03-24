@@ -1,15 +1,19 @@
+//! Useful utilities for testing.
+
 use std::{cell::Cell, ops::Deref};
 
 use tempfile::TempDir;
 
 use super::*;
 
+/// RocksDb storage with self-cleanup
 pub struct TempStorage {
     dir: Cell<TempDir>,
     storage: RocksDbStorage,
 }
 
 impl TempStorage {
+    /// Create new `TempStorage`
     pub fn new() -> Self {
         let dir = TempDir::new().expect("cannot create tempir");
         let storage = RocksDbStorage::default_rocksdb_with_path(dir.path())
@@ -20,6 +24,7 @@ impl TempStorage {
         }
     }
 
+    /// Simulate storage crash
     pub fn crash(&self) {
         drop(
             self.dir
