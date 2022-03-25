@@ -14,7 +14,7 @@ use std::cmp::max;
 
 use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
-use ed::{Decode, Encode};
+use ed::{Decode, Encode, Terminated};
 pub use hash::{kv_digest_to_kv_hash, kv_hash, node_hash, Hash, HASH_LENGTH, NULL_HASH};
 use kv::KV;
 pub use link::Link;
@@ -33,6 +33,8 @@ struct TreeInner {
     right: Option<Link>,
     kv: KV,
 }
+
+impl Terminated for Box<TreeInner> {}
 
 /// A binary AVL tree data structure, with Merkle hashes.
 ///
