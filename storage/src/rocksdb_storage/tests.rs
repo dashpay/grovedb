@@ -931,4 +931,120 @@ mod batch_no_transaction {
     }
 }
 
-mod batch_transaction {}
+mod batch_transaction {
+    use super::*;
+    use crate::{Batch, Storage, StorageBatch, StorageContext};
+
+    #[test]
+    fn test_transaction_properties() {
+        let storage = TempStorage::new();
+        let transaction = storage.start_transaction();
+
+        let context_ayya = storage.get_storage_context(to_path(b"ayya"));
+        let context_ayyb = storage.get_storage_context(to_path(b"ayyb"));
+        let context_ayya_tx =
+            storage.get_transactional_storage_context(to_path(b"ayya"), &transaction);
+        let context_ayyb_tx =
+            storage.get_transactional_storage_context(to_path(b"ayyb"), &transaction);
+
+        // Data should be visible in transaction...
+        context_ayya_tx
+            .put(b"key1", b"ayyavalue1")
+            .expect("cannot insert data");
+        context_ayyb_tx
+            .put(b"key1", b"ayybvalue1")
+            .expect("cannot insert data");
+
+        assert_eq!(
+            context_ayya_tx
+                .get(b"key1")
+                .ok()
+                .flatten()
+                .expect("cannot get data"),
+            b"ayyavalue1"
+        );
+        assert_eq!(
+            context_ayyb_tx
+                .get(b"key1")
+                .ok()
+                .flatten()
+                .expect("cannot get data"),
+            b"ayybvalue1"
+        );
+
+        // ...but not outside of it
+        assert!(context_ayya
+            .get(b"key1")
+            .expect("cannot get data")
+            .is_none());
+        assert!(context_ayyb
+            .get(b"key1")
+            .expect("cannot get data")
+            .is_none());
+
+        // Batches data won't be visible either in transaction and outside of it until
+        // batch is commited
+
+        let batch = StorageBatch::new();
+        let context_ayya_batch =
+            storage.get_batch_transactional_storage_context(to_path(b"ayya"), &batch, &transaction);
+        let context_ayyb_batch =
+            storage.get_batch_transactional_storage_context(to_path(b"ayyb"), &batch, &transaction);
+        context_ayya_batch
+            .put_aux(b"key2", b"ayyavalue2")
+            .expect("cannot put aux data into batch");
+        context_ayyb_batch
+            .put_aux(b"key2", b"ayybvalue2")
+            .expect("cannot put aux data into batch");
+
+        assert_eq!(batch.len(), 2);
+
+        assert!(context_ayya_tx
+            .get_aux(b"key2")
+            .expect("cannot get data")
+            .is_none());
+        assert!(context_ayyb_tx
+            .get_aux(b"key2")
+            .expect("cannot get data")
+            .is_none());
+        assert!(context_ayya
+            .get_aux(b"key2")
+            .expect("cannot get data")
+            .is_none());
+        assert!(context_ayyb
+            .get_aux(b"key2")
+            .expect("cannot get data")
+            .is_none());
+
+        storage
+            .commit_multi_context_batch_with_transaction(batch, &transaction)
+            .expect("cannot commit batch");
+
+        // Commited batch data is accessible in transaction but not outside
+        assert_eq!(
+            context_ayya_tx
+                .get_aux(b"key2")
+                .ok()
+                .flatten()
+                .expect("cannot get data"),
+            b"ayyavalue2"
+        );
+
+        assert!(context_ayya
+            .get_aux(b"key2")
+            .expect("cannot get data")
+            .is_none());
+
+        storage
+            .commit_transaction(transaction)
+            .expect("cannot commit transaction");
+        assert_eq!(
+            context_ayya
+                .get_aux(b"key2")
+                .ok()
+                .flatten()
+                .expect("cannot get data"),
+            b"ayyavalue2"
+        );
+    }
+}

@@ -149,7 +149,8 @@ impl<'db> Storage<'db> for RocksDbStorage {
     where
         P: IntoIterator<Item = &'p [u8]>,
     {
-        todo!()
+        let prefix = Self::build_prefix(path);
+        PrefixedRocksDbBatchTransactionContext::new(&self.db, transaction, prefix, batch)
     }
 
     fn commit_multi_context_batch(&self, batch: StorageBatch) -> Result<(), Self::Error> {
@@ -184,6 +185,50 @@ impl<'db> Storage<'db> for RocksDbStorage {
         }
         self.db.write(db_batch)?;
         Ok(())
+    }
+
+    fn commit_multi_context_batch_with_transaction(
+        &self,
+        batch: StorageBatch,
+        transaction: &'db Self::Transaction,
+    ) -> Result<(), Self::Error> {
+        transaction.set_savepoint();
+        let batch_result: Result<(), Self::Error> = batch
+            .into_iter()
+            .map(|op| {
+                match op {
+                    BatchOperation::Put { key, value } => {
+                        transaction.put(key, value)?;
+                    }
+                    BatchOperation::PutAux { key, value } => {
+                        transaction.put_cf(cf_aux(&self.db), key, value)?;
+                    }
+                    BatchOperation::PutRoot { key, value } => {
+                        transaction.put_cf(cf_roots(&self.db), key, value)?;
+                    }
+                    BatchOperation::PutMeta { key, value } => {
+                        transaction.put_cf(cf_meta(&self.db), key, value)?;
+                    }
+                    BatchOperation::Delete { key } => {
+                        transaction.delete(key)?;
+                    }
+                    BatchOperation::DeleteAux { key } => {
+                        transaction.delete_cf(cf_aux(&self.db), key)?;
+                    }
+                    BatchOperation::DeleteRoot { key } => {
+                        transaction.delete_cf(cf_roots(&self.db), key)?;
+                    }
+                    BatchOperation::DeleteMeta { key } => {
+                        transaction.delete_cf(cf_meta(&self.db), key)?;
+                    }
+                }
+                Ok(())
+            })
+            .collect();
+        if batch_result.is_err() {
+            transaction.rollback_to_savepoint()?;
+        }
+        batch_result
     }
 }
 

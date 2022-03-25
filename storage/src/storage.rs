@@ -42,6 +42,13 @@ pub trait Storage<'db> {
     /// Consumes and applies multi-context batch.
     fn commit_multi_context_batch(&self, batch: StorageBatch) -> Result<(), Self::Error>;
 
+    /// Consumes and applies multi-context batch on transaction.
+    fn commit_multi_context_batch_with_transaction(
+        &self,
+        batch: StorageBatch,
+        transaction: &'db Self::Transaction,
+    ) -> Result<(), Self::Error>;
+
     /// Forces data to be written
     fn flush(&self) -> Result<(), Self::Error>;
 
