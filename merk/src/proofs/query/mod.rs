@@ -1070,6 +1070,12 @@ pub fn execute_proof(bytes: &[u8]) -> Result<(MerkHash, Map)> {
     Ok((root.hash(), map_builder.build()))
 }
 
+pub struct ProofVerificationResult {
+    result_set: Vec<(Vec<u8>, Vec<u8>)>,
+    limit: Option<u16>,
+    offset: Option<u16>,
+}
+
 /// Verifies the encoded proof with the given query and expected hash.
 ///
 /// Every key in `keys` is checked to either have a key/value pair in the proof,
@@ -1088,7 +1094,7 @@ pub fn verify_query(
     offset: Option<u16>,
     left_to_right: bool,
     expected_hash: MerkHash,
-) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+) -> Result<ProofVerificationResult> {
     pub fn get_query_iter(
         query: &Query,
         left_to_right: bool,
@@ -1310,7 +1316,11 @@ pub fn verify_query(
         );
     }
 
-    Ok(output)
+    Ok(ProofVerificationResult {
+        result_set: output,
+        limit: current_limit,
+        offset: current_offset,
+    })
 }
 
 #[allow(deprecated)]
