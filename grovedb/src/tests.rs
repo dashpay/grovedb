@@ -253,6 +253,20 @@ fn test_root_tree_leafs_are_noted() {
     assert_eq!(db.get_root_tree(None).unwrap().leaves_len(), 2);
 }
 
+#[test]
+fn play_with_proofs() {
+    let mut temp_db = make_grovedb();
+
+    let mut query = Query::new();
+    query.insert_key(b"key1".to_vec());
+
+    // temp_db.proof(PathQuery{
+    //     path: vec![TEST_LEAF.to_vec()],
+    //     query,
+    // });
+    temp_db.proof(PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query));
+}
+
 // #[test]
 // fn test_proof_construction() {
 //     // Tree Structure
