@@ -1,6 +1,11 @@
 use std::env::split_paths;
 
-use crate::{util::merk_optional_tx, Element, Error, GroveDb, PathQuery, Query};
+use crate::{
+    util::{merk_optional_tx, meta_storage_context_optional_tx},
+    Element, Error,
+    Error::InvalidPath,
+    GroveDb, PathQuery, Query,
+};
 
 impl GroveDb {
     pub fn prove(&self, query: PathQuery) -> Result<Vec<u8>, Error> {
@@ -29,6 +34,26 @@ impl GroveDb {
         while let Some((key, path_slice)) = split_path {
             if path_slice.is_empty() {
                 dbg!("gotten to root");
+                // generate the root proof
+                // rs-merkle stores the root keys as indexes
+                // grovedb has a way to convert from readable names to those indexes
+                // the goal here is to take the key value and convert it to the correct index
+                // insert it into a vector, then use the vector to generate a root proof
+                meta_storage_context_optional_tx!(self.db, None, meta_storage, {
+                    // TODO: is this correct
+                    // if we cannot get the root_left_keys then something is wrong should propagate
+                    let root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;
+                    let mut root_index: Vec<usize> = vec![];
+                    match root_leaf_keys.get(&key.to_vec()) {
+                        Some(index) => root_index.push(*index),
+                        // technically, this should not be possible as the path should
+                        // have caught this already
+                        None => return Err(InvalidPath("invalid root key")),
+                    }
+                    let root_tree = self.get_root_tree(None).expect("should get root tree");
+                    let root_proof = root_tree.proof(&root_index).to_bytes();
+                    dbg!(root_proof);
+                })
             } else {
                 let path_slices = path_slice.iter().map(|x| *x).collect::<Vec<_>>();
 
