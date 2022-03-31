@@ -1303,9 +1303,9 @@ pub fn execute_proof(
 
 #[derive(PartialEq, Debug)]
 pub struct ProofVerificationResult {
-    result_set: Vec<(Vec<u8>, Vec<u8>)>,
-    limit: Option<u16>,
-    offset: Option<u16>,
+    pub result_set: Vec<(Vec<u8>, Vec<u8>)>,
+    pub limit: Option<u16>,
+    pub offset: Option<u16>,
 }
 
 /// Verifies the encoded proof with the given query and expected hash
