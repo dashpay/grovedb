@@ -1,10 +1,6 @@
-use std::{
-    env::split_paths,
-    io::{Read, Write},
-};
+use std::io::{Read, Write};
 
 use rs_merkle::{algorithms::Sha256, MerkleProof};
-use storage::{RawIterator, StorageContext};
 
 use crate::{
     util::{merk_optional_tx, meta_storage_context_optional_tx},
@@ -60,7 +56,7 @@ impl GroveDb {
                     write_to_vec(&mut proof_result, &root_proof);
 
                     // add the index values required to prove the root
-                    let mut root_index_bytes = root_index
+                    let root_index_bytes = root_index
                         .into_iter()
                         .map(|index| index as u8)
                         .collect::<Vec<u8>>();
@@ -152,7 +148,7 @@ impl GroveDb {
         let root_proof = proof_reader.read_proof(ROOT_PROOF)?;
 
         let root_meta_data = proof_reader.read_to_end();
-        let mut root_index_usize = root_meta_data
+        let root_index_usize = root_meta_data
             .into_iter()
             .map(|index| index as usize)
             .collect::<Vec<usize>>();

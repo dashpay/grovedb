@@ -269,7 +269,7 @@ fn test_path_query_proofs_without_subquery() {
     //             k4,v4
 
     // Insert elements into grovedb instance
-    let mut temp_db = make_grovedb();
+    let temp_db = make_grovedb();
     // Insert level 1 nodes
     temp_db
         .insert([TEST_LEAF], b"innertree", Element::empty_tree(), None)
@@ -338,7 +338,7 @@ fn test_path_query_proofs_without_subquery() {
 
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
 
-    let mut proof = temp_db.prove(path_query.clone()).unwrap();
+    let proof = temp_db.prove(path_query.clone()).unwrap();
     let (hash, result_set) =
         GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
 
@@ -354,7 +354,7 @@ fn test_path_query_proofs_without_subquery() {
         SizedQuery::new(query, Some(1), None),
     );
 
-    let mut proof = temp_db.prove(path_query.clone()).unwrap();
+    let proof = temp_db.prove(path_query.clone()).unwrap();
     let (hash, result_set) =
         GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
 
@@ -370,7 +370,7 @@ fn test_path_query_proofs_without_subquery() {
         SizedQuery::new(query, Some(1), Some(1)),
     );
 
-    let mut proof = temp_db.prove(path_query.clone()).unwrap();
+    let proof = temp_db.prove(path_query.clone()).unwrap();
     let (hash, result_set) =
         GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
 
