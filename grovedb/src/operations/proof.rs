@@ -2,6 +2,9 @@ use std::{
     env::split_paths,
     io::{Read, Write},
 };
+use rs_merkle::algorithms::Sha256;
+use rs_merkle::MerkleProof;
+use storage::{RawIterator, StorageContext};
 
 use crate::{
     util::{merk_optional_tx, meta_storage_context_optional_tx},
@@ -15,7 +18,6 @@ fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
 }
 
 impl GroveDb {
-    // TODO: Add left_to_right as a parameter
     pub fn prove(&self, query: PathQuery) -> Result<Vec<u8>, Error> {
         // A path query has a path and then a query
         // First we find the merk at the defined path
@@ -30,6 +32,7 @@ impl GroveDb {
         // Using type, length, value encoding
         // merk_path - 0x01
         // root-path - 0x02
+        // meta-data - 0x10
         // TODO: Remove this assumptions (length are represented with a single byte)
         // TODO: Transition to variable length encoding
         // length is represented by a single byte specifying how long the proof is
@@ -46,8 +49,14 @@ impl GroveDb {
 
         // Leaf node, we care about the result set of this
         merk_optional_tx!(self.db, path_slices.clone(), None, subtree, {
-            dbg!("MERK!!");
+            // let a = subtree.get(b"key1");
+            // dbg!(a);
+            // let b = subtree.get(b"key2");
+            // dbg!(b);
+            // panic!();
+            // dbg!("MERK!!");
             // TODO: Not allowed to create proof for an empty tree (handle this)
+            // dbg!(subtree.root_hash());
             let proof = subtree
                 .prove(query.query.query, None, None)
                 .expect("should generate proof");
@@ -62,15 +71,15 @@ impl GroveDb {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             if path_slice.is_empty() {
-                dbg!("ROOT");
-                dbg!("gotten to root");
+                // dbg!("ROOT");
+                // dbg!("gotten to root");
                 // generate the root proof
                 // rs-merkle stores the root keys as indexes
                 // grovedb has a way to convert from readable names to those indexes
                 // the goal here is to take the key value and convert it to the correct index
                 // insert it into a vector, then use the vector to generate a root proof
                 meta_storage_context_optional_tx!(self.db, None, meta_storage, {
-                    // TODO: is this correct
+                    // TODO: verify the correctness of this
                     // if we cannot get the root_left_keys then something is wrong should propagate
                     let root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;
                     let mut root_index: Vec<usize> = vec![];
@@ -87,9 +96,18 @@ impl GroveDb {
                     debug_assert!(root_proof.len() < 256);
                     write_to_vec(&mut proof_result, &vec![0x02, root_proof.len() as u8]);
                     write_to_vec(&mut proof_result, &root_proof);
+
+                    // add the root proof to output vec
+                    let mut root_index_bytes = root_index.into_iter().map(|index| {
+                      index as u8
+                    }).collect::<Vec<u8>>();
+
+                    // TODO: Save an extra byte?
+                    // write_to_vec(&mut proof_result, &vec![0x10]);
+                    write_to_vec(&mut proof_result, &root_index_bytes);
                 })
             } else {
-                dbg!("MERK");
+                // dbg!("MERK");
                 let path_slices = path_slice.iter().map(|x| *x).collect::<Vec<_>>();
 
                 merk_optional_tx!(self.db, path_slices, None, subtree, {
@@ -141,24 +159,23 @@ impl GroveDb {
         proof.read(&mut length);
         let mut proof_data = vec![0; length[0] as usize];
         proof.read(&mut proof_data);
-        dbg!(&proof_data);
+        // dbg!(&proof_data);
 
         let (mut last_root_hash, result_set) =
             merk::execute_proof(&proof_data, &query.query.query, None, None, true)
                 .expect("should execute proof");
-        dbg!(last_root_hash);
+        // dbg!(last_root_hash);
 
         // Validate the path
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
-            if path_slice.is_empty() {
-                todo!()
-            } else {
+            // dbg!("in");
+            if !path_slice.is_empty() {
                 // more merk proofs
                 // TODO: remove duplication
                 let mut data_type = [0; 1];
                 proof.read(&mut data_type);
-                dbg!(&data_type);
+                // dbg!(&data_type);
 
                 if data_type != [0x01] {
                     return Err(Error::InvalidProof("proof invalid: not merk proof"));
@@ -175,7 +192,7 @@ impl GroveDb {
                 let proof_result = merk::execute_proof(&proof_data, &query, None, None, true)
                     .expect("should execute proof");
                 let result_set = proof_result.1.result_set;
-                dbg!(&result_set);
+                // dbg!(&result_set);
 
                 // Take the first tuple of the result set
                 // TODO: convert result_set to hash_map
@@ -193,13 +210,15 @@ impl GroveDb {
                         "intermidiate proofs should be for trees",
                     )),
                 }?;
-                dbg!(&child_hash);
+                // dbg!(&child_hash);
 
                 if child_hash != last_root_hash {
                     return Err(Error::InvalidProof("Bad path"));
                 }
 
                 last_root_hash = proof_result.0;
+            } else {
+                break;
             }
             split_path = path_slice.split_last();
         }
@@ -218,6 +237,43 @@ impl GroveDb {
         //     }
         // }
 
-        Err(Error::InvalidProof("proof invalid"))
+        // Verify the root proof
+        // read the root proof data
+        // read the meta data
+        // read the root data
+        let mut data_type = [0; 1];
+        proof.read(&mut data_type);
+        // dbg!(&data_type);
+
+        if data_type != [0x02] {
+            return Err(Error::InvalidProof("proof invalid: not root proof"));
+        }
+
+        let mut length = vec![0; 1];
+        proof.read(&mut length);
+        let mut root_proof = vec![0; length[0] as usize];
+        proof.read(&mut root_proof);
+        // dbg!(&root_proof);
+
+        // dbg!(&proof);
+        let mut root_meta_data = vec![];
+        proof.read_to_end(&mut root_meta_data);
+        let mut root_index_usize = root_meta_data.into_iter().map(|index| {
+            index as usize
+        }).collect::<Vec<usize>>();
+
+        // Get the root hash after verifying the root proof
+        let root_proof_terrible_name = match MerkleProof::<Sha256>::try_from(root_proof) {
+            Ok(proof) => Ok(proof),
+            Err(_) => Err(Error::InvalidProof("invalid proof element")),
+        }?;
+
+        let root_hash = match root_proof_terrible_name.root(&root_index_usize, &[last_root_hash], 2){
+            Ok(hash) => Ok(hash),
+            Err(_) => Err(Error::InvalidProof("Invalid proof element")),
+        }?;
+
+        Ok((root_hash, result_set.result_set))
+        // dgb!(root_hash);
     }
 }
