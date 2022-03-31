@@ -254,13 +254,14 @@ fn test_root_tree_leafs_are_noted() {
 }
 
 #[test]
-fn play_with_proofs() {
+fn test_path_query_proofs_without_subquery() {
     // Tree Structure
     // root
     //     test_leaf
     //         innertree
     //             k1,v1
     //             k2,v2
+    //             k3,v3
     //     another_test_leaf
     //         innertree2
     //             k3,v3
@@ -308,6 +309,14 @@ fn play_with_proofs() {
         .expect("successful subtree insert");
     temp_db
         .insert(
+            [TEST_LEAF, b"innertree"],
+            b"key3",
+            Element::Item(b"value3".to_vec()),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
             [ANOTHER_TEST_LEAF, b"innertree2"],
             b"key3",
             Element::Item(b"value3".to_vec()),
@@ -323,23 +332,71 @@ fn play_with_proofs() {
         )
         .expect("successful subtree insert");
 
+    // Single key query
     let mut query = Query::new();
-    query.insert_key(b"key2".to_vec());
     query.insert_key(b"key1".to_vec());
-    query.insert_key(b"key9".to_vec());
 
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
+
+    let mut proof = temp_db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
+
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    let r1 = Element::Item(b"value1".to_vec()).serialize().unwrap();
+    assert_eq!(result_set, vec![(b"key1".to_vec(), r1)]);
+
+    // Range query + limit
+    let mut query = Query::new();
+    query.insert_range_after(b"key1".to_vec()..);
+    let path_query = PathQuery::new(
+        vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
+        SizedQuery::new(query, Some(1), None),
+    );
+
+    let mut proof = temp_db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
+
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    let r1 = Element::Item(b"value2".to_vec()).serialize().unwrap();
+    assert_eq!(result_set, vec![(b"key2".to_vec(), r1)]);
+
+    // Range query + offset + limit
+    let mut query = Query::new();
+    query.insert_range_after(b"key1".to_vec()..);
     let path_query = PathQuery::new(
         vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
         SizedQuery::new(query, Some(1), Some(1)),
     );
 
     let mut proof = temp_db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
 
-    let (hash, result_set) = GroveDb::execute_proof(&mut proof.as_slice(), path_query.clone())
-        .expect("should execute proof");
-    dbg!(hash);
-    dbg!(temp_db.root_hash(None));
-    dbg!(result_set);
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    let r1 = Element::Item(b"value3".to_vec()).serialize().unwrap();
+    assert_eq!(result_set, vec![(b"key3".to_vec(), r1)]);
+
+    // Range query + direction + limit
+    let mut query = Query::new_with_direction(false);
+    query.insert_all();
+    let path_query = PathQuery::new(
+        vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
+        SizedQuery::new(query, Some(2), None),
+    );
+
+    let mut proof = temp_db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
+
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    let r1 = Element::Item(b"value3".to_vec()).serialize().unwrap();
+    let r2 = Element::Item(b"value2".to_vec()).serialize().unwrap();
+    assert_eq!(
+        result_set,
+        vec![(b"key3".to_vec(), r1), (b"key2".to_vec(), r2)]
+    );
 }
 
 // #[test]

@@ -91,7 +91,7 @@ impl GroveDb {
     }
 
     pub fn execute_proof(
-        mut proof: &[u8],
+        proof: &[u8],
         query: PathQuery,
     ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
