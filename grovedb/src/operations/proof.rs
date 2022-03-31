@@ -145,33 +145,32 @@ impl GroveDb {
     // how can we encapsulate this in a single function
     // read_proof, takes the type for validation
 
-    fn read_proof(mut proof_data: &[u8], expected_data_type: u8) -> Result<Vec<u8>, Error> {
-        let mut data_type = [0; 1];
-        proof_data.read(&mut data_type);
-
-        if data_type != [expected_data_type] {
-           return Err(Error::InvalidProof("wrong data_type"));
-        }
-
-        let mut length = vec![0; 1];
-        proof_data.read(&mut length);
-        let mut proof = vec![0; length[0] as usize];
-        proof_data.read(&mut proof);
-
-        Ok(proof)
-    }
+    // fn read_proof(mut proof_data: &[u8], expected_data_type: u8) ->
+    // Result<(Vec<u8>, &[u8]), Error> {     // proof data doesn't get mutated,
+    // why?
+    //
+    //     let mut data_type = [0; 1];
+    //     proof_data.read(&mut data_type);
+    //
+    //     if data_type != [expected_data_type] {
+    //        return Err(Error::InvalidProof("wrong data_type"));
+    //     }
+    //
+    //     let mut length = vec![0; 1];
+    //     proof_data.read(&mut length);
+    //     let mut proof = vec![0; length[0] as usize];
+    //     proof_data.read(&mut proof);
+    //     dbg!(proof_data.len());
+    //
+    //     Ok((proof, proof_data))
+    // }
 
     pub fn execute_proof(
         mut proof: &[u8],
         query: PathQuery,
     ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
-        // Path is composed of keys, need to split last and verify that the root hash
-        // of last merk is a value of parent merk at specified key
-
-        // let result_set;
-        // let mut last_root_hash;
-
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
+        let mut proof_reader = ProofReader::new(proof);
 
         // Sequence
         // Read type
@@ -179,47 +178,31 @@ impl GroveDb {
         // execute the proof, store the result set and the last hash
         // split the path, execute the next proof, verify that the
         // result set contains the root hash of the previous tree at that key
-        let mut data_type = [0; 1];
-        proof.read(&mut data_type);
-
-        let mut length = vec![0; 1];
-        proof.read(&mut length);
-        let mut proof_data = vec![0; length[0] as usize];
-        proof.read(&mut proof_data);
-        // dbg!(&proof_data);
+        // let (merk_proof, mut proof) = GroveDb::read_proof(&mut proof, MERK_PROOF)?;
+        let merk_proof = proof_reader.read_proof(MERK_PROOF)?;
+        dbg!(&merk_proof);
 
         let (mut last_root_hash, result_set) =
-            merk::execute_proof(&proof_data, &query.query.query, None, None, true)
+            merk::execute_proof(&merk_proof, &query.query.query, None, None, true)
                 .expect("should execute proof");
-        // dbg!(last_root_hash);
+        dbg!(&last_root_hash);
+        dbg!(&result_set);
 
         // Validate the path
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             // dbg!("in");
             if !path_slice.is_empty() {
-                // more merk proofs
-                // TODO: remove duplication
-                let mut data_type = [0; 1];
-                proof.read(&mut data_type);
-                // dbg!(&data_type);
-
-                if data_type != [MERK_PROOF] {
-                    return Err(Error::InvalidProof("proof invalid: not merk proof"));
-                }
-
-                let mut length = vec![0; 1];
-                proof.read(&mut length);
-                let mut proof_data = vec![0; length[0] as usize];
-                proof.read(&mut proof_data);
+                let merk_proof = proof_reader.read_proof(MERK_PROOF)?;
+                dbg!(&merk_proof);
 
                 let mut query = Query::new();
                 query.insert_key(key.to_vec());
 
-                let proof_result = merk::execute_proof(&proof_data, &query, None, None, true)
+                let proof_result = merk::execute_proof(&merk_proof, &query, None, None, true)
                     .expect("should execute proof");
                 let result_set = proof_result.1.result_set;
-                // dbg!(&result_set);
+                dbg!(&result_set);
 
                 // Take the first tuple of the result set
                 // TODO: convert result_set to hash_map
@@ -249,52 +232,25 @@ impl GroveDb {
             }
             split_path = path_slice.split_last();
         }
+        // panic!();
 
-        // match data_type {
-        //     [0x01] => {
-        //         dbg!("merk proof");
-        //         let mut length = vec![0; 1];
-        //         proof.read(&mut length);
-        //         let mut proof_data = vec![0; length[0] as usize];
-        //         proof.read(&mut proof_data);
-        //         dbg!(proof_data);
-        //     }
-        //     _ => {
-        //         dbg!("unknown");
-        //     }
-        // }
-
-        // Verify the root proof
-        // read the root proof data
-        // read the meta data
-        // read the root data
-        let mut data_type = [0; 1];
-        proof.read(&mut data_type);
-        // dbg!(&data_type);
-
-        if data_type != [ROOT_PROOF] {
-            return Err(Error::InvalidProof("proof invalid: not root proof"));
-        }
-
-        let mut length = vec![0; 1];
-        proof.read(&mut length);
-        let mut root_proof = vec![0; length[0] as usize];
-        proof.read(&mut root_proof);
-        // dbg!(&root_proof);
+        let root_proof = proof_reader.read_proof(ROOT_PROOF)?;
+        dbg!(&root_proof);
 
         // dbg!(&proof);
-        let mut root_meta_data = vec![];
-        proof.read_to_end(&mut root_meta_data);
+        let root_meta_data = proof_reader.read_to_end();
         let mut root_index_usize = root_meta_data
             .into_iter()
             .map(|index| index as usize)
             .collect::<Vec<usize>>();
+        // dbg!(&root_index_usize);
 
         // Get the root hash after verifying the root proof
         let root_proof_terrible_name = match MerkleProof::<Sha256>::try_from(root_proof) {
             Ok(proof) => Ok(proof),
             Err(_) => Err(Error::InvalidProof("invalid proof element")),
         }?;
+        // panic!();
 
         let root_hash = match root_proof_terrible_name.root(&root_index_usize, &[last_root_hash], 2)
         {
@@ -304,5 +260,37 @@ impl GroveDb {
 
         Ok((root_hash, result_set.result_set))
         // dgb!(root_hash);
+    }
+}
+
+struct ProofReader<'a> {
+    proof_data: &'a [u8],
+}
+
+impl<'a> ProofReader<'a> {
+    fn new(proof_data: &'a [u8]) -> Self {
+        Self { proof_data }
+    }
+
+    fn read_proof(&mut self, expected_data_type: u8) -> Result<Vec<u8>, Error> {
+        let mut data_type = [0; 1];
+        self.proof_data.read(&mut data_type);
+
+        if data_type != [expected_data_type] {
+            return Err(Error::InvalidProof("wrong data_type"));
+        }
+
+        let mut length = vec![0; 1];
+        self.proof_data.read(&mut length);
+        let mut proof = vec![0; length[0] as usize];
+        self.proof_data.read(&mut proof);
+
+        Ok(proof)
+    }
+
+    fn read_to_end(&mut self) -> Vec<u8> {
+        let mut data = vec![];
+        self.proof_data.read_to_end(&mut data);
+        data
     }
 }

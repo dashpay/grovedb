@@ -255,13 +255,10 @@ where
 
         self.use_tree_mut(|maybe_tree| {
             let tree = maybe_tree.ok_or(anyhow!("Cannot create proof for empty tree"))?;
-            dbg!(&tree);
 
             let mut ref_walker = RefWalker::new(tree, self.source());
             let (proof, ..) =
                 ref_walker.create_proof(query_vec.as_slice(), limit, offset, left_to_right)?;
-
-            dbg!(&proof);
 
             let mut bytes = Vec::with_capacity(128);
             encode_into(proof.iter(), &mut bytes);
