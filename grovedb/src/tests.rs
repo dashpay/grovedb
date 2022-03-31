@@ -324,17 +324,19 @@ fn play_with_proofs() {
         .expect("successful subtree insert");
 
     let mut query = Query::new();
-    query.insert_key(b"aey9".to_vec());
+    query.insert_key(b"key2".to_vec());
+    query.insert_key(b"key1".to_vec());
+    query.insert_key(b"key9".to_vec());
 
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
 
     let mut proof = temp_db.prove(path_query.clone()).unwrap();
-    // dbg!(&proof);
 
     let (hash, result_set) = GroveDb::execute_proof(&mut proof.as_slice(), path_query.clone())
         .expect("should execute proof");
-    // dbg!(hash);
-    // dbg!(temp_db.root_hash(None));
+    dbg!(hash);
+    dbg!(temp_db.root_hash(None));
+    dbg!(result_set);
 }
 
 // #[test]

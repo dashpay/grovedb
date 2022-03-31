@@ -2,8 +2,8 @@ use std::{
     env::split_paths,
     io::{Read, Write},
 };
-use rs_merkle::algorithms::Sha256;
-use rs_merkle::MerkleProof;
+
+use rs_merkle::{algorithms::Sha256, MerkleProof};
 use storage::{RawIterator, StorageContext};
 
 use crate::{
@@ -98,9 +98,10 @@ impl GroveDb {
                     write_to_vec(&mut proof_result, &root_proof);
 
                     // add the root proof to output vec
-                    let mut root_index_bytes = root_index.into_iter().map(|index| {
-                      index as u8
-                    }).collect::<Vec<u8>>();
+                    let mut root_index_bytes = root_index
+                        .into_iter()
+                        .map(|index| index as u8)
+                        .collect::<Vec<u8>>();
 
                     // TODO: Save an extra byte?
                     // write_to_vec(&mut proof_result, &vec![0x10]);
@@ -258,9 +259,10 @@ impl GroveDb {
         // dbg!(&proof);
         let mut root_meta_data = vec![];
         proof.read_to_end(&mut root_meta_data);
-        let mut root_index_usize = root_meta_data.into_iter().map(|index| {
-            index as usize
-        }).collect::<Vec<usize>>();
+        let mut root_index_usize = root_meta_data
+            .into_iter()
+            .map(|index| index as usize)
+            .collect::<Vec<usize>>();
 
         // Get the root hash after verifying the root proof
         let root_proof_terrible_name = match MerkleProof::<Sha256>::try_from(root_proof) {
@@ -268,7 +270,8 @@ impl GroveDb {
             Err(_) => Err(Error::InvalidProof("invalid proof element")),
         }?;
 
-        let root_hash = match root_proof_terrible_name.root(&root_index_usize, &[last_root_hash], 2){
+        let root_hash = match root_proof_terrible_name.root(&root_index_usize, &[last_root_hash], 2)
+        {
             Ok(hash) => Ok(hash),
             Err(_) => Err(Error::InvalidProof("Invalid proof element")),
         }?;
