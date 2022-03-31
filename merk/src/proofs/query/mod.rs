@@ -1071,7 +1071,13 @@ pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> Result<Map> {
 /// list will contain 2 elements, the value of `A` and the value of `B`. Keys
 /// proven to be absent in the tree will have an entry of `None`, keys that have
 /// a proven value will have an entry of `Some(value)`.
-pub fn execute_proof(bytes: &[u8], query: &Query, limit: Option<u16>, offset: Option<u16>, left_to_right: bool) -> Result<(MerkHash, ProofVerificationResult)> {
+pub fn execute_proof(
+    bytes: &[u8],
+    query: &Query,
+    limit: Option<u16>,
+    offset: Option<u16>,
+    left_to_right: bool,
+) -> Result<(MerkHash, ProofVerificationResult)> {
     pub fn get_query_iter(
         query: &Query,
         left_to_right: bool,
@@ -1285,11 +1291,14 @@ pub fn execute_proof(bytes: &[u8], query: &Query, limit: Option<u16>, offset: Op
         }
     }
 
-    Ok((root.hash(), ProofVerificationResult {
-        result_set: output,
-        limit: current_limit,
-        offset: current_offset,
-    }))
+    Ok((
+        root.hash(),
+        ProofVerificationResult {
+            result_set: output,
+            limit: current_limit,
+            offset: current_offset,
+        },
+    ))
 }
 
 #[derive(PartialEq, Debug)]
@@ -1308,7 +1317,8 @@ pub fn verify_query(
     left_to_right: bool,
     expected_hash: MerkHash,
 ) -> Result<ProofVerificationResult> {
-    let (root_hash, verification_result) = execute_proof(bytes, query, limit, offset, left_to_right)?;
+    let (root_hash, verification_result) =
+        execute_proof(bytes, query, limit, offset, left_to_right)?;
 
     if root_hash != expected_hash {
         bail!(
