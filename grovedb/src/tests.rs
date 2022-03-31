@@ -326,11 +326,13 @@ fn play_with_proofs() {
     let mut query = Query::new();
     query.insert_key(b"key1".to_vec());
 
-    let proof = temp_db.prove(PathQuery::new_unsized(
-        vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
-        query,
-    ));
-    dbg!(proof);
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
+
+    let mut proof = temp_db.prove(path_query.clone()).unwrap();
+
+    let (hash, result_set) = GroveDb::execute_proof(&mut proof.as_slice(), path_query.clone())
+        .expect("should execute proof");
+    dbg!(hash);
 }
 
 // #[test]

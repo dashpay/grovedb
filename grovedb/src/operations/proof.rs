@@ -1,4 +1,7 @@
-use std::{env::split_paths, io::Write};
+use std::{
+    env::split_paths,
+    io::{Read, Write},
+};
 
 use crate::{
     util::{merk_optional_tx, meta_storage_context_optional_tx},
@@ -7,10 +10,7 @@ use crate::{
     GroveDb, PathQuery, Query,
 };
 
-fn write_to_vec<W>(dest: &mut W, value: &Vec<u8>)
-where
-    W: Write,
-{
+fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
     dest.write_all(value);
 }
 
@@ -49,6 +49,8 @@ impl GroveDb {
             let proof = subtree
                 .prove(query.query.query, None, None)
                 .expect("should generate proof");
+            // TODO: Switch to variable length encoding
+            debug_assert!(proof.len() < 256);
             write_to_vec(&mut proof_result, &vec![0x01, proof.len() as u8]);
             write_to_vec(&mut proof_result, &proof);
         });
@@ -78,6 +80,8 @@ impl GroveDb {
                     let root_tree = self.get_root_tree(None).expect("should get root tree");
                     let root_proof = root_tree.proof(&root_index).to_bytes();
                     // dbg!(root_proof);
+
+                    debug_assert!(root_proof.len() < 256);
                     write_to_vec(&mut proof_result, &vec![0x02, root_proof.len() as u8]);
                     write_to_vec(&mut proof_result, &root_proof);
                 })
@@ -92,6 +96,8 @@ impl GroveDb {
                     let proof = subtree
                         .prove(query, None, None)
                         .expect("should generate proof");
+
+                    debug_assert!(proof.len() < 256);
                     write_to_vec(&mut proof_result, &vec![0x01, proof.len() as u8]);
                     write_to_vec(&mut proof_result, &proof);
                     // dbg!(proof);
@@ -106,7 +112,47 @@ impl GroveDb {
         // Err(Error::InvalidQuery("invalid query"))
     }
 
-    pub fn execute_proof(proof: Vec<u8>) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
+    pub fn execute_proof(
+        mut proof: &[u8],
+        query: PathQuery,
+    ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
+        // Path is composed of keys, need to split last and verify that the root hash
+        // of last merk is a value of parent merk at specified key
+
+        // let result_set;
+        // let mut last_root_hash;
+
+        let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
+
+        // Sequence
+        // Read type
+        // if merk type, read proof length, then read proof
+        // execute the proof, store the result set and the last hash
+        // split the path, execute the next proof, verify that the
+        // result set contains the root hash of the previous tree at that key
+        let mut data_type = [0; 1];
+        proof.read(&mut data_type);
+
+        let mut length = vec![0; 1];
+        proof.read(&mut length);
+        let mut proof_data = vec![0; length[0] as usize];
+        proof.read(&mut proof_data);
+        dbg!(proof_data);
+
+        // match data_type {
+        //     [0x01] => {
+        //         dbg!("merk proof");
+        //         let mut length = vec![0; 1];
+        //         proof.read(&mut length);
+        //         let mut proof_data = vec![0; length[0] as usize];
+        //         proof.read(&mut proof_data);
+        //         dbg!(proof_data);
+        //     }
+        //     _ => {
+        //         dbg!("unknown");
+        //     }
+        // }
+
         Err(Error::InvalidProof("proof invalid"))
     }
 }

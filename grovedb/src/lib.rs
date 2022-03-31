@@ -68,7 +68,7 @@ pub enum Error {
     CorruptedData(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PathQuery {
     // TODO: Make generic over path type
     path: Vec<Vec<u8>>,
@@ -79,7 +79,7 @@ pub struct PathQuery {
 // limit should be applied to the elements returned by the subquery
 // offset should be applied to the first item that will subqueried (first in the
 // case of a range)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SizedQuery {
     query: Query,
     limit: Option<u16>,
