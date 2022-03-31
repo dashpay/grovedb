@@ -13,6 +13,9 @@ use crate::{
     GroveDb, PathQuery, Query,
 };
 
+const MERK_PROOF: u8 = 0x01;
+const ROOT_PROOF: u8 = 0x02;
+
 fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
     dest.write_all(value);
 }
@@ -62,7 +65,7 @@ impl GroveDb {
                 .expect("should generate proof");
             // TODO: Switch to variable length encoding
             debug_assert!(proof.len() < 256);
-            write_to_vec(&mut proof_result, &vec![0x01, proof.len() as u8]);
+            write_to_vec(&mut proof_result, &vec![MERK_PROOF, proof.len() as u8]);
             write_to_vec(&mut proof_result, &proof);
         });
 
@@ -94,7 +97,7 @@ impl GroveDb {
                     // dbg!(root_proof);
 
                     debug_assert!(root_proof.len() < 256);
-                    write_to_vec(&mut proof_result, &vec![0x02, root_proof.len() as u8]);
+                    write_to_vec(&mut proof_result, &vec![ROOT_PROOF, root_proof.len() as u8]);
                     write_to_vec(&mut proof_result, &root_proof);
 
                     // add the root proof to output vec
@@ -121,7 +124,7 @@ impl GroveDb {
                         .expect("should generate proof");
 
                     debug_assert!(proof.len() < 256);
-                    write_to_vec(&mut proof_result, &vec![0x01, proof.len() as u8]);
+                    write_to_vec(&mut proof_result, &vec![MERK_PROOF, proof.len() as u8]);
                     write_to_vec(&mut proof_result, &proof);
                     // dbg!(proof);
                 });
@@ -133,6 +136,29 @@ impl GroveDb {
         // dbg!(proof_result);
         //
         // Err(Error::InvalidQuery("invalid query"))
+    }
+
+    // Abstract the reading process
+    // we really only care about the proof packets
+    // we currently read merk proofs, root proofs and metadata
+    // we verify that those proofs are the next in the proof object
+    // how can we encapsulate this in a single function
+    // read_proof, takes the type for validation
+
+    fn read_proof(mut proof_data: &[u8], expected_data_type: u8) -> Result<Vec<u8>, Error> {
+        let mut data_type = [0; 1];
+        proof_data.read(&mut data_type);
+
+        if data_type != [expected_data_type] {
+           return Err(Error::InvalidProof("wrong data_type"));
+        }
+
+        let mut length = vec![0; 1];
+        proof_data.read(&mut length);
+        let mut proof = vec![0; length[0] as usize];
+        proof_data.read(&mut proof);
+
+        Ok(proof)
     }
 
     pub fn execute_proof(
@@ -178,7 +204,7 @@ impl GroveDb {
                 proof.read(&mut data_type);
                 // dbg!(&data_type);
 
-                if data_type != [0x01] {
+                if data_type != [MERK_PROOF] {
                     return Err(Error::InvalidProof("proof invalid: not merk proof"));
                 }
 
@@ -246,7 +272,7 @@ impl GroveDb {
         proof.read(&mut data_type);
         // dbg!(&data_type);
 
-        if data_type != [0x02] {
+        if data_type != [ROOT_PROOF] {
             return Err(Error::InvalidProof("proof invalid: not root proof"));
         }
 
