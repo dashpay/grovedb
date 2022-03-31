@@ -99,9 +99,14 @@ impl GroveDb {
 
         let merk_proof = proof_reader.read_proof(MERK_PROOF)?;
 
-        let (mut last_root_hash, result_set) =
-            merk::execute_proof(&merk_proof, &query.query.query, None, None, true)
-                .expect("should execute proof");
+        let (mut last_root_hash, result_set) = merk::execute_proof(
+            &merk_proof,
+            &query.query.query,
+            None,
+            None,
+            query.query.query.left_to_right,
+        )
+        .expect("should execute proof");
 
         // Validate the path
         let mut split_path = path_slices.split_last();
@@ -109,11 +114,17 @@ impl GroveDb {
             if !path_slice.is_empty() {
                 let merk_proof = proof_reader.read_proof(MERK_PROOF)?;
 
-                let mut query = Query::new();
-                query.insert_key(key.to_vec());
+                let mut parent_query = Query::new();
+                parent_query.insert_key(key.to_vec());
 
-                let proof_result = merk::execute_proof(&merk_proof, &query, None, None, true)
-                    .expect("should execute proof");
+                let proof_result = merk::execute_proof(
+                    &merk_proof,
+                    &parent_query,
+                    None,
+                    None,
+                    query.query.query.left_to_right,
+                )
+                .expect("should execute proof");
                 let result_set = proof_result.1.result_set;
 
                 if result_set[0].0 != key.to_vec() {
