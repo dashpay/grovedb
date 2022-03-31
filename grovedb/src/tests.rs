@@ -328,7 +328,10 @@ fn play_with_proofs() {
     query.insert_key(b"key1".to_vec());
     query.insert_key(b"key9".to_vec());
 
-    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
+    let path_query = PathQuery::new(
+        vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
+        SizedQuery::new(query, Some(1), Some(1)),
+    );
 
     let mut proof = temp_db.prove(path_query.clone()).unwrap();
 

@@ -31,7 +31,7 @@ impl GroveDb {
         merk_optional_tx!(self.db, path_slices.clone(), None, subtree, {
             // TODO: Not allowed to create proof for an empty tree (handle this)
             let proof = subtree
-                .prove(query.query.query, None, None)
+                .prove(query.query.query, query.query.limit, query.query.offset)
                 .expect("should generate proof");
 
             // TODO: Switch to variable length encoding
@@ -102,8 +102,8 @@ impl GroveDb {
         let (mut last_root_hash, result_set) = merk::execute_proof(
             &merk_proof,
             &query.query.query,
-            None,
-            None,
+            query.query.limit,
+            query.query.offset,
             query.query.query.left_to_right,
         )
         .expect("should execute proof");
