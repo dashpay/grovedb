@@ -15,6 +15,7 @@ fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
 }
 
 impl GroveDb {
+    // TODO: Add left_to_right as a parameter
     pub fn prove(&self, query: PathQuery) -> Result<Vec<u8>, Error> {
         // A path query has a path and then a query
         // First we find the merk at the defined path
@@ -45,6 +46,7 @@ impl GroveDb {
 
         // Leaf node, we care about the result set of this
         merk_optional_tx!(self.db, path_slices.clone(), None, subtree, {
+            dbg!("MERK!!");
             // TODO: Not allowed to create proof for an empty tree (handle this)
             let proof = subtree
                 .prove(query.query.query, None, None)
@@ -60,6 +62,7 @@ impl GroveDb {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             if path_slice.is_empty() {
+                dbg!("ROOT");
                 dbg!("gotten to root");
                 // generate the root proof
                 // rs-merkle stores the root keys as indexes
@@ -86,6 +89,7 @@ impl GroveDb {
                     write_to_vec(&mut proof_result, &root_proof);
                 })
             } else {
+                dbg!("MERK");
                 let path_slices = path_slice.iter().map(|x| *x).collect::<Vec<_>>();
 
                 merk_optional_tx!(self.db, path_slices, None, subtree, {
@@ -137,7 +141,68 @@ impl GroveDb {
         proof.read(&mut length);
         let mut proof_data = vec![0; length[0] as usize];
         proof.read(&mut proof_data);
-        dbg!(proof_data);
+        dbg!(&proof_data);
+
+        let (mut last_root_hash, result_set) =
+            merk::execute_proof(&proof_data, &query.query.query, None, None, true)
+                .expect("should execute proof");
+        dbg!(last_root_hash);
+
+        // Validate the path
+        let mut split_path = path_slices.split_last();
+        while let Some((key, path_slice)) = split_path {
+            if path_slice.is_empty() {
+                todo!()
+            } else {
+                // more merk proofs
+                // TODO: remove duplication
+                let mut data_type = [0; 1];
+                proof.read(&mut data_type);
+                dbg!(&data_type);
+
+                if data_type != [0x01] {
+                    return Err(Error::InvalidProof("proof invalid: not merk proof"));
+                }
+
+                let mut length = vec![0; 1];
+                proof.read(&mut length);
+                let mut proof_data = vec![0; length[0] as usize];
+                proof.read(&mut proof_data);
+
+                let mut query = Query::new();
+                query.insert_key(key.to_vec());
+
+                let proof_result = merk::execute_proof(&proof_data, &query, None, None, true)
+                    .expect("should execute proof");
+                let result_set = proof_result.1.result_set;
+                dbg!(&result_set);
+
+                // Take the first tuple of the result set
+                // TODO: convert result_set to hash_map
+                // make sure the key matches
+                // convert the result to an element and make sure the
+                // hash of the element is the same as the last root hash
+                // set the current hash to the last root_hash
+                if result_set[0].0 != key.to_vec() {
+                    return Err(Error::InvalidProof("proof invalid: invalid parent"));
+                }
+                let elem = Element::deserialize(result_set[0].1.as_slice())?;
+                let child_hash = match elem {
+                    Element::Tree(hash) => Ok(hash),
+                    _ => Err(Error::InvalidProof(
+                        "intermidiate proofs should be for trees",
+                    )),
+                }?;
+                dbg!(&child_hash);
+
+                if child_hash != last_root_hash {
+                    return Err(Error::InvalidProof("Bad path"));
+                }
+
+                last_root_hash = proof_result.0;
+            }
+            split_path = path_slice.split_last();
+        }
 
         // match data_type {
         //     [0x01] => {
