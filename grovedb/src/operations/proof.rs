@@ -24,6 +24,70 @@ impl GroveDb {
 
         self.check_subtree_exists_path_not_found(path_slices.clone(), None, None)?;
 
+        // Next up is to take into account subqueries, starting with just one subquery
+        // deep might need two additional markers, to signify children and
+        // parents limit and offset relationship would also change, we only want
+        // to apply the limit and offset parameters to the leaf nodes i.e. nodes
+        // that after query application they have no children that are of the
+        // tree element type or there is no new subquery essentially, this means
+        // that we need to get the result of applying a query to an subtree
+        // first, before constructing the proof (not sure I like this)
+        // If the result set has elements that are tree items then we construct a new
+        // path, pass the new path query ....
+
+        // Need to take into account, limit, offset, path_query_exists, has subtree
+        // Once you enter a parent, you have to prove all the children?? (that won't be
+        // very efficient).
+        // Say a parent has 10 subtrees, and there is a limit of 100, if the first two
+        // subtrees exhaust this limit, then we have no reason to generate
+        // proofs for 8 other subtrees and we close with an early parent step,
+        // also no need to go down further on any subsequent parent
+        // (only recurse and prove if the limit is non zero)
+
+        // There is nothing stopping a tree from having a combination of different
+        // element types TODO: Figure out how to properly deal with references
+        // There is a possibility that the result set might span multiple trees if the
+        // subtrees hold different element types (brings too much complexity,
+        // will ignore for now) TODO: What to do if a subtree returns a
+        // combination of item, reference and tree elements TODO: How would they
+        // be added to the result set, limit, offset e.t.c.
+
+        // Latest assumption: Trees only contain one type of Element
+        // TODO: Add debug assert to enforce this constraint
+        // Either the subquery can be applied to all elements or none
+
+        // How do we deal with limits and offset in such a system.
+        // we generally only want to apply the limit and offset values to subtree trees
+        // that don't have subtrees (we also want to propagate the resulting
+        // values up for further subtrees) since we create proofs for all child
+        // nodes before parents, we know if any of the child nodes was a subtree
+        // (set a flag then generate this merk's proof without limit and offset).
+        // we keep a global track of the limit and offset??
+
+        // Rough algo
+        // Get the elements of the subtree
+        // For all values that are trees, we do the same thing
+        // (set a flag, add the child start marker to the proof)
+        // after checking all the child values, check the flag if leaf node then
+        // generate this proof with limit and offset, if not just generate a
+        // plain proof.
+
+        // How would verification work, we need to create a parent child context
+        // everything we see the child marker, we create a new scope that keeps track
+        // of the child's path key and the last_root_hash of that child
+        // ISSUE: We don't know the child's key damn!!!!!!
+        // we need the child's key to verify that it is indeed a child of the parent
+        // that's coming the parent knows it's children (and what we really care
+        // about is that all the parent's children were proved)
+        // hence we only care about the root hashes of the child merks and their
+        // relative order. No problem then, we create a new context when we see
+        // the child marker verify each child element (with the appropriate
+        // query, limit and offset) and store their root hash when the parent
+        // marker is seen, pull the parent, verify the merk proof
+
+        // Ideally, you prove every child in the parent merk, if you do not then you
+        // need to show that the limit is 0 (as justification for truncating the
+        // child proofs)
         merk_optional_tx!(self.db, path_slices.clone(), None, subtree, {
             // TODO: Not allowed to create proof for an empty tree (handle this)
             let proof = subtree
