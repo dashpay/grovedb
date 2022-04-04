@@ -34,7 +34,7 @@ pub struct Query {
     pub left_to_right: bool,
 }
 
-type ProofOffsetLimit = (LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>);
+type ProofAbsenceLimitOffset = (LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>);
 
 impl Query {
     /// Creates a new query which contains no items.
@@ -808,10 +808,8 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> Result<(LinkedList<Op>, (bool, bool))> {
-        let (linked_list, (left, right), ..) =
-            self.create_proof(query, limit, offset, left_to_right)?;
-        Ok((linked_list, (left, right)))
+    ) -> Result<ProofAbsenceLimitOffset> {
+        self.create_proof(query, limit, offset, left_to_right)
     }
 
     /// Generates a proof for the list of queried keys. Returns a tuple
@@ -827,7 +825,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> Result<ProofOffsetLimit> {
+    ) -> Result<ProofAbsenceLimitOffset> {
         // TODO: don't copy into vec, support comparing QI to byte slice
         let node_key = QueryItem::Key(self.tree().key().to_vec());
         let mut search = query.binary_search_by(|key| key.cmp(&node_key));
@@ -1023,7 +1021,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> Result<ProofOffsetLimit> {
+    ) -> Result<ProofAbsenceLimitOffset> {
         Ok(if !query.is_empty() {
             if let Some(mut child) = self.walk(left)? {
                 child.create_proof(query, limit, offset, left_to_right)?
