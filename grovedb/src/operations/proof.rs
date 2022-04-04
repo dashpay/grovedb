@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use rs_merkle::{algorithms::Sha256, MerkleProof};
 
 use crate::{
+    merk::ProofConstructionResult,
     util::{merk_optional_tx, meta_storage_context_optional_tx},
     Element, Error,
     Error::InvalidPath,
@@ -90,7 +91,7 @@ impl GroveDb {
         // child proofs)
         merk_optional_tx!(self.db, path_slices.clone(), None, subtree, {
             // TODO: Not allowed to create proof for an empty tree (handle this)
-            let proof = subtree
+            let ProofConstructionResult { proof, .. } = subtree
                 .prove(query.query.query, query.query.limit, query.query.offset)
                 .expect("should generate proof");
 
@@ -135,7 +136,7 @@ impl GroveDb {
                     let mut query = Query::new();
                     query.insert_key(key.to_vec());
 
-                    let proof = subtree
+                    let ProofConstructionResult { proof, .. } = subtree
                         .prove(query, None, None)
                         .expect("should generate proof");
 

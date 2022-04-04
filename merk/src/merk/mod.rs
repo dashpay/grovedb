@@ -13,6 +13,22 @@ use crate::{
 
 const ROOT_KEY_KEY: &[u8] = b"root";
 
+pub struct ProofConstructionResult {
+    pub proof: Vec<u8>,
+    pub limit: Option<u16>,
+    pub offset: Option<u16>,
+}
+
+impl ProofConstructionResult {
+    pub fn new(proof: Vec<u8>, limit: Option<u16>, offset: Option<u16>) -> Self {
+        Self {
+            proof,
+            limit,
+            offset,
+        }
+    }
+}
+
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk<S> {
     pub(crate) tree: Cell<Option<Tree>>,
@@ -223,7 +239,7 @@ where
         query: Query,
         limit: Option<u16>,
         offset: Option<u16>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<ProofConstructionResult> {
         let left_to_right = query.left_to_right;
         self.prove_unchecked(query, limit, offset, left_to_right)
     }
@@ -246,7 +262,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> Result<Vec<u8>>
+    ) -> Result<ProofConstructionResult>
     where
         Q: Into<QueryItem>,
         I: IntoIterator<Item = Q>,
@@ -257,12 +273,12 @@ where
             let tree = maybe_tree.ok_or(anyhow!("Cannot create proof for empty tree"))?;
 
             let mut ref_walker = RefWalker::new(tree, self.source());
-            let (proof, ..) =
+            let (proof, _, limit, offset, ..) =
                 ref_walker.create_proof(query_vec.as_slice(), limit, offset, left_to_right)?;
 
             let mut bytes = Vec::with_capacity(128);
             encode_into(proof.iter(), &mut bytes);
-            Ok(bytes)
+            Ok(ProofConstructionResult::new(bytes, limit, offset))
         })
     }
 
