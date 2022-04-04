@@ -4460,9 +4460,11 @@ mod test {
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
         let queryitems = vec![QueryItem::RangeFrom(vec![2]..)];
-        let (proof, ..) = walker
+        let (proof, _, limit, offset) = walker
             .create_full_proof(queryitems.as_slice(), Some(1), None, true)
             .expect("create_proof errored");
+        assert_eq!(limit, Some(0));
+        assert_eq!(offset, None);
 
         let mut iter = proof.iter();
         assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![2], vec![2]))));
