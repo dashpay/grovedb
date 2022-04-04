@@ -4463,6 +4463,8 @@ mod test {
         let (proof, _, limit, offset) = walker
             .create_full_proof(queryitems.as_slice(), Some(1), None, true)
             .expect("create_proof errored");
+
+        // TODO: Add this test for other range types
         assert_eq!(limit, Some(0));
         assert_eq!(offset, None);
 
