@@ -123,6 +123,18 @@ impl GroveDb {
                 // the limit and offset values. If true then yes, false then no
                 let mut has_subtree = false;
 
+                // before getting the elements of the subtree, we should get the
+                // subquery key and value
+                // we have a query, that is inserted in a sized query for the path query
+                // we only care about the query (not so simple)
+                // need to understand conditional_subqueries and default_subqueries
+                let (subquery_key, subquery_value) =
+                    Element::default_subquery_paths_for_sized_query(&query.query);
+                dbg!(subquery_key, subquery_value);
+                // if there is a subquery and subquery key then combine key to path and use
+                // other as query if there is just a subquery key then convert
+                // subquery key to query
+
                 // everything happens here
                 // we need to get all the elements of this subtree
                 // the get function expects a key
