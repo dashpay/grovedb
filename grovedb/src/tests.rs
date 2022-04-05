@@ -399,6 +399,104 @@ fn test_path_query_proofs_without_subquery() {
     );
 }
 
+#[test]
+fn test_path_query_proofs_with_default_subquery() {
+    // Tree Structure
+    // root
+    //     test_leaf
+    //         innertree
+    //             k1,v1
+    //             k2,v2
+    //             k3,v3
+    //     another_test_leaf
+    //         innertree2
+    //             k3,v3
+    //         innertree3
+    //             k4,v4
+
+    // Insert elements into grovedb instance
+    let temp_db = make_grovedb();
+    // Insert level 1 nodes
+    temp_db
+        .insert([TEST_LEAF], b"innertree", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [ANOTHER_TEST_LEAF],
+            b"innertree2",
+            Element::empty_tree(),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [ANOTHER_TEST_LEAF],
+            b"innertree3",
+            Element::empty_tree(),
+            None,
+        )
+        .expect("successful subtree insert");
+    // Insert level 2 nodes
+    temp_db
+        .insert(
+            [TEST_LEAF, b"innertree"],
+            b"key1",
+            Element::Item(b"value1".to_vec()),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [TEST_LEAF, b"innertree"],
+            b"key2",
+            Element::Item(b"value2".to_vec()),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [TEST_LEAF, b"innertree"],
+            b"key3",
+            Element::Item(b"value3".to_vec()),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [ANOTHER_TEST_LEAF, b"innertree2"],
+            b"key3",
+            Element::Item(b"value3".to_vec()),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [ANOTHER_TEST_LEAF, b"innertree3"],
+            b"key4",
+            Element::Item(b"value4".to_vec()),
+            None,
+        )
+        .expect("successful subtree insert");
+
+    let mut query = Query::new();
+    query.insert_key(b"innertree".to_vec());
+    let mut subq = Query::new();
+    subq.insert_key(b"key1".to_vec());
+    query.set_subquery(subq);
+
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+    let proof = temp_db.prove(path_query.clone()).unwrap();
+    dbg!(&proof);
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
+    dbg!(&result_set);
+
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    let r1 = Element::Item(b"value1".to_vec()).serialize().unwrap();
+    assert_eq!(result_set, vec![(b"key1".to_vec(), r1)]);
+}
+
 // #[test]
 // fn test_proof_construction() {
 //     // Tree Structure

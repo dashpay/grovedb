@@ -21,6 +21,7 @@ fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
 
 impl GroveDb {
     pub fn prove(&self, query: PathQuery) -> Result<Vec<u8>, Error> {
+        // TODO: Should people be allowed to get proofs for tree items??
         let mut proof_result: Vec<u8> = vec![];
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
@@ -144,6 +145,7 @@ impl GroveDb {
                     for (key, value_bytes) in subtree_key_values.iter() {
                         // TODO: Figure out what to do if decoding fails
                         let element = raw_decode(value_bytes).unwrap();
+                        dbg!(&element);
                         // check if the element is of type tree
                         // if is it a tree, set has_subtree
                         match element {
@@ -162,6 +164,8 @@ impl GroveDb {
                                 // proof set (most likely a closure);
                                 // TODO: cleanup
                                 let mut new_path = path.clone();
+                                new_path.push(key.as_ref());
+
                                 let mut query = subquery_value.clone();
                                 let sub_key = subquery_key.clone();
 
@@ -176,6 +180,9 @@ impl GroveDb {
                                     key_as_query.insert_key(sub_key.unwrap());
                                     query = Some(key_as_query);
                                 }
+
+                                dbg!(&new_path);
+                                dbg!(&query);
 
                                 let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
                                 let new_path_query =
@@ -204,6 +211,7 @@ impl GroveDb {
                     None
                 };
 
+                dbg!(&query.query.query);
                 let ProofConstructionResult { proof, .. } = subtree
                     .prove(query.query.query, limit, offset)
                     .expect("should generate proof");
