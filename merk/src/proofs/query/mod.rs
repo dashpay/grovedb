@@ -794,10 +794,25 @@ where
         let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
 
         proof.push_back(match search {
-            Ok(_) => Op::Push(self.to_kv_node()),
+            Ok(index) => {
+                // if the current key is part of the non inclusive bounds of the query
+                // push the KVDigest
+                let item = &query[index];
+                let (start_key, start_not_inclusive) = item.lower_bound();
+                let (end_key, end_inclusive) = item.upper_bound();
+                if start_key.is_some()
+                    && start_key.unwrap() == self.tree().key()
+                    && start_not_inclusive
+                    || end_key.is_some() && end_key.unwrap() == self.tree().key() && !end_inclusive
+                {
+                    Op::Push(self.to_kvdigest_node())
+                } else {
+                    Op::Push(self.to_kv_node())
+                }
+            }
             Err(_) => {
                 if left_absence.1 || right_absence.0 {
-                    Op::Push(self.to_kv_node())
+                    Op::Push(self.to_kvdigest_node())
                 } else {
                     Op::Push(self.to_kvhash_node())
                 }
@@ -936,7 +951,7 @@ pub fn verify_query(
     let ops = Decoder::new(bytes);
 
     let root = execute(ops, true, |node| {
-        if let Node::KV(key, value) = node {
+        let mut execute_node = |key: &Vec<u8>, value: Option<&Vec<u8>>| -> Result<_> {
             while let Some(item) = query.peek() {
                 // get next item in query
                 let query_item = *item;
@@ -972,6 +987,7 @@ pub fn verify_query(
                         // lower bound is proven - the preceding tree node
                         // is lower than the bound
                         Some(Node::KV(..)) => {}
+                        Some(Node::KVDigest(..)) => {}
 
                         // cannot verify lower bound - we have an abridged
                         // tree so we cannot tell what the preceding key was
@@ -998,15 +1014,25 @@ pub fn verify_query(
 
                 // this push matches the queried item
                 if query_item.contains(key) {
-                    // add data to output
-                    output.push((key.clone(), value.clone()));
+                    if let Some(val) = value {
+                        // add data to output
+                        output.push((key.clone(), val.clone()));
 
-                    // continue to next push
-                    break;
+                        // continue to next push
+                        break;
+                    } else {
+                        bail!("Proof is missing data for query");
+                    }
                 }
-
                 // continue to next queried item
             }
+            Ok(())
+        };
+
+        if let Node::KV(key, value) = node {
+            execute_node(key, Some(value))?;
+        } else if let Node::KVDigest(key, _) = node {
+            execute_node(key, None)?;
         } else if in_range {
             // we encountered a queried range but the proof was abridged (saw a
             // non-KV push), we are missing some part of the range
@@ -1024,6 +1050,7 @@ pub fn verify_query(
         match last_push {
             // last node in tree was less than queried item
             Some(Node::KV(..)) => {}
+            Some(Node::KVDigest(..)) => {}
 
             // proof contains abridged data so we cannot verify absence of
             // remaining query items
@@ -1426,7 +1453,16 @@ mod test {
             ])))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVDigest(
+                vec![7],
+                [
+                    63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
+                    51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Child));
         assert!(iter.next().is_none());
         assert_eq!(absence, (false, true));
@@ -1459,9 +1495,27 @@ mod test {
                 82, 205, 81, 207, 60, 90, 166, 78, 184, 53, 134, 79, 66, 255
             ])))
         );
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVDigest(
+                vec![5],
+                [
+                    116, 30, 0, 135, 25, 118, 86, 14, 12, 107, 215, 214, 133, 122, 48, 45, 180, 21,
+                    158, 223, 88, 148, 181, 149, 189, 65, 121, 19, 81, 118, 11, 106
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVDigest(
+                vec![7],
+                [
+                    63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
+                    51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Child));
         assert!(iter.next().is_none());
         assert_eq!(absence, (false, false));
@@ -1717,9 +1771,12 @@ mod test {
         assert_eq!(iter.next(), Some(&Op::Child));
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KV(
+            Some(&Op::Push(Node::KVDigest(
                 vec![0, 0, 0, 0, 0, 0, 0, 7],
-                vec![123; 60]
+                [
+                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
+                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
+                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
@@ -1897,7 +1954,16 @@ mod test {
         assert_eq!(iter.next(), Some(&Op::Child));
         assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVDigest(
+                vec![7],
+                [
+                    63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
+                    51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
+                ]
+            )))
+        );
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVHash([
@@ -1946,7 +2012,16 @@ mod test {
         assert_eq!(iter.next(), Some(&Op::Child));
         assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVDigest(
+                vec![7],
+                [
+                    63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
+                    51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
+                ]
+            )))
+        );
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVHash([
@@ -1995,7 +2070,16 @@ mod test {
                 241, 127, 41, 198, 197, 228, 19, 190, 36, 173, 183, 73, 104, 30
             ])))
         );
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVDigest(
+                vec![3],
+                [
+                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
+                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
         assert_eq!(iter.next(), Some(&Op::Child));
@@ -2044,13 +2128,31 @@ mod test {
                 241, 127, 41, 198, 197, 228, 19, 190, 36, 173, 183, 73, 104, 30
             ])))
         );
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVDigest(
+                vec![3],
+                [
+                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
+                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
         assert_eq!(iter.next(), Some(&Op::Child));
         assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVDigest(
+                vec![7],
+                [
+                    63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
+                    51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
+                ]
+            )))
+        );
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVHash([
@@ -2091,7 +2193,16 @@ mod test {
                 241, 127, 41, 198, 197, 228, 19, 190, 36, 173, 183, 73, 104, 30,
             ]))),
         );
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVDigest(
+                vec![3],
+                [
+                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
+                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
         assert_eq!(iter.next(), Some(&Op::Child));
@@ -2222,9 +2333,12 @@ mod test {
         assert_eq!(iter.next(), Some(&Op::Child));
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KV(
+            Some(&Op::Push(Node::KVDigest(
                 vec![0, 0, 0, 0, 0, 0, 0, 7],
-                vec![123; 60]
+                [
+                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
+                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
+                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
@@ -2294,9 +2408,12 @@ mod test {
         );
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KV(
+            Some(&Op::Push(Node::KVDigest(
                 vec![0, 0, 0, 0, 0, 0, 0, 5],
-                vec![123; 60]
+                [
+                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
+                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
+                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
@@ -2310,9 +2427,12 @@ mod test {
         assert_eq!(iter.next(), Some(&Op::Child));
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KV(
+            Some(&Op::Push(Node::KVDigest(
                 vec![0, 0, 0, 0, 0, 0, 0, 7],
-                vec![123; 60]
+                [
+                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
+                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
+                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));

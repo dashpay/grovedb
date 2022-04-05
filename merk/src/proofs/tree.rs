@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 
 use super::{Node, Op};
-use crate::tree::{kv_hash, kv_digest_to_kv_hash, node_hash, Hash, NULL_HASH};
+use crate::tree::{kv_digest_to_kv_hash, kv_hash, node_hash, Hash, NULL_HASH};
 
 /// Contains a tree's child node and its hash. The hash can always be assumed to
 /// be up-to-date.
@@ -57,7 +57,7 @@ impl Tree {
             Node::KVDigest(key, value_hash) => {
                 let kv_hash = kv_digest_to_kv_hash(key, value_hash);
                 compute_hash(self, kv_hash)
-            },
+            }
         }
     }
 
