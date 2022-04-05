@@ -1,9 +1,7 @@
-use std::{
-    io::{Read, Write},
-    path::Path,
-};
+use std::io::{Read, Write};
 
 use rs_merkle::{algorithms::Sha256, MerkleProof};
+use storage::rocksdb_storage::RocksDbStorage;
 
 use crate::{
     merk::ProofConstructionResult,
@@ -94,7 +92,19 @@ impl GroveDb {
         // need to show that the limit is 0 (as justification for truncating the
         // child proofs)
 
-        fn prove_subqueries(proofs: &Vec<u8>, path: Vec<&[u8]>, query: PathQuery) {
+        prove_subqueries(
+            &self.db,
+            &mut proof_result,
+            path_slices.clone(),
+            query.clone(),
+        );
+
+        fn prove_subqueries(
+            db: &RocksDbStorage,
+            proofs: &mut Vec<u8>,
+            path: Vec<&[u8]>,
+            query: PathQuery,
+        ) -> Result<(), Error> {
             // get subtree at given path
             // if there is no subquery
             // prove the current tree
@@ -106,72 +116,74 @@ impl GroveDb {
             // if the element is a tree, then recurse
             // if it had subtrees, then generate proof without limit and offset
             // else use the limit and offset
-        }
+            merk_optional_tx!(db, path.clone(), None, subtree, {
+                // TODO: Not allowed to create proof for an empty tree (handle this)
 
-        merk_optional_tx!(self.db, path_slices.clone(), None, subtree, {
-            // TODO: Not allowed to create proof for an empty tree (handle this)
+                // This is used to determine if we should create a proof with
+                // the limit and offset values. If true then yes, false then no
+                let mut has_subtree = false;
 
-            // This is used to determine if we should create a proof with
-            // the limit and offset values. If true then yes, false then no
-            let mut has_subtree = false;
-
-            // everything happens here
-            // we need to get all the elements of this subtree
-            // the get function expects a key
-            // how do you get all the keys of a subtree
-            dbg!("start");
-            let subtree_key_values = subtree.get_kv_pairs();
-            // TODO: make use of the direction
-            for (key, value_bytes) in subtree_key_values.iter() {
-                // TODO: Figure out what to do if decoding fails
-                let element = raw_decode(value_bytes).unwrap();
-                // check if the element is of type tree
-                // if is it a tree, set has_subtree
-                match element {
-                    Element::Tree(_) => {
-                        // following a greedy approach, one we encounter a
-                        // subtree we exhaust it before moving on to the
-                        // next subtree
-                        // has_subtree, was to make sure we don't make use
-                        // of the result set (do we still need this?)
-                        has_subtree = true;
-                        // recurse on this subtree, by creating a new path_slice
-                        // with the new key
-                        // function should return the resulting limits and
-                        // offset should add to a global
-                        // proof set (most likely a closure);
-                    }
-                    _ => {
-                        // if no subtree then we care about the result set
-                        dbg!("not tree");
+                // everything happens here
+                // we need to get all the elements of this subtree
+                // the get function expects a key
+                // how do you get all the keys of a subtree
+                dbg!("start");
+                let subtree_key_values = subtree.get_kv_pairs();
+                // TODO: make use of the direction
+                for (key, value_bytes) in subtree_key_values.iter() {
+                    // TODO: Figure out what to do if decoding fails
+                    let element = raw_decode(value_bytes).unwrap();
+                    // check if the element is of type tree
+                    // if is it a tree, set has_subtree
+                    match element {
+                        Element::Tree(_) => {
+                            // following a greedy approach, one we encounter a
+                            // subtree we exhaust it before moving on to the
+                            // next subtree
+                            // has_subtree, was to make sure we don't make use
+                            // of the result set (do we still need this?)
+                            has_subtree = true;
+                            // recurse on this subtree, by creating a new
+                            // path_slice
+                            // with the new key
+                            // function should return the resulting limits and
+                            // offset should add to a global
+                            // proof set (most likely a closure);
+                        }
+                        _ => {
+                            // if no subtree then we care about the result set
+                            dbg!("not tree");
+                        }
                     }
                 }
-            }
-            // dbg!(m);
-            dbg!("end");
+                // dbg!(m);
+                dbg!("end");
 
-            let limit = if !has_subtree {
-                query.query.limit
-            } else {
-                None
-            };
-            let offset = if !has_subtree {
-                query.query.offset
-            } else {
-                None
-            };
+                let limit = if !has_subtree {
+                    query.query.limit
+                } else {
+                    None
+                };
+                let offset = if !has_subtree {
+                    query.query.offset
+                } else {
+                    None
+                };
 
-            let ProofConstructionResult { proof, .. } = subtree
-                .prove(query.query.query, limit, offset)
-                .expect("should generate proof");
+                let ProofConstructionResult { proof, .. } = subtree
+                    .prove(query.query.query, limit, offset)
+                    .expect("should generate proof");
 
-            // only adding to the proof result set, after you have added that of
-            // your child nodes
-            // TODO: Switch to variable length encoding
-            debug_assert!(proof.len() < 256);
-            write_to_vec(&mut proof_result, &vec![MERK_PROOF, proof.len() as u8]);
-            write_to_vec(&mut proof_result, &proof);
-        });
+                // only adding to the proof result set, after you have added that of
+                // your child nodes
+                // TODO: Switch to variable length encoding
+                debug_assert!(proof.len() < 256);
+                write_to_vec(proofs, &vec![MERK_PROOF, proof.len() as u8]);
+                write_to_vec(proofs, &proof);
+            });
+
+            Ok(())
+        }
 
         // generate proof up to root
         let mut split_path = path_slices.split_last();
