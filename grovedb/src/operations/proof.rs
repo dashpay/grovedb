@@ -1,4 +1,7 @@
-use std::io::{Read, Write};
+use std::{
+    io::{Read, Write},
+    path::Path,
+};
 
 use rs_merkle::{algorithms::Sha256, MerkleProof};
 
@@ -90,6 +93,21 @@ impl GroveDb {
         // Ideally, you prove every child in the parent merk, if you do not then you
         // need to show that the limit is 0 (as justification for truncating the
         // child proofs)
+
+        fn prove_subqueries(proofs: &Vec<u8>, path: Vec<&[u8]>, query: PathQuery) {
+            // get subtree at given path
+            // if there is no subquery
+            // prove the current tree
+            // if there is a subquery then
+            // get all elements of the subtree
+            // for each element in the subtree
+            // if limit is zero break
+            // else continue
+            // if the element is a tree, then recurse
+            // if it had subtrees, then generate proof without limit and offset
+            // else use the limit and offset
+        }
+
         merk_optional_tx!(self.db, path_slices.clone(), None, subtree, {
             // TODO: Not allowed to create proof for an empty tree (handle this)
 
