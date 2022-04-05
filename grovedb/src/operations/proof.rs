@@ -9,7 +9,7 @@ use crate::{
     util::{merk_optional_tx, meta_storage_context_optional_tx},
     Element, Error,
     Error::InvalidPath,
-    GroveDb, PathQuery, Query,
+    GroveDb, PathQuery, Query, SizedQuery,
 };
 
 const MERK_PROOF: u8 = 0x01;
@@ -130,46 +130,68 @@ impl GroveDb {
                 // need to understand conditional_subqueries and default_subqueries
                 let (subquery_key, subquery_value) =
                     Element::default_subquery_paths_for_sized_query(&query.query);
-                dbg!(subquery_key, subquery_value);
                 // if there is a subquery and subquery key then combine key to path and use
                 // other as query if there is just a subquery key then convert
                 // subquery key to query
 
-                // everything happens here
-                // we need to get all the elements of this subtree
-                // the get function expects a key
-                // how do you get all the keys of a subtree
-                dbg!("start");
-                let subtree_key_values = subtree.get_kv_pairs();
-                // TODO: make use of the direction
-                for (key, value_bytes) in subtree_key_values.iter() {
-                    // TODO: Figure out what to do if decoding fails
-                    let element = raw_decode(value_bytes).unwrap();
-                    // check if the element is of type tree
-                    // if is it a tree, set has_subtree
-                    match element {
-                        Element::Tree(_) => {
-                            // following a greedy approach, one we encounter a
-                            // subtree we exhaust it before moving on to the
-                            // next subtree
-                            // has_subtree, was to make sure we don't make use
-                            // of the result set (do we still need this?)
-                            has_subtree = true;
-                            // recurse on this subtree, by creating a new
-                            // path_slice
-                            // with the new key
-                            // function should return the resulting limits and
-                            // offset should add to a global
-                            // proof set (most likely a closure);
-                        }
-                        _ => {
-                            // if no subtree then we care about the result set
-                            dbg!("not tree");
+                // if there is no subquery or subquery key then don't iterate
+                // if there is either one then iterate
+                // TODO: Convert to or ||
+                if subquery_key.is_some() || subquery_value.is_some() {
+                    dbg!("start");
+                    let subtree_key_values = subtree.get_kv_pairs();
+                    // TODO: make use of the direction
+                    for (key, value_bytes) in subtree_key_values.iter() {
+                        // TODO: Figure out what to do if decoding fails
+                        let element = raw_decode(value_bytes).unwrap();
+                        // check if the element is of type tree
+                        // if is it a tree, set has_subtree
+                        match element {
+                            Element::Tree(_) => {
+                                // following a greedy approach, one we encounter a
+                                // subtree we exhaust it before moving on to the
+                                // next subtree
+                                // has_subtree, was to make sure we don't make use
+                                // of the result set (do we still need this?)
+                                has_subtree = true;
+                                // recurse on this subtree, by creating a new
+                                // path_slice
+                                // with the new key
+                                // function should return the resulting limits and
+                                // offset should add to a global
+                                // proof set (most likely a closure);
+                                // TODO: cleanup
+                                let mut new_path = path.clone();
+                                let mut query = subquery_value.clone();
+                                let sub_key = subquery_key.clone();
+
+                                if query.is_some() {
+                                    if sub_key.is_some() {
+                                        new_path.push(sub_key.as_ref().unwrap());
+                                    }
+                                } else {
+                                    // only subquery key must exist, convert to query
+                                    // TODO: add direction
+                                    let mut key_as_query = Query::new();
+                                    key_as_query.insert_key(sub_key.unwrap());
+                                    query = Some(key_as_query);
+                                }
+
+                                let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
+                                let new_path_query =
+                                    PathQuery::new_unsized(new_path_owned, query.unwrap());
+
+                                prove_subqueries(db, proofs, new_path, new_path_query);
+                            }
+                            _ => {
+                                // if no subtree then we care about the result set
+                                dbg!("not tree");
+                            }
                         }
                     }
+                    // dbg!(m);
+                    dbg!("end");
                 }
-                // dbg!(m);
-                dbg!("end");
 
                 let limit = if !has_subtree {
                     query.query.limit
