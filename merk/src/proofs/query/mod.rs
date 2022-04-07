@@ -28,7 +28,7 @@ pub struct SubqueryBranch {
 /// resolve a proof which will include all of the requested values.
 #[derive(Debug, Default, Clone)]
 pub struct Query {
-    items: BTreeSet<QueryItem>,
+    pub items: BTreeSet<QueryItem>,
     pub default_subquery_branch: SubqueryBranch,
     pub conditional_subquery_branches: IndexMap<QueryItem, SubqueryBranch>,
     pub left_to_right: bool,

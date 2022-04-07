@@ -71,8 +71,8 @@ pub enum Error {
 #[derive(Debug)]
 pub struct PathQuery {
     // TODO: Make generic over path type
-    path: Vec<Vec<u8>>,
-    query: SizedQuery,
+    pub path: Vec<Vec<u8>>,
+    pub query: SizedQuery,
 }
 
 // If a subquery exists :
@@ -81,9 +81,9 @@ pub struct PathQuery {
 // case of a range)
 #[derive(Debug)]
 pub struct SizedQuery {
-    query: Query,
-    limit: Option<u16>,
-    offset: Option<u16>,
+    pub query: Query,
+    pub limit: Option<u16>,
+    pub offset: Option<u16>,
 }
 
 impl SizedQuery {
