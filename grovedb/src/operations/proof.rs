@@ -13,7 +13,12 @@ use crate::{
 };
 
 const MERK_PROOF: u8 = 0x01;
-const ROOT_PROOF: u8 = 0x02;
+const SIZED_MERK_PROOF: u8 = 0x02;
+const ROOT_PROOF: u8 = 0x03;
+// CHILD signifies that next proof elements are children of the current node
+const CHILD: u8 = 0x10;
+// PARENT signifies that we have gotten all child proofs for the current node
+const PARENT: u8 = 0x11;
 
 fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
     dest.write_all(value);
@@ -21,7 +26,8 @@ fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
 
 impl GroveDb {
     pub fn prove(&self, query: PathQuery) -> Result<Vec<u8>, Error> {
-        // TODO: Should people be allowed to get proofs for tree items??
+        // TODO: Should people be allowed to get proofs for tree items?? defaulting to
+        // yes
         let mut proof_result: Vec<u8> = vec![];
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
@@ -93,6 +99,20 @@ impl GroveDb {
         // need to show that the limit is 0 (as justification for truncating the
         // child proofs)
 
+        // TODO: Reorganize thoughts
+        // if allowed to prove tree items, then only prove with limit and offset it you
+        // cannot go further down, else prove without them
+        // Factors that determine if you can go further down are:
+        // - are there any more subqueries
+        // - does this element have any subtree
+        // - is the limit non zero
+
+        // For verification, the structure of the query should inform you about the
+        // structure of the proof, so based on the query, you know what proof item
+        // to expect, if you get something different then the proof was not constructed
+        // correctly.
+        // if you get the right thing, then perform additional constraint checks.
+
         prove_subqueries(
             &self.db,
             &mut proof_result,
@@ -100,12 +120,15 @@ impl GroveDb {
             query.clone(),
         );
 
+        // TODO: return the propagated limit and offset values after running this
         fn prove_subqueries(
             db: &RocksDbStorage,
             proofs: &mut Vec<u8>,
             path: Vec<&[u8]>,
             query: PathQuery,
-        ) -> Result<(), Error> {
+        ) -> Result<(Option<u16>, Option<u16>), Error> {
+            let mut current_limit: Option<u16> = query.query.limit;
+            let mut current_offset: Option<u16> = query.query.offset;
             // get subtree at given path
             // if there is no subquery
             // prove the current tree
@@ -120,25 +143,26 @@ impl GroveDb {
             merk_optional_tx!(db, path.clone(), None, subtree, {
                 // TODO: Not allowed to create proof for an empty tree (handle this)
 
-                // This is used to determine if we should create a proof with
-                // the limit and offset values. If true then yes, false then no
-                let mut has_subtree = false;
+                // Track if we can apply more subqueries to result set of the current merk
+                // Factors that determine if you can go further down are:
+                // - are there any more subqueries
+                // - does this element have any subtree
+                // - is the limit non zero
+                let mut has_useful_subtree = false;
 
                 // before getting the elements of the subtree, we should get the
                 // subquery key and value
                 // we have a query, that is inserted in a sized query for the path query
                 // we only care about the query (not so simple)
-                // need to understand conditional_subqueries and default_subqueries
+
                 let (subquery_key, subquery_value) =
                     Element::default_subquery_paths_for_sized_query(&query.query);
-                // if there is a subquery and subquery key then combine key to path and use
-                // other as query if there is just a subquery key then convert
-                // subquery key to query
 
-                // if there is no subquery or subquery key then don't iterate
-                // if there is either one then iterate
-                // TODO: Convert to or ||
-                if subquery_key.is_some() || subquery_value.is_some() {
+                let has_subquery = subquery_key.is_some() || subquery_value.is_some();
+                let exhausted_limit =
+                    query.query.limit.is_some() && query.query.limit.unwrap() == 0;
+
+                if has_subquery && !exhausted_limit {
                     dbg!("start");
                     let subtree_key_values = subtree.get_kv_pairs();
                     // TODO: make use of the direction
@@ -146,16 +170,32 @@ impl GroveDb {
                         // TODO: Figure out what to do if decoding fails
                         let element = raw_decode(value_bytes).unwrap();
                         dbg!(&element);
-                        // check if the element is of type tree
-                        // if is it a tree, set has_subtree
+
                         match element {
                             Element::Tree(_) => {
-                                // following a greedy approach, one we encounter a
-                                // subtree we exhaust it before moving on to the
-                                // next subtree
-                                // has_subtree, was to make sure we don't make use
-                                // of the result set (do we still need this?)
-                                has_subtree = true;
+                                // we should add the proof of the current element
+                                // before hitting the children
+                                // since we know it has a useful subtree, then we
+                                // know this is not a leaf node as such we can prove
+                                // it without limit and offset
+                                if !has_useful_subtree {
+                                    // add the current elements merk proof
+                                    has_useful_subtree = true;
+
+                                    // generate unsized merk proof for current element
+                                    // TODO: Remove duplication
+                                    // TODO: How do you handle mixed tree types?
+                                    // TODO: Get rid of query clone
+                                    let ProofConstructionResult { proof, .. } = subtree
+                                        .prove(query.query.query.clone(), None, None)
+                                        .expect("should generate proof");
+
+                                    // TODO: Switch to variable length encoding
+                                    debug_assert!(proof.len() < 256);
+                                    write_to_vec(proofs, &vec![MERK_PROOF, proof.len() as u8]);
+                                    write_to_vec(proofs, &proof);
+                                }
+
                                 // recurse on this subtree, by creating a new
                                 // path_slice
                                 // with the new key
@@ -185,46 +225,57 @@ impl GroveDb {
                                 dbg!(&query);
 
                                 let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
+                                // TODO: Propagate the limit and offset values by creating a sized
+                                // query
                                 let new_path_query =
                                     PathQuery::new_unsized(new_path_owned, query.unwrap());
 
-                                prove_subqueries(db, proofs, new_path, new_path_query);
+                                // signify you are about to add child proofs
+                                write_to_vec(proofs, &vec![CHILD]);
+
+                                // add proofs for child nodes
+                                // TODO: Handle error properly, what could cause an error?
+                                let limit_offset_result =
+                                    prove_subqueries(db, proofs, new_path, new_path_query).unwrap();
+                                current_limit = limit_offset_result.0;
+                                current_offset = limit_offset_result.1;
+
+                                // signify that you are done with child proofs
+                                write_to_vec(proofs, &vec![PARENT]);
                             }
                             _ => {
-                                // if no subtree then we care about the result set
-                                dbg!("not tree");
+                                // Current implementation makes the assumption that all elements of
+                                // a result set are of the same type i.e either all trees, all items
+                                // e.t.c and not mixed types.
+                                // This catches when that invariant is not preserved.
+                                debug_assert!(has_useful_subtree == false);
                             }
                         }
                     }
-                    // dbg!(m);
                     dbg!("end");
                 }
 
-                let limit = if !has_subtree {
-                    query.query.limit
-                } else {
-                    None
-                };
-                let offset = if !has_subtree {
-                    query.query.offset
-                } else {
-                    None
-                };
+                // if the current element has a useful subtree then we already added the proof
+                // for this element (skip proof addition).
+                if !has_useful_subtree {
+                    let proof_result = subtree
+                        .prove(query.query.query, current_limit, current_offset)
+                        .expect("should generate proof");
 
-                dbg!(&query.query.query);
-                let ProofConstructionResult { proof, .. } = subtree
-                    .prove(query.query.query, limit, offset)
-                    .expect("should generate proof");
+                    // update limit and offset values
+                    current_limit = proof_result.limit;
+                    current_offset = proof_result.offset;
 
-                // only adding to the proof result set, after you have added that of
-                // your child nodes
-                // TODO: Switch to variable length encoding
-                debug_assert!(proof.len() < 256);
-                write_to_vec(proofs, &vec![MERK_PROOF, proof.len() as u8]);
-                write_to_vec(proofs, &proof);
+                    // only adding to the proof result set, after you have added that of
+                    // your child nodes
+                    // TODO: Switch to variable length encoding
+                    debug_assert!(proof_result.proof.len() < 256);
+                    write_to_vec(proofs, &vec![MERK_PROOF, proof_result.proof.len() as u8]);
+                    write_to_vec(proofs, &proof_result.proof);
+                }
             });
 
-            Ok(())
+            Ok((current_limit, current_offset))
         }
 
         // generate proof up to root
