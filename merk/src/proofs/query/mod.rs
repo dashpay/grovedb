@@ -278,6 +278,16 @@ impl std::hash::Hash for QueryItem {
 }
 
 impl QueryItem {
+    pub fn processing_footprint(&self) -> u32 {
+        match self {
+            QueryItem::Key(key) => key.len() as u32,
+            QueryItem::RangeFull(_) => 0u32,
+            _ => {
+                (self.lower_bound().0.len() + self.upper_bound().0.len()) as u32
+            }
+        }
+    }
+
     pub fn lower_bound(&self) -> (&[u8], bool) {
         match self {
             QueryItem::Key(key) => (key.as_slice(), false),
