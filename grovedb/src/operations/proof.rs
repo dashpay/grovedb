@@ -12,6 +12,7 @@ use crate::{
     GroveDb, PathQuery, Query, SizedQuery,
 };
 
+// TODO: cleanup, maybe enum??
 const MERK_PROOF: u8 = 0x01;
 const SIZED_MERK_PROOF: u8 = 0x02;
 const ROOT_PROOF: u8 = 0x03;
@@ -127,8 +128,11 @@ impl GroveDb {
             path: Vec<&[u8]>,
             query: PathQuery,
         ) -> Result<(Option<u16>, Option<u16>), Error> {
+
+            // Track final limit and offset values for correct propagation
             let mut current_limit: Option<u16> = query.query.limit;
             let mut current_offset: Option<u16> = query.query.offset;
+
             // get subtree at given path
             // if there is no subquery
             // prove the current tree
@@ -237,8 +241,15 @@ impl GroveDb {
                                 // TODO: Handle error properly, what could cause an error?
                                 let limit_offset_result =
                                     prove_subqueries(db, proofs, new_path, new_path_query).unwrap();
+
                                 current_limit = limit_offset_result.0;
                                 current_offset = limit_offset_result.1;
+
+                                // if we hit the limit, we should kill the loop
+                                if current_limit.is_some() && current_limit.unwrap() == 0 {
+                                    dbg!("killing because we hit the limit");
+                                    break;
+                                }
 
                                 // signify that you are done with child proofs
                                 write_to_vec(proofs, &vec![PARENT]);
@@ -270,7 +281,7 @@ impl GroveDb {
                     // your child nodes
                     // TODO: Switch to variable length encoding
                     debug_assert!(proof_result.proof.len() < 256);
-                    write_to_vec(proofs, &vec![MERK_PROOF, proof_result.proof.len() as u8]);
+                    write_to_vec(proofs, &vec![SIZED_MERK_PROOF, proof_result.proof.len() as u8]);
                     write_to_vec(proofs, &proof_result.proof);
                 }
             });
