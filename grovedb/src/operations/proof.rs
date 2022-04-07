@@ -242,6 +242,9 @@ impl GroveDb {
                                 let limit_offset_result =
                                     prove_subqueries(db, proofs, new_path, new_path_query).unwrap();
 
+                                // signify that you are done with child proofs
+                                write_to_vec(proofs, &vec![PARENT]);
+
                                 current_limit = limit_offset_result.0;
                                 current_offset = limit_offset_result.1;
 
@@ -250,9 +253,6 @@ impl GroveDb {
                                     dbg!("killing because we hit the limit");
                                     break;
                                 }
-
-                                // signify that you are done with child proofs
-                                write_to_vec(proofs, &vec![PARENT]);
                             }
                             _ => {
                                 // Current implementation makes the assumption that all elements of
@@ -346,7 +346,7 @@ impl GroveDb {
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
         let mut proof_reader = ProofReader::new(proof);
 
-        let merk_proof = proof_reader.read_proof(MERK_PROOF)?;
+        let merk_proof = proof_reader.read_proof(SIZED_MERK_PROOF)?;
 
         let (mut last_root_hash, result_set) = merk::execute_proof(
             &merk_proof,
