@@ -1027,6 +1027,7 @@ pub fn verify_query(
                                 }
                             }
                         }
+
                         // add data to output
                         output.push((key.clone(), val.clone()));
 
