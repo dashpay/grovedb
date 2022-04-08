@@ -12,16 +12,24 @@ use crate::{
     GroveDb, PathQuery, Query, SizedQuery,
 };
 
-// TODO: cleanup, maybe enum??
-const MERK_PROOF: u8 = 0x01;
-const SIZED_MERK_PROOF: u8 = 0x02;
-const ROOT_PROOF: u8 = 0x03;
-// CHILD signifies that next proof elements are children of the current node
-const CHILD: u8 = 0x10;
-// PARENT signifies that we have gotten all child proofs for the current node
-const PARENT: u8 = 0x11;
+enum ProofType {
+    MERK_PROOF,
+    SIZED_MERK_PROOF,
+    ROOT_PROOF,
+}
+
+impl From<ProofType> for u8 {
+    fn from(proof_type: ProofType) -> Self {
+        match proof_type {
+            ProofType::MERK_PROOF => 0x01,
+            ProofType::SIZED_MERK_PROOF => 0x02,
+            ProofType::ROOT_PROOF => 0x03,
+        }
+    }
+}
 
 fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
+    dbg!(&value);
     dest.write_all(value);
 }
 
@@ -128,7 +136,6 @@ impl GroveDb {
             path: Vec<&[u8]>,
             query: PathQuery,
         ) -> Result<(Option<u16>, Option<u16>), Error> {
-
             // Track final limit and offset values for correct propagation
             let mut current_limit: Option<u16> = query.query.limit;
             let mut current_offset: Option<u16> = query.query.offset;
@@ -173,7 +180,7 @@ impl GroveDb {
                     for (key, value_bytes) in subtree_key_values.iter() {
                         // TODO: Figure out what to do if decoding fails
                         let element = raw_decode(value_bytes).unwrap();
-                        dbg!(&element);
+                        // dbg!(&element);
 
                         match element {
                             Element::Tree(_) => {
@@ -196,7 +203,10 @@ impl GroveDb {
 
                                     // TODO: Switch to variable length encoding
                                     debug_assert!(proof.len() < 256);
-                                    write_to_vec(proofs, &vec![MERK_PROOF, proof.len() as u8]);
+                                    write_to_vec(
+                                        proofs,
+                                        &vec![ProofType::MERK_PROOF.into(), proof.len() as u8],
+                                    );
                                     write_to_vec(proofs, &proof);
                                 }
 
@@ -225,8 +235,8 @@ impl GroveDb {
                                     query = Some(key_as_query);
                                 }
 
-                                dbg!(&new_path);
-                                dbg!(&query);
+                                // dbg!(&new_path);
+                                // dbg!(&query);
 
                                 let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
                                 // TODO: Propagate the limit and offset values by creating a sized
@@ -235,7 +245,9 @@ impl GroveDb {
                                     PathQuery::new_unsized(new_path_owned, query.unwrap());
 
                                 // signify you are about to add child proofs
-                                write_to_vec(proofs, &vec![CHILD]);
+                                // TODO: Taking this out for now as instruction might be in query
+                                // itself write_to_vec(proofs,
+                                // &vec![CHILD]);
 
                                 // add proofs for child nodes
                                 // TODO: Handle error properly, what could cause an error?
@@ -243,7 +255,9 @@ impl GroveDb {
                                     prove_subqueries(db, proofs, new_path, new_path_query).unwrap();
 
                                 // signify that you are done with child proofs
-                                write_to_vec(proofs, &vec![PARENT]);
+                                // TODO: Taking this out for now as instruction might be in query
+                                // itself write_to_vec(proofs,
+                                // &vec![PARENT]);
 
                                 current_limit = limit_offset_result.0;
                                 current_offset = limit_offset_result.1;
@@ -281,7 +295,13 @@ impl GroveDb {
                     // your child nodes
                     // TODO: Switch to variable length encoding
                     debug_assert!(proof_result.proof.len() < 256);
-                    write_to_vec(proofs, &vec![SIZED_MERK_PROOF, proof_result.proof.len() as u8]);
+                    write_to_vec(
+                        proofs,
+                        &vec![
+                            ProofType::SIZED_MERK_PROOF.into(),
+                            proof_result.proof.len() as u8,
+                        ],
+                    );
                     write_to_vec(proofs, &proof_result.proof);
                 }
             });
@@ -294,6 +314,7 @@ impl GroveDb {
         while let Some((key, path_slice)) = split_path {
             if path_slice.is_empty() {
                 // generate root proof
+                // TODO: Encode the leave count
                 meta_storage_context_optional_tx!(self.db, None, meta_storage, {
                     let root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;
                     let mut root_index: Vec<usize> = vec![];
@@ -305,7 +326,10 @@ impl GroveDb {
                     let root_proof = root_tree.proof(&root_index).to_bytes();
 
                     debug_assert!(root_proof.len() < 256);
-                    write_to_vec(&mut proof_result, &vec![ROOT_PROOF, root_proof.len() as u8]);
+                    write_to_vec(
+                        &mut proof_result,
+                        &vec![ProofType::ROOT_PROOF.into(), root_proof.len() as u8],
+                    );
                     write_to_vec(&mut proof_result, &root_proof);
 
                     // add the index values required to prove the root
@@ -329,7 +353,10 @@ impl GroveDb {
                         .expect("should generate proof");
 
                     debug_assert!(proof.len() < 256);
-                    write_to_vec(&mut proof_result, &vec![MERK_PROOF, proof.len() as u8]);
+                    write_to_vec(
+                        &mut proof_result,
+                        &vec![ProofType::MERK_PROOF.into(), proof.len() as u8],
+                    );
                     write_to_vec(&mut proof_result, &proof);
                 });
             }
@@ -339,6 +366,32 @@ impl GroveDb {
         Ok(proof_result)
     }
 
+    // Proof is divided into 2 main parts.
+    // - subquery proofs and path proof
+    // subquery proofs have the parent elements first then their children
+    // there are two types of merk proofs now (sized and unsized), we care about
+    // the result set of sized (sized just means this is a proof for a leaf node)
+    // have to keep track of the result set (the same way we keep track of the proof
+    // result for construction) the result set would be seen in their ordered
+    // form Need a subroutine to verify the subqueries proof
+    // How do we know when the subqery proof is done??
+    // We know it starts the proof, we can either read a sized or unsized merk proof
+    // TODO: Define changes to the proof reader
+    // verify_subquery routine should be recursive also I believe
+    // to verify you need to pass the query, limit and offset
+    // we are doing parent first so that we know what query the child nodes would
+    // need Hence we have to verify the first proof we read (ah the parents
+    // would tell us what to expect) TODO: Might be possible to remove the child
+    // and parent markers?? Read the parent, verify the proof with the current
+    // query (get the result set) That tells you the keys you require proofs for
+    // (if it was an unsized query - signifying there is more) TODO: Note that
+    // this makes the same assumption that all elements of the result set are of the
+    // same type really, all we care about it the actual type of the proof we
+    // read unsized - verify and expect proof for the result set (unless limit
+    // has been hit) sized - verify, update limit and offset + add result to
+    // global result set subroutine should return the root_hash + updated limit
+    // and offset
+
     pub fn execute_proof(
         proof: &[u8],
         query: PathQuery,
@@ -346,7 +399,7 @@ impl GroveDb {
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
         let mut proof_reader = ProofReader::new(proof);
 
-        let merk_proof = proof_reader.read_proof(SIZED_MERK_PROOF)?;
+        let merk_proof = proof_reader.read_proof(ProofType::SIZED_MERK_PROOF.into())?;
 
         let (mut last_root_hash, result_set) = merk::execute_proof(
             &merk_proof,
@@ -361,11 +414,12 @@ impl GroveDb {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             if !path_slice.is_empty() {
-                let merk_proof = proof_reader.read_proof(MERK_PROOF)?;
+                let merk_proof = proof_reader.read_proof(ProofType::MERK_PROOF.into())?;
 
                 let mut parent_query = Query::new();
                 parent_query.insert_key(key.to_vec());
 
+                // TODO: Handle this better, should not be using expect
                 let proof_result = merk::execute_proof(
                     &merk_proof,
                     &parent_query,
@@ -398,7 +452,7 @@ impl GroveDb {
             split_path = path_slice.split_last();
         }
 
-        let root_proof = proof_reader.read_proof(ROOT_PROOF)?;
+        let root_proof = proof_reader.read_proof(ProofType::ROOT_PROOF.into())?;
 
         let root_meta_data = proof_reader.read_to_end();
         let root_index_usize = root_meta_data
@@ -422,6 +476,8 @@ impl GroveDb {
     }
 }
 
+// I need this to be able to read data and tell me what type of data it has read
+// maybe just read proof without
 struct ProofReader<'a> {
     proof_data: &'a [u8],
 }
