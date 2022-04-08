@@ -12,10 +12,12 @@ use crate::{
     GroveDb, PathQuery, Query, SizedQuery,
 };
 
+#[derive(Debug)]
 enum ProofType {
     MERK_PROOF,
     SIZED_MERK_PROOF,
     ROOT_PROOF,
+    INVALID_TYPE,
 }
 
 impl From<ProofType> for u8 {
@@ -24,6 +26,18 @@ impl From<ProofType> for u8 {
             ProofType::MERK_PROOF => 0x01,
             ProofType::SIZED_MERK_PROOF => 0x02,
             ProofType::ROOT_PROOF => 0x03,
+            ProofType::INVALID_TYPE => 0x10
+        }
+    }
+}
+
+impl From<u8> for ProofType {
+    fn from(val: u8) -> Self {
+        match val {
+            0x01 => ProofType::MERK_PROOF,
+            0x02 => ProofType::SIZED_MERK_PROOF,
+            0x03 => ProofType::ROOT_PROOF,
+            _ => ProofType::INVALID_TYPE,
         }
     }
 }
