@@ -8,7 +8,7 @@ use crate::{
     subtree::raw_decode,
     util::{merk_optional_tx, meta_storage_context_optional_tx},
     Element, Error,
-    Error::InvalidPath,
+    Error::{InvalidPath, InvalidProof},
     GroveDb, PathQuery, Query, SizedQuery,
 };
 
@@ -411,18 +411,67 @@ impl GroveDb {
         query: PathQuery,
     ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
+
+        // global result set
+        let mut result_set: Vec<(Vec<u8>, Vec<u8>)> = vec![];
+        // initialize proof reader
         let mut proof_reader = ProofReader::new(proof);
 
-        let merk_proof = proof_reader.read_proof_of_type(ProofType::SIZED_MERK_PROOF.into())?;
+        // not sure the type of the initial merk proof (might be sized or unsized, but
+        // should be merk proof right??) TODO: Is there a possibility that there
+        // might only be a root proof (handle accordingly) maybe use the length
+        // of the path to determine this?? assuming it starts with a merk proof
+        // TODO: Remove
+        // let merk_proof =
+        // proof_reader.read_proof_of_type(ProofType::SIZED_MERK_PROOF.into())?;
 
-        let (mut last_root_hash, result_set) = merk::execute_proof(
-            &merk_proof,
-            &query.query.query,
-            query.query.limit,
-            query.query.offset,
-            query.query.query.left_to_right,
-        )
-        .expect("should execute proof");
+        // TODO: optionally run this
+        // TODO: Get rid of clone
+        let mut last_root_hash =
+            execute_subquery_proof(&mut proof_reader, &mut result_set, query.clone())?;
+
+        // what should this take as argument?
+        // needs the proof reader_for sure to read the merk proof
+        // needs the query object also
+        fn execute_subquery_proof(
+            proof_reader: &mut ProofReader,
+            result_set: &mut Vec<(Vec<u8>, Vec<u8>)>,
+            query: PathQuery,
+        ) -> Result<[u8; 32], Error> {
+            // return the hash of the current proof object (subqueries)
+            // TODO: make uninitialized and immutable (just a workaround for now)
+            let mut root_hash: [u8; 32] = [0; 32];
+            let (proof_type, proof) = proof_reader.read_proof()?;
+            match proof_type {
+                ProofType::SIZED_MERK_PROOF => {
+                    // verify the proof with current offset and limit parameters
+                    // TODO: remove expect clause
+                    let verification_result = merk::execute_proof(
+                        &proof,
+                        &query.query.query,
+                        query.query.limit,
+                        query.query.offset,
+                        query.query.query.left_to_right,
+                    )
+                    .expect("should execute proof");
+
+                    root_hash = verification_result.0;
+                    result_set.extend(verification_result.1.result_set);
+                }
+                ProofType::MERK_PROOF => {
+                    // verify with no limit and offset
+                    // recurse on children (from result set)
+                    // verify that their proof is equal to the given hash
+                    // TODO: Handle limits
+                    // return the hash and updated limits and offset
+                }
+                _ => {
+                    // TODO: Update here when you fix possibility of only root
+                    // proof in proof return an error
+                }
+            }
+            Ok(root_hash)
+        }
 
         // Validate the path
         let mut split_path = path_slices.split_last();
@@ -474,6 +523,7 @@ impl GroveDb {
             .map(|index| index as usize)
             .collect::<Vec<usize>>();
 
+        // TODO: Rename
         let root_proof_terrible_name = match MerkleProof::<Sha256>::try_from(root_proof) {
             Ok(proof) => Ok(proof),
             Err(_) => Err(Error::InvalidProof("invalid proof element")),
@@ -486,12 +536,13 @@ impl GroveDb {
             Err(_) => Err(Error::InvalidProof("Invalid proof element")),
         }?;
 
-        Ok((root_hash, result_set.result_set))
+        Ok((root_hash, result_set))
     }
 }
 
 // I need this to be able to read data and tell me what type of data it has read
 // maybe just read proof without an expected type
+#[derive(Debug)]
 struct ProofReader<'a> {
     proof_data: &'a [u8],
 }
@@ -502,6 +553,7 @@ impl<'a> ProofReader<'a> {
     }
 
     // TODO: Handle duplication
+    // TODO: handle error (e.g. not enough bytes to read)
     fn read_proof(&mut self) -> Result<(ProofType, Vec<u8>), Error> {
         let mut data_type = [0; 1];
         self.proof_data.read(&mut data_type);
