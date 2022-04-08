@@ -43,7 +43,7 @@ impl From<u8> for ProofType {
 }
 
 fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
-    dbg!(&value);
+    // dbg!(&value);
     dest.write_all(value);
 }
 
@@ -150,6 +150,7 @@ impl GroveDb {
             path: Vec<&[u8]>,
             query: PathQuery,
         ) -> Result<(Option<u16>, Option<u16>), Error> {
+            // TODO: Not sure this is supposed to be inside
             // Track final limit and offset values for correct propagation
             let mut current_limit: Option<u16> = query.query.limit;
             let mut current_offset: Option<u16> = query.query.offset;
@@ -193,6 +194,8 @@ impl GroveDb {
                     // TODO: make use of the direction
                     for (key, value_bytes) in subtree_key_values.iter() {
                         // TODO: Figure out what to do if decoding fails
+                        dbg!(&key);
+                        dbg!(&value_bytes);
                         let element = raw_decode(value_bytes).unwrap();
                         // dbg!(&element);
 
@@ -416,6 +419,8 @@ impl GroveDb {
         let mut result_set: Vec<(Vec<u8>, Vec<u8>)> = vec![];
         // initialize proof reader
         let mut proof_reader = ProofReader::new(proof);
+        let mut current_limit = query.query.limit;
+        let mut current_offset = query.query.offset;
 
         // not sure the type of the initial merk proof (might be sized or unsized, but
         // should be merk proof right??) TODO: Is there a possibility that there
@@ -427,47 +432,128 @@ impl GroveDb {
 
         // TODO: optionally run this
         // TODO: Get rid of clone
-        let mut last_root_hash =
-            execute_subquery_proof(&mut proof_reader, &mut result_set, query.clone())?;
+        let mut last_root_hash = execute_subquery_proof(
+            &mut proof_reader,
+            &mut result_set,
+            &mut current_limit,
+            &mut current_offset,
+            query.clone(),
+        )?;
 
+        // TODO: Should proof verification take into account the path??
+        // TODO: Might need to prove subquery keys all the time
+        // TODO: Should fail if we have subquery and subquery key
         // what should this take as argument?
         // needs the proof reader_for sure to read the merk proof
         // needs the query object also
         fn execute_subquery_proof(
             proof_reader: &mut ProofReader,
             result_set: &mut Vec<(Vec<u8>, Vec<u8>)>,
+            current_limit: &mut Option<u16>,
+            current_offset: &mut Option<u16>,
             query: PathQuery,
         ) -> Result<[u8; 32], Error> {
-            // return the hash of the current proof object (subqueries)
-            // TODO: make uninitialized and immutable (just a workaround for now)
-            let mut root_hash: [u8; 32] = [0; 32];
+            let root_hash: [u8; 32];
             let (proof_type, proof) = proof_reader.read_proof()?;
             match proof_type {
                 ProofType::SIZED_MERK_PROOF => {
+                    dbg!("got to sized proof");
                     // verify the proof with current offset and limit parameters
-                    // TODO: remove expect clause
+                    // TODO: remove expect clause + clone
                     let verification_result = merk::execute_proof(
                         &proof,
                         &query.query.query,
-                        query.query.limit,
-                        query.query.offset,
+                        current_limit.clone(),
+                        current_offset.clone(),
                         query.query.query.left_to_right,
                     )
                     .expect("should execute proof");
 
                     root_hash = verification_result.0;
                     result_set.extend(verification_result.1.result_set);
+
+                    // update limit and offset
+                    *current_limit = verification_result.1.limit;
+                    *current_offset = verification_result.1.offset;
                 }
                 ProofType::MERK_PROOF => {
+                    dbg!("got unsized prooooooof");
                     // verify with no limit and offset
                     // recurse on children (from result set)
                     // verify that their proof is equal to the given hash
-                    // TODO: Handle limits
                     // return the hash and updated limits and offset
+                    // TODO: remove expect clause
+                    let verification_result = merk::execute_proof(
+                        &proof,
+                        &query.query.query,
+                        None,
+                        None,
+                        query.query.query.left_to_right,
+                    )
+                    .expect("should execute proof");
+
+                    root_hash = verification_result.0;
+                    dbg!(&root_hash);
+                    dbg!(&verification_result.1.result_set);
+
+                    // iterate over the children
+                    // TODO: remove clone
+                    for (key, value_bytes) in verification_result.1.result_set.clone() {
+                        dbg!("nothing");
+                        // we ue the key to get the exact subquery
+                        // TODO: Handle limits
+                        // recurse with the new subquery
+                        // verify that the root hash is what you expect
+                        // value must represent a tree (error if it does not)
+                        // maybe err first
+                        // TODO: Remove duplication
+                        dbg!("decoding child");
+                        let child_element = Element::deserialize(value_bytes.as_slice())?;
+                        match child_element {
+                            Element::Tree(expected_root_hash) => {
+                                // construct the subquery
+                                // TODO: Is it possible to prove that the subquery key was applied??
+                                // TODO: Do I need to prove the path of the subqueries??
+
+                                // TODO: add direction
+                                // TODO: change from default subquery type
+                                // don't recurse if the limit is zero
+                                if current_limit.is_some() && current_limit.unwrap() == 0 {
+                                    // we are done verifying the subqueries
+                                    break;
+                                }
+
+                                // TODO: Make use of the subquery_key
+                                let (subquery_key, subquery_value) =
+                                    Element::default_subquery_paths_for_sized_query(&query.query);
+
+                                let new_path_query =
+                                    PathQuery::new_unsized(vec![], subquery_value.unwrap());
+
+                                let child_hash = execute_subquery_proof(
+                                    proof_reader,
+                                    result_set,
+                                    current_limit,
+                                    current_offset,
+                                    new_path_query,
+                                )?;
+
+                                // child hash should be the same as expected hash
+                                if child_hash != expected_root_hash {
+                                    return Err(Error::InvalidProof(
+                                        "child hash doesn't match the expected hash",
+                                    ));
+                                }
+                            }
+                            _ => {
+                                return Err(Error::InvalidProof("Missing proof for subtree"));
+                            }
+                        }
+                    }
                 }
                 _ => {
                     // TODO: Update here when you fix possibility of only root
-                    // proof in proof return an error
+                    return Err(Error::InvalidProof("wrong proof type"));
                 }
             }
             Ok(root_hash)
