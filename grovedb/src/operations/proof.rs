@@ -26,7 +26,7 @@ impl From<ProofType> for u8 {
             ProofType::MERK_PROOF => 0x01,
             ProofType::SIZED_MERK_PROOF => 0x02,
             ProofType::ROOT_PROOF => 0x03,
-            ProofType::INVALID_TYPE => 0x10
+            ProofType::INVALID_TYPE => 0x10,
         }
     }
 }
@@ -413,7 +413,7 @@ impl GroveDb {
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
         let mut proof_reader = ProofReader::new(proof);
 
-        let merk_proof = proof_reader.read_proof(ProofType::SIZED_MERK_PROOF.into())?;
+        let merk_proof = proof_reader.read_proof_of_type(ProofType::SIZED_MERK_PROOF.into())?;
 
         let (mut last_root_hash, result_set) = merk::execute_proof(
             &merk_proof,
@@ -428,7 +428,7 @@ impl GroveDb {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             if !path_slice.is_empty() {
-                let merk_proof = proof_reader.read_proof(ProofType::MERK_PROOF.into())?;
+                let merk_proof = proof_reader.read_proof_of_type(ProofType::MERK_PROOF.into())?;
 
                 let mut parent_query = Query::new();
                 parent_query.insert_key(key.to_vec());
@@ -466,7 +466,7 @@ impl GroveDb {
             split_path = path_slice.split_last();
         }
 
-        let root_proof = proof_reader.read_proof(ProofType::ROOT_PROOF.into())?;
+        let root_proof = proof_reader.read_proof_of_type(ProofType::ROOT_PROOF.into())?;
 
         let root_meta_data = proof_reader.read_to_end();
         let root_index_usize = root_meta_data
@@ -491,7 +491,7 @@ impl GroveDb {
 }
 
 // I need this to be able to read data and tell me what type of data it has read
-// maybe just read proof without
+// maybe just read proof without an expected type
 struct ProofReader<'a> {
     proof_data: &'a [u8],
 }
@@ -501,7 +501,22 @@ impl<'a> ProofReader<'a> {
         Self { proof_data }
     }
 
-    fn read_proof(&mut self, expected_data_type: u8) -> Result<Vec<u8>, Error> {
+    // TODO: Handle duplication
+    fn read_proof(&mut self) -> Result<(ProofType, Vec<u8>), Error> {
+        let mut data_type = [0; 1];
+        self.proof_data.read(&mut data_type);
+
+        let proof_type: ProofType = data_type[0].into();
+
+        let mut length = vec![0; 1];
+        self.proof_data.read(&mut length);
+        let mut proof = vec![0; length[0] as usize];
+        self.proof_data.read(&mut proof);
+
+        Ok((proof_type, proof))
+    }
+
+    fn read_proof_of_type(&mut self, expected_data_type: u8) -> Result<Vec<u8>, Error> {
         let mut data_type = [0; 1];
         self.proof_data.read(&mut data_type);
 
