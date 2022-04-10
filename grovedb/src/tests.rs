@@ -416,9 +416,31 @@ fn test_path_query_proofs_with_default_subquery() {
     //             k3,v3
     //         innertree3
     //             k4,v4
+    //     deep_leaf
+    //          deep_node_1
+    //              deeper_node_1
+    //                  k1,v1
+    //                  k2,v2
+    //                  k3,v3
+    //              deeper_node_2
+    //                  k4,v4
+    //                  k5,v5
+    //                  k6,v6
+    //          deep_node_2
+    //              deeper_node_3
+    //                  k7,v7
+    //                  k8,v8
+    //                  k9,v9
+    //              deeper_node_3
+    //                  k10,v10
+    //                  k11,v11
 
     // Insert elements into grovedb instance
     let temp_db = make_grovedb();
+    // let DEEP_LEAF: &[u8] = b"deep_leaf";
+    // temp_db.insert([], DEEP_LEAF, Element::empty_tree(), None)
+    //     .expect("successful root tree leaf insert");
+
     // Insert level 1 nodes
     temp_db
         .insert([TEST_LEAF], b"innertree", Element::empty_tree(), None)
@@ -499,7 +521,7 @@ fn test_path_query_proofs_with_default_subquery() {
             None,
         )
         .expect("successful subtree insert");
-    // dbg!("temp-tree-root-hash", temp_db.root_hash(None));
+    dbg!("temp-tree-root-hash", temp_db.root_hash(None));
 
     let mut query = Query::new();
     query.insert_all();
