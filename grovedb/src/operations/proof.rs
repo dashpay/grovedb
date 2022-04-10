@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 
+use merk::proofs::query::QueryItem;
 use rs_merkle::{algorithms::Sha256, MerkleProof};
 use storage::rocksdb_storage::RocksDbStorage;
 
@@ -11,6 +12,8 @@ use crate::{
     Error::{InvalidPath, InvalidProof},
     GroveDb, PathQuery, Query, SizedQuery,
 };
+
+const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
 
 #[derive(Debug)]
 enum ProofType {
@@ -189,18 +192,23 @@ impl GroveDb {
                     query.query.limit.is_some() && query.query.limit.unwrap() == 0;
 
                 if has_subquery && !exhausted_limit {
-                    dbg!("start");
+                    // dbg!("start");
                     let subtree_key_values = subtree.get_kv_pairs();
                     // TODO: make use of the direction
                     for (key, value_bytes) in subtree_key_values.iter() {
                         // TODO: Figure out what to do if decoding fails
-                        dbg!(&key);
-                        dbg!(&value_bytes);
+                        // dbg!(&key);
+                        // dbg!(&value_bytes);
                         let element = raw_decode(value_bytes).unwrap();
                         // dbg!(&element);
 
                         match element {
-                            Element::Tree(_) => {
+                            Element::Tree(tree_hash) => {
+                                if tree_hash == EMPTY_TREE_HASH {
+                                    // skip proof generation for empty trees
+                                    continue;
+                                }
+
                                 // we should add the proof of the current element
                                 // before hitting the children
                                 // since we know it has a useful subtree, then we
@@ -210,13 +218,18 @@ impl GroveDb {
                                     // add the current elements merk proof
                                     has_useful_subtree = true;
 
+                                    // prove all the keys
+                                    // TODO: Add direction
+                                    let mut all_key_query = Query::new();
+                                    all_key_query.insert_all();
+
                                     // generate unsized merk proof for current element
                                     // TODO: Remove duplication
                                     // TODO: How do you handle mixed tree types?
-                                    // TODO: Get rid of query clone
                                     let ProofConstructionResult { proof, .. } = subtree
-                                        .prove(query.query.query.clone(), None, None)
+                                        .prove(all_key_query, None, None)
                                         .expect("should generate proof");
+                                    // dbg!("Writing", &proof);
 
                                     // TODO: Switch to variable length encoding
                                     debug_assert!(proof.len() < 256);
@@ -281,7 +294,7 @@ impl GroveDb {
 
                                 // if we hit the limit, we should kill the loop
                                 if current_limit.is_some() && current_limit.unwrap() == 0 {
-                                    dbg!("killing because we hit the limit");
+                                    // dbg!("killing because we hit the limit");
                                     break;
                                 }
                             }
@@ -294,7 +307,7 @@ impl GroveDb {
                             }
                         }
                     }
-                    dbg!("end");
+                    // dbg!("end");
                 }
 
                 // if the current element has a useful subtree then we already added the proof
@@ -457,7 +470,7 @@ impl GroveDb {
             let (proof_type, proof) = proof_reader.read_proof()?;
             match proof_type {
                 ProofType::SIZED_MERK_PROOF => {
-                    dbg!("got to sized proof");
+                    // dbg!("got to sized proof");
                     // verify the proof with current offset and limit parameters
                     // TODO: remove expect clause + clone
                     let verification_result = merk::execute_proof(
@@ -477,15 +490,23 @@ impl GroveDb {
                     *current_offset = verification_result.1.offset;
                 }
                 ProofType::MERK_PROOF => {
-                    dbg!("got unsized prooooooof");
+                    // dbg!("got unsized prooooooof");
+                    // dbg!("proving", &proof);
                     // verify with no limit and offset
                     // recurse on children (from result set)
                     // verify that their proof is equal to the given hash
                     // return the hash and updated limits and offset
                     // TODO: remove expect clause
+
+                    // for non leaf subtrees, we want to prove that all their keys
+                    // have an accompanying proof as long as the limit is non zero
+                    // and their child subtree is not empty
+                    let mut all_key_query = Query::new();
+                    all_key_query.insert_all();
+
                     let verification_result = merk::execute_proof(
                         &proof,
-                        &query.query.query,
+                        &all_key_query,
                         None,
                         None,
                         query.query.query.left_to_right,
@@ -493,13 +514,11 @@ impl GroveDb {
                     .expect("should execute proof");
 
                     root_hash = verification_result.0;
-                    dbg!(&root_hash);
-                    dbg!(&verification_result.1.result_set);
+                    // dbg!(&verification_result.1.result_set);
 
                     // iterate over the children
                     // TODO: remove clone
                     for (key, value_bytes) in verification_result.1.result_set.clone() {
-                        dbg!("nothing");
                         // we ue the key to get the exact subquery
                         // TODO: Handle limits
                         // recurse with the new subquery
@@ -507,16 +526,21 @@ impl GroveDb {
                         // value must represent a tree (error if it does not)
                         // maybe err first
                         // TODO: Remove duplication
-                        dbg!("decoding child");
+                        // dbg!("decoding child");
                         let child_element = Element::deserialize(value_bytes.as_slice())?;
+                        dbg!(&child_element);
                         match child_element {
                             Element::Tree(expected_root_hash) => {
                                 // construct the subquery
                                 // TODO: Is it possible to prove that the subquery key was applied??
                                 // TODO: Do I need to prove the path of the subqueries??
 
+                                if expected_root_hash == EMPTY_TREE_HASH {
+                                    // child node is empty, move on to next
+                                    continue;
+                                }
+
                                 // TODO: add direction
-                                // TODO: change from default subquery type
                                 // don't recurse if the limit is zero
                                 if current_limit.is_some() && current_limit.unwrap() == 0 {
                                     // we are done verifying the subqueries
@@ -524,6 +548,7 @@ impl GroveDb {
                                 }
 
                                 // TODO: Make use of the subquery_key
+                                // TODO: change from default subquery type
                                 let (subquery_key, subquery_value) =
                                     Element::default_subquery_paths_for_sized_query(&query.query);
 

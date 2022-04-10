@@ -408,6 +408,9 @@ fn test_path_query_proofs_with_default_subquery() {
     //             k1,v1
     //             k2,v2
     //             k3,v3
+    //         innertree4
+    //             k4,v4
+    //             k5,v5
     //     another_test_leaf
     //         innertree2
     //             k3,v3
@@ -419,6 +422,9 @@ fn test_path_query_proofs_with_default_subquery() {
     // Insert level 1 nodes
     temp_db
         .insert([TEST_LEAF], b"innertree", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([TEST_LEAF], b"innertree4", Element::empty_tree(), None)
         .expect("successful subtree insert");
     temp_db
         .insert(
@@ -461,6 +467,22 @@ fn test_path_query_proofs_with_default_subquery() {
             None,
         )
         .expect("successful subtree insert");
+    // temp_db
+    //     .insert(
+    //         [TEST_LEAF, b"innertree4"],
+    //         b"key4",
+    //         Element::Item(b"value4".to_vec()),
+    //         None,
+    //     )
+    //     .expect("successful subtree insert");
+    // temp_db
+    //     .insert(
+    //         [TEST_LEAF, b"innertree4"],
+    //         b"key5",
+    //         Element::Item(b"value5".to_vec()),
+    //         None,
+    //     )
+    //     .expect("successful subtree insert");
     temp_db
         .insert(
             [ANOTHER_TEST_LEAF, b"innertree2"],
@@ -477,6 +499,7 @@ fn test_path_query_proofs_with_default_subquery() {
             None,
         )
         .expect("successful subtree insert");
+    // dbg!("temp-tree-root-hash", temp_db.root_hash(None));
 
     let mut query = Query::new();
     query.insert_key(b"innertree".to_vec());
@@ -488,12 +511,12 @@ fn test_path_query_proofs_with_default_subquery() {
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
     let proof = temp_db.prove(path_query.clone()).unwrap();
-    dbg!(&proof);
+    // dbg!(&proof);
     let (hash, result_set) = GroveDb::execute_proof(proof.as_slice(), path_query).expect(
         "should
     execute proof",
     );
-    dbg!(&result_set);
+    // dbg!(&result_set);
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::Item(b"value1".to_vec()).serialize().unwrap();
