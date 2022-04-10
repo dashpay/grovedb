@@ -533,7 +533,7 @@ impl GroveDb {
                         // TODO: Remove duplication
                         // dbg!("decoding child");
                         let child_element = Element::deserialize(value_bytes.as_slice())?;
-                        dbg!(&child_element);
+                        // dbg!(&child_element);
                         match child_element {
                             Element::Tree(expected_root_hash) => {
                                 // construct the subquery

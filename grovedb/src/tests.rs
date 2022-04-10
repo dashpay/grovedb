@@ -431,15 +431,17 @@ fn test_path_query_proofs_with_default_subquery() {
     //                  k7,v7
     //                  k8,v8
     //                  k9,v9
-    //              deeper_node_3
+    //              deeper_node_4
     //                  k10,v10
     //                  k11,v11
 
     // Insert elements into grovedb instance
     let temp_db = make_grovedb();
-    // let DEEP_LEAF: &[u8] = b"deep_leaf";
-    // temp_db.insert([], DEEP_LEAF, Element::empty_tree(), None)
-    //     .expect("successful root tree leaf insert");
+
+    // add an extra root leaf
+    let DEEP_LEAF: &[u8] = b"deep_leaf";
+    temp_db.insert([], DEEP_LEAF, Element::empty_tree(), None)
+        .expect("successful root tree leaf insert");
 
     // Insert level 1 nodes
     temp_db
@@ -463,6 +465,12 @@ fn test_path_query_proofs_with_default_subquery() {
             Element::empty_tree(),
             None,
         )
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF], b"deep_node_1", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF], b"deep_node_2", Element::empty_tree(), None)
         .expect("successful subtree insert");
     // Insert level 2 nodes
     temp_db
@@ -521,7 +529,55 @@ fn test_path_query_proofs_with_default_subquery() {
             None,
         )
         .expect("successful subtree insert");
-    dbg!("temp-tree-root-hash", temp_db.root_hash(None));
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1"], b"deeper_node_1", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1"], b"deeper_node_2", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_2"], b"deeper_node_3", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_2"], b"deeper_node_4", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    // Insert level 3 nodes
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_1"], b"key1", Element::Item(b"value1".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_1"], b"key2", Element::Item(b"value2".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_1"], b"key3", Element::Item(b"value3".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_2"], b"key4", Element::Item(b"value4".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_2"], b"key5", Element::Item(b"value5".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_2"], b"key6", Element::Item(b"value6".to_vec()), None)
+        .expect("successful subtree insert");
+
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_3"], b"key7", Element::Item(b"value7".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_3"], b"key8", Element::Item(b"value8".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_3"], b"key9", Element::Item(b"value9".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_4"], b"key10", Element::Item(b"value10".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_4"], b"key11", Element::Item(b"value11".to_vec()), None)
+        .expect("successful subtree insert");
+
+    // dbg!("temp-tree-root-hash", temp_db.root_hash(None));
 
     let mut query = Query::new();
     query.insert_all();
@@ -578,6 +634,58 @@ fn test_path_query_proofs_with_default_subquery() {
 
     let keys = [b"key2".to_vec(), b"key3".to_vec(), b"key4".to_vec()];
     let values = [b"value2".to_vec(), b"value3".to_vec(), b"value4".to_vec()];
+    let elements = values.map(|x| Element::Item(x).serialize().unwrap());
+    let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
+    assert_eq!(result_set, expected_result_set);
+
+    // deep tree test
+    let mut query = Query::new();
+    query.insert_all();
+
+    let mut subq = Query::new();
+    subq.insert_all();
+
+    let mut sub_subquery = Query::new();
+    sub_subquery.insert_all();
+
+    subq.set_subquery(sub_subquery);
+    query.set_subquery(subq);
+
+    let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
+
+    let proof = temp_db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
+
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 11);
+
+    let keys = [
+        b"key1".to_vec(),
+        b"key2".to_vec(),
+        b"key3".to_vec(),
+        b"key4".to_vec(),
+        b"key5".to_vec(),
+        b"key6".to_vec(),
+        b"key7".to_vec(),
+        b"key8".to_vec(),
+        b"key9".to_vec(),
+        b"key10".to_vec(),
+        b"key11".to_vec(),
+    ];
+    let values = [
+        b"value1".to_vec(),
+        b"value2".to_vec(),
+        b"value3".to_vec(),
+        b"value4".to_vec(),
+        b"value5".to_vec(),
+        b"value6".to_vec(),
+        b"value7".to_vec(),
+        b"value8".to_vec(),
+        b"value9".to_vec(),
+        b"value10".to_vec(),
+        b"value11".to_vec(),
+    ];
     let elements = values.map(|x| Element::Item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
     assert_eq!(result_set, expected_result_set);
