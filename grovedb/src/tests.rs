@@ -11,6 +11,7 @@ use super::*;
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
 const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
+const DEEP_LEAF: &[u8] = b"deep_leaf";
 
 /// GroveDB wrapper to keep temp directory alive
 pub struct TempGroveDb {
@@ -57,6 +58,184 @@ fn add_test_leafs(db: &mut GroveDb) {
         .expect("successful root tree leaf insert");
     db.insert([], ANOTHER_TEST_LEAF, Element::empty_tree(), None)
         .expect("successful root tree leaf 2 insert");
+}
+
+fn make_deep_tree() -> TempGroveDb {
+    // Tree Structure
+    // root
+    //     test_leaf
+    //         innertree
+    //             k1,v1
+    //             k2,v2
+    //             k3,v3
+    //         innertree4
+    //             k4,v4
+    //             k5,v5
+    //     another_test_leaf
+    //         innertree2
+    //             k3,v3
+    //         innertree3
+    //             k4,v4
+    //     deep_leaf
+    //          deep_node_1
+    //              deeper_node_1
+    //                  k1,v1
+    //                  k2,v2
+    //                  k3,v3
+    //              deeper_node_2
+    //                  k4,v4
+    //                  k5,v5
+    //                  k6,v6
+    //          deep_node_2
+    //              deeper_node_3
+    //                  k7,v7
+    //                  k8,v8
+    //                  k9,v9
+    //              deeper_node_4
+    //                  k10,v10
+    //                  k11,v11
+
+    // Insert elements into grovedb instance
+    let temp_db = make_grovedb();
+
+    // add an extra root leaf
+    temp_db.insert([], DEEP_LEAF, Element::empty_tree(), None)
+        .expect("successful root tree leaf insert");
+
+    // Insert level 1 nodes
+    temp_db
+        .insert([TEST_LEAF], b"innertree", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([TEST_LEAF], b"innertree4", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [ANOTHER_TEST_LEAF],
+            b"innertree2",
+            Element::empty_tree(),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [ANOTHER_TEST_LEAF],
+            b"innertree3",
+            Element::empty_tree(),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF], b"deep_node_1", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF], b"deep_node_2", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    // Insert level 2 nodes
+    temp_db
+        .insert(
+            [TEST_LEAF, b"innertree"],
+            b"key1",
+            Element::Item(b"value1".to_vec()),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [TEST_LEAF, b"innertree"],
+            b"key2",
+            Element::Item(b"value2".to_vec()),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [TEST_LEAF, b"innertree"],
+            b"key3",
+            Element::Item(b"value3".to_vec()),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [TEST_LEAF, b"innertree4"],
+            b"key4",
+            Element::Item(b"value4".to_vec()),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [TEST_LEAF, b"innertree4"],
+            b"key5",
+            Element::Item(b"value5".to_vec()),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [ANOTHER_TEST_LEAF, b"innertree2"],
+            b"key3",
+            Element::Item(b"value3".to_vec()),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [ANOTHER_TEST_LEAF, b"innertree3"],
+            b"key4",
+            Element::Item(b"value4".to_vec()),
+            None,
+        )
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1"], b"deeper_node_1", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1"], b"deeper_node_2", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_2"], b"deeper_node_3", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_2"], b"deeper_node_4", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    // Insert level 3 nodes
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_1"], b"key1", Element::Item(b"value1".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_1"], b"key2", Element::Item(b"value2".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_1"], b"key3", Element::Item(b"value3".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_2"], b"key4", Element::Item(b"value4".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_2"], b"key5", Element::Item(b"value5".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_2"], b"key6", Element::Item(b"value6".to_vec()), None)
+        .expect("successful subtree insert");
+
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_3"], b"key7", Element::Item(b"value7".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_3"], b"key8", Element::Item(b"value8".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_3"], b"key9", Element::Item(b"value9".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_4"], b"key10", Element::Item(b"value10".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
+        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_4"], b"key11", Element::Item(b"value11".to_vec()), None)
+        .expect("successful subtree insert");
+    temp_db
 }
 
 #[test]
@@ -399,184 +578,11 @@ fn test_path_query_proofs_without_subquery() {
     );
 }
 
+
 #[test]
 fn test_path_query_proofs_with_default_subquery() {
-    // Tree Structure
-    // root
-    //     test_leaf
-    //         innertree
-    //             k1,v1
-    //             k2,v2
-    //             k3,v3
-    //         innertree4
-    //             k4,v4
-    //             k5,v5
-    //     another_test_leaf
-    //         innertree2
-    //             k3,v3
-    //         innertree3
-    //             k4,v4
-    //     deep_leaf
-    //          deep_node_1
-    //              deeper_node_1
-    //                  k1,v1
-    //                  k2,v2
-    //                  k3,v3
-    //              deeper_node_2
-    //                  k4,v4
-    //                  k5,v5
-    //                  k6,v6
-    //          deep_node_2
-    //              deeper_node_3
-    //                  k7,v7
-    //                  k8,v8
-    //                  k9,v9
-    //              deeper_node_4
-    //                  k10,v10
-    //                  k11,v11
 
-    // Insert elements into grovedb instance
-    let temp_db = make_grovedb();
-
-    // add an extra root leaf
-    let DEEP_LEAF: &[u8] = b"deep_leaf";
-    temp_db.insert([], DEEP_LEAF, Element::empty_tree(), None)
-        .expect("successful root tree leaf insert");
-
-    // Insert level 1 nodes
-    temp_db
-        .insert([TEST_LEAF], b"innertree", Element::empty_tree(), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert([TEST_LEAF], b"innertree4", Element::empty_tree(), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert(
-            [ANOTHER_TEST_LEAF],
-            b"innertree2",
-            Element::empty_tree(),
-            None,
-        )
-        .expect("successful subtree insert");
-    temp_db
-        .insert(
-            [ANOTHER_TEST_LEAF],
-            b"innertree3",
-            Element::empty_tree(),
-            None,
-        )
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF], b"deep_node_1", Element::empty_tree(), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF], b"deep_node_2", Element::empty_tree(), None)
-        .expect("successful subtree insert");
-    // Insert level 2 nodes
-    temp_db
-        .insert(
-            [TEST_LEAF, b"innertree"],
-            b"key1",
-            Element::Item(b"value1".to_vec()),
-            None,
-        )
-        .expect("successful subtree insert");
-    temp_db
-        .insert(
-            [TEST_LEAF, b"innertree"],
-            b"key2",
-            Element::Item(b"value2".to_vec()),
-            None,
-        )
-        .expect("successful subtree insert");
-    temp_db
-        .insert(
-            [TEST_LEAF, b"innertree"],
-            b"key3",
-            Element::Item(b"value3".to_vec()),
-            None,
-        )
-        .expect("successful subtree insert");
-    temp_db
-        .insert(
-            [TEST_LEAF, b"innertree4"],
-            b"key4",
-            Element::Item(b"value4".to_vec()),
-            None,
-        )
-        .expect("successful subtree insert");
-    temp_db
-        .insert(
-            [TEST_LEAF, b"innertree4"],
-            b"key5",
-            Element::Item(b"value5".to_vec()),
-            None,
-        )
-        .expect("successful subtree insert");
-    temp_db
-        .insert(
-            [ANOTHER_TEST_LEAF, b"innertree2"],
-            b"key3",
-            Element::Item(b"value3".to_vec()),
-            None,
-        )
-        .expect("successful subtree insert");
-    temp_db
-        .insert(
-            [ANOTHER_TEST_LEAF, b"innertree3"],
-            b"key4",
-            Element::Item(b"value4".to_vec()),
-            None,
-        )
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_1"], b"deeper_node_1", Element::empty_tree(), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_1"], b"deeper_node_2", Element::empty_tree(), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_2"], b"deeper_node_3", Element::empty_tree(), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_2"], b"deeper_node_4", Element::empty_tree(), None)
-        .expect("successful subtree insert");
-    // Insert level 3 nodes
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_1"], b"key1", Element::Item(b"value1".to_vec()), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_1"], b"key2", Element::Item(b"value2".to_vec()), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_1"], b"key3", Element::Item(b"value3".to_vec()), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_2"], b"key4", Element::Item(b"value4".to_vec()), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_2"], b"key5", Element::Item(b"value5".to_vec()), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_1", b"deeper_node_2"], b"key6", Element::Item(b"value6".to_vec()), None)
-        .expect("successful subtree insert");
-
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_3"], b"key7", Element::Item(b"value7".to_vec()), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_3"], b"key8", Element::Item(b"value8".to_vec()), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_3"], b"key9", Element::Item(b"value9".to_vec()), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_4"], b"key10", Element::Item(b"value10".to_vec()), None)
-        .expect("successful subtree insert");
-    temp_db
-        .insert([DEEP_LEAF, b"deep_node_2", b"deeper_node_4"], b"key11", Element::Item(b"value11".to_vec()), None)
-        .expect("successful subtree insert");
-
+    let temp_db = make_deep_tree();
     // dbg!("temp-tree-root-hash", temp_db.root_hash(None));
 
     let mut query = Query::new();
