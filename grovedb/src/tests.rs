@@ -533,10 +533,8 @@ fn test_path_query_proofs_with_default_subquery() {
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
     let proof = temp_db.prove(path_query.clone()).unwrap();
-    let (hash, result_set) = GroveDb::execute_proof(proof.as_slice(), path_query).expect(
-        "should
-    execute proof",
-    );
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 5);

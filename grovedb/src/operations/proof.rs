@@ -362,6 +362,11 @@ impl GroveDb {
                     );
                     write_to_vec(&mut proof_result, &root_proof);
 
+                    // write the number of root leafs
+                    // makes the assumption that 1 byte is enough to represent the root leaf count
+                    // size
+                    write_to_vec(&mut proof_result, &vec![root_leaf_keys.len() as u8]);
+
                     // add the index values required to prove the root
                     let root_index_bytes = root_index
                         .into_iter()
@@ -628,6 +633,10 @@ impl GroveDb {
 
         let root_proof = proof_reader.read_proof_of_type(ProofType::ROOT_PROOF.into())?;
 
+        // makes the assumption that 1 byte is enough to represent the root leaf count
+        // size
+        let root_leaf_size = proof_reader.read_byte()?;
+
         let root_meta_data = proof_reader.read_to_end();
         let root_index_usize = root_meta_data
             .into_iter()
@@ -640,9 +649,15 @@ impl GroveDb {
             Err(_) => Err(Error::InvalidProof("invalid proof element")),
         }?;
 
-        // TODO: Don't hard code the leave count
-        let root_hash = match root_proof_terrible_name.root(&root_index_usize, &[last_root_hash], 2)
-        {
+        // getting rid of the leaf count:
+        // for our purposes, root leafs are not expected to be very many
+        // could theoretically be represented with just one byte
+        // but nothing about the system prevents more than one byte of leaf keys
+        let root_hash = match root_proof_terrible_name.root(
+            &root_index_usize,
+            &[last_root_hash],
+            root_leaf_size[0] as usize,
+        ) {
             Ok(hash) => Ok(hash),
             Err(_) => Err(Error::InvalidProof("Invalid proof element")),
         }?;
@@ -661,6 +676,12 @@ struct ProofReader<'a> {
 impl<'a> ProofReader<'a> {
     fn new(proof_data: &'a [u8]) -> Self {
         Self { proof_data }
+    }
+
+    fn read_byte(&mut self) -> Result<[u8; 1], Error> {
+        let mut data = [0; 1];
+        self.proof_data.read(&mut data);
+        Ok(data)
     }
 
     // TODO: Handle duplication
