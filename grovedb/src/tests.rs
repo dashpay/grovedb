@@ -583,7 +583,6 @@ fn test_path_query_proofs_without_subquery() {
 fn test_path_query_proofs_with_default_subquery() {
 
     let temp_db = make_deep_tree();
-    // dbg!("temp-tree-root-hash", temp_db.root_hash(None));
 
     let mut query = Query::new();
     query.insert_all();
@@ -691,6 +690,46 @@ fn test_path_query_proofs_with_default_subquery() {
         b"value9".to_vec(),
         b"value10".to_vec(),
         b"value11".to_vec(),
+    ];
+    let elements = values.map(|x| Element::Item(x).serialize().unwrap());
+    let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
+    assert_eq!(result_set, expected_result_set);
+}
+
+#[test]
+fn test_path_query_proofs_with_subquery_key(){
+    let temp_db = make_deep_tree();
+
+    let mut query = Query::new();
+    query.insert_all();
+
+    let mut subq = Query::new();
+    subq.insert_all();
+    subq.set_subquery_key(b"deeper_node_1".to_vec());
+    query.set_subquery(subq);
+
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+    let proof = temp_db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
+
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 3);
+
+    let keys = [
+        b"key1".to_vec(),
+        b"key2".to_vec(),
+        b"key3".to_vec(),
+        b"key4".to_vec(),
+        b"key5".to_vec(),
+    ];
+    let values = [
+        b"value1".to_vec(),
+        b"value2".to_vec(),
+        b"value3".to_vec(),
+        b"value4".to_vec(),
+        b"value5".to_vec(),
     ];
     let elements = values.map(|x| Element::Item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();

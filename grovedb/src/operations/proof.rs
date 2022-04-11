@@ -184,6 +184,12 @@ impl GroveDb {
                 // we have a query, that is inserted in a sized query for the path query
                 // we only care about the query (not so simple)
 
+
+                // Dealing with subquery key and value
+                // a subquery key is essentially a key query item that you want to apply
+                // first before applying the actual subquery
+                // 
+
                 let (subquery_key, subquery_value) =
                     Element::default_subquery_paths_for_sized_query(&query.query);
 
