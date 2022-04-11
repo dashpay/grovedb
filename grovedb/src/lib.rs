@@ -1,3 +1,5 @@
+extern crate core;
+
 mod operations;
 mod subtree;
 #[cfg(test)]

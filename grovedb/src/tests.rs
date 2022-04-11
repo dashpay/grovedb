@@ -705,10 +705,11 @@ fn test_path_query_proofs_with_subquery_key(){
 
     let mut subq = Query::new();
     subq.insert_all();
-    subq.set_subquery_key(b"deeper_node_1".to_vec());
+    // subq.set_subquery_key(b"deeper_node_1".to_vec());
+    query.set_subquery_key(b"deeper_node_1".to_vec());
     query.set_subquery(subq);
 
-    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+    let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
 
     let proof = temp_db.prove(path_query.clone()).unwrap();
     let (hash, result_set) =

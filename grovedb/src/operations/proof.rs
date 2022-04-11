@@ -50,6 +50,17 @@ fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
     dest.write_all(value);
 }
 
+// TODO: Delete this function
+fn print_path(path: Vec<&[u8]>) {
+    let mut result = String::from("");
+    for p in path {
+        let m = std::str::from_utf8(p).unwrap();
+        result.push_str(" -> ");
+        result.push_str( m);
+    }
+    dbg!(result);
+}
+
 impl GroveDb {
     pub fn prove(&self, query: PathQuery) -> Result<Vec<u8>, Error> {
         // TODO: Should people be allowed to get proofs for tree items?? defaulting to
@@ -169,6 +180,7 @@ impl GroveDb {
             // if the element is a tree, then recurse
             // if it had subtrees, then generate proof without limit and offset
             // else use the limit and offset
+            print_path(path.clone());
             merk_optional_tx!(db, path.clone(), None, subtree, {
                 // TODO: Not allowed to create proof for an empty tree (handle this)
 
@@ -188,7 +200,9 @@ impl GroveDb {
                 // Dealing with subquery key and value
                 // a subquery key is essentially a key query item that you want to apply
                 // first before applying the actual subquery
-                // 
+                // hence adding a subquery key and subquery is essentially the same
+                // as adding two subqueries, one a key followed by the other query
+                //
 
                 let (subquery_key, subquery_value) =
                     Element::default_subquery_paths_for_sized_query(&query.query);
@@ -196,6 +210,8 @@ impl GroveDb {
                 let has_subquery = subquery_key.is_some() || subquery_value.is_some();
                 let exhausted_limit =
                     query.query.limit.is_some() && query.query.limit.unwrap() == 0;
+                dbg!(&has_subquery);
+                dbg!(exhausted_limit);
 
                 if has_subquery && !exhausted_limit {
                     // dbg!("start");
@@ -274,33 +290,27 @@ impl GroveDb {
                                 // dbg!(&new_path);
                                 // dbg!(&query);
 
+                                // there is a chance that this new path does not exist
+                                // if it does not exist, you can't add any proof, we should skip??
+                                // how would verification work?
+                                // self.check_subtree_exists_path_not_found(path_slices.clone(), None, None)?;
+
                                 let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
                                 // TODO: Propagate the limit and offset values by creating a sized
                                 // query
                                 let new_path_query =
                                     PathQuery::new_unsized(new_path_owned, query.unwrap());
 
-                                // signify you are about to add child proofs
-                                // TODO: Taking this out for now as instruction might be in query
-                                // itself write_to_vec(proofs,
-                                // &vec![CHILD]);
-
                                 // add proofs for child nodes
                                 // TODO: Handle error properly, what could cause an error?
                                 let limit_offset_result =
                                     prove_subqueries(db, proofs, new_path, new_path_query).unwrap();
-
-                                // signify that you are done with child proofs
-                                // TODO: Taking this out for now as instruction might be in query
-                                // itself write_to_vec(proofs,
-                                // &vec![PARENT]);
 
                                 current_limit = limit_offset_result.0;
                                 current_offset = limit_offset_result.1;
 
                                 // if we hit the limit, we should kill the loop
                                 if current_limit.is_some() && current_limit.unwrap() == 0 {
-                                    // dbg!("killing because we hit the limit");
                                     break;
                                 }
                             }
@@ -530,7 +540,7 @@ impl GroveDb {
                     // iterate over the children
                     // TODO: remove clone
                     for (key, value_bytes) in verification_result.1.result_set.clone() {
-                        // we ue the key to get the exact subquery
+                        // we use the key to get the exact subquery
                         // TODO: Handle limits
                         // recurse with the new subquery
                         // verify that the root hash is what you expect
@@ -539,7 +549,7 @@ impl GroveDb {
                         // TODO: Remove duplication
                         // dbg!("decoding child");
                         let child_element = Element::deserialize(value_bytes.as_slice())?;
-                        // dbg!(&child_element);
+                        dbg!(&child_element);
                         match child_element {
                             Element::Tree(expected_root_hash) => {
                                 // construct the subquery
@@ -562,6 +572,8 @@ impl GroveDb {
                                 // TODO: change from default subquery type
                                 let (subquery_key, subquery_value) =
                                     Element::default_subquery_paths_for_sized_query(&query.query);
+                                dbg!(&subquery_key);
+                                dbg!(&subquery_value);
 
                                 let new_path_query =
                                     PathQuery::new_unsized(vec![], subquery_value.unwrap());
