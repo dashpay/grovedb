@@ -970,12 +970,60 @@ fn test_path_query_proofs_with_direction() {
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
 
-    // for (m, _) in result_set.iter() {
-    //     dbg!(std::str::from_utf8(m));
-    // }
-
     let keys = [b"key10".to_vec(), b"key6".to_vec(), b"key5".to_vec()];
     let values = [b"value10".to_vec(), b"value6".to_vec(), b"value5".to_vec()];
+    let elements = values.map(|x| Element::Item(x).serialize().unwrap());
+    let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
+    assert_eq!(result_set, expected_result_set);
+
+    // combined directions
+    let mut query = Query::new();
+    query.insert_all();
+
+    let mut subq = Query::new_with_direction(false);
+    subq.insert_all();
+
+    let mut sub_subquery = Query::new();
+    sub_subquery.insert_all();
+
+    subq.set_subquery(sub_subquery);
+    query.set_subquery(subq);
+
+    let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
+
+    let proof = temp_db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
+
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 11);
+
+    let keys = [
+        b"key4".to_vec(),
+        b"key5".to_vec(),
+        b"key6".to_vec(),
+        b"key1".to_vec(),
+        b"key2".to_vec(),
+        b"key3".to_vec(),
+        b"key10".to_vec(),
+        b"key11".to_vec(),
+        b"key7".to_vec(),
+        b"key8".to_vec(),
+        b"key9".to_vec(),
+    ];
+    let values = [
+        b"value4".to_vec(),
+        b"value5".to_vec(),
+        b"value6".to_vec(),
+        b"value1".to_vec(),
+        b"value2".to_vec(),
+        b"value3".to_vec(),
+        b"value10".to_vec(),
+        b"value11".to_vec(),
+        b"value7".to_vec(),
+        b"value8".to_vec(),
+        b"value9".to_vec(),
+    ];
     let elements = values.map(|x| Element::Item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
     assert_eq!(result_set, expected_result_set);
