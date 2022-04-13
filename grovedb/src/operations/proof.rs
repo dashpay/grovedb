@@ -17,19 +17,19 @@ const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
 
 #[derive(Debug)]
 enum ProofType {
-    MERK_PROOF,
-    SIZED_MERK_PROOF,
-    ROOT_PROOF,
-    INVALID_TYPE,
+    MerkProof,
+    SizedMerkProof,
+    RootProof,
+    InvalidProof,
 }
 
 impl From<ProofType> for u8 {
     fn from(proof_type: ProofType) -> Self {
         match proof_type {
-            ProofType::MERK_PROOF => 0x01,
-            ProofType::SIZED_MERK_PROOF => 0x02,
-            ProofType::ROOT_PROOF => 0x03,
-            ProofType::INVALID_TYPE => 0x10,
+            ProofType::MerkProof => 0x01,
+            ProofType::SizedMerkProof => 0x02,
+            ProofType::RootProof => 0x03,
+            ProofType::InvalidProof => 0x10,
         }
     }
 }
@@ -37,10 +37,10 @@ impl From<ProofType> for u8 {
 impl From<u8> for ProofType {
     fn from(val: u8) -> Self {
         match val {
-            0x01 => ProofType::MERK_PROOF,
-            0x02 => ProofType::SIZED_MERK_PROOF,
-            0x03 => ProofType::ROOT_PROOF,
-            _ => ProofType::INVALID_TYPE,
+            0x01 => ProofType::MerkProof,
+            0x02 => ProofType::SizedMerkProof,
+            0x03 => ProofType::RootProof,
+            _ => ProofType::InvalidProof,
         }
     }
 }
@@ -252,7 +252,7 @@ impl GroveDb {
                                     debug_assert!(proof.len() < 256);
                                     write_to_vec(
                                         proofs,
-                                        &vec![ProofType::MERK_PROOF.into(), proof.len() as u8],
+                                        &vec![ProofType::MerkProof.into(), proof.len() as u8],
                                     );
                                     write_to_vec(proofs, &proof);
                                 }
@@ -309,7 +309,7 @@ impl GroveDb {
                                                 write_to_vec(
                                                     proofs,
                                                     &vec![
-                                                        ProofType::MERK_PROOF.into(),
+                                                        ProofType::MerkProof.into(),
                                                         proof.len() as u8,
                                                     ],
                                                 );
@@ -390,7 +390,7 @@ impl GroveDb {
                     write_to_vec(
                         proofs,
                         &vec![
-                            ProofType::SIZED_MERK_PROOF.into(),
+                            ProofType::SizedMerkProof.into(),
                             proof_result.proof.len() as u8,
                         ],
                     );
@@ -420,7 +420,7 @@ impl GroveDb {
                     debug_assert!(root_proof.len() < 256);
                     write_to_vec(
                         &mut proof_result,
-                        &vec![ProofType::ROOT_PROOF.into(), root_proof.len() as u8],
+                        &vec![ProofType::RootProof.into(), root_proof.len() as u8],
                     );
                     write_to_vec(&mut proof_result, &root_proof);
 
@@ -452,7 +452,7 @@ impl GroveDb {
                     debug_assert!(proof.len() < 256);
                     write_to_vec(
                         &mut proof_result,
-                        &vec![ProofType::MERK_PROOF.into(), proof.len() as u8],
+                        &vec![ProofType::MerkProof.into(), proof.len() as u8],
                     );
                     write_to_vec(&mut proof_result, &proof);
                 });
@@ -541,7 +541,7 @@ impl GroveDb {
             let root_hash: [u8; 32];
             let (proof_type, proof) = proof_reader.read_proof()?;
             match proof_type {
-                ProofType::SIZED_MERK_PROOF => {
+                ProofType::SizedMerkProof => {
                     // dbg!("got to sized proof");
                     // verify the proof with current offset and limit parameters
                     // TODO: remove expect clause + clone
@@ -561,7 +561,7 @@ impl GroveDb {
                     *current_limit = verification_result.1.limit;
                     *current_offset = verification_result.1.offset;
                 }
-                ProofType::MERK_PROOF => {
+                ProofType::MerkProof => {
                     // dbg!("got unsized prooooooof");
                     // dbg!("proving", &proof);
                     // verify with no limit and offset
@@ -632,41 +632,39 @@ impl GroveDb {
                                 // if it does not exist in the result set then stop
                                 // if it does exists in the result set, update the expected root
                                 // hash and continue
-                                dbg!(std::str::from_utf8(key.as_slice()));
-                                dbg!(std::str::from_utf8(
-                                    subquery_key.clone().unwrap().as_slice()
-                                ));
-                                let (proof_type, subkey_proof) = proof_reader.read_proof()?;
-                                // TODO: verify it's a merk proof
-                                let mut key_as_query = Query::new();
-                                key_as_query.insert_key(subquery_key.clone().unwrap());
-                                // TODO: add direction
-                                let verification_result = merk::execute_proof(
-                                    &subkey_proof,
-                                    &key_as_query,
-                                    None,
-                                    None,
-                                    true,
-                                );
-                                let rset = verification_result.unwrap().1.result_set;
-                                if rset.len() == 0 {
-                                    // subquery key does not exist in the subtree
-                                    // proceed to another subtree
-                                    continue;
-                                } else {
-                                    // if it does exist then update the expected root hash
-                                    // dbg!(rset);
-                                    let elem_value = &rset[0].1;
-                                    let elem = Element::deserialize(elem_value).unwrap();
-                                    match elem {
-                                        Element::Tree(new_exptected_hash) => {
-                                            expected_root_hash = new_exptected_hash;
+                                if subquery_key.is_some() {
+                                    let (proof_type, subkey_proof) = proof_reader.read_proof()?;
+                                    // TODO: verify it's a merk proof
+                                    let mut key_as_query = Query::new();
+                                    key_as_query.insert_key(subquery_key.clone().unwrap());
+                                    // TODO: add direction
+                                    let verification_result = merk::execute_proof(
+                                        &subkey_proof,
+                                        &key_as_query,
+                                        None,
+                                        None,
+                                        true,
+                                    );
+                                    let rset = verification_result.unwrap().1.result_set;
+                                    if rset.len() == 0 {
+                                        // subquery key does not exist in the subtree
+                                        // proceed to another subtree
+                                        continue;
+                                    } else {
+                                        // if it does exist then update the expected root hash
+                                        // dbg!(rset);
+                                        let elem_value = &rset[0].1;
+                                        let elem = Element::deserialize(elem_value).unwrap();
+                                        match elem {
+                                            Element::Tree(new_exptected_hash) => {
+                                                expected_root_hash = new_exptected_hash;
+                                            }
+                                            _ => {
+                                                dbg!("shouting");
+                                            }
                                         }
-                                        _ => {
-                                            dbg!("shouting");
-                                        }
+                                        // expected_root_hash =
                                     }
-                                    // expected_root_hash =
                                 }
 
                                 // TODO: Write a test whose subqueries are more than the depth of
@@ -715,7 +713,7 @@ impl GroveDb {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             if !path_slice.is_empty() {
-                let merk_proof = proof_reader.read_proof_of_type(ProofType::MERK_PROOF.into())?;
+                let merk_proof = proof_reader.read_proof_of_type(ProofType::MerkProof.into())?;
 
                 let mut parent_query = Query::new();
                 parent_query.insert_key(key.to_vec());
@@ -753,7 +751,7 @@ impl GroveDb {
             split_path = path_slice.split_last();
         }
 
-        let root_proof = proof_reader.read_proof_of_type(ProofType::ROOT_PROOF.into())?;
+        let root_proof = proof_reader.read_proof_of_type(ProofType::RootProof.into())?;
 
         // makes the assumption that 1 byte is enough to represent the root leaf count
         // size
