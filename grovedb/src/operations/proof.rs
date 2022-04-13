@@ -199,20 +199,22 @@ impl GroveDb {
                 // hence adding a subquery key and subquery is essentially the same
                 // as adding two subqueries, one a key followed by the other query
 
-                let (subquery_key, subquery_value) =
-                    Element::default_subquery_paths_for_sized_query(&query.query);
 
-                let has_subquery = subquery_key.is_some() || subquery_value.is_some();
+                // how do I get this key??
+
+                // let has_subquery = subquery_key.is_some() || subquery_value.is_some();
                 let exhausted_limit =
                     query.query.limit.is_some() && query.query.limit.unwrap() == 0;
                 // dbg!(&has_subquery);
                 // dbg!(exhausted_limit);
 
-                if has_subquery && !exhausted_limit {
+                if !exhausted_limit {
                     // dbg!("start");
                     let subtree_key_values = subtree.get_kv_pairs();
                     // TODO: make use of the direction
                     for (key, value_bytes) in subtree_key_values.iter() {
+                        let (subquery_key, subquery_value) =
+                            Element::subquery_paths_for_sized_query(&query.query, key);
                         // TODO: Figure out what to do if decoding fails
                         // dbg!(&key);
                         // dbg!(&value_bytes);
@@ -406,7 +408,6 @@ impl GroveDb {
         while let Some((key, path_slice)) = split_path {
             if path_slice.is_empty() {
                 // generate root proof
-                // TODO: Encode the leave count
                 meta_storage_context_optional_tx!(self.db, None, meta_storage, {
                     let root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;
                     let mut root_index: Vec<usize> = vec![];
@@ -620,9 +621,8 @@ impl GroveDb {
                                 }
 
                                 // TODO: Make use of the subquery_key
-                                // TODO: change from default subquery type
                                 let (subquery_key, subquery_value) =
-                                    Element::default_subquery_paths_for_sized_query(&query.query);
+                                    Element::subquery_paths_for_sized_query(&query.query, key.as_slice());
                                 // dbg!(&subquery_key);
                                 // dbg!(&subquery_value);
 
