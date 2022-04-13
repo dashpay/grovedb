@@ -781,7 +781,7 @@ fn test_path_query_proofs_with_subquery_key() {
     subq.insert_all();
 
     query.set_subquery_key(b"deeper_node_1".to_vec());
-    // query.set_subquery(subq);
+    query.set_subquery(subq);
 
     let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
 

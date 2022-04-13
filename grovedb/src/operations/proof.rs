@@ -158,6 +158,8 @@ impl GroveDb {
             proofs: &mut Vec<u8>,
             path: Vec<&[u8]>,
             query: PathQuery,
+            // TODO: describe subquery only, maybe a bool?
+            // ignore_subquery_key: bool,
         ) -> Result<(Option<u16>, Option<u16>), Error> {
             // TODO: Not sure this is supposed to be inside
             // Track final limit and offset values for correct propagation
@@ -175,7 +177,7 @@ impl GroveDb {
             // if the element is a tree, then recurse
             // if it had subtrees, then generate proof without limit and offset
             // else use the limit and offset
-            print_path(path.clone());
+            // print_path(path.clone());
             merk_optional_tx!(db.db, path.clone(), None, subtree, {
                 // TODO: Not allowed to create proof for an empty tree (handle this)
 
@@ -196,7 +198,6 @@ impl GroveDb {
                 // first before applying the actual subquery
                 // hence adding a subquery key and subquery is essentially the same
                 // as adding two subqueries, one a key followed by the other query
-                //
 
                 let (subquery_key, subquery_value) =
                     Element::default_subquery_paths_for_sized_query(&query.query);
@@ -204,8 +205,8 @@ impl GroveDb {
                 let has_subquery = subquery_key.is_some() || subquery_value.is_some();
                 let exhausted_limit =
                     query.query.limit.is_some() && query.query.limit.unwrap() == 0;
-                dbg!(&has_subquery);
-                dbg!(exhausted_limit);
+                // dbg!(&has_subquery);
+                // dbg!(exhausted_limit);
 
                 if has_subquery && !exhausted_limit {
                     // dbg!("start");
@@ -256,6 +257,16 @@ impl GroveDb {
                                     write_to_vec(proofs, &proof);
                                 }
 
+                                // This section is to prove the subtrees
+                                // some queries might come with both a subquery key and a query
+                                // they both need proofs on different paths (which requires
+                                // different subtrees) constraint:
+                                // you cannot modify the subquery keys
+                                // normally, the way you get subtrees is by recursing on
+                                // prove_subquery with the path
+                                // why doesn't this work for us??
+                                // should figure out what should be proved first
+
                                 // recurse on this subtree, by creating a new
                                 // path_slice
                                 // with the new key
@@ -271,6 +282,37 @@ impl GroveDb {
 
                                 if query.is_some() {
                                     if sub_key.is_some() {
+                                        // intermediate step here, generate a proof that the
+                                        // subquery key
+                                        // exists or doesn't exist in this subtree
+                                        merk_optional_tx!(
+                                            db.db,
+                                            new_path.clone(),
+                                            None,
+                                            inner_subtree,
+                                            {
+                                                // generate a proof for the subquery key
+                                                let mut key_as_query = Query::new();
+                                                key_as_query.insert_key(sub_key.clone().unwrap());
+                                                // query = Some(key_as_query);
+
+                                                let ProofConstructionResult { proof, .. } =
+                                                    inner_subtree
+                                                        .prove(key_as_query.clone(), None, None)
+                                                        .expect("should generate proof");
+
+                                                debug_assert!(proof.len() < 256);
+                                                write_to_vec(
+                                                    proofs,
+                                                    &vec![
+                                                        ProofType::MERK_PROOF.into(),
+                                                        proof.len() as u8,
+                                                    ],
+                                                );
+                                                write_to_vec(proofs, &proof);
+                                            }
+                                        );
+
                                         new_path.push(sub_key.as_ref().unwrap());
                                         // verify that the new path exists
                                         let subquery_key_path_exists = db
@@ -280,7 +322,7 @@ impl GroveDb {
                                                 None,
                                             );
                                         if subquery_key_path_exists.is_err() {
-                                            dbg!("does not exist");
+                                            // dbg!("does not exist");
                                             continue;
                                         }
                                     }
@@ -294,10 +336,6 @@ impl GroveDb {
 
                                 // dbg!(&new_path);
                                 // dbg!(&query);
-
-                                // there is a chance that this new path does not exist
-                                // if it does not exist, you can't add any proof, we should skip??
-                                // how would verification work?
 
                                 let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
                                 // TODO: Propagate the limit and offset values by creating a sized
@@ -447,12 +485,15 @@ impl GroveDb {
     // global result set subroutine should return the root_hash + updated limit
     // and offset
 
+    // TODO: Audit and make clearer logic of figuring out what to verify
+    // TODO: There might be cases where we randomly stop proof generations because a
+    // certain key TODO: does not exists, should also take that into account
     pub fn execute_proof(
         proof: &[u8],
         query: PathQuery,
     ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
-        dbg!("");
-        dbg!("Starting verification");
+        // dbg!("");
+        // dbg!("Starting verification");
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
 
         // global result set
@@ -541,7 +582,7 @@ impl GroveDb {
                     .expect("should execute proof");
 
                     root_hash = verification_result.0;
-                    dbg!(&verification_result.1.result_set);
+                    // dbg!(&verification_result.1.result_set);
 
                     // iterate over the children
                     // TODO: remove clone
