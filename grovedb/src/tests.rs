@@ -799,6 +799,48 @@ fn test_path_query_proofs_with_subquery_key() {
     assert_eq!(result_set, expected_result_set);
 }
 
+#[test]
+fn test_path_query_proofs_with_conditional_subquery() {
+    let temp_db = make_deep_tree();
+
+    let mut query = Query::new();
+    query.insert_all();
+
+    let mut subquery = Query::new();
+    subquery.insert_all();
+
+    let mut final_subquery = Query::new();
+    final_subquery.insert_all();
+
+    subquery.add_conditional_subquery(
+        QueryItem::Key(b"deeper_node_4".to_vec()),
+        None,
+        Some(final_subquery),
+    );
+
+    query.set_subquery(subquery);
+
+    let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
+    let proof = temp_db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
+
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+
+    let keys = [
+        b"deeper_node_1".to_vec(),
+        b"deeper_node_2".to_vec(),
+        b"key10".to_vec(),
+        b"key11".to_vec(),
+    ];
+    assert_eq!(result_set.len(), keys.len());
+
+    // TODO: Is this defined behaviour
+    for (index, key) in keys.iter().enumerate() {
+        assert_eq!(&result_set[index].0, key);
+    }
+}
+
 // #[test]
 // fn test_proof_construction() {
 //     // Tree Structure

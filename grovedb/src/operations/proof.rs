@@ -609,7 +609,6 @@ impl GroveDb {
                                     break;
                                 }
 
-                                // TODO: Make use of the subquery_key
                                 let (subquery_key, subquery_value) =
                                     Element::subquery_paths_for_sized_query(
                                         &query.query,
@@ -617,6 +616,10 @@ impl GroveDb {
                                     );
                                 // dbg!(&subquery_key);
                                 // dbg!(&subquery_value);
+
+                                if subquery_value.is_none() && subquery_key.is_none() {
+                                    continue;
+                                }
 
                                 // what do you do if there exists a subquery key
                                 // if there is a subquery key then there would be a corresponding
@@ -659,8 +662,6 @@ impl GroveDb {
                                     }
                                 }
 
-                                // TODO: Write a test whose subqueries are more than the depth of
-                                // the tree
                                 let new_path_query;
                                 if subquery_value.is_some() {
                                     new_path_query =
