@@ -970,8 +970,12 @@ fn test_path_query_proofs_with_direction() {
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
 
-    let keys = [b"key10".to_vec(), b"key9".to_vec(), b"key8".to_vec()];
-    let values = [b"value10".to_vec(), b"value9".to_vec(), b"value8".to_vec()];
+    // for (m, _) in result_set.iter() {
+    //     dbg!(std::str::from_utf8(m));
+    // }
+
+    let keys = [b"key10".to_vec(), b"key6".to_vec(), b"key5".to_vec()];
+    let values = [b"value10".to_vec(), b"value6".to_vec(), b"value5".to_vec()];
     let elements = values.map(|x| Element::Item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
     assert_eq!(result_set, expected_result_set);

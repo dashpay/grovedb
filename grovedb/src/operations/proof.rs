@@ -204,8 +204,11 @@ impl GroveDb {
 
                 if !exhausted_limit {
                     // dbg!("start");
-                    let subtree_key_values = subtree.get_kv_pairs();
+                    let subtree_key_values = subtree.get_kv_pairs(query.query.query.left_to_right);
+                    // dbg!(&subtree_key_values);
                     // TODO: make use of the direction
+                    // depending on the direction of the first query, we want to iterate over the
+                    // key pairs accordingly
                     for (key, value_bytes) in subtree_key_values.iter() {
                         let (subquery_key, subquery_value) =
                             Element::subquery_paths_for_sized_query(&query.query, key);
@@ -239,7 +242,10 @@ impl GroveDb {
 
                                     // prove all the keys
                                     // TODO: Add direction
-                                    let mut all_key_query = Query::new();
+                                    // what direction does this inherit??
+                                    // should inherit the current queries direction
+                                    let mut all_key_query =
+                                        Query::new_with_direction(query.query.query.left_to_right);
                                     all_key_query.insert_all();
 
                                     // generate unsized merk proof for current element
@@ -293,10 +299,11 @@ impl GroveDb {
                                             None,
                                             inner_subtree,
                                             {
-                                                // generate a proof for the subquery key
-                                                dbg!(std::str::from_utf8(
-                                                    sub_key.clone().unwrap().as_slice()
-                                                ));
+                                                // // generate a proof for the subquery key
+                                                // dbg!(std::str::from_utf8(
+                                                //     sub_key.clone().unwrap().as_slice()
+                                                // ));
+                                                // no need for direction as it's a single key query
                                                 let mut key_as_query = Query::new();
                                                 key_as_query.insert_key(sub_key.clone().unwrap());
                                                 // query = Some(key_as_query);
@@ -334,7 +341,7 @@ impl GroveDb {
                                     }
                                 } else {
                                     // only subquery key must exist, convert to query
-                                    // TODO: add direction
+                                    // no need for direction as it's a single key
                                     let mut key_as_query = Query::new();
                                     key_as_query.insert_key(sub_key.unwrap());
                                     query = Some(key_as_query);
@@ -346,6 +353,8 @@ impl GroveDb {
                                 let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
                                 // TODO: Propagate the limit and offset values by creating a sized
                                 // query
+                                // shouldn't this be sized??
+                                // TODO: Figure out why this is not sized
                                 let new_path_query =
                                     PathQuery::new_unsized(new_path_owned, query.unwrap());
 
@@ -578,7 +587,8 @@ impl GroveDb {
                     // for non leaf subtrees, we want to prove that all their keys
                     // have an accompanying proof as long as the limit is non zero
                     // and their child subtree is not empty
-                    let mut all_key_query = Query::new();
+                    let mut all_key_query =
+                        Query::new_with_direction(query.query.query.left_to_right);
                     all_key_query.insert_all();
 
                     let verification_result = merk::execute_proof(
@@ -586,7 +596,7 @@ impl GroveDb {
                         &all_key_query,
                         None,
                         None,
-                        query.query.query.left_to_right,
+                        all_key_query.left_to_right,
                     )
                     .expect("should execute proof");
 
@@ -648,12 +658,15 @@ impl GroveDb {
                                     let mut key_as_query = Query::new();
                                     key_as_query.insert_key(subquery_key.clone().unwrap());
                                     // TODO: add direction
+                                    // what direction should be used here??
+                                    // here we are trying to verify the subquery key's existence
+                                    // doesn't matter as it's a single key proof
                                     let verification_result = merk::execute_proof(
                                         &subkey_proof,
                                         &key_as_query,
                                         None,
                                         None,
-                                        true,
+                                        key_as_query.left_to_right,
                                     );
                                     let rset = verification_result.unwrap().1.result_set;
                                     if rset.len() == 0 {

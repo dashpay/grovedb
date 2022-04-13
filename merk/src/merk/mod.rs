@@ -353,16 +353,25 @@ where
     }
 
     // TODO: Convert this to something that returns all the keys in a merk
-    pub fn get_kv_pairs(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+    pub fn get_kv_pairs(&self, left_to_right: bool) -> Vec<(Vec<u8>, Vec<u8>)> {
         let mut result = vec![];
         let mut iter = self.storage.raw_iter();
         // might need to use seek for iter, or maybe not
-        iter.seek_to_first();
+        // iter.seek_to_first();
+        if left_to_right {
+            iter.seek_to_first();
+        } else {
+            iter.seek_to_last();
+        }
 
         while iter.valid() {
             let rs = (iter.key().unwrap().to_vec(), iter.value().unwrap().to_vec());
             result.push(rs);
-            iter.next();
+            if left_to_right {
+                iter.next();
+            } else {
+                iter.prev();
+            }
         }
 
         result
