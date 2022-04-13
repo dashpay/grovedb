@@ -934,6 +934,49 @@ fn test_path_query_proofs_with_sized_query() {
     assert_eq!(result_set, expected_result_set);
 }
 
+#[test]
+fn test_path_query_proofs_with_direction() {
+    let temp_db = make_deep_tree();
+
+    let mut query = Query::new_with_direction(false);
+    query.insert_all();
+
+    let mut subquery = Query::new_with_direction(false);
+    subquery.insert_all();
+
+    let mut final_conditional_subquery = Query::new_with_direction(false);
+    final_conditional_subquery.insert_all();
+
+    let mut final_default_subquery = Query::new_with_direction(false);
+    final_default_subquery.insert_range_inclusive(b"key3".to_vec()..=b"key6".to_vec());
+
+    subquery.add_conditional_subquery(
+        QueryItem::Key(b"deeper_node_4".to_vec()),
+        None,
+        Some(final_conditional_subquery),
+    );
+    subquery.set_subquery(final_default_subquery);
+
+    query.set_subquery(subquery);
+
+    let path_query = PathQuery::new(
+        vec![DEEP_LEAF.to_vec()],
+        SizedQuery::new(query, Some(3), Some(1)),
+    );
+    let proof = temp_db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
+
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 3);
+
+    let keys = [b"key10".to_vec(), b"key9".to_vec(), b"key8".to_vec()];
+    let values = [b"value10".to_vec(), b"value9".to_vec(), b"value8".to_vec()];
+    let elements = values.map(|x| Element::Item(x).serialize().unwrap());
+    let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
+    assert_eq!(result_set, expected_result_set);
+}
+
 // #[test]
 // fn test_checkpoint() {
 //     let mut db = make_grovedb();

@@ -153,6 +153,12 @@ impl GroveDb {
         // correctly.
         // if you get the right thing, then perform additional constraint checks.
 
+        // dealing with direction
+        // each query has a direction in which they want to get their keys
+        // this includes the subqueries
+        // just apply that!!!
+        // if creating a new query from a subquery just use it's left to right
+
         prove_subqueries(
             &self,
             &mut proof_result,
@@ -354,10 +360,6 @@ impl GroveDb {
                                     current_offset,
                                 )
                                 .unwrap();
-
-                                // TODO: Ascertain I don't need to do this here
-                                // current_limit = limit_offset_result.0;
-                                // current_offset = limit_offset_result.1;
 
                                 // if we hit the limit, we should kill the loop
                                 if current_limit.is_some() && current_limit.unwrap() == 0 {
