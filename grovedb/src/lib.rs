@@ -1,5 +1,3 @@
-extern crate core;
-
 mod operations;
 mod subtree;
 #[cfg(test)]
@@ -104,14 +102,6 @@ impl PathQuery {
         Self { path, query }
     }
 }
-
-// #[derive(Serialize, Deserialize)]
-// pub struct Proof {
-//     query_paths: Vec<Vec<Vec<u8>>>,
-//     proofs: HashMap<Vec<u8>, Vec<u8>>,
-//     root_proof: Vec<u8>,
-//     root_leaf_keys: HashMap<Vec<u8>, usize>,
-// }
 
 pub struct GroveDb {
     db: RocksDbStorage,
