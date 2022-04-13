@@ -839,6 +839,56 @@ fn test_path_query_proofs_with_conditional_subquery() {
     for (index, key) in keys.iter().enumerate() {
         assert_eq!(&result_set[index].0, key);
     }
+
+    // TODO: Add test for conditional subquery + default subquery
+    let mut query = Query::new();
+    query.insert_all();
+
+    let mut subquery = Query::new();
+    subquery.insert_all();
+
+    let mut final_conditional_subquery = Query::new();
+    final_conditional_subquery.insert_all();
+
+    let mut final_default_subquery = Query::new();
+    final_default_subquery.insert_range_inclusive(b"key3".to_vec()..=b"key6".to_vec());
+
+    subquery.add_conditional_subquery(
+        QueryItem::Key(b"deeper_node_4".to_vec()),
+        None,
+        Some(final_conditional_subquery),
+    );
+    subquery.set_subquery(final_default_subquery);
+
+    query.set_subquery(subquery);
+
+    let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
+    let proof = temp_db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
+
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 6);
+
+    let keys = [
+        b"key3".to_vec(),
+        b"key4".to_vec(),
+        b"key5".to_vec(),
+        b"key6".to_vec(),
+        b"key10".to_vec(),
+        b"key11".to_vec(),
+    ];
+    let values = [
+        b"value3".to_vec(),
+        b"value4".to_vec(),
+        b"value5".to_vec(),
+        b"value6".to_vec(),
+        b"value10".to_vec(),
+        b"value11".to_vec(),
+    ];
+    let elements = values.map(|x| Element::Item(x).serialize().unwrap());
+    let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
+    assert_eq!(result_set, expected_result_set);
 }
 
 // #[test]
