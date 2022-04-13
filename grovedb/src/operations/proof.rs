@@ -188,25 +188,8 @@ impl GroveDb {
                 // - is the limit non zero
                 let mut has_useful_subtree = false;
 
-                // before getting the elements of the subtree, we should get the
-                // subquery key and value
-                // we have a query, that is inserted in a sized query for the path query
-                // we only care about the query (not so simple)
-
-                // Dealing with subquery key and value
-                // a subquery key is essentially a key query item that you want to apply
-                // first before applying the actual subquery
-                // hence adding a subquery key and subquery is essentially the same
-                // as adding two subqueries, one a key followed by the other query
-
-
-                // how do I get this key??
-
-                // let has_subquery = subquery_key.is_some() || subquery_value.is_some();
                 let exhausted_limit =
                     query.query.limit.is_some() && query.query.limit.unwrap() == 0;
-                // dbg!(&has_subquery);
-                // dbg!(exhausted_limit);
 
                 if !exhausted_limit {
                     // dbg!("start");
@@ -215,6 +198,12 @@ impl GroveDb {
                     for (key, value_bytes) in subtree_key_values.iter() {
                         let (subquery_key, subquery_value) =
                             Element::subquery_paths_for_sized_query(&query.query, key);
+
+                        // what if there is no subquery??
+                        if subquery_key.is_none() && subquery_value.is_none() {
+                            continue;
+                        }
+
                         // TODO: Figure out what to do if decoding fails
                         // dbg!(&key);
                         // dbg!(&value_bytes);
@@ -622,7 +611,10 @@ impl GroveDb {
 
                                 // TODO: Make use of the subquery_key
                                 let (subquery_key, subquery_value) =
-                                    Element::subquery_paths_for_sized_query(&query.query, key.as_slice());
+                                    Element::subquery_paths_for_sized_query(
+                                        &query.query,
+                                        key.as_slice(),
+                                    );
                                 // dbg!(&subquery_key);
                                 // dbg!(&subquery_value);
 
