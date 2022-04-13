@@ -71,6 +71,9 @@ impl GroveDb {
 
         self.check_subtree_exists_path_not_found(path_slices.clone(), None, None)?;
 
+        let mut current_limit: Option<u16> = query.query.limit;
+        let mut current_offset: Option<u16> = query.query.offset;
+
         // Next up is to take into account subqueries, starting with just one subquery
         // deep might need two additional markers, to signify children and
         // parents limit and offset relationship would also change, we only want
@@ -150,22 +153,24 @@ impl GroveDb {
         // correctly.
         // if you get the right thing, then perform additional constraint checks.
 
-        prove_subqueries(&self, &mut proof_result, path_slices.clone(), query.clone());
+        prove_subqueries(
+            &self,
+            &mut proof_result,
+            path_slices.clone(),
+            query.clone(),
+            &mut current_limit,
+            &mut current_offset,
+        )
+        .unwrap();
 
-        // TODO: return the propagated limit and offset values after running this
         fn prove_subqueries(
             db: &GroveDb,
             proofs: &mut Vec<u8>,
             path: Vec<&[u8]>,
             query: PathQuery,
-            // TODO: describe subquery only, maybe a bool?
-            // ignore_subquery_key: bool,
-        ) -> Result<(Option<u16>, Option<u16>), Error> {
-            // TODO: Not sure this is supposed to be inside
-            // Track final limit and offset values for correct propagation
-            let mut current_limit: Option<u16> = query.query.limit;
-            let mut current_offset: Option<u16> = query.query.offset;
-
+            current_limit: &mut Option<u16>,
+            current_offset: &mut Option<u16>,
+        ) -> Result<(), Error> {
             // get subtree at given path
             // if there is no subquery
             // prove the current tree
@@ -340,11 +345,19 @@ impl GroveDb {
 
                                 // add proofs for child nodes
                                 // TODO: Handle error properly, what could cause an error?
-                                let limit_offset_result =
-                                    prove_subqueries(db, proofs, new_path, new_path_query).unwrap();
+                                prove_subqueries(
+                                    db,
+                                    proofs,
+                                    new_path,
+                                    new_path_query,
+                                    current_limit,
+                                    current_offset,
+                                )
+                                .unwrap();
 
-                                current_limit = limit_offset_result.0;
-                                current_offset = limit_offset_result.1;
+                                // TODO: Ascertain I don't need to do this here
+                                // current_limit = limit_offset_result.0;
+                                // current_offset = limit_offset_result.1;
 
                                 // if we hit the limit, we should kill the loop
                                 if current_limit.is_some() && current_limit.unwrap() == 0 {
@@ -367,12 +380,12 @@ impl GroveDb {
                 // for this element (skip proof addition).
                 if !has_useful_subtree {
                     let proof_result = subtree
-                        .prove(query.query.query, current_limit, current_offset)
+                        .prove(query.query.query, *current_limit, *current_offset)
                         .expect("should generate proof");
 
                     // update limit and offset values
-                    current_limit = proof_result.limit;
-                    current_offset = proof_result.offset;
+                    *current_limit = proof_result.limit;
+                    *current_offset = proof_result.offset;
 
                     // only adding to the proof result set, after you have added that of
                     // your child nodes
@@ -389,7 +402,7 @@ impl GroveDb {
                 }
             });
 
-            Ok((current_limit, current_offset))
+            Ok(())
         }
 
         // generate proof up to root
