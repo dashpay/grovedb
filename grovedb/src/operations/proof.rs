@@ -292,6 +292,9 @@ impl GroveDb {
                                             inner_subtree,
                                             {
                                                 // generate a proof for the subquery key
+                                                dbg!(std::str::from_utf8(
+                                                    sub_key.clone().unwrap().as_slice()
+                                                ));
                                                 let mut key_as_query = Query::new();
                                                 key_as_query.insert_key(sub_key.clone().unwrap());
                                                 // query = Some(key_as_query);
@@ -300,6 +303,7 @@ impl GroveDb {
                                                     inner_subtree
                                                         .prove(key_as_query.clone(), None, None)
                                                         .expect("should generate proof");
+                                                dbg!(&proof);
 
                                                 debug_assert!(proof.len() < 256);
                                                 write_to_vec(
@@ -596,9 +600,9 @@ impl GroveDb {
                         // TODO: Remove duplication
                         // dbg!("decoding child");
                         let child_element = Element::deserialize(value_bytes.as_slice())?;
-                        dbg!(&child_element);
+                        // dbg!(&child_element);
                         match child_element {
-                            Element::Tree(expected_root_hash) => {
+                            Element::Tree(mut expected_root_hash) => {
                                 // construct the subquery
                                 // TODO: Is it possible to prove that the subquery key was applied??
                                 // TODO: Do I need to prove the path of the subqueries??
@@ -619,9 +623,54 @@ impl GroveDb {
                                 // TODO: change from default subquery type
                                 let (subquery_key, subquery_value) =
                                     Element::default_subquery_paths_for_sized_query(&query.query);
-                                dbg!(&subquery_key);
-                                dbg!(&subquery_value);
+                                // dbg!(&subquery_key);
+                                // dbg!(&subquery_value);
 
+                                // what do you do if there exists a subquery key
+                                // if there is a subquery key then there would be a corresponding
+                                // proof to prove it's existence.
+                                // if it does not exist in the result set then stop
+                                // if it does exists in the result set, update the expected root
+                                // hash and continue
+                                dbg!(std::str::from_utf8(key.as_slice()));
+                                dbg!(std::str::from_utf8(
+                                    subquery_key.clone().unwrap().as_slice()
+                                ));
+                                let (proof_type, subkey_proof) = proof_reader.read_proof()?;
+                                // TODO: verify it's a merk proof
+                                let mut key_as_query = Query::new();
+                                key_as_query.insert_key(subquery_key.clone().unwrap());
+                                // TODO: add direction
+                                let verification_result = merk::execute_proof(
+                                    &subkey_proof,
+                                    &key_as_query,
+                                    None,
+                                    None,
+                                    true,
+                                );
+                                let rset = verification_result.unwrap().1.result_set;
+                                if rset.len() == 0 {
+                                    // subquery key does not exist in the subtree
+                                    // proceed to another subtree
+                                    continue;
+                                } else {
+                                    // if it does exist then update the expected root hash
+                                    // dbg!(rset);
+                                    let elem_value = &rset[0].1;
+                                    let elem = Element::deserialize(elem_value).unwrap();
+                                    match elem {
+                                        Element::Tree(new_exptected_hash) => {
+                                            expected_root_hash = new_exptected_hash;
+                                        }
+                                        _ => {
+                                            dbg!("shouting");
+                                        }
+                                    }
+                                    // expected_root_hash =
+                                }
+
+                                // TODO: Write a test whose subqueries are more than the depth of
+                                // the tree
                                 let new_path_query;
                                 if subquery_value.is_some() {
                                     new_path_query =
@@ -648,6 +697,7 @@ impl GroveDb {
                                 }
                             }
                             _ => {
+                                // TODO: why this error??
                                 return Err(Error::InvalidProof("Missing proof for subtree"));
                             }
                         }

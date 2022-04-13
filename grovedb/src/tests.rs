@@ -792,20 +792,8 @@ fn test_path_query_proofs_with_subquery_key() {
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
 
-    let keys = [
-        b"key1".to_vec(),
-        b"key2".to_vec(),
-        b"key3".to_vec(),
-        b"key4".to_vec(),
-        b"key5".to_vec(),
-    ];
-    let values = [
-        b"value1".to_vec(),
-        b"value2".to_vec(),
-        b"value3".to_vec(),
-        b"value4".to_vec(),
-        b"value5".to_vec(),
-    ];
+    let keys = [b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()];
+    let values = [b"value1".to_vec(), b"value2".to_vec(), b"value3".to_vec()];
     let elements = values.map(|x| Element::Item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
     assert_eq!(result_set, expected_result_set);
