@@ -913,6 +913,7 @@ fn test_path_query_proofs_with_sized_query() {
         Some(final_conditional_subquery),
     );
     subquery.set_subquery(final_default_subquery);
+    // subquery.set_subquery_key(b"key3".to_vec());
 
     query.set_subquery(subquery);
 

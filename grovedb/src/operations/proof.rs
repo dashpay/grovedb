@@ -58,18 +58,6 @@ impl GroveDb {
         let mut current_limit: Option<u16> = query.query.limit;
         let mut current_offset: Option<u16> = query.query.offset;
 
-        // TODO: Figure out references
-
-        // There is nothing stopping a tree from having a combination of different
-        // element types
-        // There is a possibility that the result set might span multiple trees if the
-        // subtrees holds different element types (this brings too much complexity,
-        // will ignore for now)
-        // TODO: What to do if a subtree returns a combination of item, reference and
-        // tree elements
-
-        // apply the query tree to the subtree at the given path
-        // append the proofs to the proof result vector
         // TODO: can this be optionally ran?
         GroveDb::prove_subqueries(
             &self,
@@ -144,8 +132,6 @@ impl GroveDb {
     }
 
     // TODO: Audit and make clearer the logic of figuring out what to verify
-    // TODO: There might be cases where we randomly stop proof generations because a
-    // TODO: certain key does not exists, should also take that into account
     pub fn execute_proof(
         proof: &[u8],
         query: PathQuery,
@@ -157,11 +143,6 @@ impl GroveDb {
 
         let mut current_limit = query.query.limit;
         let mut current_offset = query.query.offset;
-
-        // not sure the type of the initial merk proof (might be sized or unsized, but
-        // should be merk proof right??) TODO: Is there a possibility that there
-        // might only be a root proof (handle accordingly) maybe use the length
-        // of the path to determine this?? assuming it starts with a merk proof
 
         // TODO: optionally run this (check if the proof is only for root)
         // TODO: Get rid of clone
@@ -256,6 +237,11 @@ impl GroveDb {
         current_limit: &mut Option<u16>,
         current_offset: &mut Option<u16>,
     ) -> Result<(), Error> {
+        // there is a chance that the subquery key would lead to something that is not a
+        // tree same thing for the subquery itself
+        // for p in path.clone() {
+        //     dbg!(std::str::from_utf8(p));
+        // }
         merk_optional_tx!(db.db, path.clone(), None, subtree, {
             let mut has_useful_subtree = false;
             let exhausted_limit = query.query.limit.is_some() && query.query.limit.unwrap() == 0;
@@ -346,11 +332,17 @@ impl GroveDb {
                                             None,
                                             None,
                                         );
+                                    dbg!("checking if subquery key path exists");
+                                    dbg!(&subquery_key_path_exists);
                                     if subquery_key_path_exists.is_err() {
                                         continue;
                                     }
+                                    for (k, _) in subtree.get_kv_pairs(true) {
+                                        dbg!(std::str::from_utf8(k.as_slice()));
+                                    }
                                 }
                             } else {
+                                dbg!("just subquery noe");
                                 // only subquery key must exist, convert to query
                                 let mut key_as_query = Query::new();
                                 key_as_query.insert_key(sub_key.unwrap());
@@ -386,9 +378,13 @@ impl GroveDb {
                 }
             }
 
+            // There is the chance we get here because the above is not a tree hence can't
+            // have children, we attempt to prove and it fails
             if !has_useful_subtree {
-                // if no useful subtree, then we care about the result set of this subtree
-                // apply sized query
+                // if no useful subtree, then we care about the result set of this subtree.
+                // apply the sized query
+                dbg!(subtree.get_kv_pairs(true).len());
+                dbg!(subtree.is_empty_tree());
                 let proof_result = subtree
                     .prove(query.query.query, *current_limit, *current_offset)
                     .expect("should generate proof");
@@ -491,6 +487,9 @@ impl GroveDb {
                             }
 
                             if subquery_key.is_some() {
+                                // prove that the subquery key was used, update the expected hash
+                                // if the proof shows absence, path is no longer useful
+                                // move on to next
                                 let (proof_type, subkey_proof) = proof_reader.read_proof()?;
                                 if proof_type != ProofType::MerkProof {
                                     return Err(Error::InvalidProof(
@@ -513,19 +512,25 @@ impl GroveDb {
                                     Error::InvalidProof("invalid proof verification parameters")
                                 })?;
 
-                                let rset = verification_result.1.result_set;
-                                if rset.len() == 0 {
+                                let subquery_key_result_set = verification_result.1.result_set;
+                                if subquery_key_result_set.len() == 0 {
                                     // subquery key does not exist in the subtree
                                     // proceed to another subtree
                                     continue;
                                 } else {
-                                    let elem_value = &rset[0].1;
-                                    let elem = Element::deserialize(elem_value).unwrap();
-                                    match elem {
+                                    let elem_value = &subquery_key_result_set[0].1;
+                                    let subquery_key_element =
+                                        Element::deserialize(elem_value).unwrap();
+                                    match subquery_key_element {
                                         Element::Tree(new_exptected_hash) => {
                                             expected_root_hash = new_exptected_hash;
                                         }
                                         _ => {
+                                            // the means that the subquery key pointed to a non tree
+                                            // element
+                                            // what do you do in that case, say it points to an item
+                                            // or reference
+                                            // pointing to a non tree element means we cannot apply
                                             // TODO: Remove panic
                                             panic!("figure out what to do in this case");
                                         }
