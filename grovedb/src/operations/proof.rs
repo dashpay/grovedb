@@ -163,6 +163,10 @@ impl GroveDb {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             if !path_slice.is_empty() {
+                // for every subtree, we should have a corresponding proof for the parent
+                // which should prove that this subtree is a child of the parent tree
+
+                // get parent proof
                 let merk_proof = proof_reader.read_proof_of_type(ProofType::MerkProof.into())?;
 
                 let mut parent_query = Query::new();
@@ -208,6 +212,7 @@ impl GroveDb {
         let root_proof_bytes = proof_reader.read_proof_of_type(ProofType::RootProof.into())?;
 
         // makes the assumption that 1 byte is enough to represent the root leaf count
+        // hence max of 255 root leaf keys
         let root_leaf_count = proof_reader.read_byte()?;
 
         let index_to_prove_as_bytes = proof_reader.read_to_end();
