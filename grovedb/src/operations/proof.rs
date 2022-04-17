@@ -3,7 +3,10 @@ use std::{
     ptr::write,
 };
 
-use merk::{proofs::query::QueryItem, Merk};
+use merk::{
+    proofs::query::{ProofVerificationResult, QueryItem},
+    Hash, Merk,
+};
 use rs_merkle::{algorithms::Sha256, MerkleProof};
 use storage::{rocksdb_storage::RocksDbStorage, StorageContext};
 
@@ -412,17 +415,13 @@ impl GroveDb {
         let (proof_type, proof) = proof_reader.read_proof()?;
         match proof_type {
             ProofType::SizedMerkProof => {
-                let verification_result = merk::execute_proof(
+                let verification_result = execute_merk_proof(
                     &proof,
                     &query.query.query,
                     *current_limit,
                     *current_offset,
                     query.query.query.left_to_right,
-                )
-                .map_err(|e| {
-                    eprintln!("{}", e.to_string());
-                    Error::InvalidProof("invalid proof verification parameters")
-                })?;
+                )?;
 
                 root_hash = verification_result.0;
                 result_set.extend(verification_result.1.result_set);
@@ -438,18 +437,13 @@ impl GroveDb {
                 let mut all_key_query = Query::new_with_direction(query.query.query.left_to_right);
                 all_key_query.insert_all();
 
-                // TODO: remove this duplication
-                let verification_result = merk::execute_proof(
+                let verification_result = execute_merk_proof(
                     &proof,
                     &all_key_query,
                     None,
                     None,
                     all_key_query.left_to_right,
-                )
-                .map_err(|e| {
-                    eprintln!("{}", e.to_string());
-                    Error::InvalidProof("invalid proof verification parameters")
-                })?;
+                )?;
 
                 root_hash = verification_result.0;
 
@@ -492,17 +486,13 @@ impl GroveDb {
                                 let mut key_as_query = Query::new();
                                 key_as_query.insert_key(subquery_key.clone().unwrap());
 
-                                let verification_result = merk::execute_proof(
+                                let verification_result = execute_merk_proof(
                                     &subkey_proof,
                                     &key_as_query,
                                     None,
                                     None,
                                     key_as_query.left_to_right,
-                                )
-                                .map_err(|e| {
-                                    eprintln!("{}", e.to_string());
-                                    Error::InvalidProof("invalid proof verification parameters")
-                                })?;
+                                )?;
 
                                 let subquery_key_result_set = verification_result.1.result_set;
                                 if subquery_key_result_set.len() == 0 {
@@ -625,6 +615,7 @@ impl<'a> ProofReader<'a> {
     }
 }
 
+// TODO: Isn't it possible for this to return some kind of error?
 fn generate_and_store_merk_proof<'a, S: 'a>(
     subtree: &'a Merk<S>,
     query: Query,
@@ -653,4 +644,19 @@ where
 
 fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
     dest.write_all(value);
+}
+
+fn execute_merk_proof(
+    proof: &Vec<u8>,
+    query: &Query,
+    limit: Option<u16>,
+    offset: Option<u16>,
+    left_to_right: bool,
+) -> Result<(Hash, ProofVerificationResult), Error> {
+    Ok(
+        merk::execute_proof(proof, query, limit, offset, left_to_right).map_err(|e| {
+            eprintln!("{}", e.to_string());
+            Error::InvalidProof("invalid proof verification parameters")
+        })?,
+    )
 }
