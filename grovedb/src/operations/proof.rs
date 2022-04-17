@@ -1,8 +1,11 @@
-use std::io::{Read, Write};
+use std::{
+    io::{Read, Write},
+    ptr::write,
+};
 
-use merk::proofs::query::QueryItem;
+use merk::{proofs::query::QueryItem, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleProof};
-use storage::rocksdb_storage::RocksDbStorage;
+use storage::{rocksdb_storage::RocksDbStorage, StorageContext};
 
 use crate::{
     merk::ProofConstructionResult,
@@ -116,16 +119,14 @@ impl GroveDb {
                     let mut query = Query::new();
                     query.insert_key(key.to_vec());
 
-                    let ProofConstructionResult { proof, .. } = subtree
-                        .prove(query, None, None)
-                        .expect("should generate proof");
-
-                    debug_assert!(proof.len() < 256);
-                    write_to_vec(
+                    generate_and_store_merk_proof(
+                        &subtree,
+                        query,
+                        None,
+                        None,
+                        ProofType::MerkProof,
                         &mut proof_result,
-                        &vec![ProofType::MerkProof.into(), proof.len() as u8],
                     );
-                    write_to_vec(&mut proof_result, &proof);
                 });
             }
             split_path = path_slice.split_last();
@@ -281,20 +282,14 @@ impl GroveDb {
                                     Query::new_with_direction(query.query.query.left_to_right);
                                 all_key_query.insert_all();
 
-                                // generate unsized merk proof for current element
-                                // TODO: Remove duplication
-                                // TODO: How do you handle mixed tree types?
-                                let ProofConstructionResult { proof, .. } = subtree
-                                    .prove(all_key_query, None, None)
-                                    .expect("should generate proof");
-
-                                // TODO: Switch to variable length encoding
-                                debug_assert!(proof.len() < 256);
-                                write_to_vec(
+                                generate_and_store_merk_proof(
+                                    &subtree,
+                                    all_key_query,
+                                    None,
+                                    None,
+                                    ProofType::MerkProof,
                                     proofs,
-                                    &vec![ProofType::MerkProof.into(), proof.len() as u8],
                                 );
-                                write_to_vec(proofs, &proof);
                             }
 
                             let mut new_path = path.clone();
@@ -316,20 +311,14 @@ impl GroveDb {
                                             let mut key_as_query = Query::new();
                                             key_as_query.insert_key(sub_key.clone().unwrap());
 
-                                            let ProofConstructionResult { proof, .. } =
-                                                inner_subtree
-                                                    .prove(key_as_query.clone(), None, None)
-                                                    .expect("should generate proof");
-
-                                            debug_assert!(proof.len() < 256);
-                                            write_to_vec(
+                                            generate_and_store_merk_proof(
+                                                &inner_subtree,
+                                                key_as_query,
+                                                None,
+                                                None,
+                                                ProofType::MerkProof,
                                                 proofs,
-                                                &vec![
-                                                    ProofType::MerkProof.into(),
-                                                    proof.len() as u8,
-                                                ],
                                             );
-                                            write_to_vec(proofs, &proof);
                                         }
                                     );
 
@@ -394,26 +383,18 @@ impl GroveDb {
             if !has_useful_subtree {
                 // if no useful subtree, then we care about the result set of this subtree.
                 // apply the sized query
-                // dbg!(subtree.get_kv_pairs(true).len());
-                // dbg!(subtree.is_empty_tree());
-                let proof_result = subtree
-                    .prove(query.query.query, *current_limit, *current_offset)
-                    .expect("should generate proof");
+                let limit_offset = generate_and_store_merk_proof(
+                    &subtree,
+                    query.query.query,
+                    *current_limit,
+                    *current_offset,
+                    ProofType::SizedMerkProof,
+                    proofs,
+                );
 
                 // update limit and offset values
-                *current_limit = proof_result.limit;
-                *current_offset = proof_result.offset;
-
-                // TODO: Switch to variable length encoding
-                debug_assert!(proof_result.proof.len() < 256);
-                write_to_vec(
-                    proofs,
-                    &vec![
-                        ProofType::SizedMerkProof.into(),
-                        proof_result.proof.len() as u8,
-                    ],
-                );
-                write_to_vec(proofs, &proof_result.proof);
+                *current_limit = limit_offset.0;
+                *current_offset = limit_offset.1;
             }
         });
 
@@ -642,6 +623,32 @@ impl<'a> ProofReader<'a> {
         self.proof_data.read_to_end(&mut data);
         data
     }
+}
+
+fn generate_and_store_merk_proof<'a, S: 'a>(
+    subtree: &'a Merk<S>,
+    query: Query,
+    limit: Option<u16>,
+    offset: Option<u16>,
+    proof_type: ProofType,
+    proofs: &mut Vec<u8>,
+) -> (Option<u16>, Option<u16>)
+where
+    S: StorageContext<'a, 'a>,
+{
+    // TODO: How do you handle mixed tree types?
+    let proof_result = subtree
+        .prove(query, limit, offset)
+        .expect("should generate proof");
+    // TODO: Switch to variable length encoding
+    debug_assert!(proof_result.proof.len() < 256);
+    write_to_vec(
+        proofs,
+        &vec![proof_type.into(), proof_result.proof.len() as u8],
+    );
+    write_to_vec(proofs, &proof_result.proof);
+
+    (proof_result.limit, proof_result.offset)
 }
 
 fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
