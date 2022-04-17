@@ -53,12 +53,15 @@ impl GroveDb {
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
 
+        if path_slices.len() < 1 {
+            return Err(Error::InvalidPath("can't generate proof for empty path"));
+        }
+
         self.check_subtree_exists_path_not_found(path_slices.clone(), None, None)?;
 
         let mut current_limit: Option<u16> = query.query.limit;
         let mut current_offset: Option<u16> = query.query.offset;
 
-        // TODO: can this be optionally ran?
         GroveDb::prove_subqueries(
             &self,
             &mut proof_result,
@@ -138,15 +141,16 @@ impl GroveDb {
     ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
 
+        if path_slices.len() < 1 {
+            return Err(Error::InvalidPath("can't verify proof for empty path"));
+        }
+
         let mut result_set: Vec<(Vec<u8>, Vec<u8>)> = vec![];
         let mut proof_reader = ProofReader::new(proof);
 
         let mut current_limit = query.query.limit;
         let mut current_offset = query.query.offset;
 
-        // TODO: optionally run this (check if the proof is only for root)
-        // TODO: Get rid of clone
-        // validate the merk at path with query
         let mut expected_root_hash = GroveDb::execute_subquery_proof(
             &mut proof_reader,
             &mut result_set,
@@ -332,17 +336,19 @@ impl GroveDb {
                                             None,
                                             None,
                                         );
-                                    dbg!("checking if subquery key path exists");
-                                    dbg!(&subquery_key_path_exists);
+                                    // dbg!("checking if subquery key path exists");
+                                    // dbg!(&subquery_key_path_exists);
                                     if subquery_key_path_exists.is_err() {
                                         continue;
                                     }
-                                    for (k, _) in subtree.get_kv_pairs(true) {
-                                        dbg!(std::str::from_utf8(k.as_slice()));
-                                    }
+                                    // for (k, _) in subtree.get_kv_pairs(true)
+                                    // {
+                                    //     // dbg!(std::str::from_utf8(k.
+                                    // as_slice()));
+                                    // }
                                 }
                             } else {
-                                dbg!("just subquery noe");
+                                // dbg!("just subquery noe");
                                 // only subquery key must exist, convert to query
                                 let mut key_as_query = Query::new();
                                 key_as_query.insert_key(sub_key.unwrap());
@@ -383,8 +389,8 @@ impl GroveDb {
             if !has_useful_subtree {
                 // if no useful subtree, then we care about the result set of this subtree.
                 // apply the sized query
-                dbg!(subtree.get_kv_pairs(true).len());
-                dbg!(subtree.is_empty_tree());
+                // dbg!(subtree.get_kv_pairs(true).len());
+                // dbg!(subtree.is_empty_tree());
                 let proof_result = subtree
                     .prove(query.query.query, *current_limit, *current_offset)
                     .expect("should generate proof");
