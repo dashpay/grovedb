@@ -412,16 +412,16 @@ fn test_follow_references() {
 //     db.insert(
 //         [TEST_LEAF],
 //         b"reference_key_1",
-//         Element::Reference(vec![TEST_LEAF.to_vec(), b"reference_key_2".to_vec()]),
-//         None,
+//         Element::Reference(vec![TEST_LEAF.to_vec(),
+// b"reference_key_2".to_vec()]),         None,
 //     )
 //     .expect("successful reference 1 insert");
 //
 //     db.insert(
 //         [TEST_LEAF],
 //         b"reference_key_2",
-//         Element::Reference(vec![TEST_LEAF.to_vec(), b"reference_key_1".to_vec()]),
-//         None,
+//         Element::Reference(vec![TEST_LEAF.to_vec(),
+// b"reference_key_1".to_vec()]),         None,
 //     )
 //     .expect("successful reference 2 insert");
 //
@@ -431,8 +431,8 @@ fn test_follow_references() {
 //     ));
 // }
 
-// TODO: fix test, now that reference insertion follows elements it won't allow bad state
-// #[test]
+// TODO: fix test, now that reference insertion follows elements it won't allow
+// bad state #[test]
 // fn test_too_many_indirections() {
 //     use crate::operations::get::MAX_REFERENCE_HOPS;
 //     let db = make_grovedb();

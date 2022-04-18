@@ -332,6 +332,13 @@ impl Tree {
         self
     }
 
+    // TODO: Documenation
+    #[inline]
+    pub fn with_value_and_value_hash(mut self, value: Vec<u8>, value_hash: Hash) -> Self {
+        self.inner.kv = self.inner.kv.with_value_and_value_hash(value, value_hash);
+        self
+    }
+
     // TODO: add compute_hashes method
 
     /// Called to finalize modifications to a tree, recompute its hashes, and

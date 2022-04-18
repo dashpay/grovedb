@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use ed::{Decode, Encode, Result, Terminated};
 
 use super::hash::{kv_hash, Hash, HASH_LENGTH, NULL_HASH};
-use crate::tree::hash::value_hash;
+use crate::tree::{hash::value_hash, kv_digest_to_kv_hash};
 
 // TODO: maybe use something similar to Vec but without capacity field,
 //       (should save 16 bytes per entry). also, maybe a shorter length
@@ -54,6 +54,16 @@ impl KV {
         self.value = value;
         self.value_hash = value_hash(self.value());
         self.hash = kv_hash(self.key(), self.value());
+        self
+    }
+
+    // TODO: Documenation
+    #[inline]
+    pub fn with_value_and_value_hash(mut self, value: Vec<u8>, value_hash: Hash) -> Self {
+        self.value = value;
+        self.value_hash = value_hash;
+        // TODO: maybe rename the kv_digest_to_kv_hash to something more general
+        self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash());
         self
     }
 

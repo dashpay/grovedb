@@ -503,7 +503,7 @@ impl Element {
         key: K,
         referenced_value: Vec<u8>,
     ) -> Result<(), Error> {
-        let batch_operations = [(key, Op::Put(self.serialize()?))];
+        let batch_operations = [(key, Op::PutReference(self.serialize()?, referenced_value))];
         // TODO: Remove duplication
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))

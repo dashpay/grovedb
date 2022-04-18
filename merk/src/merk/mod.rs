@@ -325,6 +325,8 @@ where
         for (key, value) in aux {
             match value {
                 Op::Put(value) => batch.put_aux(key, value)?,
+                // TODO: is this correct
+                Op::PutReference(value, _) => batch.put_aux(key, value)?,
                 Op::Delete => batch.delete_aux(key)?,
             };
         }

@@ -43,9 +43,11 @@ impl GroveDb {
                 self.check_subtree_exists_invalid_path(path_iter.clone(), Some(key), transaction)?;
                 // TODO: Handle clone
                 // dbg!(reference_path.clone());
-                let referenced_element = self.follow_reference(reference_path.clone(), transaction)?;
+                let referenced_element =
+                    self.follow_reference(reference_path.clone(), transaction)?;
                 // TODO: Handle error better
-                let elem_as_bytes = referenced_element.serialize().expect("should serialize"); // to be used a value hash
+                // to be used as value hash
+                let elem_as_bytes = referenced_element.serialize().expect("should serialize");
 
                 merk_optional_tx!(self.db, path_iter.clone(), transaction, mut subtree, {
                     element.insert_reference(&mut subtree, key, elem_as_bytes)?;
