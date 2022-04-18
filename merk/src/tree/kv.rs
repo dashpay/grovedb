@@ -92,6 +92,7 @@ impl Encode for KV {
     #[inline]
     fn encode_into<W: Write>(&self, out: &mut W) -> Result<()> {
         out.write_all(&self.hash[..])?;
+        out.write_all(&self.value_hash[..])?;
         out.write_all(self.value.as_slice())?;
         Ok(())
     }
@@ -99,7 +100,7 @@ impl Encode for KV {
     #[inline]
     fn encoding_length(&self) -> Result<usize> {
         debug_assert!(self.key().len() < 256, "Key length must be less than 256");
-        Ok(HASH_LENGTH + self.value.len())
+        Ok(HASH_LENGTH + HASH_LENGTH + self.value.len())
     }
 }
 
@@ -121,11 +122,10 @@ impl Decode for KV {
         self.key.clear();
 
         input.read_exact(&mut self.hash[..])?;
+        input.read_exact(&mut self.value_hash[..])?;
 
         self.value.clear();
         input.read_to_end(self.value.as_mut())?;
-
-        self.value_hash = value_hash(self.value());
 
         Ok(())
     }
