@@ -53,8 +53,7 @@ impl From<u8> for ProofType {
 
 impl GroveDb {
     pub fn prove(&self, query: PathQuery) -> Result<Vec<u8>, Error> {
-        // TODO: should it be possible get generate proofs for tree items (currently
-        // yes)
+        // TODO: should it be possible to generate proofs for tree items (currently yes)
         let mut proof_result: Vec<u8> = vec![];
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
@@ -246,9 +245,6 @@ impl GroveDb {
     ) -> Result<(), Error> {
         // there is a chance that the subquery key would lead to something that is not a
         // tree same thing for the subquery itself
-        // for p in path.clone() {
-        //     dbg!(std::str::from_utf8(p));
-        // }
         merk_optional_tx!(db.db, path.clone(), None, subtree, {
             let mut has_useful_subtree = false;
             let exhausted_limit = query.query.limit.is_some() && query.query.limit.unwrap() == 0;
@@ -327,20 +323,13 @@ impl GroveDb {
                                             None,
                                             None,
                                         );
-                                    // dbg!("checking if subquery key path exists");
-                                    // dbg!(&subquery_key_path_exists);
+
                                     if subquery_key_path_exists.is_err() {
+                                        dbg!("leaving");
                                         continue;
                                     }
-                                    // for (k, _) in subtree.get_kv_pairs(true)
-                                    // {
-                                    //     // dbg!(std::str::from_utf8(k.
-                                    // as_slice()));
-                                    // }
                                 }
                             } else {
-                                // dbg!("just subquery noe");
-                                // only subquery key must exist, convert to query
                                 let mut key_as_query = Query::new();
                                 key_as_query.insert_key(sub_key.unwrap());
                                 query = Some(key_as_query);
@@ -375,8 +364,7 @@ impl GroveDb {
                 }
             }
 
-            // There is the chance we get here because the above is not a tree hence can't
-            // have children, we attempt to prove and it fails
+            // TODO: Explore the chance that a subquerykey might lead to non tree element
             if !has_useful_subtree {
                 // if no useful subtree, then we care about the result set of this subtree.
                 // apply the sized query
@@ -545,7 +533,8 @@ impl GroveDb {
                 }
             }
             _ => {
-                // TODO: Update here when you fix possibility of only root
+                // execute_subquery_proof only expects proofs for merk trees
+                // root proof is handled separately
                 return Err(Error::InvalidProof("wrong proof type"));
             }
         }
@@ -597,6 +586,7 @@ impl<'a> ProofReader<'a> {
             }
         }
 
+        // TODO: This should not be the invalid proof type
         let proof_type: ProofType = data_type[0].into();
 
         let mut length = vec![0; 1];
