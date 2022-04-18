@@ -27,6 +27,31 @@ impl GroveDb {
                     self.add_non_root_subtree(path_iter, key, transaction)?;
                 }
             }
+            // If the element is of type reference, follow the reference to get the actual element
+            // get the value hash of that element
+            Element::Reference(ref reference_path) => {
+                dbg!("inserting reference");
+                // TODO: Remove duplication
+                // If path is empty that means there is an attempt to insert
+                // something into a root tree and this branch is for anything
+                // but trees
+                if path_iter.len() == 0 {
+                    return Err(Error::InvalidPath(
+                        "only subtrees are allowed as root tree's leafs",
+                    ));
+                }
+                self.check_subtree_exists_invalid_path(path_iter.clone(), Some(key), transaction)?;
+                // TODO: Handle clone
+                // dbg!(reference_path.clone());
+                let referenced_element = self.follow_reference(reference_path.clone(), transaction)?;
+                // TODO: Handle error better
+                let elem_as_bytes = referenced_element.serialize().expect("should serialize"); // to be used a value hash
+
+                merk_optional_tx!(self.db, path_iter.clone(), transaction, mut subtree, {
+                    element.insert_reference(&mut subtree, key, elem_as_bytes)?;
+                });
+                self.propagate_changes(path_iter, transaction)?;
+            }
             _ => {
                 // If path is empty that means there is an attempt to insert
                 // something into a root tree and this branch is for anything
