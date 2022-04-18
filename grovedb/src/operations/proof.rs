@@ -138,7 +138,6 @@ impl GroveDb {
         Ok(proof_result)
     }
 
-    // TODO: Audit and make clearer the logic of figuring out what to verify
     pub fn execute_proof(
         proof: &[u8],
         query: PathQuery,
@@ -169,24 +168,19 @@ impl GroveDb {
             if !path_slice.is_empty() {
                 // for every subtree, we should have a corresponding proof for the parent
                 // which should prove that this subtree is a child of the parent tree
-
-                // get parent proof
-                let merk_proof = proof_reader.read_proof_of_type(ProofType::MerkProof.into())?;
+                let parent_merk_proof =
+                    proof_reader.read_proof_of_type(ProofType::MerkProof.into())?;
 
                 let mut parent_query = Query::new();
                 parent_query.insert_key(key.to_vec());
 
-                let proof_result = merk::execute_proof(
-                    &merk_proof,
+                let proof_result = execute_merk_proof(
+                    &parent_merk_proof,
                     &parent_query,
                     None,
                     None,
                     query.query.query.left_to_right,
-                )
-                .map_err(|e| {
-                    eprintln!("{}", e.to_string());
-                    Error::InvalidProof("invalid proof verification parameters")
-                })?;
+                )?;
 
                 let result_set = proof_result.1.result_set;
                 if result_set.len() == 0 || result_set[0].0 != key.to_vec() {
@@ -448,7 +442,6 @@ impl GroveDb {
                 root_hash = verification_result.0;
 
                 for (key, value_bytes) in verification_result.1.result_set {
-                    // TODO: Remove duplication
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
                     match child_element {
                         Element::Tree(mut expected_root_hash) => {
@@ -560,6 +553,8 @@ impl GroveDb {
     }
 }
 
+// Helpers
+// TODO: Extract into seperate files
 #[derive(Debug)]
 struct ProofReader<'a> {
     proof_data: &'a [u8],
@@ -570,17 +565,37 @@ impl<'a> ProofReader<'a> {
         Self { proof_data }
     }
 
+    // TODO: handle error (e.g. not enough bytes to read)
     fn read_byte(&mut self) -> Result<[u8; 1], Error> {
         let mut data = [0; 1];
         self.proof_data.read(&mut data);
         Ok(data)
     }
 
-    // TODO: Handle duplication
-    // TODO: handle error (e.g. not enough bytes to read)
     fn read_proof(&mut self) -> Result<(ProofType, Vec<u8>), Error> {
+        self.read_proof_with_optional_type(None)
+    }
+
+    fn read_proof_of_type(&mut self, expected_data_type: u8) -> Result<Vec<u8>, Error> {
+        match self.read_proof_with_optional_type(Some(expected_data_type)) {
+            Ok((_, proof)) => Ok(proof),
+            Err(e) => Err(e),
+        }
+    }
+
+    // TODO: handle error (e.g. not enough bytes to read)
+    fn read_proof_with_optional_type(
+        &mut self,
+        expected_data_type_option: Option<u8>,
+    ) -> Result<(ProofType, Vec<u8>), Error> {
         let mut data_type = [0; 1];
         self.proof_data.read(&mut data_type);
+
+        if let Some(expected_data_type) = expected_data_type_option {
+            if data_type != [expected_data_type] {
+                return Err(Error::InvalidProof("wrong data_type"));
+            }
+        }
 
         let proof_type: ProofType = data_type[0].into();
 
@@ -590,22 +605,6 @@ impl<'a> ProofReader<'a> {
         self.proof_data.read(&mut proof);
 
         Ok((proof_type, proof))
-    }
-
-    fn read_proof_of_type(&mut self, expected_data_type: u8) -> Result<Vec<u8>, Error> {
-        let mut data_type = [0; 1];
-        self.proof_data.read(&mut data_type);
-
-        if data_type != [expected_data_type] {
-            return Err(Error::InvalidProof("wrong data_type"));
-        }
-
-        let mut length = vec![0; 1];
-        self.proof_data.read(&mut length);
-        let mut proof = vec![0; length[0] as usize];
-        self.proof_data.read(&mut proof);
-
-        Ok(proof)
     }
 
     fn read_to_end(&mut self) -> Vec<u8> {
@@ -631,6 +630,7 @@ where
     let proof_result = subtree
         .prove(query, limit, offset)
         .expect("should generate proof");
+
     // TODO: Switch to variable length encoding
     debug_assert!(proof_result.proof.len() < 256);
     write_to_vec(
