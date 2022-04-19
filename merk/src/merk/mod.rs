@@ -13,6 +13,10 @@ use crate::{
 
 const ROOT_KEY_KEY: &[u8] = b"root";
 
+pub trait Bam {
+    fn greet(&self);
+}
+
 pub struct ProofConstructionResult {
     pub proof: Vec<u8>,
     pub limit: Option<u16>,
@@ -236,6 +240,7 @@ where
     /// gain.
     pub fn prove(
         &'ctx self,
+        db_state: Box<dyn Bam + 'ctx>,
         query: Query,
         limit: Option<u16>,
         offset: Option<u16>,
