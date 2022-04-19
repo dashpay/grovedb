@@ -1,4 +1,4 @@
-use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error, WriteBatchWithTransaction};
+use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error};
 
 use super::{batch::PrefixedMultiContextBatchPart, make_prefixed_key, PrefixedRocksDbRawIterator};
 use crate::{

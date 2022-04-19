@@ -1,10 +1,7 @@
 //! Storage context implementation with a transaction.
-use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error, WriteBatchWithTransaction};
+use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error};
 
-use super::{
-    batch::PrefixedMultiContextBatchPart, make_prefixed_key, PrefixedRocksDbBatch,
-    PrefixedRocksDbRawIterator,
-};
+use super::{batch::PrefixedMultiContextBatchPart, make_prefixed_key, PrefixedRocksDbRawIterator};
 use crate::{
     rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
     StorageBatch, StorageContext,

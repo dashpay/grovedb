@@ -4,7 +4,7 @@ use std::convert::Infallible;
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
 use super::{make_prefixed_key, PrefixedRocksDbTransactionContext};
-use crate::{Batch, BatchOperation, StorageBatch, StorageContext};
+use crate::{Batch, StorageBatch, StorageContext};
 
 /// Wrapper to RocksDB batch
 pub struct PrefixedRocksDbBatch<'db, B> {

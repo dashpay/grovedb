@@ -193,38 +193,22 @@ impl<'db> Storage<'db> for RocksDbStorage {
         transaction: &'db Self::Transaction,
     ) -> Result<(), Self::Error> {
         transaction.set_savepoint();
-        let batch_result: Result<(), Self::Error> = batch
-            .into_iter()
-            .map(|op| {
-                match op {
-                    BatchOperation::Put { key, value } => {
-                        transaction.put(key, value)?;
-                    }
-                    BatchOperation::PutAux { key, value } => {
-                        transaction.put_cf(cf_aux(&self.db), key, value)?;
-                    }
-                    BatchOperation::PutRoot { key, value } => {
-                        transaction.put_cf(cf_roots(&self.db), key, value)?;
-                    }
-                    BatchOperation::PutMeta { key, value } => {
-                        transaction.put_cf(cf_meta(&self.db), key, value)?;
-                    }
-                    BatchOperation::Delete { key } => {
-                        transaction.delete(key)?;
-                    }
-                    BatchOperation::DeleteAux { key } => {
-                        transaction.delete_cf(cf_aux(&self.db), key)?;
-                    }
-                    BatchOperation::DeleteRoot { key } => {
-                        transaction.delete_cf(cf_roots(&self.db), key)?;
-                    }
-                    BatchOperation::DeleteMeta { key } => {
-                        transaction.delete_cf(cf_meta(&self.db), key)?;
-                    }
-                }
-                Ok(())
-            })
-            .collect();
+        let batch_result: Result<(), Self::Error> = batch.into_iter().try_for_each(|op| match op {
+            BatchOperation::Put { key, value } => transaction.put(key, value),
+            BatchOperation::PutAux { key, value } => {
+                transaction.put_cf(cf_aux(&self.db), key, value)
+            }
+            BatchOperation::PutRoot { key, value } => {
+                transaction.put_cf(cf_roots(&self.db), key, value)
+            }
+            BatchOperation::PutMeta { key, value } => {
+                transaction.put_cf(cf_meta(&self.db), key, value)
+            }
+            BatchOperation::Delete { key } => transaction.delete(key),
+            BatchOperation::DeleteAux { key } => transaction.delete_cf(cf_aux(&self.db), key),
+            BatchOperation::DeleteRoot { key } => transaction.delete_cf(cf_roots(&self.db), key),
+            BatchOperation::DeleteMeta { key } => transaction.delete_cf(cf_meta(&self.db), key),
+        });
         if batch_result.is_err() {
             transaction.rollback_to_savepoint()?;
         }
