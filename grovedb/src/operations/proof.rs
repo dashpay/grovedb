@@ -7,6 +7,7 @@ use merk::{
     proofs::{
         encode_into,
         query::{ProofVerificationResult, QueryItem},
+        Node, Op,
     },
     Hash, Merk,
 };
@@ -125,6 +126,7 @@ impl GroveDb {
                     query.insert_key(key.to_vec());
 
                     generate_and_store_merk_proof(
+                        &self,
                         &subtree,
                         query,
                         None,
@@ -279,6 +281,7 @@ impl GroveDb {
                                 all_key_query.insert_all();
 
                                 generate_and_store_merk_proof(
+                                    db,
                                     &subtree,
                                     all_key_query,
                                     None,
@@ -308,6 +311,7 @@ impl GroveDb {
                                             key_as_query.insert_key(sub_key.clone().unwrap());
 
                                             generate_and_store_merk_proof(
+                                                db,
                                                 &inner_subtree,
                                                 key_as_query,
                                                 None,
@@ -372,6 +376,7 @@ impl GroveDb {
                 // if no useful subtree, then we care about the result set of this subtree.
                 // apply the sized query
                 let limit_offset = generate_and_store_merk_proof(
+                    db,
                     &subtree,
                     query.query.query,
                     *current_limit,
@@ -609,6 +614,7 @@ impl<'a> ProofReader<'a> {
 
 // TODO: Isn't it possible for this to return some kind of error?
 fn generate_and_store_merk_proof<'a, S: 'a>(
+    db: &GroveDb,
     subtree: &'a Merk<S>,
     query: Query,
     limit: Option<u16>,
@@ -620,9 +626,35 @@ where
     S: StorageContext<'a, 'a>,
 {
     // TODO: How do you handle mixed tree types?
-    let proof_result = subtree
+    let mut proof_result = subtree
         .prove_without_encoding(query, limit, offset)
         .expect("should generate proof");
+
+    for a in proof_result.proof.iter_mut() {
+        match a {
+            Op::Push(node) | Op::PushInverted(node) => {
+                match node {
+                    Node::KV(key, value) => {
+                        let elem = Element::deserialize(value);
+                        // only care about the reference type
+                        if let Ok(Element::Reference(reference_path)) = elem {
+                            // TODO: handle error better
+                            let referenced_elem =
+                                db.follow_reference(reference_path, None).unwrap();
+                            dbg!(&referenced_elem);
+                            // update the current elem
+                            // Handle error
+                            *value = referenced_elem.serialize().unwrap();
+                            // *a = Node::KV(key.clone(),
+                            // referenced_elem.serialize()?);
+                        }
+                    }
+                    _ => continue,
+                }
+            }
+            _ => continue,
+        }
+    }
 
     let mut proof_bytes = Vec::with_capacity(128);
     encode_into(proof_result.proof.iter(), &mut proof_bytes);
