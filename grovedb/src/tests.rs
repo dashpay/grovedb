@@ -642,7 +642,11 @@ fn test_path_query_proofs_without_subquery_with_reference() {
         .insert(
             [ANOTHER_TEST_LEAF, b"innertree2"],
             b"key4",
-            Element::Reference(vec![TEST_LEAF.to_vec(), b"innertree".to_vec(), b"key1".to_vec()]),
+            Element::Reference(vec![
+                TEST_LEAF.to_vec(),
+                b"innertree".to_vec(),
+                b"key1".to_vec(),
+            ]),
             None,
         )
         .expect("successful subtree insert");
@@ -659,7 +663,10 @@ fn test_path_query_proofs_without_subquery_with_reference() {
     let mut query = Query::new();
     query.insert_key(b"key4".to_vec());
 
-    let path_query = PathQuery::new_unsized(vec![ANOTHER_TEST_LEAF.to_vec(), b"innertree2".to_vec()], query);
+    let path_query = PathQuery::new_unsized(
+        vec![ANOTHER_TEST_LEAF.to_vec(), b"innertree2".to_vec()],
+        query,
+    );
 
     let proof = temp_db.prove(path_query.clone()).unwrap();
     let (hash, result_set) =

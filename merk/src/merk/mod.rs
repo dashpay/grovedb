@@ -7,7 +7,7 @@ use anyhow::{anyhow, bail, Result};
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
-    proofs::{encode_into, query::QueryItem, Query},
+    proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
     tree::{Commit, Fetch, Hash, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
 };
 
@@ -21,6 +21,23 @@ pub struct ProofConstructionResult {
 
 impl ProofConstructionResult {
     pub fn new(proof: Vec<u8>, limit: Option<u16>, offset: Option<u16>) -> Self {
+        Self {
+            proof,
+            limit,
+            offset,
+        }
+    }
+}
+
+// TODO: remove duplication
+pub struct ProofWithoutEncodingResult {
+    pub proof: LinkedList<ProofOp>,
+    pub limit: Option<u16>,
+    pub offset: Option<u16>,
+}
+
+impl ProofWithoutEncodingResult {
+    pub fn new(proof: LinkedList<ProofOp>, limit: Option<u16>, offset: Option<u16>) -> Self {
         Self {
             proof,
             limit,
@@ -241,7 +258,24 @@ where
         offset: Option<u16>,
     ) -> Result<ProofConstructionResult> {
         let left_to_right = query.left_to_right;
-        self.prove_unchecked(query, limit, offset, left_to_right)
+        let (proof, limit, offset) = self.prove_unchecked(query, limit, offset, left_to_right)?;
+
+        let mut bytes = Vec::with_capacity(128);
+        encode_into(proof.iter(), &mut bytes);
+        Ok(ProofConstructionResult::new(bytes, limit, offset))
+    }
+
+    // TODO: Add documentation
+    pub fn prove_without_encoding(
+        &'ctx self,
+        query: Query,
+        limit: Option<u16>,
+        offset: Option<u16>,
+    ) -> Result<ProofWithoutEncodingResult> {
+        let left_to_right = query.left_to_right;
+        let (proof, limit, offset) = self.prove_unchecked(query, limit, offset, left_to_right)?;
+
+        Ok(ProofWithoutEncodingResult::new(proof, limit, offset))
     }
 
     /// Creates a Merkle proof for the list of queried keys. For each key in
@@ -262,7 +296,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> Result<ProofConstructionResult>
+    ) -> Result<(LinkedList<ProofOp>, Option<u16>, Option<u16>)>
     where
         Q: Into<QueryItem>,
         I: IntoIterator<Item = Q>,
@@ -276,9 +310,7 @@ where
             let (proof, _, limit, offset, ..) =
                 ref_walker.create_proof(query_vec.as_slice(), limit, offset, left_to_right)?;
 
-            let mut bytes = Vec::with_capacity(128);
-            encode_into(proof.iter(), &mut bytes);
-            Ok(ProofConstructionResult::new(bytes, limit, offset))
+            Ok((proof, limit, offset))
         })
     }
 
