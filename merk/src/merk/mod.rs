@@ -7,11 +7,44 @@ use anyhow::{anyhow, bail, Result};
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
-    proofs::{encode_into, query::QueryItem, Query},
+    proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
     tree::{Commit, Fetch, Hash, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
 };
 
 const ROOT_KEY_KEY: &[u8] = b"root";
+
+pub struct ProofConstructionResult {
+    pub proof: Vec<u8>,
+    pub limit: Option<u16>,
+    pub offset: Option<u16>,
+}
+
+impl ProofConstructionResult {
+    pub fn new(proof: Vec<u8>, limit: Option<u16>, offset: Option<u16>) -> Self {
+        Self {
+            proof,
+            limit,
+            offset,
+        }
+    }
+}
+
+// TODO: remove duplication
+pub struct ProofWithoutEncodingResult {
+    pub proof: LinkedList<ProofOp>,
+    pub limit: Option<u16>,
+    pub offset: Option<u16>,
+}
+
+impl ProofWithoutEncodingResult {
+    pub fn new(proof: LinkedList<ProofOp>, limit: Option<u16>, offset: Option<u16>) -> Self {
+        Self {
+            proof,
+            limit,
+            offset,
+        }
+    }
+}
 
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk<S> {
@@ -223,9 +256,26 @@ where
         query: Query,
         limit: Option<u16>,
         offset: Option<u16>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<ProofConstructionResult> {
         let left_to_right = query.left_to_right;
-        self.prove_unchecked(query, limit, offset, left_to_right)
+        let (proof, limit, offset) = self.prove_unchecked(query, limit, offset, left_to_right)?;
+
+        let mut bytes = Vec::with_capacity(128);
+        encode_into(proof.iter(), &mut bytes);
+        Ok(ProofConstructionResult::new(bytes, limit, offset))
+    }
+
+    // TODO: Add documentation
+    pub fn prove_without_encoding(
+        &'ctx self,
+        query: Query,
+        limit: Option<u16>,
+        offset: Option<u16>,
+    ) -> Result<ProofWithoutEncodingResult> {
+        let left_to_right = query.left_to_right;
+        let (proof, limit, offset) = self.prove_unchecked(query, limit, offset, left_to_right)?;
+
+        Ok(ProofWithoutEncodingResult::new(proof, limit, offset))
     }
 
     /// Creates a Merkle proof for the list of queried keys. For each key in
@@ -246,7 +296,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> Result<Vec<u8>>
+    ) -> Result<(LinkedList<ProofOp>, Option<u16>, Option<u16>)>
     where
         Q: Into<QueryItem>,
         I: IntoIterator<Item = Q>,
@@ -257,12 +307,10 @@ where
             let tree = maybe_tree.ok_or(anyhow!("Cannot create proof for empty tree"))?;
 
             let mut ref_walker = RefWalker::new(tree, self.source());
-            let (proof, ..) =
+            let (proof, _, limit, offset, ..) =
                 ref_walker.create_proof(query_vec.as_slice(), limit, offset, left_to_right)?;
 
-            let mut bytes = Vec::with_capacity(128);
-            encode_into(proof.iter(), &mut bytes);
-            Ok(bytes)
+            Ok((proof, limit, offset))
         })
     }
 
@@ -309,6 +357,8 @@ where
         for (key, value) in aux {
             match value {
                 Op::Put(value) => batch.put_aux(key, value)?,
+                // TODO: is this correct
+                Op::PutReference(value, _) => batch.put_aux(key, value)?,
                 Op::Delete => batch.delete_aux(key)?,
             };
         }
@@ -334,6 +384,31 @@ where
         iter.seek_to_first();
 
         !iter.valid()
+    }
+
+    // TODO: Convert this to something that returns all the keys in a merk
+    pub fn get_kv_pairs(&self, left_to_right: bool) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut result = vec![];
+        let mut iter = self.storage.raw_iter();
+        // might need to use seek for iter, or maybe not
+        // iter.seek_to_first();
+        if left_to_right {
+            iter.seek_to_first();
+        } else {
+            iter.seek_to_last();
+        }
+
+        while iter.valid() {
+            let rs = (iter.key().unwrap().to_vec(), iter.value().unwrap().to_vec());
+            result.push(rs);
+            if left_to_right {
+                iter.next();
+            } else {
+                iter.prev();
+            }
+        }
+
+        result
     }
 
     fn source(&self) -> MerkSource<S> {

@@ -27,7 +27,7 @@ impl GroveDb {
         }
     }
 
-    fn follow_reference(
+    pub fn follow_reference(
         &self,
         mut path: Vec<Vec<u8>>,
         transaction: TransactionArg,

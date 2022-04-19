@@ -14,7 +14,7 @@ use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
 use crate::{
     util::{merk_optional_tx, storage_context_optional_tx},
-    Error, Merk, PathQuery, SizedQuery, TransactionArg,
+    Error, GroveDb, Merk, PathQuery, SizedQuery, TransactionArg,
 };
 
 /// Variants of GroveDB stored entities
@@ -254,7 +254,7 @@ impl Element {
         Ok(())
     }
 
-    fn subquery_paths_for_sized_query(
+    pub fn subquery_paths_for_sized_query(
         sized_query: &SizedQuery,
         key: &[u8],
     ) -> (Option<Vec<u8>>, Option<Query>) {
@@ -268,6 +268,24 @@ impl Element {
                 return (subquery_key, subquery);
             }
         }
+        let subquery_key = sized_query
+            .query
+            .default_subquery_branch
+            .subquery_key
+            .clone();
+        let subquery = sized_query
+            .query
+            .default_subquery_branch
+            .subquery
+            .as_ref()
+            .map(|query| *query.clone());
+        (subquery_key, subquery)
+    }
+
+    // TODO: Remove once you implement conditional subqueries
+    pub fn default_subquery_paths_for_sized_query(
+        sized_query: &SizedQuery,
+    ) -> (Option<Vec<u8>>, Option<Query>) {
         let subquery_key = sized_query
             .query
             .default_subquery_branch
@@ -474,6 +492,19 @@ impl Element {
         key: K,
     ) -> Result<(), Error> {
         let batch_operations = [(key, Op::Put(self.serialize()?))];
+        merk.apply::<_, Vec<u8>>(&batch_operations, &[])
+            .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    // TODO: Proper documentation, maybe better name
+    pub fn insert_reference<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx>>(
+        &self,
+        merk: &'ctx mut Merk<S>,
+        key: K,
+        referenced_value: Vec<u8>,
+    ) -> Result<(), Error> {
+        let batch_operations = [(key, Op::PutReference(self.serialize()?, referenced_value))];
+        // TODO: Remove duplication
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
