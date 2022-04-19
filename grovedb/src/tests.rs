@@ -580,6 +580,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
     //         innertree2
     //             k3,v3
     //             k4, reference to k1 in innertree
+    //             k5, reference to k4 in innertree3
     //         innertree3
     //             k4,v4
 
@@ -658,10 +659,22 @@ fn test_path_query_proofs_without_subquery_with_reference() {
             None,
         )
         .expect("successful subtree insert");
+    temp_db
+        .insert(
+            [ANOTHER_TEST_LEAF, b"innertree2"],
+            b"key5",
+            Element::Reference(vec![
+                ANOTHER_TEST_LEAF.to_vec(),
+                b"innertree3".to_vec(),
+                b"key4".to_vec(),
+            ]),
+            None,
+        )
+        .expect("successful subtree insert");
 
     // Single key query
     let mut query = Query::new();
-    query.insert_key(b"key4".to_vec());
+    query.insert_range_from(b"key4".to_vec()..);
 
     let path_query = PathQuery::new_unsized(
         vec![ANOTHER_TEST_LEAF.to_vec(), b"innertree2".to_vec()],
@@ -674,7 +687,12 @@ fn test_path_query_proofs_without_subquery_with_reference() {
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::Item(b"value1".to_vec()).serialize().unwrap();
-    assert_eq!(result_set, vec![(b"key4".to_vec(), r1)]);
+    let r2 = Element::Item(b"value4".to_vec()).serialize().unwrap();
+
+    assert_eq!(
+        result_set,
+        vec![(b"key4".to_vec(), r1), (b"key5".to_vec(), r2),]
+    );
 }
 
 #[test]
