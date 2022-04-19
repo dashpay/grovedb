@@ -5,7 +5,7 @@ use std::{
 
 use merk::{
     proofs::query::{ProofVerificationResult, QueryItem},
-    Hash, Merk, Bam
+    Hash, Merk,
 };
 use rs_merkle::{algorithms::Sha256, MerkleProof};
 use storage::{rocksdb_storage::RocksDbStorage, StorageContext};
@@ -20,12 +20,6 @@ use crate::{
 };
 
 const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
-
-impl<'a> Bam for &'a GroveDb {
-   fn greet(&self) {
-       dbg!("Nice to meet you");
-   }
-}
 
 #[derive(Debug, PartialEq)]
 enum ProofType {
@@ -128,7 +122,6 @@ impl GroveDb {
                     query.insert_key(key.to_vec());
 
                     generate_and_store_merk_proof(
-                        Box::new(self),
                         &subtree,
                         query,
                         None,
@@ -283,7 +276,6 @@ impl GroveDb {
                                 all_key_query.insert_all();
 
                                 generate_and_store_merk_proof(
-                                    Box::new(db),
                                     &subtree,
                                     all_key_query,
                                     None,
@@ -313,7 +305,6 @@ impl GroveDb {
                                             key_as_query.insert_key(sub_key.clone().unwrap());
 
                                             generate_and_store_merk_proof(
-                                                Box::new(db),
                                                 &inner_subtree,
                                                 key_as_query,
                                                 None,
@@ -378,7 +369,6 @@ impl GroveDb {
                 // if no useful subtree, then we care about the result set of this subtree.
                 // apply the sized query
                 let limit_offset = generate_and_store_merk_proof(
-                    Box::new(db),
                     &subtree,
                     query.query.query,
                     *current_limit,
@@ -616,7 +606,6 @@ impl<'a> ProofReader<'a> {
 
 // TODO: Isn't it possible for this to return some kind of error?
 fn generate_and_store_merk_proof<'a, S: 'a>(
-    db_state: Box<dyn Bam + 'a>,
     subtree: &'a Merk<S>,
     query: Query,
     limit: Option<u16>,
@@ -629,7 +618,7 @@ where
 {
     // TODO: How do you handle mixed tree types?
     let proof_result = subtree
-        .prove(db_state, query, limit, offset)
+        .prove(query, limit, offset)
         .expect("should generate proof");
 
     // TODO: Switch to variable length encoding

@@ -21,4 +21,4 @@ pub use tree::{BatchEntry, Hash, MerkBatch, Op, PanicSource, HASH_LENGTH};
 
 // #[cfg(feature = "full")]
 // // pub use crate::merk::{chunks, restore, Merk};
-pub use crate::merk::{Merk, ProofConstructionResult, Bam};
+pub use crate::merk::{Merk, ProofConstructionResult};
