@@ -660,8 +660,8 @@ where
     encode_into(proof_result.proof.iter(), &mut proof_bytes);
 
     // TODO: Switch to variable length encoding
-    debug_assert!(proof_bytes.len() < 256);
     dbg!(proof_bytes.len());
+    debug_assert!(proof_bytes.len() < 256);
     write_to_vec(proofs, &vec![proof_type.into(), proof_bytes.len() as u8]);
     write_to_vec(proofs, &proof_bytes);
 
