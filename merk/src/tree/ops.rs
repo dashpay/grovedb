@@ -7,6 +7,7 @@ use super::{Fetch, Link, Tree, Walker};
 use crate::tree::hash::value_hash;
 
 /// An operation to be applied to a key in the store.
+#[derive(PartialEq)]
 pub enum Op {
     Put(Vec<u8>),
     PutReference(Vec<u8>, Vec<u8>),
@@ -101,7 +102,23 @@ where
         };
 
         // TODO: take from batch so we don't have to clone
-        let mid_tree = Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec());
+        // let mid_tree
+
+        // TODO: cleanup
+        // dbg!(mid_op == Op::Put(_));
+        let mid_tree = match mid_op {
+            Put(_) => Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec()),
+            PutReference(_, referenced_value) => Tree::new_with_value_hash(
+                mid_key.as_ref().to_vec(),
+                mid_value.to_vec(),
+                value_hash(referenced_value),
+            ),
+            Delete => unreachable!("cannot get here, should return at the top"),
+        };
+        // if mid_op == Op::PutReference{
+        //     dbg!("I am a put reference type");
+        // }
+        // let mid_tree = Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec());
         let mid_walker = Walker::new(mid_tree, PanicSource {});
 
         // use walker, ignore deleted_keys since it should be empty

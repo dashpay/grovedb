@@ -34,6 +34,19 @@ impl KV {
         }
     }
 
+    // TODO: Documentation
+    #[inline]
+    pub fn new_with_value_hash(key: Vec<u8>, value: Vec<u8>, value_hash: Hash) -> Self {
+        // TODO: length checks?
+        let hash = kv_digest_to_kv_hash(key.as_slice(), &value_hash);
+        Self {
+            key,
+            value,
+            hash,
+            value_hash,
+        }
+    }
+
     /// Creates a new `KV` with the given key, value, and hash. The hash is not
     /// checked to be correct for the given key/value.
     #[inline]

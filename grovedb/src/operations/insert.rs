@@ -51,6 +51,7 @@ impl GroveDb {
 
                 merk_optional_tx!(self.db, path_iter.clone(), transaction, mut subtree, {
                     element.insert_reference(&mut subtree, key, elem_as_bytes)?;
+                    // element.insert(&mut subtree, key)?;
                 });
                 self.propagate_changes(path_iter, transaction)?;
             }

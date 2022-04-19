@@ -8,6 +8,7 @@ use tempfile::TempDir;
 
 // use test::RunIgnored::No;
 use super::*;
+use crate::subtree::raw_decode;
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
 const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
@@ -375,6 +376,60 @@ fn test_changes_propagated() {
         element
     );
     assert_ne!(old_hash, db.root_hash(None).unwrap());
+}
+
+#[test]
+fn test_references() {
+    let db = make_grovedb();
+    db.insert([TEST_LEAF], b"merk_1", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"merk_1"],
+        b"key1",
+        Element::Item(b"value1".to_vec()),
+        None,
+    )
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"merk_1"],
+        b"key2",
+        Element::Item(b"value2".to_vec()),
+        None,
+    )
+    .expect("successful subtree insert");
+
+    db.insert([TEST_LEAF], b"merk_2", Element::empty_tree(), None)
+        .expect("successful subtree insert");
+    // db.insert([TEST_LEAF, b"merk_2"], b"key2", Element::Item(b"value2".to_vec()),
+    // None).expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"merk_2"],
+        b"key1",
+        Element::Reference(vec![
+            TEST_LEAF.to_vec(),
+            b"merk_1".to_vec(),
+            b"key1".to_vec(),
+        ]),
+        None,
+    )
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"merk_2"],
+        b"key2",
+        Element::Reference(vec![
+            TEST_LEAF.to_vec(),
+            b"merk_1".to_vec(),
+            b"key2".to_vec(),
+        ]),
+        None,
+    )
+    .expect("successful subtree insert");
+
+    let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"merk_1"]);
+    let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+
+    let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"merk_2"]);
+    let subtree = Merk::open(subtree_storage).expect("cannot open merk");
 }
 
 #[test]

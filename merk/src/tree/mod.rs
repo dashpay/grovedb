@@ -60,6 +60,17 @@ impl Tree {
         }
     }
 
+    // TODO: Documenation
+    pub fn new_with_value_hash(key: Vec<u8>, value: Vec<u8>, value_hash: Hash) -> Self {
+        Self {
+            inner: Box::new(TreeInner {
+                kv: KV::new_with_value_hash(key, value, value_hash),
+                left: None,
+                right: None,
+            }),
+        }
+    }
+
     /// Creates a `Tree` by supplying all the raw struct fields (mainly useful
     /// for testing). The `kv_hash` and `Link`s are not ensured to be correct.
     pub fn from_fields(
