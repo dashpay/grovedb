@@ -136,13 +136,15 @@ where
     }
 
     fn new_batch(&'ctx self) -> Self::Batch {
-        todo!()
-        // self
+        PrefixedMultiContextBatchPart {
+            prefix: self.prefix.clone(),
+            batch: StorageBatch::new(),
+        }
     }
 
-    fn commit_batch(&'ctx self, _batch: Self::Batch) -> Result<(), Self::Error> {
-        todo!()
-        // Ok(())
+    fn commit_batch(&'ctx self, batch: Self::Batch) -> Result<(), Self::Error> {
+        self.batch.merge(batch.batch);
+        Ok(())
     }
 
     fn raw_iter(&self) -> Self::RawIterator {

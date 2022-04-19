@@ -894,7 +894,8 @@ mod batch_no_transaction {
             .put(b"key3", b"ayybvalue3")
             .expect("cannot push into db batch");
 
-        // DB batches are not commited yet
+        // DB batches are not commited yet, so these operations are missing from
+        // StorageBatch
         assert_eq!(batch.len(), 2);
 
         context_ayya
@@ -904,6 +905,8 @@ mod batch_no_transaction {
             .commit_batch(db_batch_ayyb)
             .expect("cannot commit db batch");
 
+        // DB batches are "commited", but actually staged in multi-context batch to do
+        // it in a single run to the database
         assert_eq!(batch.len(), 6);
 
         assert!(context_ayya
@@ -933,7 +936,7 @@ mod batch_no_transaction {
 
 mod batch_transaction {
     use super::*;
-    use crate::{Batch, Storage, StorageBatch, StorageContext};
+    use crate::{Batch, RawIterator, Storage, StorageBatch, StorageContext};
 
     #[test]
     fn test_transaction_properties() {
@@ -1045,6 +1048,98 @@ mod batch_transaction {
                 .flatten()
                 .expect("cannot get data"),
             b"ayyavalue2"
+        );
+    }
+
+    #[test]
+    fn test_db_batch_in_transaction_merged_into_context_batch() {
+        let storage = TempStorage::new();
+        let transaction = storage.start_transaction();
+        let batch = StorageBatch::new();
+
+        let context_ayya =
+            storage.get_batch_transactional_storage_context(to_path(b"ayya"), &batch, &transaction);
+        let context_ayyb =
+            storage.get_batch_transactional_storage_context(to_path(b"ayyb"), &batch, &transaction);
+
+        let mut db_batch_a = context_ayya.new_batch();
+        let mut db_batch_b = context_ayyb.new_batch();
+
+        db_batch_a
+            .put(b"key1", b"value1")
+            .expect("cannot put into db batch");
+        db_batch_b
+            .put(b"key2", b"value2")
+            .expect("cannot put into db batch");
+
+        // Until db batches are commited our multi-context batch should be empty
+        assert_eq!(batch.len(), 0);
+
+        context_ayya
+            .commit_batch(db_batch_a)
+            .expect("cannot commit batch");
+        context_ayya
+            .commit_batch(db_batch_b)
+            .expect("cannot commit batch");
+
+        // All operations are in multi-context batch, but not visible in DB yet
+        assert_eq!(batch.len(), 2);
+        assert!(context_ayya
+            .get(b"key1")
+            .expect("cannot get data")
+            .is_none());
+        assert!(context_ayyb
+            .get(b"key2")
+            .expect("cannot get data")
+            .is_none());
+
+        // Commited batch's data should be visible in transaction
+        storage
+            .commit_multi_context_batch_with_transaction(batch, &transaction)
+            .expect("cannot commit multi-context batch");
+
+        // Obtaining new contexts outside a commited batch but still within a
+        // transaction
+        let context_ayya =
+            storage.get_transactional_storage_context(to_path(b"ayya"), &transaction);
+        let context_ayyb =
+            storage.get_transactional_storage_context(to_path(b"ayyb"), &transaction);
+
+        assert_eq!(
+            context_ayya.get(b"key1").expect("cannot get data"),
+            Some(b"value1".to_vec())
+        );
+        assert_eq!(
+            context_ayyb.get(b"key2").expect("cannot get data"),
+            Some(b"value2".to_vec())
+        );
+
+        // And still no data in the database until transaction is commited
+        let context_ayya = storage.get_storage_context(to_path(b"ayya"));
+        let context_ayyb = storage.get_storage_context(to_path(b"ayyb"));
+
+        let mut iter = context_ayya.raw_iter();
+        iter.seek_to_first();
+        assert!(!iter.valid());
+
+        let mut iter = context_ayyb.raw_iter();
+        iter.seek_to_first();
+        assert!(!iter.valid());
+
+        storage
+            .commit_transaction(transaction)
+            .expect("cannot commit transaction");
+
+        let context_ayya = storage.get_storage_context(to_path(b"ayya"));
+        let context_ayyb = storage.get_storage_context(to_path(b"ayyb"));
+
+        assert_eq!(
+            context_ayya.get(b"key1").expect("cannot get data"),
+            Some(b"value1".to_vec())
+        );
+        assert_eq!(
+            context_ayyb.get(b"key2").expect("cannot get data"),
+            Some(b"value2".to_vec())
         );
     }
 }
