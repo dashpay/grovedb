@@ -28,7 +28,7 @@ pub struct SubqueryBranch {
 /// resolve a proof which will include all of the requested values.
 #[derive(Debug, Default, Clone)]
 pub struct Query {
-    items: BTreeSet<QueryItem>,
+    pub items: BTreeSet<QueryItem>,
     pub default_subquery_branch: SubqueryBranch,
     pub conditional_subquery_branches: IndexMap<QueryItem, SubqueryBranch>,
     pub left_to_right: bool,
@@ -278,6 +278,16 @@ impl std::hash::Hash for QueryItem {
 }
 
 impl QueryItem {
+    pub fn processing_footprint(&self) -> u32 {
+        match self {
+            QueryItem::Key(key) => key.len() as u32,
+            QueryItem::RangeFull(_) => 0u32,
+            _ => {
+                (self.lower_bound().0.len() + self.upper_bound().0.len()) as u32
+            }
+        }
+    }
+
     pub fn lower_bound(&self) -> (&[u8], bool) {
         match self {
             QueryItem::Key(key) => (key.as_slice(), false),
