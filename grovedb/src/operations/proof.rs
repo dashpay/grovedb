@@ -4,7 +4,10 @@ use std::{
 };
 
 use merk::{
-    proofs::query::{ProofVerificationResult, QueryItem},
+    proofs::{
+        encode_into,
+        query::{ProofVerificationResult, QueryItem},
+    },
     Hash, Merk,
 };
 use rs_merkle::{algorithms::Sha256, MerkleProof};
@@ -618,16 +621,16 @@ where
 {
     // TODO: How do you handle mixed tree types?
     let proof_result = subtree
-        .prove(query, limit, offset)
+        .prove_without_encoding(query, limit, offset)
         .expect("should generate proof");
 
+    let mut proof_bytes = Vec::with_capacity(128);
+    encode_into(proof_result.proof.iter(), &mut proof_bytes);
+
     // TODO: Switch to variable length encoding
-    debug_assert!(proof_result.proof.len() < 256);
-    write_to_vec(
-        proofs,
-        &vec![proof_type.into(), proof_result.proof.len() as u8],
-    );
-    write_to_vec(proofs, &proof_result.proof);
+    debug_assert!(proof_bytes.len() < 256);
+    write_to_vec(proofs, &vec![proof_type.into(), proof_bytes.len() as u8]);
+    write_to_vec(proofs, &proof_bytes);
 
     (proof_result.limit, proof_result.offset)
 }
