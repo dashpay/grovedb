@@ -283,7 +283,7 @@ impl QueryItem {
             QueryItem::Key(key) => key.len() as u32,
             QueryItem::RangeFull(_) => 0u32,
             _ => {
-                (self.lower_bound().0.ok_or(0).unwrap().len() + self.upper_bound().0.ok_or(0).unwrap().len()) as u32
+                (self.lower_bound().0.or_else(Some(0)).unwrap().len() + self.upper_bound().0.or_else(Some(0)).unwrap().len()) as u32
             }
         }
     }
