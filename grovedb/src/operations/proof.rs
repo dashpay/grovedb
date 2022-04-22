@@ -133,7 +133,7 @@ impl GroveDb {
                         None,
                         ProofType::MerkProof,
                         &mut proof_result,
-                    );
+                    )?;
                 });
             }
             split_path = path_slice.split_last();
@@ -288,7 +288,7 @@ impl GroveDb {
                                     None,
                                     ProofType::MerkProof,
                                     proofs,
-                                );
+                                )?;
                             }
 
                             let mut new_path = path.clone();
@@ -318,7 +318,7 @@ impl GroveDb {
                                                 None,
                                                 ProofType::MerkProof,
                                                 proofs,
-                                            );
+                                            )?;
                                         }
                                     );
 
@@ -383,7 +383,7 @@ impl GroveDb {
                     *current_offset,
                     ProofType::SizedMerkProof,
                     proofs,
-                );
+                )?;
 
                 // update limit and offset values
                 *current_limit = limit_offset.0;
@@ -621,7 +621,7 @@ fn generate_and_store_merk_proof<'a, S: 'a>(
     offset: Option<u16>,
     proof_type: ProofType,
     proofs: &mut Vec<u8>,
-) -> (Option<u16>, Option<u16>)
+) -> Result<(Option<u16>, Option<u16>), Error>
 where
     S: StorageContext<'a, 'a>,
 {
@@ -630,32 +630,24 @@ where
         .prove_without_encoding(query, limit, offset)
         .expect("should generate proof");
 
-    for a in proof_result.proof.iter_mut() {
-        match a {
-            Op::Push(node) | Op::PushInverted(node) => {
-                match node {
-                    Node::KV(key, value) => {
-                        let elem = Element::deserialize(value);
-                        // only care about the reference type
-                        if let Ok(Element::Reference(reference_path)) = elem {
-                            // TODO: handle error better
-                            let referenced_elem =
-                                db.follow_reference(reference_path, None).unwrap();
-                            dbg!(&referenced_elem);
-                            // update the current elem
-                            // Handle error
-                            *value = referenced_elem.serialize().unwrap();
-                            // *a = Node::KV(key.clone(),
-                            // referenced_elem.serialize()?);
-                        }
+    // Perform reference substitution for kv nodes
+    for op in proof_result.proof.iter_mut() {
+        match op {
+            Op::Push(node) | Op::PushInverted(node) => match node {
+                Node::KV(_, value) => {
+                    let elem = Element::deserialize(value);
+                    if let Ok(Element::Reference(reference_path)) = elem {
+                        let referenced_elem = db.follow_reference(reference_path, None)?;
+                        *value = referenced_elem.serialize().unwrap();
                     }
-                    _ => continue,
                 }
-            }
+                _ => continue,
+            },
             _ => continue,
         }
     }
 
+    // why this capacity??
     let mut proof_bytes = Vec::with_capacity(128);
     encode_into(proof_result.proof.iter(), &mut proof_bytes);
 
@@ -664,7 +656,7 @@ where
     write_to_vec(proofs, &vec![proof_type.into(), proof_bytes.len() as u8]);
     write_to_vec(proofs, &proof_bytes);
 
-    (proof_result.limit, proof_result.offset)
+    Ok((proof_result.limit, proof_result.offset))
 }
 
 fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
