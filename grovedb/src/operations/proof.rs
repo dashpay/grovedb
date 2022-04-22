@@ -121,6 +121,7 @@ impl GroveDb {
                 // generate proofs for the intermediate paths
                 let path_slices = path_slice.iter().map(|x| *x).collect::<Vec<_>>();
 
+                // TODO: No need to use this macro as transaction is always none
                 merk_optional_tx!(self.db, path_slices, None, subtree, {
                     let mut query = Query::new();
                     query.insert_key(key.to_vec());
