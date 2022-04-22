@@ -438,7 +438,7 @@ impl GroveDb {
                                 continue;
                             }
 
-                            if current_limit.is_some() && current_limit.unwrap() == 0 {
+                            if current_limit == Some(0) {
                                 // we are done verifying the subqueries
                                 break;
                             }
