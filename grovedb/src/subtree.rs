@@ -14,7 +14,7 @@ use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
 use crate::{
     util::{merk_optional_tx, storage_context_optional_tx},
-    Error, GroveDb, Merk, PathQuery, SizedQuery, TransactionArg,
+    Error, Merk, PathQuery, SizedQuery, TransactionArg,
 };
 
 /// Variants of GroveDB stored entities

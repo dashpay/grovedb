@@ -8,7 +8,6 @@ use tempfile::TempDir;
 
 // use test::RunIgnored::No;
 use super::*;
-use crate::subtree::raw_decode;
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
 const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
