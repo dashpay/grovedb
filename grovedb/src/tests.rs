@@ -462,72 +462,53 @@ fn test_follow_references() {
 
 #[test]
 fn test_reference_must_point_to_item() {
-   let db = make_grovedb();
+    let db = make_grovedb();
 
     let result = db.insert(
         [TEST_LEAF],
         b"reference_key_1",
         Element::Reference(vec![TEST_LEAF.to_vec(), b"reference_key_2".to_vec()]),
-        None
+        None,
     );
 
-    matches!(result, Err(Error::PathKeyNotFound(_)));
+    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 }
 
-// TODO: Fix test, references don't point to an existing element
-// #[test]
-// fn test_cyclic_references() {
-//     let db = make_grovedb();
-//
-//     db.insert(
-//         [TEST_LEAF],
-//         b"reference_key_1",
-//         Element::Reference(vec![TEST_LEAF.to_vec(),
-// b"reference_key_2".to_vec()]),         None,
-//     )
-//     .expect("successful reference 1 insert");
-//
-//     db.insert(
-//         [TEST_LEAF],
-//         b"reference_key_2",
-//         Element::Reference(vec![TEST_LEAF.to_vec(),
-// b"reference_key_1".to_vec()]),         None,
-//     )
-//     .expect("successful reference 2 insert");
-//
-//     assert!(matches!(
-//         db.get([TEST_LEAF], b"reference_key_1", None).unwrap_err(),
-//         Error::CyclicReference
-//     ));
-// }
+fn test_cyclic_references() {
+    // impossible to have cyclic references
+    // see: test_reference_must_point_to_item
+}
 
-// TODO: fix test, now that reference insertion follows elements it won't allow
-// bad state #[test]
-// fn test_too_many_indirections() {
-//     use crate::operations::get::MAX_REFERENCE_HOPS;
-//     let db = make_grovedb();
-//
-//     let keygen = |idx| format!("key{}", idx).bytes().collect::<Vec<u8>>();
-//
-//     db.insert([TEST_LEAF], b"key0", Element::Item(b"oops".to_vec()), None)
-//         .expect("successful item insert");
-//
-//     for i in 1..=(MAX_REFERENCE_HOPS + 1) {
-//         db.insert(
-//             [TEST_LEAF],
-//             &keygen(i),
-//             Element::Reference(vec![TEST_LEAF.to_vec(), keygen(i - 1)]),
-//             None,
-//         )
-//         .expect("successful reference insert");
-//     }
-//
-//     assert!(matches!(
-//         db.get([TEST_LEAF], &keygen(MAX_REFERENCE_HOPS + 1), None)
-//             .unwrap_err(),
-//         Error::ReferenceLimit
-//     ));
-// }
+#[test]
+fn test_too_many_indirections() {
+    use crate::operations::get::MAX_REFERENCE_HOPS;
+    let db = make_grovedb();
+
+    let keygen = |idx| format!("key{}", idx).bytes().collect::<Vec<u8>>();
+
+    db.insert([TEST_LEAF], b"key0", Element::Item(b"oops".to_vec()), None)
+        .expect("successful item insert");
+
+    for i in 1..=(MAX_REFERENCE_HOPS) {
+        db.insert(
+            [TEST_LEAF],
+            &keygen(i),
+            Element::Reference(vec![TEST_LEAF.to_vec(), keygen(i - 1)]),
+            None,
+        )
+        .expect("successful reference insert");
+    }
+
+    assert!(matches!(
+        db.insert(
+            [TEST_LEAF],
+            &keygen(MAX_REFERENCE_HOPS + 1),
+            Element::Reference(vec![TEST_LEAF.to_vec(), keygen(MAX_REFERENCE_HOPS)]),
+            None,
+        ),
+        Err(Error::ReferenceLimit)
+    ))
+}
 
 #[test]
 fn test_tree_structure_is_persistent() {
