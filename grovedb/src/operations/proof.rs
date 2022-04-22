@@ -80,7 +80,7 @@ impl GroveDb {
             &mut current_offset,
         )?;
 
-        // generate a proof to show that the path leads up to the root
+        // generate proof to show that the path leads up to the root
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             if path_slice.is_empty() {
@@ -170,7 +170,7 @@ impl GroveDb {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             if !path_slice.is_empty() {
-                // for every subtree, we should have a corresponding proof for the parent
+                // for every subtree, there should have a corresponding proof for the parent
                 // which should prove that this subtree is a child of the parent tree
                 let parent_merk_proof =
                     proof_reader.read_proof_of_type(ProofType::MerkProof.into())?;
@@ -187,7 +187,7 @@ impl GroveDb {
                 )?;
 
                 let result_set = proof_result.1.result_set;
-                if result_set.len() == 0 || result_set[0].0 != key.to_vec() {
+                if result_set.len() == 0 || &result_set[0].0 != key {
                     return Err(Error::InvalidProof("proof invalid: invalid parent"));
                 }
 
@@ -217,7 +217,7 @@ impl GroveDb {
         // hence max of 255 root leaf keys
         let root_leaf_count = proof_reader.read_byte()?;
 
-        let index_to_prove_as_bytes = proof_reader.read_to_end();
+        let index_to_prove_as_bytes = proof_reader.read_to_end()?;
         let index_to_prove_as_usize = index_to_prove_as_bytes
             .into_iter()
             .map(|index| index as usize)
@@ -267,7 +267,7 @@ impl GroveDb {
                     let element = raw_decode(value_bytes)?;
 
                     match element {
-                        // TODO: Look here when dealing with references
+                        // TODO: handle references that point to trees
                         Element::Tree(tree_hash) => {
                             if tree_hash == EMPTY_TREE_HASH {
                                 continue;
@@ -332,7 +332,6 @@ impl GroveDb {
                                         );
 
                                     if subquery_key_path_exists.is_err() {
-                                        dbg!("leaving");
                                         continue;
                                     }
                                 }
@@ -551,7 +550,7 @@ impl GroveDb {
 }
 
 // Helpers
-// TODO: Extract into seperate files
+// TODO: Extract into separate files
 #[derive(Debug)]
 struct ProofReader<'a> {
     proof_data: &'a [u8],
@@ -565,7 +564,9 @@ impl<'a> ProofReader<'a> {
     // TODO: handle error (e.g. not enough bytes to read)
     fn read_byte(&mut self) -> Result<[u8; 1], Error> {
         let mut data = [0; 1];
-        self.proof_data.read(&mut data);
+        self.proof_data
+            .read(&mut data)
+            .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
         Ok(data)
     }
 
@@ -580,13 +581,14 @@ impl<'a> ProofReader<'a> {
         }
     }
 
-    // TODO: handle error (e.g. not enough bytes to read)
     fn read_proof_with_optional_type(
         &mut self,
         expected_data_type_option: Option<u8>,
     ) -> Result<(ProofType, Vec<u8>), Error> {
         let mut data_type = [0; 1];
-        self.proof_data.read(&mut data_type);
+        self.proof_data
+            .read(&mut data_type)
+            .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
 
         if let Some(expected_data_type) = expected_data_type_option {
             if data_type != [expected_data_type] {
@@ -598,21 +600,26 @@ impl<'a> ProofReader<'a> {
         let proof_type: ProofType = data_type[0].into();
 
         let mut length = vec![0; 1];
-        self.proof_data.read(&mut length);
+        self.proof_data
+            .read(&mut length)
+            .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
         let mut proof = vec![0; length[0] as usize];
-        self.proof_data.read(&mut proof);
+        self.proof_data
+            .read(&mut proof)
+            .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
 
         Ok((proof_type, proof))
     }
 
-    fn read_to_end(&mut self) -> Vec<u8> {
+    fn read_to_end(&mut self) -> Result<Vec<u8>, Error> {
         let mut data = vec![];
-        self.proof_data.read_to_end(&mut data);
-        data
+        self.proof_data
+            .read_to_end(&mut data)
+            .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
+        Ok(data)
     }
 }
 
-// TODO: Isn't it possible for this to return some kind of error?
 fn generate_and_store_merk_proof<'a, S: 'a>(
     db: &GroveDb,
     subtree: &'a Merk<S>,
@@ -647,7 +654,6 @@ where
         }
     }
 
-    // why this capacity??
     let mut proof_bytes = Vec::with_capacity(128);
     encode_into(proof_result.proof.iter(), &mut proof_bytes);
 
