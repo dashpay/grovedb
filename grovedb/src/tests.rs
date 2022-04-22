@@ -460,6 +460,20 @@ fn test_follow_references() {
     );
 }
 
+#[test]
+fn test_reference_must_point_to_item() {
+   let db = make_grovedb();
+
+    let result = db.insert(
+        [TEST_LEAF],
+        b"reference_key_1",
+        Element::Reference(vec![TEST_LEAF.to_vec(), b"reference_key_2".to_vec()]),
+        None
+    );
+
+    matches!(result, Err(Error::PathKeyNotFound(_)));
+}
+
 // TODO: Fix test, references don't point to an existing element
 // #[test]
 // fn test_cyclic_references() {
