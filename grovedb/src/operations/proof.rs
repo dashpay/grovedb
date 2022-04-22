@@ -370,7 +370,7 @@ impl GroveDb {
                 }
             }
 
-            // TODO: Explore the chance that a subquerykey might lead to non tree element
+            // TODO: Explore the chance that a subquery key might lead to non tree element
             if !has_useful_subtree {
                 // if no useful subtree, then we care about the result set of this subtree.
                 // apply the sized query
