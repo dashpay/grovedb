@@ -136,7 +136,7 @@ where
         self
     }
 
-    // TODO: Documentation
+    /// Similar to `Tree#with_value_and_value_hash`.
     pub fn with_value_and_value_hash(mut self, value: Vec<u8>, value_hash: Hash) -> Self {
         self.tree
             .own(|t| t.with_value_and_value_hash(value, value_hash));

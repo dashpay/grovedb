@@ -496,7 +496,11 @@ impl Element {
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    // TODO: Proper documentation, maybe better name
+    /// Insert a reference element in Merk under a key; path should be resolved
+    /// and proper Merk should be loaded by this moment
+    /// If transaction is not passed, the batch will be written immediately.
+    /// If transaction is passed, the operation will be committed on the
+    /// transaction commit.
     pub fn insert_reference<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx>>(
         &self,
         merk: &'ctx mut Merk<S>,
@@ -504,7 +508,6 @@ impl Element {
         referenced_value: Vec<u8>,
     ) -> Result<(), Error> {
         let batch_operations = [(key, Op::PutReference(self.serialize()?, referenced_value))];
-        // TODO: Remove duplication
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }

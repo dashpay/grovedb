@@ -34,7 +34,8 @@ impl KV {
         }
     }
 
-    // TODO: Documentation
+    /// Creates a new `KV` with the given key, value and value_hash and computes
+    /// its hash.
     #[inline]
     pub fn new_with_value_hash(key: Vec<u8>, value: Vec<u8>, value_hash: Hash) -> Self {
         // TODO: length checks?
@@ -70,12 +71,12 @@ impl KV {
         self
     }
 
-    // TODO: Documenation
+    /// Replaces the `KV`'s value with the given value and value hash,
+    /// updates the hash and returns the modified `KV`.
     #[inline]
     pub fn with_value_and_value_hash(mut self, value: Vec<u8>, value_hash: Hash) -> Self {
         self.value = value;
         self.value_hash = value_hash;
-        // TODO: maybe rename the kv_digest_to_kv_hash to something more general
         self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash());
         self
     }

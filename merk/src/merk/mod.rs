@@ -29,7 +29,6 @@ impl ProofConstructionResult {
     }
 }
 
-// TODO: remove duplication
 pub struct ProofWithoutEncodingResult {
     pub proof: LinkedList<ProofOp>,
     pub limit: Option<u16>,
@@ -265,7 +264,17 @@ where
         Ok(ProofConstructionResult::new(bytes, limit, offset))
     }
 
-    // TODO: Add documentation
+    /// Creates a Merkle proof for the list of queried keys. For each key in the
+    /// query, if the key is found in the store then the value will be proven to
+    /// be in the tree. For each key in the query that does not exist in the
+    /// tree, its absence will be proven by including boundary keys.
+    ///
+    /// The proof returned is in an intermediate format to be later encoded
+    ///
+    /// This will fail if the keys in `query` are not sorted and unique. This
+    /// check adds some overhead, so if you are sure your batch is sorted and
+    /// unique you can use the unsafe `prove_unchecked` for a small performance
+    /// gain.
     pub fn prove_without_encoding(
         &'ctx self,
         query: Query,
@@ -357,7 +366,6 @@ where
         for (key, value) in aux {
             match value {
                 Op::Put(value) => batch.put_aux(key, value)?,
-                // TODO: is this correct
                 Op::PutReference(value, _) => batch.put_aux(key, value)?,
                 Op::Delete => batch.delete_aux(key)?,
             };

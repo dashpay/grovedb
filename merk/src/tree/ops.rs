@@ -97,15 +97,11 @@ where
                 return Ok(maybe_tree.map(|tree| tree.into()));
             }
             Put(value) => value,
-            // TODO: does this work?
             PutReference(value, _) => value,
         };
 
         // TODO: take from batch so we don't have to clone
-        // let mid_tree
 
-        // TODO: cleanup
-        // dbg!(mid_op == Op::Put(_));
         let mid_tree = match mid_op {
             Put(_) => Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec()),
             PutReference(_, referenced_value) => Tree::new_with_value_hash(
@@ -115,10 +111,6 @@ where
             ),
             Delete => unreachable!("cannot get here, should return at the top"),
         };
-        // if mid_op == Op::PutReference{
-        //     dbg!("I am a put reference type");
-        // }
-        // let mid_tree = Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec());
         let mid_walker = Walker::new(mid_tree, PanicSource {});
 
         // use walker, ignore deleted_keys since it should be empty

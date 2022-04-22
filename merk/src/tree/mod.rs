@@ -60,7 +60,10 @@ impl Tree {
         }
     }
 
-    // TODO: Documenation
+    /// Creates a new `Tree` with the given key, value and value hash, and no
+    /// children.
+    ///
+    /// Hashes the key/value pair and initializes the `kv_hash` field.
     pub fn new_with_value_hash(key: Vec<u8>, value: Vec<u8>, value_hash: Hash) -> Self {
         Self {
             inner: Box::new(TreeInner {
@@ -343,7 +346,8 @@ impl Tree {
         self
     }
 
-    // TODO: Documenation
+    /// Replaces the root node's value with the given value and value hash
+    /// and returns the modified `Tree`.
     #[inline]
     pub fn with_value_and_value_hash(mut self, value: Vec<u8>, value_hash: Hash) -> Self {
         self.inner.kv = self.inner.kv.with_value_and_value_hash(value, value_hash);

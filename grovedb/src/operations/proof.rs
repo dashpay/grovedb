@@ -170,7 +170,7 @@ impl GroveDb {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             if !path_slice.is_empty() {
-                // for every subtree, there should have a corresponding proof for the parent
+                // for every subtree, there should be a corresponding proof for the parent
                 // which should prove that this subtree is a child of the parent tree
                 let parent_merk_proof =
                     proof_reader.read_proof_of_type(ProofType::MerkProof.into())?;
