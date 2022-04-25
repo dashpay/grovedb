@@ -1,3 +1,4 @@
+mod batch;
 mod operations;
 mod subtree;
 #[cfg(test)]
@@ -5,6 +6,7 @@ mod tests;
 mod util;
 #[cfg(feature = "visualize")]
 mod visualize;
+
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path,

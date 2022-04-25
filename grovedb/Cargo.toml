@@ -14,6 +14,7 @@ storage = { path = "../storage", features = ["rocksdb_storage"] }
 hex = "0.4.3"
 itertools = { version = "0.10.3", optional = true }
 integer-encoding = "3.0.3"
+intrusive-collections = "0.9.3"
 
 [dev-dependencies]
 rand = "0.8.4"

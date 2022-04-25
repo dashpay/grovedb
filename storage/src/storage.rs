@@ -203,6 +203,7 @@ pub trait RawIterator {
 
 /// Structure to hold deferred database operations in "batched" storage
 /// contexts.
+#[derive(Debug)]
 pub struct StorageBatch {
     operations: RefCell<Vec<BatchOperation>>,
 }
@@ -300,6 +301,7 @@ impl Default for StorageBatch {
 
 /// Deferred storage operation.
 #[allow(missing_docs)]
+#[derive(Debug)]
 pub enum BatchOperation {
     /// Deferred put operation
     Put { key: Vec<u8>, value: Vec<u8> },
