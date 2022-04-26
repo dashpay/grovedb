@@ -4,7 +4,7 @@ use std::convert::Infallible;
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
 use super::{make_prefixed_key, PrefixedRocksDbTransactionContext};
-use crate::{Batch, StorageBatch, StorageContext};
+use crate::{Batch, BatchOperation, StorageBatch, StorageContext};
 
 /// Wrapper to RocksDB batch
 pub struct PrefixedRocksDbBatch<'db, B> {
@@ -19,6 +19,69 @@ pub struct PrefixedRocksDbBatch<'db, B> {
 pub struct PrefixedMultiContextBatchPart {
     pub(crate) prefix: Vec<u8>,
     pub(crate) batch: StorageBatch,
+}
+
+/// Batch used in transactional context (because RocksDB transactions doens't
+/// support its batches)
+pub struct DummyBatch {
+    pub operations: Vec<BatchOperation>,
+}
+
+impl Default for DummyBatch {
+    fn default() -> Self {
+        DummyBatch {
+            operations: Vec::new(),
+        }
+    }
+}
+
+impl Batch for DummyBatch {
+    type Error = Infallible;
+
+    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+        self.operations.push(BatchOperation::Put {
+            key: key.as_ref().to_vec(),
+            value: value.to_vec(),
+        });
+        Ok(())
+    }
+
+    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+        self.operations.push(BatchOperation::PutAux {
+            key: key.as_ref().to_vec(),
+            value: value.to_vec(),
+        });
+        Ok(())
+    }
+
+    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+        self.operations.push(BatchOperation::PutRoot {
+            key: key.as_ref().to_vec(),
+            value: value.to_vec(),
+        });
+        Ok(())
+    }
+
+    fn delete<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+        self.operations.push(BatchOperation::Delete {
+            key: key.as_ref().to_vec(),
+        });
+        Ok(())
+    }
+
+    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+        self.operations.push(BatchOperation::DeleteAux {
+            key: key.as_ref().to_vec(),
+        });
+        Ok(())
+    }
+
+    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+        self.operations.push(BatchOperation::DeleteRoot {
+            key: key.as_ref().to_vec(),
+        });
+        Ok(())
+    }
 }
 
 /// Implementation of a batch ouside a transaction
@@ -98,7 +161,8 @@ impl<'db, 'ctx> Batch for &'ctx PrefixedRocksDbTransactionContext<'db> {
     }
 }
 
-/// Implementation of a batch ouside a transaction
+/// Implementation of a rocksdb batch ouside a transaction for multi-context
+/// batch
 impl Batch for PrefixedMultiContextBatchPart {
     type Error = Infallible;
 

@@ -1,4 +1,5 @@
 use super::test_utils::TempStorage;
+use crate::Batch;
 
 fn to_path(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
     std::iter::once(bytes)
@@ -615,13 +616,23 @@ mod transaction {
             .expect("cannot get from storage")
             .is_none());
 
-        let batch = context_ayya.new_batch();
+        let mut batch = context_ayya.new_batch();
         batch.delete(b"key1").expect("infallible");
         batch.put(b"key3", b"ayyavalue3").expect("infallible");
+
+        assert!(context_ayya
+            .get(b"key1")
+            .expect("cannot get from storage")
+            .is_some());
 
         context_ayya
             .commit_batch(batch)
             .expect("cannot commit a batch");
+
+        assert!(context_ayya
+            .get(b"key1")
+            .expect("cannot get from storage")
+            .is_none());
 
         storage
             .commit_transaction(tx)

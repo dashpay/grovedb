@@ -132,14 +132,14 @@ where
             .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
     }
 
-    fn new_batch(&'ctx self) -> Self::Batch {
+    fn new_batch(&self) -> Self::Batch {
         PrefixedMultiContextBatchPart {
             prefix: self.prefix.clone(),
             batch: StorageBatch::new(),
         }
     }
 
-    fn commit_batch(&'ctx self, batch: Self::Batch) -> Result<(), Self::Error> {
+    fn commit_batch(&self, batch: Self::Batch) -> Result<(), Self::Error> {
         self.batch.merge(batch.batch);
         Ok(())
     }

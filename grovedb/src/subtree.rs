@@ -105,7 +105,7 @@ impl Element {
 
     /// Delete an element from Merk under a key
     pub fn delete<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx> + 'ctx>(
-        merk: &'ctx mut Merk<S>,
+        merk: &mut Merk<S>,
         key: K,
     ) -> Result<(), Error> {
         // TODO: delete references on this element
@@ -468,9 +468,9 @@ impl Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx>>(
+    pub fn insert<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx> + 'ctx>(
         &self,
-        merk: &'ctx mut Merk<S>,
+        merk: &mut Merk<S>,
         key: K,
     ) -> Result<(), Error> {
         let batch_operations = [(key, Op::Put(self.serialize()?))];

@@ -136,10 +136,10 @@ pub trait StorageContext<'db, 'ctx> {
     fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error>;
 
     /// Initialize a new batch
-    fn new_batch(&'ctx self) -> Self::Batch;
+    fn new_batch(&self) -> Self::Batch;
 
     /// Commits changes from batch into storage
-    fn commit_batch(&'ctx self, batch: Self::Batch) -> Result<(), Self::Error>;
+    fn commit_batch(&self, batch: Self::Batch) -> Result<(), Self::Error>;
 
     /// Get raw iterator over storage
     fn raw_iter(&self) -> Self::RawIterator;
@@ -282,14 +282,18 @@ impl StorageBatch {
         self.operations.borrow()
     }
 
-    /// Consume batch to get an iterator over operations
-    pub fn into_iter(self) -> IntoIter<BatchOperation> {
-        self.operations.into_inner().into_iter()
-    }
-
     /// Merge batch into this one
     pub fn merge(&self, other: StorageBatch) {
         self.operations.borrow_mut().extend(other.into_iter());
+    }
+}
+
+impl IntoIterator for StorageBatch {
+    type IntoIter = IntoIter<BatchOperation>;
+    type Item = BatchOperation;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.operations.into_inner().into_iter()
     }
 }
 
