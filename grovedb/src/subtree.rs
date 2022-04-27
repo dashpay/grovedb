@@ -23,7 +23,7 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Element {
     /// An ordinary value
-    Item(Vec<u8>),
+    Item(Vec<u8>, Vec<Vec<Vec<u8>>>),
     /// A reference to an object by its path
     Reference(Vec<Vec<u8>>),
     /// A subtree, contains a root hash of the underlying Merk.
