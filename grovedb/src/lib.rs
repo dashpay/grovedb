@@ -28,7 +28,7 @@ use crate::util::{merk_optional_tx, meta_storage_context_optional_tx};
 
 /// A key to store serialized data about subtree prefixes to restore HADS
 /// structure
-/// A key to store serialized data about root tree leafs keys and order
+/// A key to store serialized data about root tree leaves keys and order
 const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
 
 #[derive(Debug, thiserror::Error)]
@@ -157,7 +157,7 @@ impl GroveDb {
             meta_storage.get_meta(ROOT_LEAFS_SERIALIZED_KEY)?
         {
             bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {
-                Error::CorruptedData(String::from("unable to deserialize root leafs"))
+                Error::CorruptedData(String::from("unable to deserialize root leaves"))
             })?
         } else {
             BTreeMap::new()

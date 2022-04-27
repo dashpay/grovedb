@@ -78,7 +78,7 @@ impl GroveDb {
         if path_iter.len() == 0 {
             // Attempt to delete a root tree leaf
             Err(Error::InvalidPath(
-                "root tree leafs currently cannot be deleted",
+                "root tree leaves currently cannot be deleted",
             ))
         } else {
             self.check_subtree_exists_path_not_found(path_iter.clone(), Some(key), transaction)?;

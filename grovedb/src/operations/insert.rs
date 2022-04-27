@@ -34,7 +34,7 @@ impl GroveDb {
                 // but trees
                 if path_iter.len() == 0 {
                     return Err(Error::InvalidPath(
-                        "only subtrees are allowed as root tree's leafs",
+                        "only subtrees are allowed as root tree's leaves",
                     ));
                 }
                 self.check_subtree_exists_invalid_path(path_iter.clone(), Some(key), transaction)?;
