@@ -83,7 +83,7 @@ impl Visualize for [u8] {
 impl Visualize for Element {
     fn visualize<'a, W: Write>(&self, mut drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>> {
         match self {
-            Element::Item(value) => {
+            Element::Item(value, _) => {
                 drawer.write(b"item: ")?;
                 drawer = value.visualize(drawer)?;
             }
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn test_element_item_str() {
         let v = b"ayylmao".to_vec();
-        let e = Element::Item(v.clone());
+        let e = Element::new_item(v.clone());
         let element_hex = to_hex(&v);
         let mut result = Vec::new();
         let drawer = Drawer::new(&mut result);
@@ -242,7 +242,7 @@ mod tests {
     #[test]
     fn test_element_item_no_tr() {
         let v = vec![1, 3, 3, 7, 255];
-        let e = Element::Item(v.clone());
+        let e = Element::new_item(v.clone());
         let element_hex = to_hex(&v);
         let mut result = Vec::new();
         let drawer = Drawer::new(&mut result);

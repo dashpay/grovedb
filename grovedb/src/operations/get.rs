@@ -91,7 +91,7 @@ impl GroveDb {
             .map(|element| match element {
                 Element::Reference(reference_path) => {
                     let maybe_item = self.follow_reference(reference_path, transaction)?;
-                    if let Element::Item(item) = maybe_item {
+                    if let Element::Item(item, _) = maybe_item {
                         Ok(item)
                     } else {
                         Err(Error::InvalidQuery("the reference must result in an item"))
@@ -129,13 +129,13 @@ impl GroveDb {
             .map(|element| match element {
                 Element::Reference(reference_path) => {
                     let maybe_item = self.follow_reference(reference_path, transaction)?;
-                    if let Element::Item(item) = maybe_item {
+                    if let Element::Item(item, _) = maybe_item {
                         Ok(item)
                     } else {
                         Err(Error::InvalidQuery("the reference must result in an item"))
                     }
                 }
-                Element::Item(item) => Ok(item),
+                Element::Item(item, _) => Ok(item),
                 Element::Tree(_) => Err(Error::InvalidQuery(
                     "path_queries can only refer to items and references",
                 )),
