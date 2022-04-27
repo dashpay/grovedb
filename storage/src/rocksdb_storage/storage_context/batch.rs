@@ -133,8 +133,8 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db, WriteBatchWithTransaction<true>> {
 
 /// Implementation of a batch inside a transaction.
 /// Basically just proxies all calls to the underlying transaction.
-impl<'db, 'ctx> Batch for &'ctx PrefixedRocksDbTransactionContext<'db> {
-    type Error = <PrefixedRocksDbTransactionContext<'db> as StorageContext<'db, 'ctx>>::Error;
+impl<'ctx, 'db> Batch for &'ctx PrefixedRocksDbTransactionContext<'db> {
+    type Error = <PrefixedRocksDbTransactionContext<'db> as StorageContext<'db>>::Error;
 
     fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
         StorageContext::put(*self, key, value)

@@ -43,7 +43,7 @@ impl<'db> PrefixedRocksDbStorageContext<'db> {
     }
 }
 
-impl<'db, 'ctx> StorageContext<'db, 'ctx> for PrefixedRocksDbStorageContext<'db> {
+impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
     type Batch = PrefixedRocksDbBatch<'db, WriteBatchWithTransaction<true>>;
     type Error = Error;
     type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Db>>;

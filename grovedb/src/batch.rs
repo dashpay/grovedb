@@ -59,7 +59,7 @@ impl GroveDbOp {
 }
 
 impl GroveDb {
-    fn apply_body<'db, 'ctx, S: StorageContext<'db, 'ctx> + 'ctx>(
+    fn apply_body<'db, S: StorageContext<'db>>(
         &self,
         sorted_operations: &mut RBTree<GroveDbOpAdapter>,
         temp_root_leaves: &mut BTreeMap<Vec<u8>, usize>,
@@ -135,8 +135,8 @@ impl GroveDb {
             temp_root_leaves: &BTreeMap<Vec<u8>, usize>,
         ) -> Result<(), Error>
         where
-            S: StorageContext<'db, 'ctx>,
-            Error: From<<S as storage::StorageContext<'db, 'ctx>>::Error>,
+            S: StorageContext<'db>,
+            Error: From<<S as storage::StorageContext<'db>>::Error>,
         {
             let root_leaves_serialized = bincode::serialize(&temp_root_leaves).map_err(|_| {
                 Error::CorruptedData(String::from("unable to serialize root leaves data"))

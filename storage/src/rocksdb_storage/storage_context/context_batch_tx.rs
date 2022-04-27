@@ -56,10 +56,7 @@ impl<'db> PrefixedRocksDbBatchTransactionContext<'db> {
     }
 }
 
-impl<'db, 'ctx> StorageContext<'db, 'ctx> for PrefixedRocksDbBatchTransactionContext<'db>
-where
-    'db: 'ctx,
-{
+impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
     type Batch = PrefixedMultiContextBatchPart;
     type Error = Error;
     type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Tx<'db>>>;

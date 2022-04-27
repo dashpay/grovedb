@@ -27,10 +27,10 @@ impl<S> fmt::Debug for Merk<S> {
 
 pub type UseTreeMutResult = Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>;
 
-impl<'db, 'ctx, S> Merk<S>
+impl<'db, S> Merk<S>
 where
-    S: StorageContext<'db, 'ctx> + 'ctx,
-    <S as StorageContext<'db, 'ctx>>::Error: std::error::Error,
+    S: StorageContext<'db>,
+    <S as StorageContext<'db>>::Error: std::error::Error,
 {
     pub fn open(storage: S) -> Result<Self> {
         let mut merk = Self {
@@ -43,7 +43,7 @@ where
     }
 
     /// Deletes tree data
-    pub fn clear(&'ctx mut self) -> Result<()> {
+    pub fn clear(&mut self) -> Result<()> {
         let mut iter = self.storage.raw_iter();
         iter.seek_to_first();
         let mut to_delete = self.storage.new_batch();
@@ -218,12 +218,7 @@ where
     /// check adds some overhead, so if you are sure your batch is sorted and
     /// unique you can use the unsafe `prove_unchecked` for a small performance
     /// gain.
-    pub fn prove(
-        &'ctx self,
-        query: Query,
-        limit: Option<u16>,
-        offset: Option<u16>,
-    ) -> Result<Vec<u8>> {
+    pub fn prove(&self, query: Query, limit: Option<u16>, offset: Option<u16>) -> Result<Vec<u8>> {
         let left_to_right = query.left_to_right;
         self.prove_unchecked(query, limit, offset, left_to_right)
     }
@@ -241,7 +236,7 @@ where
     /// of this method which checks to ensure the batch is sorted and
     /// unique, see `prove`.
     pub fn prove_unchecked<Q, I>(
-        &'ctx self,
+        &self,
         query: I,
         limit: Option<u16>,
         offset: Option<u16>,
@@ -396,9 +391,9 @@ impl<'s, S> Clone for MerkSource<'s, S> {
     }
 }
 
-impl<'s, 'db, 'ctx, S> Fetch for MerkSource<'s, S>
+impl<'s, 'db, S> Fetch for MerkSource<'s, S>
 where
-    S: StorageContext<'db, 'ctx>,
+    S: StorageContext<'db>,
 {
     fn fetch(&self, link: &Link) -> Result<Tree> {
         Tree::get(self.storage, link.key())?.ok_or(anyhow!("Key not found"))
@@ -616,7 +611,7 @@ mod test {
     }
 
     type PrefixedStorageIter<'db, 'ctx> =
-        &'ctx mut <PrefixedRocksDbStorageContext<'db> as StorageContext<'db, 'ctx>>::RawIterator;
+        &'ctx mut <PrefixedRocksDbStorageContext<'db> as StorageContext<'db>>::RawIterator;
 
     #[test]
     fn reopen_iter() {

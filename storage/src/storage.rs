@@ -11,12 +11,12 @@ pub trait Storage<'db> {
     type Transaction;
 
     /// Storage context type
-    /// TODO: add `StorageContext<'db, 'ctx, Error = Self::Error>` bound with
+    /// TODO: add `StorageContext<'db, Error = Self::Error>` bound with
     /// GATs
     type StorageContext;
 
     /// Storage context type for transactional data
-    /// TODO: add `StorageContext<'db, 'ctx, Error = Self::Error>` bound with
+    /// TODO: add `StorageContext<'db, Error = Self::Error>` bound with
     /// GATs
     type TransactionalStorageContext;
 
@@ -88,7 +88,7 @@ pub trait Storage<'db> {
 /// Storage context.
 /// Provides operations expected from a database abstracting details such as
 /// whether it is a transaction or not.
-pub trait StorageContext<'db, 'ctx> {
+pub trait StorageContext<'db> {
     /// Storage error type
     type Error: std::error::Error + Send + Sync + 'static;
 

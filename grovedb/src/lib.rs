@@ -146,12 +146,12 @@ impl GroveDb {
         Ok(Self::get_root_tree_internal(&self.db, transaction)?.root())
     }
 
-    fn get_root_leaf_keys_internal<'db, 'ctx, S>(
+    fn get_root_leaf_keys_internal<'db, S>(
         meta_storage: &S,
     ) -> Result<BTreeMap<Vec<u8>, usize>, Error>
     where
-        S: StorageContext<'db, 'ctx>,
-        Error: From<<S as StorageContext<'db, 'ctx>>::Error>,
+        S: StorageContext<'db>,
+        Error: From<<S as StorageContext<'db>>::Error>,
     {
         let root_leaf_keys: BTreeMap<Vec<u8>, usize> = if let Some(root_leaf_keys_serialized) =
             meta_storage.get_meta(ROOT_LEAFS_SERIALIZED_KEY)?

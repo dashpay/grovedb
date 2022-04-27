@@ -104,7 +104,7 @@ impl Element {
     }
 
     /// Delete an element from Merk under a key
-    pub fn delete<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx> + 'ctx>(
+    pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
         key: K,
     ) -> Result<(), Error> {
@@ -116,7 +116,7 @@ impl Element {
 
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    pub fn get<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx> + 'ctx>(
+    pub fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
         key: K,
     ) -> Result<Element, Error> {
@@ -468,7 +468,7 @@ impl Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx> + 'ctx>(
+    pub fn insert<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
