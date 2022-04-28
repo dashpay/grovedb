@@ -59,6 +59,8 @@ impl GroveDbOp {
 }
 
 impl GroveDb {
+    /// Batch application generic over storage context (whether there is a
+    /// transaction or not).
     fn apply_body<'db, S: StorageContext<'db>>(
         &self,
         sorted_operations: &mut RBTree<GroveDbOpAdapter>,
@@ -148,6 +150,8 @@ impl GroveDb {
             return Ok(());
         }
 
+        // `StorageBatch` allows us to collect operations on different subtrees before
+        // execution
         let storage_batch = StorageBatch::new();
         let mut sorted_operations = RBTree::new(GroveDbOpAdapter::new());
         let mut temp_root_leaves = self.get_root_leaf_keys(transaction)?;
@@ -156,6 +160,17 @@ impl GroveDb {
         for o in ops {
             sorted_operations.insert(Box::new(o));
         }
+
+        // With the only one difference (if there is a transaction) do the following:
+        // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
+        //    one subtree and moved to another then add propagation operation to the
+        //    operations tree and drop Merk handle;
+        // 3. Take Merk from temp subtrees or open a new one with batched storage
+        //    context;
+        // 4. Apply operation to the Merk;
+        // 5. Remove operation from the tree, repeat until there are operations to do;
+        // 6. Add root leaves save operation to the batch
+        // 7. Apply storage batch
         if let Some(tx) = transaction {
             self.apply_body(&mut sorted_operations, &mut temp_root_leaves, |path| {
                 let storage = self.db.get_batch_transactional_storage_context(
@@ -197,34 +212,66 @@ impl GroveDb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::make_grovedb;
+    use crate::tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF};
 
-    // #[test]
-    // fn test_something() {
-    //     let ops = vec![
-    //         GroveDbOp::insert(
-    //             vec![b"ass".to_vec(), b"we".to_vec(), b"can".to_vec()],
-    //             b"key".to_vec(),
-    //             Element::empty_tree(),
-    //         ),
-    //         GroveDbOp::insert(
-    //             vec![
-    //                 b"ass".to_vec(),
-    //                 b"we".to_vec(),
-    //                 b"can".to_vec(),
-    //                 b"ayy".to_vec(),
-    //             ],
-    //             b"key".to_vec(),
-    //             Element::empty_tree(),
-    //         ),
-    //         GroveDbOp::insert(
-    //             vec![b"ass".to_vec(), b"can".to_vec()],
-    //             b"key".to_vec(),
-    //             Element::empty_tree(),
-    //         ),
-    //     ];
-    //     let db = make_grovedb();
-    //     let tx = db.start_transaction();
-    //     db.apply_batch(ops, Some(&tx));
-    // }
+    #[test]
+    fn test_multi_tree_insertion_with_propagation_no_tx() {
+        let db = make_grovedb();
+        db.insert([], b"key1", Element::empty_tree(), None)
+            .expect("cannot insert root leaf");
+
+        let hash = db
+            .root_hash(None)
+            .ok()
+            .flatten()
+            .expect("cannot get root hash");
+        let element = Element::Item(b"ayy".to_vec());
+        let element2 = Element::Item(b"ayy2".to_vec());
+
+        let ops = vec![
+            GroveDbOp::insert(
+                vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
+                b"key4".to_vec(),
+                element.clone(),
+            ),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec(), b"key2".to_vec()],
+                b"key3".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec()],
+                b"key2".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert(vec![TEST_LEAF.to_vec()], b"key".to_vec(), element2.clone()),
+        ];
+        db.apply_batch(ops, None).expect("cannot apply batch");
+        assert_eq!(
+            db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
+                .expect("cannot get element"),
+            element
+        );
+        assert_eq!(
+            db.get([TEST_LEAF], b"key", None)
+                .expect("cannot get element"),
+            element2
+        );
+        assert_ne!(
+            db.root_hash(None)
+                .ok()
+                .flatten()
+                .expect("cannot get root hash"),
+            hash
+        );
+        let mut root_leafs = BTreeMap::new();
+        root_leafs.insert(TEST_LEAF.to_vec(), 0);
+        root_leafs.insert(ANOTHER_TEST_LEAF.to_vec(), 1);
+        root_leafs.insert(b"key1".to_vec(), 2);
+
+        assert_eq!(
+            db.get_root_leaf_keys(None).expect("cannot get root leafs"),
+            root_leafs
+        );
+    }
 }

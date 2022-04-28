@@ -10,7 +10,7 @@ use tempfile::TempDir;
 use super::*;
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
-const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
+pub const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
 
 /// GroveDB wrapper to keep temp directory alive
 pub struct TempGroveDb {

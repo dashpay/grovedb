@@ -11,14 +11,10 @@ pub trait Storage<'db> {
     type Transaction;
 
     /// Storage context type
-    /// TODO: add `StorageContext<'db, Error = Self::Error>` bound with
-    /// GATs
-    type StorageContext;
+    type StorageContext: StorageContext<'db, Error = Self::Error>;
 
     /// Storage context type for transactional data
-    /// TODO: add `StorageContext<'db, Error = Self::Error>` bound with
-    /// GATs
-    type TransactionalStorageContext;
+    type TransactionalStorageContext: StorageContext<'db, Error = Self::Error>;
 
     /// Storage context type for mutli-tree batch operations
     type BatchStorageContext;
