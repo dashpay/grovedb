@@ -200,6 +200,9 @@ impl GroveDb {
                     )),
                 }?;
 
+                dbg!("checking child hash");
+                dbg!(child_hash);
+                dbg!(expected_root_hash);
                 if child_hash != expected_root_hash {
                     return Err(Error::InvalidProof("Bad path"));
                 }
