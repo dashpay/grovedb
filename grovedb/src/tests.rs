@@ -406,7 +406,7 @@ fn test_references() {
     db.insert(
         [TEST_LEAF, b"merk_2"],
         b"key1",
-        Element::Reference(vec![
+        Element::new_reference(vec![
             TEST_LEAF.to_vec(),
             b"merk_1".to_vec(),
             b"key1".to_vec(),
@@ -417,7 +417,7 @@ fn test_references() {
     db.insert(
         [TEST_LEAF, b"merk_2"],
         b"key2",
-        Element::Reference(vec![
+        Element::new_reference(vec![
             TEST_LEAF.to_vec(),
             b"merk_1".to_vec(),
             b"key2".to_vec(),
@@ -448,7 +448,7 @@ fn test_follow_references() {
     db.insert(
         [TEST_LEAF],
         b"reference_key",
-        Element::Reference(vec![TEST_LEAF.to_vec(), b"key2".to_vec(), b"key3".to_vec()]),
+        Element::new_reference(vec![TEST_LEAF.to_vec(), b"key2".to_vec(), b"key3".to_vec()]),
         None,
     )
     .expect("successful reference insert");
@@ -470,7 +470,7 @@ fn test_reference_must_point_to_item() {
     let result = db.insert(
         [TEST_LEAF],
         b"reference_key_1",
-        Element::Reference(vec![TEST_LEAF.to_vec(), b"reference_key_2".to_vec()]),
+        Element::new_reference(vec![TEST_LEAF.to_vec(), b"reference_key_2".to_vec()]),
         None,
     );
 
@@ -501,7 +501,7 @@ fn test_too_many_indirections() {
         db.insert(
             [TEST_LEAF],
             &keygen(i),
-            Element::Reference(vec![TEST_LEAF.to_vec(), keygen(i - 1)]),
+            Element::new_reference(vec![TEST_LEAF.to_vec(), keygen(i - 1)]),
             None,
         )
         .expect("successful reference insert");
@@ -510,7 +510,7 @@ fn test_too_many_indirections() {
     db.insert(
         [TEST_LEAF],
         &keygen(MAX_REFERENCE_HOPS + 1),
-        Element::Reference(vec![TEST_LEAF.to_vec(), keygen(MAX_REFERENCE_HOPS)]),
+        Element::new_reference(vec![TEST_LEAF.to_vec(), keygen(MAX_REFERENCE_HOPS)]),
         None,
     )
     .expect("successful reference insert");
@@ -519,7 +519,7 @@ fn test_too_many_indirections() {
     //     db.insert(
     //         [TEST_LEAF],
     //         &keygen(MAX_REFERENCE_HOPS + 1),
-    //         Element::Reference(vec![TEST_LEAF.to_vec(),
+    //         Element::new_reference(vec![TEST_LEAF.to_vec(),
     // keygen(MAX_REFERENCE_HOPS)]),         None,
     //     ),
     //     Err(Error::ReferenceLimit)
@@ -654,7 +654,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
         .insert(
             [ANOTHER_TEST_LEAF, b"innertree2"],
             b"key4",
-            Element::Reference(vec![
+            Element::new_reference(vec![
                 TEST_LEAF.to_vec(),
                 b"innertree".to_vec(),
                 b"key1".to_vec(),
@@ -674,7 +674,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
         .insert(
             [ANOTHER_TEST_LEAF, b"innertree2"],
             b"key5",
-            Element::Reference(vec![
+            Element::new_reference(vec![
                 ANOTHER_TEST_LEAF.to_vec(),
                 b"innertree3".to_vec(),
                 b"key4".to_vec(),
@@ -2115,7 +2115,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
             db.insert(
                 [TEST_LEAF, b"1", i_vec.clone().as_slice(), b"\0"],
                 &random_key,
-                Element::Reference(vec![
+                Element::new_reference(vec![
                     TEST_LEAF.to_vec(),
                     b"\0".to_vec(),
                     random_key.to_vec(),
@@ -2171,7 +2171,7 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &TempGroveDb) {
         db.insert(
             [TEST_LEAF, b"1", i_vec.clone().as_slice()],
             b"\0",
-            Element::Reference(vec![TEST_LEAF.to_vec(), b"\0".to_vec(), i_vec.clone()]),
+            Element::new_reference(vec![TEST_LEAF.to_vec(), b"\0".to_vec(), i_vec.clone()]),
             None,
         )
         .expect("successful value insert");

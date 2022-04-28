@@ -4,7 +4,7 @@ use neon::{borrow::Borrow, prelude::*};
 fn element_to_string(element: Element) -> String {
     match element {
         Element::Item(..) => "item".to_string(),
-        Element::Reference(_) => "reference".to_string(),
+        Element::Reference(..) => "reference".to_string(),
         Element::Tree(_) => "tree".to_string(),
     }
 }
@@ -27,7 +27,7 @@ pub fn js_object_to_element<'a, C: Context<'a>>(
         "reference" => {
             let js_array = value.downcast_or_throw::<JsArray, _>(cx)?;
             let reference = js_array_of_buffers_to_vec(js_array, cx)?;
-            Ok(Element::Reference(reference))
+            Ok(Element::Reference(reference, vec![]))
         }
         "tree" => {
             let js_buffer = value.downcast_or_throw::<JsBuffer, _>(cx)?;
@@ -58,7 +58,7 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
             let js_buffer = JsBuffer::external(cx, item);
             js_buffer.upcast()
         }
-        Element::Reference(reference) => nested_vecs_to_js(reference, cx)?,
+        Element::Reference(reference, _) => nested_vecs_to_js(reference, cx)?,
         Element::Tree(tree) => {
             let js_buffer = JsBuffer::external(cx, tree);
             js_buffer.upcast()

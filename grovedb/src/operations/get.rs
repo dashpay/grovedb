@@ -20,7 +20,7 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         match self.get_raw(path, key, transaction)? {
-            Element::Reference(reference_path) => {
+            Element::Reference(reference_path, _) => {
                 self.follow_reference(reference_path, transaction)
             }
             other => Ok(other),
@@ -48,7 +48,7 @@ impl GroveDb {
             }
             visited.insert(path);
             match current_element {
-                Element::Reference(reference_path) => path = reference_path,
+                Element::Reference(reference_path, _) => path = reference_path,
                 other => return Ok(other),
             }
             hops_left -= 1;
@@ -89,7 +89,7 @@ impl GroveDb {
         let results = elements
             .into_iter()
             .map(|element| match element {
-                Element::Reference(reference_path) => {
+                Element::Reference(reference_path, _) => {
                     let maybe_item = self.follow_reference(reference_path, transaction)?;
                     if let Element::Item(item, _) = maybe_item {
                         Ok(item)
@@ -127,7 +127,7 @@ impl GroveDb {
         let results = elements
             .into_iter()
             .map(|element| match element {
-                Element::Reference(reference_path) => {
+                Element::Reference(reference_path, _) => {
                     let maybe_item = self.follow_reference(reference_path, transaction)?;
                     if let Element::Item(item, _) = maybe_item {
                         Ok(item)

@@ -28,7 +28,7 @@ impl GroveDb {
                     self.add_non_root_subtree(path_iter, key, transaction)?;
                 }
             }
-            Element::Reference(ref reference_path) => {
+            Element::Reference(ref reference_path, _) => {
                 if path_iter.len() == 0 {
                     return Err(Error::InvalidPath(
                         "only subtrees are allowed as root tree's leafs",

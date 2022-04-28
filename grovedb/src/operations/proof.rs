@@ -644,7 +644,7 @@ where
             Op::Push(node) | Op::PushInverted(node) => match node {
                 Node::KV(_, value) => {
                     let elem = Element::deserialize(value);
-                    if let Ok(Element::Reference(reference_path)) = elem {
+                    if let Ok(Element::Reference(reference_path, _)) = elem {
                         let referenced_elem = db.follow_reference(reference_path, None)?;
                         *value = referenced_elem.serialize().unwrap();
                     }

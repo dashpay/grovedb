@@ -87,7 +87,7 @@ impl Visualize for Element {
                 drawer.write(b"item: ")?;
                 drawer = value.visualize(drawer)?;
             }
-            Element::Reference(_ref) => {
+            Element::Reference(_ref, _) => {
                 drawer.write(b"ref")?;
                 // drawer.write(b"ref: [path: ")?;
                 // let mut path_iter = path.iter();
@@ -258,7 +258,7 @@ mod tests {
     fn test_visualize_reference() {
         let p1 = b"ayy".to_vec();
         let p2 = b"lmao".to_vec();
-        let e = Element::Reference(vec![p1.clone(), p2.clone()]);
+        let e = Element::new_reference(vec![p1.clone(), p2.clone()]);
         let mut result = Vec::new();
         let drawer = Drawer::new(&mut result);
         e.visualize(drawer).expect("visualize IO error");
