@@ -60,16 +60,16 @@ impl GroveDb {
                 // only allow items to be referenced
                 // TODO: allows other element types
                 match referenced_element {
-                    Element::Item(_, ref mut references) => {
+                    Element::Item(_, ref mut references)
+                    | Element::Reference(_, ref mut references) => {
                         dbg!("referencing an item");
                         let mut path_owned: Vec<Vec<u8>> =
                             path_iter.clone().map(|x| x.to_vec()).collect();
                         path_owned.push(key.to_vec());
                         references.push(path_owned);
-                        // dbg!(references);
                     }
                     _ => {
-                        dbg!("Inserting a reference to a reference");
+                        dbg!("Inserting a reference to a tree");
                         return Err(Error::InvalidPath("cannot reference non item elements"));
                     }
                 }

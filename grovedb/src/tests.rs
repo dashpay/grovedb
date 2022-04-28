@@ -507,23 +507,15 @@ fn test_too_many_indirections() {
         .expect("successful reference insert");
     }
 
-    db.insert(
-        [TEST_LEAF],
-        &keygen(MAX_REFERENCE_HOPS + 1),
-        Element::new_reference(vec![TEST_LEAF.to_vec(), keygen(MAX_REFERENCE_HOPS)]),
-        None,
-    )
-    .expect("successful reference insert");
-
-    // assert!(matches!(
-    //     db.insert(
-    //         [TEST_LEAF],
-    //         &keygen(MAX_REFERENCE_HOPS + 1),
-    //         Element::new_reference(vec![TEST_LEAF.to_vec(),
-    // keygen(MAX_REFERENCE_HOPS)]),         None,
-    //     ),
-    //     Err(Error::ReferenceLimit)
-    // ))
+    assert!(matches!(
+        db.insert(
+            [TEST_LEAF],
+            &keygen(MAX_REFERENCE_HOPS + 1),
+            Element::new_reference(vec![TEST_LEAF.to_vec(), keygen(MAX_REFERENCE_HOPS)]),
+            None,
+        ),
+        Err(Error::ReferenceLimit)
+    ))
 }
 
 #[test]
