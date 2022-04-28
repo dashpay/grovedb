@@ -35,12 +35,62 @@ impl GroveDb {
                     ));
                 }
 
-                self.check_subtree_exists_invalid_path(path_iter.clone(), Some(key), transaction)?;
-                let referenced_element =
-                    self.follow_reference(reference_path.to_owned(), transaction)?;
+                // update is basically insertion into a spot that already exists (kinda like
+                // what I am doing) value hash of reference needs to match that
+                // of the referenced item (i.e base item) reference path should
+                // be stored in the referenced item (one level deep) referenced
+                // item and base item can be different (in the case of reference referencing a
+                // reference)
 
+                self.check_subtree_exists_invalid_path(path_iter.clone(), Some(key), transaction)?;
+
+                // reference path denotes the element we are directly referencing
+                let (referenced_key, referenced_subtree_path) =
+                    reference_path.split_last().unwrap();
+
+                let mut referenced_element = self.get_raw(
+                    referenced_subtree_path.iter().map(|x| x.as_slice()),
+                    referenced_key,
+                    transaction,
+                )?;
+                let base_element = self.follow_reference(reference_path.to_owned(), transaction)?;
+
+                // base element is only needed for value hash
+
+                // only allow items to be referenced
+                // TODO: allows other element types
+                match referenced_element {
+                    Element::Item(_, ref mut references) => {
+                        dbg!("referencing an item");
+                        let mut path_owned: Vec<Vec<u8>> =
+                            path_iter.clone().map(|x| x.to_vec()).collect();
+                        path_owned.push(key.to_vec());
+                        references.push(path_owned);
+                        // dbg!(references);
+                    }
+                    _ => {
+                        dbg!("Inserting a reference to a reference");
+                        return Err(Error::InvalidPath("cannot reference non item elements"));
+                    }
+                }
+
+                merk_optional_tx!(
+                    self.db,
+                    referenced_subtree_path.iter().map(|x| x.as_slice()),
+                    transaction,
+                    mut subtree,
+                    {
+                        referenced_element.insert(&mut subtree, referenced_key.as_slice())?;
+                    }
+                );
+                self.propagate_changes(
+                    referenced_subtree_path.iter().map(|x| x.as_slice()),
+                    transaction,
+                );
+
+                // insert the reference
                 merk_optional_tx!(self.db, path_iter.clone(), transaction, mut subtree, {
-                    element.insert_reference(&mut subtree, key, referenced_element.serialize()?)?;
+                    element.insert_reference(&mut subtree, key, base_element.serialize()?)?;
                 });
                 self.propagate_changes(path_iter, transaction)?;
             }
