@@ -1,53 +1,56 @@
 use std::{
+    iter::empty,
     ops::{Deref, DerefMut},
-    rc::Rc,
 };
 
 use anyhow::Result;
-use storage::rocksdb_storage::{default_rocksdb, PrefixedRocksDbStorage};
-use tempdir::TempDir;
+use storage::{
+    rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
+    Storage,
+};
 
 use crate::Merk;
 
 /// Wraps a Merk instance and drops it without flushing once it goes out of
 /// scope.
 pub struct CrashMerk {
-    merk: Merk<PrefixedRocksDbStorage>,
-    path: Option<TempDir>,
-    _db: Rc<rocksdb::OptimisticTransactionDB>,
+    storage: &'static TempStorage,
+    merk: Merk<PrefixedRocksDbStorageContext<'static>>,
 }
 
 impl CrashMerk {
     /// Opens a `CrashMerk` at the given file path, creating a new one if it
     /// does not exist.
-    pub fn open() -> Result<Self> {
-        let path = TempDir::new("db").expect("cannot create tempdir");
-        let db = default_rocksdb(path.path());
-        let merk = Merk::open(PrefixedRocksDbStorage::new(db.clone(), Vec::new()).unwrap())?;
-        Ok(Self {
-            merk,
-            path: Some(path),
-            _db: db,
-        })
+    pub fn open() -> Result<CrashMerk> {
+        let storage = Box::leak(Box::new(TempStorage::new()));
+        let context = storage.get_storage_context(empty());
+        let merk = Merk::open(context).unwrap();
+        Ok(CrashMerk { merk, storage })
     }
 
-    pub fn crash(&mut self) {
-        if let Some(a) = self.path.take() {
-            drop(a)
+    pub fn crash(&self) {
+        self.storage.crash()
+    }
+}
+
+impl Drop for CrashMerk {
+    fn drop(&mut self) {
+        unsafe {
+            Box::from_raw(self.storage as *const _ as *mut TempStorage);
         }
     }
 }
 
 impl Deref for CrashMerk {
-    type Target = Merk<PrefixedRocksDbStorage>;
+    type Target = Merk<PrefixedRocksDbStorageContext<'static>>;
 
-    fn deref(&self) -> &Merk<PrefixedRocksDbStorage> {
+    fn deref(&self) -> &Merk<PrefixedRocksDbStorageContext<'static>> {
         &self.merk
     }
 }
 
 impl DerefMut for CrashMerk {
-    fn deref_mut(&mut self) -> &mut Merk<PrefixedRocksDbStorage> {
+    fn deref_mut(&mut self) -> &mut Merk<PrefixedRocksDbStorageContext<'static>> {
         &mut self.merk
     }
 }
@@ -61,7 +64,7 @@ mod tests {
     #[ignore] // currently this still works because we enabled the WAL
     fn crash() {
         let mut merk = CrashMerk::open().expect("failed to open merk");
-        merk.apply::<_, Vec<u8>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[], None)
+        merk.apply::<_, Vec<u8>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[])
             .expect("apply failed");
 
         merk.crash();
