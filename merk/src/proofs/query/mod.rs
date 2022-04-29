@@ -1061,23 +1061,7 @@ pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> Result<Map> {
     Ok(map_builder.build())
 }
 
-pub fn execute_proof(bytes: &[u8]) -> Result<(MerkHash, Map)> {
-    let ops = Decoder::new(bytes);
-    let mut map_builder = MapBuilder::new();
-
-    let root = execute(ops, true, |node| map_builder.insert(node))?;
-
-    Ok((root.hash(), map_builder.build()))
-}
-
-#[derive(PartialEq, Debug)]
-pub struct ProofVerificationResult {
-    result_set: Vec<(Vec<u8>, Vec<u8>)>,
-    limit: Option<u16>,
-    offset: Option<u16>,
-}
-
-/// Verifies the encoded proof with the given query and expected hash.
+/// Verifies the encoded proof with the given query
 ///
 /// Every key in `keys` is checked to either have a key/value pair in the proof,
 /// or to have its absence in the tree proven.
@@ -1087,15 +1071,13 @@ pub struct ProofVerificationResult {
 /// list will contain 2 elements, the value of `A` and the value of `B`. Keys
 /// proven to be absent in the tree will have an entry of `None`, keys that have
 /// a proven value will have an entry of `Some(value)`.
-#[deprecated]
-pub fn verify_query(
+pub fn execute_proof(
     bytes: &[u8],
     query: &Query,
     limit: Option<u16>,
     offset: Option<u16>,
     left_to_right: bool,
-    expected_hash: MerkHash,
-) -> Result<ProofVerificationResult> {
+) -> Result<(MerkHash, ProofVerificationResult)> {
     pub fn get_query_iter(
         query: &Query,
         left_to_right: bool,
@@ -1309,19 +1291,44 @@ pub fn verify_query(
         }
     }
 
-    if root.hash() != expected_hash {
+    Ok((
+        root.hash(),
+        ProofVerificationResult {
+            result_set: output,
+            limit: current_limit,
+            offset: current_offset,
+        },
+    ))
+}
+
+#[derive(PartialEq, Debug)]
+pub struct ProofVerificationResult {
+    result_set: Vec<(Vec<u8>, Vec<u8>)>,
+    limit: Option<u16>,
+    offset: Option<u16>,
+}
+
+/// Verifies the encoded proof with the given query and expected hash
+pub fn verify_query(
+    bytes: &[u8],
+    query: &Query,
+    limit: Option<u16>,
+    offset: Option<u16>,
+    left_to_right: bool,
+    expected_hash: MerkHash,
+) -> Result<ProofVerificationResult> {
+    let (root_hash, verification_result) =
+        execute_proof(bytes, query, limit, offset, left_to_right)?;
+
+    if root_hash != expected_hash {
         bail!(
             "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
             expected_hash,
-            root.hash()
+            root_hash
         );
     }
 
-    Ok(ProofVerificationResult {
-        result_set: output,
-        limit: current_limit,
-        offset: current_offset,
-    })
+    Ok(verification_result)
 }
 
 #[allow(deprecated)]
