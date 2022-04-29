@@ -1,53 +1,38 @@
-use storage::{Storage, Transaction};
+use storage::StorageContext;
 
-use crate::{Error, GroveDb, PrefixedRocksDbStorage};
+use crate::{util::meta_storage_context_optional_tx, Error, GroveDb, TransactionArg};
 
 impl GroveDb {
-    pub fn put_aux<'a: 'b, 'b, K: AsRef<[u8]>>(
-        &'a mut self,
+    pub fn put_aux<K: AsRef<[u8]>>(
+        &self,
         key: K,
         value: &[u8],
-        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
+        transaction: TransactionArg,
     ) -> Result<(), Error> {
-        if let Some(tx) = transaction {
-            let transaction = self.meta_storage.transaction(tx);
-            transaction.put_aux(key, value)?;
-            Ok(())
-        } else {
-            if self.is_readonly {
-                return Err(Error::DbIsInReadonlyMode);
-            }
-            Ok(self.meta_storage.put_aux(key, value)?)
-        }
+        meta_storage_context_optional_tx!(self.db, transaction, aux_storage, {
+            aux_storage.put_aux(key, value)?;
+        });
+        Ok(())
     }
 
-    pub fn delete_aux<'a: 'b, 'b, K: AsRef<[u8]>>(
-        &'a mut self,
+    pub fn delete_aux<K: AsRef<[u8]>>(
+        &self,
         key: K,
-        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
+        transaction: TransactionArg,
     ) -> Result<(), Error> {
-        if let Some(tx) = transaction {
-            let transaction = self.meta_storage.transaction(tx);
-            transaction.delete_aux(key)?;
-            Ok(())
-        } else {
-            if self.is_readonly {
-                return Err(Error::DbIsInReadonlyMode);
-            }
-            Ok(self.meta_storage.delete_aux(key)?)
-        }
+        meta_storage_context_optional_tx!(self.db, transaction, aux_storage, {
+            aux_storage.delete_aux(key)?;
+        });
+        Ok(())
     }
 
-    pub fn get_aux<'a: 'b, 'b, K: AsRef<[u8]>>(
-        &'a mut self,
+    pub fn get_aux<K: AsRef<[u8]>>(
+        &self,
         key: K,
-        transaction: Option<&'b <PrefixedRocksDbStorage as Storage>::DBTransaction<'b>>,
+        transaction: TransactionArg,
     ) -> Result<Option<Vec<u8>>, Error> {
-        if let Some(tx) = transaction {
-            let transaction = self.meta_storage.transaction(tx);
-            Ok(transaction.get_aux(key)?)
-        } else {
-            Ok(self.meta_storage.get_aux(key)?)
-        }
+        meta_storage_context_optional_tx!(self.db, transaction, aux_storage, {
+            Ok(aux_storage.get_aux(key)?)
+        })
     }
 }
