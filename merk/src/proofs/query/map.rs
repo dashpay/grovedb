@@ -1,3 +1,5 @@
+#![allow(unstable_name_collisions)]
+
 use std::{
     collections::{btree_map, btree_map::Iter, BTreeMap},
     ops::{Bound, RangeBounds},
@@ -336,5 +338,35 @@ mod tests {
         let mut range = map.range(..&[1u8, 2, 5][..]);
         range.next().unwrap().unwrap();
         assert_eq!(range.next().unwrap().unwrap(), (&[1][..], &[1][..]));
+    }
+}
+
+/// `BTreeMapExtras` provides extra functionality to work with `BTreeMap` that
+/// either missed or unstable
+/// NOTE: We can easily remove this when the following feature will be rolled
+/// out into stable rust: https://github.com/rust-lang/rust/issues/62924
+trait BTreeMapExtras {
+    type K;
+    type V;
+
+    /// Returns `None` if `BTreeMap` is empty otherwise the first key-value pair
+    /// in the map. The key in this pair is the minimum key in the map.
+    fn first_key_value(&self) -> Option<(&Self::K, &Self::V)>;
+
+    /// Returns `None` if `BTreeMap` is empty otherwise the last key-value pair
+    /// in the map. The key in this pair is the maximum key in the map.
+    fn last_key_value(&self) -> Option<(&Self::K, &Self::V)>;
+}
+
+impl<KK: Ord, VV: Ord> BTreeMapExtras for BTreeMap<KK, VV> {
+    type K = KK;
+    type V = VV;
+
+    fn first_key_value(&self) -> Option<(&Self::K, &Self::V)> {
+        self.iter().next()
+    }
+
+    fn last_key_value(&self) -> Option<(&Self::K, &Self::V)> {
+        self.iter().next_back()
     }
 }

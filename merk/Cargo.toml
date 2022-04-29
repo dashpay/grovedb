@@ -7,13 +7,12 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-tempdir = "0.3.7"
 storage = { path = "../storage" }
 thiserror = "1.0.30"
-rocksdb = { git = "https://github.com/yiyuanliu/rust-rocksdb", branch = "transaction" }
 anyhow = "1.0.53"
 failure = "0.1.8"
 integer-encoding = "3.0.2"
+indexmap = "1.8.0"
 
 [dependencies.time]
 version = "0.3.7"
@@ -36,7 +35,7 @@ version = "1.4.3"
 optional = true
 
 [dependencies.ed]
-version = "0.1.6"
+version = "0.2.2"
 optional = true
 
 [dependencies.blake3]
@@ -68,3 +67,7 @@ full = ["rand",
 verify = ["ed",
           "blake3"
 ]
+
+[dev-dependencies]
+tempfile = "3.3.0"
+storage = { path = "../storage", features = ["rocksdb_storage"] }

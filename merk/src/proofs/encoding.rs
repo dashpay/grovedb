@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 
 use anyhow::{anyhow, Result};
-use ed::{Decode, Encode, Terminated};
+use ed::{Decode, Encode, Error, Terminated};
 
 use super::{Node, Op};
 use crate::tree::HASH_LENGTH;
@@ -156,8 +156,8 @@ impl Decode for Op {
             0x11 => Self::Child,
             0x12 => Self::ParentInverted,
             0x13 => Self::ChildInverted,
-            // TODO: get rid of `failure` with improvements to ed API (or removing dependency on ed)
-            _ => failure::bail!("Proof has unexpected value"),
+            // TODO: Remove dependency on ed and throw an internal error
+            _ => return Err(ed::Error::UnexpectedByte(variant)),
         })
     }
 }
@@ -166,8 +166,15 @@ impl Terminated for Op {}
 
 impl Op {
     fn encode_into<W: Write>(&self, dest: &mut W) -> Result<()> {
-        Encode::encode_into(self, dest)
-            .map_err(|e| anyhow!("failed to encode an proofs::Op structure ({})", e))
+        Encode::encode_into(self, dest).map_err(|e| match e {
+            Error::UnexpectedByte(byte) => anyhow!(
+                "failed to encode an proofs::Op structure (UnexpectedByte: {})",
+                byte
+            ),
+            Error::IOError(error) => {
+                anyhow!("failed to encode an proofs::Op structure ({})", error)
+            }
+        })
     }
 
     fn encoding_length(&self) -> usize {
@@ -175,8 +182,15 @@ impl Op {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        Decode::decode(bytes)
-            .map_err(|e| anyhow!("failed to decode an proofs::Op structure ({})", e))
+        Decode::decode(bytes).map_err(|e| match e {
+            Error::UnexpectedByte(byte) => anyhow!(
+                "failed to decode an proofs::Op structure (UnexpectedByte: {})",
+                byte
+            ),
+            Error::IOError(error) => {
+                anyhow!("failed to decode an proofs::Op structure ({})", error)
+            }
+        })
     }
 }
 

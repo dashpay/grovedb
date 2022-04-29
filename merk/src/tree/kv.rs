@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 
-use ed::{Decode, Encode, Result};
+use ed::{Decode, Encode, Result, Terminated};
 
 use super::hash::{kv_hash, Hash, HASH_LENGTH, NULL_HASH};
 use crate::tree::hash::value_hash;
@@ -125,9 +125,13 @@ impl Decode for KV {
         self.value.clear();
         input.read_to_end(self.value.as_mut())?;
 
+        self.value_hash = value_hash(self.value());
+
         Ok(())
     }
 }
+
+impl Terminated for KV {}
 
 #[cfg(test)]
 mod test {
