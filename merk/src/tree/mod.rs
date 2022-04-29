@@ -108,7 +108,7 @@ impl Tree {
         self.inner.kv.hash()
     }
 
-    /// Returns the hash of the node's value
+    /// Returns the hash of the node's valu
     #[inline]
     pub const fn value_hash(&self) -> &Hash {
         self.inner.kv.value_hash()
