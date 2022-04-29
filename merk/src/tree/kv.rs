@@ -125,6 +125,8 @@ impl Decode for KV {
         self.value.clear();
         input.read_to_end(self.value.as_mut())?;
 
+        self.value_hash = value_hash(self.value());
+
         Ok(())
     }
 }
