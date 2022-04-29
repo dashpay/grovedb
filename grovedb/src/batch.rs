@@ -1,6 +1,9 @@
 //! GroveDB batch operations support
 
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, HashMap, HashSet},
+};
 
 use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree, RBTreeLink};
 use merk::Merk;
@@ -8,10 +11,25 @@ use storage::{Storage, StorageBatch, StorageContext};
 
 use crate::{Element, Error, GroveDb, TransactionArg, ROOT_LEAFS_SERIALIZED_KEY};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum Op {
     Insert { element: Element },
     Delete,
+}
+
+impl PartialOrd for Op {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match (self, other) {
+            (Op::Delete, Op::Insert { .. }) => Some(Ordering::Less),
+            _ => Some(Ordering::Greater),
+        }
+    }
+}
+
+impl Ord for Op {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).expect("all ops have order")
+    }
 }
 
 /// Batch operation
@@ -31,10 +49,10 @@ pub struct GroveDbOp {
 intrusive_adapter!(GroveDbOpAdapter = Box<GroveDbOp> : GroveDbOp { link: RBTreeLink });
 
 impl<'a> KeyAdapter<'a> for GroveDbOpAdapter {
-    type Key = &'a [Vec<u8>];
+    type Key = (&'a [Vec<u8>], &'a [u8], &'a Op);
 
     fn get_key(&self, value: &'a GroveDbOp) -> Self::Key {
-        &value.path
+        (&value.path, &value.key, &value.op)
     }
 }
 
@@ -125,6 +143,81 @@ impl GroveDb {
         Ok(())
     }
 
+    /// Validates batch using a simple set of rules:
+    /// 1. Subtree must exist to perform operations on it;
+    /// 2. Subtree is treated as exising if it can be found in storage;
+    /// 3. Subtree is treated as exising if it is created within the same batch;
+    /// 4. Subtree is treated as not existing otherwise or if there is a delete
+    /// operation;
+    fn validate_batch(
+        &self,
+        ops: &RBTree<GroveDbOpAdapter>,
+        root_leaves: &BTreeMap<Vec<u8>, usize>,
+        transaction: TransactionArg,
+    ) -> Result<(), Error> {
+        // To ensure that batch `[insert([a, b], c, t), insert([a, b, c], k, v)]` is
+        // valid we need to check that subtree `[a, b]` exists;
+        // If we add `insert([a], b, t)` we need to check only `[a]` subtree as all
+        // operations form a chain and we check only head to exist.
+        let mut valid: HashSet<Vec<Vec<u8>>> = HashSet::new();
+
+        // Insertion to root tree is valid as root tree always exists
+        valid.insert(Vec::new());
+
+        for op in ops {
+            let path: &[Vec<u8>] = &op.path;
+            if !valid.contains(path) {
+                // Tree wasn't checked before
+                if path.len() == 1 {
+                    // We're working with root leaf subtree there
+                    if !root_leaves.contains_key(&path[0]) {
+                        return Err(Error::PathNotFound("missing root leaf"));
+                    }
+                } else {
+                    // Dealing with a deeper subtree
+                    let (parent_key, parent_path) =
+                        path.split_last().expect("empty path already checked");
+                    self.get(
+                        parent_path.iter().map(|x| x.as_slice()),
+                        parent_key,
+                        transaction,
+                    )?;
+                }
+                valid.insert(path.to_vec());
+            }
+            match op {
+                // Insertion of a tree makes this subtree valid
+                GroveDbOp {
+                    path,
+                    key,
+                    op:
+                        Op::Insert {
+                            element: Element::Tree(_),
+                        },
+                    ..
+                } => {
+                    let mut new_path = path.to_vec();
+                    new_path.push(key.to_vec());
+                    valid.insert(new_path);
+                }
+                // Deletion of a tree makes a subtree unavailable
+                GroveDbOp {
+                    path,
+                    key,
+                    op: Op::Delete,
+                    ..
+                } => {
+                    let mut new_path = path.to_vec();
+                    new_path.push(key.to_vec());
+                    valid.remove(&new_path);
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
     /// Applies batch of operations on GroveDB
     pub fn apply_batch(
         &self,
@@ -150,16 +243,19 @@ impl GroveDb {
             return Ok(());
         }
 
+        let mut temp_root_leaves = self.get_root_leaf_keys(transaction)?;
+
+        // 1. Collect all batch operations into RBTree to keep them sorted and validated
+        let mut sorted_operations = RBTree::new(GroveDbOpAdapter::new());
+        for op in ops {
+            sorted_operations.insert(Box::new(op));
+        }
+
+        self.validate_batch(&sorted_operations, &temp_root_leaves, transaction)?;
+
         // `StorageBatch` allows us to collect operations on different subtrees before
         // execution
         let storage_batch = StorageBatch::new();
-        let mut sorted_operations = RBTree::new(GroveDbOpAdapter::new());
-        let mut temp_root_leaves = self.get_root_leaf_keys(transaction)?;
-
-        // 1. Collect all batch operations into RBTree to keep them sorted
-        for o in ops {
-            sorted_operations.insert(Box::new(o));
-        }
 
         // With the only one difference (if there is a transaction) do the following:
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
@@ -215,9 +311,169 @@ mod tests {
     use crate::tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF};
 
     #[test]
-    fn test_multi_tree_insertion_with_propagation_no_tx() {
+    fn test_batch_validation_ok() {
+        let db = make_grovedb();
+        let element = Element::Item(b"ayy".to_vec());
+        let element2 = Element::Item(b"ayy2".to_vec());
+        let ops = vec![
+            GroveDbOp::insert(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
+                b"key4".to_vec(),
+                element.clone(),
+            ),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec(), b"key2".to_vec()],
+                b"key3".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec()],
+                b"key2".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+                b"key2".to_vec(),
+                element2.clone(),
+            ),
+        ];
+        db.apply_batch(ops, None).expect("cannot apply batch");
+        assert_eq!(
+            db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
+                .expect("cannot get element"),
+            element
+        );
+        assert_eq!(
+            db.get([TEST_LEAF, b"key1"], b"key2", None)
+                .expect("cannot get element"),
+            element2
+        );
+    }
+
+    #[test]
+    fn test_batch_validation_broken_chain() {
+        let db = make_grovedb();
+        let element = Element::Item(b"ayy".to_vec());
+        let ops = vec![
+            GroveDbOp::insert(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
+                b"key4".to_vec(),
+                element.clone(),
+            ),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec()],
+                b"key2".to_vec(),
+                Element::empty_tree(),
+            ),
+        ];
+        assert!(db.apply_batch(ops, None).is_err());
+        assert!(db.get([b"key1".as_ref()], b"key2", None).is_err());
+    }
+
+    #[test]
+    fn test_batch_validation_broken_chain_aborts_whole_batch() {
+        let db = make_grovedb();
+        let element = Element::Item(b"ayy".to_vec());
+        let ops = vec![
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+                b"key2".to_vec(),
+                element.clone(),
+            ),
+            GroveDbOp::insert(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
+                b"key4".to_vec(),
+                element.clone(),
+            ),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec()],
+                b"key2".to_vec(),
+                Element::empty_tree(),
+            ),
+        ];
+        assert!(db.apply_batch(ops, None).is_err());
+        assert!(db.get([b"key1".as_ref()], b"key2", None).is_err());
+        assert!(db.get([TEST_LEAF, b"key1"], b"key2", None).is_err(),);
+    }
+
+    #[test]
+    fn test_batch_validation_deletion_brokes_chain() {
+        let db = make_grovedb();
+        let element = Element::Item(b"ayy".to_vec());
+
+        db.insert([], b"key1", Element::empty_tree(), None)
+            .expect("cannot insert a subtree");
+        db.insert([], b"key2", Element::empty_tree(), None)
+            .expect("cannot insert a subtree");
+
+        let ops = vec![
+            GroveDbOp::insert(
+                vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
+                b"key4".to_vec(),
+                element.clone(),
+            ),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec(), b"key2".to_vec()],
+                b"key3".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::delete(vec![b"key1".to_vec()], b"key2".to_vec()),
+        ];
+        assert!(db.apply_batch(ops, None).is_err());
+    }
+
+    #[test]
+    fn test_batch_validation_deletion_and_insertion_restore_chain() {
+        let db = make_grovedb();
+        let element = Element::Item(b"ayy".to_vec());
+        let ops = vec![
+            GroveDbOp::insert(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
+                b"key4".to_vec(),
+                element.clone(),
+            ),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec(), b"key2".to_vec()],
+                b"key3".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec()],
+                b"key2".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::delete(vec![b"key1".to_vec()], b"key2".to_vec()),
+        ];
+        db.apply_batch(ops, None).expect("cannot apply batch");
+        assert_eq!(
+            db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
+                .expect("cannot get element"),
+            element
+        );
+    }
+
+    #[test]
+    fn test_multi_tree_insertion_deletion_with_propagation_no_tx() {
         let db = make_grovedb();
         db.insert([], b"key1", Element::empty_tree(), None)
+            .expect("cannot insert root leaf");
+        db.insert([], b"key2", Element::empty_tree(), None)
+            .expect("cannot insert root leaf");
+        db.insert([ANOTHER_TEST_LEAF], b"key1", Element::empty_tree(), None)
             .expect("cannot insert root leaf");
 
         let hash = db
@@ -245,8 +501,14 @@ mod tests {
                 Element::empty_tree(),
             ),
             GroveDbOp::insert(vec![TEST_LEAF.to_vec()], b"key".to_vec(), element2.clone()),
+            GroveDbOp::delete(vec![ANOTHER_TEST_LEAF.to_vec()], b"key1".to_vec()),
+            GroveDbOp::delete(vec![], b"key2".to_vec()),
         ];
         db.apply_batch(ops, None).expect("cannot apply batch");
+
+        assert!(db.get([ANOTHER_TEST_LEAF], b"key1", None).is_err());
+        assert!(db.get([], b"key2", None).is_err());
+
         assert_eq!(
             db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
                 .expect("cannot get element"),
