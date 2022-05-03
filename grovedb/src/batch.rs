@@ -9,7 +9,10 @@ use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree, RBTreeLink};
 use merk::Merk;
 use storage::{Storage, StorageBatch, StorageContext};
 
-use crate::{Element, Error, GroveDb, TransactionArg, ROOT_LEAFS_SERIALIZED_KEY};
+use crate::{
+    util::storage_context_optional_tx, visualize_stdout, Drawer, Element, Error, GroveDb,
+    TransactionArg, Visualize, ROOT_LEAFS_SERIALIZED_KEY,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 enum Op {
@@ -33,7 +36,6 @@ impl Ord for Op {
 }
 
 /// Batch operation
-#[derive(Debug)]
 pub struct GroveDbOp {
     /// Path to a subtree - subject to an operation
     path: Vec<Vec<u8>>,
@@ -43,6 +45,31 @@ pub struct GroveDbOp {
     op: Op,
     /// Link used in intrusive tree to maintain operations order
     link: RBTreeLink,
+}
+
+impl std::fmt::Debug for GroveDbOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut path_out = Vec::new();
+        let mut path_drawer = Drawer::new(&mut path_out);
+        for p in &self.path {
+            path_drawer = p.visualize(path_drawer).unwrap();
+            path_drawer.write(b" ").unwrap();
+        }
+        let mut key_out = Vec::new();
+        let key_drawer = Drawer::new(&mut key_out);
+        self.key.visualize(key_drawer).unwrap();
+
+        let op_dbg = match self.op {
+            Op::Insert { .. } => "Insert",
+            Op::Delete => "Delete",
+        };
+
+        f.debug_struct("GroveDbOp")
+            .field("path", &String::from_utf8_lossy(&path_out))
+            .field("key", &String::from_utf8_lossy(&key_out))
+            .field("op", &op_dbg)
+            .finish()
+    }
 }
 
 // TODO: keep allocation number small
@@ -77,6 +104,33 @@ impl GroveDbOp {
 }
 
 impl GroveDb {
+    /// Expands rewrite/delete operation on a subtree to multiple deletions in
+    /// case there a children.
+    fn expand_deletion(
+        &self,
+        path: Vec<Vec<u8>>,
+        transaction: TransactionArg,
+    ) -> Result<Vec<Vec<Vec<u8>>>, Error> {
+        let mut queue: Vec<Vec<Vec<u8>>> = vec![path];
+        let mut result: Vec<Vec<Vec<u8>>> = queue.clone();
+
+        while let Some(q) = queue.pop() {
+            let path_iter = q.iter().map(|x| x.as_slice());
+            storage_context_optional_tx!(self.db, path_iter.clone(), transaction, storage, {
+                let mut raw_iter = Element::iterator(storage.raw_iter());
+                while let Some((key, value)) = raw_iter.next()? {
+                    let mut sub_path = q.clone();
+                    sub_path.push(key.to_vec());
+                    if let Element::Tree(_) = value {
+                        queue.push(sub_path.clone());
+                    }
+                    result.push(sub_path);
+                }
+            })
+        }
+        Ok(result)
+    }
+
     /// Batch application generic over storage context (whether there is a
     /// transaction or not).
     fn apply_body<'db, S: StorageContext<'db>>(
@@ -113,6 +167,7 @@ impl GroveDb {
             if let Some(op) = cursor.remove() {
                 if op.path.is_empty() {
                     // Altering root leaves
+                    // We don't match operation here as only insertion is supported
                     if temp_root_leaves.get(&op.key).is_none() {
                         temp_root_leaves.insert(op.key, temp_root_leaves.len());
                     }
@@ -151,7 +206,7 @@ impl GroveDb {
     /// operation;
     fn validate_batch(
         &self,
-        ops: &RBTree<GroveDbOpAdapter>,
+        ops: &mut RBTree<GroveDbOpAdapter>,
         root_leaves: &BTreeMap<Vec<u8>, usize>,
         transaction: TransactionArg,
     ) -> Result<(), Error> {
@@ -160,18 +215,41 @@ impl GroveDb {
         // If we add `insert([a], b, t)` we need to check only `[a]` subtree as all
         // operations form a chain and we check only head to exist.
         let mut valid: HashSet<Vec<Vec<u8>>> = HashSet::new();
+        let mut removed: HashSet<Vec<Vec<u8>>> = HashSet::new();
+
+        // First pass is required to expand deletions and possible subtree overwrites
+        let mut delete_ops = Vec::new();
+        for op in ops.iter() {
+            let mut path = op.path.clone();
+            path.push(op.key.clone());
+            delete_ops.extend(self.expand_deletion(path, transaction)?.iter().map(|p| {
+                let (key, path) = p.split_last().expect("non root leaves");
+                Box::new(GroveDbOp::delete(path.to_vec(), key.to_vec()))
+            }));
+        }
+        for op in delete_ops {
+            ops.insert(op);
+        }
 
         // Insertion to root tree is valid as root tree always exists
         valid.insert(Vec::new());
 
-        for op in ops {
+        for op in ops.iter() {
             let path: &[Vec<u8>] = &op.path;
+            if removed.contains(path) {
+                return Err(Error::InvalidPath("attempt to operate on deleted subtree"));
+            }
             if !valid.contains(path) {
                 // Tree wasn't checked before
-                if path.len() == 1 {
+                if path.len() == 0 {
                     // We're working with root leaf subtree there
-                    if !root_leaves.contains_key(&path[0]) {
+                    if !root_leaves.contains_key(&op.key) {
                         return Err(Error::PathNotFound("missing root leaf"));
+                    }
+                    if let Op::Delete = op.op {
+                        return Err(Error::InvalidPath(
+                            "deletion for root leafs is not supported",
+                        ));
                     }
                 } else {
                     // Dealing with a deeper subtree
@@ -183,8 +261,10 @@ impl GroveDb {
                         transaction,
                     )?;
                 }
+                removed.remove(path);
                 valid.insert(path.to_vec());
             }
+
             match op {
                 // Insertion of a tree makes this subtree valid
                 GroveDbOp {
@@ -198,6 +278,7 @@ impl GroveDb {
                 } => {
                     let mut new_path = path.to_vec();
                     new_path.push(key.to_vec());
+                    removed.remove(&new_path);
                     valid.insert(new_path);
                 }
                 // Deletion of a tree makes a subtree unavailable
@@ -210,6 +291,7 @@ impl GroveDb {
                     let mut new_path = path.to_vec();
                     new_path.push(key.to_vec());
                     valid.remove(&new_path);
+                    removed.insert(new_path);
                 }
                 _ => {}
             }
@@ -251,7 +333,8 @@ impl GroveDb {
             sorted_operations.insert(Box::new(op));
         }
 
-        self.validate_batch(&sorted_operations, &temp_root_leaves, transaction)?;
+        self.validate_batch(&mut sorted_operations, &temp_root_leaves, transaction)?;
+        dbg!(&sorted_operations);
 
         // `StorageBatch` allows us to collect operations on different subtrees before
         // execution
@@ -467,6 +550,29 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_validation_subtree_overwrite() {
+        let db = make_grovedb();
+        let element = Element::Item(b"ayy".to_vec());
+        let element2 = Element::Item(b"ayy2".to_vec());
+        db.insert([TEST_LEAF], b"key_subtree", Element::empty_tree(), None)
+            .expect("cannot insert a subtree");
+        db.insert([TEST_LEAF, b"key_subtree"], b"key2", element, None)
+            .expect("cannot insert an item");
+
+        // TEST_LEAF will be overwritten and become not even a subtree anymore, second
+        // operation will fail
+        let ops = vec![
+            GroveDbOp::insert(vec![], TEST_LEAF.to_vec(), element2),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
+        ];
+        assert!(db.apply_batch(ops, None).is_err());
+    }
+
+    #[test]
     fn test_multi_tree_insertion_deletion_with_propagation_no_tx() {
         let db = make_grovedb();
         db.insert([], b"key1", Element::empty_tree(), None)
@@ -502,12 +608,10 @@ mod tests {
             ),
             GroveDbOp::insert(vec![TEST_LEAF.to_vec()], b"key".to_vec(), element2.clone()),
             GroveDbOp::delete(vec![ANOTHER_TEST_LEAF.to_vec()], b"key1".to_vec()),
-            GroveDbOp::delete(vec![], b"key2".to_vec()),
         ];
         db.apply_batch(ops, None).expect("cannot apply batch");
 
         assert!(db.get([ANOTHER_TEST_LEAF], b"key1", None).is_err());
-        assert!(db.get([], b"key2", None).is_err());
 
         assert_eq!(
             db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
@@ -530,6 +634,7 @@ mod tests {
         root_leafs.insert(TEST_LEAF.to_vec(), 0);
         root_leafs.insert(ANOTHER_TEST_LEAF.to_vec(), 1);
         root_leafs.insert(b"key1".to_vec(), 2);
+        root_leafs.insert(b"key2".to_vec(), 3);
 
         assert_eq!(
             db.get_root_leaf_keys(None).expect("cannot get root leafs"),
