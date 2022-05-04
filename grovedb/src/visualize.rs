@@ -1,87 +1,12 @@
 use std::io::{Result, Write};
 
-use itertools::Itertools;
 use storage::StorageContext;
+use visualize::{Drawer, Visualize};
 
 use crate::{subtree::Element, util::storage_context_optional_tx, GroveDb, TransactionArg};
 
-static HEX_LEN: usize = 8;
-static STR_LEN: usize = 32;
-static INDENT_SPACES: usize = 4;
-
-/// Pretty visualization of GroveDB components.
-pub trait Visualize {
-    fn visualize<'a, W: Write>(&self, drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>>;
-}
-
-/// A `io::Write` proxy to prepend padding and symbols to draw trees
-pub struct Drawer<'a, W: Write> {
-    level: usize,
-    write: &'a mut W,
-}
-
-impl<'a, W: Write> Drawer<'a, W> {
-    pub fn new(write: &'a mut W) -> Self {
-        Drawer { level: 0, write }
-    }
-
-    pub fn down(&mut self) {
-        self.level += 1;
-    }
-
-    pub fn up(&mut self) {
-        self.level -= 1;
-    }
-
-    pub fn write(&mut self, buf: &[u8]) -> Result<()> {
-        let lines_iter = buf.split(|c| *c == b'\n');
-        let sep = if self.level > 0 {
-            let mut result = " ".repeat(INDENT_SPACES * self.level - 1);
-            result.insert(0, '\n');
-            result
-        } else {
-            String::new()
-        };
-        let interspersed_lines_iter = Itertools::intersperse(lines_iter, sep.as_bytes());
-        for line in interspersed_lines_iter {
-            self.write.write_all(line)?;
-        }
-        Ok(())
-    }
-
-    pub fn flush(&mut self) -> Result<()> {
-        self.write.write_all(b"\n")?;
-        self.write.flush()?;
-        Ok(())
-    }
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    let mut result = hex::encode(bytes);
-    result.truncate(HEX_LEN);
-    result
-}
-
-impl Visualize for [u8] {
-    fn visualize<'a, W: Write>(&self, mut drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>> {
-        let hex_repr = to_hex(self);
-        let str_repr = String::from_utf8(self.to_vec());
-        drawer.write(format!("[hex: {hex_repr}").as_bytes())?;
-        if let Ok(str_repr) = str_repr {
-            let str_part = if str_repr.len() > STR_LEN {
-                &str_repr[..=STR_LEN]
-            } else {
-                &str_repr
-            };
-            drawer.write(format!(", str: {str_part}").as_bytes())?;
-        }
-        drawer.write(b"]")?;
-        Ok(drawer)
-    }
-}
-
 impl Visualize for Element {
-    fn visualize<'a, W: Write>(&self, mut drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>> {
+    fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
         match self {
             Element::Item(value) => {
                 drawer.write(b"item: ")?;
@@ -110,12 +35,12 @@ impl Visualize for Element {
 }
 
 impl GroveDb {
-    fn draw_subtree<'a, W: Write>(
+    fn draw_subtree<W: Write>(
         &self,
-        mut drawer: Drawer<'a, W>,
+        mut drawer: Drawer<W>,
         path: Vec<Vec<u8>>,
         transaction: TransactionArg,
-    ) -> Result<Drawer<'a, W>> {
+    ) -> Result<Drawer<W>> {
         drawer.down();
 
         storage_context_optional_tx!(
@@ -150,11 +75,11 @@ impl GroveDb {
         Ok(drawer)
     }
 
-    fn draw_root_tree<'a, W: Write>(
+    fn draw_root_tree<W: Write>(
         &self,
-        mut drawer: Drawer<'a, W>,
+        mut drawer: Drawer<W>,
         transaction: TransactionArg,
-    ) -> Result<Drawer<'a, W>> {
+    ) -> Result<Drawer<W>> {
         drawer.down();
         let root_leaf_keys = self
             .get_root_leaf_keys(transaction)
@@ -177,11 +102,11 @@ impl GroveDb {
         Ok(drawer)
     }
 
-    fn visualize_start<'a, W: Write>(
+    fn visualize_start<W: Write>(
         &self,
-        mut drawer: Drawer<'a, W>,
+        mut drawer: Drawer<W>,
         transaction: TransactionArg,
-    ) -> Result<Drawer<'a, W>> {
+    ) -> Result<Drawer<W>> {
         drawer.write(b"root")?;
         drawer = self.draw_root_tree(drawer, transaction)?;
         drawer.flush()?;
@@ -190,36 +115,15 @@ impl GroveDb {
 }
 
 impl Visualize for GroveDb {
-    fn visualize<'a, W: Write>(&self, drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>> {
+    fn visualize<W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>> {
         self.visualize_start(drawer, None)
     }
 }
 
-impl<'db, 'ctx> Visualize for (&'db GroveDb, TransactionArg<'db, 'ctx>) {
-    fn visualize<'a, W: Write>(&self, drawer: Drawer<'a, W>) -> Result<Drawer<'a, W>> {
-        let (grovedb, transaction) = self;
-        grovedb.visualize_start(drawer, *transaction)
-    }
-}
-
-pub fn visualize_stderr<T: Visualize + ?Sized>(value: &T) {
-    let mut out = std::io::stderr();
-    let drawer = Drawer::new(&mut out);
-    value
-        .visualize(drawer)
-        .expect("IO error when trying to `visualize`");
-}
-
-pub fn visualize_stdout<T: Visualize + ?Sized>(value: &T) {
-    let mut out = std::io::stdout();
-    let drawer = Drawer::new(&mut out);
-    value
-        .visualize(drawer)
-        .expect("IO error when trying to `visualize`");
-}
-
 #[cfg(test)]
 mod tests {
+    use visualize::to_hex;
+
     use super::*;
 
     #[test]

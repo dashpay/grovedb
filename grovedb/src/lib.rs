@@ -4,7 +4,6 @@ mod subtree;
 #[cfg(test)]
 mod tests;
 mod util;
-#[cfg(feature = "visualize")]
 mod visualize;
 
 use std::{
@@ -21,8 +20,6 @@ pub use storage::{
     Storage, StorageContext,
 };
 pub use subtree::Element;
-#[cfg(feature = "visualize")]
-pub use visualize::{visualize_stderr, visualize_stdout, Drawer, Visualize};
 
 use crate::util::{merk_optional_tx, meta_storage_context_optional_tx};
 

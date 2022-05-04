@@ -3,6 +3,7 @@ use std::{
     option::Option::None,
 };
 
+use ::visualize::{Drawer, Visualize};
 use rand::Rng;
 use tempfile::TempDir;
 
@@ -33,10 +34,7 @@ impl Deref for TempGroveDb {
 }
 
 impl Visualize for TempGroveDb {
-    fn visualize<'a, W: std::io::Write>(
-        &self,
-        drawer: Drawer<'a, W>,
-    ) -> std::io::Result<Drawer<'a, W>> {
+    fn visualize<W: std::io::Write>(&self, drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
         self.db.visualize(drawer)
     }
 }

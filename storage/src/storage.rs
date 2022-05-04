@@ -3,6 +3,8 @@ use std::{
     vec::IntoIter,
 };
 
+use visualize::visualize_to_vec;
+
 /// Top-level storage abstraction.
 /// Should be able to hold storage connection and to start transaction when
 /// needed. All query operations will be exposed using [StorageContext].
@@ -301,7 +303,7 @@ impl Default for StorageBatch {
 
 /// Deferred storage operation.
 #[allow(missing_docs)]
-#[derive(Debug)]
+#[derive(strum::AsRefStr)]
 pub enum BatchOperation {
     /// Deferred put operation
     Put { key: Vec<u8>, value: Vec<u8> },
@@ -319,4 +321,62 @@ pub enum BatchOperation {
     DeleteRoot { key: Vec<u8> },
     /// Deferred delete operation for metadata storage
     DeleteMeta { key: Vec<u8> },
+}
+
+impl std::fmt::Debug for BatchOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut fmt = f.debug_struct(self.as_ref());
+
+        let mut key_buf = Vec::new();
+        let mut value_buf = Vec::new();
+
+        match self {
+            BatchOperation::Put { key, value }
+            | BatchOperation::PutAux { key, value }
+            | BatchOperation::PutMeta { key, value }
+            | BatchOperation::PutRoot { key, value } => {
+                key_buf.clear();
+                value_buf.clear();
+                visualize_to_vec(&mut key_buf, key.as_slice());
+                visualize_to_vec(&mut value_buf, value.as_slice());
+                fmt.field("key", &String::from_utf8_lossy(&key_buf))
+                    .field("value", &String::from_utf8_lossy(&value_buf));
+            }
+            BatchOperation::Delete { key }
+            | BatchOperation::DeleteAux { key }
+            | BatchOperation::DeleteMeta { key }
+            | BatchOperation::DeleteRoot { key } => {
+                key_buf.clear();
+                visualize_to_vec(&mut key_buf, key.as_slice());
+                fmt.field("key", &String::from_utf8_lossy(&key_buf));
+            }
+        }
+
+        fmt.finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_debug_output_batch_operation() {
+        let op1 = BatchOperation::PutMeta {
+            key: b"key1".to_vec(),
+            value: b"value1".to_vec(),
+        };
+        let op2 = BatchOperation::DeleteRoot {
+            key: b"key1".to_vec(),
+        };
+        assert_eq!(
+            format!("{:?}", op1),
+            "PutMeta { key: \"[hex: 6b657931, str: key1]\", value: \"[hex: 76616c75, str: \
+             value1]\" }"
+        );
+        assert_eq!(
+            format!("{:?}", op2),
+            "DeleteRoot { key: \"[hex: 6b657931, str: key1]\" }"
+        );
+    }
 }

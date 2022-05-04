@@ -8,10 +8,11 @@ use std::{
 use intrusive_collections::{intrusive_adapter, KeyAdapter, RBTree, RBTreeLink};
 use merk::Merk;
 use storage::{Storage, StorageBatch, StorageContext};
+use visualize::{visualize_stdout, Drawer, Visualize};
 
 use crate::{
-    util::storage_context_optional_tx, visualize_stdout, Drawer, Element, Error, GroveDb,
-    TransactionArg, Visualize, ROOT_LEAFS_SERIALIZED_KEY,
+    util::storage_context_optional_tx, Element, Error, GroveDb, TransactionArg,
+    ROOT_LEAFS_SERIALIZED_KEY,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -169,6 +170,10 @@ impl GroveDb {
                     // Altering root leaves
                     // We don't match operation here as only insertion is supported
                     if temp_root_leaves.get(&op.key).is_none() {
+                        print!("adding leaf: ");
+                        visualize_stdout(op.key.as_slice());
+                        println!();
+
                         temp_root_leaves.insert(op.key, temp_root_leaves.len());
                     }
                 } else {
@@ -382,6 +387,8 @@ impl GroveDb {
                 .db
                 .get_batch_storage_context(std::iter::empty(), &storage_batch);
             save_root_leaves(meta_storage, &temp_root_leaves)?;
+            println!("\n\nBIG ASS\n\n");
+            dbg!(&storage_batch);
             self.db.commit_multi_context_batch(storage_batch)?;
         }
         Ok(())
@@ -390,6 +397,8 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
+    use visualize::visualize_stderr;
+
     use super::*;
     use crate::tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF};
 
@@ -427,6 +436,19 @@ mod tests {
             ),
         ];
         db.apply_batch(ops, None).expect("cannot apply batch");
+
+        println!("\n\nASS\n\n");
+        visualize_stderr(&db);
+        println!("\n\nASS");
+
+        db.get([], b"key1", None).expect("zalupa");
+        db.get([b"key1".as_ref()], b"key2", None)
+            .expect("cannot get element");
+        db.get([b"key1".as_ref(), b"key2"], b"key3", None)
+            .expect("cannot get element");
+        db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
+            .expect("cannot get element");
+
         assert_eq!(
             db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
                 .expect("cannot get element"),
