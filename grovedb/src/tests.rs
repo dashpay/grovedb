@@ -960,7 +960,7 @@ fn test_find_subtrees() {
     db.insert([TEST_LEAF], b"key4", Element::empty_tree(), None)
         .expect("successful subtree 3 insert");
     let subtrees = db
-        .find_subtrees(vec![TEST_LEAF], None, true)
+        .find_subtrees(vec![TEST_LEAF], None)
         .expect("cannot get subtrees");
     assert_eq!(
         vec![

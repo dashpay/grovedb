@@ -92,8 +92,7 @@ impl GroveDb {
 
             if let Element::Tree(_) = element {
                 let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
-                let subtrees_paths =
-                    self.find_subtrees(subtree_merk_path.clone(), transaction, true)?;
+                let subtrees_paths = self.find_subtrees(subtree_merk_path.clone(), transaction)?;
                 let is_empty =
                     merk_optional_tx!(self.db, subtree_merk_path, transaction, subtree, {
                         subtree.is_empty_tree()
@@ -137,7 +136,6 @@ impl GroveDb {
         &self,
         path: P,
         transaction: TransactionArg,
-        include_parent: bool,
     ) -> Result<Vec<Vec<Vec<u8>>>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -152,11 +150,7 @@ impl GroveDb {
 
         let mut queue: Vec<Vec<Vec<u8>>> =
             vec![path.into_iter().map(|x| x.as_ref().to_vec()).collect()];
-        let mut result: Vec<Vec<Vec<u8>>> = if include_parent {
-            queue.clone()
-        } else {
-            Vec::new()
-        };
+        let mut result: Vec<Vec<Vec<u8>>> = queue.clone();
 
         while let Some(q) = queue.pop() {
             // Get the correct subtree with q_ref as path
