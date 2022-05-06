@@ -7,7 +7,6 @@ use ::visualize::{Drawer, Visualize};
 use rand::Rng;
 use tempfile::TempDir;
 
-// use test::RunIgnored::No;
 use super::*;
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
@@ -972,8 +971,6 @@ fn test_find_subtrees() {
         ],
         subtrees
     );
-
-    dbg!(db.find_subtrees(vec![b"AOOO".as_ref()], None, false));
 }
 
 #[test]

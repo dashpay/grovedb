@@ -20,7 +20,7 @@ use crate::{
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Element {
     /// An ordinary value
     Item(Vec<u8>),
