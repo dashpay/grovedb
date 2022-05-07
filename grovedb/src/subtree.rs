@@ -61,13 +61,17 @@ impl Element {
             Element::Tree(_) => 32,
         }
     }
+    
+    pub fn required_item_space(len: usize) -> usize {
+        len + len.required_space() + 1
+    }
 
     /// Get the size of the serialization of an element in bytes
     pub fn serialized_byte_size(&self) -> usize {
         match self {
             Element::Item(item) => {
                 let len = item.len();
-                len + len.required_space() + 1 // 1 for enum
+                Self::required_item_space(len)
             }
             Element::Reference(path_reference) => {
                 path_reference
