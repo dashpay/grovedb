@@ -89,11 +89,10 @@ impl Element {
     }
 
     /// Get the size that the element will occupy on disk
-    pub fn node_byte_size(&self, key: &[u8]) -> usize {
+    pub fn node_byte_size(&self, key_len: usize) -> usize {
         // todo v23: this is just an approximation for now
         let serialized_value_size = self.serialized_byte_size();
         let node_value_size = serialized_value_size + serialized_value_size.required_space();
-        let key_len = key.len();
         let node_key_size = key_len + key_len.required_space();
         // Each node stores the key and value, the value hash and the key_value hash
         let node_size = node_value_size + node_key_size + 32 + 32;
