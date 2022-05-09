@@ -64,7 +64,6 @@ impl Element {
     }
 
     /// Get the size of an element in bytes
-    // TODO: Fix size calculation for item type and reference type
     pub fn byte_size(&self) -> usize {
         match self {
             Element::Item(item, references) => {
@@ -92,11 +91,33 @@ impl Element {
     // TODO: Fix size calculation for item type and reference type
     pub fn serialized_byte_size(&self) -> usize {
         match self {
-            Element::Item(item, _) => {
-                let len = item.len();
-                len + len.required_space() + 1 // 1 for enum
+            Element::Item(item, references) => {
+                let len_of_item = item.len();
+                let len_of_references = references
+                    .iter()
+                    .map(|inner| inner.iter().map(|inner| inner.len()).sum::<usize>())
+                    .sum::<usize>();
+
+                len_of_item
+                    + len_of_item.required_space()
+                    + len_of_references
+                    + len_of_references.required_space()
+                    + 1 // 1 for enum
             }
-            Element::Reference(path_reference, _) => {
+            Element::Reference(path_reference, references) => {
+                let len_of_references = references
+                    .iter()
+                    .map(|inner| {
+                        inner
+                            .iter()
+                            .map(|inner| {
+                                let inner_len = inner.len();
+                                inner_len + inner_len.required_space()
+                            })
+                            .sum::<usize>()
+                    })
+                    .sum::<usize>();
+
                 path_reference
                     .iter()
                     .map(|inner| {
@@ -105,6 +126,8 @@ impl Element {
                     })
                     .sum::<usize>()
                     + path_reference.len().required_space()
+                    + len_of_references
+                    + len_of_references.required_space()
                     + 1 // for the enum
             }
             Element::Tree(_) => 33, // 32 + 1 for enum
@@ -626,11 +649,10 @@ mod tests {
 
         let item = Element::new_item(hex::decode("abcdef").expect("expected to decode"));
         let serialized = item.serialize().expect("expected to serialize");
-        // TODO: Fix serialization test for item
-        // assert_eq!(serialized.len(), 5);
-        // assert_eq!(serialized.len(), item.serialized_byte_size());
+        assert_eq!(serialized.len(), 6);
+        assert_eq!(serialized.len(), item.serialized_byte_size());
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
-        // assert_eq!(hex::encode(serialized), "0003abcdef");
+        assert_eq!(hex::encode(serialized), "0003abcdef00");
 
         let reference = Element::new_reference(vec![
             vec![0],
@@ -638,13 +660,11 @@ mod tests {
             vec![5],
         ]);
         let serialized = reference.serialize().expect("expected to serialize");
-        // TODO: Fix serialization test for reference
-        // assert_eq!(serialized.len(), 9);
-        // assert_eq!(serialized.len(), reference.serialized_byte_size());
-        // // The item is variable length 2 bytes, so it's enum 1 then 1 byte
-        // for length, // then 1 byte for 0, then 1 byte 02 for abcd,
-        // then 1 byte '1' for 05 assert_eq!(hex::encode(serialized),
-        // "0103010002abcd0105");
+        assert_eq!(serialized.len(), 10);
+        assert_eq!(serialized.len(), reference.serialized_byte_size());
+        // The item is variable length 2 bytes, so it's enum 1 then 1 byte for length,
+        // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
+        assert_eq!(hex::encode(serialized), "0103010002abcd010500");
     }
 
     #[test]
