@@ -137,30 +137,42 @@ impl GroveDb {
                 }
 
                 if let Element::Reference(ref base_element_path, _) = element {
-                    // get the base element
-                    // remove this element path from the reference list
                     let (base_element_key, base_element_subtree_path) =
                         base_element_path.split_last().unwrap();
+
                     // TODO: Handle error
                     let base_element_subtree_path_as_slice =
                         base_element_subtree_path.iter().map(to_slice);
-                    let base_element = self
+                    let mut base_element = self
                         .get(
                             base_element_subtree_path_as_slice.clone(),
                             base_element_key,
                             transaction,
                         )
                         .unwrap();
-                    // dbg!(base_element);
-                    merk_optional_tx!(
-                        self.db,
-                        base_element_subtree_path_as_slice,
-                        transaction,
-                        mut subtree,
-                        {
-                            dbg!("gotten context");
+
+                    match base_element {
+                        Element::Tree(_) => {}
+                        Element::Item(_, ref mut references)
+                        | Element::Reference(_, ref mut references) => {
+                            let mut path_owned: Vec<Vec<u8>> =
+                                path_iter.clone().map(|x| x.to_vec()).collect();
+                            path_owned.push(key.to_vec());
+                            let position = references.iter().position(|path| path == &path_owned);
+                            if let Some(index) = position {
+                                references.remove(index);
+                                merk_optional_tx!(
+                                    self.db,
+                                    base_element_subtree_path_as_slice,
+                                    transaction,
+                                    mut subtree,
+                                    {
+                                        base_element.insert(&mut subtree, base_element_key)?;
+                                    }
+                                );
+                            }
                         }
-                    );
+                    }
                 }
 
                 if let Element::Item(_, references) | Element::Reference(_, references) = element {

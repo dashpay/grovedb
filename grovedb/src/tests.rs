@@ -1605,7 +1605,25 @@ fn test_reference_deletion() {
     let reference = Element::new_reference(vec![TEST_LEAF.to_vec(), b"key".to_vec()]);
     db.insert([ANOTHER_TEST_LEAF], b"reference_key", reference, None)
         .expect("successful insert");
+    let reference2 = Element::new_reference(vec![TEST_LEAF.to_vec(), b"key".to_vec()]);
+    db.insert([ANOTHER_TEST_LEAF], b"reference_key_2", reference2, None)
+        .expect("successful insert");
 
+    let element = db
+        .get([TEST_LEAF], b"key", None)
+        .expect("should get element");
+    if let Element::Item(_, references) = element {
+        assert_eq!(references.len(), 2);
+    } else {
+        panic!("should be able to fetch item");
+    }
+
+    // delete one reference
+    assert!(db
+        .delete([ANOTHER_TEST_LEAF], b"reference_key", None)
+        .is_ok());
+
+    // element should not point to reference anymore
     let element = db
         .get([TEST_LEAF], b"key", None)
         .expect("should get element");
@@ -1615,9 +1633,9 @@ fn test_reference_deletion() {
         panic!("should be able to fetch item");
     }
 
-    // delete the reference
+    // delete other reference
     assert!(db
-        .delete([ANOTHER_TEST_LEAF], b"reference_key", None)
+        .delete([ANOTHER_TEST_LEAF], b"reference_key_2", None)
         .is_ok());
 
     // element should not point to reference anymore
