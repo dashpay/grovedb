@@ -405,8 +405,14 @@ where
         }
 
         while iter.valid() {
-            // TODO: Remove unwrap
-            let rs = (iter.key().unwrap().to_vec(), iter.value().unwrap().to_vec());
+            let rs = (
+                iter.key()
+                    .expect("key must exist as iter is valid")
+                    .to_vec(),
+                iter.value()
+                    .expect("value must exist as iter is valid")
+                    .to_vec(),
+            );
             result.push(rs);
             if left_to_right {
                 iter.next();
