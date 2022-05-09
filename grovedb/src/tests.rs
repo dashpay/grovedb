@@ -1597,6 +1597,41 @@ fn test_referenced_element_deletion() {
 }
 
 #[test]
+fn test_reference_deletion() {
+    let db = make_grovedb();
+    let element = Element::new_item(b"ayy".to_vec());
+    db.insert([TEST_LEAF], b"key", element, None)
+        .expect("successful insert");
+    let reference = Element::new_reference(vec![TEST_LEAF.to_vec(), b"key".to_vec()]);
+    db.insert([ANOTHER_TEST_LEAF], b"reference_key", reference, None)
+        .expect("successful insert");
+
+    let element = db
+        .get([TEST_LEAF], b"key", None)
+        .expect("should get element");
+    if let Element::Item(_, references) = element {
+        assert_eq!(references.len(), 1);
+    } else {
+        panic!("should be able to fetch item");
+    }
+
+    // delete the reference
+    assert!(db
+        .delete([ANOTHER_TEST_LEAF], b"reference_key", None)
+        .is_ok());
+
+    // element should not point to reference anymore
+    let element = db
+        .get([TEST_LEAF], b"key", None)
+        .expect("should get element");
+    if let Element::Item(_, references) = element {
+        assert_eq!(references.len(), 0);
+    } else {
+        panic!("should be able to fetch item");
+    }
+}
+
+#[test]
 fn test_find_subtrees() {
     let element = Element::new_item(b"ayy".to_vec());
     let db = make_grovedb();
