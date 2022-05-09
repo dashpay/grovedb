@@ -95,10 +95,8 @@ impl GroveDb {
                 let root_proof = root_tree.proof(&index_to_prove).to_bytes();
 
                 debug_assert!(root_proof.len() < 256);
-                write_to_vec(
-                    &mut proof_result,
-                    &vec![ProofType::RootProof.into(), root_proof.len() as u8],
-                );
+                write_to_vec(&mut proof_result, &vec![ProofType::RootProof.into()]);
+                write_to_vec(&mut proof_result, &root_proof.len().to_be_bytes().to_vec());
                 write_to_vec(&mut proof_result, &root_proof);
 
                 // write the number of root leafs
@@ -270,7 +268,6 @@ impl GroveDb {
                 let element = raw_decode(value_bytes)?;
 
                 match element {
-                    // TODO: handle references that point to trees
                     Element::Tree(tree_hash) => {
                         if tree_hash == EMPTY_TREE_HASH {
                             continue;
@@ -559,7 +556,6 @@ impl<'a> ProofReader<'a> {
         Self { proof_data }
     }
 
-    // TODO: handle error (e.g. not enough bytes to read)
     fn read_byte(&mut self) -> Result<[u8; 1], Error> {
         let mut data = [0; 1];
         self.proof_data
@@ -594,14 +590,17 @@ impl<'a> ProofReader<'a> {
             }
         }
 
-        // TODO: This should not be the invalid proof type
         let proof_type: ProofType = data_type[0].into();
 
-        let mut length = vec![0; 1];
+        // TODO: reduce vector allocation
+        let mut proof_length = vec![0; 8 as usize];
         self.proof_data
-            .read(&mut length)
+            .read(&mut proof_length)
             .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
-        let mut proof = vec![0; length[0] as usize];
+        let proof_length: [u8; 8] = proof_length.try_into().unwrap();
+        let proof_length = usize::from_be_bytes(proof_length);
+
+        let mut proof = vec![0; proof_length];
         self.proof_data
             .read(&mut proof)
             .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
@@ -657,12 +656,15 @@ where
 
     // TODO: Switch to variable length encoding
     debug_assert!(proof_bytes.len() < 256);
-    write_to_vec(proofs, &vec![proof_type.into(), proof_bytes.len() as u8]);
+    let proof_len_bytes: [u8; 8] = proof_bytes.len().to_be_bytes();
+    write_to_vec(proofs, &vec![proof_type.into()]);
+    write_to_vec(proofs, &proof_len_bytes.to_vec());
     write_to_vec(proofs, &proof_bytes);
 
     Ok((proof_result.limit, proof_result.offset))
 }
 
+// TODO: This does not need to take a vector
 fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
     dest.write_all(value);
 }
