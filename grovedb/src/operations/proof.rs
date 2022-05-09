@@ -12,12 +12,11 @@ use merk::{
     Hash, Merk,
 };
 use rs_merkle::{algorithms::Sha256, MerkleProof};
-use storage::{rocksdb_storage::RocksDbStorage, StorageContext};
+use storage::{rocksdb_storage::RocksDbStorage, Storage, StorageContext};
 
 use crate::{
     merk::ProofConstructionResult,
     subtree::raw_decode,
-    util::{merk_optional_tx, meta_storage_context_optional_tx},
     Element, Error,
     Error::{InvalidPath, InvalidProof},
     GroveDb, PathQuery, Query, SizedQuery,
@@ -85,57 +84,57 @@ impl GroveDb {
         while let Some((key, path_slice)) = split_path {
             if path_slice.is_empty() {
                 // generate root proof
-                meta_storage_context_optional_tx!(self.db, None, meta_storage, {
-                    let root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;
-                    let mut index_to_prove: Vec<usize> = vec![];
-                    match root_leaf_keys.get(&key.to_vec()) {
-                        Some(index) => index_to_prove.push(*index),
-                        None => return Err(InvalidPath("invalid root key")),
-                    }
-                    let root_tree = self.get_root_tree(None).expect("should get root tree");
-                    let root_proof = root_tree.proof(&index_to_prove).to_bytes();
+                let meta_storage = self.db.get_storage_context(std::iter::empty());
+                let root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;
+                let mut index_to_prove: Vec<usize> = vec![];
+                match root_leaf_keys.get(&key.to_vec()) {
+                    Some(index) => index_to_prove.push(*index),
+                    None => return Err(InvalidPath("invalid root key")),
+                }
+                let root_tree = self.get_root_tree(None).expect("should get root tree");
+                let root_proof = root_tree.proof(&index_to_prove).to_bytes();
 
-                    debug_assert!(root_proof.len() < 256);
-                    write_to_vec(
-                        &mut proof_result,
-                        &vec![ProofType::RootProof.into(), root_proof.len() as u8],
-                    );
-                    write_to_vec(&mut proof_result, &root_proof);
+                debug_assert!(root_proof.len() < 256);
+                write_to_vec(
+                    &mut proof_result,
+                    &vec![ProofType::RootProof.into(), root_proof.len() as u8],
+                );
+                write_to_vec(&mut proof_result, &root_proof);
 
-                    // write the number of root leafs
-                    // this makes the assumption that 1 byte is enough to represent the number of
-                    // root leafs i.e max of 255 root leaf keys
-                    // TODO: How do we enforce this? does it make sense to make this variable
-                    // length?
-                    write_to_vec(&mut proof_result, &vec![root_leaf_keys.len() as u8]);
+                // write the number of root leafs
+                // this makes the assumption that 1 byte is enough to represent the number of
+                // root leafs i.e max of 255 root leaf keys
+                // TODO: How do we enforce this? does it make sense to make this variable
+                // length?
+                write_to_vec(&mut proof_result, &vec![root_leaf_keys.len() as u8]);
 
-                    // add the index values required to prove the root
-                    let index_to_prove_as_bytes = index_to_prove
-                        .into_iter()
-                        .map(|index| index as u8)
-                        .collect::<Vec<u8>>();
+                // add the index values required to prove the root
+                let index_to_prove_as_bytes = index_to_prove
+                    .into_iter()
+                    .map(|index| index as u8)
+                    .collect::<Vec<u8>>();
 
-                    write_to_vec(&mut proof_result, &index_to_prove_as_bytes);
-                })
+                write_to_vec(&mut proof_result, &index_to_prove_as_bytes);
             } else {
                 // generate proofs for the intermediate paths
                 let path_slices = path_slice.iter().map(|x| *x).collect::<Vec<_>>();
 
                 // TODO: No need to use this macro as transaction is always none
-                merk_optional_tx!(self.db, path_slices, None, subtree, {
-                    let mut query = Query::new();
-                    query.insert_key(key.to_vec());
+                let storage = self.db.get_storage_context(path_slices);
+                let subtree = Merk::open(storage)
+                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
+                let mut query = Query::new();
+                query.insert_key(key.to_vec());
 
-                    generate_and_store_merk_proof(
-                        &self,
-                        &subtree,
-                        query,
-                        None,
-                        None,
-                        ProofType::MerkProof,
-                        &mut proof_result,
-                    )?;
-                });
+                generate_and_store_merk_proof(
+                    &self,
+                    &subtree,
+                    query,
+                    None,
+                    None,
+                    ProofType::MerkProof,
+                    &mut proof_result,
+                )?;
             }
             split_path = path_slice.split_last();
         }
@@ -251,145 +250,143 @@ impl GroveDb {
     ) -> Result<(), Error> {
         // there is a chance that the subquery key would lead to something that is not a
         // tree same thing for the subquery itself
-        merk_optional_tx!(db.db, path.clone(), None, subtree, {
-            let mut has_useful_subtree = false;
-            let exhausted_limit = query.query.limit.is_some() && query.query.limit.unwrap() == 0;
+        let storage = db.db.get_storage_context(path.clone());
+        let subtree = Merk::open(storage)
+            .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
 
-            if !exhausted_limit {
-                let subtree_key_values = subtree.get_kv_pairs(query.query.query.left_to_right);
-                for (key, value_bytes) in subtree_key_values.iter() {
-                    let (subquery_key, subquery_value) =
-                        Element::subquery_paths_for_sized_query(&query.query, key);
+        let mut has_useful_subtree = false;
+        let exhausted_limit = query.query.limit.is_some() && query.query.limit.unwrap() == 0;
 
-                    if subquery_key.is_none() && subquery_value.is_none() {
-                        continue;
-                    }
+        if !exhausted_limit {
+            let subtree_key_values = subtree.get_kv_pairs(query.query.query.left_to_right);
+            for (key, value_bytes) in subtree_key_values.iter() {
+                let (subquery_key, subquery_value) =
+                    Element::subquery_paths_for_sized_query(&query.query, key);
 
-                    let element = raw_decode(value_bytes)?;
+                if subquery_key.is_none() && subquery_value.is_none() {
+                    continue;
+                }
 
-                    match element {
-                        // TODO: handle references that point to trees
-                        Element::Tree(tree_hash) => {
-                            if tree_hash == EMPTY_TREE_HASH {
-                                continue;
-                            }
+                let element = raw_decode(value_bytes)?;
 
-                            if !has_useful_subtree {
-                                has_useful_subtree = true;
+                match element {
+                    // TODO: handle references that point to trees
+                    Element::Tree(tree_hash) => {
+                        if tree_hash == EMPTY_TREE_HASH {
+                            continue;
+                        }
 
-                                let mut all_key_query =
-                                    Query::new_with_direction(query.query.query.left_to_right);
-                                all_key_query.insert_all();
+                        if !has_useful_subtree {
+                            has_useful_subtree = true;
+
+                            let mut all_key_query =
+                                Query::new_with_direction(query.query.query.left_to_right);
+                            all_key_query.insert_all();
+
+                            generate_and_store_merk_proof(
+                                db,
+                                &subtree,
+                                all_key_query,
+                                None,
+                                None,
+                                ProofType::MerkProof,
+                                proofs,
+                            )?;
+                        }
+
+                        let mut new_path = path.clone();
+                        new_path.push(key.as_ref());
+
+                        let mut query = subquery_value.clone();
+                        let sub_key = subquery_key.clone();
+
+                        if query.is_some() {
+                            if sub_key.is_some() {
+                                // intermediate step here, generate a proof that show
+                                // the existence or absence of the subquery key
+                                let storage = db.db.get_storage_context(new_path.clone());
+                                let inner_subtree = Merk::open(storage).map_err(|_| {
+                                    Error::CorruptedData("cannot open a subtree".to_owned())
+                                })?;
+
+                                let mut key_as_query = Query::new();
+                                key_as_query.insert_key(sub_key.clone().unwrap());
 
                                 generate_and_store_merk_proof(
                                     db,
-                                    &subtree,
-                                    all_key_query,
+                                    &inner_subtree,
+                                    key_as_query,
                                     None,
                                     None,
                                     ProofType::MerkProof,
                                     proofs,
                                 )?;
-                            }
 
-                            let mut new_path = path.clone();
-                            new_path.push(key.as_ref());
+                                new_path.push(sub_key.as_ref().unwrap());
 
-                            let mut query = subquery_value.clone();
-                            let sub_key = subquery_key.clone();
-
-                            if query.is_some() {
-                                if sub_key.is_some() {
-                                    // intermediate step here, generate a proof that show
-                                    // the existence or absence of the subquery key
-                                    merk_optional_tx!(
-                                        db.db,
+                                let subquery_key_path_exists = db
+                                    .check_subtree_exists_path_not_found(
                                         new_path.clone(),
                                         None,
-                                        inner_subtree,
-                                        {
-                                            let mut key_as_query = Query::new();
-                                            key_as_query.insert_key(sub_key.clone().unwrap());
-
-                                            generate_and_store_merk_proof(
-                                                db,
-                                                &inner_subtree,
-                                                key_as_query,
-                                                None,
-                                                None,
-                                                ProofType::MerkProof,
-                                                proofs,
-                                            )?;
-                                        }
+                                        None,
                                     );
 
-                                    new_path.push(sub_key.as_ref().unwrap());
-
-                                    let subquery_key_path_exists = db
-                                        .check_subtree_exists_path_not_found(
-                                            new_path.clone(),
-                                            None,
-                                            None,
-                                        );
-
-                                    if subquery_key_path_exists.is_err() {
-                                        continue;
-                                    }
+                                if subquery_key_path_exists.is_err() {
+                                    continue;
                                 }
-                            } else {
-                                let mut key_as_query = Query::new();
-                                key_as_query.insert_key(sub_key.unwrap());
-                                query = Some(key_as_query);
                             }
-
-                            let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
-                            let new_path_query =
-                                PathQuery::new_unsized(new_path_owned, query.unwrap());
-
-                            GroveDb::prove_subqueries(
-                                db,
-                                proofs,
-                                new_path,
-                                new_path_query,
-                                current_limit,
-                                current_offset,
-                            )?;
-
-                            // if we hit the limit, we should kill the loop
-                            if current_limit.is_some() && current_limit.unwrap() == 0 {
-                                break;
-                            }
+                        } else {
+                            let mut key_as_query = Query::new();
+                            key_as_query.insert_key(sub_key.unwrap());
+                            query = Some(key_as_query);
                         }
-                        _ => {
-                            // Current implementation makes the assumption that all elements of
-                            // a result set are of the same type i.e either all trees, all items
-                            // e.t.c and not mixed types.
-                            // This ensures that invariant is preserved
-                            debug_assert!(has_useful_subtree == false);
+
+                        let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
+                        let new_path_query = PathQuery::new_unsized(new_path_owned, query.unwrap());
+
+                        GroveDb::prove_subqueries(
+                            db,
+                            proofs,
+                            new_path,
+                            new_path_query,
+                            current_limit,
+                            current_offset,
+                        )?;
+
+                        // if we hit the limit, we should kill the loop
+                        if current_limit.is_some() && current_limit.unwrap() == 0 {
+                            break;
                         }
+                    }
+                    _ => {
+                        // Current implementation makes the assumption that all elements of
+                        // a result set are of the same type i.e either all trees, all items
+                        // e.t.c and not mixed types.
+                        // This ensures that invariant is preserved
+                        debug_assert!(has_useful_subtree == false);
                     }
                 }
             }
+        }
 
-            // TODO: Explore the chance that a subquery key might lead to non tree element
-            if !has_useful_subtree {
-                // if no useful subtree, then we care about the result set of this subtree.
-                // apply the sized query
-                let limit_offset = generate_and_store_merk_proof(
-                    db,
-                    &subtree,
-                    query.query.query,
-                    *current_limit,
-                    *current_offset,
-                    ProofType::SizedMerkProof,
-                    proofs,
-                )?;
+        // TODO: Explore the chance that a subquery key might lead to non tree element
+        if !has_useful_subtree {
+            // if no useful subtree, then we care about the result set of this subtree.
+            // apply the sized query
+            let limit_offset = generate_and_store_merk_proof(
+                db,
+                &subtree,
+                query.query.query,
+                *current_limit,
+                *current_offset,
+                ProofType::SizedMerkProof,
+                proofs,
+            )?;
 
-                // update limit and offset values
-                *current_limit = limit_offset.0;
-                *current_offset = limit_offset.1;
-            }
-        });
+            // update limit and offset values
+            *current_limit = limit_offset.0;
+            *current_offset = limit_offset.1;
+        }
 
         Ok(())
     }
