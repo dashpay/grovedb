@@ -48,7 +48,6 @@ impl GroveDb {
                     transaction,
                 )?;
 
-                // TODO: allows tree element type
                 match referenced_element {
                     Element::Item(_, ref mut references)
                     | Element::Reference(_, ref mut references) => {

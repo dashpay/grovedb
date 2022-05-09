@@ -173,7 +173,7 @@ impl GroveDb {
                             referenced_key,
                             false,
                             transaction,
-                        )?
+                        )?;
                     }
                 }
 

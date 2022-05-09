@@ -67,9 +67,22 @@ impl Element {
     // TODO: Fix size calculation for item type and reference type
     pub fn byte_size(&self) -> usize {
         match self {
-            Element::Item(item, _) => item.len(),
-            Element::Reference(path_reference, _) => {
-                path_reference.iter().map(|inner| inner.len()).sum()
+            Element::Item(item, references) => {
+                item.len()
+                    + references
+                        .iter()
+                        .map(|inner| inner.iter().map(|inner| inner.len()).sum::<usize>())
+                        .sum::<usize>()
+            }
+            Element::Reference(path_reference, references) => {
+                path_reference
+                    .iter()
+                    .map(|inner| inner.len())
+                    .sum::<usize>()
+                    + references
+                        .iter()
+                        .map(|inner| inner.iter().map(|inner| inner.len()).sum::<usize>())
+                        .sum::<usize>()
             }
             Element::Tree(_) => 32,
         }
