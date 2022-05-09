@@ -598,8 +598,6 @@ impl<'a> ProofReader<'a> {
         self.proof_data
             .read(&mut proof_length)
             .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
-        // TODO: remove unwrap
-        let proof_length: [u8; 8] = proof_length.try_into().unwrap();
         let proof_length = usize::from_be_bytes(proof_length);
 
         let mut proof = vec![0; proof_length];
