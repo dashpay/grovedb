@@ -1552,6 +1552,51 @@ fn test_element_deletion() {
 }
 
 #[test]
+fn test_referenced_element_deletion() {
+    dbg!("hello");
+    let db = make_grovedb();
+    let element = Element::new_item(b"ayy".to_vec());
+    db.insert([TEST_LEAF], b"key", element, None)
+        .expect("successful insert");
+    let other_elem = Element::new_item(b"wow".to_vec());
+    db.insert([TEST_LEAF], b"key2", other_elem, None)
+        .expect("successful insert");
+    let reference = Element::new_reference(vec![TEST_LEAF.to_vec(), b"key".to_vec()]);
+    db.insert([ANOTHER_TEST_LEAF], b"reference_key", reference, None)
+        .expect("successful insert");
+    let reference2 = Element::new_reference(vec![TEST_LEAF.to_vec(), b"key".to_vec()]);
+    db.insert([ANOTHER_TEST_LEAF], b"reference_key_2", reference2, None)
+        .expect("successful insert");
+    let reference3 = Element::new_reference(vec![
+        ANOTHER_TEST_LEAF.to_vec(),
+        b"reference_key_2".to_vec(),
+    ]);
+    db.insert([TEST_LEAF], b"reference_of_reference", reference3, None)
+        .expect("successful insert");
+
+    let root_hash = db.root_hash(None).unwrap();
+    assert!(db.delete([TEST_LEAF], b"key", None).is_ok());
+    assert!(matches!(
+        db.get([TEST_LEAF], b"key", None),
+        Err(Error::PathKeyNotFound(_))
+    ));
+    assert!(matches!(
+        db.get([ANOTHER_TEST_LEAF], b"reference_key", None),
+        Err(Error::PathKeyNotFound(_))
+    ));
+    assert!(matches!(
+        db.get([ANOTHER_TEST_LEAF], b"reference_key_2", None),
+        Err(Error::PathKeyNotFound(_))
+    ));
+    assert!(matches!(
+        db.get([TEST_LEAF], b"reference_of_reference", None),
+        Err(Error::PathKeyNotFound(_))
+    ));
+    assert!(matches!(db.get([TEST_LEAF], b"key2", None), Ok(_)));
+    assert_ne!(root_hash, db.root_hash(None).unwrap());
+}
+
+#[test]
 fn test_find_subtrees() {
     let element = Element::new_item(b"ayy".to_vec());
     let db = make_grovedb();

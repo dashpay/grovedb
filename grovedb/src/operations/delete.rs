@@ -121,6 +121,56 @@ impl GroveDb {
                     delete_element()?;
                 }
             } else {
+                // care about deleting things that can reference or be referenced
+                // when you delete a base item, all it's references should also be deleted
+                // when you delete a reference, the thing it references should stop pointing to
+                // it (dangling references)
+
+                // if the element type is a reference, grab the element it points to
+                // remove this reference path from the reference list of the element, update,
+                // then delete reference
+
+                // added this because I got a reached recursion limit error when I used a
+                // closure
+                fn to_slice(x: &Vec<u8>) -> &[u8] {
+                    x.as_slice()
+                }
+
+                // if let Element::Reference(ref base_element_path, _) = element {
+                //     dbg!("do stuff");
+                //     // get the base element
+                //     // remove this element path from the reference list
+                //     let (base_element_key, base_element_subtree_path) =
+                // base_element_path.split_last().unwrap();     // TODO: Handle
+                // error     let base_element_subtree_path_as_slice =
+                // base_element_subtree_path.iter().map(to_slice);
+                //     let base_element = self.get(base_element_subtree_path_as_slice.clone(),
+                // base_element_key, transaction).unwrap();
+                //     dbg!(base_element);
+                //     merk_optional_tx!(self.db, base_element_subtree_path_as_slice,
+                // transaction, mut subtree, {         dbg!("gotten context");
+                //     });
+                // }
+
+                if let Element::Item(_, references) | Element::Reference(_, references) = element {
+                    // we have access to the reference list
+                    // need to get the path and key for each reference element
+                    for reference in references {
+                        // TODO: Handle errror when splitting
+                        let (referenced_key, reference_subtree_path) =
+                            reference.split_last().unwrap();
+                        let subtree_path_as_slice = reference_subtree_path.iter().map(to_slice);
+                        // TODO: Handle error here
+                        self.delete_internal(
+                            subtree_path_as_slice,
+                            referenced_key,
+                            false,
+                            transaction,
+                        )
+                        .unwrap();
+                    }
+                }
+
                 delete_element()?;
             }
             self.propagate_changes(path_iter, transaction)?;
