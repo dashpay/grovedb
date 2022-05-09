@@ -94,17 +94,20 @@ impl GroveDb {
                 let root_tree = self.get_root_tree(None).expect("should get root tree");
                 let root_proof = root_tree.proof(&index_to_prove).to_bytes();
 
-                debug_assert!(root_proof.len() < 256);
+                // explicitly preventing proof generation as verification would fail
+                // also a good way to detect if the needs of the system get past this point
+                if root_proof.len() >= usize::MAX {
+                    return Err(Error::InvalidProof("proof too large"));
+                }
                 write_to_vec(&mut proof_result, &vec![ProofType::RootProof.into()]);
-                write_to_vec(&mut proof_result, &root_proof.len().to_be_bytes().to_vec());
+                write_to_vec(&mut proof_result, &root_proof.len().to_be_bytes());
                 write_to_vec(&mut proof_result, &root_proof);
 
                 // write the number of root leafs
                 // this makes the assumption that 1 byte is enough to represent the number of
                 // root leafs i.e max of 255 root leaf keys
-                // TODO: How do we enforce this? does it make sense to make this variable
-                // length?
-                write_to_vec(&mut proof_result, &vec![root_leaf_keys.len() as u8]);
+                debug_assert!(root_leaf_keys.len() < 256);
+                write_to_vec(&mut proof_result, &[root_leaf_keys.len() as u8]);
 
                 // add the index values required to prove the root
                 let index_to_prove_as_bytes = index_to_prove
@@ -117,7 +120,6 @@ impl GroveDb {
                 // generate proofs for the intermediate paths
                 let path_slices = path_slice.iter().map(|x| *x).collect::<Vec<_>>();
 
-                // TODO: No need to use this macro as transaction is always none
                 let storage = self.db.get_storage_context(path_slices);
                 let subtree = Merk::open(storage)
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
@@ -592,11 +594,11 @@ impl<'a> ProofReader<'a> {
 
         let proof_type: ProofType = data_type[0].into();
 
-        // TODO: reduce vector allocation
-        let mut proof_length = vec![0; 8 as usize];
+        let mut proof_length = [0; 8 as usize];
         self.proof_data
             .read(&mut proof_length)
             .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
+        // TODO: remove unwrap
         let proof_length: [u8; 8] = proof_length.try_into().unwrap();
         let proof_length = usize::from_be_bytes(proof_length);
 
@@ -654,18 +656,21 @@ where
     let mut proof_bytes = Vec::with_capacity(128);
     encode_into(proof_result.proof.iter(), &mut proof_bytes);
 
-    // TODO: Switch to variable length encoding
-    debug_assert!(proof_bytes.len() < 256);
+    // explicitly preventing proof generation as verification would fail
+    // also a good way to detect if the needs of the system get past this point
+    if proof_bytes.len() >= usize::MAX {
+        return Err(Error::InvalidProof("proof too large"));
+    }
+
     let proof_len_bytes: [u8; 8] = proof_bytes.len().to_be_bytes();
-    write_to_vec(proofs, &vec![proof_type.into()]);
-    write_to_vec(proofs, &proof_len_bytes.to_vec());
+    write_to_vec(proofs, &[proof_type.into()]);
+    write_to_vec(proofs, &proof_len_bytes);
     write_to_vec(proofs, &proof_bytes);
 
     Ok((proof_result.limit, proof_result.offset))
 }
 
-// TODO: This does not need to take a vector
-fn write_to_vec<W: Write>(dest: &mut W, value: &Vec<u8>) {
+fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
     dest.write_all(value);
 }
 
