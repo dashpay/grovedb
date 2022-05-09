@@ -121,35 +121,22 @@ impl GroveDb {
                     delete_element()?;
                 }
             } else {
-                // care about deleting things that can reference or be referenced
-                // when you delete a base item, all it's references should also be deleted
-                // when you delete a reference, the thing it references should stop pointing to
-                // it (dangling references)
-
-                // if the element type is a reference, grab the element it points to
-                // remove this reference path from the reference list of the element, update,
-                // then delete reference
-
-                // added this because I got a reached recursion limit error when I used a
-                // closure
                 fn to_slice(x: &Vec<u8>) -> &[u8] {
                     x.as_slice()
                 }
 
                 if let Element::Reference(ref base_element_path, _) = element {
-                    let (base_element_key, base_element_subtree_path) =
-                        base_element_path.split_last().unwrap();
+                    let (base_element_key, base_element_subtree_path) = base_element_path
+                        .split_last()
+                        .expect("reference path cannot be empty");
 
-                    // TODO: Handle error
                     let base_element_subtree_path_as_slice =
                         base_element_subtree_path.iter().map(to_slice);
-                    let mut base_element = self
-                        .get(
-                            base_element_subtree_path_as_slice.clone(),
-                            base_element_key,
-                            transaction,
-                        )
-                        .unwrap();
+                    let mut base_element = self.get(
+                        base_element_subtree_path_as_slice.clone(),
+                        base_element_key,
+                        transaction,
+                    )?;
 
                     match base_element {
                         Element::Tree(_) => {}
@@ -176,21 +163,17 @@ impl GroveDb {
                 }
 
                 if let Element::Item(_, references) | Element::Reference(_, references) = element {
-                    // we have access to the reference list
-                    // need to get the path and key for each reference element
+                    // recursively delete all references of to be deleted element
                     for reference in references {
-                        // TODO: Handle errror when splitting
-                        let (referenced_key, reference_subtree_path) =
-                            reference.split_last().unwrap();
-                        let subtree_path_as_slice = reference_subtree_path.iter().map(to_slice);
-                        // TODO: Handle error here
+                        let (referenced_key, reference_subtree_path) = reference
+                            .split_last()
+                            .expect("reference path cannot be empty");
                         self.delete_internal(
-                            subtree_path_as_slice,
+                            reference_subtree_path.iter().map(to_slice),
                             referenced_key,
                             false,
                             transaction,
-                        )
-                        .unwrap();
+                        )?
                     }
                 }
 
