@@ -210,25 +210,34 @@ impl GroveDb {
                     let mut merk = temp_subtrees
                         .remove(&op.path)
                         .expect("subtree was inserted before");
+
+                    // On subtree deletion/overwrite we need to do Merk's cleanup
+                    match Element::get(&merk, &op.key) {
+                        Ok(Element::Tree(_)) => {
+                            let mut path = op.path.clone();
+                            path.push(op.key.clone());
+                            let mut sub = temp_subtrees
+                                .remove(&path)
+                                .map(Ok)
+                                .unwrap_or_else(|| get_merk_fn(&path))?;
+                            sub.clear()
+                                .map_err(|_| Error::InternalError("cannot clear a Merk"))?;
+                        }
+                        Err(Error::PathKeyNotFound(_) | Error::PathNotFound(_)) => {
+                            // TODO: the case when key is scheduled for deletion
+                            // but cannot be found is weird and requires some
+                            // investigation
+                        }
+                        e => {
+                            e?;
+                        }
+                    }
                     match op.op {
                         Op::Insert { element } => {
                             element.insert(&mut merk, op.key)?;
                             temp_subtrees.insert(op.path.clone(), merk);
                         }
                         Op::Delete => {
-                            // On subtree deletion we also need to clean Merk's data;
-                            // Note that subree overwrites were converted to explicit deletions
-                            // on validation step
-                            if let Element::Tree(_) = Element::get(&merk, &op.key)? {
-                                let mut path = op.path.clone();
-                                path.push(op.key.clone());
-                                let mut sub = temp_subtrees
-                                    .remove(&path)
-                                    .map(Ok)
-                                    .unwrap_or_else(|| get_merk_fn(&path))?;
-                                sub.clear()
-                                    .map_err(|_| Error::InternalError("cannot clear a Merk"))?;
-                            }
                             Element::delete(&mut merk, op.key)?;
                             temp_subtrees.insert(op.path.clone(), merk);
                         }
@@ -380,7 +389,7 @@ impl GroveDb {
         transaction: TransactionArg,
     ) -> Result<(), Error> {
         // Helper function to store updated root leaves
-        fn save_root_leaves<'db, 'ctx, S>(
+        fn save_root_leaves<'db, S>(
             storage: S,
             temp_root_leaves: &BTreeMap<Vec<u8>, usize>,
         ) -> Result<(), Error>
@@ -501,7 +510,7 @@ mod tests {
         ];
         db.apply_batch(ops, None).expect("cannot apply batch");
 
-        db.get([], b"key1", None).expect("zalupa");
+        db.get([], b"key1", None).expect("cannot get element");
         db.get([b"key1".as_ref()], b"key2", None)
             .expect("cannot get element");
         db.get([b"key1".as_ref(), b"key2"], b"key3", None)
@@ -723,6 +732,30 @@ mod tests {
             ),
         ];
         assert!(db.apply_batch(ops, None).is_err());
+    }
+
+    #[test]
+    fn test_merk_data_is_deleted() {
+        let db = make_grovedb();
+        let element = Element::Item(b"ayy".to_vec());
+
+        db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
+            .expect("cannot insert a subtree");
+        db.insert([TEST_LEAF, b"key1"], b"key2", element.clone(), None)
+            .expect("cannot insert an item");
+        let ops = vec![GroveDbOp::insert(
+            vec![TEST_LEAF.to_vec()],
+            b"key1".to_vec(),
+            Element::Item(b"ayy2".to_vec()),
+        )];
+
+        assert_eq!(
+            db.get([TEST_LEAF, b"key1"], b"key2", None)
+                .expect("cannot get item"),
+            element
+        );
+        db.apply_batch(ops, None).expect("cannot apply batch");
+        assert!(db.get([TEST_LEAF, b"key1"], b"key2", None).is_err());
     }
 
     #[test]
