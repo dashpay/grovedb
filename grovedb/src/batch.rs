@@ -203,13 +203,10 @@ impl GroveDb {
                 } else {
                     // Keep opened Merk instances to accumulate changes before taking final root
                     // hash
-                    if !temp_subtrees.contains_key(&op.path) {
-                        let merk = get_merk_fn(&op.path)?;
-                        temp_subtrees.insert(op.path.clone(), merk);
-                    }
                     let mut merk = temp_subtrees
                         .remove(&op.path)
-                        .expect("subtree was inserted before");
+                        .map(Ok)
+                        .unwrap_or_else(|| get_merk_fn(&op.path))?;
 
                     // On subtree deletion/overwrite we need to do Merk's cleanup
                     match Element::get(&merk, &op.key) {
