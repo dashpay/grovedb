@@ -116,7 +116,8 @@ impl<'a> KeyAdapter<'a> for GroveDbOpAdapter {
 
 /// Helper function to keep RBTree values unique on insertions.
 fn insert_unique_op(ops: &mut RBTree<GroveDbOpAdapter>, op: Box<GroveDbOp>) {
-    let cursor = ops.lower_bound(Bound::Included(&(PathWrapper(&op.path), &op.key, &op.op)));
+    let mut cursor =
+        ops.lower_bound_mut(Bound::Included(&(PathWrapper(&op.path), &op.key, &op.op)));
 
     match cursor.get() {
         Some(found_op) if found_op == op.as_ref() => {
@@ -128,12 +129,12 @@ fn insert_unique_op(ops: &mut RBTree<GroveDbOpAdapter>, op: Box<GroveDbOp>) {
             op: Op::Insert { .. },
             ..
         }) if path == &op.path && key == &op.key => {
-            // not found but there is a tree insertion operation for that
+            // not found but there is an insertion operation for that
             // path/key which substitutes deletion
         }
         _ => {
             // TODO: possibly unnecessary clone https://github.com/Amanieu/intrusive-rs/issues/70
-            ops.insert(op.clone());
+            cursor.insert_before(op.clone());
         }
     }
 }
@@ -402,7 +403,7 @@ impl GroveDb {
         // 1. Collect all batch operations into RBTree to keep them sorted and validated
         let mut sorted_operations = RBTree::new(GroveDbOpAdapter::new());
         for op in ops {
-            sorted_operations.insert(Box::new(op));
+            insert_unique_op(&mut sorted_operations, Box::new(op));
         }
 
         let mut validated_operations =
@@ -620,8 +621,7 @@ mod tests {
                 b"key2".to_vec(),
                 Element::empty_tree(),
             ),
-            // TODO: make insertion and deletion within the same batch treated right
-            // GroveDbOp::delete(vec![b"key1".to_vec()], b"key2".to_vec()),
+            GroveDbOp::delete(vec![b"key1".to_vec()], b"key2".to_vec()),
         ];
         db.apply_batch(ops, None).expect("cannot apply batch");
         assert_eq!(
