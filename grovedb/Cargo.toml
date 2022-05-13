@@ -25,3 +25,7 @@ hex = "0.4.3"
 [[bench]]
 name = "insertion_benchmark"
 harness = false
+
+[[bench]]
+name = "batch_benchmark"
+harness = false

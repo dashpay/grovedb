@@ -11,6 +11,7 @@ use std::{
     path::Path,
 };
 
+pub use batch::GroveDbOp;
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};

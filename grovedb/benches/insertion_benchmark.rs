@@ -3,7 +3,7 @@ use grovedb::{Element, GroveDb};
 use rand::Rng;
 use tempfile::TempDir;
 
-const N_ITEMS: usize = 10_000;
+const N_ITEMS: usize = 100;
 
 pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
@@ -142,10 +142,10 @@ pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
 criterion_group!(
     benches,
     insertion_benchmark_without_transaction,
-    insertion_benchmark_with_transaction,
-    root_leaf_insertion_benchmark_without_transaction,
-    root_leaf_insertion_benchmark_with_transaction,
-    deeply_nested_insertion_benchmark_without_transaction,
-    deeply_nested_insertion_benchmark_with_transaction,
+    // insertion_benchmark_with_transaction,
+    // root_leaf_insertion_benchmark_without_transaction,
+    // root_leaf_insertion_benchmark_with_transaction,
+    // deeply_nested_insertion_benchmark_without_transaction,
+    // deeply_nested_insertion_benchmark_with_transaction,
 );
 criterion_main!(benches);

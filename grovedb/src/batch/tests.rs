@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use super::apply::*;
+use visualize::visualize_stdout;
+
+use super::*;
 use crate::{
     tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
     Element,
@@ -357,4 +359,46 @@ fn test_multi_tree_insertion_deletion_with_propagation_no_tx() {
         db.get_root_leaf_keys(None).expect("cannot get root leafs"),
         root_leafs
     );
+}
+
+#[test]
+fn test_nested_batch_insertion_corrupts_state() {
+    let db = make_grovedb();
+    let full_path = vec![
+        b"leaf1".to_vec(),
+        b"sub1".to_vec(),
+        b"sub2".to_vec(),
+        b"sub3".to_vec(),
+        b"sub4".to_vec(),
+        b"sub5".to_vec(),
+    ];
+    let mut acc_path: Vec<Vec<u8>> = vec![];
+    for p in full_path.into_iter() {
+        db.insert(
+            acc_path.iter().map(|x| x.as_slice()),
+            &p,
+            Element::empty_tree(),
+            None,
+        )
+        .unwrap();
+        acc_path.push(p);
+    }
+
+    let element = Element::Item(b"ayy".to_vec());
+    let batch = vec![GroveDbOp::insert(
+        acc_path.clone(),
+        b"key".to_vec(),
+        element.clone(),
+    )];
+    db.apply_batch(batch, None).expect("cannot apply batch");
+
+    visualize_stdout(&db);
+
+    let batch = vec![GroveDbOp::insert(
+        acc_path,
+        b"key".to_vec(),
+        element.clone(),
+    )];
+    db.apply_batch(batch, None)
+        .expect("cannot apply same batch twice");
 }
