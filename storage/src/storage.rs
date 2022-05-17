@@ -1,6 +1,6 @@
 use std::{
-    cell::{Ref, RefCell},
-    vec::IntoIter,
+    cell::RefCell,
+    collections::{hash_map::IntoValues, HashMap},
 };
 
 use visualize::visualize_to_vec;
@@ -203,95 +203,161 @@ pub trait RawIterator {
 /// contexts.
 #[derive(Debug)]
 pub struct StorageBatch {
-    operations: RefCell<Vec<BatchOperation>>,
+    operations: RefCell<Operations>,
+}
+
+#[derive(Default)]
+struct Operations {
+    data: HashMap<Vec<u8>, BatchOperation>,
+    roots: HashMap<Vec<u8>, BatchOperation>,
+    aux: HashMap<Vec<u8>, BatchOperation>,
+    meta: HashMap<Vec<u8>, BatchOperation>,
+}
+
+impl std::fmt::Debug for Operations {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut fmt = f.debug_struct("Operations");
+
+        fmt.field("data", &self.data.values());
+        fmt.field("aux", &self.aux.values());
+        fmt.field("roots", &self.roots.values());
+        fmt.field("meta", &self.meta.values());
+
+        fmt.finish()
+    }
 }
 
 impl StorageBatch {
     /// Create empty batch.
     pub fn new() -> Self {
         StorageBatch {
-            operations: RefCell::new(Vec::new()),
+            operations: RefCell::new(Operations::default()),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.operations.borrow().len()
+        let operations = self.operations.borrow();
+        operations.data.len()
+            + operations.roots.len()
+            + operations.aux.len()
+            + operations.meta.len()
     }
 
     /// Add deferred `put` operation
     pub fn put(&self, key: Vec<u8>, value: Vec<u8>) {
         self.operations
             .borrow_mut()
-            .push(BatchOperation::Put { key, value })
+            .data
+            .insert(key.clone(), BatchOperation::Put { key, value });
     }
 
     /// Add deferred `put` operation for aux storage
     pub fn put_aux(&self, key: Vec<u8>, value: Vec<u8>) {
         self.operations
             .borrow_mut()
-            .push(BatchOperation::PutAux { key, value })
+            .aux
+            .insert(key.clone(), BatchOperation::PutAux { key, value });
     }
 
     /// Add deferred `put` operation for subtree roots storage
     pub fn put_root(&self, key: Vec<u8>, value: Vec<u8>) {
         self.operations
             .borrow_mut()
-            .push(BatchOperation::PutRoot { key, value })
+            .roots
+            .insert(key.clone(), BatchOperation::PutRoot { key, value });
     }
 
     /// Add deferred `put` operation for metadata storage
     pub fn put_meta(&self, key: Vec<u8>, value: Vec<u8>) {
         self.operations
             .borrow_mut()
-            .push(BatchOperation::PutMeta { key, value })
+            .meta
+            .insert(key.clone(), BatchOperation::PutMeta { key, value });
     }
 
     /// Add deferred `delete` operation
     pub fn delete(&self, key: Vec<u8>) {
-        self.operations
-            .borrow_mut()
-            .push(BatchOperation::Delete { key })
+        let operations = &mut self.operations.borrow_mut().data;
+        if operations.get(&key).is_none() {
+            operations.insert(key.clone(), BatchOperation::Delete { key });
+        }
     }
 
     /// Add deferred `delete` operation for aux storage
     pub fn delete_aux(&self, key: Vec<u8>) {
-        self.operations
-            .borrow_mut()
-            .push(BatchOperation::DeleteAux { key })
+        let operations = &mut self.operations.borrow_mut().aux;
+        if operations.get(&key).is_none() {
+            operations.insert(key.clone(), BatchOperation::DeleteAux { key });
+        }
     }
 
     /// Add deferred `delete` operation for subtree roots storage
     pub fn delete_root(&self, key: Vec<u8>) {
-        self.operations
-            .borrow_mut()
-            .push(BatchOperation::DeleteRoot { key })
+        let operations = &mut self.operations.borrow_mut().roots;
+        if operations.get(&key).is_none() {
+            operations.insert(key.clone(), BatchOperation::DeleteRoot { key });
+        }
     }
 
     /// Add deferred `delete` operation for metadata storage
     pub fn delete_meta(&self, key: Vec<u8>) {
-        self.operations
-            .borrow_mut()
-            .push(BatchOperation::DeleteMeta { key })
-    }
-
-    /// Return borrowed operations vec
-    pub fn borrow_ops(&self) -> Ref<Vec<BatchOperation>> {
-        self.operations.borrow()
+        let operations = &mut self.operations.borrow_mut().meta;
+        if operations.get(&key).is_none() {
+            operations.insert(key.clone(), BatchOperation::DeleteMeta { key });
+        }
     }
 
     /// Merge batch into this one
     pub fn merge(&self, other: StorageBatch) {
-        self.operations.borrow_mut().extend(other.into_iter());
+        for op in other.into_iter() {
+            match op {
+                BatchOperation::Put { key, value } => self.put(key, value),
+                BatchOperation::PutAux { key, value } => self.put_aux(key, value),
+                BatchOperation::PutRoot { key, value } => self.put_root(key, value),
+                BatchOperation::PutMeta { key, value } => self.put_meta(key, value),
+                BatchOperation::Delete { key } => self.delete(key),
+                BatchOperation::DeleteAux { key } => self.delete_aux(key),
+                BatchOperation::DeleteRoot { key } => self.delete_root(key),
+                BatchOperation::DeleteMeta { key } => self.delete_meta(key),
+            }
+        }
+    }
+}
+
+/// Iterator over storage batch operations.
+pub struct StorageBatchIter {
+    data: IntoValues<Vec<u8>, BatchOperation>,
+    aux: IntoValues<Vec<u8>, BatchOperation>,
+    meta: IntoValues<Vec<u8>, BatchOperation>,
+    roots: IntoValues<Vec<u8>, BatchOperation>,
+}
+
+impl Iterator for StorageBatchIter {
+    type Item = BatchOperation;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.meta
+            .next()
+            .or_else(|| self.aux.next())
+            .or_else(|| self.roots.next())
+            .or_else(|| self.data.next())
     }
 }
 
 impl IntoIterator for StorageBatch {
-    type IntoIter = IntoIter<BatchOperation>;
+    type IntoIter = StorageBatchIter;
     type Item = BatchOperation;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.operations.into_inner().into_iter()
+        let operations = self.operations.into_inner();
+
+        StorageBatchIter {
+            data: operations.data.into_values(),
+            aux: operations.aux.into_values(),
+            meta: operations.meta.into_values(),
+            roots: operations.roots.into_values(),
+        }
     }
 }
 
