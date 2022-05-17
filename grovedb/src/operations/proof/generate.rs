@@ -35,7 +35,7 @@ impl GroveDb {
         Ok(proof_result)
     }
 
-    ///
+    /// Perform a pre-order traversal of the tree based on the provided subqueries
     fn prove_subqueries(
         &self,
         proofs: &mut Vec<u8>,
@@ -44,8 +44,6 @@ impl GroveDb {
         current_limit: &mut Option<u16>,
         current_offset: &mut Option<u16>,
     ) -> Result<(), Error> {
-        // there is a chance that the subquery key would lead to something that is not a
-        // tree same thing for the subquery itself
         let reached_limit = query.query.limit.is_some() && query.query.limit.unwrap() == 0;
         if reached_limit {
             return Ok(());
@@ -91,8 +89,7 @@ impl GroveDb {
                     let mut new_path = path.clone();
                     new_path.push(key.as_ref());
 
-                    let mut query = subquery_value;
-                    let has_subkey_and_subquery = query.is_some() && subquery_key.is_some();
+                    let has_subkey_and_subquery = subquery_value.is_some() && subquery_key.is_some();
 
                     if has_subkey_and_subquery {
                         // prove the subquery key first
@@ -114,7 +111,7 @@ impl GroveDb {
                     }
 
                     let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
-                    let new_path_query = PathQuery::new_unsized(new_path_owned, query.unwrap());
+                    let new_path_query = PathQuery::new_unsized(new_path_owned,subquery_value.unwrap());
 
                     if self
                         .check_subtree_exists_path_not_found(new_path.clone(), None, None)
