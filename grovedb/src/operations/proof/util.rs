@@ -1,5 +1,8 @@
-use std::io::Read;
+use std::io::{Read, Write};
+
 use crate::Error;
+
+pub const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
 
 #[derive(Debug, PartialEq)]
 pub enum ProofType {
@@ -98,4 +101,8 @@ impl<'a> ProofReader<'a> {
             .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
         Ok(data)
     }
+}
+
+pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
+    dest.write_all(value);
 }

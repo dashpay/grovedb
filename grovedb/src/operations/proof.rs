@@ -1,3 +1,3 @@
 mod generate;
-mod verify;
 mod util;
+mod verify;

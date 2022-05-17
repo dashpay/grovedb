@@ -1,22 +1,23 @@
-use std::io::Write;
 
 use merk::{
-    proofs::{encode_into, Node},
-    Merk, proofs::Op,
+    ProofWithoutEncodingResult,
+    proofs::{encode_into, Node, Op},
+    Merk,
 };
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
 
-use crate::{subtree::raw_decode, Element, Error, GroveDb, PathQuery, Query};
-use crate::operations::proof::util::ProofType;
-
-const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
+use crate::{
+    operations::proof::util::{ProofType, EMPTY_TREE_HASH, write_to_vec},
+    subtree::raw_decode,
+    Element, Error, GroveDb, PathQuery, Query,
+};
 
 impl GroveDb {
     pub fn prove(&self, query: PathQuery) -> Result<Vec<u8>, Error> {
         // TODO: should it be possible to generate proofs for tree items (currently yes)
         let mut proof_result: Vec<u8> = vec![];
-        let mut current_limit: Option<u16> = query.query.limit;
-        let mut current_offset: Option<u16> = query.query.offset;
+        let mut limit: Option<u16> = query.query.limit;
+        let mut offset: Option<u16> = query.query.offset;
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
         if path_slices.len() < 1 {
@@ -28,14 +29,15 @@ impl GroveDb {
             &mut proof_result,
             path_slices.clone(),
             query.clone(),
-            &mut current_limit,
-            &mut current_offset,
+            &mut limit,
+            &mut offset,
         )?;
         self.prove_path(&mut proof_result, path_slices)?;
 
         Ok(proof_result)
     }
 
+    ///
     fn prove_subqueries(
         &self,
         proofs: &mut Vec<u8>,
@@ -53,11 +55,6 @@ impl GroveDb {
 
         let subtree = self.open_subtree(&path)?;
         let mut is_leaf_tree = true;
-
-        // iterate over each child of the current node
-        // TODO: you should only care about kv pairs that are part of the query
-        // if there is no subquery for that key then move on to the next
-        // if there is we need to recurse with that as the new node
 
         // TODO: shouldn't you get the kv pairs based on the query??
         for (key, value_bytes) in subtree.get_kv_pairs(query.query.query.left_to_right).iter() {
@@ -93,6 +90,7 @@ impl GroveDb {
                         )?;
                     }
 
+                    // add the key to the path, then prove
                     let mut new_path = path.clone();
                     new_path.push(key.as_ref());
 
@@ -143,8 +141,7 @@ impl GroveDb {
                         current_offset,
                     )?;
 
-                    // if we hit the limit, we should kill the loop
-                    if current_limit.is_some() && current_limit.unwrap() == 0 {
+                    if *current_limit == Some(0) {
                         break;
                     }
                 }
@@ -179,16 +176,8 @@ impl GroveDb {
         Ok(())
     }
 
-    fn open_subtree(
-        &self,
-        path: &Vec<&[u8]>,
-    ) -> Result<Merk<PrefixedRocksDbStorageContext>, Error> {
-        let storage = self.db.get_storage_context(path.clone());
-        let subtree = Merk::open(storage)
-            .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-        Ok(subtree)
-    }
-
+    /// Given a path, construct and append a set of proofs that shows there is
+    /// a valid path from the root of the db to that point.
     fn prove_path(
         &self,
         mut proof_result: &mut Vec<u8>,
@@ -253,6 +242,7 @@ impl GroveDb {
         Ok(())
     }
 
+    /// Generates query proof given a subtree and appends the result to a proof list
     fn generate_and_store_merk_proof<'a, S: 'a>(
         &self,
         subtree: &'a Merk<S>,
@@ -270,7 +260,25 @@ impl GroveDb {
             .prove_without_encoding(query, limit, offset)
             .expect("should generate proof");
 
-        // Perform reference substitution for kv nodes
+        self.replace_references(&mut proof_result);
+
+        let mut proof_bytes = Vec::with_capacity(128);
+        encode_into(proof_result.proof.iter(), &mut proof_bytes);
+
+        if proof_bytes.len() >= usize::MAX {
+            return Err(Error::InvalidProof("proof too large"));
+        }
+
+        let proof_len_bytes: [u8; 8] = proof_bytes.len().to_be_bytes();
+        write_to_vec(proofs, &[proof_type.into()]);
+        write_to_vec(proofs, &proof_len_bytes);
+        write_to_vec(proofs, &proof_bytes);
+
+        Ok((proof_result.limit, proof_result.offset))
+    }
+
+    /// Replaces references with the base item they point to
+    fn replace_references(&self, proof_result: &mut ProofWithoutEncodingResult) -> Result<(), Error> {
         for op in proof_result.proof.iter_mut() {
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
@@ -286,25 +294,19 @@ impl GroveDb {
                 _ => continue,
             }
         }
+        Ok(())
+    }
 
-        let mut proof_bytes = Vec::with_capacity(128);
-        encode_into(proof_result.proof.iter(), &mut proof_bytes);
-
-        // explicitly preventing proof generation as verification would fail
-        // also a good way to detect if the needs of the system get past this point
-        if proof_bytes.len() >= usize::MAX {
-            return Err(Error::InvalidProof("proof too large"));
-        }
-
-        let proof_len_bytes: [u8; 8] = proof_bytes.len().to_be_bytes();
-        write_to_vec(proofs, &[proof_type.into()]);
-        write_to_vec(proofs, &proof_len_bytes);
-        write_to_vec(proofs, &proof_bytes);
-
-        Ok((proof_result.limit, proof_result.offset))
+    /// Opens merk at a given path without transaction
+    fn open_subtree(
+        &self,
+        path: &Vec<&[u8]>,
+    ) -> Result<Merk<PrefixedRocksDbStorageContext>, Error> {
+        self.check_subtree_exists_path_not_found(path.clone(), None, None)?;
+        let storage = self.db.get_storage_context(path.clone());
+        let subtree = Merk::open(storage)
+            .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
+        Ok(subtree)
     }
 }
 
-fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
-    dest.write_all(value);
-}

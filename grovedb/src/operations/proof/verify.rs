@@ -1,12 +1,13 @@
-use rs_merkle::algorithms::Sha256;
-use rs_merkle::MerkleProof;
-use merk::Hash;
-use merk::proofs::Query;
-use merk::proofs::query::ProofVerificationResult;
-use crate::{Element, Error, GroveDb, PathQuery};
-use crate::operations::proof::util::{ProofReader, ProofType};
+use merk::{
+    proofs::{query::ProofVerificationResult, Query},
+    Hash,
+};
+use rs_merkle::{algorithms::Sha256, MerkleProof};
 
-const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
+use crate::{
+    operations::proof::util::{ProofReader, ProofType, EMPTY_TREE_HASH},
+    Element, Error, GroveDb, PathQuery,
+};
 
 impl GroveDb {
     pub fn execute_proof(
