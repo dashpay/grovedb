@@ -19,6 +19,23 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
         let path_iter = path.into_iter();
+
+        let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
+        let subtrees_paths = self.find_subtrees(subtree_merk_path.clone(), transaction)?;
+        for subtree_path in subtrees_paths {
+            merk_optional_tx!(
+                self.db,
+                subtree_path.iter().map(|x| x.as_slice()),
+                transaction,
+                mut subtree,
+                {
+                    subtree.clear().map_err(|e| {
+                        Error::CorruptedData(format!("unable to cleanup tree from storage: {}", e))
+                    })?;
+                }
+            );
+        }
+
         match element {
             Element::Tree(_) => {
                 if path_iter.len() == 0 {

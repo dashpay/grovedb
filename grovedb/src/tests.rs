@@ -2510,3 +2510,51 @@ fn test_get_non_existing_root_leaf() {
     let db = make_grovedb();
     assert!(matches!(db.get([], b"ayy", None), Err(_)));
 }
+
+#[test]
+fn test_subtree_overwrite_deletes_recursively() {
+    let db = make_grovedb();
+    let element = Element::Item(b"ayy".to_vec());
+
+    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
+        .expect("successful subtree 1 insert");
+    db.insert([TEST_LEAF, b"key1"], b"key2", Element::empty_tree(), None)
+        .expect("successful subtree 2 insert");
+    db.insert(
+        [TEST_LEAF, b"key1", b"key2"],
+        b"key3",
+        element.clone(),
+        None,
+    )
+    .expect("successful value insert");
+
+    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
+        .expect("cannot overwrite subtree");
+    assert!(db
+        .get([TEST_LEAF, b"key1", b"key2"], b"key3", None)
+        .is_err());
+}
+
+#[test]
+fn test_root_leaf_overwrite_deletes_recursively() {
+    let db = make_grovedb();
+    let element = Element::Item(b"ayy".to_vec());
+
+    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
+        .expect("successful subtree 1 insert");
+    db.insert([TEST_LEAF, b"key1"], b"key2", Element::empty_tree(), None)
+        .expect("successful subtree 2 insert");
+    db.insert(
+        [TEST_LEAF, b"key1", b"key2"],
+        b"key3",
+        element.clone(),
+        None,
+    )
+    .expect("successful value insert");
+
+    db.insert([], TEST_LEAF, Element::empty_tree(), None)
+        .expect("cannot overwrite subtree");
+    assert!(db
+        .get([TEST_LEAF, b"key1", b"key2"], b"key3", None)
+        .is_err());
+}

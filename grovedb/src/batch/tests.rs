@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 
-use visualize::visualize_stdout;
-
 use super::*;
 use crate::{
     tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
@@ -391,8 +389,6 @@ fn test_nested_batch_insertion_corrupts_state() {
         element.clone(),
     )];
     db.apply_batch(batch, None).expect("cannot apply batch");
-
-    visualize_stdout(&db);
 
     let batch = vec![GroveDbOp::insert(
         acc_path,
