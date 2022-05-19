@@ -873,6 +873,34 @@ fn test_path_query_proofs_with_default_subquery() {
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
     assert_eq!(result_set, expected_result_set);
 
+    let mut query = Query::new();
+    query.insert_range_after(b"innertree".to_vec()..);
+
+    let mut subq = Query::new();
+    subq.insert_all();
+    query.set_subquery(subq);
+
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+    let proof = temp_db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), path_query).expect("should execute proof");
+
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 2);
+
+    let keys = [
+        b"key4".to_vec(),
+        b"key5".to_vec(),
+    ];
+    let values = [
+        b"value4".to_vec(),
+        b"value5".to_vec(),
+    ];
+    let elements = values.map(|x| Element::Item(x).serialize().unwrap());
+    let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
+    assert_eq!(result_set, expected_result_set);
+
     // range subquery
     let mut query = Query::new();
     query.insert_all();
