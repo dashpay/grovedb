@@ -71,14 +71,9 @@ impl GroveDb {
                     // if the element is a non empty tree then current tree is not a leaf tree
                     if is_leaf_tree {
                         is_leaf_tree = false;
-                        // TODO: this should not be an all key query??
-                        let mut all_key_query =
-                            Query::new_with_direction(query.query.query.left_to_right);
-                        all_key_query.insert_all();
-
                         self.generate_and_store_merk_proof(
                             &subtree,
-                            all_key_query,
+                            &query.query.query,
                             None,
                             None,
                             ProofType::MerkProof,
@@ -101,7 +96,7 @@ impl GroveDb {
 
                         self.generate_and_store_merk_proof(
                             &inner_subtree,
-                            key_as_query,
+                            &key_as_query,
                             None,
                             None,
                             ProofType::MerkProof,
@@ -150,7 +145,7 @@ impl GroveDb {
             // apply the sized query
             let limit_offset = self.generate_and_store_merk_proof(
                 &subtree,
-                query.query.query,
+                &query.query.query,
                 *current_limit,
                 *current_offset,
                 ProofType::SizedMerkProof,
@@ -219,7 +214,7 @@ impl GroveDb {
 
                 self.generate_and_store_merk_proof(
                     &subtree,
-                    query,
+                    &query,
                     None,
                     None,
                     ProofType::MerkProof,
@@ -236,7 +231,7 @@ impl GroveDb {
     fn generate_and_store_merk_proof<'a, S: 'a>(
         &self,
         subtree: &'a Merk<S>,
-        query: Query,
+        query: &Query,
         limit: Option<u16>,
         offset: Option<u16>,
         proof_type: ProofType,
@@ -247,7 +242,7 @@ impl GroveDb {
     {
         // TODO: How do you handle mixed tree types?
         let mut proof_result = subtree
-            .prove_without_encoding(query, limit, offset)
+            .prove_without_encoding(query.clone(), limit, offset)
             .expect("should generate proof");
 
         self.replace_references(&mut proof_result);
