@@ -4,6 +4,7 @@ use std::{
 };
 
 use rand::Rng;
+use serde::Serialize;
 use tempfile::TempDir;
 
 // use test::RunIgnored::No;
@@ -2183,6 +2184,15 @@ fn populate_tree_for_unique_range_subquery_with_non_unique_null_values(db: &mut 
     }
 }
 
+fn deserialize_and_extract_item_bytes(raw_bytes: &[u8]) -> Result<Vec<u8>, Error> {
+    dbg!(raw_bytes);
+    let elem = Element::deserialize(raw_bytes)?;
+    return match elem {
+        Element::Item(item) => Ok(item),
+        _ => Err(Error::CorruptedPath("expected only item type")),
+    };
+}
+
 #[test]
 fn test_get_range_query_with_non_unique_subquery() {
     let db = make_grovedb();
@@ -2214,6 +2224,20 @@ fn test_get_range_query_with_non_unique_subquery() {
     let mut last_value = 1991_u32.to_be_bytes().to_vec();
     last_value.append(&mut 149_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
+
+    let proof = db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) = GroveDb::execute_proof(&proof, path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 200);
+
+    assert_eq!(
+        deserialize_and_extract_item_bytes(&result_set[0].1).unwrap(),
+        first_value
+    );
+    assert_eq!(
+        deserialize_and_extract_item_bytes(&result_set[result_set.len() - 1].1).unwrap(),
+        last_value
+    );
 }
 
 #[test]
@@ -2242,6 +2266,21 @@ fn test_get_range_query_with_unique_subquery() {
 
     let last_value = 1991_u32.to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
+
+    let proof = db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) = GroveDb::execute_proof(&proof, path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 4);
+
+    assert_eq!(
+        deserialize_and_extract_item_bytes(&result_set[0].1).unwrap(),
+        first_value
+    );
+
+    assert_eq!(
+        deserialize_and_extract_item_bytes(&result_set[result_set.len() - 1].1).unwrap(),
+        last_value
+    );
 }
 
 #[test]
