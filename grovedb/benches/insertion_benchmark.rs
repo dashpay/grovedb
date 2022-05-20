@@ -48,7 +48,7 @@ pub fn root_leaf_insertion_benchmark_without_transaction(c: &mut Criterion) {
     let db = GroveDb::open(dir.path()).unwrap();
     let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(10);
 
-    c.bench_function("root leafs insertion without transaction", |b| {
+    c.bench_function("root leaves insertion without transaction", |b| {
         b.iter(|| {
             for k in keys.clone() {
                 db.insert([], &k, Element::empty_tree(), None).unwrap();
@@ -62,7 +62,7 @@ pub fn root_leaf_insertion_benchmark_with_transaction(c: &mut Criterion) {
     let db = GroveDb::open(dir.path()).unwrap();
     let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(10);
 
-    c.bench_function("root leafs insertion with transaction", |b| {
+    c.bench_function("root leaves insertion with transaction", |b| {
         b.iter(|| {
             let tx = db.start_transaction();
             for k in keys.clone() {
