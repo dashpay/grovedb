@@ -53,7 +53,6 @@ impl GroveDb {
         let subtree = self.open_subtree(&path)?;
         let mut is_leaf_tree = true;
 
-        // TODO: shouldn't you get the kv pairs based on the query??
         for (key, value_bytes) in subtree.get_kv_pairs(&query.query.query).iter() {
             let (subquery_key, subquery_value) =
                 Element::subquery_paths_for_sized_query(&query.query, key);
