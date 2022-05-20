@@ -35,7 +35,8 @@ impl GroveDb {
         Ok(proof_result)
     }
 
-    /// Perform a pre-order traversal of the tree based on the provided subqueries
+    /// Perform a pre-order traversal of the tree based on the provided
+    /// subqueries
     fn prove_subqueries(
         &self,
         proofs: &mut Vec<u8>,
@@ -53,7 +54,7 @@ impl GroveDb {
         let mut is_leaf_tree = true;
 
         // TODO: shouldn't you get the kv pairs based on the query??
-        for (key, value_bytes) in subtree.get_kv_pairs(query.query.query.left_to_right).iter() {
+        for (key, value_bytes) in subtree.get_kv_pairs(&query.query.query).iter() {
             let (subquery_key, subquery_value) =
                 Element::subquery_paths_for_sized_query(&query.query, key);
 
@@ -89,7 +90,8 @@ impl GroveDb {
                     let mut new_path = path.clone();
                     new_path.push(key.as_ref());
 
-                    let has_subkey_and_subquery = subquery_value.is_some() && subquery_key.is_some();
+                    let has_subkey_and_subquery =
+                        subquery_value.is_some() && subquery_key.is_some();
 
                     if has_subkey_and_subquery {
                         // prove the subquery key first
@@ -111,7 +113,8 @@ impl GroveDb {
                     }
 
                     let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
-                    let new_path_query = PathQuery::new_unsized(new_path_owned,subquery_value.unwrap());
+                    let new_path_query =
+                        PathQuery::new_unsized(new_path_owned, subquery_value.unwrap());
 
                     if self
                         .check_subtree_exists_path_not_found(new_path.clone(), None, None)

@@ -394,30 +394,51 @@ where
         !iter.valid()
     }
 
-    pub fn get_kv_pairs(&self, left_to_right: bool) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let mut result = vec![];
+    pub fn get_kv_pairs(&self, query: &Query) -> Vec<(Vec<u8>, Vec<u8>)> {
         let mut iter = self.storage.raw_iter();
+        let mut result = vec![];
 
-        if left_to_right {
-            iter.seek_to_first();
+        if query.left_to_right {
+            let query_item_iter = query.iter();
+            for query_item in query_item_iter {
+                query_item.seek_for_iter(&mut iter, query.left_to_right);
+                while query_item.iter_is_valid_for_type(&iter, None, query.left_to_right) {
+                    let rs = (
+                        iter.key()
+                            .expect("key must exist as iter is valid")
+                            .to_vec(),
+                        iter.value()
+                            .expect("value must exist as iter is valid")
+                            .to_vec(),
+                    );
+                    result.push(rs);
+                    if query.left_to_right {
+                        iter.next();
+                    } else {
+                        iter.prev();
+                    }
+                }
+            }
         } else {
-            iter.seek_to_last();
-        }
-
-        while iter.valid() {
-            let rs = (
-                iter.key()
-                    .expect("key must exist as iter is valid")
-                    .to_vec(),
-                iter.value()
-                    .expect("value must exist as iter is valid")
-                    .to_vec(),
-            );
-            result.push(rs);
-            if left_to_right {
-                iter.next();
-            } else {
-                iter.prev();
+            let query_item_iter = query.rev_iter();
+            for query_item in query_item_iter {
+                query_item.seek_for_iter(&mut iter, query.left_to_right);
+                while query_item.iter_is_valid_for_type(&iter, None, query.left_to_right) {
+                    let rs = (
+                        iter.key()
+                            .expect("key must exist as iter is valid")
+                            .to_vec(),
+                        iter.value()
+                            .expect("value must exist as iter is valid")
+                            .to_vec(),
+                    );
+                    result.push(rs);
+                    if query.left_to_right {
+                        iter.next();
+                    } else {
+                        iter.prev();
+                    }
+                }
             }
         }
 

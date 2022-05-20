@@ -33,7 +33,12 @@ impl GroveDb {
         )?;
 
         // validate the path elements are connected
-        Self::verify_path_to_root(&query, path_slices, &mut proof_reader, &mut last_subtree_root_hash)?;
+        Self::verify_path_to_root(
+            &query,
+            path_slices,
+            &mut proof_reader,
+            &mut last_subtree_root_hash,
+        )?;
 
         // execute the root proof
         let root_hash = Self::execute_root_proof(&mut proof_reader, last_subtree_root_hash)?;
@@ -70,18 +75,16 @@ impl GroveDb {
                 *current_offset = verification_result.1.offset;
             }
             ProofType::MerkProof => {
-                // for non leaf subtrees, we want to prove that all their keys
+                // for non leaf subtrees, we want to prove that all the queried keys
                 // have an accompanying proof as long as the limit is non zero
                 // and their child subtree is not empty
-                let mut all_key_query = Query::new_with_direction(query.query.query.left_to_right);
-                all_key_query.insert_all();
 
                 let verification_result = execute_merk_proof(
                     &proof,
-                    &all_key_query,
+                    &query.query.query,
                     None,
                     None,
-                    all_key_query.left_to_right,
+                    query.query.query.left_to_right,
                 )?;
 
                 last_root_hash = verification_result.0;
@@ -110,23 +113,29 @@ impl GroveDb {
                                 continue;
                             }
 
-                            let has_subquery_key_and_value = subquery_value.is_some() && subquery_key.is_some();
+                            let has_subquery_key_and_value =
+                                subquery_value.is_some() && subquery_key.is_some();
                             if has_subquery_key_and_value {
                                 // prove that the subquery key was used and update the expected hash
-                                // if the proof shows subquery key does not exist, path is no longer useful
-                                // move on to next
-                                let verification_result = Self::verify_subquery_key(proof_reader, subquery_key)?;
+                                // if the proof shows subquery key does not exist, path is no longer
+                                // useful move on to next
+                                let verification_result =
+                                    Self::verify_subquery_key(proof_reader, subquery_key)?;
                                 let subquery_key_result_set = verification_result.1.result_set;
                                 let subquery_key_not_in_tree = subquery_key_result_set.len() == 0;
 
                                 if subquery_key_not_in_tree {
                                     continue;
                                 } else {
-                                    Self::update_root_hash_from_subquery_key_element(&mut expected_root_hash, &subquery_key_result_set)?;
+                                    Self::update_root_hash_from_subquery_key_element(
+                                        &mut expected_root_hash,
+                                        &subquery_key_result_set,
+                                    )?;
                                 }
                             }
 
-                            let new_path_query = PathQuery::new_unsized(vec![], subquery_value.unwrap());
+                            let new_path_query =
+                                PathQuery::new_unsized(vec![], subquery_value.unwrap());
                             let child_hash = GroveDb::execute_subquery_proof(
                                 proof_reader,
                                 result_set,
@@ -160,14 +169,13 @@ impl GroveDb {
     }
 
     /// Deserialize subkey_element and update expected root hash
-    fn update_root_hash_from_subquery_key_element(expected_root_hash: &mut [u8; 32], subquery_key_result_set: &Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), Error>{
+    fn update_root_hash_from_subquery_key_element(
+        expected_root_hash: &mut [u8; 32],
+        subquery_key_result_set: &Vec<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<(), Error> {
         let elem_value = &subquery_key_result_set[0].1;
         let subquery_key_element = Element::deserialize(elem_value)
-            .map_err(|_| {
-                Error::CorruptedData(
-                    "failed to deserialize element".to_string(),
-                )
-            })?;
+            .map_err(|_| Error::CorruptedData("failed to deserialize element".to_string()))?;
         match subquery_key_element {
             Element::Tree(new_exptected_hash) => {
                 *expected_root_hash = new_exptected_hash;
@@ -176,14 +184,20 @@ impl GroveDb {
                 // the means that the subquery key pointed to a non tree
                 // element, this is not valid as you cannot apply the
                 // the subquery value to non tree items
-                return Err(Error::InvalidProof("subquery key cannot point to non tree element"))
+                return Err(Error::InvalidProof(
+                    "subquery key cannot point to non tree element",
+                ));
             }
         }
         Ok(())
     }
 
-    /// Checks that a valid proof showing the existence or absence of the subquery key is present
-    fn verify_subquery_key(proof_reader: &mut ProofReader, subquery_key: Option<Vec<u8>>) -> Result<(Hash, ProofVerificationResult), Error> {
+    /// Checks that a valid proof showing the existence or absence of the
+    /// subquery key is present
+    fn verify_subquery_key(
+        proof_reader: &mut ProofReader,
+        subquery_key: Option<Vec<u8>>,
+    ) -> Result<(Hash, ProofVerificationResult), Error> {
         let (proof_type, subkey_proof) = proof_reader.read_proof()?;
         if proof_type != ProofType::MerkProof {
             return Err(Error::InvalidProof(
@@ -204,8 +218,14 @@ impl GroveDb {
         Ok(verification_result)
     }
 
-    /// Verifies that the correct proof was provided to confirm the path in query
-    fn verify_path_to_root(query: &PathQuery, path_slices: Vec<&[u8]>, proof_reader: &mut ProofReader, expected_root_hash: &mut [u8; 32]) -> Result<(), Error> {
+    /// Verifies that the correct proof was provided to confirm the path in
+    /// query
+    fn verify_path_to_root(
+        query: &PathQuery,
+        path_slices: Vec<&[u8]>,
+        proof_reader: &mut ProofReader,
+        expected_root_hash: &mut [u8; 32],
+    ) -> Result<(), Error> {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             if !path_slice.is_empty() {
@@ -253,7 +273,10 @@ impl GroveDb {
     }
 
     /// Generate expected root hash based on root proof and leaf hashes
-    fn execute_root_proof(proof_reader: &mut ProofReader, leaf_hash: [u8; 32]) -> Result<[u8; 32], Error> {
+    fn execute_root_proof(
+        proof_reader: &mut ProofReader,
+        leaf_hash: [u8; 32],
+    ) -> Result<[u8; 32], Error> {
         let root_proof_bytes = proof_reader.read_proof_of_type(ProofType::RootProof.into())?;
 
         // makes the assumption that 1 byte is enough to represent the root leaf count

@@ -555,7 +555,8 @@ impl QueryItem {
         left_to_right: bool,
     ) -> bool {
         match self {
-            QueryItem::Key(_) => true,
+            // TODO: Update the validity check for this
+            QueryItem::Key(start) => iter.key() == Some(start),
             QueryItem::Range(Range { start, end }) => {
                 let basic_valid =
                     (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
