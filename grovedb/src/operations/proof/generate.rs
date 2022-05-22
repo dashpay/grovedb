@@ -112,8 +112,7 @@ impl GroveDb {
                     }
 
                     let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
-                    let new_path_query =
-                        PathQuery::new_unsized(new_path_owned,query.unwrap());
+                    let new_path_query = PathQuery::new_unsized(new_path_owned, query.unwrap());
 
                     if self
                         .check_subtree_exists_path_not_found(new_path.clone(), None, None)

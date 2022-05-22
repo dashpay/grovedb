@@ -109,34 +109,40 @@ impl GroveDb {
                                     key.as_slice(),
                                 );
 
-                            if subquery_value.is_none() {
+                            if subquery_value.is_none() && subquery_key.is_none() {
                                 continue;
                             }
 
                             // I need to reinsert the ability for subquery key to work independently
                             // if a subquery has only a key, that key should be used as the query
-                            // hence subqueries can point to non tree type, and you don't need to update the
-                            // root hash everytime. based on the query we can know the exact
-                            // condition we are experiencing. and the perform the verification
+                            // hence subqueries can point to non tree type, and you don't need to
+                            // update the root hash everytime. based on
+                            // the query we can know the exact condition
+                            // we are experiencing. and the perform the verification
                             // accordingly states:
-                            // - subquery value and key in this case, verify the subquery key first, update
-                            //   the hash and then move on to the next
+                            // - subquery value and key in this case, verify the subquery key first,
+                            //   update the hash and then move on to the next
                             // - subquery key only in this case, create a sized merk proof for that
                             //   subquery, don't
-                            // - subquery value only in this case,
+                            // - subquery value only in this case, no verification, just proceed.
+                            //   (this is the default state);
 
-                            let has_subquery_key_and_value =
-                                subquery_value.is_some() && subquery_key.is_some();
-                            if has_subquery_key_and_value {
+                            if subquery_key.is_some() {
                                 // prove that the subquery key was used and update the expected hash
                                 // if the proof shows subquery key does not exist, path is no longer
                                 // useful move on to next
+
+                                // TODO
+                                // depending on the type of query will need to update the limit and
+                                // offset values would be nice if
+                                // that update just happened automatically
+
                                 let verification_result =
                                     Self::verify_subquery_key(proof_reader, subquery_key)?;
                                 let subquery_key_result_set = verification_result.1.result_set;
                                 let subquery_key_not_in_tree = subquery_key_result_set.len() == 0;
 
-                                if subquery_key_not_in_tree {
+                                if subquery_key_not_in_tree || subquery_value.is_none() {
                                     continue;
                                 } else {
                                     Self::update_root_hash_from_subquery_key_element(
@@ -145,6 +151,29 @@ impl GroveDb {
                                     )?;
                                 }
                             }
+
+                            // let has_subquery_key_and_value =
+                            //     subquery_value.is_some() && subquery_key.is_some();
+                            // if has_subquery_key_and_value {
+                            //     // prove that the subquery key was used and update the expected
+                            // hash     // if the proof shows subquery
+                            // key does not exist, path is no longer
+                            //     // useful move on to next
+                            //     let verification_result =
+                            //         Self::verify_subquery_key(proof_reader, subquery_key)?;
+                            //     let subquery_key_result_set = verification_result.1.result_set;
+                            //     let subquery_key_not_in_tree = subquery_key_result_set.len() ==
+                            // 0;
+                            //
+                            //     if subquery_key_not_in_tree {
+                            //         continue;
+                            //     } else {
+                            //         Self::update_root_hash_from_subquery_key_element(
+                            //             &mut expected_root_hash,
+                            //             &subquery_key_result_set,
+                            //         )?;
+                            //     }
+                            // }
 
                             let new_path_query =
                                 PathQuery::new_unsized(vec![], subquery_value.unwrap());
