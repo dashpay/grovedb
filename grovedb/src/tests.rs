@@ -2270,7 +2270,7 @@ fn test_get_range_query_with_unique_subquery() {
     let proof = db.prove(path_query.clone()).unwrap();
     let (hash, result_set) = GroveDb::execute_proof(&proof, path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
-    // assert_eq!(result_set.len(), 4);
+    assert_eq!(result_set.len(), 4);
 
     // assert_eq!(
     //     deserialize_and_extract_item_bytes(&result_set[0].1).unwrap(),
