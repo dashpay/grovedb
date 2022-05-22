@@ -57,7 +57,7 @@ impl GroveDb {
             let (subquery_key, subquery_value) =
                 Element::subquery_paths_for_sized_query(&query.query, key);
 
-            if subquery_value.is_none() {
+            if subquery_value.is_none() && subquery_key.is_none() {
                 continue;
             }
 
@@ -84,31 +84,36 @@ impl GroveDb {
                     let mut new_path = path.clone();
                     new_path.push(key.as_ref());
 
-                    let has_subkey_and_subquery =
-                        subquery_value.is_some() && subquery_key.is_some();
+                    let mut query = subquery_value;
 
-                    if has_subkey_and_subquery {
-                        // prove the subquery key first
-                        let inner_subtree = self.open_subtree(&new_path)?;
+                    if query.is_some() {
+                        if subquery_key.is_some() {
+                            // prove the subquery key first
+                            let inner_subtree = self.open_subtree(&new_path)?;
 
+                            let mut key_as_query = Query::new();
+                            key_as_query.insert_key(subquery_key.clone().unwrap());
+
+                            self.generate_and_store_merk_proof(
+                                &inner_subtree,
+                                &key_as_query,
+                                None,
+                                None,
+                                ProofType::MerkProof,
+                                proofs,
+                            )?;
+
+                            new_path.push(subquery_key.as_ref().unwrap());
+                        }
+                    } else {
                         let mut key_as_query = Query::new();
-                        key_as_query.insert_key(subquery_key.clone().unwrap());
-
-                        self.generate_and_store_merk_proof(
-                            &inner_subtree,
-                            &key_as_query,
-                            None,
-                            None,
-                            ProofType::MerkProof,
-                            proofs,
-                        )?;
-
-                        new_path.push(subquery_key.as_ref().unwrap());
+                        key_as_query.insert_key(subquery_key.unwrap());
+                        query = Some(key_as_query);
                     }
 
                     let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
                     let new_path_query =
-                        PathQuery::new_unsized(new_path_owned, subquery_value.unwrap());
+                        PathQuery::new_unsized(new_path_owned,query.unwrap());
 
                     if self
                         .check_subtree_exists_path_not_found(new_path.clone(), None, None)
