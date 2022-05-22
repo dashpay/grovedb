@@ -14,14 +14,16 @@ impl GroveDb {
         proof: &[u8],
         query: PathQuery,
     ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
-        let mut m = ProofVerifier::new(&query);
-        m.execute_proof(proof, query)
+        let mut verifier = ProofVerifier::new(&query);
+        let hash = verifier.execute_proof(proof, query)?;
+        Ok((hash, verifier.result_set))
     }
 }
 
 struct ProofVerifier {
     limit: Option<u16>,
     offset: Option<u16>,
+    result_set: Vec<(Vec<u8>, Vec<u8>)>
 }
 
 impl ProofVerifier {
@@ -29,6 +31,7 @@ impl ProofVerifier {
         ProofVerifier {
             limit: query.query.limit,
             offset: query.query.offset,
+            result_set: vec![],
         }
     }
 
@@ -36,8 +39,7 @@ impl ProofVerifier {
         &mut self,
         proof: &[u8],
         query: PathQuery,
-    ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
-        let mut result_set: Vec<(Vec<u8>, Vec<u8>)> = vec![];
+    ) -> Result<[u8; 32], Error> {
         let mut proof_reader = ProofReader::new(proof);
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
@@ -46,7 +48,7 @@ impl ProofVerifier {
         }
 
         let mut last_subtree_root_hash =
-            self.execute_subquery_proof(&mut proof_reader, &mut result_set, query.clone())?;
+            self.execute_subquery_proof(&mut proof_reader, query.clone())?;
 
         // validate the path elements are connected
         self.verify_path_to_root(
@@ -59,13 +61,12 @@ impl ProofVerifier {
         // execute the root proof
         let root_hash = Self::execute_root_proof(&mut proof_reader, last_subtree_root_hash)?;
 
-        Ok((root_hash, result_set))
+        Ok(root_hash)
     }
 
     fn execute_subquery_proof(
         &mut self,
         proof_reader: &mut ProofReader,
-        result_set: &mut Vec<(Vec<u8>, Vec<u8>)>,
         query: PathQuery,
     ) -> Result<[u8; 32], Error> {
         let last_root_hash: [u8; 32];
@@ -82,7 +83,7 @@ impl ProofVerifier {
                 )?;
 
                 last_root_hash = verification_result.0;
-                result_set.extend(verification_result.1);
+                self.result_set.extend(verification_result.1);
             }
             ProofType::MerkProof => {
                 // for non leaf subtrees, we want to prove that all the queried keys
@@ -187,7 +188,6 @@ impl ProofVerifier {
                                 PathQuery::new_unsized(vec![], subquery_value.unwrap());
                             let child_hash = self.execute_subquery_proof(
                                 proof_reader,
-                                result_set,
                                 new_path_query,
                             )?;
 
@@ -245,25 +245,26 @@ impl ProofVerifier {
         &mut self,
         proof_reader: &mut ProofReader,
         subquery_key: Option<Vec<u8>>,
-    ) -> Result<(Hash,  Vec<(Vec<u8>, Vec<u8>)>), Error> {
+    ) -> Result<(Hash, Vec<(Vec<u8>, Vec<u8>)>), Error> {
         let (proof_type, subkey_proof) = proof_reader.read_proof()?;
-        if proof_type != ProofType::MerkProof {
-            return Err(Error::InvalidProof(
-                "expected unsized merk proof for subquery key",
-            ));
+        match proof_type {
+            ProofType::MerkProof | ProofType::SizedMerkProof => {
+                let mut key_as_query = Query::new();
+                key_as_query.insert_key(subquery_key.clone().unwrap());
+
+                let verification_result = self.execute_merk_proof(
+                    proof_type,
+                    &subkey_proof,
+                    &key_as_query,
+                    key_as_query.left_to_right,
+                )?;
+
+                return Ok(verification_result);
+            }
+            _ => {
+                return Err(Error::InvalidProof("expected merk proof for subquery key"));
+            }
         }
-
-        let mut key_as_query = Query::new();
-        key_as_query.insert_key(subquery_key.clone().unwrap());
-
-        let verification_result = self.execute_merk_proof(
-            ProofType::MerkProof,
-            &subkey_proof,
-            &key_as_query,
-            key_as_query.left_to_right,
-        )?;
-
-        Ok(verification_result)
     }
 
     /// Verifies that the correct proof was provided to confirm the path in
