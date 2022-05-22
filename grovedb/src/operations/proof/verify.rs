@@ -14,26 +14,42 @@ impl GroveDb {
         proof: &[u8],
         query: PathQuery,
     ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
+        let mut m = ProofVerifier::new(&query);
+        m.execute_proof(proof, query)
+    }
+}
+
+struct ProofVerifier {
+    limit: Option<u16>,
+    offset: Option<u16>,
+}
+
+impl ProofVerifier {
+    pub fn new(query: &PathQuery) -> Self {
+        ProofVerifier {
+            limit: query.query.limit,
+            offset: query.query.offset,
+        }
+    }
+
+    pub fn execute_proof(
+        &mut self,
+        proof: &[u8],
+        query: PathQuery,
+    ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
         let mut result_set: Vec<(Vec<u8>, Vec<u8>)> = vec![];
         let mut proof_reader = ProofReader::new(proof);
-        let mut current_limit = query.query.limit;
-        let mut current_offset = query.query.offset;
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
         if path_slices.len() < 1 {
             return Err(Error::InvalidPath("can't verify proof for empty path"));
         }
 
-        let mut last_subtree_root_hash = GroveDb::execute_subquery_proof(
-            &mut proof_reader,
-            &mut result_set,
-            &mut current_limit,
-            &mut current_offset,
-            query.clone(),
-        )?;
+        let mut last_subtree_root_hash =
+            self.execute_subquery_proof(&mut proof_reader, &mut result_set, query.clone())?;
 
         // validate the path elements are connected
-        Self::verify_path_to_root(
+        self.verify_path_to_root(
             &query,
             path_slices,
             &mut proof_reader,
@@ -47,10 +63,9 @@ impl GroveDb {
     }
 
     fn execute_subquery_proof(
+        &mut self,
         proof_reader: &mut ProofReader,
         result_set: &mut Vec<(Vec<u8>, Vec<u8>)>,
-        current_limit: &mut Option<u16>,
-        current_offset: &mut Option<u16>,
         query: PathQuery,
     ) -> Result<[u8; 32], Error> {
         let last_root_hash: [u8; 32];
@@ -59,37 +74,30 @@ impl GroveDb {
         match proof_type {
             ProofType::SizedMerkProof => {
                 // verify proof with limit and offset values
-                let verification_result = execute_merk_proof(
+                let verification_result = self.execute_merk_proof(
+                    ProofType::SizedMerkProof,
                     &proof,
                     &query.query.query,
-                    *current_limit,
-                    *current_offset,
                     query.query.query.left_to_right,
                 )?;
 
                 last_root_hash = verification_result.0;
-                result_set.extend(verification_result.1.result_set);
-
-                // update limit and offset
-                *current_limit = verification_result.1.limit;
-                *current_offset = verification_result.1.offset;
+                result_set.extend(verification_result.1);
             }
             ProofType::MerkProof => {
                 // for non leaf subtrees, we want to prove that all the queried keys
                 // have an accompanying proof as long as the limit is non zero
                 // and their child subtree is not empty
-
-                let verification_result = execute_merk_proof(
+                let verification_result = self.execute_merk_proof(
+                    ProofType::MerkProof,
                     &proof,
                     &query.query.query,
-                    None,
-                    None,
                     query.query.query.left_to_right,
                 )?;
 
                 last_root_hash = verification_result.0;
 
-                for (key, value_bytes) in verification_result.1.result_set {
+                for (key, value_bytes) in verification_result.1 {
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
                     match child_element {
                         Element::Tree(mut expected_root_hash) => {
@@ -98,7 +106,7 @@ impl GroveDb {
                                 continue;
                             }
 
-                            if *current_limit == Some(0) {
+                            if self.limit == Some(0) {
                                 // we are done verifying the subqueries
                                 break;
                             }
@@ -138,8 +146,8 @@ impl GroveDb {
                                 // that update just happened automatically
 
                                 let verification_result =
-                                    Self::verify_subquery_key(proof_reader, subquery_key)?;
-                                let subquery_key_result_set = verification_result.1.result_set;
+                                    self.verify_subquery_key(proof_reader, subquery_key)?;
+                                let subquery_key_result_set = verification_result.1;
                                 let subquery_key_not_in_tree = subquery_key_result_set.len() == 0;
 
                                 if subquery_key_not_in_tree || subquery_value.is_none() {
@@ -177,11 +185,9 @@ impl GroveDb {
 
                             let new_path_query =
                                 PathQuery::new_unsized(vec![], subquery_value.unwrap());
-                            let child_hash = GroveDb::execute_subquery_proof(
+                            let child_hash = self.execute_subquery_proof(
                                 proof_reader,
                                 result_set,
-                                current_limit,
-                                current_offset,
                                 new_path_query,
                             )?;
 
@@ -236,9 +242,10 @@ impl GroveDb {
     /// Checks that a valid proof showing the existence or absence of the
     /// subquery key is present
     fn verify_subquery_key(
+        &mut self,
         proof_reader: &mut ProofReader,
         subquery_key: Option<Vec<u8>>,
-    ) -> Result<(Hash, ProofVerificationResult), Error> {
+    ) -> Result<(Hash,  Vec<(Vec<u8>, Vec<u8>)>), Error> {
         let (proof_type, subkey_proof) = proof_reader.read_proof()?;
         if proof_type != ProofType::MerkProof {
             return Err(Error::InvalidProof(
@@ -249,19 +256,20 @@ impl GroveDb {
         let mut key_as_query = Query::new();
         key_as_query.insert_key(subquery_key.clone().unwrap());
 
-        let verification_result = execute_merk_proof(
+        let verification_result = self.execute_merk_proof(
+            ProofType::MerkProof,
             &subkey_proof,
             &key_as_query,
-            None,
-            None,
             key_as_query.left_to_right,
         )?;
+
         Ok(verification_result)
     }
 
     /// Verifies that the correct proof was provided to confirm the path in
     /// query
     fn verify_path_to_root(
+        &mut self,
         query: &PathQuery,
         path_slices: Vec<&[u8]>,
         proof_reader: &mut ProofReader,
@@ -278,15 +286,14 @@ impl GroveDb {
                 let mut parent_query = Query::new();
                 parent_query.insert_key(key.to_vec());
 
-                let proof_result = execute_merk_proof(
+                let proof_result = self.execute_merk_proof(
+                    ProofType::MerkProof,
                     &parent_merk_proof,
                     &parent_query,
-                    None,
-                    None,
                     query.query.query.left_to_right,
                 )?;
 
-                let result_set = proof_result.1.result_set;
+                let result_set = proof_result.1;
                 if result_set.len() == 0 || &result_set[0].0 != key {
                     return Err(Error::InvalidProof("proof invalid: invalid parent"));
                 }
@@ -346,19 +353,34 @@ impl GroveDb {
 
         Ok(root_hash)
     }
-}
 
-fn execute_merk_proof(
-    proof: &Vec<u8>,
-    query: &Query,
-    limit: Option<u16>,
-    offset: Option<u16>,
-    left_to_right: bool,
-) -> Result<(Hash, ProofVerificationResult), Error> {
-    Ok(
-        merk::execute_proof(proof, query, limit, offset, left_to_right).map_err(|e| {
-            eprintln!("{}", e.to_string());
-            Error::InvalidProof("invalid proof verification parameters")
-        })?,
-    )
+    fn execute_merk_proof(
+        &mut self,
+        proof_type: ProofType,
+        proof: &Vec<u8>,
+        query: &Query,
+        left_to_right: bool,
+    ) -> Result<(Hash, Vec<(Vec<u8>, Vec<u8>)>), Error> {
+        let is_sized_proof = proof_type == ProofType::SizedMerkProof;
+        let mut limit = None;
+        let mut offset = None;
+
+        if is_sized_proof {
+            limit = self.limit;
+            offset = self.offset;
+        }
+
+        let (hash, result) = merk::execute_proof(proof, query, limit, offset, left_to_right)
+            .map_err(|e| {
+                eprintln!("{}", e.to_string());
+                Error::InvalidProof("invalid proof verification parameters")
+            })?;
+
+        if is_sized_proof {
+            self.limit = result.limit;
+            self.offset = result.offset;
+        }
+
+        Ok((hash, result.result_set))
+    }
 }
