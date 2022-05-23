@@ -1,7 +1,7 @@
 pub mod chunks;
 // TODO
 // pub mod restore;
-use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt, path::Iter};
+use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt};
 
 use anyhow::{anyhow, bail, Result};
 use storage::{self, Batch, RawIterator, StorageContext};
@@ -467,128 +467,6 @@ where
 
         !iter.valid()
     }
-
-    // TODO: turn this into an iter
-    //  currently, we accumulate all the kv pairs in a result array
-    //  this doesn't scale, as everything would be stored in memory
-    //  what would be ideal is something that lazy loads the next pair
-    //
-    // what does this function currently do?
-    // we have a storage iter (this is based on a single subtree)
-    // - which works as we are only dealing with single subtrees
-    // then we have a collection of query items
-    // - query items define valid key sections, when we have more than one
-    // - it means there are more than one block of keys we care about
-    // we first grab a key section descriptor (query item)
-    // move the iterator to the beginning of that section
-    // from that point pick a key, if its in the block add to result, move to next
-    // if the key is not in block (we have reached the end of the block)
-    // get the next block and repeat.
-
-    // to make this lazy, we need to preserve state (so we can resume exactly were
-    // we stopped) we need to know the current state of the iter
-    // we also need to know the current query item
-    // - we can keep track of that with a number
-    // the main problem then becomes how do we preserve the state of the raw iter??
-
-    pub fn get_kv_pairs(&self, query: &Query) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let mut iter = self.storage.raw_iter();
-        let mut result = vec![];
-        let query_item_iter = query.directional_iter(query.left_to_right);
-
-        for query_item in query_item_iter {
-            query_item.seek_for_iter(&mut iter, query.left_to_right);
-            while query_item.iter_is_valid_for_type(&iter, None, query.left_to_right) {
-                let rs = (
-                    iter.key()
-                        .expect("key must exist as iter is valid")
-                        .to_vec(),
-                    iter.value()
-                        .expect("value must exist as iter is valid")
-                        .to_vec(),
-                );
-                result.push(rs);
-                if query.left_to_right {
-                    iter.next();
-                } else {
-                    iter.prev();
-                }
-            }
-        }
-
-        result
-    }
-
-    // pub fn get_kv_pairs_plus<'a>(&self, query: &'a Query, iter: S) -> impl
-    // FnMut() -> Option<(Vec<u8>, Vec<u8>)> + 'a{     // let mut iter =
-    // self.storage.raw_iter();     let mut query_item_iter =
-    // query.directional_iter(query.left_to_right);     let mut curr_query_item
-    // = query_item_iter.next();
-    //
-    //     let next = move || -> Option<(Vec<u8>, Vec<u8>)> {
-    //         if curr_query_item.is_none() {
-    //             return None;
-    //         }
-    //
-    //         while !curr_query_item.unwrap().iter_is_valid_for_type(&iter, None,
-    // query.left_to_right) {             curr_query_item =
-    // query_item_iter.next();             if curr_query_item.is_none() {
-    //                 return None
-    //             }
-    //         }
-    //
-    //         let kv = (
-    //             iter.key()
-    //                 .expect("key must exist as iter is valid")
-    //                 .to_vec(),
-    //             iter.value()
-    //                 .expect("value must exist as iter is valid")
-    //                 .to_vec(),
-    //         );
-    //         if query.left_to_right {
-    //             iter.next();
-    //         } else {
-    //             iter.prev();
-    //         }
-    //         return Some(kv);
-    //     };
-    //
-    //     return next;
-    // }
-
-    // pub fn get_kv_pairs_plus(&self, iter: S, query_item_iter: Box<dyn
-    // Iterator<Item = QueryItem>>, curr_query_item: &mut QueryItem) ->
-    // Option<(Vec<u8>, Vec<u8>)>{     // let mut iter =
-    // self.storage.raw_iter();     // let mut query_item_iter =
-    // query.directional_iter(query.left_to_right);     // let mut
-    // curr_query_item = query_item_iter.next();
-    //
-    //     if curr_query_item.is_none() {
-    //         return None;
-    //     }
-    //
-    //     while !curr_query_item.unwrap().iter_is_valid_for_type(&iter, None,
-    // query.left_to_right) {         curr_query_item = query_item_iter.next();
-    //         if curr_query_item.is_none() {
-    //             return None
-    //         }
-    //     }
-    //
-    //     let kv = (
-    //         iter.key()
-    //             .expect("key must exist as iter is valid")
-    //             .to_vec(),
-    //         iter.value()
-    //             .expect("value must exist as iter is valid")
-    //             .to_vec(),
-    //     );
-    //     if query.left_to_right {
-    //         iter.next();
-    //     } else {
-    //         iter.prev();
-    //     }
-    //     return Some(kv);
-    // }
 
     fn source(&self) -> MerkSource<S> {
         MerkSource {
