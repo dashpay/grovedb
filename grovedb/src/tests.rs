@@ -2309,6 +2309,21 @@ fn test_get_range_query_with_unique_subquery_on_references() {
 
     let last_value = 1991_u32.to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
+
+    let proof = db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) = GroveDb::execute_proof(&proof, path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 4);
+
+    assert_eq!(
+        deserialize_and_extract_item_bytes(&result_set[0].1).unwrap(),
+        first_value
+    );
+
+    assert_eq!(
+        deserialize_and_extract_item_bytes(&result_set[result_set.len() - 1].1).unwrap(),
+        last_value
+    );
 }
 
 #[test]
@@ -2346,6 +2361,19 @@ fn test_get_range_query_with_unique_subquery_with_non_unique_null_values() {
 
     let last_value = 1999_u32.to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
+
+    let proof = db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) = GroveDb::execute_proof(&proof, path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 115);
+    assert_eq!(
+        deserialize_and_extract_item_bytes(&result_set[0].1).unwrap(),
+        first_value
+    );
+    assert_eq!(
+        deserialize_and_extract_item_bytes(&result_set[result_set.len() - 1].1).unwrap(),
+        last_value
+    );
 }
 
 #[test]
@@ -2382,6 +2410,19 @@ fn test_get_range_query_with_unique_subquery_ignore_non_unique_null_values() {
 
     let last_value = 1999_u32.to_be_bytes().to_vec();
     assert_eq!(elements[elements.len() - 1], last_value);
+
+    let proof = db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) = GroveDb::execute_proof(&proof, path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 15);
+    assert_eq!(
+        deserialize_and_extract_item_bytes(&result_set[0].1).unwrap(),
+        first_value
+    );
+    assert_eq!(
+        deserialize_and_extract_item_bytes(&result_set[result_set.len() - 1].1).unwrap(),
+        last_value
+    );
 }
 
 #[test]
@@ -2415,6 +2456,19 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
     let mut last_value = 1995_u32.to_be_bytes().to_vec();
     last_value.append(&mut 149_u32.to_be_bytes().to_vec());
     assert_eq!(elements[elements.len() - 1], last_value);
+
+    let proof = db.prove(path_query.clone()).unwrap();
+    let (hash, result_set) = GroveDb::execute_proof(&proof, path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 400);
+    assert_eq!(
+        deserialize_and_extract_item_bytes(&result_set[0].1).unwrap(),
+        first_value
+    );
+    assert_eq!(
+        deserialize_and_extract_item_bytes(&result_set[result_set.len() - 1].1).unwrap(),
+        last_value
+    );
 }
 
 #[test]
@@ -2448,6 +2502,19 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
     let mut last_value = 1995_u32.to_be_bytes().to_vec();
     last_value.append(&mut 149_u32.to_be_bytes().to_vec());
     assert!(elements.contains(&last_value));
+
+    // let proof = db.prove(path_query.clone()).unwrap();
+    // let (hash, result_set) = GroveDb::execute_proof(&proof, path_query).unwrap();
+    // assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    // assert_eq!(result_set.len(), 400);
+    // assert_eq!(
+    //     deserialize_and_extract_item_bytes(&result_set[0].1).unwrap(),
+    //     first_value
+    // );
+    // assert_eq!(
+    //     deserialize_and_extract_item_bytes(&result_set[result_set.len() - 1].1).unwrap(),
+    //     last_value
+    // );
 }
 
 #[test]
