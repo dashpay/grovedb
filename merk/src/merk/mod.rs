@@ -45,6 +45,7 @@ impl ProofWithoutEncodingResult {
     }
 }
 
+/// KVIterator allows you to lazily iterate over each kv pair of a subtree
 pub struct KVIterator<'a, I: RawIterator> {
     raw_iter: I,
     query: &'a Query,
@@ -66,7 +67,9 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
         iterator
     }
 
-    pub fn get_kv(&mut self, query_item: &QueryItem) -> Option<(Vec<u8>, Vec<u8>)> {
+    /// Returns the current node the iter points to if it's valid for the given
+    /// query item returns None otherwise
+    fn get_kv(&mut self, query_item: &QueryItem) -> Option<(Vec<u8>, Vec<u8>)> {
         if query_item.iter_is_valid_for_type(&self.raw_iter, None, self.left_to_right) {
             let kv = (
                 self.raw_iter
@@ -89,7 +92,8 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
         }
     }
 
-    pub fn seek(&mut self) {
+    /// Moves the iter to the start of the next query item
+    fn seek(&mut self) {
         let mut query_iter = self.query.directional_iter(self.left_to_right);
         let current_query_item = query_iter.nth(self.query_position);
         if let Some(query_item) = current_query_item {
