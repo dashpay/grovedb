@@ -2272,15 +2272,15 @@ fn test_get_range_query_with_unique_subquery() {
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 4);
 
-    // assert_eq!(
-    //     deserialize_and_extract_item_bytes(&result_set[0].1).unwrap(),
-    //     first_value
-    // );
-    //
-    // assert_eq!(
-    //     deserialize_and_extract_item_bytes(&result_set[result_set.len() -
-    // 1].1).unwrap(),     last_value
-    // );
+    assert_eq!(
+        deserialize_and_extract_item_bytes(&result_set[0].1).unwrap(),
+        first_value
+    );
+
+    assert_eq!(
+        deserialize_and_extract_item_bytes(&result_set[result_set.len() - 1].1).unwrap(),
+        last_value
+    );
 }
 
 #[test]

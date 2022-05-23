@@ -23,7 +23,7 @@ impl GroveDb {
 struct ProofVerifier {
     limit: Option<u16>,
     offset: Option<u16>,
-    result_set: Vec<(Vec<u8>, Vec<u8>)>
+    result_set: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 impl ProofVerifier {
@@ -35,11 +35,7 @@ impl ProofVerifier {
         }
     }
 
-    pub fn execute_proof(
-        &mut self,
-        proof: &[u8],
-        query: PathQuery,
-    ) -> Result<[u8; 32], Error> {
+    pub fn execute_proof(&mut self, proof: &[u8], query: PathQuery) -> Result<[u8; 32], Error> {
         let mut proof_reader = ProofReader::new(proof);
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
@@ -96,7 +92,9 @@ impl ProofVerifier {
                 )?;
 
                 last_root_hash = verification_result.0;
-                let children = verification_result.1.expect("MERK_PROOF always returns a result set");
+                let children = verification_result
+                    .1
+                    .expect("MERK_PROOF always returns a result set");
 
                 for (key, value_bytes) in children {
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
@@ -123,42 +121,52 @@ impl ProofVerifier {
                             }
 
                             if subquery_key.is_some() {
-                                // prove that the subquery key was used and update the expected hash
-                                // if the proof shows subquery key does not exist, path is no longer
-                                // useful move on to next
-                                let verification_result =
-                                    self.verify_subquery_key(proof_reader, subquery_key)?;
-
                                 if subquery_value.is_none() {
+                                    self.verify_subquery_key(
+                                        proof_reader,
+                                        ProofType::SizedMerkProof,
+                                        subquery_key,
+                                    )?;
                                     continue;
                                 } else {
-                                    // we expect a result set
+                                    let verification_result = self.verify_subquery_key(
+                                        proof_reader,
+                                        ProofType::MerkProof,
+                                        subquery_key,
+                                    )?;
                                     let subquery_key_result_set = verification_result.1;
                                     if subquery_key_result_set.is_none() {
-                                        // this means a sized proof was generated for the subquery key
+                                        // this means a sized proof was generated for the subquery
+                                        // key
                                         // which is invalid as there exists a subquery value
-                                        return Err(Error::InvalidProof("expected unsized proof for subquery key as subquery value exists"));
+                                        return Err(Error::InvalidProof(
+                                            "expected unsized proof for subquery key as subquery \
+                                             value exists",
+                                        ));
                                     }
-                                    let subquery_key_result_set = subquery_key_result_set.expect("confirmed exists above");
+                                    let subquery_key_result_set =
+                                        subquery_key_result_set.expect("confirmed exists above");
 
-                                    let subquery_key_not_in_tree = subquery_key_result_set.len() == 0;
+                                    let subquery_key_not_in_tree =
+                                        subquery_key_result_set.len() == 0;
                                     if subquery_key_not_in_tree {
+                                        // we have a valid proof that shows the absence of the
+                                        // subquery key in the tree, hence the subquery value
+                                        // cannot be applied, move on to the next.
                                         continue;
                                     }
 
                                     Self::update_root_hash_from_subquery_key_element(
                                         &mut expected_root_hash,
-                                        &subquery_key_result_set
+                                        &subquery_key_result_set,
                                     )?;
                                 }
                             }
 
                             let new_path_query =
                                 PathQuery::new_unsized(vec![], subquery_value.unwrap());
-                            let child_hash = self.execute_subquery_proof(
-                                proof_reader,
-                                new_path_query,
-                            )?;
+                            let child_hash =
+                                self.execute_subquery_proof(proof_reader, new_path_query)?;
 
                             if child_hash != expected_root_hash {
                                 return Err(Error::InvalidProof(
@@ -213,10 +221,18 @@ impl ProofVerifier {
     fn verify_subquery_key(
         &mut self,
         proof_reader: &mut ProofReader,
+        expected_proof_type: ProofType,
         subquery_key: Option<Vec<u8>>,
     ) -> Result<(Hash, Option<Vec<(Vec<u8>, Vec<u8>)>>), Error> {
         let (proof_type, subkey_proof) = proof_reader.read_proof()?;
-        match proof_type {
+
+        if proof_type != expected_proof_type {
+            return Err(Error::InvalidProof(
+                "unexpected proof type for subquery key",
+            ));
+        }
+
+        return match proof_type {
             ProofType::MerkProof | ProofType::SizedMerkProof => {
                 let mut key_as_query = Query::new();
                 key_as_query.insert_key(subquery_key.clone().unwrap());
@@ -228,12 +244,10 @@ impl ProofVerifier {
                     key_as_query.left_to_right,
                 )?;
 
-                return Ok(verification_result);
+                Ok(verification_result)
             }
-            _ => {
-                return Err(Error::InvalidProof("expected merk proof for subquery key"));
-            }
-        }
+            _ => Err(Error::InvalidProof("expected merk proof for subquery key")),
+        };
     }
 
     /// Verifies that the correct proof was provided to confirm the path in
@@ -263,7 +277,9 @@ impl ProofVerifier {
                     query.query.query.left_to_right,
                 )?;
 
-                let result_set = proof_result.1.expect("MERK_PROOF always returns a result set");
+                let result_set = proof_result
+                    .1
+                    .expect("MERK_PROOF always returns a result set");
                 if result_set.len() == 0 || &result_set[0].0 != key {
                     return Err(Error::InvalidProof("proof invalid: invalid parent"));
                 }
@@ -324,6 +340,8 @@ impl ProofVerifier {
         Ok(root_hash)
     }
 
+    /// Exectute a merk proof, update the state when a sized proof is
+    /// encountered i.e. update the limit, offset and result set values
     fn execute_merk_proof(
         &mut self,
         proof_type: ProofType,
@@ -353,7 +371,6 @@ impl ProofVerifier {
             Ok((hash, None))
         } else {
             Ok((hash, Some(result.result_set)))
-        }
+        };
     }
-
 }
