@@ -340,7 +340,7 @@ impl ProofVerifier {
         Ok(root_hash)
     }
 
-    /// Exectute a merk proof, update the state when a sized proof is
+    /// Execute a merk proof, update the state when a sized proof is
     /// encountered i.e. update the limit, offset and result set values
     fn execute_merk_proof(
         &mut self,
