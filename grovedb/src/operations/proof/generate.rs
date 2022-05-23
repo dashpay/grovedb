@@ -1,6 +1,6 @@
 use merk::{
     proofs::{encode_into, Node, Op},
-    Merk, ProofWithoutEncodingResult,
+    KVIterator, Merk, ProofWithoutEncodingResult,
 };
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
 
@@ -53,15 +53,16 @@ impl GroveDb {
         let subtree = self.open_subtree(&path)?;
         let mut is_leaf_tree = true;
 
-        for (key, value_bytes) in subtree.get_kv_pairs(&query.query.query).iter() {
+        let kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query);
+        for (key, value_bytes) in kv_iterator {
             let (subquery_key, subquery_value) =
-                Element::subquery_paths_for_sized_query(&query.query, key);
+                Element::subquery_paths_for_sized_query(&query.query, &key);
 
             if subquery_value.is_none() && subquery_key.is_none() {
                 continue;
             }
 
-            let element = raw_decode(value_bytes)?;
+            let element = raw_decode(&value_bytes)?;
             match element {
                 Element::Tree(tree_hash) => {
                     if tree_hash == EMPTY_TREE_HASH {

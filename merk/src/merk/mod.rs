@@ -1,7 +1,7 @@
 pub mod chunks;
 // TODO
 // pub mod restore;
-use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt};
+use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt, path::Iter};
 
 use anyhow::{anyhow, bail, Result};
 use storage::{self, Batch, RawIterator, StorageContext};
@@ -41,6 +41,80 @@ impl ProofWithoutEncodingResult {
             proof,
             limit,
             offset,
+        }
+    }
+}
+
+pub struct KVIterator<'a, I: RawIterator> {
+    raw_iter: I,
+    query: &'a Query,
+    left_to_right: bool,
+    current_query_item: Option<&'a QueryItem>,
+    query_position: usize,
+}
+
+impl<'a, I: RawIterator> KVIterator<'a, I> {
+    pub fn new(raw_iter: I, query: &'a Query) -> Self {
+        let mut iterator = KVIterator {
+            raw_iter,
+            query,
+            left_to_right: query.left_to_right,
+            current_query_item: None,
+            query_position: 0,
+        };
+        iterator.seek();
+        iterator
+    }
+
+    pub fn get_kv(&mut self, query_item: &QueryItem) -> Option<(Vec<u8>, Vec<u8>)> {
+        if query_item.iter_is_valid_for_type(&self.raw_iter, None, self.left_to_right) {
+            let kv = (
+                self.raw_iter
+                    .key()
+                    .expect("key must exist as iter is valid")
+                    .to_vec(),
+                self.raw_iter
+                    .value()
+                    .expect("value must exists as iter is valid")
+                    .to_vec(),
+            );
+            if self.left_to_right {
+                self.raw_iter.next()
+            } else {
+                self.raw_iter.prev()
+            }
+            Some(kv)
+        } else {
+            None
+        }
+    }
+
+    pub fn seek(&mut self) {
+        let mut query_iter = self.query.directional_iter(self.left_to_right);
+        let current_query_item = query_iter.nth(self.query_position);
+        if let Some(query_item) = current_query_item {
+            query_item.seek_for_iter(&mut self.raw_iter, self.left_to_right);
+        }
+        self.current_query_item = current_query_item;
+    }
+}
+
+impl<'a, I: RawIterator> Iterator for KVIterator<'a, I> {
+    type Item = (Vec<u8>, Vec<u8>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(query_item) = self.current_query_item {
+            let kv_pair = self.get_kv(&query_item);
+
+            if kv_pair.is_some() {
+                return kv_pair;
+            } else {
+                self.query_position += 1;
+                self.seek();
+                self.next()
+            }
+        } else {
+            None
         }
     }
 }
@@ -393,6 +467,29 @@ where
 
         !iter.valid()
     }
+
+    // TODO: turn this into an iter
+    //  currently, we accumulate all the kv pairs in a result array
+    //  this doesn't scale, as everything would be stored in memory
+    //  what would be ideal is something that lazy loads the next pair
+    //
+    // what does this function currently do?
+    // we have a storage iter (this is based on a single subtree)
+    // - which works as we are only dealing with single subtrees
+    // then we have a collection of query items
+    // - query items define valid key sections, when we have more than one
+    // - it means there are more than one block of keys we care about
+    // we first grab a key section descriptor (query item)
+    // move the iterator to the beginning of that section
+    // from that point pick a key, if its in the block add to result, move to next
+    // if the key is not in block (we have reached the end of the block)
+    // get the next block and repeat.
+
+    // to make this lazy, we need to preserve state (so we can resume exactly were
+    // we stopped) we need to know the current state of the iter
+    // we also need to know the current query item
+    // - we can keep track of that with a number
+    // the main problem then becomes how do we preserve the state of the raw iter??
 
     pub fn get_kv_pairs(&self, query: &Query) -> Vec<(Vec<u8>, Vec<u8>)> {
         let mut iter = self.storage.raw_iter();
