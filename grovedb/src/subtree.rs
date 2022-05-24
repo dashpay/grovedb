@@ -483,9 +483,9 @@ impl Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert_reference<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx>>(
+    pub fn insert_reference<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         &self,
-        merk: &'ctx mut Merk<S>,
+        merk: &mut Merk<S>,
         key: K,
         referenced_value: Vec<u8>,
     ) -> Result<(), Error> {

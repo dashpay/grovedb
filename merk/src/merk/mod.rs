@@ -276,7 +276,7 @@ where
     /// unique you can use the unsafe `prove_unchecked` for a small performance
     /// gain.
     pub fn prove_without_encoding(
-        &'ctx self,
+        &self,
         query: Query,
         limit: Option<u16>,
         offset: Option<u16>,
