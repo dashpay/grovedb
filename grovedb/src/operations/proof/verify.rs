@@ -120,6 +120,7 @@ impl ProofVerifier {
                                 continue;
                             }
 
+
                             if subquery_key.is_some() {
                                 if subquery_value.is_none() {
                                     self.verify_subquery_key(
@@ -165,6 +166,7 @@ impl ProofVerifier {
 
                             let new_path_query =
                                 PathQuery::new_unsized(vec![], subquery_value.unwrap());
+
                             let child_hash =
                                 self.execute_subquery_proof(proof_reader, new_path_query)?;
 

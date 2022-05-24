@@ -1,11 +1,14 @@
+mod batch;
 mod operations;
 mod subtree;
 #[cfg(test)]
 mod tests;
 mod util;
-#[cfg(feature = "visualize")]
 mod visualize;
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::Path,
+};
 
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
@@ -15,14 +18,12 @@ pub use storage::{
     Storage, StorageContext,
 };
 pub use subtree::Element;
-#[cfg(feature = "visualize")]
-pub use visualize::{visualize_stderr, visualize_stdout, Drawer, Visualize};
 
 use crate::util::{merk_optional_tx, meta_storage_context_optional_tx};
 
 /// A key to store serialized data about subtree prefixes to restore HADS
 /// structure
-/// A key to store serialized data about root tree leafs keys and order
+/// A key to store serialized data about root tree leaves keys and order
 const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
 
 #[derive(Debug, thiserror::Error)]
@@ -132,18 +133,18 @@ impl GroveDb {
         Ok(Self::get_root_tree_internal(&self.db, transaction)?.root())
     }
 
-    fn get_root_leaf_keys_internal<'db, 'ctx, S>(
+    fn get_root_leaf_keys_internal<'db, S>(
         meta_storage: &S,
     ) -> Result<BTreeMap<Vec<u8>, usize>, Error>
     where
-        S: StorageContext<'db, 'ctx>,
-        Error: From<<S as StorageContext<'db, 'ctx>>::Error>,
+        S: StorageContext<'db>,
+        Error: From<<S as StorageContext<'db>>::Error>,
     {
         let root_leaf_keys: BTreeMap<Vec<u8>, usize> = if let Some(root_leaf_keys_serialized) =
             meta_storage.get_meta(ROOT_LEAFS_SERIALIZED_KEY)?
         {
             bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {
-                Error::CorruptedData(String::from("unable to deserialize root leafs"))
+                Error::CorruptedData(String::from("unable to deserialize root leaves"))
             })?
         } else {
             BTreeMap::new()

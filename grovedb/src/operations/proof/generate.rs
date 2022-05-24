@@ -243,7 +243,7 @@ impl GroveDb {
         proofs: &mut Vec<u8>,
     ) -> Result<(Option<u16>, Option<u16>), Error>
     where
-        S: StorageContext<'a, 'a>,
+        S: StorageContext<'a>,
     {
         // TODO: How do you handle mixed tree types?
         let mut proof_result = subtree
