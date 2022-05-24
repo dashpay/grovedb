@@ -5,7 +5,6 @@ mod subtree;
 mod tests;
 mod util;
 mod visualize;
-
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
@@ -14,7 +13,6 @@ use std::{
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
-use serde::{Deserialize, Serialize};
 pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
     Storage, StorageContext,
@@ -67,7 +65,7 @@ pub enum Error {
     CorruptedData(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PathQuery {
     // TODO: Make generic over path type
     path: Vec<Vec<u8>>,
@@ -78,7 +76,7 @@ pub struct PathQuery {
 // limit should be applied to the elements returned by the subquery
 // offset should be applied to the first item that will subqueried (first in the
 // case of a range)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SizedQuery {
     query: Query,
     limit: Option<u16>,
@@ -104,14 +102,6 @@ impl PathQuery {
         let query = SizedQuery::new(query, None, None);
         Self { path, query }
     }
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Proof {
-    query_paths: Vec<Vec<Vec<u8>>>,
-    proofs: HashMap<Vec<u8>, Vec<u8>>,
-    root_proof: Vec<u8>,
-    root_leaf_keys: HashMap<Vec<u8>, usize>,
 }
 
 pub struct GroveDb {

@@ -6,7 +6,7 @@ pub use fetch::Fetch;
 pub use ref_walker::RefWalker;
 
 use super::{Link, Tree};
-use crate::owner::Owner;
+use crate::{owner::Owner, Hash};
 
 /// Allows traversal of a `Tree`, fetching from the given source when traversing
 /// to a pruned node, detaching children as they are traversed.
@@ -133,6 +133,13 @@ where
     /// Similar to `Tree#with_value`.
     pub fn with_value(mut self, value: Vec<u8>) -> Self {
         self.tree.own(|t| t.with_value(value));
+        self
+    }
+
+    /// Similar to `Tree#with_value_and_value_hash`.
+    pub fn with_value_and_value_hash(mut self, value: Vec<u8>, value_hash: Hash) -> Self {
+        self.tree
+            .own(|t| t.with_value_and_value_hash(value, value_hash));
         self
     }
 }

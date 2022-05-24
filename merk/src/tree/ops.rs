@@ -4,10 +4,13 @@ use anyhow::Result;
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};
+use crate::tree::hash::value_hash;
 
 /// An operation to be applied to a key in the store.
+#[derive(PartialEq)]
 pub enum Op {
     Put(Vec<u8>),
+    PutReference(Vec<u8>, Vec<u8>),
     Delete,
 }
 
@@ -18,6 +21,8 @@ impl fmt::Debug for Op {
             "{}",
             match self {
                 Put(value) => format!("Put({:?})", value),
+                PutReference(value, referenced_value) =>
+                    format!("Put Reference({:?}) for ({:?})", value, referenced_value),
                 Delete => "Delete".to_string(),
             }
         )
@@ -92,10 +97,20 @@ where
                 return Ok(maybe_tree.map(|tree| tree.into()));
             }
             Put(value) => value,
+            PutReference(value, _) => value,
         };
 
         // TODO: take from batch so we don't have to clone
-        let mid_tree = Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec());
+
+        let mid_tree = match mid_op {
+            Put(_) => Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec()),
+            PutReference(_, referenced_value) => Tree::new_with_value_hash(
+                mid_key.as_ref().to_vec(),
+                mid_value.to_vec(),
+                value_hash(referenced_value),
+            ),
+            Delete => unreachable!("cannot get here, should return at the top"),
+        };
         let mid_walker = Walker::new(mid_tree, PanicSource {});
 
         // use walker, ignore deleted_keys since it should be empty
@@ -121,6 +136,9 @@ where
             match &batch[index].1 {
                 // TODO: take vec from batch so we don't need to clone
                 Put(value) => self.with_value(value.to_vec()),
+                PutReference(value, referenced_value) => {
+                    self.with_value_and_value_hash(value.to_vec(), value_hash(&referenced_value))
+                }
                 Delete => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply
                     let source = self.clone_source();

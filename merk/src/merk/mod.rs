@@ -7,11 +7,118 @@ use anyhow::{anyhow, bail, Result};
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
-    proofs::{encode_into, query::QueryItem, Query},
+    proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
     tree::{Commit, Fetch, Hash, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
 };
 
 const ROOT_KEY_KEY: &[u8] = b"root";
+
+pub struct ProofConstructionResult {
+    pub proof: Vec<u8>,
+    pub limit: Option<u16>,
+    pub offset: Option<u16>,
+}
+
+impl ProofConstructionResult {
+    pub fn new(proof: Vec<u8>, limit: Option<u16>, offset: Option<u16>) -> Self {
+        Self {
+            proof,
+            limit,
+            offset,
+        }
+    }
+}
+
+pub struct ProofWithoutEncodingResult {
+    pub proof: LinkedList<ProofOp>,
+    pub limit: Option<u16>,
+    pub offset: Option<u16>,
+}
+
+impl ProofWithoutEncodingResult {
+    pub fn new(proof: LinkedList<ProofOp>, limit: Option<u16>, offset: Option<u16>) -> Self {
+        Self {
+            proof,
+            limit,
+            offset,
+        }
+    }
+}
+
+/// KVIterator allows you to lazily iterate over each kv pair of a subtree
+pub struct KVIterator<'a, I: RawIterator> {
+    raw_iter: I,
+    query: &'a Query,
+    left_to_right: bool,
+    query_iterator: Box<dyn Iterator<Item = &'a QueryItem> + 'a>,
+    current_query_item: Option<&'a QueryItem>,
+}
+
+impl<'a, I: RawIterator> KVIterator<'a, I> {
+    pub fn new(raw_iter: I, query: &'a Query) -> Self {
+        let mut iterator = KVIterator {
+            raw_iter,
+            query,
+            left_to_right: query.left_to_right,
+            current_query_item: None,
+            query_iterator: query.directional_iter(query.left_to_right),
+        };
+        iterator.seek();
+        iterator
+    }
+
+    /// Returns the current node the iter points to if it's valid for the given
+    /// query item returns None otherwise
+    fn get_kv(&mut self, query_item: &QueryItem) -> Option<(Vec<u8>, Vec<u8>)> {
+        if query_item.iter_is_valid_for_type(&self.raw_iter, None, self.left_to_right) {
+            let kv = (
+                self.raw_iter
+                    .key()
+                    .expect("key must exist as iter is valid")
+                    .to_vec(),
+                self.raw_iter
+                    .value()
+                    .expect("value must exists as iter is valid")
+                    .to_vec(),
+            );
+            if self.left_to_right {
+                self.raw_iter.next()
+            } else {
+                self.raw_iter.prev()
+            }
+            Some(kv)
+        } else {
+            None
+        }
+    }
+
+    /// Moves the iter to the start of the next query item
+    fn seek(&mut self) {
+        self.current_query_item = self.query_iterator.next();
+        if let Some(query_item) = self.current_query_item {
+            query_item.seek_for_iter(&mut self.raw_iter, self.left_to_right);
+        }
+    }
+}
+
+impl<'a, I: RawIterator> Iterator for KVIterator<'a, I> {
+    type Item = (Vec<u8>, Vec<u8>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(query_item) = self.current_query_item {
+            let kv_pair = self.get_kv(&query_item);
+
+            if kv_pair.is_some() {
+                return kv_pair;
+            } else {
+                self.seek();
+                self.next()
+            }
+        } else {
+            None
+        }
+    }
+}
 
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk<S> {
@@ -218,9 +325,41 @@ where
     /// check adds some overhead, so if you are sure your batch is sorted and
     /// unique you can use the unsafe `prove_unchecked` for a small performance
     /// gain.
-    pub fn prove(&self, query: Query, limit: Option<u16>, offset: Option<u16>) -> Result<Vec<u8>> {
+    pub fn prove(
+        &self,
+        query: Query,
+        limit: Option<u16>,
+        offset: Option<u16>,
+    ) -> Result<ProofConstructionResult> {
         let left_to_right = query.left_to_right;
-        self.prove_unchecked(query, limit, offset, left_to_right)
+        let (proof, limit, offset) = self.prove_unchecked(query, limit, offset, left_to_right)?;
+
+        let mut bytes = Vec::with_capacity(128);
+        encode_into(proof.iter(), &mut bytes);
+        Ok(ProofConstructionResult::new(bytes, limit, offset))
+    }
+
+    /// Creates a Merkle proof for the list of queried keys. For each key in the
+    /// query, if the key is found in the store then the value will be proven to
+    /// be in the tree. For each key in the query that does not exist in the
+    /// tree, its absence will be proven by including boundary keys.
+    ///
+    /// The proof returned is in an intermediate format to be later encoded
+    ///
+    /// This will fail if the keys in `query` are not sorted and unique. This
+    /// check adds some overhead, so if you are sure your batch is sorted and
+    /// unique you can use the unsafe `prove_unchecked` for a small performance
+    /// gain.
+    pub fn prove_without_encoding(
+        &self,
+        query: Query,
+        limit: Option<u16>,
+        offset: Option<u16>,
+    ) -> Result<ProofWithoutEncodingResult> {
+        let left_to_right = query.left_to_right;
+        let (proof, limit, offset) = self.prove_unchecked(query, limit, offset, left_to_right)?;
+
+        Ok(ProofWithoutEncodingResult::new(proof, limit, offset))
     }
 
     /// Creates a Merkle proof for the list of queried keys. For each key in
@@ -241,7 +380,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> Result<Vec<u8>>
+    ) -> Result<(LinkedList<ProofOp>, Option<u16>, Option<u16>)>
     where
         Q: Into<QueryItem>,
         I: IntoIterator<Item = Q>,
@@ -252,12 +391,10 @@ where
             let tree = maybe_tree.ok_or(anyhow!("Cannot create proof for empty tree"))?;
 
             let mut ref_walker = RefWalker::new(tree, self.source());
-            let (proof, ..) =
+            let (proof, _, limit, offset, ..) =
                 ref_walker.create_proof(query_vec.as_slice(), limit, offset, left_to_right)?;
 
-            let mut bytes = Vec::with_capacity(128);
-            encode_into(proof.iter(), &mut bytes);
-            Ok(bytes)
+            Ok((proof, limit, offset))
         })
     }
 
@@ -300,6 +437,7 @@ where
         for (key, value) in aux {
             match value {
                 Op::Put(value) => batch.put_aux(key, value)?,
+                Op::PutReference(value, _) => batch.put_aux(key, value)?,
                 Op::Delete => batch.delete_aux(key)?,
             };
         }
