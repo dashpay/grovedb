@@ -50,8 +50,8 @@ pub struct KVIterator<'a, I: RawIterator> {
     raw_iter: I,
     query: &'a Query,
     left_to_right: bool,
+    query_iterator: Box<dyn Iterator<Item = &'a QueryItem> + 'a>,
     current_query_item: Option<&'a QueryItem>,
-    query_position: usize,
 }
 
 impl<'a, I: RawIterator> KVIterator<'a, I> {
@@ -61,7 +61,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
             query,
             left_to_right: query.left_to_right,
             current_query_item: None,
-            query_position: 0,
+            query_iterator: query.directional_iter(query.left_to_right),
         };
         iterator.seek();
         iterator
@@ -94,12 +94,10 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
 
     /// Moves the iter to the start of the next query item
     fn seek(&mut self) {
-        let mut query_iter = self.query.directional_iter(self.left_to_right);
-        let current_query_item = query_iter.nth(self.query_position);
-        if let Some(query_item) = current_query_item {
+        self.current_query_item = self.query_iterator.next();
+        if let Some(query_item) = self.current_query_item {
             query_item.seek_for_iter(&mut self.raw_iter, self.left_to_right);
         }
-        self.current_query_item = current_query_item;
     }
 }
 
@@ -113,7 +111,6 @@ impl<'a, I: RawIterator> Iterator for KVIterator<'a, I> {
             if kv_pair.is_some() {
                 return kv_pair;
             } else {
-                self.query_position += 1;
                 self.seek();
                 self.next()
             }
