@@ -3,10 +3,10 @@ use std::{
     option::Option::None,
 };
 
+use ::visualize::{Drawer, Visualize};
 use rand::Rng;
 use tempfile::TempDir;
 
-// use test::RunIgnored::No;
 use super::*;
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
@@ -34,10 +34,7 @@ impl Deref for TempGroveDb {
 }
 
 impl Visualize for TempGroveDb {
-    fn visualize<'a, W: std::io::Write>(
-        &self,
-        drawer: Drawer<'a, W>,
-    ) -> std::io::Result<Drawer<'a, W>> {
+    fn visualize<W: std::io::Write>(&self, drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
         self.db.visualize(drawer)
     }
 }
@@ -46,14 +43,14 @@ impl Visualize for TempGroveDb {
 pub fn make_grovedb() -> TempGroveDb {
     let tmp_dir = TempDir::new().unwrap();
     let mut db = GroveDb::open(tmp_dir.path()).unwrap();
-    add_test_leafs(&mut db);
+    add_test_leaves(&mut db);
     TempGroveDb {
         _tmp_dir: tmp_dir,
         db,
     }
 }
 
-fn add_test_leafs(db: &mut GroveDb) {
+fn add_test_leaves(db: &mut GroveDb) {
     db.insert([], TEST_LEAF, Element::empty_tree(), None)
         .expect("successful root tree leaf insert");
     db.insert([], ANOTHER_TEST_LEAF, Element::empty_tree(), None)
@@ -516,7 +513,7 @@ fn test_tree_structure_is_persistent() {
     // Create a scoped GroveDB
     let prev_root_hash = {
         let mut db = GroveDb::open(tmp_dir.path()).unwrap();
-        add_test_leafs(&mut db);
+        add_test_leaves(&mut db);
 
         // Insert some nested subtrees
         db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
@@ -552,7 +549,7 @@ fn test_tree_structure_is_persistent() {
 }
 
 #[test]
-fn test_root_tree_leafs_are_noted() {
+fn test_root_tree_leaves_are_noted() {
     let db = make_grovedb();
     let mut hm = BTreeMap::new();
     hm.insert(TEST_LEAF.to_vec(), 0);
