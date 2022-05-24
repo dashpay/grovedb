@@ -721,7 +721,11 @@ mod tests {
     fn test_batch_validation_root_leaf_removal() {
         let db = make_grovedb();
         let ops = vec![
-            GroveDbOp::insert(vec![], TEST_LEAF.to_vec(), Element::new_item(b"ayy".to_vec())),
+            GroveDbOp::insert(
+                vec![],
+                TEST_LEAF.to_vec(),
+                Element::new_item(b"ayy".to_vec()),
+            ),
             GroveDbOp::insert(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),

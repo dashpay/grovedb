@@ -374,7 +374,6 @@ fn test_changes_propagated() {
     assert_ne!(old_hash, db.root_hash(None).unwrap());
 }
 
-// TODO: Add solid test cases to this
 #[test]
 fn test_references() {
     let db = make_grovedb();
@@ -397,9 +396,6 @@ fn test_references() {
 
     db.insert([TEST_LEAF], b"merk_2", Element::empty_tree(), None)
         .expect("successful subtree insert");
-    // db.insert([TEST_LEAF, b"merk_2"], b"key2",
-    // Element::new_item(b"value2".to_vec()), None).expect("successful subtree
-    // insert");
     db.insert(
         [TEST_LEAF, b"merk_2"],
         b"key1",
@@ -423,11 +419,15 @@ fn test_references() {
     )
     .expect("successful subtree insert");
 
+    // what was the plan here???
     let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"merk_1"]);
-    let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+    let value_subtree = Merk::open(subtree_storage).expect("cannot open merk");
 
     let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"merk_2"]);
-    let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+    let reference_subtree = Merk::open(subtree_storage).expect("cannot open merk");
+
+    // Verify that they have the same root hash
+    assert_eq!(value_subtree.root_hash(), reference_subtree.root_hash());
 }
 
 #[test]
