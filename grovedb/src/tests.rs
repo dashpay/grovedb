@@ -419,7 +419,32 @@ fn test_references() {
     )
     .expect("successful subtree insert");
 
-    // what was the plan here???
+    // Verify the base element is updated on reference insertion
+    assert_eq!(
+        db.get([TEST_LEAF, b"merk_1"], b"key1", None)
+            .expect("successful get"),
+        Element::Item(
+            b"value1".to_vec(),
+            vec![vec![
+                TEST_LEAF.to_vec(),
+                b"merk_2".to_vec(),
+                b"key1".to_vec()
+            ]]
+        )
+    );
+    assert_eq!(
+        db.get([TEST_LEAF, b"merk_1"], b"key2", None)
+            .expect("successful get"),
+        Element::Item(
+            b"value2".to_vec(),
+            vec![vec![
+                TEST_LEAF.to_vec(),
+                b"merk_2".to_vec(),
+                b"key2".to_vec()
+            ]]
+        )
+    );
+
     let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"merk_1"]);
     let value_subtree = Merk::open(subtree_storage).expect("cannot open merk");
 
