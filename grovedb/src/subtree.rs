@@ -20,7 +20,7 @@ use crate::{
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Element {
     /// An ordinary value
     Item(Vec<u8>, Vec<Vec<Vec<u8>>>),
@@ -150,8 +150,8 @@ impl Element {
     }
 
     /// Delete an element from Merk under a key
-    pub fn delete<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx> + 'ctx>(
-        merk: &'ctx mut Merk<S>,
+    pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        merk: &mut Merk<S>,
         key: K,
     ) -> Result<(), Error> {
         // TODO: delete references on this element
@@ -162,7 +162,7 @@ impl Element {
 
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    pub fn get<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx> + 'ctx>(
+    pub fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
         key: K,
     ) -> Result<Element, Error> {
@@ -532,9 +532,9 @@ impl Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx>>(
+    pub fn insert<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         &self,
-        merk: &'ctx mut Merk<S>,
+        merk: &mut Merk<S>,
         key: K,
     ) -> Result<(), Error> {
         let batch_operations = [(key, Op::Put(self.serialize()?))];
@@ -547,9 +547,9 @@ impl Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    pub fn insert_reference<'db, 'ctx, K: AsRef<[u8]>, S: StorageContext<'db, 'ctx>>(
+    pub fn insert_reference<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         &self,
-        merk: &'ctx mut Merk<S>,
+        merk: &mut Merk<S>,
         key: K,
         referenced_value: Vec<u8>,
     ) -> Result<(), Error> {
