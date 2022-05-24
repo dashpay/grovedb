@@ -45,6 +45,81 @@ impl ProofWithoutEncodingResult {
     }
 }
 
+/// KVIterator allows you to lazily iterate over each kv pair of a subtree
+pub struct KVIterator<'a, I: RawIterator> {
+    raw_iter: I,
+    query: &'a Query,
+    left_to_right: bool,
+    query_iterator: Box<dyn Iterator<Item = &'a QueryItem> + 'a>,
+    current_query_item: Option<&'a QueryItem>,
+}
+
+impl<'a, I: RawIterator> KVIterator<'a, I> {
+    pub fn new(raw_iter: I, query: &'a Query) -> Self {
+        let mut iterator = KVIterator {
+            raw_iter,
+            query,
+            left_to_right: query.left_to_right,
+            current_query_item: None,
+            query_iterator: query.directional_iter(query.left_to_right),
+        };
+        iterator.seek();
+        iterator
+    }
+
+    /// Returns the current node the iter points to if it's valid for the given
+    /// query item returns None otherwise
+    fn get_kv(&mut self, query_item: &QueryItem) -> Option<(Vec<u8>, Vec<u8>)> {
+        if query_item.iter_is_valid_for_type(&self.raw_iter, None, self.left_to_right) {
+            let kv = (
+                self.raw_iter
+                    .key()
+                    .expect("key must exist as iter is valid")
+                    .to_vec(),
+                self.raw_iter
+                    .value()
+                    .expect("value must exists as iter is valid")
+                    .to_vec(),
+            );
+            if self.left_to_right {
+                self.raw_iter.next()
+            } else {
+                self.raw_iter.prev()
+            }
+            Some(kv)
+        } else {
+            None
+        }
+    }
+
+    /// Moves the iter to the start of the next query item
+    fn seek(&mut self) {
+        self.current_query_item = self.query_iterator.next();
+        if let Some(query_item) = self.current_query_item {
+            query_item.seek_for_iter(&mut self.raw_iter, self.left_to_right);
+        }
+    }
+}
+
+impl<'a, I: RawIterator> Iterator for KVIterator<'a, I> {
+    type Item = (Vec<u8>, Vec<u8>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(query_item) = self.current_query_item {
+            let kv_pair = self.get_kv(&query_item);
+
+            if kv_pair.is_some() {
+                return kv_pair;
+            } else {
+                self.seek();
+                self.next()
+            }
+        } else {
+            None
+        }
+    }
+}
+
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk<S> {
     pub(crate) tree: Cell<Option<Tree>>,
@@ -388,36 +463,6 @@ where
         iter.seek_to_first();
 
         !iter.valid()
-    }
-
-    pub fn get_kv_pairs(&self, left_to_right: bool) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let mut result = vec![];
-        let mut iter = self.storage.raw_iter();
-
-        if left_to_right {
-            iter.seek_to_first();
-        } else {
-            iter.seek_to_last();
-        }
-
-        while iter.valid() {
-            let rs = (
-                iter.key()
-                    .expect("key must exist as iter is valid")
-                    .to_vec(),
-                iter.value()
-                    .expect("value must exist as iter is valid")
-                    .to_vec(),
-            );
-            result.push(rs);
-            if left_to_right {
-                iter.next();
-            } else {
-                iter.prev();
-            }
-        }
-
-        result
     }
 
     fn source(&self) -> MerkSource<S> {

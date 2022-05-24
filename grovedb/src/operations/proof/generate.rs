@@ -1,6 +1,6 @@
 use merk::{
     proofs::{encode_into, Node, Op},
-    Merk, ProofWithoutEncodingResult,
+    KVIterator, Merk, ProofWithoutEncodingResult,
 };
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
 
@@ -53,16 +53,16 @@ impl GroveDb {
         let subtree = self.open_subtree(&path)?;
         let mut is_leaf_tree = true;
 
-        // TODO: shouldn't you get the kv pairs based on the query??
-        for (key, value_bytes) in subtree.get_kv_pairs(query.query.query.left_to_right).iter() {
+        let kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query);
+        for (key, value_bytes) in kv_iterator {
             let (subquery_key, subquery_value) =
-                Element::subquery_paths_for_sized_query(&query.query, key);
+                Element::subquery_paths_for_sized_query(&query.query, &key);
 
-            if subquery_value.is_none() {
+            if subquery_value.is_none() && subquery_key.is_none() {
                 continue;
             }
 
-            let element = raw_decode(value_bytes)?;
+            let element = raw_decode(&value_bytes)?;
             match element {
                 Element::Tree(tree_hash) => {
                     if tree_hash == EMPTY_TREE_HASH {
@@ -72,14 +72,9 @@ impl GroveDb {
                     // if the element is a non empty tree then current tree is not a leaf tree
                     if is_leaf_tree {
                         is_leaf_tree = false;
-                        // TODO: this should not be an all key query??
-                        let mut all_key_query =
-                            Query::new_with_direction(query.query.query.left_to_right);
-                        all_key_query.insert_all();
-
                         self.generate_and_store_merk_proof(
                             &subtree,
-                            all_key_query,
+                            &query.query.query,
                             None,
                             None,
                             ProofType::MerkProof,
@@ -90,31 +85,35 @@ impl GroveDb {
                     let mut new_path = path.clone();
                     new_path.push(key.as_ref());
 
-                    let has_subkey_and_subquery =
-                        subquery_value.is_some() && subquery_key.is_some();
+                    let mut query = subquery_value;
 
-                    if has_subkey_and_subquery {
-                        // prove the subquery key first
-                        let inner_subtree = self.open_subtree(&new_path)?;
+                    if query.is_some() {
+                        if subquery_key.is_some() {
+                            // prove the subquery key first
+                            let inner_subtree = self.open_subtree(&new_path)?;
 
+                            let mut key_as_query = Query::new();
+                            key_as_query.insert_key(subquery_key.clone().unwrap());
+
+                            self.generate_and_store_merk_proof(
+                                &inner_subtree,
+                                &key_as_query,
+                                None,
+                                None,
+                                ProofType::MerkProof,
+                                proofs,
+                            )?;
+
+                            new_path.push(subquery_key.as_ref().unwrap());
+                        }
+                    } else {
                         let mut key_as_query = Query::new();
-                        key_as_query.insert_key(subquery_key.clone().unwrap());
-
-                        self.generate_and_store_merk_proof(
-                            &inner_subtree,
-                            key_as_query,
-                            None,
-                            None,
-                            ProofType::MerkProof,
-                            proofs,
-                        )?;
-
-                        new_path.push(subquery_key.as_ref().unwrap());
+                        key_as_query.insert_key(subquery_key.unwrap());
+                        query = Some(key_as_query);
                     }
 
                     let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
-                    let new_path_query =
-                        PathQuery::new_unsized(new_path_owned, subquery_value.unwrap());
+                    let new_path_query = PathQuery::new_unsized(new_path_owned, query.unwrap());
 
                     if self
                         .check_subtree_exists_path_not_found(new_path.clone(), None, None)
@@ -151,7 +150,7 @@ impl GroveDb {
             // apply the sized query
             let limit_offset = self.generate_and_store_merk_proof(
                 &subtree,
-                query.query.query,
+                &query.query.query,
                 *current_limit,
                 *current_offset,
                 ProofType::SizedMerkProof,
@@ -220,7 +219,7 @@ impl GroveDb {
 
                 self.generate_and_store_merk_proof(
                     &subtree,
-                    query,
+                    &query,
                     None,
                     None,
                     ProofType::MerkProof,
@@ -237,7 +236,7 @@ impl GroveDb {
     fn generate_and_store_merk_proof<'a, S: 'a>(
         &self,
         subtree: &'a Merk<S>,
-        query: Query,
+        query: &Query,
         limit: Option<u16>,
         offset: Option<u16>,
         proof_type: ProofType,
@@ -248,7 +247,7 @@ impl GroveDb {
     {
         // TODO: How do you handle mixed tree types?
         let mut proof_result = subtree
-            .prove_without_encoding(query, limit, offset)
+            .prove_without_encoding(query.clone(), limit, offset)
             .expect("should generate proof");
 
         self.replace_references(&mut proof_result);

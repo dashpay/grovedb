@@ -61,6 +61,17 @@ impl Query {
         self.items.iter().rev()
     }
 
+    pub fn directional_iter(
+        &self,
+        left_to_right: bool,
+    ) -> Box<dyn Iterator<Item = &QueryItem> + '_> {
+        if left_to_right {
+            Box::new(self.iter())
+        } else {
+            Box::new(self.rev_iter())
+        }
+    }
+
     /// Sets the subquery_key for the query. This causes every element that is
     /// returned by the query to be subqueried to the subquery_key.
     pub fn set_subquery_key(&mut self, key: Vec<u8>) {
@@ -555,7 +566,7 @@ impl QueryItem {
         left_to_right: bool,
     ) -> bool {
         match self {
-            QueryItem::Key(_) => true,
+            QueryItem::Key(start) => iter.key() == Some(start),
             QueryItem::Range(Range { start, end }) => {
                 let basic_valid =
                     (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
@@ -1076,20 +1087,9 @@ pub fn execute_proof(
     offset: Option<u16>,
     left_to_right: bool,
 ) -> Result<(MerkHash, ProofVerificationResult)> {
-    pub fn get_query_iter(
-        query: &Query,
-        left_to_right: bool,
-    ) -> Box<dyn Iterator<Item = &QueryItem> + '_> {
-        if left_to_right {
-            Box::new(query.iter())
-        } else {
-            Box::new(query.rev_iter())
-        }
-    }
-
     let mut output = Vec::with_capacity(query.len());
     let mut last_push = None;
-    let mut query = get_query_iter(query, left_to_right).peekable();
+    let mut query = query.directional_iter(left_to_right).peekable();
     let mut in_range = false;
     let mut current_limit = limit;
     let mut current_offset = offset;
