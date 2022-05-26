@@ -210,7 +210,7 @@ impl GroveDb {
 
                     // On subtree deletion/overwrite we need to do Merk's cleanup
                     match Element::get(&merk, &op.key) {
-                        Ok(Element::Tree(_, _)) => {
+                        Ok(Element::Tree(..)) => {
                             let mut path = op.path.clone();
                             path.push(op.key.clone());
                             let mut sub = temp_subtrees
@@ -351,7 +351,7 @@ impl GroveDb {
                     ref key,
                     op:
                         Op::Insert {
-                            element: Element::Tree(_, _),
+                            element: Element::Tree(..),
                         },
                     ..
                 } => {
@@ -721,7 +721,11 @@ mod tests {
     fn test_batch_validation_root_leaf_removal() {
         let db = make_grovedb();
         let ops = vec![
-            GroveDbOp::insert(vec![], TEST_LEAF.to_vec(), Element::new_item(b"ayy".to_vec())),
+            GroveDbOp::insert(
+                vec![],
+                TEST_LEAF.to_vec(),
+                Element::new_item(b"ayy".to_vec()),
+            ),
             GroveDbOp::insert(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
