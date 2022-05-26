@@ -99,7 +99,7 @@ impl ProofVerifier {
                 for (key, value_bytes) in children {
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
                     match child_element {
-                        Element::Tree(mut expected_root_hash) => {
+                        Element::Tree(mut expected_root_hash, _) => {
                             if expected_root_hash == EMPTY_TREE_HASH {
                                 // child node is empty, move on to next
                                 continue;
@@ -202,7 +202,7 @@ impl ProofVerifier {
         let subquery_key_element = Element::deserialize(elem_value)
             .map_err(|_| Error::CorruptedData("failed to deserialize element".to_string()))?;
         match subquery_key_element {
-            Element::Tree(new_exptected_hash) => {
+            Element::Tree(new_exptected_hash, _) => {
                 *expected_root_hash = new_exptected_hash;
             }
             _ => {
@@ -287,7 +287,7 @@ impl ProofVerifier {
 
                 let elem = Element::deserialize(result_set[0].1.as_slice())?;
                 let child_hash = match elem {
-                    Element::Tree(hash) => Ok(hash),
+                    Element::Tree(hash, _) => Ok(hash),
                     _ => Err(Error::InvalidProof(
                         "intermediate proofs should be for trees",
                     )),
