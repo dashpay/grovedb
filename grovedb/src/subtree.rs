@@ -62,12 +62,24 @@ impl Element {
         Element::Item(item_value, None)
     }
 
+    pub fn new_item_with_flag(item_value: Vec<u8>, flag: ElementFlag) -> Self {
+        Element::Item(item_value, flag)
+    }
+
     pub fn new_reference(reference_path: Vec<Vec<u8>>) -> Self {
         Element::Reference(reference_path, None)
     }
 
+    pub fn new_reference_with_flag(reference_path: Vec<Vec<u8>>, flag: ElementFlag) -> Self {
+        Element::Reference(reference_path, flag)
+    }
+
     pub fn new_tree(tree_hash: [u8; 32]) -> Self {
         Element::Tree(tree_hash, None)
+    }
+
+    pub fn new_tree_with_flag(tree_hash: [u8; 32], flag: ElementFlag) -> Self {
+        Element::Tree(tree_hash, flag)
     }
 
     /// Get the size of an element in bytes
