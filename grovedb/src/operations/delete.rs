@@ -90,7 +90,7 @@ impl GroveDb {
                 })
             };
 
-            if let Element::Tree(_) = element {
+            if let Element::Tree(..) = element {
                 let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
                 let subtrees_paths = self.find_subtrees(subtree_merk_path.clone(), transaction)?;
                 let is_empty =
@@ -158,7 +158,7 @@ impl GroveDb {
             storage_context_optional_tx!(self.db, path_iter.clone(), transaction, storage, {
                 let mut raw_iter = Element::iterator(storage.raw_iter());
                 while let Some((key, value)) = raw_iter.next()? {
-                    if let Element::Tree(_) = value {
+                    if let Element::Tree(..) = value {
                         let mut sub_path = q.clone();
                         sub_path.push(key.to_vec());
                         queue.push(sub_path.clone());
