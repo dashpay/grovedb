@@ -416,10 +416,7 @@ fn test_element_with_flags() {
         element_with_flag,
         Element::Item(b"flagged".to_vec(), Some(4))
     );
-    // assert!(matches!(
-    //     tree_element_with_flag,
-    //     Element::Tree(_, Some(1))
-    // ));
+    assert!(matches!(tree_element_with_flag, Element::Tree(_, Some(1))));
     assert_eq!(
         flagged_ref_follow,
         Element::Item(b"flagged".to_vec(), Some(4))
