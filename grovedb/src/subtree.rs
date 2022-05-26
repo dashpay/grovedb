@@ -55,6 +55,18 @@ impl Element {
         Element::Tree(Default::default())
     }
 
+    pub fn new_item(item_value: Vec<u8>) -> Self {
+        Element::Item(item_value)
+    }
+
+    pub fn new_reference(reference_path: Vec<Vec<u8>>) -> Self {
+        Element::Reference(reference_path)
+    }
+
+    pub fn new_tree(tree_hash: [u8; 32]) -> Self {
+        Element::Tree(tree_hash)
+    }
+
     /// Get the size of an element in bytes
     pub fn byte_size(&self) -> usize {
         match self {
