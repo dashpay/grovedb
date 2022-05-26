@@ -198,7 +198,7 @@ impl GroveDb {
                     .get_transactional_storage_context(path_iter.clone(), tx);
                 let subtree = Merk::open(subtree_storage)
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                let element = Element::Tree(subtree.root_hash());
+                let element = Element::new_tree(subtree.root_hash());
                 let key = path_iter.next_back().expect("next element is `Some`");
                 let parent_storage = self
                     .db
@@ -210,7 +210,7 @@ impl GroveDb {
                 let subtree_storage = self.db.get_storage_context(path_iter.clone());
                 let subtree = Merk::open(subtree_storage)
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                let element = Element::Tree(subtree.root_hash());
+                let element = Element::new_tree(subtree.root_hash());
                 let key = path_iter.next_back().expect("next element is `Some`");
                 let parent_storage = self.db.get_storage_context(path_iter.clone());
                 let mut parent_tree = Merk::open(parent_storage)
