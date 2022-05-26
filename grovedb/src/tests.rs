@@ -348,6 +348,92 @@ fn test_insert_value_to_subtree() {
 }
 
 #[test]
+fn test_element_with_flags() {
+    let db = make_grovedb();
+
+    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
+        .expect("should insert subtree successfully");
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"elem1",
+        Element::new_item(b"flagless".to_vec()),
+        None,
+    )
+    .expect("should insert subtree successfully");
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"elem2",
+        Element::new_item_with_flag(b"flagged".to_vec(), Some(4)),
+        None,
+    )
+    .expect("should insert subtree successfully");
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"elem3",
+        Element::new_tree_with_flag([0; 32], Some(1)),
+        None,
+    )
+    .expect("should insert subtree successfully");
+    db.insert(
+        [TEST_LEAF, b"key1", b"elem3"],
+        b"elem4",
+        Element::new_reference_with_flag(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"elem2".to_vec()],
+            Some(9),
+        ),
+        None,
+    )
+    .expect("should insert subtree successfully");
+
+    let element_without_flag = db
+        .get([TEST_LEAF, b"key1"], b"elem1", None)
+        .expect("should get successfully");
+    let element_with_flag = db
+        .get([TEST_LEAF, b"key1"], b"elem2", None)
+        .expect("should get successfully");
+    let tree_element_with_flag = db
+        .get([TEST_LEAF, b"key1"], b"elem3", None)
+        .expect("should get successfully");
+    let flagged_ref_follow = db
+        .get([TEST_LEAF, b"key1", b"elem3"], b"elem4", None)
+        .expect("should get successfully");
+
+    let mut query = Query::new();
+    query.insert_key(b"elem4".to_vec());
+    let path_query = PathQuery::new(
+        vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"elem3".to_vec()],
+        SizedQuery::new(query, None, None),
+    );
+    let (flagged_ref_no_follow, _) = db
+        .get_path_query_raw(&path_query, None)
+        .expect("should get successfully");
+
+    assert_eq!(
+        element_without_flag,
+        Element::Item(b"flagless".to_vec(), None)
+    );
+    assert_eq!(
+        element_with_flag,
+        Element::Item(b"flagged".to_vec(), Some(4))
+    );
+    // assert!(matches!(
+    //     tree_element_with_flag,
+    //     Element::Tree(_, Some(1))
+    // ));
+    assert_eq!(
+        flagged_ref_follow,
+        Element::Item(b"flagged".to_vec(), Some(4))
+    );
+    assert_eq!(
+        flagged_ref_no_follow[0],
+        Element::Reference(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"elem2".to_vec()],
+            Some(9)
+        )
+    );
+}
+
+#[test]
 fn test_changes_propagated() {
     let db = make_grovedb();
     let old_hash = db.root_hash(None).unwrap();
@@ -397,8 +483,9 @@ fn test_references() {
 
     db.insert([TEST_LEAF], b"merk_2", Element::empty_tree(), None)
         .expect("successful subtree insert");
-    // db.insert([TEST_LEAF, b"merk_2"], b"key2", Element::new_item(b"value2".to_vec()),
-    // None).expect("successful subtree insert");
+    // db.insert([TEST_LEAF, b"merk_2"], b"key2",
+    // Element::new_item(b"value2".to_vec()), None).expect("successful subtree
+    // insert");
     db.insert(
         [TEST_LEAF, b"merk_2"],
         b"key1",
@@ -482,8 +569,13 @@ fn test_too_many_indirections() {
 
     let keygen = |idx| format!("key{}", idx).bytes().collect::<Vec<u8>>();
 
-    db.insert([TEST_LEAF], b"key0", Element::new_item(b"oops".to_vec()), None)
-        .expect("successful item insert");
+    db.insert(
+        [TEST_LEAF],
+        b"key0",
+        Element::new_item(b"oops".to_vec()),
+        None,
+    )
+    .expect("successful item insert");
 
     for i in 1..=(MAX_REFERENCE_HOPS) {
         db.insert(
@@ -3214,8 +3306,13 @@ fn test_root_hash() {
     let db = make_grovedb();
     // Check hashes are different if tree is edited
     let old_root_hash = db.root_hash(None);
-    db.insert([TEST_LEAF], b"key1", Element::new_item(b"ayy".to_vec()), None)
-        .expect("unable to insert an item");
+    db.insert(
+        [TEST_LEAF],
+        b"key1",
+        Element::new_item(b"ayy".to_vec()),
+        None,
+    )
+    .expect("unable to insert an item");
     assert_ne!(old_root_hash.unwrap(), db.root_hash(None).unwrap());
 
     // Check isolation
