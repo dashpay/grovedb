@@ -21,7 +21,7 @@ impl GroveDb {
         if path_slices.len() < 1 {
             return Err(Error::InvalidPath("can't generate proof for empty path"));
         }
-        self.check_subtree_exists_path_not_found(path_slices.clone(), None, None)?;
+        self.check_subtree_exists_path_not_found(path_slices.clone(), None)?;
 
         self.prove_subqueries(
             &mut proof_result,
@@ -116,7 +116,7 @@ impl GroveDb {
                     let new_path_query = PathQuery::new_unsized(new_path_owned, query.unwrap());
 
                     if self
-                        .check_subtree_exists_path_not_found(new_path.clone(), None, None)
+                        .check_subtree_exists_path_not_found(new_path.clone(), None)
                         .is_err()
                     {
                         continue;
