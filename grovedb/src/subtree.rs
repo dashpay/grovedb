@@ -55,7 +55,7 @@ where
 impl Element {
     // TODO: improve API to avoid creation of Tree elements with uncertain state
     pub fn empty_tree() -> Element {
-        Element::Tree(Default::default())
+        Element::new_tree(Default::default())
     }
 
     pub fn new_item(item_value: Vec<u8>) -> Self {
@@ -71,24 +71,26 @@ impl Element {
     }
 
     /// Get the size of an element in bytes
+    // TODO: Fix byte size value
     pub fn byte_size(&self) -> usize {
         match self {
-            Element::Item(item) => item.len(),
-            Element::Reference(path_reference) => {
+            Element::Item(item, _) => item.len(),
+            Element::Reference(path_reference, _) => {
                 path_reference.iter().map(|inner| inner.len()).sum()
             }
-            Element::Tree(_) => 32,
+            Element::Tree(..) => 32,
         }
     }
 
     /// Get the size of the serialization of an element in bytes
+    // TODO: Fix serialized byte size value
     pub fn serialized_byte_size(&self) -> usize {
         match self {
-            Element::Item(item) => {
+            Element::Item(item, _) => {
                 let len = item.len();
                 len + len.required_space() + 1 // 1 for enum
             }
-            Element::Reference(path_reference) => {
+            Element::Reference(path_reference, _) => {
                 path_reference
                     .iter()
                     .map(|inner| {
@@ -99,11 +101,12 @@ impl Element {
                     + path_reference.len().required_space()
                     + 1 // for the enum
             }
-            Element::Tree(_) => 33, // 32 + 1 for enum
+            Element::Tree(..) => 33, // 32 + 1 for enum
         }
     }
 
     /// Get the size that the element will occupy on disk
+    // TODO: Fix node byte size value
     pub fn node_byte_size(&self, key: &[u8]) -> usize {
         // todo v23: this is just an approximation for now
         let serialized_value_size = self.serialized_byte_size();
@@ -193,7 +196,7 @@ impl Element {
             offset,
         } = args;
         match element {
-            Element::Tree(_) => {
+            Element::Tree(..) => {
                 let mut path_vec = path
                     .ok_or(Error::MissingParameter(
                         "the path must be provided when using a subquery key",
@@ -576,13 +579,13 @@ mod tests {
         Element::empty_tree()
             .insert(&mut merk, b"mykey")
             .expect("expected successful insertion");
-        Element::Item(b"value".to_vec())
+        Element::new_item(b"value".to_vec())
             .insert(&mut merk, b"another-key")
             .expect("expected successful insertion 2");
 
         assert_eq!(
             Element::get(&merk, b"another-key").expect("expected successful get"),
-            Element::Item(b"value".to_vec()),
+            Element::new_item(b"value".to_vec()),
         );
     }
 
@@ -598,14 +601,14 @@ mod tests {
             "020000000000000000000000000000000000000000000000000000000000000000"
         );
 
-        let item = Element::Item(hex::decode("abcdef").expect("expected to decode"));
+        let item = Element::new_item(hex::decode("abcdef").expect("expected to decode"));
         let serialized = item.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 5);
         assert_eq!(serialized.len(), item.serialized_byte_size());
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "0003abcdef");
 
-        let reference = Element::Reference(vec![
+        let reference = Element::new_reference(vec![
             vec![0],
             hex::decode("abcd").expect("expected to decode"),
             vec![5],
@@ -626,16 +629,16 @@ mod tests {
         let storage_context = storage.get_storage_context([TEST_LEAF]);
         let mut merk = Merk::open(storage_context).expect("cannot open Merk");
 
-        Element::Item(b"ayyd".to_vec())
+        Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
             .expect("expected successful insertion");
-        Element::Item(b"ayyc".to_vec())
+        Element::new_item(b"ayyc".to_vec())
             .insert(&mut merk, b"c")
             .expect("expected successful insertion");
-        Element::Item(b"ayya".to_vec())
+        Element::new_item(b"ayya".to_vec())
             .insert(&mut merk, b"a")
             .expect("expected successful insertion");
-        Element::Item(b"ayyb".to_vec())
+        Element::new_item(b"ayyb".to_vec())
             .insert(&mut merk, b"b")
             .expect("expected successful insertion");
 
@@ -647,8 +650,8 @@ mod tests {
             Element::get_query(&storage, &[TEST_LEAF], &query, None)
                 .expect("expected successful get_query"),
             vec![
-                Element::Item(b"ayya".to_vec()),
-                Element::Item(b"ayyc".to_vec())
+                Element::new_item(b"ayya".to_vec()),
+                Element::new_item(b"ayyc".to_vec())
             ]
         );
 
@@ -660,9 +663,9 @@ mod tests {
             Element::get_query(&storage, &[TEST_LEAF], &query, None)
                 .expect("expected successful get_query"),
             vec![
-                Element::Item(b"ayya".to_vec()),
-                Element::Item(b"ayyb".to_vec()),
-                Element::Item(b"ayyc".to_vec())
+                Element::new_item(b"ayya".to_vec()),
+                Element::new_item(b"ayyb".to_vec()),
+                Element::new_item(b"ayyc".to_vec())
             ]
         );
 
@@ -674,9 +677,9 @@ mod tests {
             Element::get_query(&storage, &[TEST_LEAF], &query, None)
                 .expect("expected successful get_query"),
             vec![
-                Element::Item(b"ayyb".to_vec()),
-                Element::Item(b"ayyc".to_vec()),
-                Element::Item(b"ayyd".to_vec())
+                Element::new_item(b"ayyb".to_vec()),
+                Element::new_item(b"ayyc".to_vec()),
+                Element::new_item(b"ayyd".to_vec())
             ]
         );
 
@@ -689,9 +692,9 @@ mod tests {
             Element::get_query(&storage, &[TEST_LEAF], &query, None)
                 .expect("expected successful get_query"),
             vec![
-                Element::Item(b"ayya".to_vec()),
-                Element::Item(b"ayyb".to_vec()),
-                Element::Item(b"ayyc".to_vec())
+                Element::new_item(b"ayya".to_vec()),
+                Element::new_item(b"ayyb".to_vec()),
+                Element::new_item(b"ayyc".to_vec())
             ]
         );
     }
@@ -704,16 +707,16 @@ mod tests {
         let storage_context = storage.get_storage_context([TEST_LEAF]);
         let mut merk = Merk::open(storage_context).expect("cannot open Merk");
 
-        Element::Item(b"ayyd".to_vec())
+        Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
             .expect("expected successful insertion");
-        Element::Item(b"ayyc".to_vec())
+        Element::new_item(b"ayyc".to_vec())
             .insert(&mut merk, b"c")
             .expect("expected successful insertion");
-        Element::Item(b"ayya".to_vec())
+        Element::new_item(b"ayya".to_vec())
             .insert(&mut merk, b"a")
             .expect("expected successful insertion");
-        Element::Item(b"ayyb".to_vec())
+        Element::new_item(b"ayyb".to_vec())
             .insert(&mut merk, b"b")
             .expect("expected successful insertion");
 
@@ -728,9 +731,9 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::Item(b"ayya".to_vec()),
-                Element::Item(b"ayyb".to_vec()),
-                Element::Item(b"ayyc".to_vec()),
+                Element::new_item(b"ayya".to_vec()),
+                Element::new_item(b"ayyb".to_vec()),
+                Element::new_item(b"ayyc".to_vec()),
             ]
         );
         assert_eq!(skipped, 0);
@@ -744,9 +747,9 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::Item(b"ayyc".to_vec()),
-                Element::Item(b"ayyb".to_vec()),
-                Element::Item(b"ayya".to_vec()),
+                Element::new_item(b"ayyc".to_vec()),
+                Element::new_item(b"ayyb".to_vec()),
+                Element::new_item(b"ayya".to_vec()),
             ]
         );
         assert_eq!(skipped, 0);
@@ -760,16 +763,16 @@ mod tests {
         let storage_context = storage.get_storage_context([TEST_LEAF]);
         let mut merk = Merk::open(storage_context).expect("cannot open Merk");
 
-        Element::Item(b"ayyd".to_vec())
+        Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
             .expect("expected successful insertion");
-        Element::Item(b"ayyc".to_vec())
+        Element::new_item(b"ayyc".to_vec())
             .insert(&mut merk, b"c")
             .expect("expected successful insertion");
-        Element::Item(b"ayya".to_vec())
+        Element::new_item(b"ayya".to_vec())
             .insert(&mut merk, b"a")
             .expect("expected successful insertion");
-        Element::Item(b"ayyb".to_vec())
+        Element::new_item(b"ayyb".to_vec())
             .insert(&mut merk, b"b")
             .expect("expected successful insertion");
 
@@ -780,10 +783,10 @@ mod tests {
         let ascending_query = SizedQuery::new(query.clone(), None, None);
         fn check_elements_no_skipped((elements, skipped): (Vec<Element>, u16), reverse: bool) {
             let mut expected = vec![
-                Element::Item(b"ayya".to_vec()),
-                Element::Item(b"ayyb".to_vec()),
-                Element::Item(b"ayyc".to_vec()),
-                Element::Item(b"ayyd".to_vec()),
+                Element::new_item(b"ayya".to_vec()),
+                Element::new_item(b"ayyb".to_vec()),
+                Element::new_item(b"ayyc".to_vec()),
+                Element::new_item(b"ayyd".to_vec()),
             ];
             if reverse {
                 expected.reverse();
@@ -828,16 +831,16 @@ mod tests {
         let storage_context = storage.get_storage_context([TEST_LEAF]);
         let mut merk = Merk::open(storage_context).expect("cannot open Merk");
 
-        Element::Item(b"ayyd".to_vec())
+        Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
             .expect("expected successful insertion");
-        Element::Item(b"ayyc".to_vec())
+        Element::new_item(b"ayyc".to_vec())
             .insert(&mut merk, b"c")
             .expect("expected successful insertion");
-        Element::Item(b"ayya".to_vec())
+        Element::new_item(b"ayya".to_vec())
             .insert(&mut merk, b"a")
             .expect("expected successful insertion");
-        Element::Item(b"ayyb".to_vec())
+        Element::new_item(b"ayyb".to_vec())
             .insert(&mut merk, b"b")
             .expect("expected successful insertion");
 
@@ -854,8 +857,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::Item(b"ayya".to_vec()),
-                Element::Item(b"ayyc".to_vec()),
+                Element::new_item(b"ayya".to_vec()),
+                Element::new_item(b"ayyc".to_vec()),
             ]
         );
         assert_eq!(skipped, 0);
@@ -873,8 +876,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::Item(b"ayyc".to_vec()),
-                Element::Item(b"ayya".to_vec()),
+                Element::new_item(b"ayyc".to_vec()),
+                Element::new_item(b"ayya".to_vec()),
             ]
         );
         assert_eq!(skipped, 0);
@@ -884,7 +887,7 @@ mod tests {
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_query, None)
                 .expect("expected successful get_query");
-        assert_eq!(elements, vec![Element::Item(b"ayyc".to_vec()),]);
+        assert_eq!(elements, vec![Element::new_item(b"ayyc".to_vec()),]);
         assert_eq!(skipped, 0);
 
         // Test range query
@@ -898,8 +901,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::Item(b"ayya".to_vec()),
-                Element::Item(b"ayyb".to_vec())
+                Element::new_item(b"ayya".to_vec()),
+                Element::new_item(b"ayyb".to_vec())
             ]
         );
         assert_eq!(skipped, 0);
@@ -911,8 +914,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::Item(b"ayyb".to_vec()),
-                Element::Item(b"ayyc".to_vec())
+                Element::new_item(b"ayyb".to_vec()),
+                Element::new_item(b"ayyc".to_vec())
             ]
         );
         assert_eq!(skipped, 1);
@@ -929,8 +932,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::Item(b"ayyb".to_vec()),
-                Element::Item(b"ayya".to_vec())
+                Element::new_item(b"ayyb".to_vec()),
+                Element::new_item(b"ayya".to_vec())
             ]
         );
         assert_eq!(skipped, 1);
@@ -946,9 +949,9 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::Item(b"ayyb".to_vec()),
-                Element::Item(b"ayyc".to_vec()),
-                Element::Item(b"ayyd".to_vec()),
+                Element::new_item(b"ayyb".to_vec()),
+                Element::new_item(b"ayyc".to_vec()),
+                Element::new_item(b"ayyd".to_vec()),
             ]
         );
         assert_eq!(skipped, 0);
@@ -964,8 +967,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::Item(b"ayyc".to_vec()),
-                Element::Item(b"ayyb".to_vec()),
+                Element::new_item(b"ayyc".to_vec()),
+                Element::new_item(b"ayyb".to_vec()),
             ]
         );
         assert_eq!(skipped, 1);
@@ -982,8 +985,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::Item(b"ayyb".to_vec()),
-                Element::Item(b"ayya".to_vec()),
+                Element::new_item(b"ayyb".to_vec()),
+                Element::new_item(b"ayya".to_vec()),
             ]
         );
         assert_eq!(skipped, 1);

@@ -71,7 +71,7 @@ impl GroveDb {
         self.check_subtree_exists_path_not_found(path_iter.clone(), Some(key), transaction)?;
         if path_iter.len() == 0 {
             merk_optional_tx!(self.db, [key], transaction, subtree, {
-                Ok(Element::Tree(subtree.root_hash()))
+                Ok(Element::new_tree(subtree.root_hash()))
             })
         } else {
             merk_optional_tx!(self.db, path_iter, transaction, subtree, {
