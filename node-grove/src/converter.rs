@@ -3,9 +3,9 @@ use neon::{borrow::Borrow, prelude::*};
 
 fn element_to_string(element: Element) -> String {
     match element {
-        Element::Item(_) => "item".to_string(),
-        Element::Reference(_) => "reference".to_string(),
-        Element::Tree(_) => "tree".to_string(),
+        Element::Item(..) => "item".to_string(),
+        Element::Reference(..) => "reference".to_string(),
+        Element::Tree(..) => "tree".to_string(),
     }
 }
 
@@ -22,17 +22,17 @@ pub fn js_object_to_element<'a, C: Context<'a>>(
         "item" => {
             let js_buffer = value.downcast_or_throw::<JsBuffer, _>(cx)?;
             let item = js_buffer_to_vec_u8(js_buffer, cx);
-            Ok(Element::Item(item))
+            Ok(Element::new_item(item))
         }
         "reference" => {
             let js_array = value.downcast_or_throw::<JsArray, _>(cx)?;
             let reference = js_array_of_buffers_to_vec(js_array, cx)?;
-            Ok(Element::Reference(reference))
+            Ok(Element::new_reference(reference))
         }
         "tree" => {
             let js_buffer = value.downcast_or_throw::<JsBuffer, _>(cx)?;
             let tree_vec = js_buffer_to_vec_u8(js_buffer, cx);
-            Ok(Element::Tree(tree_vec.try_into().or_else(
+            Ok(Element::new_tree(tree_vec.try_into().or_else(
                 |v: Vec<u8>| {
                     cx.throw_error(format!(
                         "Tree buffer is expected to be 32 bytes long, but got {}",
@@ -54,12 +54,12 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
     js_object.set(cx, "type", js_type_string)?;
 
     let js_value: Handle<JsValue> = match element {
-        Element::Item(item) => {
+        Element::Item(item, _) => {
             let js_buffer = JsBuffer::external(cx, item);
             js_buffer.upcast()
         }
-        Element::Reference(reference) => nested_vecs_to_js(reference, cx)?,
-        Element::Tree(tree) => {
+        Element::Reference(reference, _) => nested_vecs_to_js(reference, cx)?,
+        Element::Tree(tree, _) => {
             let js_buffer = JsBuffer::external(cx, tree);
             js_buffer.upcast()
         }
