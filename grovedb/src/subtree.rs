@@ -17,19 +17,22 @@ use crate::{
     Error, Merk, PathQuery, SizedQuery, TransactionArg,
 };
 
+/// Optional single byte meta-data to be stored per element
+type ElementFlag = Option<u8>;
+
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Element {
     /// An ordinary value
-    Item(Vec<u8>),
+    Item(Vec<u8>, ElementFlag),
     /// A reference to an object by its path
-    Reference(Vec<Vec<u8>>),
+    Reference(Vec<Vec<u8>>, ElementFlag),
     /// A subtree, contains a root hash of the underlying Merk.
     /// Hash is stored to make Merk become different when its subtrees have
     /// changed, otherwise changes won't be reflected in parent trees.
-    Tree([u8; 32]),
+    Tree([u8; 32], ElementFlag),
 }
 
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>
@@ -56,15 +59,15 @@ impl Element {
     }
 
     pub fn new_item(item_value: Vec<u8>) -> Self {
-        Element::Item(item_value)
+        Element::Item(item_value, None)
     }
 
     pub fn new_reference(reference_path: Vec<Vec<u8>>) -> Self {
-        Element::Reference(reference_path)
+        Element::Reference(reference_path, None)
     }
 
     pub fn new_tree(tree_hash: [u8; 32]) -> Self {
-        Element::Tree(tree_hash)
+        Element::Tree(tree_hash, None)
     }
 
     /// Get the size of an element in bytes
