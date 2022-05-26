@@ -21,7 +21,7 @@ impl GroveDb {
         let path_iter = path.into_iter();
 
         match element {
-            Element::Tree(_) => {
+            Element::Tree(..) => {
                 if path_iter.len() == 0 {
                     self.add_root_leaf(key, transaction)?;
                 } else {
@@ -29,7 +29,7 @@ impl GroveDb {
                     self.propagate_changes(path_iter, transaction)?;
                 }
             }
-            Element::Reference(ref reference_path) => {
+            Element::Reference(ref reference_path, _) => {
                 if path_iter.len() == 0 {
                     return Err(Error::InvalidPath(
                         "only subtrees are allowed as root tree's leafs",
@@ -109,7 +109,7 @@ impl GroveDb {
             );
             let child_subtree = Merk::open(child_storage)
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
-            let element = Element::Tree(child_subtree.root_hash());
+            let element = Element::new_tree(child_subtree.root_hash());
             element.insert(&mut parent_subtree, key)?;
         } else {
             let parent_storage = self.db.get_storage_context(path_iter.clone());
@@ -120,7 +120,7 @@ impl GroveDb {
                 .get_storage_context(path_iter.clone().chain(std::iter::once(key)));
             let child_subtree = Merk::open(child_storage)
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
-            let element = Element::Tree(child_subtree.root_hash());
+            let element = Element::new_tree(child_subtree.root_hash());
             element.insert(&mut parent_subtree, key)?;
         }
         Ok(())
