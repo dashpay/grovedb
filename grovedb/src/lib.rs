@@ -198,28 +198,52 @@ impl GroveDb {
                     .get_transactional_storage_context(path_iter.clone(), tx);
                 let subtree = Merk::open(subtree_storage)
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                let element = Element::new_tree(subtree.root_hash());
                 let key = path_iter.next_back().expect("next element is `Some`");
                 let parent_storage = self
                     .db
                     .get_transactional_storage_context(path_iter.clone(), tx);
                 let mut parent_tree = Merk::open(parent_storage)
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                element.insert(&mut parent_tree, key.as_ref())?;
+                if let Element::Tree(_, flag) = Self::get_element_from_subtree(&parent_tree, key)? {
+                    let element = Element::new_tree_with_flag(subtree.root_hash(), flag);
+                    element.insert(&mut parent_tree, key.as_ref())?;
+                } else {
+                    return Err(Error::InvalidPath("can only propagate on tree items"));
+                }
             } else {
                 let subtree_storage = self.db.get_storage_context(path_iter.clone());
                 let subtree = Merk::open(subtree_storage)
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                let element = Element::new_tree(subtree.root_hash());
                 let key = path_iter.next_back().expect("next element is `Some`");
                 let parent_storage = self.db.get_storage_context(path_iter.clone());
                 let mut parent_tree = Merk::open(parent_storage)
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                element.insert(&mut parent_tree, key.as_ref())?;
+                if let Element::Tree(_, flag) = Self::get_element_from_subtree(&parent_tree, key)? {
+                    let element = Element::new_tree_with_flag(subtree.root_hash(), flag);
+                    element.insert(&mut parent_tree, key.as_ref())?;
+                } else {
+                    return Err(Error::InvalidPath("can only propagate on tree items"));
+                }
             }
         }
 
         Ok(())
+    }
+
+    fn get_element_from_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        subtree: &Merk<S>,
+        key: K,
+    ) -> Result<Element, Error> {
+        let element_bytes = subtree
+            .get(key.as_ref())
+            .map_err(|_| Error::InvalidPath("can't find subtree in parent during propagation"))?
+            .ok_or(Error::InvalidPath(
+                "can't find subtree in parent during propagation",
+            ))?;
+        let element = Element::deserialize(&element_bytes).map_err(|_| {
+            Error::CorruptedData("failed to deserialized parent during propagation".to_owned())
+        })?;
+        Ok(element)
     }
 
     pub fn flush(&self) -> Result<(), Error> {
