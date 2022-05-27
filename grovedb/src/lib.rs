@@ -204,12 +204,7 @@ impl GroveDb {
                     .get_transactional_storage_context(path_iter.clone(), tx);
                 let mut parent_tree = Merk::open(parent_storage)
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                if let Element::Tree(_, flag) = Self::get_element_from_subtree(&parent_tree, key)? {
-                    let element = Element::new_tree_with_flag(subtree.root_hash(), flag);
-                    element.insert(&mut parent_tree, key.as_ref())?;
-                } else {
-                    return Err(Error::InvalidPath("can only propagate on tree items"));
-                }
+                Self::update_tree_item_preserve_flag(&mut parent_tree, key, subtree.root_hash())?;
             } else {
                 let subtree_storage = self.db.get_storage_context(path_iter.clone());
                 let subtree = Merk::open(subtree_storage)
@@ -218,15 +213,24 @@ impl GroveDb {
                 let parent_storage = self.db.get_storage_context(path_iter.clone());
                 let mut parent_tree = Merk::open(parent_storage)
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                if let Element::Tree(_, flag) = Self::get_element_from_subtree(&parent_tree, key)? {
-                    let element = Element::new_tree_with_flag(subtree.root_hash(), flag);
-                    element.insert(&mut parent_tree, key.as_ref())?;
-                } else {
-                    return Err(Error::InvalidPath("can only propagate on tree items"));
-                }
+                Self::update_tree_item_preserve_flag(&mut parent_tree, key, subtree.root_hash())?;
             }
         }
 
+        Ok(())
+    }
+
+    fn update_tree_item_preserve_flag<'db, K: AsRef<[u8]> + Copy, S: StorageContext<'db>>(
+        parent_tree: &mut Merk<S>,
+        key: K,
+        root_hash: [u8; 32],
+    ) -> Result<(), Error> {
+        if let Element::Tree(_, flag) = Self::get_element_from_subtree(&parent_tree, key)? {
+            let element = Element::new_tree_with_flag(root_hash, flag);
+            element.insert(parent_tree, key.as_ref())?;
+        } else {
+            return Err(Error::InvalidPath("can only propagate on tree items"));
+        }
         Ok(())
     }
 
