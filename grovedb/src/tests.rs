@@ -3294,3 +3294,36 @@ fn test_get_non_existing_root_leaf() {
     let db = make_grovedb();
     assert!(matches!(db.get([], b"ayy", None), Err(_)));
 }
+
+#[test]
+fn test_check_subtree_exists_function() {
+    let db = make_grovedb();
+    db.insert(
+        [TEST_LEAF],
+        b"key_scalar",
+        Element::Item(b"ayy".to_vec()),
+        None,
+    )
+    .expect("cannot insert item");
+    db.insert([TEST_LEAF], b"key_subtree", Element::empty_tree(), None)
+        .expect("cannot insert item");
+
+    // Empty tree path means root always exist
+    assert!(db.check_subtree_exists_invalid_path([], None).is_ok());
+
+    // TEST_LEAF should be a tree
+    assert!(db
+        .check_subtree_exists_invalid_path([TEST_LEAF], None)
+        .is_ok());
+
+    // TEST_LEAF.key_subtree should be a tree
+    assert!(db
+        .check_subtree_exists_invalid_path([TEST_LEAF, b"key_subtree"], None)
+        .is_ok());
+
+    // TEST_LEAF.key_scalar should NOT be a tree
+    assert!(matches!(
+        db.check_subtree_exists_invalid_path([TEST_LEAF, b"key_scalar"], None),
+        Err(Error::InvalidPath(_))
+    ));
+}
