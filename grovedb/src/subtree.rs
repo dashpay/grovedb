@@ -83,24 +83,28 @@ impl Element {
     }
 
     /// Get the size of an element in bytes
-    // TODO: Fix byte size value
     pub fn byte_size(&self) -> usize {
         match self {
-            Element::Item(item, _) => item.len(),
+            // +1 for 1 byte flag
+            Element::Item(item, _) => item.len() + 1,
             Element::Reference(path_reference, _) => {
-                path_reference.iter().map(|inner| inner.len()).sum()
+                path_reference
+                    .iter()
+                    .map(|inner| inner.len())
+                    .sum::<usize>()
+                    + 1
             }
-            Element::Tree(..) => 32,
+            Element::Tree(..) => 32 + 1,
         }
     }
 
     /// Get the size of the serialization of an element in bytes
-    // TODO: Fix serialized byte size value
     pub fn serialized_byte_size(&self) -> usize {
         match self {
             Element::Item(item, _) => {
                 let len = item.len();
-                len + len.required_space() + 1 // 1 for enum
+                len + len.required_space() + 1 + 1 // +1 for enum and +1 for
+                                                   // flag
             }
             Element::Reference(path_reference, _) => {
                 path_reference
@@ -111,14 +115,14 @@ impl Element {
                     })
                     .sum::<usize>()
                     + path_reference.len().required_space()
-                    + 1 // for the enum
+                    + 1
+                    + 1 // +1 for enum and +1 for flag
             }
-            Element::Tree(..) => 33, // 32 + 1 for enum
+            Element::Tree(..) => 32 + 1 + 1, // 32 + 1 for enum + 1 for flag
         }
     }
 
     /// Get the size that the element will occupy on disk
-    // TODO: Fix node byte size value
     pub fn node_byte_size(&self, key: &[u8]) -> usize {
         // todo v23: this is just an approximation for now
         let serialized_value_size = self.serialized_byte_size();
@@ -601,25 +605,24 @@ mod tests {
         );
     }
 
-    // TODO: reenable this test
-    // #[test]
+    #[test]
     fn test_serialization() {
         let empty_tree = Element::empty_tree();
         let serialized = empty_tree.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 33);
+        assert_eq!(serialized.len(), 34);
         assert_eq!(serialized.len(), empty_tree.serialized_byte_size());
         // The tree is fixed length 32 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(
             hex::encode(serialized),
-            "020000000000000000000000000000000000000000000000000000000000000000"
+            "02000000000000000000000000000000000000000000000000000000000000000000"
         );
 
         let item = Element::new_item(hex::decode("abcdef").expect("expected to decode"));
         let serialized = item.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 5);
+        assert_eq!(serialized.len(), 6);
         assert_eq!(serialized.len(), item.serialized_byte_size());
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
-        assert_eq!(hex::encode(serialized), "0003abcdef");
+        assert_eq!(hex::encode(serialized), "0003abcdef00");
 
         let reference = Element::new_reference(vec![
             vec![0],
@@ -627,11 +630,11 @@ mod tests {
             vec![5],
         ]);
         let serialized = reference.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 9);
+        assert_eq!(serialized.len(), 10);
         assert_eq!(serialized.len(), reference.serialized_byte_size());
         // The item is variable length 2 bytes, so it's enum 1 then 1 byte for length,
         // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
-        assert_eq!(hex::encode(serialized), "0103010002abcd0105");
+        assert_eq!(hex::encode(serialized), "0103010002abcd010500");
     }
 
     #[test]

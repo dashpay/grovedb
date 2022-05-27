@@ -250,7 +250,7 @@ impl GroveDb {
             .prove_without_encoding(query.clone(), limit, offset)
             .expect("should generate proof");
 
-        self.replace_references(&mut proof_result);
+        self.replace_references(&mut proof_result)?;
 
         let mut proof_bytes = Vec::with_capacity(128);
         encode_into(proof_result.proof.iter(), &mut proof_bytes);
