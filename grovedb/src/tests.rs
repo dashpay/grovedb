@@ -433,6 +433,35 @@ fn test_element_with_flags() {
             Some([9].to_vec())
         )
     );
+
+    // Test proofs with flags
+    let mut query = Query::new();
+    query.insert_all();
+
+    let path_query = PathQuery::new(
+        vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+        SizedQuery::new(query, None, None),
+    );
+    let proof = db
+        .prove(path_query.clone())
+        .expect("should successfully create proof");
+    let (root_hash, result_set) =
+        GroveDb::execute_proof(&proof, path_query).expect("should verify proof");
+    assert_eq!(root_hash, db.db.root_hash(None).unwrap().unwrap());
+    assert_eq!(
+        Element::deserialize(&result_set[0].1).expect("should deserialize element"),
+        Element::Item(b"flagless".to_vec(), None)
+    );
+    assert_eq!(
+        Element::deserialize(&result_set[1].1).expect("should deserialize element"),
+        Element::Item(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec()))
+    );
+    match Element::deserialize(&result_set[2].1).expect("should deserialize element") {
+        Element::Tree(_, flag) => {
+            assert_eq!(flag, Some([1].to_vec()))
+        }
+        _ => panic!("expected a tree"),
+    }
 }
 
 #[test]
