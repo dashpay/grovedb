@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Optional single byte meta-data to be stored per element
-type ElementFlag = Option<u8>;
+type ElementFlag = Option<Vec<u8>>;
 
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
@@ -83,6 +83,7 @@ impl Element {
     }
 
     /// Get the size of an element in bytes
+    // TODO: Fix this
     pub fn byte_size(&self) -> usize {
         match self {
             // +1 for 1 byte flag
@@ -99,6 +100,7 @@ impl Element {
     }
 
     /// Get the size of the serialization of an element in bytes
+    // TODO: Fix this
     pub fn serialized_byte_size(&self) -> usize {
         match self {
             Element::Item(item, _) => {
@@ -123,6 +125,7 @@ impl Element {
     }
 
     /// Get the size that the element will occupy on disk
+    // TODO: Fix this
     pub fn node_byte_size(&self, key: &[u8]) -> usize {
         // todo v23: this is just an approximation for now
         let serialized_value_size = self.serialized_byte_size();

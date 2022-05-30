@@ -363,14 +363,14 @@ fn test_element_with_flags() {
     db.insert(
         [TEST_LEAF, b"key1"],
         b"elem2",
-        Element::new_item_with_flag(b"flagged".to_vec(), Some(4)),
+        Element::new_item_with_flag(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec())),
         None,
     )
     .expect("should insert subtree successfully");
     db.insert(
         [TEST_LEAF, b"key1"],
         b"elem3",
-        Element::new_tree_with_flag([0; 32], Some(1)),
+        Element::new_tree_with_flag([0; 32], Some([1].to_vec())),
         None,
     )
     .expect("should insert subtree successfully");
@@ -379,7 +379,7 @@ fn test_element_with_flags() {
         b"elem4",
         Element::new_reference_with_flag(
             vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"elem2".to_vec()],
-            Some(9),
+            Some([9].to_vec()),
         ),
         None,
     )
@@ -414,18 +414,23 @@ fn test_element_with_flags() {
     );
     assert_eq!(
         element_with_flag,
-        Element::Item(b"flagged".to_vec(), Some(4))
+        Element::Item(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec()))
     );
-    assert!(matches!(tree_element_with_flag, Element::Tree(_, Some(1))));
+    match tree_element_with_flag {
+        Element::Tree(_, flag) => {
+            assert_eq!(flag, Some([1].to_vec()))
+        }
+        _ => panic!("expected a tree"),
+    }
     assert_eq!(
         flagged_ref_follow,
-        Element::Item(b"flagged".to_vec(), Some(4))
+        Element::Item(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec()))
     );
     assert_eq!(
         flagged_ref_no_follow[0],
         Element::Reference(
             vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"elem2".to_vec()],
-            Some(9)
+            Some([9].to_vec())
         )
     );
 }
