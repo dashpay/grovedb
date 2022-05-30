@@ -448,6 +448,7 @@ fn test_element_with_flags() {
     let (root_hash, result_set) =
         GroveDb::execute_proof(&proof, path_query).expect("should verify proof");
     assert_eq!(root_hash, db.db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 3);
     assert_eq!(
         Element::deserialize(&result_set[0].1).expect("should deserialize element"),
         Element::Item(b"flagless".to_vec(), None)
