@@ -64,7 +64,7 @@ impl GroveDb {
 
             let element = raw_decode(&value_bytes)?;
             match element {
-                Element::Tree(tree_hash) => {
+                Element::Tree(tree_hash, _) => {
                     if tree_hash == EMPTY_TREE_HASH {
                         continue;
                     }
@@ -250,7 +250,7 @@ impl GroveDb {
             .prove_without_encoding(query.clone(), limit, offset)
             .expect("should generate proof");
 
-        self.replace_references(&mut proof_result);
+        self.replace_references(&mut proof_result)?;
 
         let mut proof_bytes = Vec::with_capacity(128);
         encode_into(proof_result.proof.iter(), &mut proof_bytes);
@@ -277,7 +277,7 @@ impl GroveDb {
                 Op::Push(node) | Op::PushInverted(node) => match node {
                     Node::KV(_, value) => {
                         let elem = Element::deserialize(value);
-                        if let Ok(Element::Reference(reference_path)) = elem {
+                        if let Ok(Element::Reference(reference_path, _)) = elem {
                             let referenced_elem = self.follow_reference(reference_path, None)?;
                             *value = referenced_elem.serialize().unwrap();
                         }
