@@ -116,13 +116,12 @@ impl Element {
     }
 
     /// Get the size of the serialization of an element in bytes
-    // TODO: Fix this
     pub fn serialized_byte_size(&self) -> usize {
         match self {
             Element::Item(item, element_flag) => {
                 let item_len = item.len();
                 let flag_len = if let Some(flag) = element_flag {
-                    flag.len() + 1 // for option
+                    flag.len() + 1
                 } else {
                     0
                 };
@@ -130,7 +129,7 @@ impl Element {
             }
             Element::Reference(path_reference, element_flag) => {
                 let flag_len = if let Some(flag) = element_flag {
-                    flag.len() + 1 // for option
+                    flag.len() + 1
                 } else {
                     0
                 };
@@ -149,18 +148,16 @@ impl Element {
             }
             Element::Tree(_, element_flag) => {
                 let flag_len = if let Some(flag) = element_flag {
-                    flag.len() + 1 // for option
+                    flag.len() + 1
                 } else {
                     0
                 };
-                32 + flag_len + flag_len.required_space() + 1 // +1 for enum and
-                                                              // option
+                32 + flag_len + flag_len.required_space() + 1 // + 1 for enum
             }
         }
     }
 
     /// Get the size that the element will occupy on disk
-    // TODO: Fix this
     pub fn node_byte_size(&self, key: &[u8]) -> usize {
         // todo v23: this is just an approximation for now
         let serialized_value_size = self.serialized_byte_size();
