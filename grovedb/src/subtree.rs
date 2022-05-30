@@ -83,19 +83,35 @@ impl Element {
     }
 
     /// Get the size of an element in bytes
-    // TODO: Fix this
     pub fn byte_size(&self) -> usize {
         match self {
-            // +1 for 1 byte flag
-            Element::Item(item, _) => item.len() + 1,
-            Element::Reference(path_reference, _) => {
-                path_reference
+            Element::Item(item, element_flag) => {
+                if let Some(flag) = element_flag {
+                    flag.len() + item.len()
+                } else {
+                    item.len()
+                }
+            }
+            Element::Reference(path_reference, element_flag) => {
+                let path_length = path_reference
                     .iter()
                     .map(|inner| inner.len())
                     .sum::<usize>()
-                    + 1
+                    + 1;
+
+                if let Some(flag) = element_flag {
+                    flag.len() + path_length
+                } else {
+                    path_length
+                }
             }
-            Element::Tree(..) => 32 + 1,
+            Element::Tree(_, element_flag) => {
+                if let Some(flag) = element_flag {
+                    flag.len() + 32
+                } else {
+                    32
+                }
+            }
         }
     }
 
@@ -103,12 +119,22 @@ impl Element {
     // TODO: Fix this
     pub fn serialized_byte_size(&self) -> usize {
         match self {
-            Element::Item(item, _) => {
-                let len = item.len();
-                len + len.required_space() + 1 + 1 // +1 for enum and +1 for
-                                                   // flag
+            Element::Item(item, element_flag) => {
+                let item_len = item.len();
+                let flag_len = if let Some(flag) = element_flag {
+                    flag.len() + 1 // for option
+                } else {
+                    0
+                };
+                item_len + item_len.required_space() + flag_len + flag_len.required_space() + 1
             }
-            Element::Reference(path_reference, _) => {
+            Element::Reference(path_reference, element_flag) => {
+                let flag_len = if let Some(flag) = element_flag {
+                    flag.len() + 1 // for option
+                } else {
+                    0
+                };
+
                 path_reference
                     .iter()
                     .map(|inner| {
@@ -117,10 +143,19 @@ impl Element {
                     })
                     .sum::<usize>()
                     + path_reference.len().required_space()
-                    + 1
-                    + 1 // +1 for enum and +1 for flag
+                    + flag_len
+                    + flag_len.required_space()
+                    + 1 // + 1 for enum
             }
-            Element::Tree(..) => 32 + 1 + 1, // 32 + 1 for enum + 1 for flag
+            Element::Tree(_, element_flag) => {
+                let flag_len = if let Some(flag) = element_flag {
+                    flag.len() + 1 // for option
+                } else {
+                    0
+                };
+                32 + flag_len + flag_len.required_space() + 1 // +1 for enum and
+                                                              // option
+            }
         }
     }
 
@@ -622,12 +657,10 @@ mod tests {
 
         let empty_tree = Element::new_tree_with_flag([0; 32], Some(vec![5]));
         let serialized = empty_tree.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 34);
-        assert_eq!(serialized.len(), empty_tree.serialized_byte_size());
-        // The tree is fixed length 32 bytes, so it's enum 2 then 32 bytes of zeroes
+        assert_eq!(serialized.len(), 36);
         assert_eq!(
             hex::encode(serialized),
-            "02000000000000000000000000000000000000000000000000000000000000000000"
+            "020000000000000000000000000000000000000000000000000000000000000000010105"
         );
 
         let item = Element::new_item(hex::decode("abcdef").expect("expected to decode"));
@@ -637,12 +670,14 @@ mod tests {
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "0003abcdef00");
 
-        let item = Element::new_item_with_flag(hex::decode("abcdef").expect("expected to decode"), Some(vec![1]));
+        let item = Element::new_item_with_flag(
+            hex::decode("abcdef").expect("expected to decode"),
+            Some(vec![1]),
+        );
         let serialized = item.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 6);
+        assert_eq!(serialized.len(), 8);
         assert_eq!(serialized.len(), item.serialized_byte_size());
-        // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
-        assert_eq!(hex::encode(serialized), "0003abcdef00");
+        assert_eq!(hex::encode(serialized), "0003abcdef010101");
 
         let reference = Element::new_reference(vec![
             vec![0],
@@ -656,17 +691,18 @@ mod tests {
         // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
         assert_eq!(hex::encode(serialized), "0103010002abcd010500");
 
-        let reference = Element::new_reference_with_flag(vec![
-            vec![0],
-            hex::decode("abcd").expect("expected to decode"),
-            vec![5],
-        ], Some(vec![1, 2]));
+        let reference = Element::new_reference_with_flag(
+            vec![
+                vec![0],
+                hex::decode("abcd").expect("expected to decode"),
+                vec![5],
+            ],
+            Some(vec![1, 2, 3]),
+        );
         let serialized = reference.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 10);
+        assert_eq!(serialized.len(), 14);
         assert_eq!(serialized.len(), reference.serialized_byte_size());
-        // The item is variable length 2 bytes, so it's enum 1 then 1 byte for length,
-        // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
-        assert_eq!(hex::encode(serialized), "0103010002abcd010500");
+        assert_eq!(hex::encode(serialized), "0103010002abcd01050103010203");
     }
 
     #[test]
