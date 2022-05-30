@@ -620,7 +620,24 @@ mod tests {
             "02000000000000000000000000000000000000000000000000000000000000000000"
         );
 
+        let empty_tree = Element::new_tree_with_flag([0; 32], Some(vec![5]));
+        let serialized = empty_tree.serialize().expect("expected to serialize");
+        assert_eq!(serialized.len(), 34);
+        assert_eq!(serialized.len(), empty_tree.serialized_byte_size());
+        // The tree is fixed length 32 bytes, so it's enum 2 then 32 bytes of zeroes
+        assert_eq!(
+            hex::encode(serialized),
+            "02000000000000000000000000000000000000000000000000000000000000000000"
+        );
+
         let item = Element::new_item(hex::decode("abcdef").expect("expected to decode"));
+        let serialized = item.serialize().expect("expected to serialize");
+        assert_eq!(serialized.len(), 6);
+        assert_eq!(serialized.len(), item.serialized_byte_size());
+        // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
+        assert_eq!(hex::encode(serialized), "0003abcdef00");
+
+        let item = Element::new_item_with_flag(hex::decode("abcdef").expect("expected to decode"), Some(vec![1]));
         let serialized = item.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 6);
         assert_eq!(serialized.len(), item.serialized_byte_size());
@@ -632,6 +649,18 @@ mod tests {
             hex::decode("abcd").expect("expected to decode"),
             vec![5],
         ]);
+        let serialized = reference.serialize().expect("expected to serialize");
+        assert_eq!(serialized.len(), 10);
+        assert_eq!(serialized.len(), reference.serialized_byte_size());
+        // The item is variable length 2 bytes, so it's enum 1 then 1 byte for length,
+        // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
+        assert_eq!(hex::encode(serialized), "0103010002abcd010500");
+
+        let reference = Element::new_reference_with_flag(vec![
+            vec![0],
+            hex::decode("abcd").expect("expected to decode"),
+            vec![5],
+        ], Some(vec![1, 2]));
         let serialized = reference.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 10);
         assert_eq!(serialized.len(), reference.serialized_byte_size());
