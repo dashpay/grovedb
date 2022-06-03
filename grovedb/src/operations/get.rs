@@ -184,7 +184,7 @@ impl GroveDb {
             let parent_key = parent_iter.next_back().expect("path is not empty");
             merk_optional_tx!(self.db, parent_iter, transaction, parent, {
                 match Element::get(&parent, parent_key) {
-                    Ok(Element::Tree(_)) => {}
+                    Ok(Element::Tree(..)) => {}
                     Ok(_) | Err(Error::PathKeyNotFound(_)) => {
                         return Err(error);
                     }
