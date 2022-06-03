@@ -17,7 +17,7 @@ pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
     Storage, StorageContext,
 };
-pub use subtree::Element;
+pub use subtree::{Element, ElementFlag};
 
 use crate::util::{merk_optional_tx, meta_storage_context_optional_tx};
 
