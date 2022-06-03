@@ -3430,7 +3430,7 @@ fn test_check_subtree_exists_function() {
     db.insert(
         [TEST_LEAF],
         b"key_scalar",
-        Element::Item(b"ayy".to_vec()),
+        Element::new_item(b"ayy".to_vec()),
         None,
     )
     .expect("cannot insert item");

@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Optional single byte meta-data to be stored per element
-type ElementFlag = Option<Vec<u8>>;
+pub type ElementFlag = Option<Vec<u8>>;
 
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
