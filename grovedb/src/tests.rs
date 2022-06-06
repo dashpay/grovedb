@@ -428,9 +428,12 @@ fn test_element_with_flags() {
     );
     assert_eq!(
         flagged_ref_no_follow[0],
-        Element::Reference(
-            vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"elem2".to_vec()],
-            Some([9].to_vec())
+        (
+            b"elem4".to_vec(),
+            Element::Reference(
+                vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"elem2".to_vec()],
+                Some([9].to_vec())
+            )
         )
     );
 
@@ -2015,9 +2018,9 @@ fn test_get_full_query() {
         db.get_path_queries_raw(&[&path_query1, &path_query2], None)
             .expect("expected successful get_query"),
         vec![
-            subtree::Element::new_item(b"ayya".to_vec()),
-            subtree::Element::new_item(b"ayyb".to_vec()),
-            subtree::Element::new_item(b"ayyd".to_vec()),
+            (b"key3".to_vec(), Element::new_item(b"ayya".to_vec())),
+            (b"key4".to_vec(), Element::new_item(b"ayyb".to_vec())),
+            (b"key6".to_vec(), Element::new_item(b"ayyd".to_vec())),
         ]
     );
 }
@@ -3430,7 +3433,7 @@ fn test_check_subtree_exists_function() {
     db.insert(
         [TEST_LEAF],
         b"key_scalar",
-        Element::Item(b"ayy".to_vec()),
+        Element::new_item(b"ayy".to_vec()),
         None,
     )
     .expect("cannot insert item");

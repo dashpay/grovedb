@@ -89,7 +89,7 @@ impl GroveDb {
         let elements = self.get_path_queries_raw(path_queries, transaction)?;
         let results = elements
             .into_iter()
-            .map(|element| match element {
+            .map(|(_, element)| match element {
                 Element::Reference(reference_path, _) => {
                     let maybe_item = self.follow_reference(reference_path, transaction)?;
                     if let Element::Item(item, _) = maybe_item {
@@ -110,7 +110,7 @@ impl GroveDb {
         &self,
         path_queries: &[&PathQuery],
         transaction: TransactionArg,
-    ) -> Result<Vec<Element>, Error> {
+    ) -> Result<Vec<(Vec<u8>, Element)>, Error> {
         let mut result = Vec::new();
         for query in path_queries {
             let (query_results, _) = self.get_path_query_raw(query, transaction)?;
@@ -127,7 +127,7 @@ impl GroveDb {
         let (elements, skipped) = self.get_path_query_raw(path_query, transaction)?;
         let results = elements
             .into_iter()
-            .map(|element| match element {
+            .map(|(_, element)| match element {
                 Element::Reference(reference_path, _) => {
                     let maybe_item = self.follow_reference(reference_path, transaction)?;
                     if let Element::Item(item, _) = maybe_item {
@@ -149,7 +149,7 @@ impl GroveDb {
         &self,
         path_query: &PathQuery,
         transaction: TransactionArg,
-    ) -> Result<(Vec<Element>, u16), Error> {
+    ) -> Result<(Vec<(Vec<u8>, Element)>, u16), Error> {
         let path_slices = path_query
             .path
             .iter()
@@ -184,7 +184,7 @@ impl GroveDb {
             let parent_key = parent_iter.next_back().expect("path is not empty");
             merk_optional_tx!(self.db, parent_iter, transaction, parent, {
                 match Element::get(&parent, parent_key) {
-                    Ok(Element::Tree(_)) => {}
+                    Ok(Element::Tree(..)) => {}
                     Ok(_) | Err(Error::PathKeyNotFound(_)) => {
                         return Err(error);
                     }
