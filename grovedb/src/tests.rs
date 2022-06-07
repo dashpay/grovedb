@@ -416,12 +416,7 @@ fn test_element_with_flags() {
         element_with_flag,
         Element::Item(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec()))
     );
-    match tree_element_with_flag {
-        Element::Tree(_, flag) => {
-            assert_eq!(flag, Some([1].to_vec()))
-        }
-        _ => panic!("expected a tree"),
-    }
+    assert_eq!(tree_element_with_flag.get_flags(), &Some([1].to_vec()));
     assert_eq!(
         flagged_ref_follow,
         Element::Item(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec()))
@@ -460,12 +455,12 @@ fn test_element_with_flags() {
         Element::deserialize(&result_set[1].1).expect("should deserialize element"),
         Element::Item(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec()))
     );
-    match Element::deserialize(&result_set[2].1).expect("should deserialize element") {
-        Element::Tree(_, flag) => {
-            assert_eq!(flag, Some([1].to_vec()))
-        }
-        _ => panic!("expected a tree"),
-    }
+    assert_eq!(
+        Element::deserialize(&result_set[2].1)
+            .expect("should deserialize element")
+            .get_flags(),
+        &Some([1].to_vec())
+    );
 }
 
 #[test]

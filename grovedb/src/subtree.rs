@@ -82,6 +82,15 @@ impl Element {
         Element::Tree(tree_hash, flag)
     }
 
+    /// Grab the optional flag stored in an element
+    pub fn get_flags(&self) -> &ElementFlags {
+        match self {
+            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, flags) => {
+                flags
+            }
+        }
+    }
+
     /// Get the size of an element in bytes
     pub fn byte_size(&self) -> usize {
         match self {
