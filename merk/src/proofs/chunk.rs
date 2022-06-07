@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use fees::{FeesContext, FeesExt, OperationCost};
 use storage::RawIterator;
 #[cfg(feature = "full")]
 use {
@@ -25,31 +26,49 @@ where
     /// whether or not there will be more chunks to follow. If the chunk
     /// contains the entire tree, the boolean will be `false`, if the chunk
     /// is abridged and will be connected to leaf chunks, it will be `true`.
-    pub fn create_trunk_proof(&mut self) -> Result<(Vec<Op>, bool)> {
+    pub fn create_trunk_proof(&mut self) -> FeesContext<Result<(Vec<Op>, bool)>> {
         let approx_size = 2usize.pow((self.tree().height() / 2) as u32) * 3;
         let mut proof = Vec::with_capacity(approx_size);
 
-        let trunk_height = self.traverse_for_height_proof(&mut proof, 1)?;
-
-        if trunk_height < MIN_TRUNK_HEIGHT {
-            proof.clear();
-            self.traverse_for_trunk(&mut proof, usize::MAX, true)?;
-            Ok((proof, false))
-        } else {
-            self.traverse_for_trunk(&mut proof, trunk_height, true)?;
-            Ok((proof, true))
-        }
+        self.traverse_for_height_proof(&mut proof, 1)
+            .flat_map_ok(|trunk_height| {
+                if trunk_height < MIN_TRUNK_HEIGHT {
+                    proof.clear();
+                    self.traverse_for_trunk(&mut proof, usize::MAX, true)
+                        .map_ok(|_| Ok((proof, false)))
+                } else {
+                    self.traverse_for_trunk(&mut proof, trunk_height, true)
+                        .map_ok(|_| Ok((proof, true)))
+                }
+            })
+            .flatten()
     }
 
     /// Traverses down the left edge of the tree and pushes ops to the proof, to
     /// act as a proof of the height of the tree. This is the first step in
     /// generating a trunk proof.
-    fn traverse_for_height_proof(&mut self, proof: &mut Vec<Op>, depth: usize) -> Result<usize> {
-        let maybe_left = self.walk(true)?;
+    fn traverse_for_height_proof(
+        &mut self,
+        proof: &mut Vec<Op>,
+        depth: usize,
+    ) -> FeesContext<Result<usize>> {
+        let mut cost = OperationCost::default();
+        let maybe_left = match self.walk(true).unwrap_add_cost(&mut cost) {
+            Ok(maybe_left) => maybe_left,
+            Err(e) => {
+                return Err(e).wrap_with_cost(cost);
+            }
+        };
         let has_left_child = maybe_left.is_some();
 
         let trunk_height = if let Some(mut left) = maybe_left {
-            left.traverse_for_height_proof(proof, depth + 1)?
+            match left
+                .traverse_for_height_proof(proof, depth + 1)
+                .unwrap_add_cost(&mut cost)
+            {
+                Ok(x) => x,
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            }
         } else {
             depth / 2
         };
@@ -67,7 +86,7 @@ where
             }
         }
 
-        Ok(trunk_height)
+        Ok(trunk_height).wrap_with_cost(cost)
     }
 
     /// Traverses down the tree and adds KV push ops for all nodes up to a
@@ -78,42 +97,43 @@ where
         proof: &mut Vec<Op>,
         remaining_depth: usize,
         is_leftmost: bool,
-    ) -> Result<()> {
-        if remaining_depth == 0 {
-            // return early if we have reached bottom of trunk
+    ) -> FeesContext<Result<()>> {
+        // if remaining_depth == 0 {
+        //     // return early if we have reached bottom of trunk
 
-            // for leftmost node, we already have height proof
-            if is_leftmost {
-                return Ok(());
-            }
+        //     // for leftmost node, we already have height proof
+        //     if is_leftmost {
+        //         return Ok(());
+        //     }
 
-            // add this node's hash
-            proof.push(Op::Push(self.to_hash_node()));
+        //     // add this node's hash
+        //     proof.push(Op::Push(self.to_hash_node()));
 
-            return Ok(());
-        }
+        //     return Ok(());
+        // }
 
-        // traverse left
-        let has_left_child = self.tree().link(true).is_some();
-        if has_left_child {
-            let mut left = self.walk(true)?.unwrap();
-            left.traverse_for_trunk(proof, remaining_depth - 1, is_leftmost)?;
-        }
+        // // traverse left
+        // let has_left_child = self.tree().link(true).is_some();
+        // if has_left_child {
+        //     let mut left = self.walk(true)?.unwrap();
+        //     left.traverse_for_trunk(proof, remaining_depth - 1, is_leftmost)?;
+        // }
 
-        // add this node's data
-        proof.push(Op::Push(self.to_kv_node()));
+        // // add this node's data
+        // proof.push(Op::Push(self.to_kv_node()));
 
-        if has_left_child {
-            proof.push(Op::Parent);
-        }
+        // if has_left_child {
+        //     proof.push(Op::Parent);
+        // }
 
-        // traverse right
-        if let Some(mut right) = self.walk(false)? {
-            right.traverse_for_trunk(proof, remaining_depth - 1, false)?;
-            proof.push(Op::Child);
-        }
+        // // traverse right
+        // if let Some(mut right) = self.walk(false)? {
+        //     right.traverse_for_trunk(proof, remaining_depth - 1, false)?;
+        //     proof.push(Op::Child);
+        // }
 
-        Ok(())
+        // Ok(())
+        todo!()
     }
 }
 

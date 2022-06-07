@@ -16,13 +16,17 @@ impl Tree {
         K: AsRef<[u8]>,
         Error: From<S::Error>,
     {
-        let cost = OperationCost {
+        let mut cost = OperationCost {
             seek_count: 1,
             ..Default::default()
         };
-        let tree: Result<Option<Self>, Error> = storage
+        let tree_bytes: Result<_, Error> = storage
             .get(&key)
-            .map_err(|e| e.into())
+            .map_err(|e| e.into());
+        if let Ok(Some(bytes)) = &tree_bytes {
+            cost.loaded_bytes = bytes.len();
+        }
+        let tree = tree_bytes
             .and_then(|raw_opt| raw_opt.map(|x| Tree::decode_raw(&x)).transpose());
 
         let res = match tree {

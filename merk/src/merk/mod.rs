@@ -166,8 +166,19 @@ where
     }
 
     /// Gets an auxiliary value.
-    pub fn get_aux(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(self.storage.get_aux(key)?)
+    pub fn get_aux(&self, key: &[u8]) -> FeesContext<Result<Option<Vec<u8>>>> {
+        self.storage
+            .get_aux(key)
+            .map_err(|e| e.into())
+            .wrap_fn_cost(|value_res| OperationCost {
+                seek_count: 1,
+                loaded_bytes: if let Ok(Some(value)) = value_res {
+                    value.len()
+                } else {
+                    0
+                },
+                ..Default::default()
+            })
     }
 
     /// Gets a value for the given key. If the key is not found, `None` is
@@ -661,7 +672,7 @@ mod test {
 
         // Opening existing merk should cost two seeks.
         assert!(matches!(
-            merk_fee_context.cost(),
+            dbg!(merk_fee_context.cost()),
             OperationCost { seek_count: 2, .. }
         ));
     }
@@ -730,7 +741,7 @@ mod test {
         let mut merk = TempMerk::new();
         merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))])
             .expect("apply failed");
-        let val = merk.get_aux(&[1, 2, 3]).unwrap();
+        let val = merk.get_aux(&[1, 2, 3]).unwrap().unwrap();
         assert_eq!(val, Some(vec![4, 5, 6]));
     }
 
@@ -751,7 +762,7 @@ mod test {
         }
         merk.crash();
 
-        assert_eq!(merk.get_aux(&[2]).unwrap(), Some(vec![3]));
+        assert_eq!(merk.get_aux(&[2]).unwrap().unwrap(), Some(vec![3]));
     }
 
     #[test]

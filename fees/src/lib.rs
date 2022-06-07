@@ -154,13 +154,6 @@ pub trait FeesExt {
 
 impl<T> FeesExt for T {}
 
-/// General way to get full occupied space by an object.
-pub trait FullSize {
-    /// Get full size of an object (approximately, no alignment taken into
-    /// account).
-    fn full_size(&self) -> usize;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
