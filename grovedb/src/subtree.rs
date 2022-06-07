@@ -47,7 +47,7 @@ where
     pub subquery_key: Option<Vec<u8>>,
     pub subquery: Option<Query>,
     pub left_to_right: bool,
-    pub results: &'a mut Vec<Element>,
+    pub results: &'a mut Vec<(Vec<u8>, Element)>,
     pub limit: &'a mut Option<u16>,
     pub offset: &'a mut Option<u16>,
 }
@@ -206,23 +206,38 @@ impl Element {
         merk_path: &[&[u8]],
         query: &Query,
         transaction: TransactionArg,
-    ) -> Result<Vec<Element>, Error> {
+    ) -> Result<Vec<(Vec<u8>, Element)>, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
         let (elements, _) =
             Element::get_sized_query(storage, merk_path, &sized_query, transaction)?;
         Ok(elements)
     }
 
+    pub fn get_query_values(
+        storage: &RocksDbStorage,
+        merk_path: &[&[u8]],
+        query: &Query,
+        transaction: TransactionArg,
+    ) -> Result<Vec<Element>, Error> {
+        let sized_query = SizedQuery::new(query.clone(), None, None);
+        let (elements, _) =
+            Element::get_sized_query(storage, merk_path, &sized_query, transaction)?;
+        let values = elements.into_iter().map(|(k, v)| v).collect();
+        Ok(values)
+    }
+
     fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
         let PathQueryPushArgs {
+            key,
             element,
             results,
             limit,
             offset,
             ..
         } = args;
+        let key = key.ok_or(Error::CorruptedPath("basic push must have a key"))?;
         if offset.unwrap_or(0) == 0 {
-            results.push(element);
+            results.push((Vec::from(key), element));
             if let Some(limit) = limit {
                 *limit -= 1;
             }
@@ -288,7 +303,10 @@ impl Element {
                             transaction,
                             subtree,
                             {
-                                results.push(Element::get(&subtree, subquery_key.as_slice())?);
+                                results.push((
+                                    subquery_key.clone(),
+                                    Element::get(&subtree, subquery_key.as_slice())?,
+                                ));
                             }
                         );
                         if let Some(limit) = limit {
@@ -354,7 +372,7 @@ impl Element {
     fn query_item(
         storage: &RocksDbStorage,
         item: &QueryItem,
-        results: &mut Vec<Element>,
+        results: &mut Vec<(Vec<u8>, Element)>,
         merk_path: &[&[u8]],
         sized_query: &SizedQuery,
         path: Option<&[&[u8]]>,
@@ -440,7 +458,7 @@ impl Element {
         path: Option<&[&[u8]]>,
         transaction: TransactionArg,
         add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
-    ) -> Result<(Vec<Element>, u16), Error> {
+    ) -> Result<(Vec<(Vec<u8>, Element)>, u16), Error> {
         let mut results = Vec::new();
 
         let mut limit = sized_query.limit;
@@ -499,7 +517,7 @@ impl Element {
         merk_path: &[&[u8]],
         path_query: &PathQuery,
         transaction: TransactionArg,
-    ) -> Result<(Vec<Element>, u16), Error> {
+    ) -> Result<(Vec<(Vec<u8>, Element)>, u16), Error> {
         let path_slices = path_query
             .path
             .iter()
@@ -521,7 +539,7 @@ impl Element {
         merk_path: &[&[u8]],
         sized_query: &SizedQuery,
         transaction: TransactionArg,
-    ) -> Result<(Vec<Element>, u16), Error> {
+    ) -> Result<(Vec<(Vec<u8>, Element)>, u16), Error> {
         Element::get_query_apply_function(
             storage,
             merk_path,
@@ -728,7 +746,7 @@ mod tests {
         query.insert_key(b"c".to_vec());
         query.insert_key(b"a".to_vec());
         assert_eq!(
-            Element::get_query(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
@@ -741,7 +759,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
@@ -755,7 +773,7 @@ mod tests {
         query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayyb".to_vec()),
@@ -770,7 +788,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
@@ -812,9 +830,9 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayya".to_vec()),
-                Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayyc".to_vec()),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
             ]
         );
         assert_eq!(skipped, 0);
@@ -828,9 +846,9 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayyc".to_vec()),
-                Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayya".to_vec()),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
             ]
         );
         assert_eq!(skipped, 0);
@@ -862,12 +880,15 @@ mod tests {
         query.insert_range_inclusive(b"a".to_vec()..=b"d".to_vec());
 
         let ascending_query = SizedQuery::new(query.clone(), None, None);
-        fn check_elements_no_skipped((elements, skipped): (Vec<Element>, u16), reverse: bool) {
+        fn check_elements_no_skipped(
+            (elements, skipped): (Vec<(Vec<u8>, Element)>, u16),
+            reverse: bool,
+        ) {
             let mut expected = vec![
-                Element::new_item(b"ayya".to_vec()),
-                Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayyc".to_vec()),
-                Element::new_item(b"ayyd".to_vec()),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
+                (b"d".to_vec(), Element::new_item(b"ayyd".to_vec())),
             ];
             if reverse {
                 expected.reverse();
@@ -938,8 +959,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayya".to_vec()),
-                Element::new_item(b"ayyc".to_vec()),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
             ]
         );
         assert_eq!(skipped, 0);
@@ -957,8 +978,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayyc".to_vec()),
-                Element::new_item(b"ayya".to_vec()),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
             ]
         );
         assert_eq!(skipped, 0);
@@ -968,7 +989,10 @@ mod tests {
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_query, None)
                 .expect("expected successful get_query");
-        assert_eq!(elements, vec![Element::new_item(b"ayyc".to_vec()),]);
+        assert_eq!(
+            elements,
+            vec![(b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),]
+        );
         assert_eq!(skipped, 0);
 
         // Test range query
@@ -982,8 +1006,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayya".to_vec()),
-                Element::new_item(b"ayyb".to_vec())
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec()))
             ]
         );
         assert_eq!(skipped, 0);
@@ -995,8 +1019,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayyc".to_vec())
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec()))
             ]
         );
         assert_eq!(skipped, 1);
@@ -1013,8 +1037,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayya".to_vec())
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec()))
             ]
         );
         assert_eq!(skipped, 1);
@@ -1030,9 +1054,9 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayyc".to_vec()),
-                Element::new_item(b"ayyd".to_vec()),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
+                (b"d".to_vec(), Element::new_item(b"ayyd".to_vec())),
             ]
         );
         assert_eq!(skipped, 0);
@@ -1048,8 +1072,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayyc".to_vec()),
-                Element::new_item(b"ayyb".to_vec()),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
             ]
         );
         assert_eq!(skipped, 1);
@@ -1066,8 +1090,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayya".to_vec()),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
             ]
         );
         assert_eq!(skipped, 1);
