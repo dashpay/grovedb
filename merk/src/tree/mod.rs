@@ -422,26 +422,27 @@ impl Tree {
     /// to `Link::Loaded`).
     #[inline]
     pub fn load<S: Fetch>(&mut self, left: bool, source: &S) -> Result<()> {
-        // TODO: return Err instead of panic?
-        let link = self.link(left).expect("Expected link");
-        let (child_heights, hash) = match link {
-            Link::Reference {
-                child_heights,
-                hash,
-                ..
-            } => (child_heights, hash),
-            _ => panic!("Expected Some(Link::Reference)"),
-        };
+        // // TODO: return Err instead of panic?
+        // let link = self.link(left).expect("Expected link");
+        // let (child_heights, hash) = match link {
+        //     Link::Reference {
+        //         child_heights,
+        //         hash,
+        //         ..
+        //     } => (child_heights, hash),
+        //     _ => panic!("Expected Some(Link::Reference)"),
+        // };
 
-        let tree = source.fetch(link)?;
-        debug_assert_eq!(tree.key(), link.key());
-        *self.slot_mut(left) = Some(Link::Loaded {
-            tree,
-            hash: *hash,
-            child_heights: *child_heights,
-        });
+        // let tree = source.fetch(link)?;
+        // debug_assert_eq!(tree.key(), link.key());
+        // *self.slot_mut(left) = Some(Link::Loaded {
+        //     tree,
+        //     hash: *hash,
+        //     child_heights: *child_heights,
+        // });
 
-        Ok(())
+        // Ok(())
+        todo!()
     }
 }
 

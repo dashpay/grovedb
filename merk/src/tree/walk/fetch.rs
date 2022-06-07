@@ -1,4 +1,5 @@
 use anyhow::Result;
+use fees::FeesContext;
 
 use super::super::{Link, Tree};
 
@@ -8,5 +9,5 @@ use super::super::{Link, Tree};
 pub trait Fetch {
     /// Called when the tree needs to fetch a node with the given `Link`. The
     /// `link` value will always be a `Link::Reference` variant.
-    fn fetch(&self, link: &Link) -> Result<Tree>;
+    fn fetch(&self, link: &Link) -> FeesContext<Result<Tree>>;
 }

@@ -34,27 +34,28 @@ where
     /// same source as `self`. Returned tuple is `(updated_self,
     /// maybe_child_walker)`.
     pub fn detach(mut self, left: bool) -> Result<(Self, Option<Self>)> {
-        let link = match self.tree.link(left) {
-            None => return Ok((self, None)),
-            Some(link) => link,
-        };
+        // let link = match self.tree.link(left) {
+        //     None => return Ok((self, None)),
+        //     Some(link) => link,
+        // };
 
-        let child = if link.tree().is_some() {
-            match self.tree.own_return(|t| t.detach(left)) {
-                Some(child) => child,
-                _ => unreachable!("Expected Some"),
-            }
-        } else {
-            let link = self.tree.slot_mut(left).take();
-            match link {
-                Some(Link::Reference { .. }) => (),
-                _ => unreachable!("Expected Some(Link::Reference)"),
-            }
-            self.source.fetch(&link.unwrap())?
-        };
+        // let child = if link.tree().is_some() {
+        //     match self.tree.own_return(|t| t.detach(left)) {
+        //         Some(child) => child,
+        //         _ => unreachable!("Expected Some"),
+        //     }
+        // } else {
+        //     let link = self.tree.slot_mut(left).take();
+        //     match link {
+        //         Some(Link::Reference { .. }) => (),
+        //         _ => unreachable!("Expected Some(Link::Reference)"),
+        //     }
+        //     self.source.fetch(&link.unwrap())?
+        // };
 
-        let child = self.wrap(child);
-        Ok((self, Some(child)))
+        // let child = self.wrap(child);
+        // Ok((self, Some(child)))
+        todo!()
     }
 
     /// Similar to `Tree#detach_expect`, but yields a `Walker` which fetches
@@ -155,6 +156,8 @@ where
 
 #[cfg(test)]
 mod test {
+    use fees::{FeesContext, FeesExt};
+
     use super::{super::NoopCommit, *};
     use crate::tree::Tree;
 
@@ -162,8 +165,8 @@ mod test {
     struct MockSource {}
 
     impl Fetch for MockSource {
-        fn fetch(&self, link: &Link) -> Result<Tree> {
-            Ok(Tree::new(link.key().to_vec(), b"foo".to_vec()))
+        fn fetch(&self, link: &Link) -> FeesContext<Result<Tree>> {
+            Ok(Tree::new(link.key().to_vec(), b"foo".to_vec())).wrap_with_cost(Default::default())
         }
     }
 

@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Error};
 use ed::{Decode, Encode};
+use fees::{FeesContext, FeesExt, OperationCost};
 use storage::StorageContext;
 
 use super::Tree;
@@ -9,20 +10,30 @@ impl Tree {
         Decode::decode(bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
     }
 
-    pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> Result<Option<Self>, Error>
+    pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> FeesContext<Result<Option<Self>, Error>>
     where
         S: StorageContext<'db>,
         K: AsRef<[u8]>,
         Error: From<S::Error>,
     {
-        let mut tree: Option<Self> = storage
-            .get(&key)?
-            .map(|x| Tree::decode_raw(&x))
-            .transpose()?;
-        if let Some(ref mut t) = tree {
-            t.set_key(key.as_ref().to_vec());
-        }
-        Ok(tree)
+        let cost = OperationCost {
+            seek_count: 1,
+            ..Default::default()
+        };
+        let tree: Result<Option<Self>, Error> = storage
+            .get(&key)
+            .map_err(|e| e.into())
+            .and_then(|raw_opt| raw_opt.map(|x| Tree::decode_raw(&x)).transpose());
+
+        let res = match tree {
+            Ok(Some(mut t)) => {
+                t.set_key(key.as_ref().to_vec());
+                Ok(Some(t))
+            }
+            other => other,
+        };
+
+        res.wrap_with_cost(cost)
     }
 }
 

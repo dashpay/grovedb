@@ -4,6 +4,7 @@ pub mod chunks;
 use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt};
 
 use anyhow::{anyhow, bail, Result};
+use fees::{FeesContext, FeesExt, OperationCost};
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
@@ -139,14 +140,13 @@ where
     S: StorageContext<'db>,
     <S as StorageContext<'db>>::Error: std::error::Error,
 {
-    pub fn open(storage: S) -> Result<Self> {
+    pub fn open(storage: S) -> FeesContext<Result<Self>> {
         let mut merk = Self {
             tree: Cell::new(None),
             storage,
         };
-        merk.load_root()?;
 
-        Ok(merk)
+        merk.load_root().map_ok(|_| merk)
     }
 
     /// Deletes tree data
@@ -190,34 +190,35 @@ where
     where
         F: FnOnce(&Tree) -> T,
     {
-        self.use_tree(move |maybe_tree| {
-            let mut cursor = match maybe_tree {
-                None => return Ok(None), // empty tree
-                Some(tree) => tree,
-            };
+        todo!()
+        // self.use_tree(move |maybe_tree| {
+        //     let mut cursor = match maybe_tree {
+        //         None => return Ok(None), // empty tree
+        //         Some(tree) => tree,
+        //     };
 
-            loop {
-                if key == cursor.key() {
-                    return Ok(Some(f(cursor)));
-                }
+        //     loop {
+        //         if key == cursor.key() {
+        //             return Ok(Some(f(cursor)));
+        //         }
 
-                let left = key < cursor.key();
-                let link = match cursor.link(left) {
-                    None => return Ok(None), // not found
-                    Some(link) => link,
-                };
+        //         let left = key < cursor.key();
+        //         let link = match cursor.link(left) {
+        //             None => return Ok(None), // not found
+        //             Some(link) => link,
+        //         };
 
-                let maybe_child = link.tree();
-                match maybe_child {
-                    None => {
-                        // fetch from RocksDB
-                        break Tree::get(&self.storage, key)
-                            .map(|maybe_node| maybe_node.map(|node| f(&node)));
-                    }
-                    Some(child) => cursor = child, // traverse to child
-                }
-            }
-        })
+        //         let maybe_child = link.tree();
+        //         match maybe_child {
+        //             None => {
+        //                 // fetch from RocksDB
+        //                 break Tree::get(&self.storage, key)
+        //                     .map(|maybe_node| maybe_node.map(|node|
+        // f(&node)));             }
+        //             Some(child) => cursor = child, // traverse to child
+        //         }
+        //     }
+        // })
     }
 
     /// Returns the root hash of the tree (a digest for the entire store which
@@ -489,12 +490,33 @@ where
     //     Ok(self.storage.put_root(ROOT_KEY_KEY, key)?)
     // }
 
-    pub(crate) fn load_root(&mut self) -> Result<()> {
-        if let Some(tree_root_key) = self.storage.get_root(ROOT_KEY_KEY)? {
-            let tree = Tree::get(&self.storage, &tree_root_key)?;
-            self.tree = Cell::new(tree);
-        }
-        Ok(())
+    pub(crate) fn load_root(&mut self) -> FeesContext<Result<()>> {
+        self.storage
+            .get_root(ROOT_KEY_KEY)
+            .wrap_fn_cost(|key_res| {
+                let mut cost = OperationCost {
+                    seek_count: 1, // One seek required to get where root key could be stored.
+                    ..Default::default()
+                };
+                if let Ok(Some(key)) = key_res {
+                    cost.loaded_bytes = key.len(); // Successful seek means some
+                                                   // loaded bytes.
+                }
+                cost
+            })
+            .map(|root_result| root_result.map_err(|e| anyhow!(e)))
+            .flat_map_ok(|tree_root_key_opt| {
+                // In case of successful seek for root key check if it exists
+                if let Some(tree_root_key) = tree_root_key_opt {
+                    // Trying to build a tree out of it, costs will be accumulated because
+                    // `Tree::get` returns `FeesContext` and this call happens inside `flat_map_ok`.
+                    Tree::get(&self.storage, &tree_root_key).map_ok(|tree| {
+                        self.tree = Cell::new(tree);
+                    })
+                } else {
+                    Ok(()).wrap_with_cost(Default::default())
+                }
+            })
     }
 }
 
@@ -533,8 +555,10 @@ impl<'s, 'db, S> Fetch for MerkSource<'s, S>
 where
     S: StorageContext<'db>,
 {
-    fn fetch(&self, link: &Link) -> Result<Tree> {
-        Tree::get(self.storage, link.key())?.ok_or(anyhow!("Key not found"))
+    fn fetch(&self, link: &Link) -> FeesContext<Result<Tree>> {
+        Tree::get(self.storage, link.key())
+            .map_ok(|x| x.ok_or(anyhow!("Key not found")))
+            .flatten()
     }
 }
 
@@ -573,6 +597,7 @@ impl Commit for MerkCommitter {
 mod test {
     use std::iter::empty;
 
+    use fees::OperationCost;
     use storage::{
         rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
         RawIterator, Storage, StorageContext,
@@ -589,6 +614,56 @@ mod test {
             let tree = maybe_tree.expect("expected tree");
             assert_tree_invariants(tree);
         })
+    }
+
+    #[test]
+    fn test_reopen_root_hash() {
+        let tmp_dir = TempDir::new().expect("cannot open tempdir");
+        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+            .expect("cannot open rocksdb storage");
+        let test_prefix = [b"ayy"].into_iter().map(|x| x.as_slice());
+        let mut merk = Merk::open(storage.get_storage_context(test_prefix.clone()))
+            .unwrap()
+            .unwrap();
+
+        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[])
+            .expect("apply failed");
+
+        let root_hash = merk.root_hash();
+        drop(merk);
+        let merk = Merk::open(storage.get_storage_context(test_prefix))
+            .unwrap()
+            .unwrap();
+        assert_eq!(merk.root_hash(), root_hash);
+    }
+
+    #[test]
+    fn test_open_fee() {
+        let tmp_dir = TempDir::new().expect("cannot open tempdir");
+        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+            .expect("cannot open rocksdb storage");
+        let test_prefix = [b"ayy"].into_iter().map(|x| x.as_slice());
+        let merk_fee_context = Merk::open(storage.get_storage_context(test_prefix.clone()));
+
+        // Opening not existing merk should cost only root key seek
+        assert!(matches!(
+            merk_fee_context.cost(),
+            OperationCost { seek_count: 1, .. }
+        ));
+
+        let mut merk = merk_fee_context.unwrap().unwrap();
+        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[])
+            .expect("apply failed");
+
+        drop(merk);
+
+        let merk_fee_context = Merk::open(storage.get_storage_context(test_prefix));
+
+        // Opening existing merk should cost two seeks.
+        assert!(matches!(
+            merk_fee_context.cost(),
+            OperationCost { seek_count: 2, .. }
+        ));
     }
 
     #[test]
@@ -724,8 +799,9 @@ mod test {
         let original_nodes = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
-            let mut merk =
-                Merk::open(storage.get_storage_context(empty())).expect("cannot open merk");
+            let mut merk = Merk::open(storage.get_storage_context(empty()))
+                .unwrap()
+                .expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
             merk.apply::<_, Vec<_>>(batch.as_slice(), &[]).unwrap();
             let mut tree = merk.tree.take().unwrap();
@@ -738,7 +814,9 @@ mod test {
 
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let merk = Merk::open(storage.get_storage_context(empty())).expect("cannot open merk");
+        let merk = Merk::open(storage.get_storage_context(empty()))
+            .unwrap()
+            .expect("cannot open merk");
         let mut tree = merk.tree.take().unwrap();
         let walker = RefWalker::new(&mut tree, merk.source());
 
@@ -767,8 +845,9 @@ mod test {
         let original_nodes = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
-            let mut merk =
-                Merk::open(storage.get_storage_context(empty())).expect("cannot open merk");
+            let mut merk = Merk::open(storage.get_storage_context(empty()))
+                .unwrap()
+                .expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
             merk.apply::<_, Vec<_>>(batch.as_slice(), &[]).unwrap();
 
@@ -778,7 +857,9 @@ mod test {
         };
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let merk = Merk::open(storage.get_storage_context(empty())).expect("cannot open merk");
+        let merk = Merk::open(storage.get_storage_context(empty()))
+            .unwrap()
+            .expect("cannot open merk");
 
         let mut reopen_nodes = vec![];
         collect(&mut merk.storage.raw_iter(), &mut reopen_nodes);

@@ -2314,7 +2314,6 @@ fn compare_result_sets(elements: &Vec<Vec<u8>>, result_set: &Vec<(Vec<u8>, Vec<u
 }
 
 fn deserialize_and_extract_item_bytes(raw_bytes: &[u8]) -> Result<Vec<u8>, Error> {
-    dbg!(raw_bytes);
     let elem = Element::deserialize(raw_bytes)?;
     return match elem {
         Element::Item(item, _) => Ok(item),
