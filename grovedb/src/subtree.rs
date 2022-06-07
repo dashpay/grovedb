@@ -54,32 +54,36 @@ where
 
 impl Element {
     // TODO: improve API to avoid creation of Tree elements with uncertain state
-    pub fn empty_tree() -> Element {
+    pub fn empty_tree() -> Self {
         Element::new_tree(Default::default())
+    }
+
+    pub fn empty_tree_with_flags(flags: ElementFlags) -> Self {
+        Element::new_tree_with_flags(Default::default(), flags)
     }
 
     pub fn new_item(item_value: Vec<u8>) -> Self {
         Element::Item(item_value, None)
     }
 
-    pub fn new_item_with_flag(item_value: Vec<u8>, flag: ElementFlags) -> Self {
-        Element::Item(item_value, flag)
+    pub fn new_item_with_flags(item_value: Vec<u8>, flags: ElementFlags) -> Self {
+        Element::Item(item_value, flags)
     }
 
     pub fn new_reference(reference_path: Vec<Vec<u8>>) -> Self {
         Element::Reference(reference_path, None)
     }
 
-    pub fn new_reference_with_flag(reference_path: Vec<Vec<u8>>, flag: ElementFlags) -> Self {
-        Element::Reference(reference_path, flag)
+    pub fn new_reference_with_flags(reference_path: Vec<Vec<u8>>, flags: ElementFlags) -> Self {
+        Element::Reference(reference_path, flags)
     }
 
     pub fn new_tree(tree_hash: [u8; 32]) -> Self {
         Element::Tree(tree_hash, None)
     }
 
-    pub fn new_tree_with_flag(tree_hash: [u8; 32], flag: ElementFlags) -> Self {
-        Element::Tree(tree_hash, flag)
+    pub fn new_tree_with_flags(tree_hash: [u8; 32], flags: ElementFlags) -> Self {
+        Element::Tree(tree_hash, flags)
     }
 
     /// Grab the optional flag stored in an element
@@ -679,7 +683,7 @@ mod tests {
             "02000000000000000000000000000000000000000000000000000000000000000000"
         );
 
-        let empty_tree = Element::new_tree_with_flag([0; 32], Some(vec![5]));
+        let empty_tree = Element::new_tree_with_flags([0; 32], Some(vec![5]));
         let serialized = empty_tree.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 36);
         assert_eq!(
@@ -694,7 +698,7 @@ mod tests {
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "0003abcdef00");
 
-        let item = Element::new_item_with_flag(
+        let item = Element::new_item_with_flags(
             hex::decode("abcdef").expect("expected to decode"),
             Some(vec![1]),
         );
@@ -715,7 +719,7 @@ mod tests {
         // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
         assert_eq!(hex::encode(serialized), "0103010002abcd010500");
 
-        let reference = Element::new_reference_with_flag(
+        let reference = Element::new_reference_with_flags(
             vec![
                 vec![0],
                 hex::decode("abcd").expect("expected to decode"),

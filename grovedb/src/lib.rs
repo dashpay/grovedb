@@ -226,7 +226,7 @@ impl GroveDb {
         root_hash: [u8; 32],
     ) -> Result<(), Error> {
         if let Element::Tree(_, flag) = Self::get_element_from_subtree(&parent_tree, key)? {
-            let element = Element::new_tree_with_flag(root_hash, flag);
+            let element = Element::new_tree_with_flags(root_hash, flag);
             element.insert(parent_tree, key.as_ref())?;
         } else {
             return Err(Error::InvalidPath("can only propagate on tree items"));
