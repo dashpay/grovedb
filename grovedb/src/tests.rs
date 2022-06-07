@@ -363,21 +363,21 @@ fn test_element_with_flags() {
     db.insert(
         [TEST_LEAF, b"key1"],
         b"elem2",
-        Element::new_item_with_flag(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec())),
+        Element::new_item_with_flags(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec())),
         None,
     )
     .expect("should insert subtree successfully");
     db.insert(
         [TEST_LEAF, b"key1"],
         b"elem3",
-        Element::new_tree_with_flag([0; 32], Some([1].to_vec())),
+        Element::new_tree_with_flags([0; 32], Some([1].to_vec())),
         None,
     )
     .expect("should insert subtree successfully");
     db.insert(
         [TEST_LEAF, b"key1", b"elem3"],
         b"elem4",
-        Element::new_reference_with_flag(
+        Element::new_reference_with_flags(
             vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"elem2".to_vec()],
             Some([9].to_vec()),
         ),

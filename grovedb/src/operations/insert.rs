@@ -114,7 +114,7 @@ impl GroveDb {
             );
             let child_subtree = Merk::open(child_storage)
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
-            let element = Element::new_tree_with_flag(child_subtree.root_hash(), element_flag);
+            let element = Element::new_tree_with_flags(child_subtree.root_hash(), element_flag);
             element.insert(&mut parent_subtree, key)?;
         } else {
             let parent_storage = self.db.get_storage_context(path_iter.clone());
@@ -125,7 +125,7 @@ impl GroveDb {
                 .get_storage_context(path_iter.clone().chain(std::iter::once(key)));
             let child_subtree = Merk::open(child_storage)
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
-            let element = Element::new_tree_with_flag(child_subtree.root_hash(), element_flag);
+            let element = Element::new_tree_with_flags(child_subtree.root_hash(), element_flag);
             element.insert(&mut parent_subtree, key)?;
         }
         Ok(())
