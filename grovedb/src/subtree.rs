@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Optional single byte meta-data to be stored per element
-pub type ElementFlag = Option<Vec<u8>>;
+pub type ElementFlags = Option<Vec<u8>>;
 
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
@@ -26,13 +26,13 @@ pub type ElementFlag = Option<Vec<u8>>;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Element {
     /// An ordinary value
-    Item(Vec<u8>, ElementFlag),
+    Item(Vec<u8>, ElementFlags),
     /// A reference to an object by its path
-    Reference(Vec<Vec<u8>>, ElementFlag),
+    Reference(Vec<Vec<u8>>, ElementFlags),
     /// A subtree, contains a root hash of the underlying Merk.
     /// Hash is stored to make Merk become different when its subtrees have
     /// changed, otherwise changes won't be reflected in parent trees.
-    Tree([u8; 32], ElementFlag),
+    Tree([u8; 32], ElementFlags),
 }
 
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>
@@ -62,7 +62,7 @@ impl Element {
         Element::Item(item_value, None)
     }
 
-    pub fn new_item_with_flag(item_value: Vec<u8>, flag: ElementFlag) -> Self {
+    pub fn new_item_with_flag(item_value: Vec<u8>, flag: ElementFlags) -> Self {
         Element::Item(item_value, flag)
     }
 
@@ -70,7 +70,7 @@ impl Element {
         Element::Reference(reference_path, None)
     }
 
-    pub fn new_reference_with_flag(reference_path: Vec<Vec<u8>>, flag: ElementFlag) -> Self {
+    pub fn new_reference_with_flag(reference_path: Vec<Vec<u8>>, flag: ElementFlags) -> Self {
         Element::Reference(reference_path, flag)
     }
 
@@ -78,8 +78,17 @@ impl Element {
         Element::Tree(tree_hash, None)
     }
 
-    pub fn new_tree_with_flag(tree_hash: [u8; 32], flag: ElementFlag) -> Self {
+    pub fn new_tree_with_flag(tree_hash: [u8; 32], flag: ElementFlags) -> Self {
         Element::Tree(tree_hash, flag)
+    }
+
+    /// Grab the optional flag stored in an element
+    pub fn get_flags(&self) -> &ElementFlags {
+        match self {
+            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, flags) => {
+                flags
+            }
+        }
     }
 
     /// Get the size of an element in bytes
