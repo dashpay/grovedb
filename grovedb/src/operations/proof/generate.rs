@@ -11,7 +11,7 @@ use crate::{
 };
 
 impl GroveDb {
-    pub fn prove(&self, query: PathQuery) -> Result<Vec<u8>, Error> {
+    pub fn prove(&self, query: &PathQuery) -> Result<Vec<u8>, Error> {
         // TODO: should it be possible to generate proofs for tree items (currently yes)
         let mut proof_result: Vec<u8> = vec![];
         let mut limit: Option<u16> = query.query.limit;
@@ -26,7 +26,7 @@ impl GroveDb {
         self.prove_subqueries(
             &mut proof_result,
             path_slices.clone(),
-            query.clone(),
+            query,
             &mut limit,
             &mut offset,
         )?;
@@ -41,7 +41,7 @@ impl GroveDb {
         &self,
         proofs: &mut Vec<u8>,
         path: Vec<&[u8]>,
-        query: PathQuery,
+        query: &PathQuery,
         current_limit: &mut Option<u16>,
         current_offset: &mut Option<u16>,
     ) -> Result<(), Error> {
@@ -125,7 +125,7 @@ impl GroveDb {
                     self.prove_subqueries(
                         proofs,
                         new_path,
-                        new_path_query,
+                        &new_path_query,
                         current_limit,
                         current_offset,
                     )?;

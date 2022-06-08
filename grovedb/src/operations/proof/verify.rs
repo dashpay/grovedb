@@ -1,7 +1,4 @@
-use merk::{
-    proofs::{query::ProofVerificationResult, Query},
-    Hash,
-};
+use merk::{proofs::Query, Hash};
 use rs_merkle::{algorithms::Sha256, MerkleProof};
 
 use crate::{

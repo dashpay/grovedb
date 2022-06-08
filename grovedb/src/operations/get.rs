@@ -119,6 +119,20 @@ impl GroveDb {
         Ok(result)
     }
 
+    pub fn get_proved_path_query(
+        &self,
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+    ) -> Result<Vec<u8>, Error> {
+        if transaction.is_some() {
+            Err(Error::NotSupported(
+                "transactions are not currently supported",
+            ))
+        } else {
+            self.prove(path_query)
+        }
+    }
+
     pub fn get_path_query(
         &self,
         path_query: &PathQuery,
