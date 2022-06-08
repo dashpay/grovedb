@@ -9,10 +9,10 @@ use crate::{
 impl GroveDb {
     pub fn execute_proof(
         proof: &[u8],
-        query: PathQuery,
+        query: &PathQuery,
     ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
         let mut verifier = ProofVerifier::new(&query);
-        let hash = verifier.execute_proof(proof, query)?;
+        let hash = verifier.execute_proof(proof, &query)?;
         Ok((hash, verifier.result_set))
     }
 }
@@ -32,7 +32,7 @@ impl ProofVerifier {
         }
     }
 
-    pub fn execute_proof(&mut self, proof: &[u8], query: PathQuery) -> Result<[u8; 32], Error> {
+    pub fn execute_proof(&mut self, proof: &[u8], query: &PathQuery) -> Result<[u8; 32], Error> {
         let mut proof_reader = ProofReader::new(proof);
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
