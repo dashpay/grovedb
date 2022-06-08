@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 
 use super::{Node, Op};
-use crate::tree::{kv_hash, node_hash, Hash, NULL_HASH};
+use crate::tree::{kv_digest_to_kv_hash, kv_hash, node_hash, Hash, NULL_HASH};
 
 /// Contains a tree's child node and its hash. The hash can always be assumed to
 /// be up-to-date.
@@ -52,6 +52,10 @@ impl Tree {
             Node::KVHash(kv_hash) => compute_hash(self, *kv_hash),
             Node::KV(key, value) => {
                 let kv_hash = kv_hash(key.as_slice(), value.as_slice());
+                compute_hash(self, kv_hash)
+            }
+            Node::KVDigest(key, value_hash) => {
+                let kv_hash = kv_digest_to_kv_hash(key, value_hash);
                 compute_hash(self, kv_hash)
             }
         }
@@ -260,11 +264,38 @@ where
                 parent.attach(false, if collapse { child.into_hash() } else { child })?;
                 stack.push(parent);
             }
+            Op::ParentInverted => {
+                let (mut parent, child) = (try_pop(&mut stack)?, try_pop(&mut stack)?);
+                parent.attach(false, if collapse { child.into_hash() } else { child })?;
+                stack.push(parent);
+            }
+            Op::ChildInverted => {
+                let (child, mut parent) = (try_pop(&mut stack)?, try_pop(&mut stack)?);
+                parent.attach(true, if collapse { child.into_hash() } else { child })?;
+                stack.push(parent);
+            }
             Op::Push(node) => {
                 if let Node::KV(key, _) = &node {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
                         if key <= last_key {
+                            bail!("Incorrect key ordering");
+                        }
+                    }
+
+                    maybe_last_key = Some(key.clone());
+                }
+
+                visit_node(&node)?;
+
+                let tree: Tree = node.into();
+                stack.push(tree);
+            }
+            Op::PushInverted(node) => {
+                if let Node::KV(key, _) = &node {
+                    // keys should always increase
+                    if let Some(last_key) = &maybe_last_key {
+                        if key >= last_key {
                             bail!("Incorrect key ordering");
                         }
                     }

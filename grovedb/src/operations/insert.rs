@@ -19,13 +19,31 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
         let path_iter = path.into_iter();
+
         match element {
-            Element::Tree(_) => {
+            Element::Tree(..) => {
                 if path_iter.len() == 0 {
                     self.add_root_leaf(key, transaction)?;
                 } else {
-                    self.add_non_root_subtree(path_iter, key, transaction)?;
+                    self.add_non_root_subtree(path_iter.clone(), key, element, transaction)?;
+                    self.propagate_changes(path_iter, transaction)?;
                 }
+            }
+            Element::Reference(ref reference_path, _) => {
+                if path_iter.len() == 0 {
+                    return Err(Error::InvalidPath(
+                        "only subtrees are allowed as root tree's leafs",
+                    ));
+                }
+
+                self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)?;
+                let referenced_element =
+                    self.follow_reference(reference_path.to_owned(), transaction)?;
+
+                merk_optional_tx!(self.db, path_iter.clone(), transaction, mut subtree, {
+                    element.insert_reference(&mut subtree, key, referenced_element.serialize()?)?;
+                });
+                self.propagate_changes(path_iter, transaction)?;
             }
             _ => {
                 // If path is empty that means there is an attempt to insert
@@ -33,10 +51,10 @@ impl GroveDb {
                 // but trees
                 if path_iter.len() == 0 {
                     return Err(Error::InvalidPath(
-                        "only subtrees are allowed as root tree's leafs",
+                        "only subtrees are allowed as root tree's leaves",
                     ));
                 }
-                self.check_subtree_exists_invalid_path(path_iter.clone(), Some(key), transaction)?;
+                self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)?;
                 merk_optional_tx!(self.db, path_iter.clone(), transaction, mut subtree, {
                     element.insert(&mut subtree, key)?;
                 });
@@ -71,14 +89,19 @@ impl GroveDb {
         &self,
         path: P,
         key: &'p [u8],
+        element: Element,
         transaction: TransactionArg,
     ) -> Result<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
+        let element_flag = match element {
+            Element::Tree(_, flag) => Ok(flag),
+            _ => Err(Error::CorruptedData("element should be a tree".to_owned())),
+        }?;
         let path_iter = path.into_iter();
-        self.check_subtree_exists_invalid_path(path_iter.clone(), Some(key), transaction)?;
+        self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)?;
         if let Some(tx) = transaction {
             let parent_storage = self
                 .db
@@ -91,7 +114,7 @@ impl GroveDb {
             );
             let child_subtree = Merk::open(child_storage)
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
-            let element = Element::Tree(child_subtree.root_hash());
+            let element = Element::new_tree_with_flag(child_subtree.root_hash(), element_flag);
             element.insert(&mut parent_subtree, key)?;
         } else {
             let parent_storage = self.db.get_storage_context(path_iter.clone());
@@ -102,10 +125,9 @@ impl GroveDb {
                 .get_storage_context(path_iter.clone().chain(std::iter::once(key)));
             let child_subtree = Merk::open(child_storage)
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
-            let element = Element::Tree(child_subtree.root_hash());
+            let element = Element::new_tree_with_flag(child_subtree.root_hash(), element_flag);
             element.insert(&mut parent_subtree, key)?;
         }
-        self.propagate_changes(path_iter, transaction)?;
         Ok(())
     }
 

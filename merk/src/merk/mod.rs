@@ -7,11 +7,118 @@ use anyhow::{anyhow, bail, Result};
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
-    proofs::{encode_into, query::QueryItem, Query},
+    proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
     tree::{Commit, Fetch, Hash, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
 };
 
 const ROOT_KEY_KEY: &[u8] = b"root";
+
+pub struct ProofConstructionResult {
+    pub proof: Vec<u8>,
+    pub limit: Option<u16>,
+    pub offset: Option<u16>,
+}
+
+impl ProofConstructionResult {
+    pub fn new(proof: Vec<u8>, limit: Option<u16>, offset: Option<u16>) -> Self {
+        Self {
+            proof,
+            limit,
+            offset,
+        }
+    }
+}
+
+pub struct ProofWithoutEncodingResult {
+    pub proof: LinkedList<ProofOp>,
+    pub limit: Option<u16>,
+    pub offset: Option<u16>,
+}
+
+impl ProofWithoutEncodingResult {
+    pub fn new(proof: LinkedList<ProofOp>, limit: Option<u16>, offset: Option<u16>) -> Self {
+        Self {
+            proof,
+            limit,
+            offset,
+        }
+    }
+}
+
+/// KVIterator allows you to lazily iterate over each kv pair of a subtree
+pub struct KVIterator<'a, I: RawIterator> {
+    raw_iter: I,
+    query: &'a Query,
+    left_to_right: bool,
+    query_iterator: Box<dyn Iterator<Item = &'a QueryItem> + 'a>,
+    current_query_item: Option<&'a QueryItem>,
+}
+
+impl<'a, I: RawIterator> KVIterator<'a, I> {
+    pub fn new(raw_iter: I, query: &'a Query) -> Self {
+        let mut iterator = KVIterator {
+            raw_iter,
+            query,
+            left_to_right: query.left_to_right,
+            current_query_item: None,
+            query_iterator: query.directional_iter(query.left_to_right),
+        };
+        iterator.seek();
+        iterator
+    }
+
+    /// Returns the current node the iter points to if it's valid for the given
+    /// query item returns None otherwise
+    fn get_kv(&mut self, query_item: &QueryItem) -> Option<(Vec<u8>, Vec<u8>)> {
+        if query_item.iter_is_valid_for_type(&self.raw_iter, None, self.left_to_right) {
+            let kv = (
+                self.raw_iter
+                    .key()
+                    .expect("key must exist as iter is valid")
+                    .to_vec(),
+                self.raw_iter
+                    .value()
+                    .expect("value must exists as iter is valid")
+                    .to_vec(),
+            );
+            if self.left_to_right {
+                self.raw_iter.next()
+            } else {
+                self.raw_iter.prev()
+            }
+            Some(kv)
+        } else {
+            None
+        }
+    }
+
+    /// Moves the iter to the start of the next query item
+    fn seek(&mut self) {
+        self.current_query_item = self.query_iterator.next();
+        if let Some(query_item) = self.current_query_item {
+            query_item.seek_for_iter(&mut self.raw_iter, self.left_to_right);
+        }
+    }
+}
+
+impl<'a, I: RawIterator> Iterator for KVIterator<'a, I> {
+    type Item = (Vec<u8>, Vec<u8>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(query_item) = self.current_query_item {
+            let kv_pair = self.get_kv(&query_item);
+
+            if kv_pair.is_some() {
+                return kv_pair;
+            } else {
+                self.seek();
+                self.next()
+            }
+        } else {
+            None
+        }
+    }
+}
 
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk<S> {
@@ -27,10 +134,10 @@ impl<S> fmt::Debug for Merk<S> {
 
 pub type UseTreeMutResult = Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>;
 
-impl<'db, 'ctx, S> Merk<S>
+impl<'db, S> Merk<S>
 where
-    S: StorageContext<'db, 'ctx> + 'ctx,
-    <S as StorageContext<'db, 'ctx>>::Error: std::error::Error,
+    S: StorageContext<'db>,
+    <S as StorageContext<'db>>::Error: std::error::Error,
 {
     pub fn open(storage: S) -> Result<Self> {
         let mut merk = Self {
@@ -43,7 +150,7 @@ where
     }
 
     /// Deletes tree data
-    pub fn clear(&'ctx mut self) -> Result<()> {
+    pub fn clear(&mut self) -> Result<()> {
         let mut iter = self.storage.raw_iter();
         iter.seek_to_first();
         let mut to_delete = self.storage.new_batch();
@@ -140,7 +247,7 @@ where
     /// ];
     /// store.apply::<_, Vec<_>>(batch, &[]).unwrap();
     /// ```
-    pub fn apply<KB, KA>(&'ctx mut self, batch: &MerkBatch<KB>, aux: &MerkBatch<KA>) -> Result<()>
+    pub fn apply<KB, KA>(&mut self, batch: &MerkBatch<KB>, aux: &MerkBatch<KA>) -> Result<()>
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
@@ -183,7 +290,7 @@ where
     /// unsafe { store.apply_unchecked::<_, Vec<_>>(batch, &[]).unwrap() };
     /// ```
     pub unsafe fn apply_unchecked<KB, KA>(
-        &'ctx mut self,
+        &mut self,
         batch: &MerkBatch<KB>,
         aux: &MerkBatch<KA>,
     ) -> Result<()>
@@ -219,13 +326,40 @@ where
     /// unique you can use the unsafe `prove_unchecked` for a small performance
     /// gain.
     pub fn prove(
-        &'ctx self,
+        &self,
         query: Query,
         limit: Option<u16>,
         offset: Option<u16>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<ProofConstructionResult> {
         let left_to_right = query.left_to_right;
-        self.prove_unchecked(query, limit, offset, left_to_right)
+        let (proof, limit, offset) = self.prove_unchecked(query, limit, offset, left_to_right)?;
+
+        let mut bytes = Vec::with_capacity(128);
+        encode_into(proof.iter(), &mut bytes);
+        Ok(ProofConstructionResult::new(bytes, limit, offset))
+    }
+
+    /// Creates a Merkle proof for the list of queried keys. For each key in the
+    /// query, if the key is found in the store then the value will be proven to
+    /// be in the tree. For each key in the query that does not exist in the
+    /// tree, its absence will be proven by including boundary keys.
+    ///
+    /// The proof returned is in an intermediate format to be later encoded
+    ///
+    /// This will fail if the keys in `query` are not sorted and unique. This
+    /// check adds some overhead, so if you are sure your batch is sorted and
+    /// unique you can use the unsafe `prove_unchecked` for a small performance
+    /// gain.
+    pub fn prove_without_encoding(
+        &self,
+        query: Query,
+        limit: Option<u16>,
+        offset: Option<u16>,
+    ) -> Result<ProofWithoutEncodingResult> {
+        let left_to_right = query.left_to_right;
+        let (proof, limit, offset) = self.prove_unchecked(query, limit, offset, left_to_right)?;
+
+        Ok(ProofWithoutEncodingResult::new(proof, limit, offset))
     }
 
     /// Creates a Merkle proof for the list of queried keys. For each key in
@@ -241,12 +375,12 @@ where
     /// of this method which checks to ensure the batch is sorted and
     /// unique, see `prove`.
     pub fn prove_unchecked<Q, I>(
-        &'ctx self,
+        &self,
         query: I,
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> Result<Vec<u8>>
+    ) -> Result<(LinkedList<ProofOp>, Option<u16>, Option<u16>)>
     where
         Q: Into<QueryItem>,
         I: IntoIterator<Item = Q>,
@@ -257,20 +391,14 @@ where
             let tree = maybe_tree.ok_or(anyhow!("Cannot create proof for empty tree"))?;
 
             let mut ref_walker = RefWalker::new(tree, self.source());
-            let (proof, ..) =
+            let (proof, _, limit, offset, ..) =
                 ref_walker.create_proof(query_vec.as_slice(), limit, offset, left_to_right)?;
 
-            let mut bytes = Vec::with_capacity(128);
-            encode_into(proof.iter(), &mut bytes);
-            Ok(bytes)
+            Ok((proof, limit, offset))
         })
     }
 
-    pub fn commit<K>(
-        &'ctx mut self,
-        deleted_keys: LinkedList<Vec<u8>>,
-        aux: &MerkBatch<K>,
-    ) -> Result<()>
+    pub fn commit<K>(&mut self, deleted_keys: LinkedList<Vec<u8>>, aux: &MerkBatch<K>) -> Result<()>
     where
         K: AsRef<[u8]>,
     {
@@ -309,6 +437,7 @@ where
         for (key, value) in aux {
             match value {
                 Op::Put(value) => batch.put_aux(key, value)?,
+                Op::PutReference(value, _) => batch.put_aux(key, value)?,
                 Op::Delete => batch.delete_aux(key)?,
             };
         }
@@ -400,9 +529,9 @@ impl<'s, S> Clone for MerkSource<'s, S> {
     }
 }
 
-impl<'s, 'db, 'ctx, S> Fetch for MerkSource<'s, S>
+impl<'s, 'db, S> Fetch for MerkSource<'s, S>
 where
-    S: StorageContext<'db, 'ctx>,
+    S: StorageContext<'db>,
 {
     fn fetch(&self, link: &Link) -> Result<Tree> {
         Tree::get(self.storage, link.key())?.ok_or(anyhow!("Key not found"))
@@ -620,7 +749,7 @@ mod test {
     }
 
     type PrefixedStorageIter<'db, 'ctx> =
-        &'ctx mut <PrefixedRocksDbStorageContext<'db> as StorageContext<'db, 'ctx>>::RawIterator;
+        &'ctx mut <PrefixedRocksDbStorageContext<'db> as StorageContext<'db>>::RawIterator;
 
     #[test]
     fn reopen_iter() {

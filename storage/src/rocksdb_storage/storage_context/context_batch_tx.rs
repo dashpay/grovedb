@@ -1,32 +1,39 @@
 //! Storage context implementation with a transaction.
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error};
 
-use super::{batch::DummyBatch, make_prefixed_key, PrefixedRocksDbRawIterator};
+use super::{batch::PrefixedMultiContextBatchPart, make_prefixed_key, PrefixedRocksDbRawIterator};
 use crate::{
     rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
-    BatchOperation, StorageContext,
+    StorageBatch, StorageContext,
 };
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
 /// transaction.
-pub struct PrefixedRocksDbTransactionContext<'db> {
+pub struct PrefixedRocksDbBatchTransactionContext<'db> {
     storage: &'db Db,
     transaction: &'db Tx<'db>,
     prefix: Vec<u8>,
+    batch: &'db StorageBatch,
 }
 
-impl<'db> PrefixedRocksDbTransactionContext<'db> {
+impl<'db> PrefixedRocksDbBatchTransactionContext<'db> {
     /// Create a new prefixed transaction context instance
-    pub fn new(storage: &'db Db, transaction: &'db Tx<'db>, prefix: Vec<u8>) -> Self {
-        PrefixedRocksDbTransactionContext {
+    pub fn new(
+        storage: &'db Db,
+        transaction: &'db Tx<'db>,
+        prefix: Vec<u8>,
+        batch: &'db StorageBatch,
+    ) -> Self {
+        PrefixedRocksDbBatchTransactionContext {
             storage,
             transaction,
             prefix,
+            batch,
         }
     }
 }
 
-impl<'db> PrefixedRocksDbTransactionContext<'db> {
+impl<'db> PrefixedRocksDbBatchTransactionContext<'db> {
     /// Get auxiliary data column family
     fn cf_aux(&self) -> &'db ColumnFamily {
         self.storage
@@ -49,58 +56,57 @@ impl<'db> PrefixedRocksDbTransactionContext<'db> {
     }
 }
 
-impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
-    type Batch = DummyBatch;
+impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
+    type Batch = PrefixedMultiContextBatchPart;
     type Error = Error;
     type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Tx<'db>>>;
 
     fn put<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
-        self.transaction
-            .put(make_prefixed_key(self.prefix.clone(), key), value)
+        self.batch
+            .put(make_prefixed_key(self.prefix.clone(), key), value.to_vec());
+        Ok(())
     }
 
     fn put_aux<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
-        self.transaction.put_cf(
-            self.cf_aux(),
-            make_prefixed_key(self.prefix.clone(), key),
-            value,
-        )
+        self.batch
+            .put_aux(make_prefixed_key(self.prefix.clone(), key), value.to_vec());
+        Ok(())
     }
 
     fn put_root<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
-        self.transaction.put_cf(
-            self.cf_roots(),
-            make_prefixed_key(self.prefix.clone(), key),
-            value,
-        )
+        self.batch
+            .put_root(make_prefixed_key(self.prefix.clone(), key), value.to_vec());
+        Ok(())
     }
 
     fn put_meta<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> Result<(), Self::Error> {
-        self.transaction.put_cf(
-            self.cf_meta(),
-            make_prefixed_key(self.prefix.clone(), key),
-            value,
-        )
+        self.batch
+            .put_meta(make_prefixed_key(self.prefix.clone(), key), value.to_vec());
+        Ok(())
     }
 
     fn delete<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Self::Error> {
-        self.transaction
-            .delete(make_prefixed_key(self.prefix.clone(), key))
+        self.batch
+            .delete(make_prefixed_key(self.prefix.clone(), key));
+        Ok(())
     }
 
     fn delete_aux<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Self::Error> {
-        self.transaction
-            .delete_cf(self.cf_aux(), make_prefixed_key(self.prefix.clone(), key))
+        self.batch
+            .delete_aux(make_prefixed_key(self.prefix.clone(), key));
+        Ok(())
     }
 
     fn delete_root<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Self::Error> {
-        self.transaction
-            .delete_cf(self.cf_roots(), make_prefixed_key(self.prefix.clone(), key))
+        self.batch
+            .delete_root(make_prefixed_key(self.prefix.clone(), key));
+        Ok(())
     }
 
     fn delete_meta<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Self::Error> {
-        self.transaction
-            .delete_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
+        self.batch
+            .delete_meta(make_prefixed_key(self.prefix.clone(), key));
+        Ok(())
     }
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Self::Error> {
@@ -124,38 +130,14 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
     }
 
     fn new_batch(&self) -> Self::Batch {
-        DummyBatch::default()
+        PrefixedMultiContextBatchPart {
+            prefix: self.prefix.clone(),
+            batch: StorageBatch::new(),
+        }
     }
 
     fn commit_batch(&self, batch: Self::Batch) -> Result<(), Self::Error> {
-        for op in batch.operations {
-            match op {
-                BatchOperation::Put { key, value } => {
-                    self.put(key, &value)?;
-                }
-                BatchOperation::PutAux { key, value } => {
-                    self.put_aux(key, &value)?;
-                }
-                BatchOperation::PutRoot { key, value } => {
-                    self.put_root(key, &value)?;
-                }
-                BatchOperation::PutMeta { key, value } => {
-                    self.put_meta(key, &value)?;
-                }
-                BatchOperation::Delete { key } => {
-                    self.delete(key)?;
-                }
-                BatchOperation::DeleteAux { key } => {
-                    self.delete_aux(key)?;
-                }
-                BatchOperation::DeleteRoot { key } => {
-                    self.delete_root(key)?;
-                }
-                BatchOperation::DeleteMeta { key } => {
-                    self.delete_meta(key)?;
-                }
-            }
-        }
+        self.batch.merge(batch.batch);
         Ok(())
     }
 

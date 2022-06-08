@@ -15,11 +15,13 @@ use std::cmp::max;
 use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
 use ed::{Decode, Encode, Terminated};
-pub use hash::{kv_hash, node_hash, Hash, HASH_LENGTH, NULL_HASH};
+pub use hash::{kv_digest_to_kv_hash, kv_hash, node_hash, Hash, HASH_LENGTH, NULL_HASH};
 use kv::KV;
 pub use link::Link;
 pub use ops::{BatchEntry, MerkBatch, Op, PanicSource};
 pub use walk::{Fetch, RefWalker, Walker};
+
+use crate::tree::hash::value_hash;
 
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
@@ -58,6 +60,20 @@ impl Tree {
         }
     }
 
+    /// Creates a new `Tree` with the given key, value and value hash, and no
+    /// children.
+    ///
+    /// Hashes the key/value pair and initializes the `kv_hash` field.
+    pub fn new_with_value_hash(key: Vec<u8>, value: Vec<u8>, value_hash: Hash) -> Self {
+        Self {
+            inner: Box::new(TreeInner {
+                kv: KV::new_with_value_hash(key, value, value_hash),
+                left: None,
+                right: None,
+            }),
+        }
+    }
+
     /// Creates a `Tree` by supplying all the raw struct fields (mainly useful
     /// for testing). The `kv_hash` and `Link`s are not ensured to be correct.
     pub fn from_fields(
@@ -67,9 +83,10 @@ impl Tree {
         left: Option<Link>,
         right: Option<Link>,
     ) -> Self {
+        let vh = value_hash(value.as_slice());
         Self {
             inner: Box::new(TreeInner {
-                kv: KV::from_fields(key, value, kv_hash),
+                kv: KV::from_fields(key, value, kv_hash, vh),
                 left,
                 right,
             }),
@@ -103,6 +120,12 @@ impl Tree {
     #[inline]
     pub const fn kv_hash(&self) -> &Hash {
         self.inner.kv.hash()
+    }
+
+    /// Returns the hash of the node's valu
+    #[inline]
+    pub const fn value_hash(&self) -> &Hash {
+        self.inner.kv.value_hash()
     }
 
     /// Returns a reference to the root node's `Link` on the given side, if any.
@@ -320,6 +343,14 @@ impl Tree {
     #[inline]
     pub fn with_value(mut self, value: Vec<u8>) -> Self {
         self.inner.kv = self.inner.kv.with_value(value);
+        self
+    }
+
+    /// Replaces the root node's value with the given value and value hash
+    /// and returns the modified `Tree`.
+    #[inline]
+    pub fn with_value_and_value_hash(mut self, value: Vec<u8>, value_hash: Hash) -> Self {
+        self.inner.kv = self.inner.kv.with_value_and_value_hash(value, value_hash);
         self
     }
 

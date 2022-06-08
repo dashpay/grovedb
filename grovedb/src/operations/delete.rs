@@ -18,7 +18,7 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let mut path_iter = path.into_iter();
-        self.check_subtree_exists_path_not_found(path_iter.clone(), Some(key), transaction)?;
+        self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)?;
         if let Some(stop_path_height) = stop_path_height {
             if stop_path_height == path_iter.clone().len() as u16 {
                 return Ok(0);
@@ -78,10 +78,10 @@ impl GroveDb {
         if path_iter.len() == 0 {
             // Attempt to delete a root tree leaf
             Err(Error::InvalidPath(
-                "root tree leafs currently cannot be deleted",
+                "root tree leaves currently cannot be deleted",
             ))
         } else {
-            self.check_subtree_exists_path_not_found(path_iter.clone(), Some(key), transaction)?;
+            self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)?;
             let element = self.get_raw(path_iter.clone(), key.as_ref(), transaction)?;
             let delete_element = || -> Result<(), Error> {
                 merk_optional_tx!(self.db, path_iter.clone(), transaction, mut parent_merk, {
@@ -90,7 +90,7 @@ impl GroveDb {
                 })
             };
 
-            if let Element::Tree(_) = element {
+            if let Element::Tree(..) = element {
                 let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
                 let subtrees_paths = self.find_subtrees(subtree_merk_path.clone(), transaction)?;
                 let is_empty =
@@ -158,7 +158,7 @@ impl GroveDb {
             storage_context_optional_tx!(self.db, path_iter.clone(), transaction, storage, {
                 let mut raw_iter = Element::iterator(storage.raw_iter());
                 while let Some((key, value)) = raw_iter.next()? {
-                    if let Element::Tree(_) = value {
+                    if let Element::Tree(..) = value {
                         let mut sub_path = q.clone();
                         sub_path.push(key.to_vec());
                         queue.push(sub_path.clone());
