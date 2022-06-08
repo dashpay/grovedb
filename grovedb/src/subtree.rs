@@ -7,7 +7,7 @@ use integer_encoding::VarInt;
 use merk::{
     proofs::{query::QueryItem, Query},
     tree::Tree,
-    Op,
+    Op, HASH_LENGTH,
 };
 use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
@@ -128,6 +128,10 @@ impl Element {
         }
     }
 
+    pub fn required_item_space(len: usize, flag_len: usize) -> usize {
+        len + len.required_space() + flag_len + flag_len.required_space() + 1
+    }
+
     /// Get the size of the serialization of an element in bytes
     pub fn serialized_byte_size(&self) -> usize {
         match self {
@@ -138,7 +142,7 @@ impl Element {
                 } else {
                     0
                 };
-                item_len + item_len.required_space() + flag_len + flag_len.required_space() + 1
+                Self::required_item_space(item_len, flag_len)
             }
             Element::Reference(path_reference, element_flag) => {
                 let flag_len = if let Some(flag) = element_flag {
@@ -171,16 +175,20 @@ impl Element {
     }
 
     /// Get the size that the element will occupy on disk
-    pub fn node_byte_size(&self, key: &[u8]) -> usize {
+    pub fn node_byte_size(&self, key_len: usize) -> usize {
         // todo v23: this is just an approximation for now
         let serialized_value_size = self.serialized_byte_size();
+        Self::calculate_node_byte_size(serialized_value_size, key_len)
+    }
+
+    /// Get the size that the element will occupy on disk
+    pub fn calculate_node_byte_size(serialized_value_size: usize, key_len: usize) -> usize {
         let node_value_size = serialized_value_size + serialized_value_size.required_space();
-        let key_len = key.len();
         let node_key_size = key_len + key_len.required_space();
         // Each node stores the key and value, the value hash and the key_value hash
-        let node_size = node_value_size + node_key_size + 32 + 32;
+        let node_size = node_value_size + node_key_size + HASH_LENGTH + HASH_LENGTH;
         // The node will be a child of another node which stores it's key and hash
-        let parent_additions = node_key_size + 32;
+        let parent_additions = node_key_size + HASH_LENGTH;
         let child_sizes = 2 as usize;
         node_size + parent_additions + child_sizes
     }

@@ -28,7 +28,7 @@ pub struct SubqueryBranch {
 /// resolve a proof which will include all of the requested values.
 #[derive(Debug, Default, Clone)]
 pub struct Query {
-    items: BTreeSet<QueryItem>,
+    pub items: BTreeSet<QueryItem>,
     pub default_subquery_branch: SubqueryBranch,
     pub conditional_subquery_branches: IndexMap<QueryItem, SubqueryBranch>,
     pub left_to_right: bool,
@@ -281,7 +281,7 @@ pub enum QueryItem {
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
 }
 
-impl std::hash::Hash for QueryItem {
+impl Hash for QueryItem {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.enum_value().hash(state);
         self.value_hash(state);
@@ -289,6 +289,17 @@ impl std::hash::Hash for QueryItem {
 }
 
 impl QueryItem {
+    pub fn processing_footprint(&self) -> u32 {
+        match self {
+            QueryItem::Key(key) => key.len() as u32,
+            QueryItem::RangeFull(_) => 0u32,
+            _ => {
+                (self.lower_bound().0.map_or(0u32, |x| x.len() as u32)
+                    + self.upper_bound().0.map_or(0u32, |x| x.len() as u32))
+            }
+        }
+    }
+
     pub fn lower_bound(&self) -> (Option<&[u8]>, bool) {
         match self {
             QueryItem::Key(key) => (Some(key.as_slice()), false),
