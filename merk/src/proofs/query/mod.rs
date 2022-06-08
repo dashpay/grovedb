@@ -293,7 +293,10 @@ impl QueryItem {
         match self {
             QueryItem::Key(key) => key.len() as u32,
             QueryItem::RangeFull(_) => 0u32,
-            _ => (self.lower_bound().0.map_or(0u32, |x| x.len() as u32) + self.upper_bound().0.map_or(0u32, |x| x.len() as u32)),
+            _ => {
+                (self.lower_bound().0.map_or(0u32, |x| x.len() as u32)
+                    + self.upper_bound().0.map_or(0u32, |x| x.len() as u32))
+            }
         }
     }
 
