@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::{bail, Result};
+use costs::CostContext;
 use indexmap::IndexMap;
 pub use map::*;
 use storage::RawIterator;
@@ -1043,7 +1044,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> Result<ProofAbsenceLimitOffset> {
+    ) -> CostContext<Result<ProofAbsenceLimitOffset>> {
         Ok(if !query.is_empty() {
             if let Some(mut child) = self.walk(left)? {
                 child.create_proof(query, limit, offset, left_to_right)?

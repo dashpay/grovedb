@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "fees",
+    "costs",
     "grovedb",
     "merk",
     "node-grove",

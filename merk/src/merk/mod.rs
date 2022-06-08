@@ -4,7 +4,7 @@ pub mod chunks;
 use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt};
 
 use anyhow::{anyhow, bail, Result};
-use fees::{FeesContext, FeesExt, OperationCost};
+use costs::{CostContext, CostsExt, OperationCost};
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
@@ -140,7 +140,7 @@ where
     S: StorageContext<'db>,
     <S as StorageContext<'db>>::Error: std::error::Error,
 {
-    pub fn open(storage: S) -> FeesContext<Result<Self>> {
+    pub fn open(storage: S) -> CostContext<Result<Self>> {
         let mut merk = Self {
             tree: Cell::new(None),
             storage,
@@ -166,7 +166,7 @@ where
     }
 
     /// Gets an auxiliary value.
-    pub fn get_aux(&self, key: &[u8]) -> FeesContext<Result<Option<Vec<u8>>>> {
+    pub fn get_aux(&self, key: &[u8]) -> CostContext<Result<Option<Vec<u8>>>> {
         self.storage
             .get_aux(key)
             .map_err(|e| e.into())
@@ -501,7 +501,7 @@ where
     //     Ok(self.storage.put_root(ROOT_KEY_KEY, key)?)
     // }
 
-    pub(crate) fn load_root(&mut self) -> FeesContext<Result<()>> {
+    pub(crate) fn load_root(&mut self) -> CostContext<Result<()>> {
         self.storage
             .get_root(ROOT_KEY_KEY)
             .wrap_fn_cost(|key_res| {
@@ -520,7 +520,7 @@ where
                 // In case of successful seek for root key check if it exists
                 if let Some(tree_root_key) = tree_root_key_opt {
                     // Trying to build a tree out of it, costs will be accumulated because
-                    // `Tree::get` returns `FeesContext` and this call happens inside `flat_map_ok`.
+                    // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
                     Tree::get(&self.storage, &tree_root_key).map_ok(|tree| {
                         self.tree = Cell::new(tree);
                     })
@@ -566,7 +566,7 @@ impl<'s, 'db, S> Fetch for MerkSource<'s, S>
 where
     S: StorageContext<'db>,
 {
-    fn fetch(&self, link: &Link) -> FeesContext<Result<Tree>> {
+    fn fetch(&self, link: &Link) -> CostContext<Result<Tree>> {
         Tree::get(self.storage, link.key())
             .map_ok(|x| x.ok_or(anyhow!("Key not found")))
             .flatten()
@@ -608,7 +608,7 @@ impl Commit for MerkCommitter {
 mod test {
     use std::iter::empty;
 
-    use fees::OperationCost;
+    use costs::OperationCost;
     use storage::{
         rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
         RawIterator, Storage, StorageContext,
@@ -672,9 +672,10 @@ mod test {
 
         // Opening existing merk should cost two seeks.
         assert!(matches!(
-            dbg!(merk_fee_context.cost()),
+            merk_fee_context.cost(),
             OperationCost { seek_count: 2, .. }
         ));
+        assert!(merk_fee_context.cost().loaded_bytes > 0);
     }
 
     #[test]
@@ -797,10 +798,10 @@ mod test {
             nodes: &mut Vec<Vec<u8>>,
         ) {
             nodes.push(node.tree().encode());
-            if let Some(c) = node.walk(true).unwrap() {
+            if let Some(c) = node.walk(true).unwrap().unwrap() {
                 collect(c, nodes);
             }
-            if let Some(c) = node.walk(false).unwrap() {
+            if let Some(c) = node.walk(false).unwrap().unwrap() {
                 collect(c, nodes);
             }
         }

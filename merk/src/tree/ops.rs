@@ -1,7 +1,7 @@
 use std::{collections::LinkedList, fmt};
 
 use anyhow::Result;
-use fees::FeesContext;
+use costs::CostContext;
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};
@@ -41,7 +41,7 @@ pub type MerkBatch<K> = [BatchEntry<K>];
 #[derive(Clone)]
 pub struct PanicSource {}
 impl Fetch for PanicSource {
-    fn fetch(&self, _link: &Link) -> FeesContext<Result<Tree>> {
+    fn fetch(&self, _link: &Link) -> CostContext<Result<Tree>> {
         unreachable!("'fetch' should not have been called")
     }
 }

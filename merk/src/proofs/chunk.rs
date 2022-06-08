@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use fees::{FeesContext, FeesExt, OperationCost};
+use costs::{CostContext, CostsExt, OperationCost};
 use storage::RawIterator;
 #[cfg(feature = "full")]
 use {
@@ -26,7 +26,7 @@ where
     /// whether or not there will be more chunks to follow. If the chunk
     /// contains the entire tree, the boolean will be `false`, if the chunk
     /// is abridged and will be connected to leaf chunks, it will be `true`.
-    pub fn create_trunk_proof(&mut self) -> FeesContext<Result<(Vec<Op>, bool)>> {
+    pub fn create_trunk_proof(&mut self) -> CostContext<Result<(Vec<Op>, bool)>> {
         let approx_size = 2usize.pow((self.tree().height() / 2) as u32) * 3;
         let mut proof = Vec::with_capacity(approx_size);
 
@@ -51,7 +51,7 @@ where
         &mut self,
         proof: &mut Vec<Op>,
         depth: usize,
-    ) -> FeesContext<Result<usize>> {
+    ) -> CostContext<Result<usize>> {
         let mut cost = OperationCost::default();
         let maybe_left = match self.walk(true).unwrap_add_cost(&mut cost) {
             Ok(maybe_left) => maybe_left,
@@ -97,7 +97,7 @@ where
         proof: &mut Vec<Op>,
         remaining_depth: usize,
         is_leftmost: bool,
-    ) -> FeesContext<Result<()>> {
+    ) -> CostContext<Result<()>> {
         // if remaining_depth == 0 {
         //     // return early if we have reached bottom of trunk
 
@@ -323,7 +323,7 @@ mod tests {
         let mut tree = make_tree_seq(31);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let (proof, has_more) = walker.create_trunk_proof().unwrap();
+        let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
 
         println!("{:?}", &proof);
@@ -340,7 +340,7 @@ mod tests {
         let mut tree = make_tree_seq(2u64.pow(MIN_TRUNK_HEIGHT as u32 * 2 + 1) - 1);
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
-        let (proof, has_more) = walker.create_trunk_proof().unwrap();
+        let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(has_more);
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap();
 
@@ -360,7 +360,7 @@ mod tests {
         tree.commit(&mut NoopCommit {}).unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
-        let (proof, has_more) = walker.create_trunk_proof().unwrap();
+        let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
 
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap();
@@ -379,7 +379,7 @@ mod tests {
             BaseTree::new(vec![0], vec![]).attach(false, Some(BaseTree::new(vec![1], vec![])));
         tree.commit(&mut NoopCommit {}).unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
-        let (proof, has_more) = walker.create_trunk_proof().unwrap();
+        let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
 
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap();
@@ -398,7 +398,7 @@ mod tests {
             BaseTree::new(vec![1], vec![]).attach(true, Some(BaseTree::new(vec![0], vec![])));
         tree.commit(&mut NoopCommit {}).unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
-        let (proof, has_more) = walker.create_trunk_proof().unwrap();
+        let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
 
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap();
@@ -419,7 +419,7 @@ mod tests {
         tree.commit(&mut NoopCommit {}).unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
-        let (proof, has_more) = walker.create_trunk_proof().unwrap();
+        let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
 
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap();

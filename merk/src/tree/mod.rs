@@ -14,8 +14,8 @@ use std::cmp::max;
 
 use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
+use costs::CostContext;
 use ed::{Decode, Encode, Terminated};
-use fees::FeesContext;
 pub use hash::{kv_digest_to_kv_hash, kv_hash, node_hash, Hash, HASH_LENGTH, NULL_HASH};
 use kv::KV;
 pub use link::Link;
@@ -421,7 +421,7 @@ impl Tree {
     /// Fetches the child on the given side using the given data source, and
     /// places it in the child slot (upgrading the link from `Link::Reference`
     /// to `Link::Loaded`).
-    pub fn load<S: Fetch>(&mut self, left: bool, source: &S) -> FeesContext<Result<()>> {
+    pub fn load<S: Fetch>(&mut self, left: bool, source: &S) -> CostContext<Result<()>> {
         // TODO: return Err instead of panic?
         let link = self.link(left).expect("Expected link");
         let (child_heights, hash) = match link {
@@ -433,15 +433,18 @@ impl Tree {
             _ => panic!("Expected Some(Link::Reference)"),
         };
 
-        source.fetch(link).map_ok(|tree| {
-            debug_assert_eq!(tree.key(), link.key());
-            *self.slot_mut(left) = Some(Link::Loaded {
-                tree,
-                hash: *hash,
-                child_heights: *child_heights,
-            });
-            Ok(())
-        }).flatten()
+        source
+            .fetch(link)
+            .map_ok(|tree| {
+                debug_assert_eq!(tree.key(), link.key());
+                *self.slot_mut(left) = Some(Link::Loaded {
+                    tree,
+                    hash: *hash,
+                    child_heights: *child_heights,
+                });
+                Ok(())
+            })
+            .flatten()
     }
 }
 

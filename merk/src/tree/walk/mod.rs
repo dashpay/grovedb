@@ -156,7 +156,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use fees::{FeesContext, FeesExt};
+    use costs::{CostContext, CostsExt};
 
     use super::{super::NoopCommit, *};
     use crate::tree::Tree;
@@ -165,7 +165,7 @@ mod test {
     struct MockSource {}
 
     impl Fetch for MockSource {
-        fn fetch(&self, link: &Link) -> FeesContext<Result<Tree>> {
+        fn fetch(&self, link: &Link) -> CostContext<Result<Tree>> {
             Ok(Tree::new(link.key().to_vec(), b"foo".to_vec())).wrap_with_cost(Default::default())
         }
     }

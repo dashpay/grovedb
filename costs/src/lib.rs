@@ -48,15 +48,15 @@ impl AddAssign for OperationCost {
 
 /// Wrapped operation result with associated cost.
 #[derive(Debug, Eq, PartialEq)]
-pub struct FeesContext<T> {
+pub struct CostContext<T> {
     /// Wrapped operation's return value.
     value: T,
     /// Cost of the operation.
     cost: OperationCost,
 }
 
-/// General combinators for `FeesContext`.
-impl<T> FeesContext<T> {
+/// General combinators for `CostContext`.
+impl<T> CostContext<T> {
     /// Take wrapped value out adding its cost to provided accumulator.
     pub fn unwrap_add_cost(self, acc_cost: &mut OperationCost) -> T {
         *acc_cost += self.cost;
@@ -79,48 +79,48 @@ impl<T> FeesContext<T> {
     }
 
     /// Applies function to wrapped value keeping cost the same as before.
-    pub fn map<B>(self, f: impl FnOnce(T) -> B) -> FeesContext<B> {
+    pub fn map<B>(self, f: impl FnOnce(T) -> B) -> CostContext<B> {
         let cost = self.cost;
         let value = f(self.value);
-        FeesContext { value, cost }
+        CostContext { value, cost }
     }
 
     /// Applies function to wrapped value adding costs.
-    pub fn flat_map<B>(self, f: impl FnOnce(T) -> FeesContext<B>) -> FeesContext<B> {
+    pub fn flat_map<B>(self, f: impl FnOnce(T) -> CostContext<B>) -> CostContext<B> {
         let mut cost = self.cost;
         let value = f(self.value).unwrap_add_cost(&mut cost);
-        FeesContext { value, cost }
+        CostContext { value, cost }
     }
 }
 
-/// Combinators to use with `Result` wrapped in `FeesContext`.
-impl<T, E> FeesContext<Result<T, E>> {
+/// Combinators to use with `Result` wrapped in `CostContext`.
+impl<T, E> CostContext<Result<T, E>> {
     /// Applies function to wrapped value in case of `Ok` keeping cost the same
     /// as before.
-    pub fn map_ok<B>(self, f: impl FnOnce(T) -> B) -> FeesContext<Result<B, E>> {
+    pub fn map_ok<B>(self, f: impl FnOnce(T) -> B) -> CostContext<Result<B, E>> {
         self.map(|result| result.map(f))
     }
 
     /// Applies function to wrapped result in case of `Ok` adding costs.
     pub fn flat_map_ok<B>(
         self,
-        f: impl FnOnce(T) -> FeesContext<Result<B, E>>,
-    ) -> FeesContext<Result<B, E>> {
+        f: impl FnOnce(T) -> CostContext<Result<B, E>>,
+    ) -> CostContext<Result<B, E>> {
         let mut cost = self.cost;
         let result = match self.value {
             Ok(x) => f(x).unwrap_add_cost(&mut cost),
             Err(e) => Err(e),
         };
-        FeesContext {
+        CostContext {
             value: result,
             cost,
         }
     }
 }
 
-impl<T, E> FeesContext<Result<Result<T, E>, E>> {
-    /// Flattens nested errors inside `FeesContext`
-    pub fn flatten(self) -> FeesContext<Result<T, E>> {
+impl<T, E> CostContext<Result<Result<T, E>, E>> {
+    /// Flattens nested errors inside `CostContext`
+    pub fn flatten(self) -> CostContext<Result<T, E>> {
         self.map(|value| match value {
             Err(e) => Err(e),
             Ok(Err(e)) => Err(e),
@@ -130,29 +130,29 @@ impl<T, E> FeesContext<Result<Result<T, E>, E>> {
 }
 
 /// Extension trait to add costs context to values.
-pub trait FeesExt {
-    /// Wraps any value into a `FeesContext` object with provided costs.
-    fn wrap_with_cost(self, cost: OperationCost) -> FeesContext<Self>
+pub trait CostsExt {
+    /// Wraps any value into a `CostContext` object with provided costs.
+    fn wrap_with_cost(self, cost: OperationCost) -> CostContext<Self>
     where
         Self: Sized,
     {
-        FeesContext { value: self, cost }
+        CostContext { value: self, cost }
     }
 
-    /// Wraps any value into `FeesContext` object with costs computed using the
+    /// Wraps any value into `CostContext` object with costs computed using the
     /// value getting wrapped.
-    fn wrap_fn_cost(self, f: impl FnOnce(&Self) -> OperationCost) -> FeesContext<Self>
+    fn wrap_fn_cost(self, f: impl FnOnce(&Self) -> OperationCost) -> CostContext<Self>
     where
         Self: Sized,
     {
-        FeesContext {
+        CostContext {
             cost: f(&self),
             value: self,
         }
     }
 }
 
-impl<T> FeesExt for T {}
+impl<T> CostsExt for T {}
 
 #[cfg(test)]
 mod tests {
@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn test_map() {
-        let initial = FeesContext {
+        let initial = CostContext {
             value: 75,
             cost: OperationCost {
                 loaded_bytes: 3,
@@ -171,7 +171,7 @@ mod tests {
         let mapped = initial.map(|x| x + 25);
         assert_eq!(
             mapped,
-            FeesContext {
+            CostContext {
                 value: 100,
                 cost: OperationCost {
                     loaded_bytes: 3,
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_flat_map() {
-        let initial = FeesContext {
+        let initial = CostContext {
             value: 75,
             cost: OperationCost {
                 loaded_bytes: 3,
@@ -191,7 +191,7 @@ mod tests {
             },
         };
 
-        let mapped = initial.flat_map(|x| FeesContext {
+        let mapped = initial.flat_map(|x| CostContext {
             value: x + 25,
             cost: OperationCost {
                 loaded_bytes: 7,
@@ -200,7 +200,7 @@ mod tests {
         });
         assert_eq!(
             mapped,
-            FeesContext {
+            CostContext {
                 value: 100,
                 cost: OperationCost {
                     loaded_bytes: 10,
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_map_ok() {
-        let initial: FeesContext<Result<usize, ()>> = FeesContext {
+        let initial: CostContext<Result<usize, ()>> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 loaded_bytes: 3,
@@ -223,7 +223,7 @@ mod tests {
         let mapped = initial.map_ok(|x| x + 25);
         assert_eq!(
             mapped,
-            FeesContext {
+            CostContext {
                 value: Ok(100),
                 cost: OperationCost {
                     loaded_bytes: 3,
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn test_map_ok_err() {
-        let initial: FeesContext<Result<usize, ()>> = FeesContext {
+        let initial: CostContext<Result<usize, ()>> = CostContext {
             value: Err(()),
             cost: OperationCost {
                 loaded_bytes: 3,
@@ -246,7 +246,7 @@ mod tests {
         let mapped = initial.map_ok(|x| x + 25);
         assert_eq!(
             mapped,
-            FeesContext {
+            CostContext {
                 value: Err(()),
                 cost: OperationCost {
                     loaded_bytes: 3,
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_flat_map_ok() {
-        let initial: FeesContext<Result<usize, ()>> = FeesContext {
+        let initial: CostContext<Result<usize, ()>> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 loaded_bytes: 3,
@@ -266,7 +266,7 @@ mod tests {
             },
         };
 
-        let mapped = initial.flat_map_ok(|x| FeesContext {
+        let mapped = initial.flat_map_ok(|x| CostContext {
             value: Ok(x + 25),
             cost: OperationCost {
                 loaded_bytes: 7,
@@ -275,7 +275,7 @@ mod tests {
         });
         assert_eq!(
             mapped,
-            FeesContext {
+            CostContext {
                 value: Ok(100),
                 cost: OperationCost {
                     loaded_bytes: 10,
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn test_flat_map_err_first() {
-        let initial: FeesContext<Result<usize, ()>> = FeesContext {
+        let initial: CostContext<Result<usize, ()>> = CostContext {
             value: Err(()),
             cost: OperationCost {
                 loaded_bytes: 3,
@@ -297,7 +297,7 @@ mod tests {
         let mut executed = false;
         let mapped = initial.flat_map_ok(|x| {
             executed = true;
-            FeesContext {
+            CostContext {
                 value: Ok(x + 25),
                 cost: OperationCost {
                     loaded_bytes: 7,
@@ -310,7 +310,7 @@ mod tests {
         assert!(!executed);
         assert_eq!(
             mapped,
-            FeesContext {
+            CostContext {
                 value: Err(()),
                 cost: OperationCost {
                     loaded_bytes: 3,
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_flat_map_err_second() {
-        let initial: FeesContext<Result<usize, ()>> = FeesContext {
+        let initial: CostContext<Result<usize, ()>> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 loaded_bytes: 3,
@@ -330,9 +330,9 @@ mod tests {
             },
         };
         let mut executed = false;
-        let mapped: FeesContext<Result<usize, ()>> = initial.flat_map_ok(|_| {
+        let mapped: CostContext<Result<usize, ()>> = initial.flat_map_ok(|_| {
             executed = true;
-            FeesContext {
+            CostContext {
                 value: Err(()),
                 cost: OperationCost {
                     loaded_bytes: 7,
@@ -346,7 +346,7 @@ mod tests {
         assert!(executed);
         assert_eq!(
             mapped,
-            FeesContext {
+            CostContext {
                 value: Err(()),
                 cost: OperationCost {
                     loaded_bytes: 10,
@@ -358,37 +358,37 @@ mod tests {
 
     #[test]
     fn test_flatten_nested_errors() {
-        let initial: FeesContext<Result<usize, &str>> = FeesContext {
+        let initial: CostContext<Result<usize, &str>> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 loaded_bytes: 3,
                 ..Default::default()
             },
         };
-        // We use function that has nothing to do with fees but returns a result, we're
-        // trying to flatten nested errors inside FeesContext.
+        // We use function that has nothing to do with costs but returns a result, we're
+        // trying to flatten nested errors inside CostContext.
         let ok = initial.map_ok(|x| Ok(x + 25));
         assert_eq!(ok.flatten().unwrap(), Ok(100));
 
-        let initial: FeesContext<Result<usize, &str>> = FeesContext {
+        let initial: CostContext<Result<usize, &str>> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 loaded_bytes: 3,
                 ..Default::default()
             },
         };
-        let error_inner: FeesContext<Result<Result<usize, &str>, &str>> =
+        let error_inner: CostContext<Result<Result<usize, &str>, &str>> =
             initial.map_ok(|_| Err("latter"));
         assert_eq!(error_inner.flatten().unwrap(), Err("latter"));
 
-        let initial: FeesContext<Result<usize, &str>> = FeesContext {
+        let initial: CostContext<Result<usize, &str>> = CostContext {
             value: Err("inner"),
             cost: OperationCost {
                 loaded_bytes: 3,
                 ..Default::default()
             },
         };
-        let error_inner: FeesContext<Result<Result<usize, &str>, &str>> =
+        let error_inner: CostContext<Result<Result<usize, &str>, &str>> =
             initial.map_ok(|x| Ok(x + 25));
         assert_eq!(error_inner.flatten().unwrap(), Err("inner"));
     }
@@ -397,14 +397,14 @@ mod tests {
     fn test_wrap_fn_cost() {
         // Imagine this one is loaded from storage.
         let loaded_value = b"ayylmao";
-        let fees_ctx = loaded_value.wrap_fn_cost(|x| OperationCost {
+        let costs_ctx = loaded_value.wrap_fn_cost(|x| OperationCost {
             seek_count: 1,
             loaded_bytes: x.len(),
             ..Default::default()
         });
         assert_eq!(
-            fees_ctx,
-            FeesContext {
+            costs_ctx,
+            CostContext {
                 value: loaded_value,
                 cost: OperationCost {
                     seek_count: 1,
