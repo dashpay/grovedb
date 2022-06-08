@@ -119,6 +119,20 @@ impl GroveDb {
         Ok(result)
     }
 
+    pub fn get_proved_path_query(
+        &self,
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+    ) -> Result<Vec<u8>, Error> {
+        if transaction.is_some() {
+            Err(Error::NotSupported(
+                "transactions are not currently supported",
+            ))
+        } else {
+            self.prove(path_query)
+        }
+    }
+
     pub fn get_path_query(
         &self,
         path_query: &PathQuery,
@@ -184,7 +198,7 @@ impl GroveDb {
             let parent_key = parent_iter.next_back().expect("path is not empty");
             merk_optional_tx!(self.db, parent_iter, transaction, parent, {
                 match Element::get(&parent, parent_key) {
-                    Ok(Element::Tree(_)) => {}
+                    Ok(Element::Tree(..)) => {}
                     Ok(_) | Err(Error::PathKeyNotFound(_)) => {
                         return Err(error);
                     }

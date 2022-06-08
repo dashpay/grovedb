@@ -5,10 +5,7 @@ mod subtree;
 mod tests;
 mod util;
 mod visualize;
-use std::{
-    collections::{BTreeMap, HashMap},
-    path::Path,
-};
+use std::{collections::BTreeMap, path::Path};
 
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
@@ -63,6 +60,10 @@ pub enum Error {
     StorageError(#[from] rocksdb_storage::Error),
     #[error("data corruption error: {0}")]
     CorruptedData(String),
+
+    // Support errors
+    #[error("not supported: {0}")]
+    NotSupported(&'static str),
 }
 
 #[derive(Debug, Clone)]
