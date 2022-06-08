@@ -342,13 +342,14 @@ where
         query: Query,
         limit: Option<u16>,
         offset: Option<u16>,
-    ) -> Result<ProofConstructionResult> {
+    ) -> CostContext<Result<ProofConstructionResult>> {
         let left_to_right = query.left_to_right;
-        let (proof, limit, offset) = self.prove_unchecked(query, limit, offset, left_to_right)?;
-
-        let mut bytes = Vec::with_capacity(128);
-        encode_into(proof.iter(), &mut bytes);
-        Ok(ProofConstructionResult::new(bytes, limit, offset))
+        self.prove_unchecked(query, limit, offset, left_to_right)
+            .map_ok(|(proof, limit, offset)| {
+                let mut bytes = Vec::with_capacity(128);
+                encode_into(proof.iter(), &mut bytes);
+                ProofConstructionResult::new(bytes, limit, offset)
+            })
     }
 
     /// Creates a Merkle proof for the list of queried keys. For each key in the
@@ -367,11 +368,10 @@ where
         query: Query,
         limit: Option<u16>,
         offset: Option<u16>,
-    ) -> Result<ProofWithoutEncodingResult> {
+    ) -> CostContext<Result<ProofWithoutEncodingResult>> {
         let left_to_right = query.left_to_right;
-        let (proof, limit, offset) = self.prove_unchecked(query, limit, offset, left_to_right)?;
-
-        Ok(ProofWithoutEncodingResult::new(proof, limit, offset))
+        self.prove_unchecked(query, limit, offset, left_to_right)
+            .map_ok(|(proof, limit, offset)| ProofWithoutEncodingResult::new(proof, limit, offset))
     }
 
     /// Creates a Merkle proof for the list of queried keys. For each key in
@@ -392,7 +392,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> Result<(LinkedList<ProofOp>, Option<u16>, Option<u16>)>
+    ) -> CostContext<Result<(LinkedList<ProofOp>, Option<u16>, Option<u16>)>>
     where
         Q: Into<QueryItem>,
         I: IntoIterator<Item = Q>,
@@ -400,13 +400,14 @@ where
         let query_vec: Vec<QueryItem> = query.into_iter().map(Into::into).collect();
 
         self.use_tree_mut(|maybe_tree| {
-            let tree = maybe_tree.ok_or(anyhow!("Cannot create proof for empty tree"))?;
-
-            let mut ref_walker = RefWalker::new(tree, self.source());
-            let (proof, _, limit, offset, ..) =
-                ref_walker.create_proof(query_vec.as_slice(), limit, offset, left_to_right)?;
-
-            Ok((proof, limit, offset))
+            maybe_tree
+                .ok_or(anyhow!("Cannot create proof for empty tree"))
+                .wrap_with_cost(Default::default())
+                .flat_map_ok(|tree| {
+                    let mut ref_walker = RefWalker::new(tree, self.source());
+                    ref_walker.create_proof(query_vec.as_slice(), limit, offset, left_to_right)
+                })
+                .map_ok(|(proof, _, limit, offset, ..)| (proof, limit, offset))
         })
     }
 

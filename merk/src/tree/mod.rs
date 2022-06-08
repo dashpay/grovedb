@@ -14,7 +14,7 @@ use std::cmp::max;
 
 use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
-use costs::CostContext;
+use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use ed::{Decode, Encode, Terminated};
 pub use hash::{kv_digest_to_kv_hash, kv_hash, node_hash, Hash, HASH_LENGTH, NULL_HASH};
 use kv::KV;
@@ -433,18 +433,15 @@ impl Tree {
             _ => panic!("Expected Some(Link::Reference)"),
         };
 
-        source
-            .fetch(link)
-            .map_ok(|tree| {
-                debug_assert_eq!(tree.key(), link.key());
-                *self.slot_mut(left) = Some(Link::Loaded {
-                    tree,
-                    hash: *hash,
-                    child_heights: *child_heights,
-                });
-                Ok(())
-            })
-            .flatten()
+        let mut cost = OperationCost::default();
+        let tree = cost_return_on_error!(&mut cost, source.fetch(link));
+        debug_assert_eq!(tree.key(), link.key());
+        *self.slot_mut(left) = Some(Link::Loaded {
+            tree,
+            hash: *hash,
+            child_heights: *child_heights,
+        });
+        Ok(()).wrap_with_cost(cost)
     }
 }
 
