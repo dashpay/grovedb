@@ -57,7 +57,7 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(super) fn get_raw<'p, P>(
+    pub fn get_raw<'p, P>(
         &self,
         path: P,
         key: &'p [u8],
@@ -72,6 +72,31 @@ impl GroveDb {
             self.check_subtree_exists_path_not_found([key], transaction)?;
             merk_optional_tx!(self.db, [key], transaction, subtree, {
                 Ok(Element::new_tree(subtree.root_hash()))
+            })
+        } else {
+            self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)?;
+            merk_optional_tx!(self.db, path_iter, transaction, subtree, {
+                Element::get(&subtree, key)
+            })
+        }
+    }
+
+    /// Does tree element exist without following references
+    pub fn has_raw<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        transaction: TransactionArg,
+    ) -> Result<bool, Error>
+        where
+            P: IntoIterator<Item = &'p [u8]>,
+            <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        let path_iter = path.into_iter();
+        if path_iter.len() == 0 {
+            self.check_subtree_exists_path_not_found([key], transaction)?;
+            merk_optional_tx!(self.db, [key], transaction, subtree, {
+                true
             })
         } else {
             self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)?;
