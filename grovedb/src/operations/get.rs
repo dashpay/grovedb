@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
+use storage::StorageContext;
+
 use crate::{
-    util::{merk_optional_tx, meta_storage_context_optional_tx},
+    util::{merk_optional_tx, meta_storage_context_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
 
@@ -57,7 +59,7 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(super) fn get_raw<'p, P>(
+    pub fn get_raw<'p, P>(
         &self,
         path: P,
         key: &'p [u8],
@@ -77,6 +79,34 @@ impl GroveDb {
             self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)?;
             merk_optional_tx!(self.db, path_iter, transaction, subtree, {
                 Element::get(&subtree, key)
+            })
+        }
+    }
+
+    /// Does tree element exist without following references
+    pub fn has_raw<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        transaction: TransactionArg,
+    ) -> Result<bool, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        let path_iter = path.into_iter();
+
+        if path_iter.len() == 0 {
+            // Root tree's items are serialized into meta storage and cannot be checked
+            // easily; Knowing that root tree's leafs are subtrees only, we can
+            // check them using roots storage.
+            storage_context_optional_tx!(self.db, [key], transaction, storage, {
+                Ok(storage.get_root(merk::ROOT_KEY_KEY)?.is_some())
+            })
+        } else {
+            // Merk's items should be written into data storage and checked accordingly
+            storage_context_optional_tx!(self.db, path_iter, transaction, storage, {
+                Ok(storage.get(key)?.is_some())
             })
         }
     }
