@@ -3454,3 +3454,49 @@ fn test_check_subtree_exists_function() {
         Err(Error::InvalidPath(_))
     ));
 }
+
+#[test]
+fn test_tree_value_exists_method_no_tx() {
+    let db = make_grovedb();
+    // Test keys in non-root tree
+    db.insert(
+        [TEST_LEAF],
+        b"key",
+        Element::new_item(b"ayy".to_vec()),
+        None,
+    )
+    .expect("cannot insert item");
+    assert!(db.has_raw([TEST_LEAF], b"key", None).unwrap());
+    assert!(!db.has_raw([TEST_LEAF], b"badkey", None).unwrap());
+
+    // Test keys for a root tree
+    assert!(db.has_raw([], TEST_LEAF, None).unwrap());
+    assert!(!db.has_raw([], b"badleaf", None).unwrap());
+}
+
+#[test]
+fn test_tree_value_exists_method_tx() {
+    let db = make_grovedb();
+    let tx = db.start_transaction();
+    // Test keys in non-root tree
+    db.insert(
+        [TEST_LEAF],
+        b"key",
+        Element::new_item(b"ayy".to_vec()),
+        Some(&tx),
+    )
+    .expect("cannot insert item");
+    assert!(db.has_raw([TEST_LEAF], b"key", Some(&tx)).unwrap());
+    assert!(!db.has_raw([TEST_LEAF], b"key", None).unwrap());
+
+    // Test keys for a root tree
+    db.insert([], b"leaf", Element::new_item(b"ayy".to_vec()), Some(&tx))
+        .expect("cannot insert item");
+    assert!(db.has_raw([], b"leaf", Some(&tx)).unwrap());
+    assert!(!db.has_raw([], b"leaf", None).unwrap());
+
+    db.commit_transaction(tx)
+        .expect("cannot commit transaction");
+    assert!(db.has_raw([TEST_LEAF], b"key", None).unwrap());
+    assert!(db.has_raw([], b"leaf", None).unwrap());
+}

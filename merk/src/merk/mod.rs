@@ -11,7 +11,7 @@ use crate::{
     tree::{Commit, Fetch, Hash, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
 };
 
-const ROOT_KEY_KEY: &[u8] = b"root";
+pub const ROOT_KEY_KEY: &[u8] = b"root";
 
 pub struct ProofConstructionResult {
     pub proof: Vec<u8>,
