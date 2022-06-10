@@ -109,8 +109,8 @@ impl<'db> Storage<'db> for RocksDbStorage {
     }
 
     fn get_storage_context<'p, P>(&'db self, path: P) -> Self::StorageContext
-    where
-        P: IntoIterator<Item = &'p [u8]>,
+        where
+            P: IntoIterator<Item=&'p [u8]>,
     {
         let prefix = Self::build_prefix(path);
         PrefixedRocksDbStorageContext::new(&self.db, prefix)
@@ -121,8 +121,8 @@ impl<'db> Storage<'db> for RocksDbStorage {
         path: P,
         transaction: &'db Self::Transaction,
     ) -> Self::TransactionalStorageContext
-    where
-        P: IntoIterator<Item = &'p [u8]>,
+        where
+            P: IntoIterator<Item=&'p [u8]>,
     {
         let prefix = Self::build_prefix(path);
         PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix)
@@ -133,8 +133,8 @@ impl<'db> Storage<'db> for RocksDbStorage {
         path: P,
         batch: &'db StorageBatch,
     ) -> Self::BatchStorageContext
-    where
-        P: IntoIterator<Item = &'p [u8]>,
+        where
+            P: IntoIterator<Item=&'p [u8]>,
     {
         let prefix = Self::build_prefix(path);
         PrefixedRocksDbBatchStorageContext::new(&self.db, prefix, batch)
@@ -146,14 +146,14 @@ impl<'db> Storage<'db> for RocksDbStorage {
         batch: &'db StorageBatch,
         transaction: &'db Self::Transaction,
     ) -> Self::BatchTransactionalStorageContext
-    where
-        P: IntoIterator<Item = &'p [u8]>,
+        where
+            P: IntoIterator<Item=&'p [u8]>,
     {
         let prefix = Self::build_prefix(path);
         PrefixedRocksDbBatchTransactionContext::new(&self.db, transaction, prefix, batch)
     }
 
-    fn commit_multi_context_batch(&self, batch: StorageBatch) -> Result<(), Self::Error> {
+    fn commit_multi_context_batch(&self, batch: StorageBatch, transaction: Option<&'db Self::Transaction>) -> Result<(), Self::Error> {
         let mut db_batch = WriteBatchWithTransaction::<true>::default();
         for op in batch.into_iter() {
             match op {
@@ -183,36 +183,10 @@ impl<'db> Storage<'db> for RocksDbStorage {
                 }
             }
         }
-        self.db.write(db_batch)?;
-        Ok(())
-    }
-
-    fn commit_multi_context_batch_with_transaction(
-        &self,
-        batch: StorageBatch,
-        transaction: &'db Self::Transaction,
-    ) -> Result<(), Self::Error> {
-        transaction.set_savepoint();
-        let batch_result: Result<(), Self::Error> = batch.into_iter().try_for_each(|op| match op {
-            BatchOperation::Put { key, value } => transaction.put(key, value),
-            BatchOperation::PutAux { key, value } => {
-                transaction.put_cf(cf_aux(&self.db), key, value)
-            }
-            BatchOperation::PutRoot { key, value } => {
-                transaction.put_cf(cf_roots(&self.db), key, value)
-            }
-            BatchOperation::PutMeta { key, value } => {
-                transaction.put_cf(cf_meta(&self.db), key, value)
-            }
-            BatchOperation::Delete { key } => transaction.delete(key),
-            BatchOperation::DeleteAux { key } => transaction.delete_cf(cf_aux(&self.db), key),
-            BatchOperation::DeleteRoot { key } => transaction.delete_cf(cf_roots(&self.db), key),
-            BatchOperation::DeleteMeta { key } => transaction.delete_cf(cf_meta(&self.db), key),
-        });
-        if batch_result.is_err() {
-            transaction.rollback_to_savepoint()?;
+        match transaction {
+            None => { self.db.write(db_batch) }
+            Some(transaction) => { transaction.rebuild_from_writebatch(&db_batch) }
         }
-        batch_result
     }
 }
 

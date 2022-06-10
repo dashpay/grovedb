@@ -1,7 +1,10 @@
 use std::{
     cell::RefCell,
-    collections::{hash_map::IntoValues, HashMap},
 };
+
+use indexmap::{IndexMap};
+use indexmap::map::IntoValues;
+use rocksdb::{Transaction, WriteBatchWithTransaction};
 
 use visualize::visualize_to_vec;
 
@@ -37,14 +40,7 @@ pub trait Storage<'db> {
     fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Self::Error>;
 
     /// Consumes and applies multi-context batch.
-    fn commit_multi_context_batch(&self, batch: StorageBatch) -> Result<(), Self::Error>;
-
-    /// Consumes and applies multi-context batch on transaction.
-    fn commit_multi_context_batch_with_transaction(
-        &self,
-        batch: StorageBatch,
-        transaction: &'db Self::Transaction,
-    ) -> Result<(), Self::Error>;
+    fn commit_multi_context_batch(&self, batch: StorageBatch, transaction: Option<&'db Self::Transaction>) -> Result<(), Self::Error>;
 
     /// Forces data to be written
     fn flush(&self) -> Result<(), Self::Error>;
@@ -208,10 +204,10 @@ pub struct StorageBatch {
 
 #[derive(Default)]
 struct Operations {
-    data: HashMap<Vec<u8>, BatchOperation>,
-    roots: HashMap<Vec<u8>, BatchOperation>,
-    aux: HashMap<Vec<u8>, BatchOperation>,
-    meta: HashMap<Vec<u8>, BatchOperation>,
+    data: IndexMap<Vec<u8>, BatchOperation>,
+    roots: IndexMap<Vec<u8>, BatchOperation>,
+    aux: IndexMap<Vec<u8>, BatchOperation>,
+    meta: IndexMap<Vec<u8>, BatchOperation>,
 }
 
 impl std::fmt::Debug for Operations {

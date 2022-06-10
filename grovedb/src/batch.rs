@@ -447,7 +447,7 @@ impl GroveDb {
             );
             save_root_leaves(meta_storage, &temp_root_leaves)?;
             self.db
-                .commit_multi_context_batch_with_transaction(storage_batch, tx)?;
+                .commit_multi_context_batch(storage_batch, Some(tx))?;
         } else {
             self.apply_body(&mut validated_operations, &mut temp_root_leaves, |path| {
                 let storage = self
@@ -461,7 +461,7 @@ impl GroveDb {
                 .db
                 .get_batch_storage_context(std::iter::empty(), &storage_batch);
             save_root_leaves(meta_storage, &temp_root_leaves)?;
-            self.db.commit_multi_context_batch(storage_batch)?;
+            self.db.commit_multi_context_batch(storage_batch, None)?;
         }
         Ok(())
     }
@@ -522,6 +522,70 @@ mod tests {
         );
         assert_eq!(
             db.get([TEST_LEAF, b"key1"], b"key2", None)
+                .expect("cannot get element"),
+            element2
+        );
+    }
+
+
+    #[test]
+    fn test_batch_validation_ok_on_transaction() {
+        let db = make_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"keyb", Element::empty_tree(), Some(&tx))
+            .expect("successful root tree leaf insert");
+
+        let element = Element::new_item(b"ayy".to_vec());
+        let element2 = Element::new_item(b"ayy2".to_vec());
+        let ops = vec![
+            GroveDbOp::insert(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
+                b"key4".to_vec(),
+                element.clone(),
+            ),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec(), b"key2".to_vec()],
+                b"key3".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert(
+                vec![b"key1".to_vec()],
+                b"key2".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+                b"key2".to_vec(),
+                element2.clone(),
+            ),
+        ];
+        db.apply_batch(ops, Some(&tx)).expect("cannot apply batch");
+        db.get([], b"keyb", None).expect_err("we should not get an element");
+        db.get([], b"keyb", Some(&tx)).expect("we should get an element");
+
+        db.get([], b"key1", None).expect_err("we should not get an element");
+        db.get([], b"key1", Some(&tx)).expect("cannot get element");
+        db.get([b"key1".as_ref()], b"key2", Some(&tx))
+            .expect("cannot get element");
+        db.get([b"key1".as_ref(), b"key2"], b"key3", Some(&tx))
+            .expect("cannot get element");
+        db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx))
+            .expect("cannot get element");
+
+        assert_eq!(
+            db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx))
+                .expect("cannot get element"),
+            element
+        );
+        assert_eq!(
+            db.get([TEST_LEAF, b"key1"], b"key2", Some(&tx))
                 .expect("cannot get element"),
             element2
         );
