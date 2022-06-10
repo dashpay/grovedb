@@ -383,6 +383,7 @@ impl GroveDb {
     pub fn apply_batch(
         &self,
         ops: Vec<GroveDbOp>,
+        validate: bool,
         transaction: TransactionArg,
     ) -> Result<(), Error> {
         // Helper function to store updated root leaves
@@ -412,8 +413,12 @@ impl GroveDb {
             insert_unique_op(&mut sorted_operations, Box::new(op));
         }
 
-        let mut validated_operations =
-            self.validate_batch(sorted_operations, &temp_root_leaves, transaction)?;
+        let mut validated_operations = if validate {
+            self.validate_batch(sorted_operations, &temp_root_leaves, transaction)?
+        } else {
+            sorted_operations
+        };
+
 
         // `StorageBatch` allows us to collect operations on different subtrees before
         // execution
@@ -505,7 +510,7 @@ mod tests {
                 element2.clone(),
             ),
         ];
-        db.apply_batch(ops, None).expect("cannot apply batch");
+        db.apply_batch(ops, true, None).expect("cannot apply batch");
 
         db.get([], b"key1", None).expect("cannot get element");
         db.get([b"key1".as_ref()], b"key2", None)
@@ -566,7 +571,7 @@ mod tests {
                 element2.clone(),
             ),
         ];
-        db.apply_batch(ops, Some(&tx)).expect("cannot apply batch");
+        db.apply_batch(ops, true, Some(&tx)).expect("cannot apply batch");
         db.get([], b"keyb", None).expect_err("we should not get an element");
         db.get([], b"keyb", Some(&tx)).expect("we should get an element");
 
@@ -608,7 +613,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, None).is_err());
+        assert!(db.apply_batch(ops, true, None).is_err());
         assert!(db.get([b"key1".as_ref()], b"key2", None).is_err());
     }
 
@@ -639,7 +644,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, None).is_err());
+        assert!(db.apply_batch(ops, true, None).is_err());
         assert!(db.get([b"key1".as_ref()], b"key2", None).is_err());
         assert!(db.get([TEST_LEAF, b"key1"], b"key2", None).is_err(),);
     }
@@ -667,7 +672,7 @@ mod tests {
             ),
             GroveDbOp::delete(vec![b"key1".to_vec()], b"key2".to_vec()),
         ];
-        assert!(db.apply_batch(ops, None).is_err());
+        assert!(db.apply_batch(ops, true, None).is_err());
     }
 
     #[test]
@@ -693,7 +698,7 @@ mod tests {
             ),
             GroveDbOp::delete(vec![b"key1".to_vec()], b"key2".to_vec()),
         ];
-        db.apply_batch(ops, None).expect("cannot apply batch");
+        db.apply_batch(ops, true, None).expect("cannot apply batch");
         assert_eq!(
             db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
                 .expect("cannot get element"),
@@ -717,7 +722,7 @@ mod tests {
             b"key1".to_vec(),
             element.clone(),
         )];
-        assert!(db.apply_batch(ops, None).is_err());
+        assert!(db.apply_batch(ops, true, None).is_err());
 
         // Insertion into a tree is correct
         let ops = vec![GroveDbOp::insert(
@@ -725,7 +730,7 @@ mod tests {
             b"key1".to_vec(),
             element.clone(),
         )];
-        db.apply_batch(ops, None).expect("cannot apply batch");
+        db.apply_batch(ops, true, None).expect("cannot apply batch");
         assert_eq!(
             db.get([TEST_LEAF, b"valid"], b"key1", None)
                 .expect("cannot get element"),
@@ -753,7 +758,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, None).is_err());
+        assert!(db.apply_batch(ops, true, None).is_err());
 
         // TEST_LEAF will became a scalar, insertion into scalar is also invalid
         let ops = vec![
@@ -764,7 +769,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, None).is_err());
+        assert!(db.apply_batch(ops, true, None).is_err());
 
         // Here TEST_LEAF is overwritten and new data should be available why older data
         // shouldn't
@@ -772,7 +777,7 @@ mod tests {
             GroveDbOp::insert(vec![], TEST_LEAF.to_vec(), Element::empty_tree()),
             GroveDbOp::insert(vec![TEST_LEAF.to_vec()], b"key1".to_vec(), element2.clone()),
         ];
-        assert!(db.apply_batch(ops, None).is_ok());
+        assert!(db.apply_batch(ops, true, None).is_ok());
 
         assert_eq!(
             db.get([TEST_LEAF], b"key1", None).expect("cannot get data"),
@@ -796,7 +801,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, None).is_err());
+        assert!(db.apply_batch(ops, true, None).is_err());
     }
 
     #[test]
@@ -819,7 +824,7 @@ mod tests {
                 .expect("cannot get item"),
             element
         );
-        db.apply_batch(ops, None).expect("cannot apply batch");
+        db.apply_batch(ops, true, None).expect("cannot apply batch");
         assert!(db.get([TEST_LEAF, b"key1"], b"key2", None).is_err());
     }
 
@@ -860,7 +865,7 @@ mod tests {
             GroveDbOp::insert(vec![TEST_LEAF.to_vec()], b"key".to_vec(), element2.clone()),
             GroveDbOp::delete(vec![ANOTHER_TEST_LEAF.to_vec()], b"key1".to_vec()),
         ];
-        db.apply_batch(ops, None).expect("cannot apply batch");
+        db.apply_batch(ops, true, None).expect("cannot apply batch");
 
         assert!(db.get([ANOTHER_TEST_LEAF], b"key1", None).is_err());
 
@@ -922,14 +927,14 @@ mod tests {
             b"key".to_vec(),
             element.clone(),
         )];
-        db.apply_batch(batch, None).expect("cannot apply batch");
+        db.apply_batch(batch, true, None).expect("cannot apply batch");
 
         let batch = vec![GroveDbOp::insert(
             acc_path,
             b"key".to_vec(),
             element.clone(),
         )];
-        db.apply_batch(batch, None)
+        db.apply_batch(batch, true, None)
             .expect("cannot apply same batch twice");
     }
 }
