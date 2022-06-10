@@ -468,7 +468,7 @@ impl QueryItem {
 
     pub fn seek_for_iter<I: RawIterator>(&self, iter: &mut I, left_to_right: bool) {
         match self {
-            QueryItem::Key(_) => {}
+            QueryItem::Key(start) => { iter.seek(start) }
             QueryItem::Range(Range { start, end }) => {
                 if left_to_right {
                     iter.seek(start);
