@@ -91,6 +91,12 @@ impl<T> CostContext<T> {
         let value = f(self.value).unwrap_add_cost(&mut cost);
         CostContext { value, cost }
     }
+
+    /// Adds previously accumulated cost
+    pub fn add_cost(mut self, cost: OperationCost) -> Self {
+        self.cost += cost;
+        self
+    }
 }
 
 /// Combinators to use with `Result` wrapped in `CostContext`.
@@ -129,6 +135,15 @@ impl<T, E> CostContext<Result<Result<T, E>, E>> {
     }
 }
 
+impl<T> CostContext<CostContext<T>> {
+    /// Flattens nested `CostContext`s adding costs.
+    pub fn flatten(self) -> CostContext<T> {
+        let mut cost = OperationCost::default();
+        let inner = self.unwrap_add_cost(&mut cost);
+        inner.add_cost(cost)
+    }
+}
+
 /// Extension trait to add costs context to values.
 pub trait CostsExt {
     /// Wraps any value into a `CostContext` object with provided costs.
@@ -159,7 +174,8 @@ impl<T> CostsExt for T {}
 /// 1. Early termination on error;
 /// 2. Because of 1. `Result` is removed from the equation;
 /// 3. `CostContext` if removed too because it is added to external cost
-/// accumulator; 4. Early termination uses external cost accumulator so previous
+///    accumulator;
+/// 4. Early termination uses external cost accumulator so previous
 /// costs won't be lost.
 #[macro_export]
 macro_rules! cost_return_on_error {
@@ -168,6 +184,24 @@ macro_rules! cost_return_on_error {
             use $crate::CostsExt;
             let result_with_cost = { $($body)+ };
             let result = result_with_cost.unwrap_add_cost(&mut $cost);
+            match result {
+                Ok(x) => x,
+                Err(e) => return Err(e).wrap_with_cost($cost),
+            }
+        }
+    };
+}
+
+/// Macro to achieve a kind of what `?` operator does, but with `CostContext` on
+/// top. The difference between this macro and `cost_return_on_error` is to use it on
+/// `Result` rather than `CostContext<Result<..>>`, so no costs will be added except previously
+/// accumulated.
+#[macro_export]
+macro_rules! cost_return_on_error_no_add {
+    ( &mut $cost:ident, $($body:tt)+ ) => {
+        {
+            use $crate::CostsExt;
+            let result = { $($body)+ };
             match result {
                 Ok(x) => x,
                 Err(e) => return Err(e).wrap_with_cost($cost),

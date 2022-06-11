@@ -64,11 +64,11 @@ mod tests {
     #[ignore] // currently this still works because we enabled the WAL
     fn crash() {
         let mut merk = CrashMerk::open().expect("failed to open merk");
-        merk.apply::<_, Vec<u8>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[])
+        merk.apply::<_, Vec<u8>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[]).unwrap()
             .expect("apply failed");
 
         merk.crash();
 
-        assert_eq!(merk.get(&[1, 2, 3]).expect("failed to get"), None);
+        assert_eq!(merk.get(&[1, 2, 3]).unwrap().expect("failed to get"), None);
     }
 }

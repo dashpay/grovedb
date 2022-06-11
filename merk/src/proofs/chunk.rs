@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use costs::{CostContext, CostsExt, OperationCost};
+use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use storage::RawIterator;
 #[cfg(feature = "full")]
 use {
@@ -98,42 +98,49 @@ where
         remaining_depth: usize,
         is_leftmost: bool,
     ) -> CostContext<Result<()>> {
-        // if remaining_depth == 0 {
-        //     // return early if we have reached bottom of trunk
+        let mut cost = OperationCost::default();
 
-        //     // for leftmost node, we already have height proof
-        //     if is_leftmost {
-        //         return Ok(());
-        //     }
+        if remaining_depth == 0 {
+            // return early if we have reached bottom of trunk
 
-        //     // add this node's hash
-        //     proof.push(Op::Push(self.to_hash_node()));
+            // for leftmost node, we already have height proof
+            if is_leftmost {
+                return Ok(()).wrap_with_cost(cost);
+            }
 
-        //     return Ok(());
-        // }
+            // add this node's hash
+            proof.push(Op::Push(self.to_hash_node()));
 
-        // // traverse left
-        // let has_left_child = self.tree().link(true).is_some();
-        // if has_left_child {
-        //     let mut left = self.walk(true)?.unwrap();
-        //     left.traverse_for_trunk(proof, remaining_depth - 1, is_leftmost)?;
-        // }
+            return Ok(()).wrap_with_cost(cost);
+        }
 
-        // // add this node's data
-        // proof.push(Op::Push(self.to_kv_node()));
+        // traverse left
+        let has_left_child = self.tree().link(true).is_some();
+        if has_left_child {
+            let mut left = cost_return_on_error!(&mut cost, self.walk(true)).unwrap();
+            cost_return_on_error!(
+                &mut cost,
+                left.traverse_for_trunk(proof, remaining_depth - 1, is_leftmost)
+            );
+        }
 
-        // if has_left_child {
-        //     proof.push(Op::Parent);
-        // }
+        // add this node's data
+        proof.push(Op::Push(self.to_kv_node()));
 
-        // // traverse right
-        // if let Some(mut right) = self.walk(false)? {
-        //     right.traverse_for_trunk(proof, remaining_depth - 1, false)?;
-        //     proof.push(Op::Child);
-        // }
+        if has_left_child {
+            proof.push(Op::Parent);
+        }
 
-        // Ok(())
-        todo!()
+        // traverse right
+        if let Some(mut right) = cost_return_on_error!(&mut cost, self.walk(false)) {
+            cost_return_on_error!(
+                &mut cost,
+                right.traverse_for_trunk(proof, remaining_depth - 1, false)
+            );
+            proof.push(Op::Child);
+        }
+
+        Ok(()).wrap_with_cost(cost)
     }
 }
 
