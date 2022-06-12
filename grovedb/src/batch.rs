@@ -419,7 +419,6 @@ impl GroveDb {
             sorted_operations
         };
 
-
         // `StorageBatch` allows us to collect operations on different subtrees before
         // execution
         let storage_batch = StorageBatch::new();
@@ -532,7 +531,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn test_batch_validation_ok_on_transaction() {
         let db = make_grovedb();
@@ -571,11 +569,15 @@ mod tests {
                 element2.clone(),
             ),
         ];
-        db.apply_batch(ops, true, Some(&tx)).expect("cannot apply batch");
-        db.get([], b"keyb", None).expect_err("we should not get an element");
-        db.get([], b"keyb", Some(&tx)).expect("we should get an element");
+        db.apply_batch(ops, true, Some(&tx))
+            .expect("cannot apply batch");
+        db.get([], b"keyb", None)
+            .expect_err("we should not get an element");
+        db.get([], b"keyb", Some(&tx))
+            .expect("we should get an element");
 
-        db.get([], b"key1", None).expect_err("we should not get an element");
+        db.get([], b"key1", None)
+            .expect_err("we should not get an element");
         db.get([], b"key1", Some(&tx)).expect("cannot get element");
         db.get([b"key1".as_ref()], b"key2", Some(&tx))
             .expect("cannot get element");
@@ -927,7 +929,8 @@ mod tests {
             b"key".to_vec(),
             element.clone(),
         )];
-        db.apply_batch(batch, true, None).expect("cannot apply batch");
+        db.apply_batch(batch, true, None)
+            .expect("cannot apply batch");
 
         let batch = vec![GroveDbOp::insert(
             acc_path,

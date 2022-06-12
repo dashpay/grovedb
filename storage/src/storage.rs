@@ -1,11 +1,7 @@
-use std::{
-    cell::RefCell,
-};
+use std::cell::RefCell;
 
-use indexmap::{IndexMap};
-use indexmap::map::IntoValues;
+use indexmap::{map::IntoValues, IndexMap};
 use rocksdb::{Transaction, WriteBatchWithTransaction};
-
 use visualize::visualize_to_vec;
 
 /// Top-level storage abstraction.
@@ -40,7 +36,11 @@ pub trait Storage<'db> {
     fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Self::Error>;
 
     /// Consumes and applies multi-context batch.
-    fn commit_multi_context_batch(&self, batch: StorageBatch, transaction: Option<&'db Self::Transaction>) -> Result<(), Self::Error>;
+    fn commit_multi_context_batch(
+        &self,
+        batch: StorageBatch,
+        transaction: Option<&'db Self::Transaction>,
+    ) -> Result<(), Self::Error>;
 
     /// Forces data to be written
     fn flush(&self) -> Result<(), Self::Error>;
