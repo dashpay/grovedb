@@ -4,7 +4,9 @@ pub mod chunks;
 use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt};
 
 use anyhow::{anyhow, Result};
-use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+};
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
@@ -12,7 +14,7 @@ use crate::{
     tree::{Commit, Fetch, Hash, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
 };
 
-const ROOT_KEY_KEY: &[u8] = b"root";
+pub const ROOT_KEY_KEY: &[u8] = b"root";
 
 pub struct ProofConstructionResult {
     pub proof: Vec<u8>,
@@ -167,18 +169,16 @@ where
 
     /// Gets an auxiliary value.
     pub fn get_aux(&self, key: &[u8]) -> CostContext<Result<Option<Vec<u8>>>> {
-        self.storage
-            .get_aux(key)
-            .map_err(|e| e.into())
-            .wrap_fn_cost(|value_res| OperationCost {
-                seek_count: 1,
-                loaded_bytes: if let Ok(Some(value)) = value_res {
-                    value.len()
-                } else {
-                    0
-                },
-                ..Default::default()
-            })
+        let mut cost = OperationCost {
+            seek_count: 1,
+            ..Default::default()
+        };
+
+        let value =
+            cost_return_on_error_no_add!(&cost, self.storage.get_aux(key).map_err(|e| e.into()));
+
+        cost.loaded_bytes = value.as_ref().map(|x| x.len()).unwrap_or(0);
+        Ok(value).wrap_with_cost(cost)
     }
 
     /// Gets a value for the given key. If the key is not found, `None` is

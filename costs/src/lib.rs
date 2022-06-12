@@ -176,7 +176,7 @@ impl<T> CostsExt for T {}
 /// 3. `CostContext` if removed too because it is added to external cost
 ///    accumulator;
 /// 4. Early termination uses external cost accumulator so previous
-/// costs won't be lost.
+///    costs won't be lost.
 #[macro_export]
 macro_rules! cost_return_on_error {
     ( &mut $cost:ident, $($body:tt)+ ) => {
@@ -193,9 +193,9 @@ macro_rules! cost_return_on_error {
 }
 
 /// Macro to achieve a kind of what `?` operator does, but with `CostContext` on
-/// top. The difference between this macro and `cost_return_on_error` is to use
-/// it on `Result` rather than `CostContext<Result<..>>`, so no costs will be
-/// added except previously accumulated.
+/// top. The difference between this macro and `cost_return_on_error` is that it
+/// is intended to use it on `Result` rather than `CostContext<Result<..>>`, so
+/// no costs will be added except previously accumulated.
 #[macro_export]
 macro_rules! cost_return_on_error_no_add {
     ( &$cost:ident, $($body:tt)+ ) => {

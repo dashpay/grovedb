@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
+use storage::StorageContext;
+
 use crate::{
-    util::{merk_optional_tx, meta_storage_context_optional_tx},
+    util::{merk_optional_tx, meta_storage_context_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
 
@@ -57,7 +59,7 @@ impl GroveDb {
     }
 
     /// Get tree item without following references
-    pub(super) fn get_raw<'p, P>(
+    pub fn get_raw<'p, P>(
         &self,
         path: P,
         key: &'p [u8],
@@ -83,6 +85,34 @@ impl GroveDb {
         }
     }
 
+    /// Does tree element exist without following references
+    pub fn has_raw<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        transaction: TransactionArg,
+    ) -> Result<bool, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        let path_iter = path.into_iter();
+
+        if path_iter.len() == 0 {
+            // Root tree's items are serialized into meta storage and cannot be checked
+            // easily; Knowing that root tree's leafs are subtrees only, we can
+            // check them using roots storage.
+            storage_context_optional_tx!(self.db, [key], transaction, storage, {
+                Ok(storage.get_root(merk::ROOT_KEY_KEY)?.is_some())
+            })
+        } else {
+            // Merk's items should be written into data storage and checked accordingly
+            storage_context_optional_tx!(self.db, path_iter, transaction, storage, {
+                Ok(storage.get(key)?.is_some())
+            })
+        }
+    }
+
     pub fn get_path_queries(
         &self,
         path_queries: &[&PathQuery],
@@ -91,7 +121,7 @@ impl GroveDb {
         let elements = self.get_path_queries_raw(path_queries, transaction)?;
         let results = elements
             .into_iter()
-            .map(|element| match element {
+            .map(|(_, element)| match element {
                 Element::Reference(reference_path, _) => {
                     let maybe_item = self.follow_reference(reference_path, transaction)?;
                     if let Element::Item(item, _) = maybe_item {
@@ -112,13 +142,27 @@ impl GroveDb {
         &self,
         path_queries: &[&PathQuery],
         transaction: TransactionArg,
-    ) -> Result<Vec<Element>, Error> {
+    ) -> Result<Vec<(Vec<u8>, Element)>, Error> {
         let mut result = Vec::new();
         for query in path_queries {
             let (query_results, _) = self.get_path_query_raw(query, transaction)?;
             result.extend_from_slice(&query_results);
         }
         Ok(result)
+    }
+
+    pub fn get_proved_path_query(
+        &self,
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+    ) -> Result<Vec<u8>, Error> {
+        if transaction.is_some() {
+            Err(Error::NotSupported(
+                "transactions are not currently supported",
+            ))
+        } else {
+            self.prove(path_query)
+        }
     }
 
     pub fn get_path_query(
@@ -129,7 +173,7 @@ impl GroveDb {
         let (elements, skipped) = self.get_path_query_raw(path_query, transaction)?;
         let results = elements
             .into_iter()
-            .map(|element| match element {
+            .map(|(_, element)| match element {
                 Element::Reference(reference_path, _) => {
                     let maybe_item = self.follow_reference(reference_path, transaction)?;
                     if let Element::Item(item, _) = maybe_item {
@@ -151,7 +195,7 @@ impl GroveDb {
         &self,
         path_query: &PathQuery,
         transaction: TransactionArg,
-    ) -> Result<(Vec<Element>, u16), Error> {
+    ) -> Result<(Vec<(Vec<u8>, Element)>, u16), Error> {
         let path_slices = path_query
             .path
             .iter()

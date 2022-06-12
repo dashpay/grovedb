@@ -1,14 +1,11 @@
-mod batch;
+pub mod batch;
 mod operations;
 mod subtree;
 #[cfg(test)]
 mod tests;
 mod util;
 mod visualize;
-use std::{
-    collections::{BTreeMap, HashMap},
-    path::Path,
-};
+use std::{collections::BTreeMap, path::Path};
 
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
@@ -17,7 +14,7 @@ pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
     Storage, StorageContext,
 };
-pub use subtree::{Element, ElementFlag};
+pub use subtree::{Element, ElementFlags};
 
 use crate::util::{merk_optional_tx, meta_storage_context_optional_tx};
 
@@ -63,13 +60,17 @@ pub enum Error {
     StorageError(#[from] rocksdb_storage::Error),
     #[error("data corruption error: {0}")]
     CorruptedData(String),
+
+    // Support errors
+    #[error("not supported: {0}")]
+    NotSupported(&'static str),
 }
 
 #[derive(Debug, Clone)]
 pub struct PathQuery {
     // TODO: Make generic over path type
-    path: Vec<Vec<u8>>,
-    query: SizedQuery,
+    pub path: Vec<Vec<u8>>,
+    pub query: SizedQuery,
 }
 
 // If a subquery exists :
@@ -78,9 +79,9 @@ pub struct PathQuery {
 // case of a range)
 #[derive(Debug, Clone)]
 pub struct SizedQuery {
-    query: Query,
-    limit: Option<u16>,
-    offset: Option<u16>,
+    pub query: Query,
+    pub limit: Option<u16>,
+    pub offset: Option<u16>,
 }
 
 impl SizedQuery {
@@ -234,7 +235,7 @@ impl GroveDb {
         root_hash: [u8; 32],
     ) -> Result<(), Error> {
         if let Element::Tree(_, flag) = Self::get_element_from_subtree(&parent_tree, key)? {
-            let element = Element::new_tree_with_flag(root_hash, flag);
+            let element = Element::new_tree_with_flags(root_hash, flag);
             element.insert(parent_tree, key.as_ref())?;
         } else {
             return Err(Error::InvalidPath("can only propagate on tree items"));

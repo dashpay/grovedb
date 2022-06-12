@@ -7,7 +7,7 @@ use integer_encoding::VarInt;
 use merk::{
     proofs::{query::QueryItem, Query},
     tree::Tree,
-    Op,
+    Op, HASH_LENGTH,
 };
 use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Optional single byte meta-data to be stored per element
-pub type ElementFlag = Option<Vec<u8>>;
+pub type ElementFlags = Option<Vec<u8>>;
 
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
@@ -26,13 +26,13 @@ pub type ElementFlag = Option<Vec<u8>>;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Element {
     /// An ordinary value
-    Item(Vec<u8>, ElementFlag),
+    Item(Vec<u8>, ElementFlags),
     /// A reference to an object by its path
-    Reference(Vec<Vec<u8>>, ElementFlag),
+    Reference(Vec<Vec<u8>>, ElementFlags),
     /// A subtree, contains a root hash of the underlying Merk.
     /// Hash is stored to make Merk become different when its subtrees have
     /// changed, otherwise changes won't be reflected in parent trees.
-    Tree([u8; 32], ElementFlag),
+    Tree([u8; 32], ElementFlags),
 }
 
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>
@@ -47,39 +47,52 @@ where
     pub subquery_key: Option<Vec<u8>>,
     pub subquery: Option<Query>,
     pub left_to_right: bool,
-    pub results: &'a mut Vec<Element>,
+    pub results: &'a mut Vec<(Vec<u8>, Element)>,
     pub limit: &'a mut Option<u16>,
     pub offset: &'a mut Option<u16>,
 }
 
 impl Element {
     // TODO: improve API to avoid creation of Tree elements with uncertain state
-    pub fn empty_tree() -> Element {
+    pub fn empty_tree() -> Self {
         Element::new_tree(Default::default())
+    }
+
+    pub fn empty_tree_with_flags(flags: ElementFlags) -> Self {
+        Element::new_tree_with_flags(Default::default(), flags)
     }
 
     pub fn new_item(item_value: Vec<u8>) -> Self {
         Element::Item(item_value, None)
     }
 
-    pub fn new_item_with_flag(item_value: Vec<u8>, flag: ElementFlag) -> Self {
-        Element::Item(item_value, flag)
+    pub fn new_item_with_flags(item_value: Vec<u8>, flags: ElementFlags) -> Self {
+        Element::Item(item_value, flags)
     }
 
     pub fn new_reference(reference_path: Vec<Vec<u8>>) -> Self {
         Element::Reference(reference_path, None)
     }
 
-    pub fn new_reference_with_flag(reference_path: Vec<Vec<u8>>, flag: ElementFlag) -> Self {
-        Element::Reference(reference_path, flag)
+    pub fn new_reference_with_flags(reference_path: Vec<Vec<u8>>, flags: ElementFlags) -> Self {
+        Element::Reference(reference_path, flags)
     }
 
     pub fn new_tree(tree_hash: [u8; 32]) -> Self {
         Element::Tree(tree_hash, None)
     }
 
-    pub fn new_tree_with_flag(tree_hash: [u8; 32], flag: ElementFlag) -> Self {
-        Element::Tree(tree_hash, flag)
+    pub fn new_tree_with_flags(tree_hash: [u8; 32], flags: ElementFlags) -> Self {
+        Element::Tree(tree_hash, flags)
+    }
+
+    /// Grab the optional flag stored in an element
+    pub fn get_flags(&self) -> &ElementFlags {
+        match self {
+            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, flags) => {
+                flags
+            }
+        }
     }
 
     /// Get the size of an element in bytes
@@ -115,6 +128,10 @@ impl Element {
         }
     }
 
+    pub fn required_item_space(len: usize, flag_len: usize) -> usize {
+        len + len.required_space() + flag_len + flag_len.required_space() + 1
+    }
+
     /// Get the size of the serialization of an element in bytes
     pub fn serialized_byte_size(&self) -> usize {
         match self {
@@ -125,7 +142,7 @@ impl Element {
                 } else {
                     0
                 };
-                item_len + item_len.required_space() + flag_len + flag_len.required_space() + 1
+                Self::required_item_space(item_len, flag_len)
             }
             Element::Reference(path_reference, element_flag) => {
                 let flag_len = if let Some(flag) = element_flag {
@@ -158,16 +175,20 @@ impl Element {
     }
 
     /// Get the size that the element will occupy on disk
-    pub fn node_byte_size(&self, key: &[u8]) -> usize {
+    pub fn node_byte_size(&self, key_len: usize) -> usize {
         // todo v23: this is just an approximation for now
         let serialized_value_size = self.serialized_byte_size();
+        Self::calculate_node_byte_size(serialized_value_size, key_len)
+    }
+
+    /// Get the size that the element will occupy on disk
+    pub fn calculate_node_byte_size(serialized_value_size: usize, key_len: usize) -> usize {
         let node_value_size = serialized_value_size + serialized_value_size.required_space();
-        let key_len = key.len();
         let node_key_size = key_len + key_len.required_space();
         // Each node stores the key and value, the value hash and the key_value hash
-        let node_size = node_value_size + node_key_size + 32 + 32;
+        let node_size = node_value_size + node_key_size + HASH_LENGTH + HASH_LENGTH;
         // The node will be a child of another node which stores it's key and hash
-        let parent_additions = node_key_size + 32;
+        let parent_additions = node_key_size + HASH_LENGTH;
         let child_sizes = 2 as usize;
         node_size + parent_additions + child_sizes
     }
@@ -206,23 +227,38 @@ impl Element {
         merk_path: &[&[u8]],
         query: &Query,
         transaction: TransactionArg,
-    ) -> Result<Vec<Element>, Error> {
+    ) -> Result<Vec<(Vec<u8>, Element)>, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
         let (elements, _) =
             Element::get_sized_query(storage, merk_path, &sized_query, transaction)?;
         Ok(elements)
     }
 
+    pub fn get_query_values(
+        storage: &RocksDbStorage,
+        merk_path: &[&[u8]],
+        query: &Query,
+        transaction: TransactionArg,
+    ) -> Result<Vec<Element>, Error> {
+        let sized_query = SizedQuery::new(query.clone(), None, None);
+        let (elements, _) =
+            Element::get_sized_query(storage, merk_path, &sized_query, transaction)?;
+        let values = elements.into_iter().map(|(k, v)| v).collect();
+        Ok(values)
+    }
+
     fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
         let PathQueryPushArgs {
+            key,
             element,
             results,
             limit,
             offset,
             ..
         } = args;
+        let key = key.ok_or(Error::CorruptedPath("basic push must have a key"))?;
         if offset.unwrap_or(0) == 0 {
-            results.push(element);
+            results.push((Vec::from(key), element));
             if let Some(limit) = limit {
                 *limit -= 1;
             }
@@ -288,7 +324,10 @@ impl Element {
                             transaction,
                             subtree,
                             {
-                                results.push(Element::get(&subtree, subquery_key.as_slice())?);
+                                results.push((
+                                    subquery_key.clone(),
+                                    Element::get(&subtree, subquery_key.as_slice())?,
+                                ));
                             }
                         );
                         if let Some(limit) = limit {
@@ -354,7 +393,7 @@ impl Element {
     fn query_item(
         storage: &RocksDbStorage,
         item: &QueryItem,
-        results: &mut Vec<Element>,
+        results: &mut Vec<(Vec<u8>, Element)>,
         merk_path: &[&[u8]],
         sized_query: &SizedQuery,
         path: Option<&[&[u8]]>,
@@ -440,7 +479,7 @@ impl Element {
         path: Option<&[&[u8]]>,
         transaction: TransactionArg,
         add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
-    ) -> Result<(Vec<Element>, u16), Error> {
+    ) -> Result<(Vec<(Vec<u8>, Element)>, u16), Error> {
         let mut results = Vec::new();
 
         let mut limit = sized_query.limit;
@@ -499,7 +538,7 @@ impl Element {
         merk_path: &[&[u8]],
         path_query: &PathQuery,
         transaction: TransactionArg,
-    ) -> Result<(Vec<Element>, u16), Error> {
+    ) -> Result<(Vec<(Vec<u8>, Element)>, u16), Error> {
         let path_slices = path_query
             .path
             .iter()
@@ -521,7 +560,7 @@ impl Element {
         merk_path: &[&[u8]],
         sized_query: &SizedQuery,
         transaction: TransactionArg,
-    ) -> Result<(Vec<Element>, u16), Error> {
+    ) -> Result<(Vec<(Vec<u8>, Element)>, u16), Error> {
         Element::get_query_apply_function(
             storage,
             merk_path,
@@ -652,7 +691,7 @@ mod tests {
             "02000000000000000000000000000000000000000000000000000000000000000000"
         );
 
-        let empty_tree = Element::new_tree_with_flag([0; 32], Some(vec![5]));
+        let empty_tree = Element::new_tree_with_flags([0; 32], Some(vec![5]));
         let serialized = empty_tree.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 36);
         assert_eq!(
@@ -667,7 +706,7 @@ mod tests {
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "0003abcdef00");
 
-        let item = Element::new_item_with_flag(
+        let item = Element::new_item_with_flags(
             hex::decode("abcdef").expect("expected to decode"),
             Some(vec![1]),
         );
@@ -688,7 +727,7 @@ mod tests {
         // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
         assert_eq!(hex::encode(serialized), "0103010002abcd010500");
 
-        let reference = Element::new_reference_with_flag(
+        let reference = Element::new_reference_with_flags(
             vec![
                 vec![0],
                 hex::decode("abcd").expect("expected to decode"),
@@ -730,7 +769,7 @@ mod tests {
         query.insert_key(b"c".to_vec());
         query.insert_key(b"a".to_vec());
         assert_eq!(
-            Element::get_query(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
@@ -743,7 +782,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
@@ -757,7 +796,7 @@ mod tests {
         query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayyb".to_vec()),
@@ -772,7 +811,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
@@ -816,9 +855,9 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayya".to_vec()),
-                Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayyc".to_vec()),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
             ]
         );
         assert_eq!(skipped, 0);
@@ -832,9 +871,9 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayyc".to_vec()),
-                Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayya".to_vec()),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
             ]
         );
         assert_eq!(skipped, 0);
@@ -868,12 +907,15 @@ mod tests {
         query.insert_range_inclusive(b"a".to_vec()..=b"d".to_vec());
 
         let ascending_query = SizedQuery::new(query.clone(), None, None);
-        fn check_elements_no_skipped((elements, skipped): (Vec<Element>, u16), reverse: bool) {
+        fn check_elements_no_skipped(
+            (elements, skipped): (Vec<(Vec<u8>, Element)>, u16),
+            reverse: bool,
+        ) {
             let mut expected = vec![
-                Element::new_item(b"ayya".to_vec()),
-                Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayyc".to_vec()),
-                Element::new_item(b"ayyd".to_vec()),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
+                (b"d".to_vec(), Element::new_item(b"ayyd".to_vec())),
             ];
             if reverse {
                 expected.reverse();
@@ -946,8 +988,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayya".to_vec()),
-                Element::new_item(b"ayyc".to_vec()),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
             ]
         );
         assert_eq!(skipped, 0);
@@ -965,8 +1007,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayyc".to_vec()),
-                Element::new_item(b"ayya".to_vec()),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
             ]
         );
         assert_eq!(skipped, 0);
@@ -976,7 +1018,10 @@ mod tests {
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_query, None)
                 .expect("expected successful get_query");
-        assert_eq!(elements, vec![Element::new_item(b"ayyc".to_vec()),]);
+        assert_eq!(
+            elements,
+            vec![(b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),]
+        );
         assert_eq!(skipped, 0);
 
         // Test range query
@@ -990,8 +1035,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayya".to_vec()),
-                Element::new_item(b"ayyb".to_vec())
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec()))
             ]
         );
         assert_eq!(skipped, 0);
@@ -1003,8 +1048,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayyc".to_vec())
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec()))
             ]
         );
         assert_eq!(skipped, 1);
@@ -1021,8 +1066,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayya".to_vec())
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec()))
             ]
         );
         assert_eq!(skipped, 1);
@@ -1038,9 +1083,9 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayyc".to_vec()),
-                Element::new_item(b"ayyd".to_vec()),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
+                (b"d".to_vec(), Element::new_item(b"ayyd".to_vec())),
             ]
         );
         assert_eq!(skipped, 0);
@@ -1056,8 +1101,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayyc".to_vec()),
-                Element::new_item(b"ayyb".to_vec()),
+                (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
             ]
         );
         assert_eq!(skipped, 1);
@@ -1074,8 +1119,8 @@ mod tests {
         assert_eq!(
             elements,
             vec![
-                Element::new_item(b"ayyb".to_vec()),
-                Element::new_item(b"ayya".to_vec()),
+                (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
+                (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
             ]
         );
         assert_eq!(skipped, 1);

@@ -114,7 +114,7 @@ impl GroveDb {
             );
             let child_subtree = Merk::open(child_storage).unwrap() // TODO implement costs
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
-            let element = Element::new_tree_with_flag(
+            let element = Element::new_tree_with_flags(
                 child_subtree.root_hash().unwrap(), // TODO implement costs
                 element_flag,
             );
@@ -128,7 +128,7 @@ impl GroveDb {
                 .get_storage_context(path_iter.clone().chain(std::iter::once(key)));
             let child_subtree = Merk::open(child_storage).unwrap() // TODO implement costs
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
-            let element = Element::new_tree_with_flag(
+            let element = Element::new_tree_with_flags(
                 child_subtree.root_hash().unwrap(), // TODO implement costs
                 element_flag,
             );

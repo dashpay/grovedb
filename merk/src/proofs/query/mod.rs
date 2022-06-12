@@ -282,7 +282,7 @@ pub enum QueryItem {
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
 }
 
-impl std::hash::Hash for QueryItem {
+impl Hash for QueryItem {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.enum_value().hash(state);
         self.value_hash(state);
@@ -469,7 +469,7 @@ impl QueryItem {
 
     pub fn seek_for_iter<I: RawIterator>(&self, iter: &mut I, left_to_right: bool) {
         match self {
-            QueryItem::Key(_) => {}
+            QueryItem::Key(start) => iter.seek(start),
             QueryItem::Range(Range { start, end }) => {
                 if left_to_right {
                     iter.seek(start);
