@@ -42,7 +42,7 @@ macro_rules! merk_optional_tx {
         {
             use crate::util::storage_context_optional_tx;
             storage_context_optional_tx!($db, $path, $transaction, storage, {
-                let mut $subtree = ::merk::Merk::open(storage)
+                let mut $subtree = ::merk::Merk::open(storage).unwrap() // TODO implement costs
                     .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
                 $($body)*
             })
@@ -53,7 +53,7 @@ macro_rules! merk_optional_tx {
         {
             use crate::util::storage_context_optional_tx;
             storage_context_optional_tx!($db, $path, $transaction, storage, {
-                let $subtree = ::merk::Merk::open(storage)
+                let $subtree = ::merk::Merk::open(storage).unwrap() // TODO implement costs
                     .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
                 $($body)*
             })

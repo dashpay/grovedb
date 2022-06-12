@@ -180,7 +180,8 @@ impl GroveDb {
                     let hash = temp_subtrees
                         .remove(&prev_path)
                         .expect("subtree was inserted before")
-                        .root_hash();
+                        .root_hash()
+                        .unwrap(); // TODO implement costs
 
                     cursor.insert(Box::new(GroveDbOp::insert(
                         path_slice.to_vec(),
@@ -436,7 +437,7 @@ impl GroveDb {
                     &storage_batch,
                     tx,
                 );
-                Merk::open(storage)
+                Merk::open(storage).unwrap() // TODO implement costs
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
             })?;
 
@@ -453,7 +454,7 @@ impl GroveDb {
                 let storage = self
                     .db
                     .get_batch_storage_context(path.iter().map(|x| x.as_slice()), &storage_batch);
-                Merk::open(storage)
+                Merk::open(storage).unwrap() // TODO implement costs
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
             })?;
 

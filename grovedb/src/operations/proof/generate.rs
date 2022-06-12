@@ -247,7 +247,7 @@ impl GroveDb {
     {
         // TODO: How do you handle mixed tree types?
         let mut proof_result = subtree
-            .prove_without_encoding(query.clone(), limit, offset)
+            .prove_without_encoding(query.clone(), limit, offset).unwrap() // TODO implement costs
             .expect("should generate proof");
 
         self.replace_references(&mut proof_result)?;
@@ -296,7 +296,7 @@ impl GroveDb {
         path: &Vec<&[u8]>,
     ) -> Result<Merk<PrefixedRocksDbStorageContext>, Error> {
         let storage = self.db.get_storage_context(path.clone());
-        let subtree = Merk::open(storage)
+        let subtree = Merk::open(storage).unwrap() // TODO implement costs
             .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
         Ok(subtree)
     }

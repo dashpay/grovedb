@@ -106,26 +106,32 @@ impl GroveDb {
             let parent_storage = self
                 .db
                 .get_transactional_storage_context(path_iter.clone(), tx);
-            let mut parent_subtree = Merk::open(parent_storage)
+            let mut parent_subtree = Merk::open(parent_storage).unwrap() // TODO implement costs
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
             let child_storage = self.db.get_transactional_storage_context(
                 path_iter.clone().chain(std::iter::once(key)),
                 tx,
             );
-            let child_subtree = Merk::open(child_storage)
+            let child_subtree = Merk::open(child_storage).unwrap() // TODO implement costs
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
-            let element = Element::new_tree_with_flag(child_subtree.root_hash(), element_flag);
+            let element = Element::new_tree_with_flag(
+                child_subtree.root_hash().unwrap(), // TODO implement costs
+                element_flag,
+            );
             element.insert(&mut parent_subtree, key)?;
         } else {
             let parent_storage = self.db.get_storage_context(path_iter.clone());
-            let mut parent_subtree = Merk::open(parent_storage)
+            let mut parent_subtree = Merk::open(parent_storage).unwrap() // TODO implement costs
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
             let child_storage = self
                 .db
                 .get_storage_context(path_iter.clone().chain(std::iter::once(key)));
-            let child_subtree = Merk::open(child_storage)
+            let child_subtree = Merk::open(child_storage).unwrap() // TODO implement costs
                 .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))?;
-            let element = Element::new_tree_with_flag(child_subtree.root_hash(), element_flag);
+            let element = Element::new_tree_with_flag(
+                child_subtree.root_hash().unwrap(), // TODO implement costs
+                element_flag,
+            );
             element.insert(&mut parent_subtree, key)?;
         }
         Ok(())

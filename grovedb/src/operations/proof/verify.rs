@@ -359,7 +359,13 @@ impl ProofVerifier {
             offset = self.offset;
         }
 
-        let (hash, result) = merk::execute_proof(proof, query, limit, offset, left_to_right)
+        let (hash, result) = merk::execute_proof(
+            proof,
+            query,
+            limit,
+            offset,
+            left_to_right
+        ).unwrap() // TODO implement costs
             .map_err(|e| {
                 eprintln!("{}", e.to_string());
                 Error::InvalidProof("invalid proof verification parameters")
