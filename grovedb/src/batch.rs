@@ -14,7 +14,7 @@ use visualize::{Drawer, Visualize};
 use crate::{Element, Error, GroveDb, TransactionArg, ROOT_LEAFS_SERIALIZED_KEY};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
-enum Op {
+pub enum Op {
     Insert { element: Element },
     Delete,
 }
