@@ -147,15 +147,22 @@ where
     /// Similar to `Tree#with_value`.
     pub fn with_value(mut self, value: Vec<u8>) -> CostContext<Self> {
         let mut cost = OperationCost::default();
-        self.tree.own(|t| t.with_value(value).unwrap_add_cost(&mut cost));
+        self.tree
+            .own(|t| t.with_value(value).unwrap_add_cost(&mut cost));
         self.wrap_with_cost(cost)
     }
 
     /// Similar to `Tree#with_value_and_value_hash`.
-    pub fn with_value_and_value_hash(mut self, value: Vec<u8>, value_hash: Hash) -> CostContext<Self> {
+    pub fn with_value_and_value_hash(
+        mut self,
+        value: Vec<u8>,
+        value_hash: Hash,
+    ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
-        self.tree
-            .own(|t| t.with_value_and_value_hash(value, value_hash).unwrap_add_cost(&mut cost));
+        self.tree.own(|t| {
+            t.with_value_and_value_hash(value, value_hash)
+                .unwrap_add_cost(&mut cost)
+        });
         self.wrap_with_cost(cost)
     }
 }
@@ -187,8 +194,12 @@ mod test {
 
     #[test]
     fn walk_modified() {
-        let tree = Tree::new(b"test".to_vec(), b"abc".to_vec()).unwrap()
-            .attach(true, Some(Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap()));
+        let tree = Tree::new(b"test".to_vec(), b"abc".to_vec())
+            .unwrap()
+            .attach(
+                true,
+                Some(Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap()),
+            );
 
         let source = MockSource {};
         let walker = Walker::new(tree, source);
@@ -207,7 +218,10 @@ mod test {
     fn walk_stored() {
         let mut tree = Tree::new(b"test".to_vec(), b"abc".to_vec())
             .unwrap()
-            .attach(true, Some(Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap()));
+            .attach(
+                true,
+                Some(Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap()),
+            );
         tree.commit(&mut NoopCommit {})
             .unwrap()
             .expect("commit failed");

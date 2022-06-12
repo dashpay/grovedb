@@ -107,7 +107,8 @@ mod tests {
                 tree: Tree::new(vec![2], vec![3]).unwrap(),
             }),
             None,
-        ).unwrap();
+        )
+        .unwrap();
         tree.encode();
     }
 
@@ -123,7 +124,8 @@ mod tests {
                 tree: Tree::new(vec![2], vec![3]).unwrap(),
             }),
             None,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(
             tree.encode(),
             vec![
@@ -149,7 +151,8 @@ mod tests {
                 tree: Tree::new(vec![2], vec![3]).unwrap(),
             }),
             None,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(
             tree.encode(),
             vec![
@@ -175,7 +178,8 @@ mod tests {
                 key: vec![2],
             }),
             None,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(tree.encoding_length(), 103);
         assert_eq!(
             tree.encode(),

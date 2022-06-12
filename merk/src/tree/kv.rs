@@ -182,7 +182,8 @@ mod test {
 
     #[test]
     fn with_value() {
-        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6]).unwrap()
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6])
+            .unwrap()
             .with_value(vec![7, 8, 9])
             .unwrap();
 

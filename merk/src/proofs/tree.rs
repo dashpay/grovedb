@@ -1,5 +1,7 @@
 use anyhow::{anyhow, bail, Result};
-use costs::{CostContext, CostsExt, OperationCost, cost_return_on_error, cost_return_on_error_no_add};
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+};
 
 use super::{Node, Op};
 use crate::tree::{kv_digest_to_kv_hash, kv_hash, node_hash, Hash, NULL_HASH};
@@ -386,13 +388,13 @@ mod test {
 
         let mut tree = make_node(3);
         let mut left = make_node(1);
-        left.attach(true, make_node(0)).unwrap();
-        left.attach(false, make_node(2)).unwrap();
+        left.attach(true, make_node(0)).unwrap().unwrap();
+        left.attach(false, make_node(2)).unwrap().unwrap();
         let mut right = make_node(5);
-        right.attach(true, make_node(4)).unwrap();
-        right.attach(false, make_node(6)).unwrap();
-        tree.attach(true, left).unwrap();
-        tree.attach(false, right).unwrap();
+        right.attach(true, make_node(4)).unwrap().unwrap();
+        right.attach(false, make_node(6)).unwrap().unwrap();
+        tree.attach(true, left).unwrap().unwrap();
+        tree.attach(false, right).unwrap().unwrap();
 
         tree
     }

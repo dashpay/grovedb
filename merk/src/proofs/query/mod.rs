@@ -8,7 +8,7 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use indexmap::IndexMap;
 pub use map::*;
@@ -1084,21 +1084,23 @@ where
     }
 }
 
-pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> Result<Map> {
+pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostContext<Result<Map>> {
     let ops = Decoder::new(bytes);
     let mut map_builder = MapBuilder::new();
 
-    let root = execute(ops, true, |node| map_builder.insert(node))?;
+    execute(ops, true, |node| map_builder.insert(node)).flat_map_ok(|root| {
+        root.hash().map(|hash| {
+            if hash != expected_hash {
+                bail!(
+                    "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
+                    expected_hash,
+                    root.hash()
+                );
+            }
 
-    if root.hash() != expected_hash {
-        bail!(
-            "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
-            expected_hash,
-            root.hash()
-        );
-    }
-
-    Ok(map_builder.build())
+            Ok(map_builder.build())
+        })
+    })
 }
 
 /// Verifies the encoded proof with the given query
@@ -1118,6 +1120,8 @@ pub fn execute_proof(
     offset: Option<u16>,
     left_to_right: bool,
 ) -> CostContext<Result<(MerkHash, ProofVerificationResult)>> {
+    let mut cost = OperationCost::default();
+
     let mut output = Vec::with_capacity(query.len());
     let mut last_push = None;
     let mut query = query.directional_iter(left_to_right).peekable();
@@ -1127,7 +1131,7 @@ pub fn execute_proof(
 
     let ops = Decoder::new(bytes);
 
-    let root = execute(ops, true, |node| {
+    let root_wrapped = execute(ops, true, |node| {
         let mut execute_node = |key: &Vec<u8>, value: Option<&Vec<u8>>| -> Result<_> {
             while let Some(item) = query.peek() {
                 // get next item in query
@@ -1301,7 +1305,9 @@ pub fn execute_proof(
         last_push = Some(node.clone());
 
         Ok(())
-    })?;
+    });
+
+    let root = cost_return_on_error!(&mut cost, root_wrapped);
 
     // we have remaining query items, check absence proof against right edge of
     // tree
@@ -1315,19 +1321,20 @@ pub fn execute_proof(
 
                 // proof contains abridged data so we cannot verify absence of
                 // remaining query items
-                _ => bail!("Proof is missing data for query"),
+                _ => return Err(anyhow!("Proof is missing data for query")).wrap_with_cost(cost),
             }
         }
     }
 
     Ok((
-        root.hash(),
+        root.hash().unwrap_add_cost(&mut cost),
         ProofVerificationResult {
             result_set: output,
             limit: current_limit,
             offset: current_offset,
         },
     ))
+    .wrap_with_cost(cost)
 }
 
 #[derive(PartialEq, Debug)]
@@ -5554,7 +5561,7 @@ mod test {
 
         encode_into(proof.iter(), &mut bytes);
 
-        let map = verify(&bytes, root_hash).unwrap();
+        let map = verify(&bytes, root_hash).unwrap().unwrap();
         assert_eq!(
             map.get(vec![5].as_slice()).unwrap().unwrap(),
             vec![5].as_slice()
@@ -5579,7 +5586,7 @@ mod test {
 
         encode_into(proof.iter(), &mut bytes);
 
-        let _map = verify(&bytes, [42; 32]).expect("verify failed");
+        let _map = verify(&bytes, [42; 32]).unwrap().expect("verify failed");
     }
 
     #[test]

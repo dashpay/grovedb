@@ -3,7 +3,7 @@ pub mod chunks;
 // pub mod restore;
 use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use storage::{self, Batch, RawIterator, StorageContext};
 

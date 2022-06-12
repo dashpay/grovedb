@@ -490,7 +490,9 @@ mod test {
         assert_eq!(tree.child(true).unwrap().key(), &[2]);
         assert!(tree.child(false).is_none());
 
-        let tree = Tree::new(vec![3], vec![103]).unwrap().attach(false, Some(tree));
+        let tree = Tree::new(vec![3], vec![103])
+            .unwrap()
+            .attach(false, Some(tree));
         assert_eq!(tree.key(), &[3]);
         assert_eq!(tree.child(false).unwrap().key(), &[1]);
         assert!(tree.child(true).is_none());

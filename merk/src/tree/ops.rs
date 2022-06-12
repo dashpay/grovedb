@@ -113,12 +113,15 @@ where
         // TODO: take from batch so we don't have to clone
 
         let mid_tree = match mid_op {
-            Put(_) => Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec()).unwrap_add_cost(&mut cost),
+            Put(_) => {
+                Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec()).unwrap_add_cost(&mut cost)
+            }
             PutReference(_, referenced_value) => Tree::new_with_value_hash(
                 mid_key.as_ref().to_vec(),
                 mid_value.to_vec(),
                 value_hash(referenced_value).unwrap_add_cost(&mut cost),
-            ).unwrap_add_cost(&mut cost),
+            )
+            .unwrap_add_cost(&mut cost),
             Delete => unreachable!("cannot get here, should return at the top"),
         };
         let mid_walker = Walker::new(mid_tree, PanicSource {});
@@ -150,10 +153,12 @@ where
             match &batch[index].1 {
                 // TODO: take vec from batch so we don't need to clone
                 Put(value) => self.with_value(value.to_vec()).unwrap_add_cost(&mut cost),
-                PutReference(value, referenced_value) => self.with_value_and_value_hash(
-                    value.to_vec(),
-                    value_hash(&referenced_value).unwrap_add_cost(&mut cost),
-                ).unwrap_add_cost(&mut cost),
+                PutReference(value, referenced_value) => self
+                    .with_value_and_value_hash(
+                        value.to_vec(),
+                        value_hash(&referenced_value).unwrap_add_cost(&mut cost),
+                    )
+                    .unwrap_add_cost(&mut cost),
                 Delete => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply
                     let source = self.clone_source();

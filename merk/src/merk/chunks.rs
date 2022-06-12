@@ -2,7 +2,7 @@
 //! a Merk.
 use std::error::Error;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use ed::Encode;
 use storage::{RawIterator, StorageContext};
@@ -251,7 +251,7 @@ mod tests {
 
         for (chunk, node) in chunks.zip(trunk.layer(height / 2)) {
             let ops = Decoder::new(chunk.as_slice());
-            verify_leaf(ops, node.hash().unwrap()).unwrap();
+            verify_leaf(ops, node.hash().unwrap()).unwrap().unwrap();
         }
     }
 
@@ -360,7 +360,7 @@ mod tests {
         merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
 
         let mut producer = merk.chunks().unwrap().unwrap();
-        let _chunk = producer.chunk(50000).unwrap();
+        let _chunk = producer.chunk(50000).unwrap().unwrap();
     }
 
     #[test]

@@ -219,10 +219,11 @@ pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op>>>(
         tree.hash().map(|hash| {
             if hash != expected_hash {
                 bail!(
-                "Leaf chunk proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
-                expected_hash,
-                tree.hash()
-            );
+                    "Leaf chunk proof did not match expected hash\n\tExpected: {:?}\n\tActual: \
+                     {:?}",
+                    expected_hash,
+                    tree.hash()
+                );
             }
             Ok(tree)
         })
@@ -469,7 +470,9 @@ mod tests {
         iter.seek_to_first();
         let chunk = get_next_chunk(&mut iter, None).unwrap().unwrap();
         let ops = chunk.into_iter().map(Ok);
-        let chunk = verify_leaf(ops, merk.root_hash().unwrap()).unwrap().unwrap();
+        let chunk = verify_leaf(ops, merk.root_hash().unwrap())
+            .unwrap()
+            .unwrap();
         let counts = count_node_types(chunk);
         assert_eq!(counts.kv, 31);
         assert_eq!(counts.hash, 0);
@@ -480,7 +483,9 @@ mod tests {
         iter.seek_to_first();
 
         // left leaf
-        let chunk = get_next_chunk(&mut iter, Some(root_key.as_slice())).unwrap().unwrap();
+        let chunk = get_next_chunk(&mut iter, Some(root_key.as_slice()))
+            .unwrap()
+            .unwrap();
         let ops = chunk.into_iter().map(Ok);
         let chunk = verify_leaf(
             ops,
@@ -489,7 +494,8 @@ mod tests {
                 220, 160, 35, 78, 120, 122, 61, 90, 241, 105, 35, 180, 133, 98,
             ],
         )
-        .unwrap().unwrap();
+        .unwrap()
+        .unwrap();
         let counts = count_node_types(chunk);
         assert_eq!(counts.kv, 15);
         assert_eq!(counts.hash, 0);
@@ -505,7 +511,8 @@ mod tests {
                 19, 191, 134, 37, 165, 5, 35, 111, 233, 213, 212, 5, 92, 45,
             ],
         )
-        .unwrap().unwrap();
+        .unwrap()
+        .unwrap();
         let counts = count_node_types(chunk);
         assert_eq!(counts.kv, 15);
         assert_eq!(counts.hash, 0);
