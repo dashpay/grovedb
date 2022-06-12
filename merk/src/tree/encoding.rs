@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn encode_leaf_tree() {
-        let tree = Tree::from_fields(vec![0], vec![1], [55; 32], None, None);
+        let tree = Tree::from_fields(vec![0], vec![1], [55; 32], None, None).unwrap();
         assert_eq!(tree.encoding_length(), 67);
         assert_eq!(
             tree.encode(),
@@ -104,10 +104,10 @@ mod tests {
             Some(Link::Modified {
                 pending_writes: 1,
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3]),
+                tree: Tree::new(vec![2], vec![3]).unwrap(),
             }),
             None,
-        );
+        ).unwrap();
         tree.encode();
     }
 
@@ -120,10 +120,10 @@ mod tests {
             Some(Link::Loaded {
                 hash: [66; 32],
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3]),
+                tree: Tree::new(vec![2], vec![3]).unwrap(),
             }),
             None,
-        );
+        ).unwrap();
         assert_eq!(
             tree.encode(),
             vec![
@@ -146,10 +146,10 @@ mod tests {
             Some(Link::Uncommitted {
                 hash: [66; 32],
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3]),
+                tree: Tree::new(vec![2], vec![3]).unwrap(),
             }),
             None,
-        );
+        ).unwrap();
         assert_eq!(
             tree.encode(),
             vec![
@@ -175,7 +175,7 @@ mod tests {
                 key: vec![2],
             }),
             None,
-        );
+        ).unwrap();
         assert_eq!(tree.encoding_length(), 103);
         assert_eq!(
             tree.encode(),

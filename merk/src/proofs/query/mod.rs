@@ -1117,7 +1117,7 @@ pub fn execute_proof(
     limit: Option<u16>,
     offset: Option<u16>,
     left_to_right: bool,
-) -> Result<(MerkHash, ProofVerificationResult)> {
+) -> CostContext<Result<(MerkHash, ProofVerificationResult)>> {
     let mut output = Vec::with_capacity(query.len());
     let mut last_push = None;
     let mut query = query.directional_iter(left_to_right).peekable();
@@ -1345,19 +1345,19 @@ pub fn verify_query(
     offset: Option<u16>,
     left_to_right: bool,
     expected_hash: MerkHash,
-) -> Result<ProofVerificationResult> {
-    let (root_hash, verification_result) =
-        execute_proof(bytes, query, limit, offset, left_to_right)?;
-
-    if root_hash != expected_hash {
-        bail!(
-            "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
-            expected_hash,
-            root_hash
-        );
-    }
-
-    Ok(verification_result)
+) -> CostContext<Result<ProofVerificationResult>> {
+    execute_proof(bytes, query, limit, offset, left_to_right)
+        .map_ok(|(root_hash, verification_result)| {
+            if root_hash != expected_hash {
+                bail!(
+                    "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
+                    expected_hash,
+                    root_hash
+                );
+            };
+            Ok(verification_result)
+        })
+        .flatten()
 }
 
 #[allow(deprecated)]
@@ -1375,8 +1375,9 @@ mod test {
 
     fn make_3_node_tree() -> Tree {
         let mut tree = Tree::new(vec![5], vec![5])
-            .attach(true, Some(Tree::new(vec![3], vec![3])))
-            .attach(false, Some(Tree::new(vec![7], vec![7])));
+            .unwrap()
+            .attach(true, Some(Tree::new(vec![3], vec![3]).unwrap()))
+            .attach(false, Some(Tree::new(vec![7], vec![7]).unwrap()));
         tree.commit(&mut NoopCommit {})
             .unwrap()
             .expect("commit failed");
@@ -1384,9 +1385,10 @@ mod test {
     }
 
     fn make_6_node_tree() -> Tree {
-        let two_tree = Tree::new(vec![2], vec![2]);
-        let four_tree = Tree::new(vec![4], vec![4]);
+        let two_tree = Tree::new(vec![2], vec![2]).unwrap();
+        let four_tree = Tree::new(vec![4], vec![4]).unwrap();
         let mut three_tree = Tree::new(vec![3], vec![3])
+            .unwrap()
             .attach(true, Some(two_tree))
             .attach(false, Some(four_tree));
         three_tree
@@ -1394,14 +1396,17 @@ mod test {
             .unwrap()
             .expect("commit failed");
 
-        let seven_tree = Tree::new(vec![7], vec![7]);
-        let mut eight_tree = Tree::new(vec![8], vec![8]).attach(true, Some(seven_tree));
+        let seven_tree = Tree::new(vec![7], vec![7]).unwrap();
+        let mut eight_tree = Tree::new(vec![8], vec![8])
+            .unwrap()
+            .attach(true, Some(seven_tree));
         eight_tree
             .commit(&mut NoopCommit {})
             .unwrap()
             .expect("commit failed");
 
         let mut root_tree = Tree::new(vec![5], vec![5])
+            .unwrap()
             .attach(true, Some(three_tree))
             .attach(false, Some(eight_tree));
         root_tree
@@ -1443,6 +1448,7 @@ mod test {
         }
 
         let result = verify_query(bytes.as_slice(), &query, None, None, true, expected_hash)
+            .unwrap()
             .expect("verify failed");
 
         let mut values = std::collections::HashMap::new();
@@ -1582,6 +1588,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert!(res.result_set.is_empty());
     }
@@ -1632,6 +1639,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
     }
@@ -1682,6 +1690,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![3], vec![3])]);
     }
@@ -1726,6 +1735,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -1771,6 +1781,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -1833,6 +1844,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![]);
     }
@@ -1895,6 +1907,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![]);
     }
@@ -1902,16 +1915,19 @@ mod test {
     #[test]
     fn doc_proof() {
         let mut tree = Tree::new(vec![5], vec![5])
+            .unwrap()
             .attach(
                 true,
                 Some(
                     Tree::new(vec![2], vec![2])
-                        .attach(true, Some(Tree::new(vec![1], vec![1])))
+                        .unwrap()
+                        .attach(true, Some(Tree::new(vec![1], vec![1]).unwrap()))
                         .attach(
                             false,
                             Some(
                                 Tree::new(vec![4], vec![4])
-                                    .attach(true, Some(Tree::new(vec![3], vec![3]))),
+                                    .unwrap()
+                                    .attach(true, Some(Tree::new(vec![3], vec![3]).unwrap())),
                             ),
                         ),
                 ),
@@ -1920,19 +1936,22 @@ mod test {
                 false,
                 Some(
                     Tree::new(vec![9], vec![9])
+                        .unwrap()
                         .attach(
                             true,
                             Some(
                                 Tree::new(vec![7], vec![7])
-                                    .attach(true, Some(Tree::new(vec![6], vec![6])))
-                                    .attach(false, Some(Tree::new(vec![8], vec![8]))),
+                                    .unwrap()
+                                    .attach(true, Some(Tree::new(vec![6], vec![6]).unwrap()))
+                                    .attach(false, Some(Tree::new(vec![8], vec![8]).unwrap())),
                             ),
                         )
                         .attach(
                             false,
                             Some(
                                 Tree::new(vec![11], vec![11])
-                                    .attach(true, Some(Tree::new(vec![10], vec![10]))),
+                                    .unwrap()
+                                    .attach(true, Some(Tree::new(vec![10], vec![10]).unwrap())),
                             ),
                         ),
                 ),
@@ -2006,6 +2025,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -2185,6 +2205,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -2222,6 +2243,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -2256,6 +2278,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
@@ -2287,6 +2310,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
@@ -2318,6 +2342,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -2414,6 +2439,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -2452,6 +2478,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -2486,6 +2513,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -2520,6 +2548,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
@@ -2551,6 +2580,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
 
         assert_eq!(
@@ -2587,6 +2617,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
 
         assert_eq!(
@@ -2639,6 +2670,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -2680,6 +2712,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
@@ -2722,6 +2755,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -2763,6 +2797,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -2795,6 +2830,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
@@ -2824,6 +2860,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![8], vec![8])]);
         assert_eq!(res.limit, Some(0));
@@ -2853,6 +2890,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
@@ -2884,6 +2922,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -2915,6 +2954,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![7], vec![7]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
@@ -2976,6 +3016,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -3022,6 +3063,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
@@ -3060,6 +3102,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -3101,6 +3144,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -3138,6 +3182,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
@@ -3167,6 +3212,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
@@ -3196,6 +3242,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
@@ -3227,6 +3274,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -3263,6 +3311,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -3327,6 +3376,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -3373,6 +3423,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
@@ -3411,6 +3462,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -3452,6 +3504,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -3489,6 +3542,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
@@ -3518,6 +3572,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
@@ -3547,6 +3602,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
@@ -3578,6 +3634,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -3614,6 +3671,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![4], vec![4]),]);
         assert_eq!(res.limit, Some(0));
@@ -3675,6 +3733,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -3721,6 +3780,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
@@ -3759,6 +3819,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -3800,6 +3861,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -3837,6 +3899,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
@@ -3866,6 +3929,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
@@ -3895,6 +3959,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
@@ -3926,6 +3991,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -3962,6 +4028,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4041,6 +4108,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4082,6 +4150,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
@@ -4120,6 +4189,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4161,6 +4231,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4193,6 +4264,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
@@ -4222,6 +4294,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
@@ -4251,6 +4324,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
@@ -4282,6 +4356,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4313,6 +4388,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(299));
@@ -4380,6 +4456,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4421,6 +4498,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
@@ -4459,6 +4537,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4500,6 +4579,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4532,6 +4612,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
@@ -4561,6 +4642,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
@@ -4590,6 +4672,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
@@ -4621,6 +4704,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4669,6 +4753,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4717,6 +4802,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
@@ -4755,6 +4841,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4796,6 +4883,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4835,6 +4923,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4867,6 +4956,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4899,6 +4989,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
@@ -4930,6 +5021,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -4968,6 +5060,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -5042,6 +5135,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
@@ -5115,6 +5209,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
@@ -5183,6 +5278,7 @@ mod test {
             false,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -5285,6 +5381,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -5388,6 +5485,7 @@ mod test {
             true,
             tree.hash().unwrap(),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             res.result_set,
@@ -5440,7 +5538,7 @@ mod test {
 
     #[test]
     fn verify_ops() {
-        let mut tree = Tree::new(vec![5], vec![5]);
+        let mut tree = Tree::new(vec![5], vec![5]).unwrap();
         tree.commit(&mut NoopCommit {})
             .unwrap()
             .expect("commit failed");
@@ -5466,7 +5564,7 @@ mod test {
     #[test]
     #[should_panic(expected = "verify failed")]
     fn verify_ops_mismatched_hash() {
-        let mut tree = Tree::new(vec![5], vec![5]);
+        let mut tree = Tree::new(vec![5], vec![5]).unwrap();
         tree.commit(&mut NoopCommit {})
             .unwrap()
             .expect("commit failed");
@@ -5512,6 +5610,7 @@ mod test {
         }
 
         let _result = verify_query(bytes.as_slice(), &query, None, None, true, [42; 32])
+            .unwrap()
             .expect("verify failed");
     }
 }

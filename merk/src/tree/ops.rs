@@ -113,12 +113,12 @@ where
         // TODO: take from batch so we don't have to clone
 
         let mid_tree = match mid_op {
-            Put(_) => Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec()),
+            Put(_) => Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec()).unwrap_add_cost(&mut cost),
             PutReference(_, referenced_value) => Tree::new_with_value_hash(
                 mid_key.as_ref().to_vec(),
                 mid_value.to_vec(),
-                value_hash(referenced_value),
-            ),
+                value_hash(referenced_value).unwrap_add_cost(&mut cost),
+            ).unwrap_add_cost(&mut cost),
             Delete => unreachable!("cannot get here, should return at the top"),
         };
         let mid_walker = Walker::new(mid_tree, PanicSource {});
@@ -149,10 +149,11 @@ where
             // a key matches this node's key, apply op to this node
             match &batch[index].1 {
                 // TODO: take vec from batch so we don't need to clone
-                Put(value) => self.with_value(value.to_vec()),
-                PutReference(value, referenced_value) => {
-                    self.with_value_and_value_hash(value.to_vec(), value_hash(&referenced_value))
-                }
+                Put(value) => self.with_value(value.to_vec()).unwrap_add_cost(&mut cost),
+                PutReference(value, referenced_value) => self.with_value_and_value_hash(
+                    value.to_vec(),
+                    value_hash(&referenced_value).unwrap_add_cost(&mut cost),
+                ).unwrap_add_cost(&mut cost),
                 Delete => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply
                     let source = self.clone_source();
@@ -162,12 +163,16 @@ where
                     let key = self.tree().key().to_vec();
                     let maybe_tree = cost_return_on_error!(&mut cost, self.remove());
 
-                    let (maybe_tree, mut deleted_keys) =
-                        cost_return_on_error!(&mut cost, Self::apply_to(maybe_tree, &batch[..index], source.clone()));
+                    let (maybe_tree, mut deleted_keys) = cost_return_on_error!(
+                        &mut cost,
+                        Self::apply_to(maybe_tree, &batch[..index], source.clone())
+                    );
                     let maybe_walker = wrap(maybe_tree);
 
-                    let (maybe_tree, mut deleted_keys_right) =
-                        cost_return_on_error!(&mut cost, Self::apply_to(maybe_walker, &batch[index + 1..], source.clone()));
+                    let (maybe_tree, mut deleted_keys_right) = cost_return_on_error!(
+                        &mut cost,
+                        Self::apply_to(maybe_walker, &batch[index + 1..], source.clone())
+                    );
                     let maybe_walker = wrap(maybe_tree);
 
                     deleted_keys.append(&mut deleted_keys_right);
@@ -372,7 +377,7 @@ mod test {
     #[test]
     fn simple_insert() {
         let batch = [(b"foo2".to_vec(), Op::Put(b"bar2".to_vec()))];
-        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec());
+        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap();
         let (maybe_walker, deleted_keys) = Walker::new(tree, PanicSource {})
             .apply(&batch)
             .unwrap()
@@ -386,7 +391,7 @@ mod test {
     #[test]
     fn simple_update() {
         let batch = [(b"foo".to_vec(), Op::Put(b"bar2".to_vec()))];
-        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec());
+        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap();
         let (maybe_walker, deleted_keys) = Walker::new(tree, PanicSource {})
             .apply(&batch)
             .unwrap()
@@ -410,9 +415,10 @@ mod test {
             Some(Link::Loaded {
                 hash: [123; 32],
                 child_heights: (0, 0),
-                tree: Tree::new(b"foo2".to_vec(), b"bar2".to_vec()),
+                tree: Tree::new(b"foo2".to_vec(), b"bar2".to_vec()).unwrap(),
             }),
-        );
+        )
+        .unwrap();
         let (maybe_walker, deleted_keys) = Walker::new(tree, PanicSource {})
             .apply(&batch)
             .unwrap()
@@ -429,7 +435,7 @@ mod test {
     #[test]
     fn delete_non_existent() {
         let batch = [(b"foo2".to_vec(), Op::Delete)];
-        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec());
+        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap();
         Walker::new(tree, PanicSource {})
             .apply(&batch)
             .unwrap()
@@ -439,7 +445,7 @@ mod test {
     #[test]
     fn delete_only_node() {
         let batch = [(b"foo".to_vec(), Op::Delete)];
-        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec());
+        let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap();
         let (maybe_walker, deleted_keys) = Walker::new(tree, PanicSource {})
             .apply(&batch)
             .unwrap()
@@ -516,7 +522,7 @@ mod test {
 
     #[test]
     fn insert_root_single() {
-        let tree = Tree::new(vec![5], vec![123]);
+        let tree = Tree::new(vec![5], vec![123]).unwrap();
         let batch = vec![(vec![6], Op::Put(vec![123]))];
         let tree = apply_memonly(tree, &batch);
         assert_eq!(tree.key(), &[5]);
@@ -526,7 +532,7 @@ mod test {
 
     #[test]
     fn insert_root_double() {
-        let tree = Tree::new(vec![5], vec![123]);
+        let tree = Tree::new(vec![5], vec![123]).unwrap();
         let batch = vec![(vec![4], Op::Put(vec![123])), (vec![6], Op::Put(vec![123]))];
         let tree = apply_memonly(tree, &batch);
         assert_eq!(tree.key(), &[5]);
@@ -536,7 +542,7 @@ mod test {
 
     #[test]
     fn insert_rebalance() {
-        let tree = Tree::new(vec![5], vec![123]);
+        let tree = Tree::new(vec![5], vec![123]).unwrap();
 
         let batch = vec![(vec![6], Op::Put(vec![123]))];
         let tree = apply_memonly(tree, &batch);
@@ -551,7 +557,7 @@ mod test {
 
     #[test]
     fn insert_100_sequential() {
-        let mut tree = Tree::new(vec![0], vec![123]);
+        let mut tree = Tree::new(vec![0], vec![123]).unwrap();
 
         for i in 0..100 {
             let batch = vec![(vec![i + 1], Op::Put(vec![123]))];

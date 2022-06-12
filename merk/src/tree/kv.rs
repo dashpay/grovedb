@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 
+use costs::{CostContext, CostsExt, OperationCost};
 use ed::{Decode, Encode, Result, Terminated};
 
 use super::hash::{kv_hash, Hash, HASH_LENGTH, NULL_HASH};
@@ -22,30 +23,33 @@ pub struct KV {
 impl KV {
     /// Creates a new `KV` with the given key and value and computes its hash.
     #[inline]
-    pub fn new(key: Vec<u8>, value: Vec<u8>) -> Self {
+    pub fn new(key: Vec<u8>, value: Vec<u8>) -> CostContext<Self> {
         // TODO: length checks?
-        let hash = kv_hash(key.as_slice(), value.as_slice());
-        let value_hash = value_hash(value.as_slice());
-        Self {
-            key,
-            value,
-            hash,
-            value_hash,
-        }
+        kv_hash(key.as_slice(), value.as_slice()).flat_map(|hash| {
+            value_hash(value.as_slice()).map(|value_hash| Self {
+                key,
+                value,
+                hash,
+                value_hash,
+            })
+        })
     }
 
     /// Creates a new `KV` with the given key, value and value_hash and computes
     /// its hash.
     #[inline]
-    pub fn new_with_value_hash(key: Vec<u8>, value: Vec<u8>, value_hash: Hash) -> Self {
+    pub fn new_with_value_hash(
+        key: Vec<u8>,
+        value: Vec<u8>,
+        value_hash: Hash,
+    ) -> CostContext<Self> {
         // TODO: length checks?
-        let hash = kv_digest_to_kv_hash(key.as_slice(), &value_hash);
-        Self {
+        kv_digest_to_kv_hash(key.as_slice(), &value_hash).map(|hash| Self {
             key,
             value,
             hash,
             value_hash,
-        }
+        })
     }
 
     /// Creates a new `KV` with the given key, value, and hash. The hash is not
@@ -63,22 +67,28 @@ impl KV {
     /// Replaces the `KV`'s value with the given value, updates the hash,
     /// value hash and returns the modified `KV`.
     #[inline]
-    pub fn with_value(mut self, value: Vec<u8>) -> Self {
+    pub fn with_value(mut self, value: Vec<u8>) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
         // TODO: length check?
         self.value = value;
-        self.value_hash = value_hash(self.value());
-        self.hash = kv_hash(self.key(), self.value());
-        self
+        self.value_hash = value_hash(self.value()).unwrap_add_cost(&mut cost);
+        self.hash = kv_hash(self.key(), self.value()).unwrap_add_cost(&mut cost);
+        self.wrap_with_cost(cost)
     }
 
     /// Replaces the `KV`'s value with the given value and value hash,
     /// updates the hash and returns the modified `KV`.
     #[inline]
-    pub fn with_value_and_value_hash(mut self, value: Vec<u8>, value_hash: Hash) -> Self {
+    pub fn with_value_and_value_hash(
+        mut self,
+        value: Vec<u8>,
+        value_hash: Hash,
+    ) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
         self.value = value;
         self.value_hash = value_hash;
-        self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash());
-        self
+        self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
+        self.wrap_with_cost(cost)
     }
 
     /// Returns the key as a slice.
@@ -163,7 +173,7 @@ mod test {
 
     #[test]
     fn new_kv() {
-        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6]);
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6]).unwrap();
 
         assert_eq!(kv.key(), &[1, 2, 3]);
         assert_eq!(kv.value(), &[4, 5, 6]);
@@ -172,7 +182,9 @@ mod test {
 
     #[test]
     fn with_value() {
-        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6]).with_value(vec![7, 8, 9]);
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6]).unwrap()
+            .with_value(vec![7, 8, 9])
+            .unwrap();
 
         assert_eq!(kv.key(), &[1, 2, 3]);
         assert_eq!(kv.value(), &[7, 8, 9]);
