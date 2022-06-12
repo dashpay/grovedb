@@ -4,7 +4,7 @@ pub mod chunks;
 use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt};
 
 use anyhow::{anyhow, bail, Result};
-use costs::{CostContext, CostsExt, OperationCost};
+use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
@@ -133,7 +133,7 @@ impl<S> fmt::Debug for Merk<S> {
     }
 }
 
-pub type UseTreeMutResult = Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>;
+pub type UseTreeMutResult = CostContext<Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>>;
 
 impl<'db, S> Merk<S>
 where
@@ -441,51 +441,111 @@ where
     where
         K: AsRef<[u8]>,
     {
-        // let mut batch = self.storage.new_batch();
-        // let mut to_batch = self.use_tree_mut(|maybe_tree| -> UseTreeMutResult {
-        //     // TODO: concurrent commit
-        //     if let Some(tree) = maybe_tree {
-        //         // TODO: configurable committer
-        //         let mut committer = MerkCommitter::new(tree.height(), 100);
-        //         tree.commit(&mut committer)?;
+        let mut cost = OperationCost::default();
 
-        //         // update pointer to root node
-        //         batch.put_root(ROOT_KEY_KEY, tree.key())?;
+        let mut batch = self.storage.new_batch();
+        let to_batch_wrapped = self.use_tree_mut(|maybe_tree| -> UseTreeMutResult {
+            // TODO: concurrent commit
+            if let Some(tree) = maybe_tree {
+                // TODO: configurable committer
+                let mut committer = MerkCommitter::new(tree.height(), 100);
+                tree.commit(&mut committer)
+                    .flat_map_ok(|_| {
+                        // update pointer to root node
+                        batch
+                            .put_root(ROOT_KEY_KEY, tree.key())
+                            .map_err(|e| e.into())
+                            .wrap_with_cost(OperationCost {
+                                storage_written_bytes: tree.key().len(),
+                                ..Default::default()
+                            })
+                    })
+                    .map_ok(|_| committer.batch)
+            } else {
+                // empty tree, delete pointer to root
+                batch
+                    .delete_root(ROOT_KEY_KEY)
+                    .map(|_| vec![])
+                    .map_err(|e| e.into())
+                    .wrap_with_cost(OperationCost {
+                        storage_written_bytes: 1337,
+                        ..Default::default()
+                    }) // TODO
+            }
+        });
+        let mut to_batch = cost_return_on_error!(&mut cost, to_batch_wrapped);
 
-        //         Ok(committer.batch)
-        //     } else {
-        //         // empty tree, delete pointer to root
-        //         batch.delete_root(ROOT_KEY_KEY)?;
-        //         Ok(vec![])
-        //     }
-        // })?;
-        todo!()
+        // TODO: move this to MerkCommitter impl?
+        for key in deleted_keys {
+            to_batch.push((key, None));
+        }
+        to_batch.sort_by(|a, b| a.0.cmp(&b.0));
+        for (key, maybe_value) in to_batch {
+            if let Some(value) = maybe_value {
+                cost_return_on_error!(
+                    &mut cost,
+                    batch
+                        .put(&key, &value)
+                        .map_err(|e| e.into())
+                        .wrap_with_cost(OperationCost {
+                            storage_written_bytes: value.len(),
+                            ..Default::default()
+                        })
+                );
+            } else {
+                cost_return_on_error!(
+                    &mut cost,
+                    batch
+                        .delete(&key)
+                        .map_err(|e| e.into())
+                        .wrap_with_cost(OperationCost {
+                            storage_written_bytes: 1337, // TODO
+                            ..Default::default()
+                        })
+                );
+            }
+        }
 
-        // // TODO: move this to MerkCommitter impl?
-        // for key in deleted_keys {
-        //     to_batch.push((key, None));
-        // }
-        // to_batch.sort_by(|a, b| a.0.cmp(&b.0));
-        // for (key, maybe_value) in to_batch {
-        //     if let Some(value) = maybe_value {
-        //         batch.put(&key, &value)?;
-        //     } else {
-        //         batch.delete(&key)?;
-        //     }
-        // }
+        for (key, value) in aux {
+            match value {
+                Op::Put(value) => cost_return_on_error!(
+                    &mut cost,
+                    batch
+                        .put_aux(key, value)
+                        .map_err(|e| e.into())
+                        .wrap_with_cost(OperationCost {
+                            storage_written_bytes: value.len(),
+                            ..Default::default()
+                        })
+                ),
+                Op::PutReference(value, _) => cost_return_on_error!(
+                    &mut cost,
+                    batch
+                        .put_aux(key, value)
+                        .map_err(|e| e.into())
+                        .wrap_with_cost(OperationCost {
+                            storage_written_bytes: value.len(),
+                            ..Default::default()
+                        })
+                ),
+                Op::Delete => cost_return_on_error!(
+                    &mut cost,
+                    batch
+                        .delete_aux(key)
+                        .map_err(|e| e.into())
+                        .wrap_with_cost(OperationCost {
+                            storage_written_bytes: 1337, // TODO
+                            ..Default::default()
+                        })
+                ),
+            };
+        }
 
-        // for (key, value) in aux {
-        //     match value {
-        //         Op::Put(value) => batch.put_aux(key, value)?,
-        //         Op::PutReference(value, _) => batch.put_aux(key, value)?,
-        //         Op::Delete => batch.delete_aux(key)?,
-        //     };
-        // }
-
-        // // write to db
-        // self.storage.commit_batch(batch)?;
-
-        // Ok(())
+        // write to db
+        self.storage
+            .commit_batch(batch)
+            .map_err(|e| e.into())
+            .wrap_with_cost(cost)
     }
 
     pub fn walk<'s, T>(&'s self, f: impl FnOnce(Option<RefWalker<MerkSource<'s, S>>>) -> T) -> T {
