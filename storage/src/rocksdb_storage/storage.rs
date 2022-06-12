@@ -109,8 +109,8 @@ impl<'db> Storage<'db> for RocksDbStorage {
     }
 
     fn get_storage_context<'p, P>(&'db self, path: P) -> Self::StorageContext
-        where
-            P: IntoIterator<Item=&'p [u8]>,
+    where
+        P: IntoIterator<Item = &'p [u8]>,
     {
         let prefix = Self::build_prefix(path);
         PrefixedRocksDbStorageContext::new(&self.db, prefix)
@@ -121,8 +121,8 @@ impl<'db> Storage<'db> for RocksDbStorage {
         path: P,
         transaction: &'db Self::Transaction,
     ) -> Self::TransactionalStorageContext
-        where
-            P: IntoIterator<Item=&'p [u8]>,
+    where
+        P: IntoIterator<Item = &'p [u8]>,
     {
         let prefix = Self::build_prefix(path);
         PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix)
@@ -133,8 +133,8 @@ impl<'db> Storage<'db> for RocksDbStorage {
         path: P,
         batch: &'db StorageBatch,
     ) -> Self::BatchStorageContext
-        where
-            P: IntoIterator<Item=&'p [u8]>,
+    where
+        P: IntoIterator<Item = &'p [u8]>,
     {
         let prefix = Self::build_prefix(path);
         PrefixedRocksDbBatchStorageContext::new(&self.db, prefix, batch)
@@ -146,14 +146,18 @@ impl<'db> Storage<'db> for RocksDbStorage {
         batch: &'db StorageBatch,
         transaction: &'db Self::Transaction,
     ) -> Self::BatchTransactionalStorageContext
-        where
-            P: IntoIterator<Item=&'p [u8]>,
+    where
+        P: IntoIterator<Item = &'p [u8]>,
     {
         let prefix = Self::build_prefix(path);
         PrefixedRocksDbBatchTransactionContext::new(&self.db, transaction, prefix, batch)
     }
 
-    fn commit_multi_context_batch(&self, batch: StorageBatch, transaction: Option<&'db Self::Transaction>) -> Result<(), Self::Error> {
+    fn commit_multi_context_batch(
+        &self,
+        batch: StorageBatch,
+        transaction: Option<&'db Self::Transaction>,
+    ) -> Result<(), Self::Error> {
         let mut db_batch = WriteBatchWithTransaction::<true>::default();
         for op in batch.into_iter() {
             match op {
@@ -184,8 +188,8 @@ impl<'db> Storage<'db> for RocksDbStorage {
             }
         }
         match transaction {
-            None => { self.db.write(db_batch) }
-            Some(transaction) => { transaction.rebuild_from_writebatch(&db_batch) }
+            None => self.db.write(db_batch),
+            Some(transaction) => transaction.rebuild_from_writebatch(&db_batch),
         }
     }
 }

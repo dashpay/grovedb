@@ -1,8 +1,8 @@
-use merk::Merk;
+use merk::{Merk, ROOT_KEY_KEY};
 use storage::{Storage, StorageContext};
 
 use crate::{
-    util::{merk_optional_tx, meta_storage_context_optional_tx},
+    util::{merk_optional_tx, meta_storage_context_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, TransactionArg, ROOT_LEAFS_SERIALIZED_KEY,
 };
 
@@ -66,6 +66,7 @@ impl GroveDb {
 
     /// Add subtree to the root tree
     fn add_root_leaf(&self, key: &[u8], transaction: TransactionArg) -> Result<(), Error> {
+        // Persist root leaf in root tree
         meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
             let mut root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;
             if root_leaf_keys.get(&key.to_vec()).is_none() {
@@ -75,6 +76,11 @@ impl GroveDb {
                 Error::CorruptedData(String::from("unable to serialize root leaves data"))
             })?;
             meta_storage.put_meta(ROOT_LEAFS_SERIALIZED_KEY, &value)?;
+        });
+
+        // Persist root leaf as a regular subtree
+        storage_context_optional_tx!(self.db, [key], transaction, storage, {
+            storage.put_root(ROOT_KEY_KEY, key)?;
         });
 
         Ok(())
