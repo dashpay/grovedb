@@ -77,7 +77,6 @@ impl Tree {
 #[cfg(test)]
 mod tests {
     use super::{super::Link, *};
-    use crate::tree::hash::value_hash;
 
     #[test]
     fn encode_leaf_tree() {

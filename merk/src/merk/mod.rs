@@ -463,14 +463,24 @@ where
                     .map_ok(|_| committer.batch)
             } else {
                 // empty tree, delete pointer to root
-                batch
-                    .delete_root(ROOT_KEY_KEY)
-                    .map(|_| vec![])
+                let root_wrapped = self
+                    .storage
+                    .get_root(ROOT_KEY_KEY)
                     .map_err(|e| e.into())
                     .wrap_with_cost(OperationCost {
-                        storage_written_bytes: 1337,
+                        seek_count: 1,
                         ..Default::default()
-                    }) // TODO
+                    });
+                root_wrapped.flat_map_ok(|root_opt| {
+                    batch
+                        .delete_root(ROOT_KEY_KEY)
+                        .map(|_| vec![])
+                        .map_err(|e| e.into())
+                        .wrap_with_cost(OperationCost {
+                            storage_written_bytes: root_opt.map(|x| x.len()).unwrap_or(0),
+                            ..Default::default()
+                        })
+                })
             }
         });
         let mut to_batch = cost_return_on_error!(&mut cost, to_batch_wrapped);
@@ -493,15 +503,23 @@ where
                         })
                 );
             } else {
+                let value_wrapped =
+                    self.storage
+                        .get(&key)
+                        .map_err(|e| e.into())
+                        .wrap_with_cost(OperationCost {
+                            seek_count: 1,
+                            ..Default::default()
+                        });
                 cost_return_on_error!(
                     &mut cost,
-                    batch
+                    value_wrapped.flat_map_ok(|value| batch
                         .delete(&key)
                         .map_err(|e| e.into())
                         .wrap_with_cost(OperationCost {
-                            storage_written_bytes: 1337, // TODO
+                            storage_written_bytes: value.map(|x| x.len()).unwrap_or(0),
                             ..Default::default()
-                        })
+                        }))
                 );
             }
         }
@@ -528,16 +546,27 @@ where
                             ..Default::default()
                         })
                 ),
-                Op::Delete => cost_return_on_error!(
-                    &mut cost,
-                    batch
-                        .delete_aux(key)
+                Op::Delete => {
+                    let value_wrapped = self
+                        .storage
+                        .get_aux(&key)
                         .map_err(|e| e.into())
                         .wrap_with_cost(OperationCost {
-                            storage_written_bytes: 1337, // TODO
+                            seek_count: 1,
                             ..Default::default()
-                        })
-                ),
+                        });
+
+                    cost_return_on_error!(
+                        &mut cost,
+                        value_wrapped.flat_map_ok(|value| batch
+                            .delete_aux(key)
+                            .map_err(|e| e.into())
+                            .wrap_with_cost(OperationCost {
+                                storage_written_bytes: value.map(|x| x.len()).unwrap_or(0),
+                                ..Default::default()
+                            }))
+                    )
+                }
             };
         }
 
