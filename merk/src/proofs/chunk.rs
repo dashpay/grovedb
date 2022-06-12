@@ -109,7 +109,7 @@ where
             }
 
             // add this node's hash
-            proof.push(Op::Push(self.to_hash_node()));
+            proof.push(Op::Push(self.to_hash_node().unwrap_add_cost(&mut cost)));
 
             return Ok(()).wrap_with_cost(cost);
         }
@@ -364,7 +364,7 @@ mod tests {
     #[test]
     fn one_node_tree_trunk_roundtrip() {
         let mut tree = BaseTree::new(vec![0], vec![]);
-        tree.commit(&mut NoopCommit {}).unwrap();
+        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
@@ -384,7 +384,7 @@ mod tests {
         //   1
         let mut tree =
             BaseTree::new(vec![0], vec![]).attach(false, Some(BaseTree::new(vec![1], vec![])));
-        tree.commit(&mut NoopCommit {}).unwrap();
+        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
@@ -403,7 +403,7 @@ mod tests {
         // 0
         let mut tree =
             BaseTree::new(vec![1], vec![]).attach(true, Some(BaseTree::new(vec![0], vec![])));
-        tree.commit(&mut NoopCommit {}).unwrap();
+        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
@@ -423,7 +423,7 @@ mod tests {
         let mut tree = BaseTree::new(vec![1], vec![])
             .attach(true, Some(BaseTree::new(vec![0], vec![])))
             .attach(false, Some(BaseTree::new(vec![2], vec![])));
-        tree.commit(&mut NoopCommit {}).unwrap();
+        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
@@ -440,7 +440,9 @@ mod tests {
     fn leaf_chunk_roundtrip() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(0..31);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[]).unwrap();
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[])
+            .unwrap()
+            .unwrap();
 
         let root_node = merk.tree.take();
         let root_key = root_node.as_ref().unwrap().key().to_vec();
@@ -451,7 +453,7 @@ mod tests {
         iter.seek_to_first();
         let chunk = get_next_chunk(&mut iter, None).unwrap();
         let ops = chunk.into_iter().map(Ok);
-        let chunk = verify_leaf(ops, merk.root_hash()).unwrap();
+        let chunk = verify_leaf(ops, merk.root_hash().unwrap()).unwrap();
         let counts = count_node_types(chunk);
         assert_eq!(counts.kv, 31);
         assert_eq!(counts.hash, 0);

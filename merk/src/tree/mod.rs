@@ -14,7 +14,9 @@ use std::cmp::max;
 
 use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
-use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+};
 use ed::{Decode, Encode, Terminated};
 pub use hash::{kv_digest_to_kv_hash, kv_hash, node_hash, Hash, HASH_LENGTH, NULL_HASH};
 use kv::KV;
@@ -186,12 +188,16 @@ impl Tree {
 
     /// Computes and returns the hash of the root node.
     #[inline]
-    pub fn hash(&self) -> Hash {
+    pub fn hash(&self) -> CostContext<Hash> {
         node_hash(
             self.inner.kv.hash(),
             self.child_hash(true),
             self.child_hash(false),
         )
+        .wrap_with_cost(OperationCost {
+            hash_node_calls: 1,
+            ..Default::default()
+        })
     }
 
     /// Returns the number of pending writes for the child on the given side, if
@@ -364,10 +370,11 @@ impl Tree {
     /// replacing them with `Link::Loaded` variants, writes out all changes to
     /// the given `Commit` object's `write` method, and calls the its `prune`
     /// method to test whether or not to keep or prune nodes from memory.
-    #[inline]
-    pub fn commit<C: Commit>(&mut self, c: &mut C) -> Result<()> {
+    pub fn commit<C: Commit>(&mut self, c: &mut C) -> CostContext<Result<()>> {
         // TODO: make this method less ugly
         // TODO: call write in-order for better performance in writing batch to db?
+
+        let mut cost = OperationCost::default();
 
         if let Some(Link::Modified { .. }) = self.inner.left {
             if let Some(Link::Modified {
@@ -376,9 +383,9 @@ impl Tree {
                 ..
             }) = self.inner.left.take()
             {
-                tree.commit(c)?;
+                cost_return_on_error!(&mut cost, tree.commit(c));
                 self.inner.left = Some(Link::Loaded {
-                    hash: tree.hash(),
+                    hash: tree.hash().unwrap_add_cost(&mut cost),
                     tree,
                     child_heights,
                 });
@@ -394,9 +401,9 @@ impl Tree {
                 ..
             }) = self.inner.right.take()
             {
-                tree.commit(c)?;
+                cost_return_on_error!(&mut cost, tree.commit(c));
                 self.inner.right = Some(Link::Loaded {
-                    hash: tree.hash(),
+                    hash: tree.hash().unwrap_add_cost(&mut cost),
                     tree,
                     child_heights,
                 });
@@ -405,7 +412,7 @@ impl Tree {
             }
         }
 
-        c.write(self)?;
+        cost_return_on_error_no_add!(&cost, c.write(self));
 
         let (prune_left, prune_right) = c.prune(self);
         if prune_left {
@@ -415,7 +422,7 @@ impl Tree {
             self.inner.right = self.inner.right.take().map(|link| link.into_reference());
         }
 
-        Ok(())
+        Ok(()).wrap_with_cost(cost)
     }
 
     /// Fetches the child on the given side using the given data source, and
@@ -523,7 +530,9 @@ mod test {
         assert!(tree.link(false).is_none());
         assert!(tree.child(false).is_none());
 
-        tree.commit(&mut NoopCommit {}).expect("commit failed");
+        tree.commit(&mut NoopCommit {})
+            .unwrap()
+            .expect("commit failed");
         assert!(tree.link(true).expect("expected link").is_stored());
         assert!(tree.child(true).is_some());
 
@@ -539,7 +548,9 @@ mod test {
     #[test]
     fn child_hash() {
         let mut tree = Tree::new(vec![0], vec![1]).attach(true, Some(Tree::new(vec![2], vec![3])));
-        tree.commit(&mut NoopCommit {}).expect("commit failed");
+        tree.commit(&mut NoopCommit {})
+            .unwrap()
+            .expect("commit failed");
         assert_eq!(
             tree.child_hash(true),
             &[
@@ -554,7 +565,7 @@ mod test {
     fn hash() {
         let tree = Tree::new(vec![0], vec![1]);
         assert_eq!(
-            tree.hash(),
+            tree.hash().unwrap(),
             [
                 10, 108, 153, 163, 54, 173, 62, 155, 228, 204, 102, 172, 158, 203, 197, 126, 230,
                 234, 97, 110, 227, 208, 64, 21, 65, 8, 82, 2, 241, 122, 66, 207
@@ -598,7 +609,9 @@ mod test {
     #[test]
     fn commit() {
         let mut tree = Tree::new(vec![0], vec![1]).attach(false, Some(Tree::new(vec![2], vec![3])));
-        tree.commit(&mut NoopCommit {}).expect("commit failed");
+        tree.commit(&mut NoopCommit {})
+            .unwrap()
+            .expect("commit failed");
 
         assert!(tree.link(false).expect("expected link").is_stored());
     }

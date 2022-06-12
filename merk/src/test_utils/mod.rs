@@ -34,11 +34,14 @@ pub fn assert_tree_invariants(tree: &Tree) {
 
 pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     let walker = Walker::<PanicSource>::new(tree, PanicSource {});
-    let mut tree = Walker::<PanicSource>::apply_to(Some(walker), batch, PanicSource {}).unwrap()
+    let mut tree = Walker::<PanicSource>::apply_to(Some(walker), batch, PanicSource {})
+        .unwrap()
         .expect("apply failed")
         .0
         .expect("expected tree");
-    tree.commit(&mut NoopCommit {}).expect("commit failed");
+    tree.commit(&mut NoopCommit {})
+        .unwrap()
+        .expect("commit failed");
     tree
 }
 
@@ -50,11 +53,14 @@ pub fn apply_memonly(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
 
 pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) -> Option<Tree> {
     let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
-    Walker::<PanicSource>::apply_to(maybe_walker, batch, PanicSource {}).unwrap()
+    Walker::<PanicSource>::apply_to(maybe_walker, batch, PanicSource {})
+        .unwrap()
         .expect("apply failed")
         .0
         .map(|mut tree| {
-            tree.commit(&mut NoopCommit {}).expect("commit failed");
+            tree.commit(&mut NoopCommit {})
+                .unwrap()
+                .expect("commit failed");
             println!("{:?}", &tree);
             assert_tree_invariants(&tree);
             tree

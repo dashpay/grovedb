@@ -205,7 +205,9 @@ mod test {
     fn walk_stored() {
         let mut tree = Tree::new(b"test".to_vec(), b"abc".to_vec())
             .attach(true, Some(Tree::new(b"foo".to_vec(), b"bar".to_vec())));
-        tree.commit(&mut NoopCommit {}).expect("commit failed");
+        tree.commit(&mut NoopCommit {})
+            .unwrap()
+            .expect("commit failed");
 
         let source = MockSource {};
         let walker = Walker::new(tree, source);

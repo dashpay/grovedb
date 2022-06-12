@@ -193,12 +193,12 @@ macro_rules! cost_return_on_error {
 }
 
 /// Macro to achieve a kind of what `?` operator does, but with `CostContext` on
-/// top. The difference between this macro and `cost_return_on_error` is to use it on
-/// `Result` rather than `CostContext<Result<..>>`, so no costs will be added except previously
-/// accumulated.
+/// top. The difference between this macro and `cost_return_on_error` is to use
+/// it on `Result` rather than `CostContext<Result<..>>`, so no costs will be
+/// added except previously accumulated.
 #[macro_export]
 macro_rules! cost_return_on_error_no_add {
-    ( &mut $cost:ident, $($body:tt)+ ) => {
+    ( &$cost:ident, $($body:tt)+ ) => {
         {
             use $crate::CostsExt;
             let result = { $($body)+ };

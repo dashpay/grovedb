@@ -60,67 +60,76 @@ where
         batch: &MerkBatch<K>,
         source: S,
     ) -> CostContext<Result<(Option<Tree>, LinkedList<Vec<u8>>)>> {
-        todo!()
-        // let (maybe_walker, deleted_keys) = if batch.is_empty() {
-        //     (maybe_tree, LinkedList::default())
-        // } else {
-        //     match maybe_tree {
-        //         None => return Ok((Self::build(batch, source)?, LinkedList::default())),
-        //         Some(tree) => tree.apply(batch)?,
-        //     }
-        // };
+        let mut cost = OperationCost::default();
 
-        // let maybe_tree = maybe_walker.map(|walker| walker.into_inner());
-        // Ok((maybe_tree, deleted_keys))
+        let (maybe_walker, deleted_keys) = if batch.is_empty() {
+            (maybe_tree, LinkedList::default())
+        } else {
+            match maybe_tree {
+                None => {
+                    return Self::build(batch, source).map_ok(|tree| (tree, LinkedList::default()))
+                }
+                Some(tree) => cost_return_on_error!(&mut cost, tree.apply(batch)),
+            }
+        };
+
+        let maybe_tree = maybe_walker.map(|walker| walker.into_inner());
+        Ok((maybe_tree, deleted_keys)).wrap_with_cost(cost)
     }
 
     /// Builds a `Tree` from a batch of operations.
     ///
     /// Keys in batch must be sorted and unique.
     fn build<K: AsRef<[u8]>>(batch: &MerkBatch<K>, source: S) -> CostContext<Result<Option<Tree>>> {
-        todo!()
-        // if batch.is_empty() {
-        //     return Ok(None);
-        // }
+        let mut cost = OperationCost::default();
 
-        // let mid_index = batch.len() / 2;
-        // let (mid_key, mid_op) = &batch[mid_index];
-        // let mid_value = match mid_op {
-        //     Delete => {
-        //         let left_batch = &batch[..mid_index];
-        //         let right_batch = &batch[mid_index + 1..];
+        if batch.is_empty() {
+            return Ok(None).wrap_with_cost(cost);
+        }
 
-        //         let maybe_tree = Self::build(left_batch, source.clone())?
-        //             .map(|tree| Self::new(tree, source.clone()));
-        //         let maybe_tree = match maybe_tree {
-        //             Some(tree) => tree.apply(right_batch)?.0,
-        //             None => Self::build(right_batch, source.clone())?
-        //                 .map(|tree| Self::new(tree, source.clone())),
-        //         };
-        //         return Ok(maybe_tree.map(|tree| tree.into()));
-        //     }
-        //     Put(value) => value,
-        //     PutReference(value, _) => value,
-        // };
+        let mid_index = batch.len() / 2;
+        let (mid_key, mid_op) = &batch[mid_index];
+        let mid_value = match mid_op {
+            Delete => {
+                let left_batch = &batch[..mid_index];
+                let right_batch = &batch[mid_index + 1..];
 
-        // // TODO: take from batch so we don't have to clone
+                let maybe_tree =
+                    cost_return_on_error!(&mut cost, Self::build(left_batch, source.clone()))
+                        .map(|tree| Self::new(tree, source.clone()));
+                let maybe_tree = match maybe_tree {
+                    Some(tree) => cost_return_on_error!(&mut cost, tree.apply(right_batch)).0,
+                    None => {
+                        cost_return_on_error!(&mut cost, Self::build(right_batch, source.clone()))
+                            .map(|tree| Self::new(tree, source.clone()))
+                    }
+                };
+                return Ok(maybe_tree.map(|tree| tree.into())).wrap_with_cost(cost);
+            }
+            Put(value) => value,
+            PutReference(value, _) => value,
+        };
 
-        // let mid_tree = match mid_op {
-        //     Put(_) => Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec()),
-        //     PutReference(_, referenced_value) => Tree::new_with_value_hash(
-        //         mid_key.as_ref().to_vec(),
-        //         mid_value.to_vec(),
-        //         value_hash(referenced_value),
-        //     ),
-        //     Delete => unreachable!("cannot get here, should return at the top"),
-        // };
-        // let mid_walker = Walker::new(mid_tree, PanicSource {});
+        // TODO: take from batch so we don't have to clone
 
-        // // use walker, ignore deleted_keys since it should be empty
-        // Ok(mid_walker
-        //     .recurse(batch, mid_index, true)?
-        //     .0
-        //     .map(|w| w.into_inner()))
+        let mid_tree = match mid_op {
+            Put(_) => Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec()),
+            PutReference(_, referenced_value) => Tree::new_with_value_hash(
+                mid_key.as_ref().to_vec(),
+                mid_value.to_vec(),
+                value_hash(referenced_value),
+            ),
+            Delete => unreachable!("cannot get here, should return at the top"),
+        };
+        let mid_walker = Walker::new(mid_tree, PanicSource {});
+
+        // use walker, ignore deleted_keys since it should be empty
+        Ok(
+            cost_return_on_error!(&mut cost, mid_walker.recurse(batch, mid_index, true))
+                .0
+                .map(|w| w.into_inner()),
+        )
+        .wrap_with_cost(cost)
     }
 
     /// Applies a batch of operations to an existing tree. This is similar to
@@ -132,33 +141,35 @@ where
         batch: &MerkBatch<K>,
     ) -> CostContext<Result<(Option<Self>, LinkedList<Vec<u8>>)>> {
         todo!()
-        // // binary search to see if this node's key is in the batch, and to split
-        // // into left and right batches
-        // let search = batch.binary_search_by(|(key, _op)| key.as_ref().cmp(self.tree().key()));
-        // let tree = if let Ok(index) = search {
-        //     // a key matches this node's key, apply op to this node
-        //     match &batch[index].1 {
+        // // binary search to see if this node's key is in the batch, and to
+        // split // into left and right batches
+        // let search = batch.binary_search_by(|(key, _op)|
+        // key.as_ref().cmp(self.tree().key())); let tree = if let
+        // Ok(index) = search {     // a key matches this node's key,
+        // apply op to this node     match &batch[index].1 {
         //         // TODO: take vec from batch so we don't need to clone
         //         Put(value) => self.with_value(value.to_vec()),
         //         PutReference(value, referenced_value) => {
-        //             self.with_value_and_value_hash(value.to_vec(), value_hash(&referenced_value))
-        //         }
+        //             self.with_value_and_value_hash(value.to_vec(),
+        // value_hash(&referenced_value))         }
         //         Delete => {
-        //             // TODO: we shouldn't have to do this as 2 different calls to apply
-        //             let source = self.clone_source();
+        //             // TODO: we shouldn't have to do this as 2 different
+        // calls to apply             let source = self.clone_source();
         //             let wrap = |maybe_tree: Option<Tree>| {
-        //                 maybe_tree.map(|tree| Self::new(tree, source.clone()))
-        //             };
+        //                 maybe_tree.map(|tree| Self::new(tree,
+        // source.clone()))             };
         //             let key = self.tree().key().to_vec();
         //             let maybe_tree = self.remove()?;
 
         //             let (maybe_tree, mut deleted_keys) =
-        //                 Self::apply_to(maybe_tree, &batch[..index], source.clone())?;
-        //             let maybe_walker = wrap(maybe_tree);
+        //                 Self::apply_to(maybe_tree, &batch[..index],
+        // source.clone())?;             let maybe_walker =
+        // wrap(maybe_tree);
 
         //             let (maybe_tree, mut deleted_keys_right) =
-        //                 Self::apply_to(maybe_walker, &batch[index + 1..], source.clone())?;
-        //             let maybe_walker = wrap(maybe_tree);
+        //                 Self::apply_to(maybe_walker, &batch[index + 1..],
+        // source.clone())?;             let maybe_walker =
+        // wrap(maybe_tree);
 
         //             deleted_keys.append(&mut deleted_keys_right);
         //             deleted_keys.push_back(key);
@@ -409,7 +420,10 @@ mod test {
     fn delete_non_existent() {
         let batch = [(b"foo2".to_vec(), Op::Delete)];
         let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec());
-        Walker::new(tree, PanicSource {}).apply(&batch).unwrap();
+        Walker::new(tree, PanicSource {})
+            .apply(&batch)
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

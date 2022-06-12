@@ -187,7 +187,9 @@ where
     /// Note that this is essentially the same as a normal RocksDB `get`, so
     /// should be a fast operation and has almost no tree overhead.
     pub fn get(&self, key: &[u8]) -> CostContext<Result<Option<Vec<u8>>>> {
-        self.get_node_fn(key, |node| node.value().to_vec())
+        self.get_node_fn(key, |node| {
+            node.value().to_vec().wrap_with_cost(Default::default())
+        })
     }
 
     /// Gets a hash of a node by a given key, `None` is returned in case
@@ -199,7 +201,7 @@ where
     /// Generic way to get a node's field
     fn get_node_fn<T, F>(&self, key: &[u8], f: F) -> CostContext<Result<Option<T>>>
     where
-        F: FnOnce(&Tree) -> T,
+        F: FnOnce(&Tree) -> CostContext<T>,
     {
         self.use_tree(move |maybe_tree| {
             let mut cursor = match maybe_tree {
@@ -209,7 +211,7 @@ where
 
             loop {
                 if key == cursor.key() {
-                    return Ok(Some(f(cursor))).wrap_with_cost(Default::default());
+                    return f(cursor).map(|x| Ok(Some(x)));
                 }
 
                 let left = key < cursor.key();
@@ -222,8 +224,15 @@ where
                 match maybe_child {
                     None => {
                         // fetch from RocksDB
-                        break Tree::get(&self.storage, key)
-                            .map_ok(|maybe_node| maybe_node.map(|node| f(&node)));
+                        break Tree::get(&self.storage, key).flat_map_ok(|maybe_node| {
+                            let mut cost = OperationCost::default();
+                            Ok(if let Some(node) = maybe_node {
+                                Some(f(&node).unwrap_add_cost(&mut cost))
+                            } else {
+                                None
+                            })
+                            .wrap_with_cost(cost)
+                        });
                     }
                     Some(child) => cursor = child, // traverse to child
                 }
@@ -234,8 +243,12 @@ where
     /// Returns the root hash of the tree (a digest for the entire store which
     /// proofs can be checked against). If the tree is empty, returns the null
     /// hash (zero-filled).
-    pub fn root_hash(&self) -> Hash {
-        self.use_tree(|tree| tree.map_or(NULL_HASH, |tree| tree.hash()))
+    pub fn root_hash(&self) -> CostContext<Hash> {
+        self.use_tree(|tree| {
+            tree.map_or(NULL_HASH.wrap_with_cost(Default::default()), |tree| {
+                tree.hash()
+            })
+        })
     }
 
     /// Applies a batch of operations (puts and deletes) to the tree.
@@ -428,7 +441,6 @@ where
     where
         K: AsRef<[u8]>,
     {
-        todo!()
         // let mut batch = self.storage.new_batch();
         // let mut to_batch = self.use_tree_mut(|maybe_tree| -> UseTreeMutResult {
         //     // TODO: concurrent commit
@@ -447,6 +459,7 @@ where
         //         Ok(vec![])
         //     }
         // })?;
+        todo!()
 
         // // TODO: move this to MerkCommitter impl?
         // for key in deleted_keys {
@@ -706,7 +719,7 @@ mod test {
 
         assert_invariants(&merk);
         assert_eq!(
-            merk.root_hash(),
+            merk.root_hash().unwrap(),
             [
                 126, 168, 96, 201, 59, 225, 123, 33, 206, 154, 87, 23, 139, 143, 136, 52, 103, 9,
                 218, 90, 71, 153, 240, 47, 227, 168, 1, 104, 239, 237, 140, 147
@@ -758,6 +771,7 @@ mod test {
 
         let key = batch.first().unwrap().0.clone();
         merk.apply::<_, Vec<_>>(&[(key.clone(), Op::Delete)], &[])
+            .unwrap()
             .unwrap();
 
         let value = merk.storage.get(key.as_slice()).unwrap();
@@ -818,6 +832,7 @@ mod test {
             ],
             &[],
         )
+        .unwrap()
         .unwrap();
         assert!(merk.get(&[3, 3, 3]).unwrap().unwrap().is_none());
     }
@@ -846,7 +861,9 @@ mod test {
                 .unwrap()
                 .expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
-            merk.apply::<_, Vec<_>>(batch.as_slice(), &[]).unwrap();
+            merk.apply::<_, Vec<_>>(batch.as_slice(), &[])
+                .unwrap()
+                .unwrap();
             let mut tree = merk.tree.take().unwrap();
             let walker = RefWalker::new(&mut tree, merk.source());
 
@@ -892,7 +909,9 @@ mod test {
                 .unwrap()
                 .expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
-            merk.apply::<_, Vec<_>>(batch.as_slice(), &[]).unwrap();
+            merk.apply::<_, Vec<_>>(batch.as_slice(), &[])
+                .unwrap()
+                .unwrap();
 
             let mut nodes = vec![];
             collect(&mut merk.storage.raw_iter(), &mut nodes);
