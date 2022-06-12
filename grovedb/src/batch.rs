@@ -39,11 +39,11 @@ impl Ord for Op {
 #[derive(Clone)]
 pub struct GroveDbOp {
     /// Path to a subtree - subject to an operation
-    path: Vec<Vec<u8>>,
+    pub path: Vec<Vec<u8>>,
     /// Key of an element in the subtree
-    key: Vec<u8>,
+    pub key: Vec<u8>,
     /// Operation to perform on the key
-    op: Op,
+    pub op: Op,
     /// Link used in intrusive tree to maintain operations order
     link: RBTreeLink,
 }
