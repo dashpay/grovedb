@@ -107,6 +107,12 @@ impl<T, E> CostContext<Result<T, E>> {
         self.map(|result| result.map(f))
     }
 
+    /// Applies function to wrapped value in case of `Err` keeping cost the same
+    /// as before.
+    pub fn map_err<B>(self, f: impl FnOnce(E) -> B) -> CostContext<Result<T, B>> {
+        self.map(|result| result.map_err(|e| f(e)))
+    }
+
     /// Applies function to wrapped result in case of `Ok` adding costs.
     pub fn flat_map_ok<B>(
         self,
@@ -469,5 +475,28 @@ mod tests {
                 }
             }
         )
+    }
+
+    #[test]
+    fn test_map_err() {
+        let initial: CostContext<Result<usize, ()>> = CostContext {
+            value: Err(()),
+            cost: OperationCost {
+                loaded_bytes: 3,
+                ..Default::default()
+            },
+        };
+
+        let mapped = initial.map_err(|_| "ayyerror");
+        assert_eq!(
+            mapped,
+            CostContext {
+                value: Err("ayyerror"),
+                cost: OperationCost {
+                    loaded_bytes: 3,
+                    ..Default::default()
+                },
+            }
+        );
     }
 }

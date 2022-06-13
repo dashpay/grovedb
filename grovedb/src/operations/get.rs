@@ -1,5 +1,8 @@
 use std::collections::HashSet;
 
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+};
 use storage::StorageContext;
 
 use crate::{
@@ -16,16 +19,18 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         transaction: TransactionArg,
-    ) -> Result<Element, Error>
+    ) -> CostContext<Result<Element, Error>>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
-        match self.get_raw(path, key, transaction)? {
-            Element::Reference(reference_path, _) => {
-                self.follow_reference(reference_path, transaction)
-            }
-            other => Ok(other),
+        let mut cost = OperationCost::default();
+
+        match cost_return_on_error!(&mut cost, self.get_raw(path, key, transaction)) {
+            Element::Reference(reference_path, _) => self
+                .follow_reference(reference_path, transaction)
+                .add_cost(cost),
+            other => Ok(other).wrap_with_cost(cost),
         }
     }
 
@@ -33,29 +38,33 @@ impl GroveDb {
         &self,
         mut path: Vec<Vec<u8>>,
         transaction: TransactionArg,
-    ) -> Result<Element, Error> {
+    ) -> CostContext<Result<Element, Error>> {
+        let mut cost = OperationCost::default();
+
         let mut hops_left = MAX_REFERENCE_HOPS;
         let mut current_element;
         let mut visited = HashSet::new();
 
         while hops_left > 0 {
             if visited.contains(&path) {
-                return Err(Error::CyclicReference);
+                return Err(Error::CyclicReference).wrap_with_cost(cost);
             }
             if let Some((key, path_slice)) = path.split_last() {
-                current_element =
-                    self.get_raw(path_slice.iter().map(|x| x.as_slice()), key, transaction)?;
+                current_element = cost_return_on_error!(
+                    &mut cost,
+                    self.get_raw(path_slice.iter().map(|x| x.as_slice()), key, transaction)
+                )
             } else {
-                return Err(Error::CorruptedPath("empty path"));
+                return Err(Error::CorruptedPath("empty path")).wrap_with_cost(cost);
             }
             visited.insert(path);
             match current_element {
                 Element::Reference(reference_path, _) => path = reference_path,
-                other => return Ok(other),
+                other => return Ok(other).wrap_with_cost(cost),
             }
             hops_left -= 1;
         }
-        Err(Error::ReferenceLimit)
+        Err(Error::ReferenceLimit).wrap_with_cost(cost)
     }
 
     /// Get tree item without following references
@@ -64,23 +73,33 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         transaction: TransactionArg,
-    ) -> Result<Element, Error>
+    ) -> CostContext<Result<Element, Error>>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
+        let mut cost = OperationCost::default();
+
         let path_iter = path.into_iter();
         if path_iter.len() == 0 {
-            self.check_subtree_exists_path_not_found([key], transaction)?;
-            merk_optional_tx!(self.db, [key], transaction, subtree, {
-                Ok(Element::new_tree(
-                    subtree.root_hash().unwrap(), // TODO implement costs
-                ))
+            cost_return_on_error!(
+                &mut cost,
+                self.check_subtree_exists_path_not_found([key], transaction)
+            );
+            merk_optional_tx!(&mut cost, self.db, [key], transaction, subtree, {
+                subtree
+                    .root_hash()
+                    .map(Element::new_tree)
+                    .map(Ok)
+                    .add_cost(cost)
             })
         } else {
-            self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)?;
-            merk_optional_tx!(self.db, path_iter, transaction, subtree, {
-                Element::get(&subtree, key)
+            cost_return_on_error!(
+                &mut cost,
+                self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
+            );
+            merk_optional_tx!(&mut cost, self.db, path_iter, transaction, subtree, {
+                Element::get(&subtree, key).add_cost(cost)
             })
         }
     }
@@ -117,13 +136,20 @@ impl GroveDb {
         &self,
         path_queries: &[&PathQuery],
         transaction: TransactionArg,
-    ) -> Result<Vec<Vec<u8>>, Error> {
-        let elements = self.get_path_queries_raw(path_queries, transaction)?;
-        let results = elements
+    ) -> CostContext<Result<Vec<Vec<u8>>, Error>> {
+        let mut cost = OperationCost::default();
+
+        let elements = cost_return_on_error!(
+            &mut cost,
+            self.get_path_queries_raw(path_queries, transaction)
+        );
+        let results_wrapped = elements
             .into_iter()
             .map(|(_, element)| match element {
                 Element::Reference(reference_path, _) => {
-                    let maybe_item = self.follow_reference(reference_path, transaction)?;
+                    let maybe_item = self
+                        .follow_reference(reference_path, transaction)
+                        .unwrap_add_cost(&mut cost)?;
                     if let Element::Item(item, _) = maybe_item {
                         Ok(item)
                     } else {
@@ -134,21 +160,25 @@ impl GroveDb {
                     "path_queries can only refer to references",
                 )),
             })
-            .collect::<Result<Vec<Vec<u8>>, Error>>()?;
-        Ok(results)
+            .collect::<Result<Vec<Vec<u8>>, Error>>();
+
+        results_wrapped.wrap_with_cost(cost)
     }
 
     pub fn get_path_queries_raw(
         &self,
         path_queries: &[&PathQuery],
         transaction: TransactionArg,
-    ) -> Result<Vec<(Vec<u8>, Element)>, Error> {
+    ) -> CostContext<Result<Vec<(Vec<u8>, Element)>, Error>> {
+        let mut cost = OperationCost::default();
+
         let mut result = Vec::new();
         for query in path_queries {
-            let (query_results, _) = self.get_path_query_raw(query, transaction)?;
+            let (query_results, _) =
+                cost_return_on_error!(&mut cost, self.get_path_query_raw(query, transaction));
             result.extend_from_slice(&query_results);
         }
-        Ok(result)
+        Ok(result).wrap_with_cost(cost)
     }
 
     pub fn get_proved_path_query(
@@ -156,26 +186,37 @@ impl GroveDb {
         path_query: &PathQuery,
         transaction: TransactionArg,
     ) -> Result<Vec<u8>, Error> {
-        if transaction.is_some() {
-            Err(Error::NotSupported(
-                "transactions are not currently supported",
-            ))
-        } else {
-            self.prove(path_query)
-        }
+        // if transaction.is_some() {
+        //     Err(Error::NotSupported(
+        //         "transactions are not currently supported",
+        //     ))
+        // } else {
+        //     self.prove(path_query)
+        // }
+        todo!()
     }
 
     pub fn get_path_query(
         &self,
         path_query: &PathQuery,
         transaction: TransactionArg,
-    ) -> Result<(Vec<Vec<u8>>, u16), Error> {
-        let (elements, skipped) = self.get_path_query_raw(path_query, transaction)?;
-        let results = elements
+    ) -> CostContext<Result<(Vec<Vec<u8>>, u16), Error>> {
+        let mut cost = OperationCost::default();
+
+        let (elements, skipped) =
+            cost_return_on_error!(&mut cost, self.get_path_query_raw(path_query, transaction));
+
+        let results_wrapped = elements
             .into_iter()
             .map(|(_, element)| match element {
                 Element::Reference(reference_path, _) => {
-                    let maybe_item = self.follow_reference(reference_path, transaction)?;
+                    // While `map` on iterator is lazy, we should accumulate costs even if `collect`
+                    // will end in `Err`, so we'll use external costs accumulator instead of
+                    // returning costs from `map` call.
+                    let maybe_item = self
+                        .follow_reference(reference_path, transaction)
+                        .unwrap_add_cost(&mut cost)?;
+
                     if let Element::Item(item, _) = maybe_item {
                         Ok(item)
                     } else {
@@ -187,15 +228,17 @@ impl GroveDb {
                     "path_queries can only refer to items and references",
                 )),
             })
-            .collect::<Result<Vec<Vec<u8>>, Error>>()?;
-        Ok((results, skipped))
+            .collect::<Result<Vec<Vec<u8>>, Error>>();
+
+        let results = cost_return_on_error_no_add!(&cost, results_wrapped);
+        Ok((results, skipped)).wrap_with_cost(cost)
     }
 
     pub fn get_path_query_raw(
         &self,
         path_query: &PathQuery,
         transaction: TransactionArg,
-    ) -> Result<(Vec<(Vec<u8>, Element)>, u16), Error> {
+    ) -> CostContext<Result<(Vec<(Vec<u8>, Element)>, u16), Error>> {
         let path_slices = path_query
             .path
             .iter()
@@ -209,45 +252,48 @@ impl GroveDb {
         path: P,
         transaction: TransactionArg,
         error: Error,
-    ) -> Result<(), Error>
+    ) -> CostContext<Result<(), Error>>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
+        let mut cost = OperationCost::default();
+
         let mut path_iter = path.into_iter();
         if path_iter.len() == 0 {
-            return Ok(());
+            return Ok(()).wrap_with_cost(cost);
         }
         if path_iter.len() == 1 {
             meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
-                let root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;
+                let root_leaf_keys = cost_return_on_error!(
+                    &mut cost,
+                    Self::get_root_leaf_keys_internal(&meta_storage)
+                );
                 if !root_leaf_keys.contains_key(path_iter.next().expect("must contain an item")) {
-                    return Err(error);
+                    return Err(error).wrap_with_cost(cost);
                 }
             });
         } else {
             let mut parent_iter = path_iter;
             let parent_key = parent_iter.next_back().expect("path is not empty");
-            merk_optional_tx!(self.db, parent_iter, transaction, parent, {
-                match Element::get(&parent, parent_key) {
+            merk_optional_tx!(&mut cost, self.db, parent_iter, transaction, parent, {
+                match Element::get(&parent, parent_key).unwrap_add_cost(&mut cost) {
                     Ok(Element::Tree(..)) => {}
                     Ok(_) | Err(Error::PathKeyNotFound(_)) => {
-                        return Err(error);
+                        return Err(error).wrap_with_cost(cost)
                     }
-                    Err(e) => {
-                        return Err(e);
-                    }
+                    Err(e) => return Err(e).wrap_with_cost(cost),
                 }
             });
         }
-        Ok(())
+        Ok(()).wrap_with_cost(cost)
     }
 
     pub fn check_subtree_exists_path_not_found<'p, P>(
         &self,
         path: P,
         transaction: TransactionArg,
-    ) -> Result<(), Error>
+    ) -> CostContext<Result<(), Error>>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -263,7 +309,7 @@ impl GroveDb {
         &self,
         path: P,
         transaction: TransactionArg,
-    ) -> Result<(), Error>
+    ) -> CostContext<Result<(), Error>>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,

@@ -3,7 +3,9 @@
 //! Merk API to GroveDB needs.
 
 use bincode::Options;
-use costs::{cost_return_on_error_no_add, CostContext, OperationCost};
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+};
 use integer_encoding::VarInt;
 use merk::{
     proofs::{query::QueryItem, Query},
@@ -210,17 +212,26 @@ impl Element {
     pub fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
         key: K,
-    ) -> Result<Element, Error> {
-        let element = Self::deserialize(
-            merk.get(key.as_ref()).unwrap() // TODO implement costs
-                .map_err(|e| Error::CorruptedData(e.to_string()))?
-                .ok_or_else(|| {
-                    Error::PathKeyNotFound(format!("key not found in Merk: {}", hex::encode(key)))
-                })?
-                .as_slice(),
-        )
-        .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
-        Ok(element)
+    ) -> CostContext<Result<Element, Error>> {
+        let mut cost = OperationCost::default();
+
+        let value_opt = cost_return_on_error!(
+            &mut cost,
+            merk.get(key.as_ref())
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+        );
+        let value = cost_return_on_error_no_add!(
+            &cost,
+            value_opt.ok_or_else(|| {
+                Error::PathKeyNotFound(format!("key not found in Merk: {}", hex::encode(key)))
+            })
+        );
+        let element = cost_return_on_error_no_add!(
+            &cost,
+            Self::deserialize(value.as_slice())
+                .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
+        );
+        Ok(element).wrap_with_cost(cost)
     }
 
     pub fn get_query(
@@ -305,8 +316,9 @@ impl Element {
         //             }
 
         //             let inner_query = SizedQuery::new(subquery, *limit, *offset);
-        //             let path_vec_owned = path_vec.iter().map(|x| x.to_vec()).collect();
-        //             let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
+        //             let path_vec_owned = path_vec.iter().map(|x|
+        // x.to_vec()).collect();             let inner_path_query =
+        // PathQuery::new(path_vec_owned, inner_query);
 
         //             let (mut sub_elements, skipped) = Element::get_path_query(
         //                 storage,
@@ -345,8 +357,8 @@ impl Element {
         //             }
         //         } else {
         //             return Err(Error::InvalidPath(
-        //                 "you must provide a subquery or a subquery_key when interacting with a \
-        //                  tree of trees",
+        //                 "you must provide a subquery or a subquery_key when
+        // interacting with a \                  tree of trees",
         //             ));
         //         }
         //     }
@@ -451,17 +463,17 @@ impl Element {
         //     }
         // } else {
         //     // this is a query on a range
-        //     storage_context_optional_tx!(storage, merk_path.iter().copied(), transaction, ctx, {
-        //         let mut iter = ctx.raw_iter();
+        //     storage_context_optional_tx!(storage, merk_path.iter().copied(),
+        // transaction, ctx, {         let mut iter = ctx.raw_iter();
 
         //         item.seek_for_iter(&mut iter, sized_query.query.left_to_right);
         //         cost.seek_count += 1;
 
-        //         while item.iter_is_valid_for_type(&iter, *limit, sized_query.query.left_to_right) {
-        //             let element =
-        //                 raw_decode(iter.value().expect("if key exists then value should too"))?;
-        //             let key = iter.key().expect("key should exist");
-        //             cost.loaded_bytes += key.len();
+        //         while item.iter_is_valid_for_type(&iter, *limit,
+        // sized_query.query.left_to_right) {             let element =
+        //                 raw_decode(iter.value().expect("if key exists then value
+        // should too"))?;             let key = iter.key().expect("key should
+        // exist");             cost.loaded_bytes += key.len();
         //             let (subquery_key, subquery) =
         //                 Self::subquery_paths_for_sized_query(sized_query, key);
         //             add_element_function(PathQueryPushArgs {
