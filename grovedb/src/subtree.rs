@@ -200,10 +200,10 @@ impl Element {
     pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
         key: K,
-    ) -> Result<(), Error> {
+    ) -> CostContext<Result<(), Error>> {
         // TODO: delete references on this element
         let batch = [(key, Op::Delete)];
-        merk.apply::<_, Vec<u8>>(&batch, &[]).unwrap() // TODO implement costs
+        merk.apply::<_, Vec<u8>>(&batch, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -658,9 +658,12 @@ impl Element {
             .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
     }
 
-    pub fn iterator<I: RawIterator>(mut raw_iter: I) -> ElementsIterator<I> {
+    pub fn iterator<I: RawIterator>(mut raw_iter: I) -> CostContext<ElementsIterator<I>> {
         raw_iter.seek_to_first();
-        ElementsIterator::new(raw_iter)
+        ElementsIterator::new(raw_iter).wrap_with_cost(OperationCost {
+            seek_count: 1,
+            ..Default::default()
+        })
     }
 }
 
@@ -679,10 +682,14 @@ impl<I: RawIterator> ElementsIterator<I> {
         ElementsIterator { raw_iter }
     }
 
-    pub fn next(&mut self) -> Result<Option<(Vec<u8>, Element)>, Error> {
+    pub fn next(&mut self) -> CostContext<Result<Option<(Vec<u8>, Element)>, Error>> {
+        let mut cost = OperationCost::default();
+
         Ok(if self.raw_iter.valid() {
             if let Some((key, value)) = self.raw_iter.key().zip(self.raw_iter.value()) {
-                let element = raw_decode(value)?;
+                cost.loaded_bytes += key.len() + value.len();
+
+                let element = cost_return_on_error_no_add!(&cost, raw_decode(value));
                 let key_vec = key.to_vec();
                 self.raw_iter.next();
                 Some((key_vec, element))
@@ -692,6 +699,7 @@ impl<I: RawIterator> ElementsIterator<I> {
         } else {
             None
         })
+        .wrap_with_cost(cost)
     }
 }
 

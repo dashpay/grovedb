@@ -49,8 +49,10 @@ impl GroveDb {
             transaction,
             storage,
             {
-                let mut iter = Element::iterator(storage.raw_iter());
-                while let Some((key, element)) = iter.next().expect("cannot get next element") {
+                let mut iter = Element::iterator(storage.raw_iter()).unwrap();
+                while let Some((key, element)) =
+                    iter.next().unwrap().expect("cannot get next element")
+                {
                     drawer.write(b"\n[key: ")?;
                     drawer = key.visualize(drawer)?;
                     drawer.write(b" ")?;
