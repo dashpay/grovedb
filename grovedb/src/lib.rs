@@ -1,4 +1,4 @@
-pub mod batch;
+// pub mod batch;
 mod operations;
 mod subtree;
 #[cfg(test)]
@@ -7,6 +7,9 @@ mod util;
 mod visualize;
 use std::{collections::BTreeMap, path::Path};
 
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+};
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
@@ -130,33 +133,48 @@ impl GroveDb {
 
     /// Returns root hash of GroveDb.
     /// Will be `None` if GroveDb is empty.
-    pub fn root_hash(&self, transaction: TransactionArg) -> Result<Option<[u8; 32]>, Error> {
-        Ok(Self::get_root_tree_internal(&self.db, transaction)?.root())
+    pub fn root_hash(
+        &self,
+        transaction: TransactionArg,
+    ) -> CostContext<Result<Option<[u8; 32]>, Error>> {
+        Self::get_root_tree_internal(&self.db, transaction).map_ok(|x| x.root())
     }
 
     fn get_root_leaf_keys_internal<'db, S>(
         meta_storage: &S,
-    ) -> Result<BTreeMap<Vec<u8>, usize>, Error>
+    ) -> CostContext<Result<BTreeMap<Vec<u8>, usize>, Error>>
     where
         S: StorageContext<'db>,
         Error: From<<S as StorageContext<'db>>::Error>,
     {
-        let root_leaf_keys: BTreeMap<Vec<u8>, usize> = if let Some(root_leaf_keys_serialized) =
-            meta_storage.get_meta(ROOT_LEAFS_SERIALIZED_KEY)?
-        {
-            bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {
-                Error::CorruptedData(String::from("unable to deserialize root leaves"))
-            })?
+        let mut cost = OperationCost {
+            seek_count: 1,
+            ..Default::default()
+        };
+
+        let root_leaf_keys: BTreeMap<Vec<u8>, usize> = if let Some(root_leaf_keys_serialized) = cost_return_on_error_no_add!(
+            &cost,
+            meta_storage
+                .get_meta(ROOT_LEAFS_SERIALIZED_KEY)
+                .map_err(|e| e.into())
+        ) {
+            cost.loaded_bytes += root_leaf_keys_serialized.len();
+            cost_return_on_error_no_add!(
+                &cost,
+                bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {
+                    Error::CorruptedData(String::from("unable to deserialize root leaves"))
+                })
+            )
         } else {
             BTreeMap::new()
         };
-        Ok(root_leaf_keys)
+        Ok(root_leaf_keys).wrap_with_cost(cost)
     }
 
     fn get_root_leaf_keys(
         &self,
         transaction: TransactionArg,
-    ) -> Result<BTreeMap<Vec<u8>, usize>, Error> {
+    ) -> CostContext<Result<BTreeMap<Vec<u8>, usize>, Error>> {
         meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
             Self::get_root_leaf_keys_internal(&meta_storage)
         })
@@ -165,21 +183,33 @@ impl GroveDb {
     fn get_root_tree_internal(
         db: &RocksDbStorage,
         transaction: TransactionArg,
-    ) -> Result<MerkleTree<Sha256>, Error> {
+    ) -> CostContext<Result<MerkleTree<Sha256>, Error>> {
+        let mut cost = OperationCost::default();
+
         let root_leaf_keys = meta_storage_context_optional_tx!(db, transaction, meta_storage, {
-            Self::get_root_leaf_keys_internal(&meta_storage)?
+            cost_return_on_error!(&mut cost, Self::get_root_leaf_keys_internal(&meta_storage))
         });
 
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
         for (subtree_path, root_leaf_idx) in root_leaf_keys {
-            merk_optional_tx!(db, [subtree_path.as_slice()], transaction, subtree, {
-                leaf_hashes[root_leaf_idx] = subtree.root_hash().unwrap(); // TODO implement costs
-            });
+            merk_optional_tx!(
+                &mut cost,
+                db,
+                [subtree_path.as_slice()],
+                transaction,
+                subtree,
+                {
+                    leaf_hashes[root_leaf_idx] = subtree.root_hash().unwrap(); // TODO implement costs
+                }
+            );
         }
-        Ok(MerkleTree::<Sha256>::from_leaves(&leaf_hashes))
+        Ok(MerkleTree::<Sha256>::from_leaves(&leaf_hashes)).wrap_with_cost(cost)
     }
 
-    pub fn get_root_tree(&self, transaction: TransactionArg) -> Result<MerkleTree<Sha256>, Error> {
+    pub fn get_root_tree(
+        &self,
+        transaction: TransactionArg,
+    ) -> CostContext<Result<MerkleTree<Sha256>, Error>> {
         Self::get_root_tree_internal(&self.db, transaction)
     }
 
