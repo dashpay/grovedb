@@ -110,7 +110,7 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         transaction: TransactionArg,
-    ) -> Result<bool, Error>
+    ) -> CostContext<Result<bool, Error>>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
@@ -122,12 +122,44 @@ impl GroveDb {
             // easily; Knowing that root tree's leafs are subtrees only, we can
             // check them using roots storage.
             storage_context_optional_tx!(self.db, [key], transaction, storage, {
-                Ok(storage.get_root(merk::ROOT_KEY_KEY)?.is_some())
+                storage
+                    .get_root(merk::ROOT_KEY_KEY)
+                    .wrap_with_cost(Default::default())
+                    .map_err(|e| e.into())
+                    .flat_map_ok(|root| {
+                        root.map(|r| {
+                            Ok(true).wrap_with_cost(OperationCost {
+                                seek_count: 1,
+                                loaded_bytes: r.len(),
+                                ..Default::default()
+                            })
+                        })
+                        .unwrap_or(Ok(false).wrap_with_cost(OperationCost {
+                            seek_count: 1,
+                            ..Default::default()
+                        }))
+                    })
             })
         } else {
             // Merk's items should be written into data storage and checked accordingly
             storage_context_optional_tx!(self.db, path_iter, transaction, storage, {
-                Ok(storage.get(key)?.is_some())
+                storage
+                    .get(key)
+                    .wrap_with_cost(Default::default())
+                    .map_err(|e| e.into())
+                    .flat_map_ok(|root| {
+                        root.map(|r| {
+                            Ok(true).wrap_with_cost(OperationCost {
+                                seek_count: 1,
+                                loaded_bytes: r.len(),
+                                ..Default::default()
+                            })
+                        })
+                        .unwrap_or(Ok(false).wrap_with_cost(OperationCost {
+                            seek_count: 1,
+                            ..Default::default()
+                        }))
+                    })
             })
         }
     }

@@ -610,9 +610,14 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: K,
-    ) -> Result<(), Error> {
-        let batch_operations = [(key, Op::Put(self.serialize()?))];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[]).unwrap() // TODO implement costs
+    ) -> CostContext<Result<(), Error>> {
+        let serialized = match self.serialize() {
+            Ok(s) => s,
+            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+        };
+
+        let batch_operations = [(key, Op::Put(serialized))];
+        merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -626,9 +631,14 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         referenced_value: Vec<u8>,
-    ) -> Result<(), Error> {
-        let batch_operations = [(key, Op::PutReference(self.serialize()?, referenced_value))];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[]).unwrap() // TODO implement costs
+    ) -> CostContext<Result<(), Error>> {
+        let serialized = match self.serialize() {
+            Ok(s) => s,
+            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+        };
+
+        let batch_operations = [(key, Op::PutReference(serialized, referenced_value))];
+        merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 

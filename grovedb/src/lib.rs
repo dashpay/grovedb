@@ -199,7 +199,7 @@ impl GroveDb {
                 transaction,
                 subtree,
                 {
-                    leaf_hashes[root_leaf_idx] = subtree.root_hash().unwrap(); // TODO implement costs
+                    leaf_hashes[root_leaf_idx] = subtree.root_hash().unwrap_add_cost(&mut cost);
                 }
             );
         }
@@ -214,11 +214,17 @@ impl GroveDb {
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
-    fn propagate_changes<'p, P>(&self, path: P, transaction: TransactionArg) -> Result<(), Error>
+    fn propagate_changes<'p, P>(
+        &self,
+        path: P,
+        transaction: TransactionArg,
+    ) -> CostContext<Result<(), Error>>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
+        let mut cost = OperationCost::default();
+
         // Go up until only one element in path, which means a key of a root tree
         let mut path_iter = path.into_iter();
 
@@ -227,66 +233,93 @@ impl GroveDb {
                 let subtree_storage = self
                     .db
                     .get_transactional_storage_context(path_iter.clone(), tx);
-                let subtree = Merk::open(subtree_storage).unwrap() // TODO implement costs
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
+                let subtree = cost_return_on_error!(
+                    &mut cost,
+                    Merk::open(subtree_storage)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                );
                 let key = path_iter.next_back().expect("next element is `Some`");
                 let parent_storage = self
                     .db
                     .get_transactional_storage_context(path_iter.clone(), tx);
-                let mut parent_tree = Merk::open(parent_storage).unwrap() // TODO implement costs
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                Self::update_tree_item_preserve_flag(
-                    &mut parent_tree,
-                    key,
-                    subtree.root_hash().unwrap(), // TODO implement costs
-                )?;
+                let mut parent_tree = cost_return_on_error!(
+                    &mut cost,
+                    Merk::open(parent_storage)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    Self::update_tree_item_preserve_flag(
+                        &mut parent_tree,
+                        key,
+                        subtree.root_hash().unwrap_add_cost(&mut cost),
+                    )
+                );
             } else {
                 let subtree_storage = self.db.get_storage_context(path_iter.clone());
-                let subtree = Merk::open(subtree_storage).unwrap() // TODO implement costs
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
+                let subtree = cost_return_on_error!(
+                    &mut cost,
+                    Merk::open(subtree_storage)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                );
                 let key = path_iter.next_back().expect("next element is `Some`");
                 let parent_storage = self.db.get_storage_context(path_iter.clone());
-                let mut parent_tree = Merk::open(parent_storage).unwrap() // TODO implement costs
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                Self::update_tree_item_preserve_flag(
-                    &mut parent_tree,
-                    key,
-                    subtree.root_hash().unwrap(), // TODO implement costs
-                )?;
+                let mut parent_tree = cost_return_on_error!(
+                    &mut cost,
+                    Merk::open(parent_storage)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    Self::update_tree_item_preserve_flag(
+                        &mut parent_tree,
+                        key,
+                        subtree.root_hash().unwrap_add_cost(&mut cost),
+                    )
+                );
             }
         }
 
-        Ok(())
+        Ok(()).wrap_with_cost(cost)
     }
 
     fn update_tree_item_preserve_flag<'db, K: AsRef<[u8]> + Copy, S: StorageContext<'db>>(
         parent_tree: &mut Merk<S>,
         key: K,
         root_hash: [u8; 32],
-    ) -> Result<(), Error> {
-        if let Element::Tree(_, flag) = Self::get_element_from_subtree(&parent_tree, key)? {
-            let element = Element::new_tree_with_flags(root_hash, flag);
-            element.insert(parent_tree, key.as_ref())?;
-        } else {
-            return Err(Error::InvalidPath("can only propagate on tree items"));
-        }
-        Ok(())
+    ) -> CostContext<Result<(), Error>> {
+        Self::get_element_from_subtree(&parent_tree, key).flat_map_ok(|element| {
+            if let Element::Tree(_, flag) = element {
+                let tree = Element::new_tree_with_flags(root_hash, flag);
+                tree.insert(parent_tree, key.as_ref())
+            } else {
+                Err(Error::InvalidPath("can only propagate on tree items"))
+                    .wrap_with_cost(Default::default())
+            }
+        })
     }
 
     fn get_element_from_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         subtree: &Merk<S>,
         key: K,
-    ) -> Result<Element, Error> {
-        let element_bytes = subtree
-            .get(key.as_ref()).unwrap() // TODO implement costs
-            .map_err(|_| Error::InvalidPath("can't find subtree in parent during propagation"))?
-            .ok_or(Error::InvalidPath(
-                "can't find subtree in parent during propagation",
-            ))?;
-        let element = Element::deserialize(&element_bytes).map_err(|_| {
-            Error::CorruptedData("failed to deserialized parent during propagation".to_owned())
-        })?;
-        Ok(element)
+    ) -> CostContext<Result<Element, Error>> {
+        subtree
+            .get(key.as_ref())
+            .map_err(|_| Error::InvalidPath("can't find subtree in parent during propagation"))
+            .map_ok(|subtree_opt| {
+                subtree_opt.ok_or(Error::InvalidPath(
+                    "can't find subtree in parent during propagation",
+                ))
+            })
+            .flatten()
+            .map_ok(|element_bytes| {
+                Element::deserialize(&element_bytes).map_err(|_| {
+                    Error::CorruptedData(
+                        "failed to deserialized parent during propagation".to_owned(),
+                    )
+                })
+            })
+            .flatten()
     }
 
     pub fn flush(&self) -> Result<(), Error> {

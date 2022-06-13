@@ -40,7 +40,7 @@ macro_rules! meta_storage_context_optional_tx {
 
 /// Macro to execute same piece of code on Merk with varying storage contexts.
 macro_rules! merk_optional_tx {
-    (&mut $cost:expr, $db:expr, $path:expr, $transaction:ident, mut $subtree:ident, { $($body:tt)* }) => {
+    (&mut $cost:ident, $db:expr, $path:expr, $transaction:ident, mut $subtree:ident, { $($body:tt)* }) => {
         {
             use crate::util::storage_context_optional_tx;
             storage_context_optional_tx!($db, $path, $transaction, storage, {
