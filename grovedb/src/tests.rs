@@ -540,10 +540,14 @@ fn test_references() {
     .expect("successful subtree insert");
 
     let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"merk_1"]);
-    let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+    let subtree = Merk::open(subtree_storage)
+        .unwrap()
+        .expect("cannot open merk"); // TODO implement costs
 
     let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"merk_2"]);
-    let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+    let subtree = Merk::open(subtree_storage)
+        .unwrap()
+        .expect("cannot open merk"); // TODO implement costs
 }
 
 #[test]
@@ -1757,7 +1761,9 @@ fn test_get_subtree() {
     // Check if it returns the same instance that was inserted
     {
         let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"key1", b"key2"]);
-        let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+        let subtree = Merk::open(subtree_storage)
+            .unwrap()
+            .expect("cannot open merk"); // TODO implement costs
         let result_element = Element::get(&subtree, b"key3").unwrap();
         assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
     }
@@ -1785,13 +1791,17 @@ fn test_get_subtree() {
         .db
         .db
         .get_transactional_storage_context([TEST_LEAF, b"key1", b"innertree"], &transaction);
-    let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+    let subtree = Merk::open(subtree_storage)
+        .unwrap()
+        .expect("cannot open merk"); // TODO implement costs
     let result_element = Element::get(&subtree, b"key4").unwrap();
     assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 
     // Should be able to retrieve instances created before transaction
     let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"key1", b"key2"]);
-    let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+    let subtree = Merk::open(subtree_storage)
+        .unwrap()
+        .expect("cannot open merk"); // TODO implement costs
     let result_element = Element::get(&subtree, b"key3").unwrap();
     assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 }

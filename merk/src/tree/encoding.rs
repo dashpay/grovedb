@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Error};
+use costs::{CostContext, CostsExt, OperationCost};
 use ed::{Decode, Encode};
 use storage::StorageContext;
 
@@ -9,20 +10,31 @@ impl Tree {
         Decode::decode(bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
     }
 
-    pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> Result<Option<Self>, Error>
+    pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> CostContext<Result<Option<Self>, Error>>
     where
         S: StorageContext<'db>,
         K: AsRef<[u8]>,
         Error: From<S::Error>,
     {
-        let mut tree: Option<Self> = storage
-            .get(&key)?
-            .map(|x| Tree::decode_raw(&x))
-            .transpose()?;
-        if let Some(ref mut t) = tree {
-            t.set_key(key.as_ref().to_vec());
+        let mut cost = OperationCost {
+            seek_count: 1,
+            ..Default::default()
+        };
+        let tree_bytes: Result<_, Error> = storage.get(&key).map_err(|e| e.into());
+        if let Ok(Some(bytes)) = &tree_bytes {
+            cost.loaded_bytes = bytes.len();
         }
-        Ok(tree)
+        let tree = tree_bytes.and_then(|raw_opt| raw_opt.map(|x| Tree::decode_raw(&x)).transpose());
+
+        let res = match tree {
+            Ok(Some(mut t)) => {
+                t.set_key(key.as_ref().to_vec());
+                Ok(Some(t))
+            }
+            other => other,
+        };
+
+        res.wrap_with_cost(cost)
     }
 }
 
@@ -65,11 +77,10 @@ impl Tree {
 #[cfg(test)]
 mod tests {
     use super::{super::Link, *};
-    use crate::tree::hash::value_hash;
 
     #[test]
     fn encode_leaf_tree() {
-        let tree = Tree::from_fields(vec![0], vec![1], [55; 32], None, None);
+        let tree = Tree::from_fields(vec![0], vec![1], [55; 32], None, None).unwrap();
         assert_eq!(tree.encoding_length(), 67);
         assert_eq!(
             tree.encode(),
@@ -92,10 +103,11 @@ mod tests {
             Some(Link::Modified {
                 pending_writes: 1,
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3]),
+                tree: Tree::new(vec![2], vec![3]).unwrap(),
             }),
             None,
-        );
+        )
+        .unwrap();
         tree.encode();
     }
 
@@ -108,10 +120,11 @@ mod tests {
             Some(Link::Loaded {
                 hash: [66; 32],
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3]),
+                tree: Tree::new(vec![2], vec![3]).unwrap(),
             }),
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(
             tree.encode(),
             vec![
@@ -134,10 +147,11 @@ mod tests {
             Some(Link::Uncommitted {
                 hash: [66; 32],
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3]),
+                tree: Tree::new(vec![2], vec![3]).unwrap(),
             }),
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(
             tree.encode(),
             vec![
@@ -163,7 +177,8 @@ mod tests {
                 key: vec![2],
             }),
             None,
-        );
+        )
+        .unwrap();
         assert_eq!(tree.encoding_length(), 103);
         assert_eq!(
             tree.encode(),
