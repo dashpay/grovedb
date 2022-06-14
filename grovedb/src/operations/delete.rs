@@ -1,6 +1,7 @@
 use storage::StorageContext;
 
 use crate::{
+    batch::{GroveDbOp, Op},
     util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, TransactionArg,
 };
@@ -36,6 +37,57 @@ impl GroveDb {
         Ok(delete_count)
     }
 
+    pub fn delete_operations_for_delete_up_tree_while_empty<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        stop_path_height: Option<u16>,
+        validate: bool,
+        current_batch_operations: &Vec<GroveDbOp>,
+        transaction: TransactionArg,
+    ) -> Result<Option<Vec<GroveDbOp>>, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let mut path_iter = path.into_iter();
+        if let Some(stop_path_height) = stop_path_height {
+            if stop_path_height == path_iter.clone().len() as u16 {
+                return Ok(None);
+            }
+        }
+        if validate {
+            self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)?;
+        }
+        if let Some(delete_operation_this_level) = self.delete_operation_for_delete_internal(
+            path_iter.clone(),
+            key,
+            true,
+            validate,
+            current_batch_operations,
+            transaction,
+        )? {
+            let mut delete_operations = vec![delete_operation_this_level];
+            if let Some(last) = path_iter.next_back() {
+                if let Some(mut delete_operations_upper_level) = self
+                    .delete_operations_for_delete_up_tree_while_empty(
+                        path_iter,
+                        last,
+                        stop_path_height,
+                        validate,
+                        current_batch_operations,
+                        transaction,
+                    )?
+                {
+                    delete_operations.append(&mut delete_operations_upper_level);
+                }
+            }
+            Ok(Some(delete_operations))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn delete<'p, P>(
         &self,
         path: P,
@@ -61,6 +113,73 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         self.delete_internal(path, key, true, transaction)
+    }
+
+    pub fn delete_operation_for_delete_internal<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        only_delete_tree_if_empty: bool,
+        validate: bool,
+        current_batch_operations: &Vec<GroveDbOp>,
+        transaction: TransactionArg,
+    ) -> Result<Option<GroveDbOp>, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let path_iter = path.into_iter();
+        if path_iter.len() == 0 {
+            // Attempt to delete a root tree leaf
+            Err(Error::InvalidPath(
+                "root tree leaves currently cannot be deleted",
+            ))
+        } else {
+            if validate {
+                self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)?;
+            }
+            let element = self.get_raw(path_iter.clone(), key.as_ref(), transaction)?;
+
+            if let Element::Tree(..) = element {
+                let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
+                let subtree_merk_path_vec = subtree_merk_path
+                    .clone()
+                    .map(|x| x.to_vec())
+                    .collect::<Vec<Vec<u8>>>();
+                let subtrees_paths = self.find_subtrees(subtree_merk_path.clone(), transaction)?;
+                let mut is_empty =
+                    merk_optional_tx!(self.db, subtree_merk_path, transaction, subtree, {
+                        subtree.is_empty_tree()
+                    });
+
+                // If there is any current batch operation that is inserting something in this
+                // tree then it is not empty either
+                is_empty &= current_batch_operations.iter().any(|op| match op.op {
+                    Op::Insert { .. } => op.path == subtree_merk_path_vec,
+                    Op::Delete => false,
+                });
+
+                if only_delete_tree_if_empty && !is_empty {
+                    Ok(None)
+                } else {
+                    if is_empty {
+                        Ok(Some(GroveDbOp::delete(
+                            path_iter.map(|x| x.to_vec()).collect(),
+                            key.to_vec(),
+                        )))
+                    } else {
+                        Err(Error::NotSupported(
+                            "deletion operation for non empty tree not currently supported",
+                        ))
+                    }
+                }
+            } else {
+                Ok(Some(GroveDbOp::delete(
+                    path_iter.map(|x| x.to_vec()).collect(),
+                    key.to_vec(),
+                )))
+            }
+        }
     }
 
     fn delete_internal<'p, P>(
@@ -102,21 +221,23 @@ impl GroveDb {
                     return Ok(false);
                 } else {
                     // TODO: dumb traversal should not be tolerated
-                    for subtree_path in subtrees_paths {
-                        merk_optional_tx!(
-                            self.db,
-                            subtree_path.iter().map(|x| x.as_slice()),
-                            transaction,
-                            mut subtree,
-                            {
-                                subtree.clear().map_err(|e| {
-                                    Error::CorruptedData(format!(
-                                        "unable to cleanup tree from storage: {}",
-                                        e
-                                    ))
-                                })?;
-                            }
-                        );
+                    if !is_empty {
+                        for subtree_path in subtrees_paths {
+                            merk_optional_tx!(
+                                self.db,
+                                subtree_path.iter().map(|x| x.as_slice()),
+                                transaction,
+                                mut subtree,
+                                {
+                                    subtree.clear().map_err(|e| {
+                                        Error::CorruptedData(format!(
+                                            "unable to cleanup tree from storage: {}",
+                                            e
+                                        ))
+                                    })?;
+                                }
+                            );
+                        }
                     }
                     delete_element()?;
                 }
