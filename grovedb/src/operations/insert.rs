@@ -1,11 +1,11 @@
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
 };
-use merk::Merk;
+use merk::{Merk, ROOT_KEY_KEY};
 use storage::{Storage, StorageContext};
 
 use crate::{
-    util::{merk_optional_tx, meta_storage_context_optional_tx},
+    util::{merk_optional_tx, meta_storage_context_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, TransactionArg, ROOT_LEAFS_SERIALIZED_KEY,
 };
 
@@ -133,6 +133,15 @@ impl GroveDb {
                     .map_err(|e| e.into())
             );
             cost.storage_written_bytes += ROOT_LEAFS_SERIALIZED_KEY.len() + value.len();
+        });
+
+        // Persist root leaf as a regular subtree
+        storage_context_optional_tx!(self.db, [key], transaction, storage, {
+            cost_return_on_error_no_add!(
+                &cost,
+                storage.put_root(ROOT_KEY_KEY, key).map_err(|e| e.into())
+            );
+            cost.storage_written_bytes += ROOT_KEY_KEY.len() + key.len()
         });
 
         Ok(()).wrap_with_cost(cost)

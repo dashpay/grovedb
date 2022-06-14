@@ -733,13 +733,17 @@ mod tests {
         let mut merk = TempMerk::new();
         Element::empty_tree()
             .insert(&mut merk, b"mykey")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"value".to_vec())
             .insert(&mut merk, b"another-key")
+            .unwrap()
             .expect("expected successful insertion 2");
 
         assert_eq!(
-            Element::get(&merk, b"another-key").expect("expected successful get"),
+            Element::get(&merk, b"another-key")
+                .unwrap()
+                .expect("expected successful get"),
             Element::new_item(b"value".to_vec()),
         );
     }
@@ -818,15 +822,19 @@ mod tests {
 
         Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
             .insert(&mut merk, b"c")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
             .insert(&mut merk, b"a")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
             .insert(&mut merk, b"b")
+            .unwrap()
             .expect("expected successful insertion");
 
         // Test queries by key
@@ -835,6 +843,7 @@ mod tests {
         query.insert_key(b"a".to_vec());
         assert_eq!(
             Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+                .unwrap()
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
@@ -848,6 +857,7 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
             Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+                .unwrap()
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
@@ -862,6 +872,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         assert_eq!(
             Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+                .unwrap()
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayyb".to_vec()),
@@ -877,6 +888,7 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
             Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+                .unwrap()
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
@@ -898,15 +910,19 @@ mod tests {
 
         Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
             .insert(&mut merk, b"c")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
             .insert(&mut merk, b"a")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
             .insert(&mut merk, b"b")
+            .unwrap()
             .expect("expected successful insertion");
 
         // Test range inclusive query
@@ -916,6 +932,7 @@ mod tests {
         let ascending_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &ascending_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -932,6 +949,7 @@ mod tests {
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -952,19 +970,23 @@ mod tests {
         let storage_context = storage.get_storage_context([TEST_LEAF]);
         let mut merk = Merk::open(storage_context)
             .unwrap()
-            .expect("cannot open Merk"); // TODO implement costs
+            .expect("cannot open Merk");
 
         Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
             .insert(&mut merk, b"c")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
             .insert(&mut merk, b"a")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
             .insert(&mut merk, b"b")
+            .unwrap()
             .expect("expected successful insertion");
 
         // Test range inclusive query
@@ -991,6 +1013,7 @@ mod tests {
 
         check_elements_no_skipped(
             Element::get_sized_query(&storage, &[TEST_LEAF], &ascending_query, None)
+                .unwrap()
                 .expect("expected successful get_query"),
             false,
         );
@@ -1000,6 +1023,7 @@ mod tests {
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         check_elements_no_skipped(
             Element::get_sized_query(&storage, &[TEST_LEAF], &backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query"),
             true,
         );
@@ -1012,6 +1036,7 @@ mod tests {
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         check_elements_no_skipped(
             Element::get_sized_query(&storage, &[TEST_LEAF], &backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query"),
             true,
         );
@@ -1025,19 +1050,23 @@ mod tests {
         let storage_context = storage.get_storage_context([TEST_LEAF]);
         let mut merk = Merk::open(storage_context)
             .unwrap()
-            .expect("cannot open Merk"); // TODO implement costs
+            .expect("cannot open Merk");
 
         Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
             .insert(&mut merk, b"c")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
             .insert(&mut merk, b"a")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
             .insert(&mut merk, b"b")
+            .unwrap()
             .expect("expected successful insertion");
 
         // Test queries by key
@@ -1049,6 +1078,7 @@ mod tests {
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1068,6 +1098,7 @@ mod tests {
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1082,6 +1113,7 @@ mod tests {
         let limit_query = SizedQuery::new(query.clone(), Some(1), None);
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1096,6 +1128,7 @@ mod tests {
         let limit_query = SizedQuery::new(query.clone(), Some(2), None);
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1109,6 +1142,7 @@ mod tests {
         let limit_offset_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_offset_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1127,6 +1161,7 @@ mod tests {
         let limit_offset_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_offset_backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1144,6 +1179,7 @@ mod tests {
         let limit_full_query = SizedQuery::new(query.clone(), Some(5), Some(0));
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_full_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1162,6 +1198,7 @@ mod tests {
         let limit_offset_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_offset_backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1180,6 +1217,7 @@ mod tests {
         let limit_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,

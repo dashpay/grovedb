@@ -341,24 +341,26 @@ impl GroveDb {
     ///
     /// let tmp_dir = TempDir::new().unwrap();
     /// let mut db = GroveDb::open(tmp_dir.path())?;
-    /// db.insert([], TEST_LEAF, Element::empty_tree(), None)?;
+    /// db.insert([], TEST_LEAF, Element::empty_tree(), None)
+    ///     .unwrap()?;
     ///
     /// let tx = db.start_transaction();
     ///
     /// let subtree_key = b"subtree_key";
-    /// db.insert([TEST_LEAF], subtree_key, Element::empty_tree(), Some(&tx))?;
+    /// db.insert([TEST_LEAF], subtree_key, Element::empty_tree(), Some(&tx))
+    ///     .unwrap()?;
     ///
     /// // This action exists only inside the transaction for now
-    /// let result = db.get([TEST_LEAF], subtree_key, None);
+    /// let result = db.get([TEST_LEAF], subtree_key, None).unwrap();
     /// assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
     ///
     /// // To access values inside the transaction, transaction needs to be passed to the `db::get`
-    /// let result_with_transaction = db.get([TEST_LEAF], subtree_key, Some(&tx))?;
+    /// let result_with_transaction = db.get([TEST_LEAF], subtree_key, Some(&tx)).unwrap()?;
     /// assert_eq!(result_with_transaction, Element::empty_tree());
     ///
     /// // After transaction is committed, the value from it can be accessed normally.
     /// db.commit_transaction(tx);
-    /// let result = db.get([TEST_LEAF], subtree_key, None)?;
+    /// let result = db.get([TEST_LEAF], subtree_key, None).unwrap()?;
     /// assert_eq!(result, Element::empty_tree());
     ///
     /// # Ok(())
