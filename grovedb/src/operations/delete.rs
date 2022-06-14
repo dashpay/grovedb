@@ -194,7 +194,7 @@ impl GroveDb {
 
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
-                is_empty &= current_batch_operations.iter().any(|op| match op.op {
+                is_empty &= !current_batch_operations.iter().any(|op| match op.op {
                     Op::Insert { .. } => op.path == subtree_merk_path_vec,
                     Op::Delete => false,
                 });
