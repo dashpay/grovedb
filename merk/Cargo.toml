@@ -12,6 +12,7 @@ anyhow = "1.0.53"
 failure = "0.1.8"
 integer-encoding = "3.0.2"
 indexmap = "1.8.0"
+costs = { path = "../costs" }
 
 [dependencies.time]
 version = "0.3.7"

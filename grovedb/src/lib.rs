@@ -173,7 +173,7 @@ impl GroveDb {
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
         for (subtree_path, root_leaf_idx) in root_leaf_keys {
             merk_optional_tx!(db, [subtree_path.as_slice()], transaction, subtree, {
-                leaf_hashes[root_leaf_idx] = subtree.root_hash();
+                leaf_hashes[root_leaf_idx] = subtree.root_hash().unwrap(); // TODO implement costs
             });
         }
         Ok(MerkleTree::<Sha256>::from_leaves(&leaf_hashes))
@@ -197,24 +197,32 @@ impl GroveDb {
                 let subtree_storage = self
                     .db
                     .get_transactional_storage_context(path_iter.clone(), tx);
-                let subtree = Merk::open(subtree_storage)
+                let subtree = Merk::open(subtree_storage).unwrap() // TODO implement costs
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
                 let key = path_iter.next_back().expect("next element is `Some`");
                 let parent_storage = self
                     .db
                     .get_transactional_storage_context(path_iter.clone(), tx);
-                let mut parent_tree = Merk::open(parent_storage)
+                let mut parent_tree = Merk::open(parent_storage).unwrap() // TODO implement costs
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                Self::update_tree_item_preserve_flag(&mut parent_tree, key, subtree.root_hash())?;
+                Self::update_tree_item_preserve_flag(
+                    &mut parent_tree,
+                    key,
+                    subtree.root_hash().unwrap(), // TODO implement costs
+                )?;
             } else {
                 let subtree_storage = self.db.get_storage_context(path_iter.clone());
-                let subtree = Merk::open(subtree_storage)
+                let subtree = Merk::open(subtree_storage).unwrap() // TODO implement costs
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
                 let key = path_iter.next_back().expect("next element is `Some`");
                 let parent_storage = self.db.get_storage_context(path_iter.clone());
-                let mut parent_tree = Merk::open(parent_storage)
+                let mut parent_tree = Merk::open(parent_storage).unwrap() // TODO implement costs
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                Self::update_tree_item_preserve_flag(&mut parent_tree, key, subtree.root_hash())?;
+                Self::update_tree_item_preserve_flag(
+                    &mut parent_tree,
+                    key,
+                    subtree.root_hash().unwrap(), // TODO implement costs
+                )?;
             }
         }
 
@@ -240,7 +248,7 @@ impl GroveDb {
         key: K,
     ) -> Result<Element, Error> {
         let element_bytes = subtree
-            .get(key.as_ref())
+            .get(key.as_ref()).unwrap() // TODO implement costs
             .map_err(|_| Error::InvalidPath("can't find subtree in parent during propagation"))?
             .ok_or(Error::InvalidPath(
                 "can't find subtree in parent during propagation",

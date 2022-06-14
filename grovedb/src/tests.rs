@@ -540,10 +540,14 @@ fn test_references() {
     .expect("successful subtree insert");
 
     let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"merk_1"]);
-    let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+    let subtree = Merk::open(subtree_storage)
+        .unwrap()
+        .expect("cannot open merk"); // TODO implement costs
 
     let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"merk_2"]);
-    let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+    let subtree = Merk::open(subtree_storage)
+        .unwrap()
+        .expect("cannot open merk"); // TODO implement costs
 }
 
 #[test]
@@ -1098,6 +1102,35 @@ fn test_path_query_proofs_with_subquery_key() {
 
     let mut query = Query::new();
     query.insert_all();
+
+    let mut subq = Query::new();
+    subq.insert_all();
+
+    query.set_subquery_key(b"deeper_node_1".to_vec());
+    query.set_subquery(subq);
+
+    let path_query = PathQuery::new_unsized(vec![DEEP_LEAF.to_vec()], query);
+
+    let proof = temp_db.prove(&path_query).unwrap();
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), &path_query).expect("should execute proof");
+
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 3);
+
+    let keys = [b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()];
+    let values = [b"value1".to_vec(), b"value2".to_vec(), b"value3".to_vec()];
+    let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+    let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
+    assert_eq!(result_set, expected_result_set);
+}
+
+#[test]
+fn test_path_query_proofs_with_key_and_subquery() {
+    let temp_db = make_deep_tree();
+
+    let mut query = Query::new();
+    query.insert_key(b"deep_node_1".to_vec());
 
     let mut subq = Query::new();
     subq.insert_all();
@@ -1728,7 +1761,9 @@ fn test_get_subtree() {
     // Check if it returns the same instance that was inserted
     {
         let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"key1", b"key2"]);
-        let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+        let subtree = Merk::open(subtree_storage)
+            .unwrap()
+            .expect("cannot open merk"); // TODO implement costs
         let result_element = Element::get(&subtree, b"key3").unwrap();
         assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
     }
@@ -1756,13 +1791,17 @@ fn test_get_subtree() {
         .db
         .db
         .get_transactional_storage_context([TEST_LEAF, b"key1", b"innertree"], &transaction);
-    let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+    let subtree = Merk::open(subtree_storage)
+        .unwrap()
+        .expect("cannot open merk"); // TODO implement costs
     let result_element = Element::get(&subtree, b"key4").unwrap();
     assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 
     // Should be able to retrieve instances created before transaction
     let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"key1", b"key2"]);
-    let subtree = Merk::open(subtree_storage).expect("cannot open merk");
+    let subtree = Merk::open(subtree_storage)
+        .unwrap()
+        .expect("cannot open merk"); // TODO implement costs
     let result_element = Element::get(&subtree, b"key3").unwrap();
     assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 }
@@ -2312,7 +2351,6 @@ fn compare_result_sets(elements: &Vec<Vec<u8>>, result_set: &Vec<(Vec<u8>, Vec<u
 }
 
 fn deserialize_and_extract_item_bytes(raw_bytes: &[u8]) -> Result<Vec<u8>, Error> {
-    dbg!(raw_bytes);
     let elem = Element::deserialize(raw_bytes)?;
     return match elem {
         Element::Item(item, _) => Ok(item),

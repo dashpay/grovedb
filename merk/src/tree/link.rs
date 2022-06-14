@@ -321,7 +321,7 @@ mod test {
 
     #[test]
     fn from_modified_tree() {
-        let tree = Tree::new(vec![0], vec![1]);
+        let tree = Tree::new(vec![0], vec![1]).unwrap();
         let link = Link::from_modified_tree(tree);
         assert!(link.is_modified());
         assert_eq!(link.height(), 1);
@@ -338,7 +338,7 @@ mod test {
         let link = Link::maybe_from_modified_tree(None);
         assert!(link.is_none());
 
-        let tree = Tree::new(vec![0], vec![1]);
+        let tree = Tree::new(vec![0], vec![1]).unwrap();
         let link = Link::maybe_from_modified_tree(Some(tree));
         assert!(link.expect("expected link").is_modified());
     }
@@ -349,7 +349,7 @@ mod test {
         let child_heights = (0, 0);
         let pending_writes = 1;
         let key = vec![0];
-        let tree = || Tree::new(vec![0], vec![1]);
+        let tree = || Tree::new(vec![0], vec![1]).unwrap();
 
         let reference = Link::Reference {
             hash,
@@ -412,7 +412,7 @@ mod test {
         Link::Modified {
             pending_writes: 1,
             child_heights: (1, 1),
-            tree: Tree::new(vec![0], vec![1]),
+            tree: Tree::new(vec![0], vec![1]).unwrap(),
         }
         .hash();
     }
@@ -423,7 +423,7 @@ mod test {
         Link::Modified {
             pending_writes: 1,
             child_heights: (1, 1),
-            tree: Tree::new(vec![0], vec![1]),
+            tree: Tree::new(vec![0], vec![1]).unwrap(),
         }
         .into_reference();
     }
@@ -434,7 +434,7 @@ mod test {
         Link::Uncommitted {
             hash: [1; 32],
             child_heights: (1, 1),
-            tree: Tree::new(vec![0], vec![1]),
+            tree: Tree::new(vec![0], vec![1]).unwrap(),
         }
         .into_reference();
     }

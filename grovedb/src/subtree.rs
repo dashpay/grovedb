@@ -200,7 +200,7 @@ impl Element {
     ) -> Result<(), Error> {
         // TODO: delete references on this element
         let batch = [(key, Op::Delete)];
-        merk.apply::<_, Vec<u8>>(&batch, &[])
+        merk.apply::<_, Vec<u8>>(&batch, &[]).unwrap() // TODO implement costs
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -211,7 +211,7 @@ impl Element {
         key: K,
     ) -> Result<Element, Error> {
         let element = Self::deserialize(
-            merk.get(key.as_ref())
+            merk.get(key.as_ref()).unwrap() // TODO implement costs
                 .map_err(|e| Error::CorruptedData(e.to_string()))?
                 .ok_or_else(|| {
                     Error::PathKeyNotFound(format!("key not found in Merk: {}", hex::encode(key)))
@@ -582,7 +582,7 @@ impl Element {
         key: K,
     ) -> Result<(), Error> {
         let batch_operations = [(key, Op::Put(self.serialize()?))];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[])
+        merk.apply::<_, Vec<u8>>(&batch_operations, &[]).unwrap() // TODO implement costs
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -598,7 +598,7 @@ impl Element {
         referenced_value: Vec<u8>,
     ) -> Result<(), Error> {
         let batch_operations = [(key, Op::PutReference(self.serialize()?, referenced_value))];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[])
+        merk.apply::<_, Vec<u8>>(&batch_operations, &[]).unwrap() // TODO implement costs
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -747,7 +747,9 @@ mod tests {
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]);
-        let mut merk = Merk::open(storage_context).expect("cannot open Merk");
+        let mut merk = Merk::open(storage_context)
+            .unwrap()
+            .expect("cannot open Merk"); // TODO implement costs
 
         Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
@@ -825,7 +827,9 @@ mod tests {
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]);
-        let mut merk = Merk::open(storage_context).expect("cannot open Merk");
+        let mut merk = Merk::open(storage_context)
+            .unwrap()
+            .expect("cannot open Merk"); // TODO implement costs
 
         Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
@@ -881,7 +885,9 @@ mod tests {
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]);
-        let mut merk = Merk::open(storage_context).expect("cannot open Merk");
+        let mut merk = Merk::open(storage_context)
+            .unwrap()
+            .expect("cannot open Merk"); // TODO implement costs
 
         Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
@@ -952,7 +958,9 @@ mod tests {
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]);
-        let mut merk = Merk::open(storage_context).expect("cannot open Merk");
+        let mut merk = Merk::open(storage_context)
+            .unwrap()
+            .expect("cannot open Merk"); // TODO implement costs
 
         Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
