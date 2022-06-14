@@ -48,12 +48,19 @@ impl GroveDb {
         current_batch_operations: &Vec<GroveDbOp>,
         transaction: TransactionArg,
     ) -> Result<Option<Vec<GroveDbOp>>, Error>
-        where
-            P: IntoIterator<Item = &'p [u8]>,
-            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let mut current_batch_operations = current_batch_operations.clone();
-        self.add_delete_operations_for_delete_up_tree_while_empty(path, key, stop_path_height, validate, &mut current_batch_operations, transaction)
+        self.add_delete_operations_for_delete_up_tree_while_empty(
+            path,
+            key,
+            stop_path_height,
+            validate,
+            &mut current_batch_operations,
+            transaction,
+        )
     }
 
     pub fn add_delete_operations_for_delete_up_tree_while_empty<'p, P>(
