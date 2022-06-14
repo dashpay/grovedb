@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use storage::StorageContext;
 
 use crate::{
@@ -147,9 +149,22 @@ impl GroveDb {
                     .map(|x| x.to_vec())
                     .collect::<Vec<Vec<u8>>>();
                 let subtrees_paths = self.find_subtrees(subtree_merk_path.clone(), transaction)?;
+                let batch_deleted_keys = current_batch_operations
+                    .iter()
+                    .filter_map(|op| match op.op {
+                        Op::Insert { .. } => None,
+                        Op::Delete => {
+                            if op.path == subtree_merk_path_vec {
+                                Some(op.key.as_slice())
+                            } else {
+                                None
+                            }
+                        }
+                    })
+                    .collect::<BTreeSet<&[u8]>>();
                 let mut is_empty =
                     merk_optional_tx!(self.db, subtree_merk_path, transaction, subtree, {
-                        subtree.is_empty_tree()
+                        subtree.is_empty_tree_except(batch_deleted_keys)
                     });
 
                 // If there is any current batch operation that is inserting something in this
