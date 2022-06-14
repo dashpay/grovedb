@@ -48,6 +48,23 @@ impl GroveDb {
         current_batch_operations: &Vec<GroveDbOp>,
         transaction: TransactionArg,
     ) -> Result<Option<Vec<GroveDbOp>>, Error>
+        where
+            P: IntoIterator<Item = &'p [u8]>,
+            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let mut current_batch_operations = current_batch_operations.clone();
+        self.add_delete_operations_for_delete_up_tree_while_empty(path, key, stop_path_height, validate, &mut current_batch_operations, transaction)
+    }
+
+    pub fn add_delete_operations_for_delete_up_tree_while_empty<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        stop_path_height: Option<u16>,
+        validate: bool,
+        current_batch_operations: &mut Vec<GroveDbOp>,
+        transaction: TransactionArg,
+    ) -> Result<Option<Vec<GroveDbOp>>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -69,10 +86,11 @@ impl GroveDb {
             current_batch_operations,
             transaction,
         )? {
-            let mut delete_operations = vec![delete_operation_this_level];
+            let mut delete_operations = vec![delete_operation_this_level.clone()];
             if let Some(last) = path_iter.next_back() {
+                current_batch_operations.push(delete_operation_this_level);
                 if let Some(mut delete_operations_upper_level) = self
-                    .delete_operations_for_delete_up_tree_while_empty(
+                    .add_delete_operations_for_delete_up_tree_while_empty(
                         path_iter,
                         last,
                         stop_path_height,
