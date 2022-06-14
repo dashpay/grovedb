@@ -1,4 +1,4 @@
-// pub mod batch;
+pub mod batch;
 mod operations;
 mod subtree;
 #[cfg(test)]
