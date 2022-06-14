@@ -280,106 +280,109 @@ impl Element {
     fn path_query_push(args: PathQueryPushArgs) -> CostContext<Result<(), Error>> {
         let mut cost = OperationCost::default();
 
-        // let PathQueryPushArgs {
-        //     storage,
-        //     transaction,
-        //     key,
-        //     element,
-        //     path,
-        //     subquery_key,
-        //     subquery,
-        //     left_to_right,
-        //     results,
-        //     limit,
-        //     offset,
-        // } = args;
-        // match element {
-        //     Element::Tree(..) => {
-        //         let mut path_vec = cost_return_on_error_no_add!(
-        //             &cost,
-        //             path.ok_or(Error::MissingParameter(
-        //                 "the path must be provided when using a subquery key",
-        //             ))
-        //         )
-        //         .to_vec();
-        //         let key = cost_return_on_error_no_add!(
-        //             &cost,
-        //             key.ok_or(Error::MissingParameter(
-        //                 "the key must be provided when using a subquery key",
-        //             ))
-        //         );
-        //         path_vec.push(key);
+        let PathQueryPushArgs {
+            storage,
+            transaction,
+            key,
+            element,
+            path,
+            subquery_key,
+            subquery,
+            left_to_right,
+            results,
+            limit,
+            offset,
+        } = args;
+        match element {
+            Element::Tree(..) => {
+                let mut path_vec = cost_return_on_error_no_add!(
+                    &cost,
+                    path.ok_or(Error::MissingParameter(
+                        "the path must be provided when using a subquery key",
+                    ))
+                )
+                .to_vec();
+                let key = cost_return_on_error_no_add!(
+                    &cost,
+                    key.ok_or(Error::MissingParameter(
+                        "the key must be provided when using a subquery key",
+                    ))
+                );
+                path_vec.push(key);
 
-        //         if let Some(subquery) = subquery {
-        //             if let Some(subquery_key) = &subquery_key {
-        //                 path_vec.push(subquery_key.as_slice());
-        //             }
+                if let Some(subquery) = subquery {
+                    if let Some(subquery_key) = &subquery_key {
+                        path_vec.push(subquery_key.as_slice());
+                    }
 
-        //             let inner_query = SizedQuery::new(subquery, *limit, *offset);
-        //             let path_vec_owned = path_vec.iter().map(|x|
-        // x.to_vec()).collect();             let inner_path_query =
-        // PathQuery::new(path_vec_owned, inner_query);
+                    let inner_query = SizedQuery::new(subquery, *limit, *offset);
+                    let path_vec_owned = path_vec.iter().map(|x| x.to_vec()).collect();
+                    let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
 
-        //             let (mut sub_elements, skipped) = Element::get_path_query(
-        //                 storage,
-        //                 &path_vec,
-        //                 &inner_path_query,
-        //                 transaction,
-        //             )?;
+                    let (mut sub_elements, skipped) = cost_return_on_error!(
+                        &mut cost,
+                        Element::get_path_query(storage, &path_vec, &inner_path_query, transaction,)
+                    );
 
-        //             if let Some(limit) = limit {
-        //                 *limit -= sub_elements.len() as u16;
-        //             }
-        //             if let Some(offset) = offset {
-        //                 *offset -= skipped;
-        //             }
-        //             results.append(&mut sub_elements);
-        //         } else if let Some(subquery_key) = subquery_key {
-        //             if offset.unwrap_or(0) == 0 {
-        //                 merk_optional_tx!(
-        //                     &mut cost,
-        //                     storage,
-        //                     path_vec.iter().copied(),
-        //                     transaction,
-        //                     subtree,
-        //                     {
-        //                         results.push((
-        //                             subquery_key.clone(),
-        //                             Element::get(&subtree, subquery_key.as_slice())?,
-        //                         ));
-        //                     }
-        //                 );
-        //                 if let Some(limit) = limit {
-        //                     *limit -= 1;
-        //                 }
-        //             } else if let Some(offset) = offset {
-        //                 *offset -= 1;
-        //             }
-        //         } else {
-        //             return Err(Error::InvalidPath(
-        //                 "you must provide a subquery or a subquery_key when
-        // interacting with a \                  tree of trees",
-        //             ));
-        //         }
-        //     }
-        //     _ => {
-        //         Element::basic_push(PathQueryPushArgs {
-        //             storage,
-        //             transaction,
-        //             key,
-        //             element,
-        //             path,
-        //             subquery_key,
-        //             subquery,
-        //             left_to_right,
-        //             results,
-        //             limit,
-        //             offset,
-        //         })?;
-        //     }
-        // }
-        // Ok(())
-        todo!()
+                    if let Some(limit) = limit {
+                        *limit -= sub_elements.len() as u16;
+                    }
+                    if let Some(offset) = offset {
+                        *offset -= skipped;
+                    }
+                    results.append(&mut sub_elements);
+                } else if let Some(subquery_key) = subquery_key {
+                    if offset.unwrap_or(0) == 0 {
+                        merk_optional_tx!(
+                            &mut cost,
+                            storage,
+                            path_vec.iter().copied(),
+                            transaction,
+                            subtree,
+                            {
+                                results.push((
+                                    subquery_key.clone(),
+                                    cost_return_on_error!(
+                                        &mut cost,
+                                        Element::get(&subtree, subquery_key.as_slice())
+                                    ),
+                                ));
+                            }
+                        );
+                        if let Some(limit) = limit {
+                            *limit -= 1;
+                        }
+                    } else if let Some(offset) = offset {
+                        *offset -= 1;
+                    }
+                } else {
+                    return Err(Error::InvalidPath(
+                        "you must provide a subquery or a subquery_key when interacting with a \
+                         Tree of trees",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
+            _ => {
+                cost_return_on_error_no_add!(
+                    &cost,
+                    Element::basic_push(PathQueryPushArgs {
+                        storage,
+                        transaction,
+                        key,
+                        element,
+                        path,
+                        subquery_key,
+                        subquery,
+                        left_to_right,
+                        results,
+                        limit,
+                        offset,
+                    })
+                );
+            }
+        }
+        Ok(()).wrap_with_cost(cost)
     }
 
     pub fn subquery_paths_for_sized_query(
@@ -422,83 +425,90 @@ impl Element {
         offset: &mut Option<u16>,
         add_element_function: fn(PathQueryPushArgs) -> CostContext<Result<(), Error>>,
     ) -> CostContext<Result<(), Error>> {
-        // let mut cost = OperationCost::default();
+        let mut cost = OperationCost::default();
 
-        // if !item.is_range() {
-        //     // this is a query on a key
-        //     if let QueryItem::Key(key) = item {
-        //         let element_res = merk_optional_tx!(
-        //             &mut cost,
-        //             storage,
-        //             merk_path.iter().copied(),
-        //             transaction,
-        //             subtree,
-        //             { Element::get(&subtree, key) }
-        //         );
-        //         match element_res {
-        //             Ok(element) => {
-        //                 let (subquery_key, subquery) =
-        //                     Self::subquery_paths_for_sized_query(sized_query, key);
-        //                 add_element_function(PathQueryPushArgs {
-        //                     storage,
-        //                     transaction,
-        //                     key: Some(key.as_slice()),
-        //                     element,
-        //                     path,
-        //                     subquery_key,
-        //                     subquery,
-        //                     left_to_right: sized_query.query.left_to_right,
-        //                     results,
-        //                     limit,
-        //                     offset,
-        //                 })
-        //             }
-        //             Err(Error::PathKeyNotFound(_)) => Ok(()),
-        //             Err(e) => Err(e),
-        //         }
-        //     } else {
-        //         Err(Error::InternalError(
-        //             "QueryItem must be a Key if not a range",
-        //         ))
-        //     }
-        // } else {
-        //     // this is a query on a range
-        //     storage_context_optional_tx!(storage, merk_path.iter().copied(),
-        // transaction, ctx, {         let mut iter = ctx.raw_iter();
+        if !item.is_range() {
+            // this is a query on a key
+            if let QueryItem::Key(key) = item {
+                let element_res = merk_optional_tx!(
+                    &mut cost,
+                    storage,
+                    merk_path.iter().copied(),
+                    transaction,
+                    subtree,
+                    { Element::get(&subtree, key).unwrap_add_cost(&mut cost) }
+                );
+                match element_res {
+                    Ok(element) => {
+                        let (subquery_key, subquery) =
+                            Self::subquery_paths_for_sized_query(sized_query, key);
+                        add_element_function(PathQueryPushArgs {
+                            storage,
+                            transaction,
+                            key: Some(key.as_slice()),
+                            element,
+                            path,
+                            subquery_key,
+                            subquery,
+                            left_to_right: sized_query.query.left_to_right,
+                            results,
+                            limit,
+                            offset,
+                        })
+                        .unwrap_add_cost(&mut cost)
+                    }
+                    Err(Error::PathKeyNotFound(_)) => Ok(()),
+                    Err(e) => Err(e),
+                }
+            } else {
+                Err(Error::InternalError(
+                    "QueryItem must be a Key if not a range",
+                ))
+            }
+        } else {
+            // this is a query on a range
+            storage_context_optional_tx!(storage, merk_path.iter().copied(), transaction, ctx, {
+                let mut iter = ctx.raw_iter();
 
-        //         item.seek_for_iter(&mut iter, sized_query.query.left_to_right);
-        //         cost.seek_count += 1;
+                item.seek_for_iter(&mut iter, sized_query.query.left_to_right);
+                cost.seek_count += 1;
 
-        //         while item.iter_is_valid_for_type(&iter, *limit,
-        // sized_query.query.left_to_right) {             let element =
-        //                 raw_decode(iter.value().expect("if key exists then value
-        // should too"))?;             let key = iter.key().expect("key should
-        // exist");             cost.loaded_bytes += key.len();
-        //             let (subquery_key, subquery) =
-        //                 Self::subquery_paths_for_sized_query(sized_query, key);
-        //             add_element_function(PathQueryPushArgs {
-        //                 storage,
-        //                 transaction,
-        //                 key: Some(key),
-        //                 element,
-        //                 path,
-        //                 subquery_key,
-        //                 subquery,
-        //                 left_to_right: sized_query.query.left_to_right,
-        //                 results,
-        //                 limit,
-        //                 offset,
-        //             })?;
-        //             if sized_query.query.left_to_right {
-        //                 iter.next();
-        //             } else {
-        //                 iter.prev();
-        //             }
-        //         }
-        //         Ok(())
-        //     })
-        // }
-        todo!()
+                while item.iter_is_valid_for_type(&iter, *limit, sized_query.query.left_to_right) {
+                    let element = cost_return_on_error_no_add!(
+                        &cost,
+                        raw_decode(iter.value().expect("if key exists then value should too"))
+                    );
+                    let key = iter.key().expect("key should exist");
+                    cost.loaded_bytes += key.len();
+                    let (subquery_key, subquery) =
+                        Self::subquery_paths_for_sized_query(sized_query, key);
+                    cost_return_on_error!(
+                        &mut cost,
+                        add_element_function(PathQueryPushArgs {
+                            storage,
+                            transaction,
+                            key: Some(key),
+                            element,
+                            path,
+                            subquery_key,
+                            subquery,
+                            left_to_right: sized_query.query.left_to_right,
+                            results,
+                            limit,
+                            offset,
+                        })
+                    );
+                    if sized_query.query.left_to_right {
+                        iter.next();
+                    } else {
+                        iter.prev();
+                    }
+                    cost.seek_count += 1;
+                }
+                Ok(())
+            })
+        }
+        .wrap_with_cost(cost)
     }
 
     pub fn get_query_apply_function(
@@ -509,57 +519,64 @@ impl Element {
         transaction: TransactionArg,
         add_element_function: fn(PathQueryPushArgs) -> CostContext<Result<(), Error>>,
     ) -> CostContext<Result<(Vec<(Vec<u8>, Element)>, u16), Error>> {
-        // let mut results = Vec::new();
+        let mut cost = OperationCost::default();
 
-        // let mut limit = sized_query.limit;
-        // let original_offset = sized_query.offset;
-        // let mut offset = original_offset;
+        let mut results = Vec::new();
 
-        // if sized_query.query.left_to_right {
-        //     for item in sized_query.query.iter() {
-        //         Self::query_item(
-        //             storage,
-        //             item,
-        //             &mut results,
-        //             merk_path,
-        //             sized_query,
-        //             path,
-        //             transaction,
-        //             &mut limit,
-        //             &mut offset,
-        //             add_element_function,
-        //         )?;
-        //         if limit == Some(0) {
-        //             break;
-        //         }
-        //     }
-        // } else {
-        //     for item in sized_query.query.rev_iter() {
-        //         Self::query_item(
-        //             storage,
-        //             item,
-        //             &mut results,
-        //             merk_path,
-        //             sized_query,
-        //             path,
-        //             transaction,
-        //             &mut limit,
-        //             &mut offset,
-        //             add_element_function,
-        //         )?;
-        //         if limit == Some(0) {
-        //             break;
-        //         }
-        //     }
-        // }
+        let mut limit = sized_query.limit;
+        let original_offset = sized_query.offset;
+        let mut offset = original_offset;
 
-        // let skipped = if let Some(original_offset_unwrapped) = original_offset {
-        //     original_offset_unwrapped - offset.unwrap()
-        // } else {
-        //     0
-        // };
-        // Ok((results, skipped))
-        todo!()
+        if sized_query.query.left_to_right {
+            for item in sized_query.query.iter() {
+                cost_return_on_error!(
+                    &mut cost,
+                    Self::query_item(
+                        storage,
+                        item,
+                        &mut results,
+                        merk_path,
+                        sized_query,
+                        path,
+                        transaction,
+                        &mut limit,
+                        &mut offset,
+                        add_element_function,
+                    )
+                );
+                if limit == Some(0) {
+                    break;
+                }
+            }
+        } else {
+            for item in sized_query.query.rev_iter() {
+                cost_return_on_error!(
+                    &mut cost,
+                    Self::query_item(
+                        storage,
+                        item,
+                        &mut results,
+                        merk_path,
+                        sized_query,
+                        path,
+                        transaction,
+                        &mut limit,
+                        &mut offset,
+                        add_element_function,
+                    )
+                );
+                if limit == Some(0) {
+                    break;
+                }
+            }
+        }
+
+        let skipped = if let Some(original_offset_unwrapped) = original_offset {
+            original_offset_unwrapped - offset.unwrap()
+        } else {
+            0
+        };
+        Ok((results, skipped)).wrap_with_cost(cost)
     }
 
     // Returns a vector of elements, and the number of skipped elements
