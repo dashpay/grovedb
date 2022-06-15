@@ -104,5 +104,5 @@ impl<'a> ProofReader<'a> {
 }
 
 pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
-    dest.write_all(value);
+    dest.write_all(value).expect("TODO what if it fails?");
 }

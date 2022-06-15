@@ -56,7 +56,7 @@ impl ProofWithoutEncodingResult {
 /// KVIterator allows you to lazily iterate over each kv pair of a subtree
 pub struct KVIterator<'a, I: RawIterator> {
     raw_iter: I,
-    query: &'a Query,
+    _query: &'a Query,
     left_to_right: bool,
     query_iterator: Box<dyn Iterator<Item = &'a QueryItem> + 'a>,
     current_query_item: Option<&'a QueryItem>,
@@ -66,7 +66,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
     pub fn new(raw_iter: I, query: &'a Query) -> Self {
         let mut iterator = KVIterator {
             raw_iter,
-            query,
+            _query: query,
             left_to_right: query.left_to_right,
             current_query_item: None,
             query_iterator: query.directional_iter(query.left_to_right),
@@ -157,19 +157,29 @@ where
     }
 
     /// Deletes tree data
-    pub fn clear(&mut self) -> Result<()> {
+    pub fn clear(&mut self) -> CostContext<Result<()>> {
+        let mut cost = OperationCost::default();
+
         let mut iter = self.storage.raw_iter();
         iter.seek_to_first();
+        cost.seek_count += 1;
+
         let mut to_delete = self.storage.new_batch();
         while iter.valid() {
             if let Some(key) = iter.key() {
-                to_delete.delete(key)?;
+                cost.loaded_bytes += key.len();
+                // TODO compute cleared data for this storage batch
+                cost_return_on_error_no_add!(&cost, to_delete.delete(key).map_err(|e| e.into()));
             }
             iter.next();
+            cost.seek_count += 1;
         }
-        self.storage.commit_batch(to_delete)?;
+        cost_return_on_error_no_add!(
+            &cost,
+            self.storage.commit_batch(to_delete).map_err(|e| e.into())
+        );
         self.tree.set(None);
-        Ok(())
+        Ok(()).wrap_with_cost(cost)
     }
 
     /// Gets an auxiliary value.

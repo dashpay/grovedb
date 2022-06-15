@@ -6,6 +6,9 @@ use std::{
     hash::Hash,
 };
 
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+};
 use intrusive_collections::{intrusive_adapter, Bound, KeyAdapter, RBTree, RBTreeLink};
 use merk::Merk;
 use storage::{Storage, StorageBatch, StorageContext};
@@ -166,8 +169,10 @@ impl GroveDb {
         &self,
         sorted_operations: &mut RBTree<GroveDbOpAdapter>,
         temp_root_leaves: &mut BTreeMap<Vec<u8>, usize>,
-        get_merk_fn: impl Fn(&[Vec<u8>]) -> Result<Merk<S>, Error>,
-    ) -> Result<(), Error> {
+        get_merk_fn: impl Fn(&[Vec<u8>]) -> CostContext<Result<Merk<S>, Error>>,
+    ) -> CostContext<Result<(), Error>> {
+        let mut cost = OperationCost::default();
+
         let mut temp_subtrees: HashMap<Vec<Vec<u8>>, Merk<_>> = HashMap::new();
         let mut cursor = sorted_operations.back_mut();
         let mut prev_path = cursor.get().expect("batch is not empty").path.clone();
@@ -204,39 +209,45 @@ impl GroveDb {
                 } else {
                     // Keep opened Merk instances to accumulate changes before taking final root
                     // hash
-                    let mut merk = temp_subtrees
-                        .remove(&op.path)
-                        .map(Ok)
-                        .unwrap_or_else(|| get_merk_fn(&op.path))?;
+                    let mut merk = cost_return_on_error!(
+                        &mut cost,
+                        temp_subtrees
+                            .remove(&op.path)
+                            .map(|x| Ok(x).wrap_with_cost(Default::default()))
+                            .unwrap_or_else(|| get_merk_fn(&op.path))
+                    );
 
                     // On subtree deletion/overwrite we need to do Merk's cleanup
-                    match Element::get(&merk, &op.key) {
+                    match Element::get(&merk, &op.key).unwrap_add_cost(&mut cost) {
                         Ok(Element::Tree(..)) => {
                             let mut path = op.path.clone();
                             path.push(op.key.clone());
-                            let mut sub = temp_subtrees
-                                .remove(&path)
-                                .map(Ok)
-                                .unwrap_or_else(|| get_merk_fn(&path))?;
-                            sub.clear()
-                                .map_err(|_| Error::InternalError("cannot clear a Merk"))?;
+
+                            cost_return_on_error!(
+                                &mut cost,
+                                temp_subtrees
+                                    .remove(&path)
+                                    .map(|x| Ok(x).wrap_with_cost(Default::default()))
+                                    .unwrap_or_else(|| get_merk_fn(&path))
+                                    .flat_map_ok(|mut s| s
+                                        .clear()
+                                        .map_err(|_| Error::InternalError("cannot clear a Merk")))
+                            );
                         }
-                        Err(Error::PathKeyNotFound(_) | Error::PathNotFound(_)) => {
+                        Err(Error::PathKeyNotFound(_) | Error::PathNotFound(_)) | Ok(_) => {
                             // TODO: the case when key is scheduled for deletion
                             // but cannot be found is weird and requires some
                             // investigation
                         }
-                        e => {
-                            e?;
-                        }
+                        Err(e) => return Err(e).wrap_with_cost(cost),
                     }
                     match op.op {
                         Op::Insert { element } => {
-                            element.insert(&mut merk, op.key)?;
+                            cost_return_on_error!(&mut cost, element.insert(&mut merk, op.key));
                             temp_subtrees.insert(op.path.clone(), merk);
                         }
                         Op::Delete => {
-                            Element::delete(&mut merk, op.key)?;
+                            cost_return_on_error!(&mut cost, Element::delete(&mut merk, op.key));
                             temp_subtrees.insert(op.path.clone(), merk);
                         }
                     }
@@ -246,7 +257,7 @@ impl GroveDb {
                 break;
             }
         }
-        Ok(())
+        Ok(()).wrap_with_cost(cost)
     }
 
     /// Validates batch using a set of rules:
@@ -263,7 +274,9 @@ impl GroveDb {
         mut ops: RBTree<GroveDbOpAdapter>,
         root_leaves: &BTreeMap<Vec<u8>, usize>,
         transaction: TransactionArg,
-    ) -> Result<RBTree<GroveDbOpAdapter>, Error> {
+    ) -> CostContext<Result<RBTree<GroveDbOpAdapter>, Error>> {
+        let mut cost = OperationCost::default();
+
         // To ensure that batch `[insert([a, b], c, t), insert([a, b, c], k, v)]` is
         // valid we need to check that subtree `[a, b]` exists;
         // If we add `insert([a], b, t)` we need to check (query the DB) only `[a]`
@@ -282,13 +295,16 @@ impl GroveDb {
         // overwrites.
         let mut delete_ops = Vec::new();
         for op in ops.iter() {
-            let delete_paths = self.find_subtrees(
-                op.path
-                    .iter()
-                    .map(|x| x.as_slice())
-                    .chain(std::iter::once(op.key.as_slice())),
-                transaction,
-            )?;
+            let delete_paths = cost_return_on_error!(
+                &mut cost,
+                self.find_subtrees(
+                    op.path
+                        .iter()
+                        .map(|x| x.as_slice())
+                        .chain(std::iter::once(op.key.as_slice())),
+                    transaction,
+                )
+            );
             delete_ops.extend(delete_paths.iter().map(|p| {
                 let (key, path) = p.split_last().expect("no empty paths expected");
                 Box::new(GroveDbOp::delete(path.to_vec(), key.to_vec()))
@@ -311,7 +327,8 @@ impl GroveDb {
 
             // Insertion into subtree that was deleted in this batch is invalid
             if matches!(op.op, Op::Insert { .. }) && removed_subtrees.contains(path) {
-                return Err(Error::InvalidPath("attempt to insert into deleted subtree"));
+                return Err(Error::InvalidPath("attempt to insert into deleted subtree"))
+                    .wrap_with_cost(cost);
             }
 
             // Attempt to subtrees cache to see if subtree exists or will exists within the
@@ -322,25 +339,29 @@ impl GroveDb {
                 if path.len() == 0 {
                     // We're working with root leaf subtree there
                     if !root_leaves.contains_key(&op.key) {
-                        return Err(Error::PathNotFound("missing root leaf"));
+                        return Err(Error::PathNotFound("missing root leaf")).wrap_with_cost(cost);
                     }
                     if let Op::Delete = op.op {
                         return Err(Error::InvalidPath(
                             "deletion for root leafs is not supported",
-                        ));
+                        ))
+                        .wrap_with_cost(cost);
                     }
                 } else {
                     // Dealing with a deeper subtree (not a root leaf so to say)
                     let (parent_key, parent_path) =
                         path.split_last().expect("empty path already checked");
-                    let subtree = self.get(
-                        parent_path.iter().map(|x| x.as_slice()),
-                        parent_key,
-                        transaction,
-                    )?;
+                    let subtree = cost_return_on_error!(
+                        &mut cost,
+                        self.get(
+                            parent_path.iter().map(|x| x.as_slice()),
+                            parent_key,
+                            transaction,
+                        )
+                    );
                     if !matches!(subtree, Element::Tree(_, _)) {
                         // There is an attempt to insert into a scalar
-                        return Err(Error::InvalidPath("must be a tree"));
+                        return Err(Error::InvalidPath("must be a tree")).wrap_with_cost(cost);
                     }
                 }
             }
@@ -377,7 +398,7 @@ impl GroveDb {
             }
         }
 
-        Ok(ops)
+        Ok(ops).wrap_with_cost(cost)
     }
 
     /// Applies batch of operations on GroveDB
@@ -386,27 +407,42 @@ impl GroveDb {
         ops: Vec<GroveDbOp>,
         validate: bool,
         transaction: TransactionArg,
-    ) -> Result<(), Error> {
+    ) -> CostContext<Result<(), Error>> {
+        let mut cost = OperationCost::default();
+
         // Helper function to store updated root leaves
         fn save_root_leaves<'db, S>(
             storage: S,
             temp_root_leaves: &BTreeMap<Vec<u8>, usize>,
-        ) -> Result<(), Error>
+        ) -> CostContext<Result<(), Error>>
         where
             S: StorageContext<'db>,
             Error: From<<S as storage::StorageContext<'db>>::Error>,
         {
-            let root_leaves_serialized = bincode::serialize(&temp_root_leaves).map_err(|_| {
-                Error::CorruptedData(String::from("unable to serialize root leaves data"))
-            })?;
-            Ok(storage.put_meta(ROOT_LEAFS_SERIALIZED_KEY, &root_leaves_serialized)?)
+            let cost = OperationCost::default();
+
+            let root_leaves_serialized = cost_return_on_error_no_add!(
+                &cost,
+                bincode::serialize(&temp_root_leaves).map_err(|_| {
+                    Error::CorruptedData(String::from("unable to serialize root leaves data"))
+                })
+            );
+            storage
+                .put_meta(ROOT_LEAFS_SERIALIZED_KEY, &root_leaves_serialized)
+                .map_err(|e| e.into())
+                .wrap_with_cost(OperationCost {
+                    storage_written_bytes: ROOT_LEAFS_SERIALIZED_KEY.len()
+                        + root_leaves_serialized.len(),
+                    ..Default::default()
+                })
         }
 
         if ops.is_empty() {
-            return Ok(());
+            return Ok(()).wrap_with_cost(cost);
         }
 
-        let mut temp_root_leaves = self.get_root_leaf_keys(transaction)?;
+        let mut temp_root_leaves =
+            cost_return_on_error!(&mut cost, self.get_root_leaf_keys(transaction));
 
         // 1. Collect all batch operations into RBTree to keep them sorted and validated
         let mut sorted_operations = RBTree::new(GroveDbOpAdapter::new());
@@ -415,7 +451,10 @@ impl GroveDb {
         }
 
         let mut validated_operations = if validate {
-            self.validate_batch(sorted_operations, &temp_root_leaves, transaction)?
+            cost_return_on_error!(
+            &mut cost,
+            self.validate_batch(sorted_operations, &temp_root_leaves, transaction)
+        )
         } else {
             sorted_operations
         };
@@ -435,40 +474,61 @@ impl GroveDb {
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage batch
         if let Some(tx) = transaction {
-            self.apply_body(&mut validated_operations, &mut temp_root_leaves, |path| {
-                let storage = self.db.get_batch_transactional_storage_context(
-                    path.iter().map(|x| x.as_slice()),
-                    &storage_batch,
-                    tx,
-                );
-                Merk::open(storage).unwrap() // TODO implement costs
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-            })?;
+            cost_return_on_error!(
+                &mut cost,
+                self.apply_body(&mut validated_operations, &mut temp_root_leaves, |path| {
+                    let storage = self.db.get_batch_transactional_storage_context(
+                        path.iter().map(|x| x.as_slice()),
+                        &storage_batch,
+                        tx,
+                    );
+                    Merk::open(storage)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                })
+            );
 
             let meta_storage = self.db.get_batch_transactional_storage_context(
                 std::iter::empty(),
                 &storage_batch,
                 tx,
             );
-            save_root_leaves(meta_storage, &temp_root_leaves)?;
-            self.db
-                .commit_multi_context_batch(storage_batch, Some(tx))?;
+
+            cost_return_on_error!(&mut cost, save_root_leaves(meta_storage, &temp_root_leaves));
+
+            // TODO: compute batch costs
+            cost_return_on_error_no_add!(
+                &cost,
+                self.db
+                    .commit_multi_context_batch(storage_batch, Some(tx))
+                    .map_err(|e| e.into())
+            );
         } else {
-            self.apply_body(&mut validated_operations, &mut temp_root_leaves, |path| {
-                let storage = self
-                    .db
-                    .get_batch_storage_context(path.iter().map(|x| x.as_slice()), &storage_batch);
-                Merk::open(storage).unwrap() // TODO implement costs
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-            })?;
+            cost_return_on_error!(
+                &mut cost,
+                self.apply_body(&mut validated_operations, &mut temp_root_leaves, |path| {
+                    let storage = self.db.get_batch_storage_context(
+                        path.iter().map(|x| x.as_slice()),
+                        &storage_batch,
+                    );
+                    Merk::open(storage)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                })
+            );
 
             let meta_storage = self
                 .db
                 .get_batch_storage_context(std::iter::empty(), &storage_batch);
-            save_root_leaves(meta_storage, &temp_root_leaves)?;
-            self.db.commit_multi_context_batch(storage_batch, None)?;
+            cost_return_on_error!(&mut cost, save_root_leaves(meta_storage, &temp_root_leaves));
+
+            // TODO: compute batch costs
+            cost_return_on_error_no_add!(
+                &cost,
+                self.db
+                    .commit_multi_context_batch(storage_batch, None)
+                    .map_err(|e| e.into())
+            );
         }
-        Ok(())
+        Ok(()).wrap_with_cost(cost)
     }
 }
 
@@ -510,23 +570,32 @@ mod tests {
                 element2.clone(),
             ),
         ];
-        db.apply_batch(ops, true, None).expect("cannot apply batch");
+        db.apply_batch(ops, true, None)
+            .unwrap()
+            .expect("cannot apply batch");
 
-        db.get([], b"key1", None).expect("cannot get element");
+        db.get([], b"key1", None)
+            .unwrap()
+            .expect("cannot get element");
         db.get([b"key1".as_ref()], b"key2", None)
+            .unwrap()
             .expect("cannot get element");
         db.get([b"key1".as_ref(), b"key2"], b"key3", None)
+            .unwrap()
             .expect("cannot get element");
         db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
+            .unwrap()
             .expect("cannot get element");
 
         assert_eq!(
             db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
+                .unwrap()
                 .expect("cannot get element"),
             element
         );
         assert_eq!(
             db.get([TEST_LEAF, b"key1"], b"key2", None)
+                .unwrap()
                 .expect("cannot get element"),
             element2
         );
@@ -537,8 +606,8 @@ mod tests {
         let db = make_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"keyb", Element::empty_tree(), Some(&tx))
-            .expect("successful root tree leaf insert");
+        db.insert(vec![], b"keyb", Element::empty_tree(), Some(&tx)).
+            unwrap().expect("successful root tree leaf insert");
 
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
@@ -570,30 +639,30 @@ mod tests {
                 element2.clone(),
             ),
         ];
-        db.apply_batch(ops, true, Some(&tx))
-            .expect("cannot apply batch");
-        db.get([], b"keyb", None)
+        db.apply_batch(ops, true, Some(&tx)).
+        unwrap().expect("cannot apply batch");
+        db.get([], b"keyb", None).unwrap()
             .expect_err("we should not get an element");
-        db.get([], b"keyb", Some(&tx))
+        db.get([], b"keyb", Some(&tx)).unwrap()
             .expect("we should get an element");
 
-        db.get([], b"key1", None)
+        db.get([], b"key1", None).unwrap()
             .expect_err("we should not get an element");
-        db.get([], b"key1", Some(&tx)).expect("cannot get element");
-        db.get([b"key1".as_ref()], b"key2", Some(&tx))
+        db.get([], b"key1", Some(&tx)).unwrap().expect("cannot get element");
+        db.get([b"key1".as_ref()], b"key2", Some(&tx)).unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref(), b"key2"], b"key3", Some(&tx))
+        db.get([b"key1".as_ref(), b"key2"], b"key3", Some(&tx)).unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx))
+        db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx)).unwrap()
             .expect("cannot get element");
 
         assert_eq!(
-            db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx))
+            db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx)).unwrap()
                 .expect("cannot get element"),
             element
         );
         assert_eq!(
-            db.get([TEST_LEAF, b"key1"], b"key2", Some(&tx))
+            db.get([TEST_LEAF, b"key1"], b"key2", Some(&tx)).unwrap()
                 .expect("cannot get element"),
             element2
         );
@@ -616,8 +685,8 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, true, None).is_err());
-        assert!(db.get([b"key1".as_ref()], b"key2", None).is_err());
+        assert!(db.apply_batch(ops, true, None).unwrap().is_err());
+        assert!(db.get([b"key1".as_ref()], b"key2", None).unwrap().is_err());
     }
 
     #[test]
@@ -647,9 +716,12 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, true, None).is_err());
-        assert!(db.get([b"key1".as_ref()], b"key2", None).is_err());
-        assert!(db.get([TEST_LEAF, b"key1"], b"key2", None).is_err(),);
+        assert!(db.apply_batch(ops, true, None).unwrap().is_err());
+        assert!(db.get([b"key1".as_ref()], b"key2", None).unwrap().is_err());
+        assert!(db
+            .get([TEST_LEAF, b"key1"], b"key2", None)
+            .unwrap()
+            .is_err(),);
     }
 
     #[test]
@@ -658,8 +730,10 @@ mod tests {
         let element = Element::new_item(b"ayy".to_vec());
 
         db.insert([], b"key1", Element::empty_tree(), None)
+            .unwrap()
             .expect("cannot insert a subtree");
         db.insert([], b"key2", Element::empty_tree(), None)
+            .unwrap()
             .expect("cannot insert a subtree");
 
         let ops = vec![
@@ -675,7 +749,7 @@ mod tests {
             ),
             GroveDbOp::delete(vec![b"key1".to_vec()], b"key2".to_vec()),
         ];
-        assert!(db.apply_batch(ops, true, None).is_err());
+        assert!(db.apply_batch(ops, true, None).unwrap().is_err());
     }
 
     #[test]
@@ -701,9 +775,12 @@ mod tests {
             ),
             GroveDbOp::delete(vec![b"key1".to_vec()], b"key2".to_vec()),
         ];
-        db.apply_batch(ops, true, None).expect("cannot apply batch");
+        db.apply_batch(ops, true, None)
+            .unwrap()
+            .expect("cannot apply batch");
         assert_eq!(
             db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
+                .unwrap()
                 .expect("cannot get element"),
             element
         );
@@ -715,8 +792,10 @@ mod tests {
         let element = Element::new_item(b"ayy".to_vec());
 
         db.insert([TEST_LEAF], b"invalid", element.clone(), None)
+            .unwrap()
             .expect("cannot insert value");
         db.insert([TEST_LEAF], b"valid", Element::empty_tree(), None)
+            .unwrap()
             .expect("cannot insert value");
 
         // Insertion into scalar is invalid
@@ -725,7 +804,7 @@ mod tests {
             b"key1".to_vec(),
             element.clone(),
         )];
-        assert!(db.apply_batch(ops, true, None).is_err());
+        assert!(db.apply_batch(ops, true, None).unwrap().is_err());
 
         // Insertion into a tree is correct
         let ops = vec![GroveDbOp::insert(
@@ -733,9 +812,12 @@ mod tests {
             b"key1".to_vec(),
             element.clone(),
         )];
-        db.apply_batch(ops, true, None).expect("cannot apply batch");
+        db.apply_batch(ops, true, None)
+            .unwrap()
+            .expect("cannot apply batch");
         assert_eq!(
             db.get([TEST_LEAF, b"valid"], b"key1", None)
+                .unwrap()
                 .expect("cannot get element"),
             element
         );
@@ -747,8 +829,10 @@ mod tests {
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
         db.insert([TEST_LEAF], b"key_subtree", Element::empty_tree(), None)
+            .unwrap()
             .expect("cannot insert a subtree");
         db.insert([TEST_LEAF, b"key_subtree"], b"key2", element, None)
+            .unwrap()
             .expect("cannot insert an item");
 
         // TEST_LEAF will be overwritten thus nested subtrees will be deleted and it is
@@ -761,7 +845,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, true, None).is_err());
+        assert!(db.apply_batch(ops, true, None).unwrap().is_err());
 
         // TEST_LEAF will became a scalar, insertion into scalar is also invalid
         let ops = vec![
@@ -772,7 +856,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, true, None).is_err());
+        assert!(db.apply_batch(ops, true, None).unwrap().is_err());
 
         // Here TEST_LEAF is overwritten and new data should be available why older data
         // shouldn't
@@ -780,13 +864,18 @@ mod tests {
             GroveDbOp::insert(vec![], TEST_LEAF.to_vec(), Element::empty_tree()),
             GroveDbOp::insert(vec![TEST_LEAF.to_vec()], b"key1".to_vec(), element2.clone()),
         ];
-        assert!(db.apply_batch(ops, true, None).is_ok());
+        assert!(db.apply_batch(ops, true, None).unwrap().is_ok());
 
         assert_eq!(
-            db.get([TEST_LEAF], b"key1", None).expect("cannot get data"),
+            db.get([TEST_LEAF], b"key1", None)
+                .unwrap()
+                .expect("cannot get data"),
             element2
         );
-        assert!(db.get([TEST_LEAF, b"key_subtree"], b"key1", None).is_err());
+        assert!(db
+            .get([TEST_LEAF, b"key_subtree"], b"key1", None)
+            .unwrap()
+            .is_err());
     }
 
     #[test]
@@ -804,7 +893,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, true, None).is_err());
+        assert!(db.apply_batch(ops, true, None).unwrap().is_err());
     }
 
     #[test]
@@ -813,8 +902,10 @@ mod tests {
         let element = Element::new_item(b"ayy".to_vec());
 
         db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
+            .unwrap()
             .expect("cannot insert a subtree");
         db.insert([TEST_LEAF, b"key1"], b"key2", element.clone(), None)
+            .unwrap()
             .expect("cannot insert an item");
         let ops = vec![GroveDbOp::insert(
             vec![TEST_LEAF.to_vec()],
@@ -824,25 +915,35 @@ mod tests {
 
         assert_eq!(
             db.get([TEST_LEAF, b"key1"], b"key2", None)
+                .unwrap()
                 .expect("cannot get item"),
             element
         );
-        db.apply_batch(ops, true, None).expect("cannot apply batch");
-        assert!(db.get([TEST_LEAF, b"key1"], b"key2", None).is_err());
+        db.apply_batch(ops, true, None)
+            .unwrap()
+            .expect("cannot apply batch");
+        assert!(db
+            .get([TEST_LEAF, b"key1"], b"key2", None)
+            .unwrap()
+            .is_err());
     }
 
     #[test]
     fn test_multi_tree_insertion_deletion_with_propagation_no_tx() {
         let db = make_grovedb();
         db.insert([], b"key1", Element::empty_tree(), None)
+            .unwrap()
             .expect("cannot insert root leaf");
         db.insert([], b"key2", Element::empty_tree(), None)
+            .unwrap()
             .expect("cannot insert root leaf");
         db.insert([ANOTHER_TEST_LEAF], b"key1", Element::empty_tree(), None)
+            .unwrap()
             .expect("cannot insert root leaf");
 
         let hash = db
             .root_hash(None)
+            .unwrap()
             .ok()
             .flatten()
             .expect("cannot get root hash");
@@ -868,22 +969,27 @@ mod tests {
             GroveDbOp::insert(vec![TEST_LEAF.to_vec()], b"key".to_vec(), element2.clone()),
             GroveDbOp::delete(vec![ANOTHER_TEST_LEAF.to_vec()], b"key1".to_vec()),
         ];
-        db.apply_batch(ops, true, None).expect("cannot apply batch");
+        db.apply_batch(ops, true, None)
+            .unwrap()
+            .expect("cannot apply batch");
 
-        assert!(db.get([ANOTHER_TEST_LEAF], b"key1", None).is_err());
+        assert!(db.get([ANOTHER_TEST_LEAF], b"key1", None).unwrap().is_err());
 
         assert_eq!(
             db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
+                .unwrap()
                 .expect("cannot get element"),
             element
         );
         assert_eq!(
             db.get([TEST_LEAF], b"key", None)
+                .unwrap()
                 .expect("cannot get element"),
             element2
         );
         assert_ne!(
             db.root_hash(None)
+                .unwrap()
                 .ok()
                 .flatten()
                 .expect("cannot get root hash"),
@@ -896,7 +1002,9 @@ mod tests {
         root_leafs.insert(b"key2".to_vec(), 3);
 
         assert_eq!(
-            db.get_root_leaf_keys(None).expect("cannot get root leafs"),
+            db.get_root_leaf_keys(None)
+                .unwrap()
+                .expect("cannot get root leafs"),
             root_leafs
         );
     }
@@ -931,6 +1039,7 @@ mod tests {
             element.clone(),
         )];
         db.apply_batch(batch, true, None)
+            .unwrap()
             .expect("cannot apply batch");
 
         let batch = vec![GroveDbOp::insert(
@@ -939,6 +1048,7 @@ mod tests {
             element.clone(),
         )];
         db.apply_batch(batch, true, None)
+            .unwrap()
             .expect("cannot apply same batch twice");
     }
 }
