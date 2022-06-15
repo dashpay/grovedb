@@ -3,6 +3,9 @@
 //! Merk API to GroveDB needs.
 
 use bincode::Options;
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+};
 use integer_encoding::VarInt;
 use merk::{
     proofs::{query::QueryItem, Query},
@@ -197,10 +200,10 @@ impl Element {
     pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
         key: K,
-    ) -> Result<(), Error> {
+    ) -> CostContext<Result<(), Error>> {
         // TODO: delete references on this element
         let batch = [(key, Op::Delete)];
-        merk.apply::<_, Vec<u8>>(&batch, &[]).unwrap() // TODO implement costs
+        merk.apply::<_, Vec<u8>>(&batch, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -209,17 +212,26 @@ impl Element {
     pub fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
         key: K,
-    ) -> Result<Element, Error> {
-        let element = Self::deserialize(
-            merk.get(key.as_ref()).unwrap() // TODO implement costs
-                .map_err(|e| Error::CorruptedData(e.to_string()))?
-                .ok_or_else(|| {
-                    Error::PathKeyNotFound(format!("key not found in Merk: {}", hex::encode(key)))
-                })?
-                .as_slice(),
-        )
-        .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))?;
-        Ok(element)
+    ) -> CostContext<Result<Element, Error>> {
+        let mut cost = OperationCost::default();
+
+        let value_opt = cost_return_on_error!(
+            &mut cost,
+            merk.get(key.as_ref())
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+        );
+        let value = cost_return_on_error_no_add!(
+            &cost,
+            value_opt.ok_or_else(|| {
+                Error::PathKeyNotFound(format!("key not found in Merk: {}", hex::encode(key)))
+            })
+        );
+        let element = cost_return_on_error_no_add!(
+            &cost,
+            Self::deserialize(value.as_slice())
+                .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
+        );
+        Ok(element).wrap_with_cost(cost)
     }
 
     pub fn get_query(
@@ -227,11 +239,10 @@ impl Element {
         merk_path: &[&[u8]],
         query: &Query,
         transaction: TransactionArg,
-    ) -> Result<Vec<(Vec<u8>, Element)>, Error> {
+    ) -> CostContext<Result<Vec<(Vec<u8>, Element)>, Error>> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, _) =
-            Element::get_sized_query(storage, merk_path, &sized_query, transaction)?;
-        Ok(elements)
+        Element::get_sized_query(storage, merk_path, &sized_query, transaction)
+            .map_ok(|(elements, _)| elements)
     }
 
     pub fn get_query_values(
@@ -239,12 +250,10 @@ impl Element {
         merk_path: &[&[u8]],
         query: &Query,
         transaction: TransactionArg,
-    ) -> Result<Vec<Element>, Error> {
+    ) -> CostContext<Result<Vec<Element>, Error>> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
-        let (elements, _) =
-            Element::get_sized_query(storage, merk_path, &sized_query, transaction)?;
-        let values = elements.into_iter().map(|(k, v)| v).collect();
-        Ok(values)
+        Element::get_sized_query(storage, merk_path, &sized_query, transaction)
+            .map_ok(|(elements, _)| elements.into_iter().map(|(_, v)| v).collect())
     }
 
     fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
@@ -268,7 +277,9 @@ impl Element {
         Ok(())
     }
 
-    fn path_query_push(args: PathQueryPushArgs) -> Result<(), Error> {
+    fn path_query_push(args: PathQueryPushArgs) -> CostContext<Result<(), Error>> {
+        let mut cost = OperationCost::default();
+
         let PathQueryPushArgs {
             storage,
             transaction,
@@ -284,14 +295,20 @@ impl Element {
         } = args;
         match element {
             Element::Tree(..) => {
-                let mut path_vec = path
-                    .ok_or(Error::MissingParameter(
+                let mut path_vec = cost_return_on_error_no_add!(
+                    &cost,
+                    path.ok_or(Error::MissingParameter(
                         "the path must be provided when using a subquery key",
-                    ))?
-                    .to_vec();
-                path_vec.push(key.ok_or(Error::MissingParameter(
-                    "the key must be provided when using a subquery key",
-                ))?);
+                    ))
+                )
+                .to_vec();
+                let key = cost_return_on_error_no_add!(
+                    &cost,
+                    key.ok_or(Error::MissingParameter(
+                        "the key must be provided when using a subquery key",
+                    ))
+                );
+                path_vec.push(key);
 
                 if let Some(subquery) = subquery {
                     if let Some(subquery_key) = &subquery_key {
@@ -302,12 +319,10 @@ impl Element {
                     let path_vec_owned = path_vec.iter().map(|x| x.to_vec()).collect();
                     let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
 
-                    let (mut sub_elements, skipped) = Element::get_path_query(
-                        storage,
-                        &path_vec,
-                        &inner_path_query,
-                        transaction,
-                    )?;
+                    let (mut sub_elements, skipped) = cost_return_on_error!(
+                        &mut cost,
+                        Element::get_path_query(storage, &path_vec, &inner_path_query, transaction,)
+                    );
 
                     if let Some(limit) = limit {
                         *limit -= sub_elements.len() as u16;
@@ -319,6 +334,7 @@ impl Element {
                 } else if let Some(subquery_key) = subquery_key {
                     if offset.unwrap_or(0) == 0 {
                         merk_optional_tx!(
+                            &mut cost,
                             storage,
                             path_vec.iter().copied(),
                             transaction,
@@ -326,7 +342,10 @@ impl Element {
                             {
                                 results.push((
                                     subquery_key.clone(),
-                                    Element::get(&subtree, subquery_key.as_slice())?,
+                                    cost_return_on_error!(
+                                        &mut cost,
+                                        Element::get(&subtree, subquery_key.as_slice())
+                                    ),
                                 ));
                             }
                         );
@@ -339,27 +358,31 @@ impl Element {
                 } else {
                     return Err(Error::InvalidPath(
                         "you must provide a subquery or a subquery_key when interacting with a \
-                         tree of trees",
-                    ));
+                         Tree of trees",
+                    ))
+                    .wrap_with_cost(cost);
                 }
             }
             _ => {
-                Element::basic_push(PathQueryPushArgs {
-                    storage,
-                    transaction,
-                    key,
-                    element,
-                    path,
-                    subquery_key,
-                    subquery,
-                    left_to_right,
-                    results,
-                    limit,
-                    offset,
-                })?;
+                cost_return_on_error_no_add!(
+                    &cost,
+                    Element::basic_push(PathQueryPushArgs {
+                        storage,
+                        transaction,
+                        key,
+                        element,
+                        path,
+                        subquery_key,
+                        subquery,
+                        left_to_right,
+                        results,
+                        limit,
+                        offset,
+                    })
+                );
             }
         }
-        Ok(())
+        Ok(()).wrap_with_cost(cost)
     }
 
     pub fn subquery_paths_for_sized_query(
@@ -400,15 +423,21 @@ impl Element {
         transaction: TransactionArg,
         limit: &mut Option<u16>,
         offset: &mut Option<u16>,
-        add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
-    ) -> Result<(), Error> {
+        add_element_function: fn(PathQueryPushArgs) -> CostContext<Result<(), Error>>,
+    ) -> CostContext<Result<(), Error>> {
+        let mut cost = OperationCost::default();
+
         if !item.is_range() {
             // this is a query on a key
             if let QueryItem::Key(key) = item {
-                let element_res =
-                    merk_optional_tx!(storage, merk_path.iter().copied(), transaction, subtree, {
-                        Element::get(&subtree, key)
-                    });
+                let element_res = merk_optional_tx!(
+                    &mut cost,
+                    storage,
+                    merk_path.iter().copied(),
+                    transaction,
+                    subtree,
+                    { Element::get(&subtree, key).unwrap_add_cost(&mut cost) }
+                );
                 match element_res {
                     Ok(element) => {
                         let (subquery_key, subquery) =
@@ -426,6 +455,7 @@ impl Element {
                             limit,
                             offset,
                         })
+                        .unwrap_add_cost(&mut cost)
                     }
                     Err(Error::PathKeyNotFound(_)) => Ok(()),
                     Err(e) => Err(e),
@@ -441,35 +471,44 @@ impl Element {
                 let mut iter = ctx.raw_iter();
 
                 item.seek_for_iter(&mut iter, sized_query.query.left_to_right);
+                cost.seek_count += 1;
 
                 while item.iter_is_valid_for_type(&iter, *limit, sized_query.query.left_to_right) {
-                    let element =
-                        raw_decode(iter.value().expect("if key exists then value should too"))?;
+                    let element = cost_return_on_error_no_add!(
+                        &cost,
+                        raw_decode(iter.value().expect("if key exists then value should too"))
+                    );
                     let key = iter.key().expect("key should exist");
+                    cost.loaded_bytes += key.len();
                     let (subquery_key, subquery) =
                         Self::subquery_paths_for_sized_query(sized_query, key);
-                    add_element_function(PathQueryPushArgs {
-                        storage,
-                        transaction,
-                        key: Some(key),
-                        element,
-                        path,
-                        subquery_key,
-                        subquery,
-                        left_to_right: sized_query.query.left_to_right,
-                        results,
-                        limit,
-                        offset,
-                    })?;
+                    cost_return_on_error!(
+                        &mut cost,
+                        add_element_function(PathQueryPushArgs {
+                            storage,
+                            transaction,
+                            key: Some(key),
+                            element,
+                            path,
+                            subquery_key,
+                            subquery,
+                            left_to_right: sized_query.query.left_to_right,
+                            results,
+                            limit,
+                            offset,
+                        })
+                    );
                     if sized_query.query.left_to_right {
                         iter.next();
                     } else {
                         iter.prev();
                     }
+                    cost.seek_count += 1;
                 }
                 Ok(())
             })
         }
+        .wrap_with_cost(cost)
     }
 
     pub fn get_query_apply_function(
@@ -478,8 +517,10 @@ impl Element {
         sized_query: &SizedQuery,
         path: Option<&[&[u8]]>,
         transaction: TransactionArg,
-        add_element_function: fn(PathQueryPushArgs) -> Result<(), Error>,
-    ) -> Result<(Vec<(Vec<u8>, Element)>, u16), Error> {
+        add_element_function: fn(PathQueryPushArgs) -> CostContext<Result<(), Error>>,
+    ) -> CostContext<Result<(Vec<(Vec<u8>, Element)>, u16), Error>> {
+        let mut cost = OperationCost::default();
+
         let mut results = Vec::new();
 
         let mut limit = sized_query.limit;
@@ -488,36 +529,42 @@ impl Element {
 
         if sized_query.query.left_to_right {
             for item in sized_query.query.iter() {
-                Self::query_item(
-                    storage,
-                    item,
-                    &mut results,
-                    merk_path,
-                    sized_query,
-                    path,
-                    transaction,
-                    &mut limit,
-                    &mut offset,
-                    add_element_function,
-                )?;
+                cost_return_on_error!(
+                    &mut cost,
+                    Self::query_item(
+                        storage,
+                        item,
+                        &mut results,
+                        merk_path,
+                        sized_query,
+                        path,
+                        transaction,
+                        &mut limit,
+                        &mut offset,
+                        add_element_function,
+                    )
+                );
                 if limit == Some(0) {
                     break;
                 }
             }
         } else {
             for item in sized_query.query.rev_iter() {
-                Self::query_item(
-                    storage,
-                    item,
-                    &mut results,
-                    merk_path,
-                    sized_query,
-                    path,
-                    transaction,
-                    &mut limit,
-                    &mut offset,
-                    add_element_function,
-                )?;
+                cost_return_on_error!(
+                    &mut cost,
+                    Self::query_item(
+                        storage,
+                        item,
+                        &mut results,
+                        merk_path,
+                        sized_query,
+                        path,
+                        transaction,
+                        &mut limit,
+                        &mut offset,
+                        add_element_function,
+                    )
+                );
                 if limit == Some(0) {
                     break;
                 }
@@ -529,7 +576,7 @@ impl Element {
         } else {
             0
         };
-        Ok((results, skipped))
+        Ok((results, skipped)).wrap_with_cost(cost)
     }
 
     // Returns a vector of elements, and the number of skipped elements
@@ -538,7 +585,7 @@ impl Element {
         merk_path: &[&[u8]],
         path_query: &PathQuery,
         transaction: TransactionArg,
-    ) -> Result<(Vec<(Vec<u8>, Element)>, u16), Error> {
+    ) -> CostContext<Result<(Vec<(Vec<u8>, Element)>, u16), Error>> {
         let path_slices = path_query
             .path
             .iter()
@@ -560,7 +607,7 @@ impl Element {
         merk_path: &[&[u8]],
         sized_query: &SizedQuery,
         transaction: TransactionArg,
-    ) -> Result<(Vec<(Vec<u8>, Element)>, u16), Error> {
+    ) -> CostContext<Result<(Vec<(Vec<u8>, Element)>, u16), Error>> {
         Element::get_query_apply_function(
             storage,
             merk_path,
@@ -580,9 +627,14 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: K,
-    ) -> Result<(), Error> {
-        let batch_operations = [(key, Op::Put(self.serialize()?))];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[]).unwrap() // TODO implement costs
+    ) -> CostContext<Result<(), Error>> {
+        let serialized = match self.serialize() {
+            Ok(s) => s,
+            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+        };
+
+        let batch_operations = [(key, Op::Put(serialized))];
+        merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -596,9 +648,14 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         referenced_value: Vec<u8>,
-    ) -> Result<(), Error> {
-        let batch_operations = [(key, Op::PutReference(self.serialize()?, referenced_value))];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[]).unwrap() // TODO implement costs
+    ) -> CostContext<Result<(), Error>> {
+        let serialized = match self.serialize() {
+            Ok(s) => s,
+            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+        };
+
+        let batch_operations = [(key, Op::PutReference(serialized, referenced_value))];
+        merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -618,9 +675,12 @@ impl Element {
             .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
     }
 
-    pub fn iterator<I: RawIterator>(mut raw_iter: I) -> ElementsIterator<I> {
+    pub fn iterator<I: RawIterator>(mut raw_iter: I) -> CostContext<ElementsIterator<I>> {
         raw_iter.seek_to_first();
-        ElementsIterator::new(raw_iter)
+        ElementsIterator::new(raw_iter).wrap_with_cost(OperationCost {
+            seek_count: 1,
+            ..Default::default()
+        })
     }
 }
 
@@ -639,10 +699,14 @@ impl<I: RawIterator> ElementsIterator<I> {
         ElementsIterator { raw_iter }
     }
 
-    pub fn next(&mut self) -> Result<Option<(Vec<u8>, Element)>, Error> {
+    pub fn next(&mut self) -> CostContext<Result<Option<(Vec<u8>, Element)>, Error>> {
+        let mut cost = OperationCost::default();
+
         Ok(if self.raw_iter.valid() {
             if let Some((key, value)) = self.raw_iter.key().zip(self.raw_iter.value()) {
-                let element = raw_decode(value)?;
+                cost.loaded_bytes += key.len() + value.len();
+
+                let element = cost_return_on_error_no_add!(&cost, raw_decode(value));
                 let key_vec = key.to_vec();
                 self.raw_iter.next();
                 Some((key_vec, element))
@@ -652,6 +716,7 @@ impl<I: RawIterator> ElementsIterator<I> {
         } else {
             None
         })
+        .wrap_with_cost(cost)
     }
 }
 
@@ -668,13 +733,17 @@ mod tests {
         let mut merk = TempMerk::new();
         Element::empty_tree()
             .insert(&mut merk, b"mykey")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"value".to_vec())
             .insert(&mut merk, b"another-key")
+            .unwrap()
             .expect("expected successful insertion 2");
 
         assert_eq!(
-            Element::get(&merk, b"another-key").expect("expected successful get"),
+            Element::get(&merk, b"another-key")
+                .unwrap()
+                .expect("expected successful get"),
             Element::new_item(b"value".to_vec()),
         );
     }
@@ -753,15 +822,19 @@ mod tests {
 
         Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
             .insert(&mut merk, b"c")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
             .insert(&mut merk, b"a")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
             .insert(&mut merk, b"b")
+            .unwrap()
             .expect("expected successful insertion");
 
         // Test queries by key
@@ -770,6 +843,7 @@ mod tests {
         query.insert_key(b"a".to_vec());
         assert_eq!(
             Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+                .unwrap()
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
@@ -783,6 +857,7 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
             Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+                .unwrap()
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
@@ -797,6 +872,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         assert_eq!(
             Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+                .unwrap()
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayyb".to_vec()),
@@ -812,6 +888,7 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
             Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+                .unwrap()
                 .expect("expected successful get_query"),
             vec![
                 Element::new_item(b"ayya".to_vec()),
@@ -833,15 +910,19 @@ mod tests {
 
         Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
             .insert(&mut merk, b"c")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
             .insert(&mut merk, b"a")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
             .insert(&mut merk, b"b")
+            .unwrap()
             .expect("expected successful insertion");
 
         // Test range inclusive query
@@ -851,6 +932,7 @@ mod tests {
         let ascending_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &ascending_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -867,6 +949,7 @@ mod tests {
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -887,19 +970,23 @@ mod tests {
         let storage_context = storage.get_storage_context([TEST_LEAF]);
         let mut merk = Merk::open(storage_context)
             .unwrap()
-            .expect("cannot open Merk"); // TODO implement costs
+            .expect("cannot open Merk");
 
         Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
             .insert(&mut merk, b"c")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
             .insert(&mut merk, b"a")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
             .insert(&mut merk, b"b")
+            .unwrap()
             .expect("expected successful insertion");
 
         // Test range inclusive query
@@ -926,6 +1013,7 @@ mod tests {
 
         check_elements_no_skipped(
             Element::get_sized_query(&storage, &[TEST_LEAF], &ascending_query, None)
+                .unwrap()
                 .expect("expected successful get_query"),
             false,
         );
@@ -935,6 +1023,7 @@ mod tests {
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         check_elements_no_skipped(
             Element::get_sized_query(&storage, &[TEST_LEAF], &backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query"),
             true,
         );
@@ -947,6 +1036,7 @@ mod tests {
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         check_elements_no_skipped(
             Element::get_sized_query(&storage, &[TEST_LEAF], &backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query"),
             true,
         );
@@ -960,19 +1050,23 @@ mod tests {
         let storage_context = storage.get_storage_context([TEST_LEAF]);
         let mut merk = Merk::open(storage_context)
             .unwrap()
-            .expect("cannot open Merk"); // TODO implement costs
+            .expect("cannot open Merk");
 
         Element::new_item(b"ayyd".to_vec())
             .insert(&mut merk, b"d")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
             .insert(&mut merk, b"c")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
             .insert(&mut merk, b"a")
+            .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
             .insert(&mut merk, b"b")
+            .unwrap()
             .expect("expected successful insertion");
 
         // Test queries by key
@@ -984,6 +1078,7 @@ mod tests {
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1003,6 +1098,7 @@ mod tests {
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1017,6 +1113,7 @@ mod tests {
         let limit_query = SizedQuery::new(query.clone(), Some(1), None);
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1031,6 +1128,7 @@ mod tests {
         let limit_query = SizedQuery::new(query.clone(), Some(2), None);
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1044,6 +1142,7 @@ mod tests {
         let limit_offset_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_offset_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1062,6 +1161,7 @@ mod tests {
         let limit_offset_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_offset_backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1079,6 +1179,7 @@ mod tests {
         let limit_full_query = SizedQuery::new(query.clone(), Some(5), Some(0));
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_full_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1097,6 +1198,7 @@ mod tests {
         let limit_offset_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_offset_backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,
@@ -1115,6 +1217,7 @@ mod tests {
         let limit_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) =
             Element::get_sized_query(&storage, &[TEST_LEAF], &limit_backwards_query, None)
+                .unwrap()
                 .expect("expected successful get_query");
         assert_eq!(
             elements,

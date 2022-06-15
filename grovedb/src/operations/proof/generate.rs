@@ -1,3 +1,6 @@
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+};
 use merk::{
     proofs::{encode_into, Node, Op},
     KVIterator, Merk, ProofWithoutEncodingResult,
@@ -11,7 +14,9 @@ use crate::{
 };
 
 impl GroveDb {
-    pub fn prove(&self, query: &PathQuery) -> Result<Vec<u8>, Error> {
+    pub fn prove(&self, query: &PathQuery) -> CostContext<Result<Vec<u8>, Error>> {
+        let mut cost = OperationCost::default();
+
         // TODO: should it be possible to generate proofs for tree items (currently yes)
         let mut proof_result: Vec<u8> = vec![];
         let mut limit: Option<u16> = query.query.limit;
@@ -19,20 +24,27 @@ impl GroveDb {
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
         if path_slices.len() < 1 {
-            return Err(Error::InvalidPath("can't generate proof for empty path"));
+            return Err(Error::InvalidPath("can't generate proof for empty path"))
+                .wrap_with_cost(cost);
         }
-        self.check_subtree_exists_path_not_found(path_slices.clone(), None)?;
+        cost_return_on_error!(
+            &mut cost,
+            self.check_subtree_exists_path_not_found(path_slices.clone(), None)
+        );
 
-        self.prove_subqueries(
-            &mut proof_result,
-            path_slices.clone(),
-            query,
-            &mut limit,
-            &mut offset,
-        )?;
-        self.prove_path(&mut proof_result, path_slices)?;
+        cost_return_on_error!(
+            &mut cost,
+            self.prove_subqueries(
+                &mut proof_result,
+                path_slices.clone(),
+                query,
+                &mut limit,
+                &mut offset,
+            )
+        );
+        cost_return_on_error!(&mut cost, self.prove_path(&mut proof_result, path_slices));
 
-        Ok(proof_result)
+        Ok(proof_result).wrap_with_cost(cost)
     }
 
     /// Perform a pre-order traversal of the tree based on the provided
@@ -44,13 +56,15 @@ impl GroveDb {
         query: &PathQuery,
         current_limit: &mut Option<u16>,
         current_offset: &mut Option<u16>,
-    ) -> Result<(), Error> {
+    ) -> CostContext<Result<(), Error>> {
+        let mut cost = OperationCost::default();
+
         let reached_limit = query.query.limit.is_some() && query.query.limit.unwrap() == 0;
         if reached_limit {
-            return Ok(());
+            return Ok(()).wrap_with_cost(cost);
         }
 
-        let subtree = self.open_subtree(&path)?;
+        let subtree = cost_return_on_error!(&mut cost, self.open_subtree(&path));
         let mut is_leaf_tree = true;
 
         let kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query);
@@ -62,7 +76,7 @@ impl GroveDb {
                 continue;
             }
 
-            let element = raw_decode(&value_bytes)?;
+            let element = cost_return_on_error_no_add!(&cost, raw_decode(&value_bytes));
             match element {
                 Element::Tree(tree_hash, _) => {
                     if tree_hash == EMPTY_TREE_HASH {
@@ -72,14 +86,17 @@ impl GroveDb {
                     // if the element is a non empty tree then current tree is not a leaf tree
                     if is_leaf_tree {
                         is_leaf_tree = false;
-                        self.generate_and_store_merk_proof(
-                            &subtree,
-                            &query.query.query,
-                            None,
-                            None,
-                            ProofType::MerkProof,
-                            proofs,
-                        )?;
+                        cost_return_on_error!(
+                            &mut cost,
+                            self.generate_and_store_merk_proof(
+                                &subtree,
+                                &query.query.query,
+                                None,
+                                None,
+                                ProofType::MerkProof,
+                                proofs,
+                            )
+                        );
                     }
 
                     let mut new_path = path.clone();
@@ -90,19 +107,23 @@ impl GroveDb {
                     if query.is_some() {
                         if subquery_key.is_some() {
                             // prove the subquery key first
-                            let inner_subtree = self.open_subtree(&new_path)?;
+                            let inner_subtree =
+                                cost_return_on_error!(&mut cost, self.open_subtree(&new_path));
 
                             let mut key_as_query = Query::new();
                             key_as_query.insert_key(subquery_key.clone().unwrap());
 
-                            self.generate_and_store_merk_proof(
-                                &inner_subtree,
-                                &key_as_query,
-                                None,
-                                None,
-                                ProofType::MerkProof,
-                                proofs,
-                            )?;
+                            cost_return_on_error!(
+                                &mut cost,
+                                self.generate_and_store_merk_proof(
+                                    &inner_subtree,
+                                    &key_as_query,
+                                    None,
+                                    None,
+                                    ProofType::MerkProof,
+                                    proofs,
+                                )
+                            );
 
                             new_path.push(subquery_key.as_ref().unwrap());
                         }
@@ -117,18 +138,22 @@ impl GroveDb {
 
                     if self
                         .check_subtree_exists_path_not_found(new_path.clone(), None)
+                        .unwrap_add_cost(&mut cost)
                         .is_err()
                     {
                         continue;
                     }
 
-                    self.prove_subqueries(
-                        proofs,
-                        new_path,
-                        &new_path_query,
-                        current_limit,
-                        current_offset,
-                    )?;
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.prove_subqueries(
+                            proofs,
+                            new_path,
+                            &new_path_query,
+                            current_limit,
+                            current_offset,
+                        )
+                    );
 
                     if *current_limit == Some(0) {
                         break;
@@ -138,7 +163,7 @@ impl GroveDb {
                     // currently not handling trees with mixed types
                     // if a tree has been seen, we should see nothing but tree
                     if is_leaf_tree == false {
-                        return Err(Error::InvalidQuery("mixed tree types"));
+                        return Err(Error::InvalidQuery("mixed tree types")).wrap_with_cost(cost);
                     }
                 }
             }
@@ -148,21 +173,24 @@ impl GroveDb {
         if is_leaf_tree {
             // if no useful subtree, then we care about the result set of this subtree.
             // apply the sized query
-            let limit_offset = self.generate_and_store_merk_proof(
-                &subtree,
-                &query.query.query,
-                *current_limit,
-                *current_offset,
-                ProofType::SizedMerkProof,
-                proofs,
-            )?;
+            let limit_offset = cost_return_on_error!(
+                &mut cost,
+                self.generate_and_store_merk_proof(
+                    &subtree,
+                    &query.query.query,
+                    *current_limit,
+                    *current_offset,
+                    ProofType::SizedMerkProof,
+                    proofs,
+                )
+            );
 
             // update limit and offset values
             *current_limit = limit_offset.0;
             *current_offset = limit_offset.1;
         }
 
-        Ok(())
+        Ok(()).wrap_with_cost(cost)
     }
 
     /// Given a path, construct and append a set of proofs that shows there is
@@ -171,26 +199,33 @@ impl GroveDb {
         &self,
         mut proof_result: &mut Vec<u8>,
         path_slices: Vec<&[u8]>,
-    ) -> Result<(), Error> {
+    ) -> CostContext<Result<(), Error>> {
+        let mut cost = OperationCost::default();
+
         // generate proof to show that the path leads up to the root
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             if path_slice.is_empty() {
                 // generate root proof
                 let meta_storage = self.db.get_storage_context(std::iter::empty());
-                let root_leaf_keys = Self::get_root_leaf_keys_internal(&meta_storage)?;
+                let root_leaf_keys = cost_return_on_error!(
+                    &mut cost,
+                    Self::get_root_leaf_keys_internal(&meta_storage)
+                );
                 let mut index_to_prove: Vec<usize> = vec![];
                 match root_leaf_keys.get(&key.to_vec()) {
                     Some(index) => index_to_prove.push(*index),
-                    None => return Err(Error::InvalidPath("invalid root key")),
+                    None => {
+                        return Err(Error::InvalidPath("invalid root key")).wrap_with_cost(cost)
+                    }
                 }
-                let root_tree = self.get_root_tree(None).expect("should get root tree");
+                let root_tree = cost_return_on_error!(&mut cost, self.get_root_tree(None));
                 let root_proof = root_tree.proof(&index_to_prove).to_bytes();
 
                 // explicitly preventing proof generation as verification would fail
                 // also a good way to detect if the needs of the system get past this point
                 if root_proof.len() >= usize::MAX {
-                    return Err(Error::InvalidProof("proof too large"));
+                    return Err(Error::InvalidProof("proof too large")).wrap_with_cost(cost);
                 }
                 write_to_vec(&mut proof_result, &vec![ProofType::RootProof.into()]);
                 write_to_vec(&mut proof_result, &root_proof.len().to_be_bytes());
@@ -213,22 +248,25 @@ impl GroveDb {
                 // generate proofs for the intermediate paths
                 let path_slices = path_slice.iter().map(|x| *x).collect::<Vec<_>>();
 
-                let subtree = self.open_subtree(&path_slices)?;
+                let subtree = cost_return_on_error!(&mut cost, self.open_subtree(&path_slices));
                 let mut query = Query::new();
                 query.insert_key(key.to_vec());
 
-                self.generate_and_store_merk_proof(
-                    &subtree,
-                    &query,
-                    None,
-                    None,
-                    ProofType::MerkProof,
-                    &mut proof_result,
-                )?;
+                cost_return_on_error!(
+                    &mut cost,
+                    self.generate_and_store_merk_proof(
+                        &subtree,
+                        &query,
+                        None,
+                        None,
+                        ProofType::MerkProof,
+                        &mut proof_result,
+                    )
+                );
             }
             split_path = path_slice.split_last();
         }
-        Ok(())
+        Ok(()).wrap_with_cost(cost)
     }
 
     /// Generates query proof given a subtree and appends the result to a proof
@@ -241,22 +279,24 @@ impl GroveDb {
         offset: Option<u16>,
         proof_type: ProofType,
         proofs: &mut Vec<u8>,
-    ) -> Result<(Option<u16>, Option<u16>), Error>
+    ) -> CostContext<Result<(Option<u16>, Option<u16>), Error>>
     where
         S: StorageContext<'a>,
     {
+        let mut cost = OperationCost::default();
+
         // TODO: How do you handle mixed tree types?
         let mut proof_result = subtree
             .prove_without_encoding(query.clone(), limit, offset).unwrap() // TODO implement costs
             .expect("should generate proof");
 
-        self.replace_references(&mut proof_result)?;
+        cost_return_on_error!(&mut cost, self.replace_references(&mut proof_result));
 
         let mut proof_bytes = Vec::with_capacity(128);
         encode_into(proof_result.proof.iter(), &mut proof_bytes);
 
         if proof_bytes.len() >= usize::MAX {
-            return Err(Error::InvalidProof("proof too large"));
+            return Err(Error::InvalidProof("proof too large")).wrap_with_cost(cost);
         }
 
         let proof_len_bytes: [u8; 8] = proof_bytes.len().to_be_bytes();
@@ -264,21 +304,26 @@ impl GroveDb {
         write_to_vec(proofs, &proof_len_bytes);
         write_to_vec(proofs, &proof_bytes);
 
-        Ok((proof_result.limit, proof_result.offset))
+        Ok((proof_result.limit, proof_result.offset)).wrap_with_cost(cost)
     }
 
     /// Replaces references with the base item they point to
     fn replace_references(
         &self,
         proof_result: &mut ProofWithoutEncodingResult,
-    ) -> Result<(), Error> {
+    ) -> CostContext<Result<(), Error>> {
+        let mut cost = OperationCost::default();
+
         for op in proof_result.proof.iter_mut() {
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
                     Node::KV(_, value) => {
                         let elem = Element::deserialize(value);
                         if let Ok(Element::Reference(reference_path, _)) = elem {
-                            let referenced_elem = self.follow_reference(reference_path, None)?;
+                            let referenced_elem = cost_return_on_error!(
+                                &mut cost,
+                                self.follow_reference(reference_path, None)
+                            );
                             *value = referenced_elem.serialize().unwrap();
                         }
                     }
@@ -287,17 +332,15 @@ impl GroveDb {
                 _ => continue,
             }
         }
-        Ok(())
+        Ok(()).wrap_with_cost(cost)
     }
 
     /// Opens merk at a given path without transaction
     fn open_subtree(
         &self,
         path: &Vec<&[u8]>,
-    ) -> Result<Merk<PrefixedRocksDbStorageContext>, Error> {
+    ) -> CostContext<Result<Merk<PrefixedRocksDbStorageContext>, Error>> {
         let storage = self.db.get_storage_context(path.clone());
-        let subtree = Merk::open(storage).unwrap() // TODO implement costs
-            .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-        Ok(subtree)
+        Merk::open(storage).map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
     }
 }

@@ -49,8 +49,10 @@ impl GroveDb {
             transaction,
             storage,
             {
-                let mut iter = Element::iterator(storage.raw_iter());
-                while let Some((key, element)) = iter.next().expect("cannot get next element") {
+                let mut iter = Element::iterator(storage.raw_iter()).unwrap();
+                while let Some((key, element)) =
+                    iter.next().unwrap().expect("cannot get next element")
+                {
                     drawer.write(b"\n[key: ")?;
                     drawer = key.visualize(drawer)?;
                     drawer.write(b" ")?;
@@ -83,6 +85,7 @@ impl GroveDb {
         drawer.down();
         let root_leaf_keys = self
             .get_root_leaf_keys(transaction)
+            .unwrap()
             .expect("cannot get root leaf keys");
         let keys = root_leaf_keys.iter().fold(
             vec![Vec::new(); root_leaf_keys.len()],
