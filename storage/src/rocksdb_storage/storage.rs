@@ -1,6 +1,9 @@
 //! Impementation for a storage abstraction over RocksDB.
 use std::path::Path;
 
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+};
 use lazy_static::lazy_static;
 use rocksdb::{
     ColumnFamily, ColumnFamilyDescriptor, Error, OptimisticTransactionDB, Transaction,
@@ -153,38 +156,98 @@ impl<'db> Storage<'db> for RocksDbStorage {
         PrefixedRocksDbBatchTransactionContext::new(&self.db, transaction, prefix, batch)
     }
 
-    fn commit_multi_context_batch(&self, batch: StorageBatch) -> Result<(), Self::Error> {
+    fn commit_multi_context_batch(
+        &self,
+        batch: StorageBatch,
+    ) -> CostContext<Result<(), Self::Error>> {
         let mut db_batch = WriteBatchWithTransaction::<true>::default();
+
+        let mut cost = OperationCost::default();
+        // Until batch is commited these costs are pending (should not be added in case of early
+        // termination).
+        let mut pending_storage_written_bytes = 0;
+        let mut pending_storage_freed_bytes = 0;
+
         for op in batch.into_iter() {
             match op {
                 BatchOperation::Put { key, value } => {
                     db_batch.put(key, value);
+                    pending_storage_written_bytes += key.len() + value.len();
                 }
                 BatchOperation::PutAux { key, value } => {
                     db_batch.put_cf(cf_aux(&self.db), key, value);
+                    pending_storage_written_bytes += key.len() + value.len();
                 }
                 BatchOperation::PutRoot { key, value } => {
                     db_batch.put_cf(cf_roots(&self.db), key, value);
+                    pending_storage_written_bytes += key.len() + value.len();
                 }
                 BatchOperation::PutMeta { key, value } => {
                     db_batch.put_cf(cf_meta(&self.db), key, value);
+                    pending_storage_written_bytes += key.len() + value.len();
                 }
                 BatchOperation::Delete { key } => {
                     db_batch.delete(key);
+
+                    // TODO: fix not atomic freed size computation
+                    cost.seek_count += 1;
+                    let value_len = cost_return_on_error_no_add!(&cost, self.db.get(&key))
+                        .map(|x| x.len())
+                        .unwrap_or(0);
+                    cost.storage_loaded_bytes += value_len;
+
+                    pending_storage_freed_bytes += key.len() + value_len;
                 }
                 BatchOperation::DeleteAux { key } => {
                     db_batch.delete_cf(cf_aux(&self.db), key);
+
+                    // TODO: fix not atomic freed size computation
+                    cost.seek_count += 1;
+                    let value_len =
+                        cost_return_on_error_no_add!(&cost, self.db.get_cf(cf_aux(&self.db), &key))
+                            .map(|x| x.len())
+                            .unwrap_or(0);
+                    cost.storage_loaded_bytes += value_len;
+
+                    pending_storage_freed_bytes += key.len() + value_len;
                 }
                 BatchOperation::DeleteRoot { key } => {
                     db_batch.delete_cf(cf_roots(&self.db), key);
+
+                    // TODO: fix not atomic freed size computation
+                    cost.seek_count += 1;
+                    let value_len = cost_return_on_error_no_add!(
+                        &cost,
+                        self.db.get_cf(cf_roots(&self.db), &key)
+                    )
+                    .map(|x| x.len())
+                    .unwrap_or(0);
+                    cost.storage_loaded_bytes += value_len;
+
+                    pending_storage_freed_bytes += key.len() + value_len;
                 }
                 BatchOperation::DeleteMeta { key } => {
                     db_batch.delete_cf(cf_meta(&self.db), key);
+
+                    // TODO: fix not atomic freed size computation
+                    cost.seek_count += 1;
+                    let value_len = cost_return_on_error_no_add!(
+                        &cost,
+                        self.db.get_cf(cf_meta(&self.db), &key)
+                    )
+                    .map(|x| x.len())
+                    .unwrap_or(0);
+                    cost.storage_loaded_bytes += value_len;
+
+                    pending_storage_freed_bytes += key.len() + value_len;
                 }
             }
         }
-        self.db.write(db_batch)?;
-        Ok(())
+        cost_return_on_error_no_add!(&cost, self.db.write(db_batch));
+
+        cost.storage_written_bytes += pending_storage_written_bytes;
+        cost.storage_freed_bytes += pending_storage_freed_bytes;
+        Ok(()).wrap_with_cost(cost)
     }
 
     fn commit_multi_context_batch_with_transaction(
