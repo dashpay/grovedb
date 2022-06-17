@@ -315,7 +315,7 @@ impl GroveDbWrapper {
                 path_slice,
                 &key,
                 using_transaction.then(|| transaction).flatten(),
-            );
+            ).unwrap(); // Todo: Costs
 
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);
@@ -362,7 +362,7 @@ impl GroveDbWrapper {
                 path_slice,
                 &key,
                 using_transaction.then(|| transaction).flatten(),
-            );
+            ).unwrap(); // Todo: Costs;
 
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);
@@ -409,7 +409,7 @@ impl GroveDbWrapper {
                 &key,
                 element,
                 using_transaction.then(|| transaction).flatten(),
-            );
+            ).unwrap(); // Todo: Costs;
 
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);
@@ -450,7 +450,7 @@ impl GroveDbWrapper {
                 &key,
                 element,
                 using_transaction.then(|| transaction).flatten(),
-            );
+            ).unwrap(); // Todo: Costs;
 
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);
@@ -491,7 +491,7 @@ impl GroveDbWrapper {
                 &key,
                 &value,
                 using_transaction.then(|| transaction).flatten(),
-            );
+            ).unwrap(); // Todo: Costs;
 
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);
@@ -528,7 +528,7 @@ impl GroveDbWrapper {
 
         db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let result =
-                grove_db.delete_aux(&key, using_transaction.then(|| transaction).flatten());
+                grove_db.delete_aux(&key, using_transaction.then(|| transaction).flatten()).unwrap(); // Todo: Costs;
 
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);
@@ -564,7 +564,7 @@ impl GroveDbWrapper {
         let using_transaction = js_using_transaction.value(&mut cx);
 
         db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
-            let result = grove_db.get_aux(&key, using_transaction.then(|| transaction).flatten());
+            let result = grove_db.get_aux(&key, using_transaction.then(|| transaction).flatten()).unwrap(); // Todo: Costs;
 
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);
@@ -610,7 +610,7 @@ impl GroveDbWrapper {
             let result = grove_db.get_path_query(
                 &path_query,
                 using_transaction.then(|| transaction).flatten(),
-            );
+            ).unwrap(); // Todo: Costs;
 
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);
@@ -702,7 +702,7 @@ impl GroveDbWrapper {
         let using_transaction = js_using_transaction.value(&mut cx);
 
         db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
-            let result = grove_db.root_hash(using_transaction.then(|| transaction).flatten());
+            let result = grove_db.root_hash(using_transaction.then(|| transaction).flatten()).unwrap(); // Todo: Costs;
 
             channel.send(move |mut task_context| {
                 let callback = js_callback.into_inner(&mut task_context);

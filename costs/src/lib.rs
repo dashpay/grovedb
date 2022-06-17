@@ -50,9 +50,9 @@ impl AddAssign for OperationCost {
 #[derive(Debug, Eq, PartialEq)]
 pub struct CostContext<T> {
     /// Wrapped operation's return value.
-    value: T,
+    pub value: T,
     /// Cost of the operation.
-    cost: OperationCost,
+    pub cost: OperationCost,
 }
 
 /// General combinators for `CostContext`.
