@@ -260,6 +260,46 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
+    fn apply_body_direct<'db, S: StorageContext<'db>>(
+        &self,
+        sorted_operations: Vec<GroveDbOp>,
+        temp_root_leaves: &mut BTreeMap<Vec<u8>, usize>,
+        get_merk_fn: impl Fn(&[Vec<u8>]) -> CostContext<Result<Merk<S>, Error>>,
+    ) -> CostContext<Result<(), Error>> {
+        let mut cost = OperationCost::default();
+        let mut temp_subtrees: BTreeMap<Vec<Vec<u8>>, Merk<_>> = BTreeMap::new();
+        for op in sorted_operations.into_iter() {
+            if op.path.is_empty() {
+                // Altering root leaves
+                // We don't match operation here as only insertion is supported
+                if temp_root_leaves.get(&op.key).is_none() {
+                    temp_root_leaves.insert(op.key, temp_root_leaves.len());
+                }
+            } else {
+                // Keep opened Merk instances to accumulate changes before taking final root
+                // hash
+                let mut merk = cost_return_on_error!(
+                    &mut cost,
+                    temp_subtrees
+                        .remove(&op.path)
+                        .map(|x| Ok(x).wrap_with_cost(Default::default()))
+                        .unwrap_or_else(|| get_merk_fn(&op.path))
+                );
+                match op.op {
+                    Op::Insert { element } => {
+                        cost_return_on_error!(&mut cost, element.insert(&mut merk, op.key));
+                        temp_subtrees.insert(op.path.clone(), merk);
+                    }
+                    Op::Delete => {
+                        cost_return_on_error!(&mut cost, Element::delete(&mut merk, op.key));
+                        temp_subtrees.insert(op.path.clone(), merk);
+                    }
+                }
+            }
+        }
+        Ok(()).wrap_with_cost(cost)
+    }
+
     /// Validates batch using a set of rules:
     /// 1. Subtree must exist to perform operations on it;
     /// 2. Subtree is treated as exising if it can be found in storage;
@@ -402,6 +442,121 @@ impl GroveDb {
     }
 
     /// Applies batch of operations on GroveDB
+    /// While is extremely fast, it is also quite dangerous
+    pub fn apply_sorted_pre_validated_batch(
+        &self,
+        ops: Vec<GroveDbOp>,
+        transaction: TransactionArg,
+    ) -> CostContext<Result<(), Error>> {
+        let mut cost = OperationCost::default();
+
+        // Helper function to store updated root leaves
+        fn save_root_leaves<'db, S>(
+            storage: S,
+            temp_root_leaves: &BTreeMap<Vec<u8>, usize>,
+        ) -> CostContext<Result<(), Error>>
+        where
+            S: StorageContext<'db>,
+            Error: From<<S as storage::StorageContext<'db>>::Error>,
+        {
+            let cost = OperationCost::default();
+
+            let root_leaves_serialized = cost_return_on_error_no_add!(
+                &cost,
+                bincode::serialize(&temp_root_leaves).map_err(|_| {
+                    Error::CorruptedData(String::from("unable to serialize root leaves data"))
+                })
+            );
+            storage
+                .put_meta(ROOT_LEAFS_SERIALIZED_KEY, &root_leaves_serialized)
+                .map_err(|e| e.into())
+                .wrap_with_cost(OperationCost {
+                    storage_written_bytes: ROOT_LEAFS_SERIALIZED_KEY.len()
+                        + root_leaves_serialized.len(),
+                    ..Default::default()
+                })
+        }
+
+        if ops.is_empty() {
+            return Ok(()).wrap_with_cost(cost);
+        }
+
+        let mut temp_root_leaves =
+            cost_return_on_error!(&mut cost, self.get_root_leaf_keys(transaction));
+
+        // `StorageBatch` allows us to collect operations on different subtrees before
+        // execution
+        let storage_batch = StorageBatch::new();
+
+        // With the only one difference (if there is a transaction) do the following:
+        // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
+        //    one subtree and moved to another then add propagation operation to the
+        //    operations tree and drop Merk handle;
+        // 3. Take Merk from temp subtrees or open a new one with batched storage
+        //    context;
+        // 4. Apply operation to the Merk;
+        // 5. Remove operation from the tree, repeat until there are operations to do;
+        // 6. Add root leaves save operation to the batch
+        // 7. Apply storage batch
+        if let Some(tx) = transaction {
+            cost_return_on_error!(
+                &mut cost,
+                self.apply_body_direct(ops, &mut temp_root_leaves, |path| {
+                    let storage = self.db.get_batch_transactional_storage_context(
+                        path.iter().map(|x| x.as_slice()),
+                        &storage_batch,
+                        tx,
+                    );
+                    Merk::open(storage)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                })
+            );
+
+            let meta_storage = self.db.get_batch_transactional_storage_context(
+                std::iter::empty(),
+                &storage_batch,
+                tx,
+            );
+
+            cost_return_on_error!(&mut cost, save_root_leaves(meta_storage, &temp_root_leaves));
+
+            // TODO: compute batch costs
+            cost_return_on_error_no_add!(
+                &cost,
+                self.db
+                    .commit_multi_context_batch(storage_batch, Some(tx))
+                    .map_err(|e| e.into())
+            );
+        } else {
+            cost_return_on_error!(
+                &mut cost,
+                self.apply_body_direct(ops, &mut temp_root_leaves, |path| {
+                    let storage = self.db.get_batch_storage_context(
+                        path.iter().map(|x| x.as_slice()),
+                        &storage_batch,
+                    );
+                    Merk::open(storage)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                })
+            );
+
+            let meta_storage = self
+                .db
+                .get_batch_storage_context(std::iter::empty(), &storage_batch);
+            cost_return_on_error!(&mut cost, save_root_leaves(meta_storage, &temp_root_leaves));
+
+            // TODO: compute batch costs
+            cost_return_on_error_no_add!(
+                &cost,
+                self.db
+                    .commit_multi_context_batch(storage_batch, None)
+                    .map_err(|e| e.into())
+            );
+        }
+        Ok(()).wrap_with_cost(cost)
+    }
+
+    /// Applies batch of operations on GroveDB
     pub fn apply_batch(
         &self,
         ops: Vec<GroveDbOp>,
@@ -452,9 +607,9 @@ impl GroveDb {
 
         let mut validated_operations = if validate {
             cost_return_on_error!(
-            &mut cost,
-            self.validate_batch(sorted_operations, &temp_root_leaves, transaction)
-        )
+                &mut cost,
+                self.validate_batch(sorted_operations, &temp_root_leaves, transaction)
+            )
         } else {
             sorted_operations
         };
@@ -606,8 +761,9 @@ mod tests {
         let db = make_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"keyb", Element::empty_tree(), Some(&tx)).
-            unwrap().expect("successful root tree leaf insert");
+        db.insert(vec![], b"keyb", Element::empty_tree(), Some(&tx))
+            .unwrap()
+            .expect("successful root tree leaf insert");
 
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
@@ -639,30 +795,41 @@ mod tests {
                 element2.clone(),
             ),
         ];
-        db.apply_batch(ops, true, Some(&tx)).
-        unwrap().expect("cannot apply batch");
-        db.get([], b"keyb", None).unwrap()
+        db.apply_batch(ops, true, Some(&tx))
+            .unwrap()
+            .expect("cannot apply batch");
+        db.get([], b"keyb", None)
+            .unwrap()
             .expect_err("we should not get an element");
-        db.get([], b"keyb", Some(&tx)).unwrap()
+        db.get([], b"keyb", Some(&tx))
+            .unwrap()
             .expect("we should get an element");
 
-        db.get([], b"key1", None).unwrap()
+        db.get([], b"key1", None)
+            .unwrap()
             .expect_err("we should not get an element");
-        db.get([], b"key1", Some(&tx)).unwrap().expect("cannot get element");
-        db.get([b"key1".as_ref()], b"key2", Some(&tx)).unwrap()
+        db.get([], b"key1", Some(&tx))
+            .unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref(), b"key2"], b"key3", Some(&tx)).unwrap()
+        db.get([b"key1".as_ref()], b"key2", Some(&tx))
+            .unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx)).unwrap()
+        db.get([b"key1".as_ref(), b"key2"], b"key3", Some(&tx))
+            .unwrap()
+            .expect("cannot get element");
+        db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx))
+            .unwrap()
             .expect("cannot get element");
 
         assert_eq!(
-            db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx)).unwrap()
+            db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx))
+                .unwrap()
                 .expect("cannot get element"),
             element
         );
         assert_eq!(
-            db.get([TEST_LEAF, b"key1"], b"key2", Some(&tx)).unwrap()
+            db.get([TEST_LEAF, b"key1"], b"key2", Some(&tx))
+                .unwrap()
                 .expect("cannot get element"),
             element2
         );
