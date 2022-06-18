@@ -1,7 +1,12 @@
 pub mod chunks;
 // TODO
 // pub mod restore;
-use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt};
+use std::{
+    cell::Cell,
+    cmp::Ordering,
+    collections::{BTreeSet, LinkedList},
+    fmt,
+};
 
 use anyhow::{anyhow, Result};
 use costs::{
@@ -602,6 +607,18 @@ where
         iter.seek_to_first();
 
         !iter.valid()
+    }
+
+    pub fn is_empty_tree_except(&self, mut except_keys: BTreeSet<&[u8]>) -> bool {
+        let mut iter = self.storage.raw_iter();
+        iter.seek_to_first();
+        while let Some(key) = iter.key() {
+            if except_keys.take(key).is_none() {
+                return false;
+            }
+            iter.next()
+        }
+        return true;
     }
 
     fn source(&self) -> MerkSource<S> {

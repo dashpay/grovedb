@@ -803,7 +803,7 @@ mod batch_no_transaction {
         assert_eq!(batch.len(), 8);
 
         storage
-            .commit_multi_context_batch(batch)
+            .commit_multi_context_batch(batch, None)
             .expect("cannot commit batch");
 
         let context_ayya = storage.get_storage_context(to_path(b"ayya"));
@@ -930,7 +930,7 @@ mod batch_no_transaction {
             .is_none());
 
         storage
-            .commit_multi_context_batch(batch)
+            .commit_multi_context_batch(batch, None)
             .expect("cannot commit multi context batch");
 
         let context_ayya = storage.get_storage_context(to_path(b"ayya"));
@@ -1031,7 +1031,7 @@ mod batch_transaction {
             .is_none());
 
         storage
-            .commit_multi_context_batch_with_transaction(batch, &transaction)
+            .commit_multi_context_batch(batch, Some(&transaction))
             .expect("cannot commit batch");
 
         // Commited batch data is accessible in transaction but not outside
@@ -1106,7 +1106,7 @@ mod batch_transaction {
 
         // Commited batch's data should be visible in transaction
         storage
-            .commit_multi_context_batch_with_transaction(batch, &transaction)
+            .commit_multi_context_batch(batch, Some(&transaction))
             .expect("cannot commit multi-context batch");
 
         // Obtaining new contexts outside a commited batch but still within a

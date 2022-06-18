@@ -112,7 +112,6 @@ impl GroveDb {
         transaction: TransactionArg,
     ) -> CostContext<Result<(), Error>> {
         let mut cost = OperationCost::default();
-
         meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
             let mut root_leaf_keys =
                 cost_return_on_error!(&mut cost, Self::get_root_leaf_keys_internal(&meta_storage));

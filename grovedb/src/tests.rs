@@ -3769,6 +3769,10 @@ fn test_tree_value_exists_method_no_tx() {
     assert!(!db.has_raw([TEST_LEAF], b"badkey", None).unwrap().unwrap());
 
     // Test keys for a root tree
+    db.insert([], b"leaf", Element::empty_tree(), None)
+        .unwrap().expect("cannot insert item");
+
+    assert!(db.has_raw([], b"leaf", None).unwrap().unwrap());
     assert!(db.has_raw([], TEST_LEAF, None).unwrap().unwrap());
     assert!(!db.has_raw([], b"badleaf", None).unwrap().unwrap());
 }
