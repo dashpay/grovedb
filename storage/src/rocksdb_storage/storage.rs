@@ -99,8 +99,12 @@ impl<'db> Storage<'db> for RocksDbStorage {
         self.db.transaction()
     }
 
-    fn commit_transaction(&self, transaction: Self::Transaction) -> Result<(), Self::Error> {
-        transaction.commit()
+    fn commit_transaction(
+        &self,
+        transaction: Self::Transaction,
+    ) -> CostContext<Result<(), Self::Error>> {
+        todo!()
+        // transaction.commit()
     }
 
     fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Self::Error> {
@@ -163,8 +167,8 @@ impl<'db> Storage<'db> for RocksDbStorage {
         let mut db_batch = WriteBatchWithTransaction::<true>::default();
 
         let mut cost = OperationCost::default();
-        // Until batch is commited these costs are pending (should not be added in case of early
-        // termination).
+        // Until batch is commited these costs are pending (should not be added in case
+        // of early termination).
         let mut pending_storage_written_bytes = 0;
         let mut pending_storage_freed_bytes = 0;
 
