@@ -288,11 +288,11 @@ impl GroveDb {
                 match op.op {
                     Op::Insert { element } => {
                         cost_return_on_error!(&mut cost, element.insert(&mut merk, op.key));
-                        temp_subtrees.insert(op.path.clone(), merk);
+                        temp_subtrees.insert(op.path, merk);
                     }
                     Op::Delete => {
                         cost_return_on_error!(&mut cost, Element::delete(&mut merk, op.key));
-                        temp_subtrees.insert(op.path.clone(), merk);
+                        temp_subtrees.insert(op.path, merk);
                     }
                 }
             }
