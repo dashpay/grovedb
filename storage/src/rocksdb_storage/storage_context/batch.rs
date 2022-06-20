@@ -36,169 +36,155 @@ impl Default for DummyBatch {
 }
 
 impl Batch for DummyBatch {
-    type Error = Infallible;
-
-    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.operations.push(BatchOperation::Put {
             key: key.as_ref().to_vec(),
             value: value.to_vec(),
         });
-        Ok(())
     }
 
-    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.operations.push(BatchOperation::PutAux {
             key: key.as_ref().to_vec(),
             value: value.to_vec(),
         });
-        Ok(())
     }
 
-    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.operations.push(BatchOperation::PutRoot {
             key: key.as_ref().to_vec(),
             value: value.to_vec(),
         });
-        Ok(())
     }
 
-    fn delete<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+    fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
         self.operations.push(BatchOperation::Delete {
             key: key.as_ref().to_vec(),
         });
-        Ok(())
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) {
         self.operations.push(BatchOperation::DeleteAux {
             key: key.as_ref().to_vec(),
         });
-        Ok(())
     }
 
-    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) {
         self.operations.push(BatchOperation::DeleteRoot {
             key: key.as_ref().to_vec(),
         });
-        Ok(())
     }
 }
 
 /// Implementation of a batch ouside a transaction
 impl<'db> Batch for PrefixedRocksDbBatch<'db, WriteBatchWithTransaction<true>> {
-    type Error = Infallible;
-
-    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.batch
             .put(make_prefixed_key(self.prefix.clone(), key), value);
-        Ok(())
     }
 
-    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.batch.put_cf(
             self.cf_aux,
             make_prefixed_key(self.prefix.clone(), key),
             value,
         );
-        Ok(())
     }
 
-    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.batch.put_cf(
             self.cf_roots,
             make_prefixed_key(self.prefix.clone(), key),
             value,
         );
-        Ok(())
     }
 
-    fn delete<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+    fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
         self.batch
             .delete(make_prefixed_key(self.prefix.clone(), key));
-        Ok(())
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) {
         self.batch
             .delete_cf(self.cf_aux, make_prefixed_key(self.prefix.clone(), key));
-        Ok(())
     }
 
-    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) {
         self.batch
             .delete_cf(self.cf_roots, make_prefixed_key(self.prefix.clone(), key));
-        Ok(())
     }
 }
 
 /// Implementation of a batch inside a transaction.
-/// Basically just proxies all calls to the underlying transaction.
+/// Basically just proxies all calls to the underlying transaction. TODO: that's wrong!
 impl<'ctx, 'db> Batch for &'ctx PrefixedRocksDbTransactionContext<'db> {
-    type Error = <PrefixedRocksDbTransactionContext<'db> as StorageContext<'db>>::Error;
-
-    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         StorageContext::put(*self, key, value)
+            .unwrap()
+            .expect("TODO: batch append should not fail")
     }
 
-    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         StorageContext::put_aux(*self, key, value)
+            .unwrap()
+            .expect("TODO: batch append should not fail")
     }
 
-    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         StorageContext::put_root(*self, key, value)
+            .unwrap()
+            .expect("TODO: batch append should not fail")
     }
 
-    fn delete<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+    fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
         StorageContext::delete(*self, key)
+            .unwrap()
+            .expect("TODO: batch append should not fail")
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) {
         StorageContext::delete_aux(*self, key)
+            .unwrap()
+            .expect("TODO: batch append should not fail")
     }
 
-    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) {
         StorageContext::delete_root(*self, key)
+            .unwrap()
+            .expect("TODO: batch append should not fail")
     }
 }
 
 /// Implementation of a rocksdb batch ouside a transaction for multi-context
 /// batch
 impl Batch for PrefixedMultiContextBatchPart {
-    type Error = Infallible;
-
-    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.batch
             .put(make_prefixed_key(self.prefix.clone(), key), value.to_vec());
-        Ok(())
     }
 
-    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.batch
             .put_aux(make_prefixed_key(self.prefix.clone(), key), value.to_vec());
-        Ok(())
     }
 
-    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) -> Result<(), Self::Error> {
+    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.batch
             .put_root(make_prefixed_key(self.prefix.clone(), key), value.to_vec());
-        Ok(())
     }
 
-    fn delete<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+    fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
         self.batch
             .delete(make_prefixed_key(self.prefix.clone(), key));
-        Ok(())
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) {
         self.batch
             .delete_aux(make_prefixed_key(self.prefix.clone(), key));
-        Ok(())
     }
 
-    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) -> Result<(), Self::Error> {
+    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) {
         self.batch
             .delete_root(make_prefixed_key(self.prefix.clone(), key));
-        Ok(())
     }
 }

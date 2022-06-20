@@ -229,42 +229,45 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         DummyBatch::default()
     }
 
-    fn commit_batch(&self, batch: Self::Batch) -> Result<(), Self::Error> {
+    fn commit_batch(&self, batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
+        // TODO: this one alters the transaction, but should not on failure
+        let mut cost = OperationCost::default();
+
         for op in batch.operations {
             match op {
                 BatchOperation::Put { key, value } => {
-                    self.put(key, &value)?;
+                    cost_return_on_error!(&mut cost, self.put(key, &value));
                 }
                 BatchOperation::PutAux { key, value } => {
-                    self.put_aux(key, &value)?;
+                    cost_return_on_error!(&mut cost, self.put_aux(key, &value));
                 }
                 BatchOperation::PutRoot { key, value } => {
-                    self.put_root(key, &value)?;
+                    cost_return_on_error!(&mut cost, self.put_root(key, &value));
                 }
                 BatchOperation::PutMeta { key, value } => {
-                    self.put_meta(key, &value)?;
+                    cost_return_on_error!(&mut cost, self.put_meta(key, &value));
                 }
                 BatchOperation::Delete { key } => {
-                    self.delete(key)?;
+                    cost_return_on_error!(&mut cost, self.delete(key));
                 }
                 BatchOperation::DeleteAux { key } => {
-                    self.delete_aux(key)?;
+                    cost_return_on_error!(&mut cost, self.delete_aux(key));
                 }
                 BatchOperation::DeleteRoot { key } => {
-                    self.delete_root(key)?;
+                    cost_return_on_error!(&mut cost, self.delete_root(key));
                 }
                 BatchOperation::DeleteMeta { key } => {
-                    self.delete_meta(key)?;
+                    cost_return_on_error!(&mut cost, self.delete_meta(key));
                 }
             }
         }
-        Ok(())
+        Ok(()).wrap_with_cost(cost)
     }
 
-    fn raw_iter(&self) -> Self::RawIterator {
+    fn raw_iter(&self) -> CostContext<Self::RawIterator> {
         PrefixedRocksDbRawIterator {
             prefix: self.prefix.clone(),
             raw_iterator: self.transaction.raw_iterator(),
-        }
+        }.wrap_with_cost(Default::default())
     }
 }

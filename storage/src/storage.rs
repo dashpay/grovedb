@@ -163,9 +163,6 @@ pub trait StorageContext<'db> {
 
 /// Database batch (not to be confused with multi-tree operations batch).
 pub trait Batch {
-    /// Error type for failed operations on the batch.
-    type Error: std::error::Error + Send + Sync + 'static;
-
     /// Appends to the database batch a put operation for a data record.
     fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]);
 
