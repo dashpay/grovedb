@@ -1218,4 +1218,40 @@ mod tests {
             .unwrap()
             .expect("cannot apply same batch twice");
     }
+
+    #[test]
+    fn test_apply_sorted_pre_validated_batch_propagation() {
+        let db = make_grovedb();
+        let full_path = vec![
+            b"leaf1".to_vec(),
+            b"sub1".to_vec(),
+            b"sub2".to_vec(),
+            b"sub3".to_vec(),
+            b"sub4".to_vec(),
+            b"sub5".to_vec(),
+        ];
+        let mut acc_path: Vec<Vec<u8>> = vec![];
+        for p in full_path.into_iter() {
+            db.insert(
+                acc_path.iter().map(|x| x.as_slice()),
+                &p,
+                Element::empty_tree(),
+                None,
+            )
+            .unwrap();
+            acc_path.push(p);
+        }
+
+        let root_hash = db.root_hash(None).unwrap().unwrap();
+
+        let element = Element::new_item(b"ayy".to_vec());
+        let batch = vec![GroveDbOp::insert(
+            acc_path.clone(),
+            b"key".to_vec(),
+            element.clone(),
+        )];
+        db.apply_sorted_pre_validated_batch(batch, None).unwrap().expect("cannot apply batch");
+
+        assert_ne!(db.root_hash(None).unwrap().unwrap(), root_hash);
+    }
 }
