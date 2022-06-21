@@ -452,9 +452,9 @@ impl GroveDb {
 
         let mut validated_operations = if validate {
             cost_return_on_error!(
-            &mut cost,
-            self.validate_batch(sorted_operations, &temp_root_leaves, transaction)
-        )
+                &mut cost,
+                self.validate_batch(sorted_operations, &temp_root_leaves, transaction)
+            )
         } else {
             sorted_operations
         };
@@ -606,8 +606,9 @@ mod tests {
         let db = make_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"keyb", Element::empty_tree(), Some(&tx)).
-            unwrap().expect("successful root tree leaf insert");
+        db.insert(vec![], b"keyb", Element::empty_tree(), Some(&tx))
+            .unwrap()
+            .expect("successful root tree leaf insert");
 
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
@@ -639,30 +640,41 @@ mod tests {
                 element2.clone(),
             ),
         ];
-        db.apply_batch(ops, true, Some(&tx)).
-        unwrap().expect("cannot apply batch");
-        db.get([], b"keyb", None).unwrap()
+        db.apply_batch(ops, true, Some(&tx))
+            .unwrap()
+            .expect("cannot apply batch");
+        db.get([], b"keyb", None)
+            .unwrap()
             .expect_err("we should not get an element");
-        db.get([], b"keyb", Some(&tx)).unwrap()
+        db.get([], b"keyb", Some(&tx))
+            .unwrap()
             .expect("we should get an element");
 
-        db.get([], b"key1", None).unwrap()
+        db.get([], b"key1", None)
+            .unwrap()
             .expect_err("we should not get an element");
-        db.get([], b"key1", Some(&tx)).unwrap().expect("cannot get element");
-        db.get([b"key1".as_ref()], b"key2", Some(&tx)).unwrap()
+        db.get([], b"key1", Some(&tx))
+            .unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref(), b"key2"], b"key3", Some(&tx)).unwrap()
+        db.get([b"key1".as_ref()], b"key2", Some(&tx))
+            .unwrap()
             .expect("cannot get element");
-        db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx)).unwrap()
+        db.get([b"key1".as_ref(), b"key2"], b"key3", Some(&tx))
+            .unwrap()
+            .expect("cannot get element");
+        db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx))
+            .unwrap()
             .expect("cannot get element");
 
         assert_eq!(
-            db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx)).unwrap()
+            db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", Some(&tx))
+                .unwrap()
                 .expect("cannot get element"),
             element
         );
         assert_eq!(
-            db.get([TEST_LEAF, b"key1"], b"key2", Some(&tx)).unwrap()
+            db.get([TEST_LEAF, b"key1"], b"key2", Some(&tx))
+                .unwrap()
                 .expect("cannot get element"),
             element2
         );

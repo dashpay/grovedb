@@ -758,6 +758,24 @@ fn test_root_tree_leaves_are_noted() {
 }
 
 #[test]
+fn test_proof_for_non_existent_data() {
+    let temp_db = make_grovedb();
+
+    let mut query = Query::new();
+    query.insert_key(b"key1".to_vec());
+
+    // path to empty subtree
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+    let proof = temp_db.prove(&path_query).unwrap().unwrap();
+    let (hash, result_set) =
+        GroveDb::execute_proof(proof.as_slice(), &path_query).expect("should execute proof");
+
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(result_set.len(), 0);
+}
+
+#[test]
 fn test_path_query_proofs_without_subquery_with_reference() {
     // Tree Structure
     // root
@@ -3770,7 +3788,8 @@ fn test_tree_value_exists_method_no_tx() {
 
     // Test keys for a root tree
     db.insert([], b"leaf", Element::empty_tree(), None)
-        .unwrap().expect("cannot insert item");
+        .unwrap()
+        .expect("cannot insert item");
 
     assert!(db.has_raw([], b"leaf", None).unwrap().unwrap());
     assert!(db.has_raw([], TEST_LEAF, None).unwrap().unwrap());
