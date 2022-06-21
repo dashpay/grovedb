@@ -141,7 +141,6 @@ impl GroveDb {
                     let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
                     let new_path_query = PathQuery::new_unsized(new_path_owned, query.unwrap());
 
-                    // TODO: check if empty tree issue is here also
                     if self
                         .check_subtree_exists_path_not_found(new_path.clone(), None)
                         .unwrap_add_cost(&mut cost)
@@ -175,9 +174,6 @@ impl GroveDb {
             }
         }
 
-        // TODO: Explore the chance that a subquery key might lead to non tree element
-        // might be a leaf tree, but might able be an empty tree
-        // what to do in the case of an empty tree
         if is_leaf_tree {
             // if no useful subtree, then we care about the result set of this subtree.
             // apply the sized query
