@@ -1206,6 +1206,7 @@ mod batch_transaction {
 
         storage
             .commit_multi_context_batch_with_transaction(batch, &transaction)
+            .unwrap()
             .expect("cannot commit batch");
 
         // Commited batch data is accessible in transaction but not outside
@@ -1287,6 +1288,7 @@ mod batch_transaction {
         // Commited batch's data should be visible in transaction
         storage
             .commit_multi_context_batch_with_transaction(batch, &transaction)
+            .unwrap()
             .expect("cannot commit multi-context batch");
 
         // Obtaining new contexts outside a commited batch but still within a

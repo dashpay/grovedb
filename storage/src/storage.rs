@@ -51,7 +51,7 @@ pub trait Storage<'db> {
         &self,
         batch: StorageBatch,
         transaction: &'db Self::Transaction,
-    ) -> Result<(), Self::Error>;
+    ) -> CostContext<Result<(), Self::Error>>;
 
     /// Forces data to be written
     fn flush(&self) -> Result<(), Self::Error>;

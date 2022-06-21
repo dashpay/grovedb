@@ -256,28 +256,90 @@ impl<'db> Storage<'db> for RocksDbStorage {
         &self,
         batch: StorageBatch,
         transaction: &'db Self::Transaction,
-    ) -> Result<(), Self::Error> {
+    ) -> CostContext<Result<(), Self::Error>> {
+        let mut cost = OperationCost::default();
+        // Until batch is commited these costs are pending (should not be added in case
+        // of early termination).
+        let mut pending_storage_written_bytes = 0;
+        let mut pending_storage_freed_bytes = 0;
+
         transaction.set_savepoint();
         let batch_result: Result<(), Self::Error> = batch.into_iter().try_for_each(|op| match op {
-            BatchOperation::Put { key, value } => transaction.put(key, value),
+            BatchOperation::Put { key, value } => {
+                pending_storage_written_bytes += key.len() + value.len();
+                transaction.put(&key, &value)
+            }
             BatchOperation::PutAux { key, value } => {
-                transaction.put_cf(cf_aux(&self.db), key, value)
+                pending_storage_written_bytes += key.len() + value.len();
+                transaction.put_cf(cf_aux(&self.db), &key, &value)
             }
             BatchOperation::PutRoot { key, value } => {
-                transaction.put_cf(cf_roots(&self.db), key, value)
+                pending_storage_written_bytes += key.len() + value.len();
+                transaction.put_cf(cf_roots(&self.db), &key, &value)
             }
             BatchOperation::PutMeta { key, value } => {
-                transaction.put_cf(cf_meta(&self.db), key, value)
+                pending_storage_written_bytes += key.len() + value.len();
+                transaction.put_cf(cf_meta(&self.db), &key, &value)
             }
-            BatchOperation::Delete { key } => transaction.delete(key),
-            BatchOperation::DeleteAux { key } => transaction.delete_cf(cf_aux(&self.db), key),
-            BatchOperation::DeleteRoot { key } => transaction.delete_cf(cf_roots(&self.db), key),
-            BatchOperation::DeleteMeta { key } => transaction.delete_cf(cf_meta(&self.db), key),
+            BatchOperation::Delete { key } => {
+                // TODO: fix not atomic freed size computation
+                cost.seek_count += 1;
+                let value_len = match self.db.get(&key) {
+                    Ok(value) => value.map(|x| x.len()).unwrap_or(0),
+                    Err(e) => return Err(e),
+                };
+
+                cost.storage_loaded_bytes += value_len;
+                pending_storage_freed_bytes += key.len() + value_len;
+
+                transaction.delete(&key)
+            }
+            BatchOperation::DeleteAux { key } => {
+                // TODO: fix not atomic freed size computation
+                cost.seek_count += 1;
+                let value_len = match self.db.get_cf(cf_aux(&self.db), &key) {
+                    Ok(value) => value.map(|x| x.len()).unwrap_or(0),
+                    Err(e) => return Err(e),
+                };
+                cost.storage_loaded_bytes += value_len;
+                pending_storage_freed_bytes += key.len() + value_len;
+
+                transaction.delete_cf(cf_aux(&self.db), &key)
+            }
+            BatchOperation::DeleteRoot { key } => {
+                // TODO: fix not atomic freed size computation
+                cost.seek_count += 1;
+                let value_len = match self.db.get_cf(cf_roots(&self.db), &key) {
+                    Ok(value) => value.map(|x| x.len()).unwrap_or(0),
+                    Err(e) => return Err(e),
+                };
+                cost.storage_loaded_bytes += value_len;
+                pending_storage_freed_bytes += key.len() + value_len;
+
+                transaction.delete_cf(cf_roots(&self.db), &key)
+            }
+            BatchOperation::DeleteMeta { key } => {
+                // TODO: fix not atomic freed size computation
+                cost.seek_count += 1;
+                let value_len = match self.db.get_cf(cf_meta(&self.db), &key) {
+                    Ok(value) => value.map(|x| x.len()).unwrap_or(0),
+                    Err(e) => return Err(e),
+                };
+                cost.storage_loaded_bytes += value_len;
+                pending_storage_freed_bytes += key.len() + value_len;
+
+                transaction.delete_cf(cf_meta(&self.db), &key)
+            }
         });
+
         if batch_result.is_err() {
-            transaction.rollback_to_savepoint()?;
+            cost_return_on_error_no_add!(&cost, transaction.rollback_to_savepoint());
+            return batch_result.wrap_with_cost(cost);
         }
-        batch_result
+
+        cost.storage_written_bytes += pending_storage_written_bytes;
+        cost.storage_freed_bytes += pending_storage_freed_bytes;
+        batch_result.wrap_with_cost(cost)
     }
 }
 
