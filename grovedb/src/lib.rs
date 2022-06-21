@@ -69,6 +69,9 @@ pub enum Error {
     #[error("data corruption error: {0}")]
     CorruptedData(String),
 
+    #[error("invalid batch operation error: {0}")]
+    InvalidBatchOperation(&'static str),
+
     // Support errors
     #[error("not supported: {0}")]
     NotSupported(&'static str),
