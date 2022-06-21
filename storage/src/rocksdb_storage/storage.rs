@@ -1,9 +1,7 @@
 //! Impementation for a storage abstraction over RocksDB.
 use std::path::Path;
 
-use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
-};
+use costs::{cost_return_on_error_no_add, CostContext, CostsExt, OperationCost};
 use lazy_static::lazy_static;
 use rocksdb::{
     ColumnFamily, ColumnFamilyDescriptor, Error, OptimisticTransactionDB, Transaction,
@@ -65,7 +63,7 @@ impl RocksDbStorage {
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
-    pub fn build_prefix<'a, P>(path: P) -> Vec<u8>
+    pub fn build_prefix<'a, P>(path: P) -> CostContext<Vec<u8>>
     where
         P: IntoIterator<Item = &'a [u8]>,
     {
@@ -83,7 +81,7 @@ impl RocksDbStorage {
         res.extend(segments_count.to_ne_bytes());
         res.extend(lengthes);
         res = blake3::hash(&res).as_bytes().to_vec();
-        res
+        res.wrap_with_cost(OperationCost::with_hash_node_calls(1))
     }
 }
 
@@ -115,36 +113,35 @@ impl<'db> Storage<'db> for RocksDbStorage {
         self.db.flush()
     }
 
-    fn get_storage_context<'p, P>(&'db self, path: P) -> Self::StorageContext
+    fn get_storage_context<'p, P>(&'db self, path: P) -> CostContext<Self::StorageContext>
     where
         P: IntoIterator<Item = &'p [u8]>,
     {
-        let prefix = Self::build_prefix(path);
-        PrefixedRocksDbStorageContext::new(&self.db, prefix)
+        Self::build_prefix(path).map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix))
     }
 
     fn get_transactional_storage_context<'p, P>(
         &'db self,
         path: P,
         transaction: &'db Self::Transaction,
-    ) -> Self::TransactionalStorageContext
+    ) -> CostContext<Self::TransactionalStorageContext>
     where
         P: IntoIterator<Item = &'p [u8]>,
     {
-        let prefix = Self::build_prefix(path);
-        PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix)
+        Self::build_prefix(path)
+            .map(|prefix| PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix))
     }
 
     fn get_batch_storage_context<'p, P>(
         &'db self,
         path: P,
         batch: &'db StorageBatch,
-    ) -> Self::BatchStorageContext
+    ) -> CostContext<Self::BatchStorageContext>
     where
         P: IntoIterator<Item = &'p [u8]>,
     {
-        let prefix = Self::build_prefix(path);
-        PrefixedRocksDbBatchStorageContext::new(&self.db, prefix, batch)
+        Self::build_prefix(path)
+            .map(|prefix| PrefixedRocksDbBatchStorageContext::new(&self.db, prefix, batch))
     }
 
     fn get_batch_transactional_storage_context<'p, P>(
@@ -152,12 +149,13 @@ impl<'db> Storage<'db> for RocksDbStorage {
         path: P,
         batch: &'db StorageBatch,
         transaction: &'db Self::Transaction,
-    ) -> Self::BatchTransactionalStorageContext
+    ) -> CostContext<Self::BatchTransactionalStorageContext>
     where
         P: IntoIterator<Item = &'p [u8]>,
     {
-        let prefix = Self::build_prefix(path);
-        PrefixedRocksDbBatchTransactionContext::new(&self.db, transaction, prefix, batch)
+        Self::build_prefix(path).map(|prefix| {
+            PrefixedRocksDbBatchTransactionContext::new(&self.db, transaction, prefix, batch)
+        })
     }
 
     fn commit_multi_context_batch(
