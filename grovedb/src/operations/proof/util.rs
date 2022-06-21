@@ -9,6 +9,7 @@ pub enum ProofType {
     MerkProof,
     SizedMerkProof,
     RootProof,
+    EmptyTreeProof,
     InvalidProof,
 }
 
@@ -18,6 +19,7 @@ impl From<ProofType> for u8 {
             ProofType::MerkProof => 0x01,
             ProofType::SizedMerkProof => 0x02,
             ProofType::RootProof => 0x03,
+            ProofType::EmptyTreeProof => 0x04,
             ProofType::InvalidProof => 0x10,
         }
     }
@@ -29,6 +31,7 @@ impl From<u8> for ProofType {
             0x01 => ProofType::MerkProof,
             0x02 => ProofType::SizedMerkProof,
             0x03 => ProofType::RootProof,
+            0x04 => ProofType::EmptyTreeProof,
             _ => ProofType::InvalidProof,
         }
     }
@@ -79,6 +82,10 @@ impl<'a> ProofReader<'a> {
         }
 
         let proof_type: ProofType = data_type[0].into();
+
+        if proof_type == ProofType::EmptyTreeProof {
+            return Ok((proof_type, vec![]));
+        }
 
         let mut proof_length = [0; 8 as usize];
         self.proof_data

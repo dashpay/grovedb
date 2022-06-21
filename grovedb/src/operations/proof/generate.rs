@@ -50,7 +50,11 @@ impl GroveDb {
             return Ok(());
         }
 
-        let subtree = self.open_subtree(&path)?;
+        let subtree = cost_return_on_error!(&mut cost, self.open_subtree(&path));
+        if subtree.root_hash().unwrap_add_cost(&mut cost) == EMPTY_TREE_HASH {
+            write_to_vec(proofs, &[ProofType::EmptyTreeProof.into()]);
+            return Ok(());
+        }
         let mut is_leaf_tree = true;
 
         let kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query);
@@ -144,7 +148,6 @@ impl GroveDb {
             }
         }
 
-        // TODO: Explore the chance that a subquery key might lead to non tree element
         if is_leaf_tree {
             // if no useful subtree, then we care about the result set of this subtree.
             // apply the sized query
