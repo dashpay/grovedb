@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+
 use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use storage::StorageContext;
 
@@ -96,36 +97,35 @@ impl GroveDb {
         }
         if validate {
             cost_return_on_error!(
-            &mut cost,
-            self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
-        );
+                &mut cost,
+                self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
+            );
         }
         if let Some(delete_operation_this_level) = cost_return_on_error!(
             &mut cost,
             self.delete_operation_for_delete_internal(
-            path_iter.clone(),
-            key,
-            true,
-            validate,
-            current_batch_operations,
-            transaction,
-        ))
-            {
+                path_iter.clone(),
+                key,
+                true,
+                validate,
+                current_batch_operations,
+                transaction,
+            )
+        ) {
             let mut delete_operations = vec![delete_operation_this_level.clone()];
             if let Some(last) = path_iter.next_back() {
                 current_batch_operations.push(delete_operation_this_level);
                 if let Some(mut delete_operations_upper_level) = cost_return_on_error!(
-            &mut cost,
-                    self
-                    .add_delete_operations_for_delete_up_tree_while_empty(
+                    &mut cost,
+                    self.add_delete_operations_for_delete_up_tree_while_empty(
                         path_iter,
                         last,
                         stop_path_height,
                         validate,
                         current_batch_operations,
                         transaction,
-                    ))
-                {
+                    )
+                ) {
                     delete_operations.append(&mut delete_operations_upper_level);
                 }
             }
@@ -182,13 +182,14 @@ impl GroveDb {
             // Attempt to delete a root tree leaf
             Err(Error::InvalidPath(
                 "root tree leaves currently cannot be deleted",
-            )).wrap_with_cost(cost)
+            ))
+            .wrap_with_cost(cost)
         } else {
             if validate {
                 cost_return_on_error!(
-                &mut cost,
-                self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
-            );
+                    &mut cost,
+                    self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
+                );
             }
             let element = cost_return_on_error!(
                 &mut cost,
@@ -218,10 +219,14 @@ impl GroveDb {
                         }
                     })
                     .collect::<BTreeSet<&[u8]>>();
-                let mut is_empty =
-                    merk_optional_tx!(&mut cost, self.db, subtree_merk_path, transaction, subtree, {
-                        subtree.is_empty_tree_except(batch_deleted_keys)
-                    });
+                let mut is_empty = merk_optional_tx!(
+                    &mut cost,
+                    self.db,
+                    subtree_merk_path,
+                    transaction,
+                    subtree,
+                    { subtree.is_empty_tree_except(batch_deleted_keys) }
+                );
 
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
@@ -230,7 +235,7 @@ impl GroveDb {
                     Op::Delete => false,
                 });
 
-               let result = if only_delete_tree_if_empty && !is_empty {
+                let result = if only_delete_tree_if_empty && !is_empty {
                     Ok(None)
                 } else {
                     if is_empty {
@@ -249,7 +254,8 @@ impl GroveDb {
                 Ok(Some(GroveDbOp::delete(
                     path_iter.map(|x| x.to_vec()).collect(),
                     key.to_vec(),
-                ))).wrap_with_cost(cost)
+                )))
+                .wrap_with_cost(cost)
             }
         }
     }
@@ -306,23 +312,23 @@ impl GroveDb {
                         // TODO: dumb traversal should not be tolerated
                         for subtree_path in subtrees_paths {
                             merk_optional_tx!(
-                            &mut cost,
-                            self.db,
-                            subtree_path.iter().map(|x| x.as_slice()),
-                            transaction,
-                            mut subtree,
-                            {
-                                cost_return_on_error!(
-                                    &mut cost,
-                                    subtree.clear().map_err(|e| {
-                                        Error::CorruptedData(format!(
-                                            "unable to cleanup tree from storage: {}",
-                                            e
-                                        ))
-                                    })
-                                );
-                            }
-                        );
+                                &mut cost,
+                                self.db,
+                                subtree_path.iter().map(|x| x.as_slice()),
+                                transaction,
+                                mut subtree,
+                                {
+                                    cost_return_on_error!(
+                                        &mut cost,
+                                        subtree.clear().map_err(|e| {
+                                            Error::CorruptedData(format!(
+                                                "unable to cleanup tree from storage: {}",
+                                                e
+                                            ))
+                                        })
+                                    );
+                                }
+                            );
                         }
                     }
                     merk_optional_tx!(
