@@ -181,6 +181,9 @@ impl ProofVerifier {
                     }
                 }
             }
+            ProofType::EmptyTreeProof => {
+                last_root_hash = EMPTY_TREE_HASH;
+            }
             _ => {
                 // execute_subquery_proof only expects proofs for merk trees
                 // root proof is handled separately
