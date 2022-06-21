@@ -119,7 +119,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
             .get(make_prefixed_key(self.prefix.clone(), key))
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
-                storage_loaded_bytes: value.ok().flatten().map(|x| x.len()).unwrap_or(0),
+                storage_loaded_bytes: value
+                    .as_ref()
+                    .ok()
+                    .map(Option::as_ref)
+                    .flatten()
+                    .map(|x| x.len())
+                    .unwrap_or(0),
                 ..Default::default()
             })
     }
@@ -129,7 +135,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
             .get_cf(self.cf_aux(), make_prefixed_key(self.prefix.clone(), key))
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
-                storage_loaded_bytes: value.ok().flatten().map(|x| x.len()).unwrap_or(0),
+                storage_loaded_bytes: value
+                    .as_ref()
+                    .ok()
+                    .map(Option::as_ref)
+                    .flatten()
+                    .map(|x| x.len())
+                    .unwrap_or(0),
                 ..Default::default()
             })
     }
@@ -142,7 +154,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
             .get_cf(self.cf_roots(), make_prefixed_key(self.prefix.clone(), key))
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
-                storage_loaded_bytes: value.ok().flatten().map(|x| x.len()).unwrap_or(0),
+                storage_loaded_bytes: value
+                    .as_ref()
+                    .ok()
+                    .map(Option::as_ref)
+                    .flatten()
+                    .map(|x| x.len())
+                    .unwrap_or(0),
                 ..Default::default()
             })
     }
@@ -155,7 +173,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
             .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
-                storage_loaded_bytes: value.ok().flatten().map(|x| x.len()).unwrap_or(0),
+                storage_loaded_bytes: value
+                    .as_ref()
+                    .ok()
+                    .map(Option::as_ref)
+                    .flatten()
+                    .map(|x| x.len())
+                    .unwrap_or(0),
                 ..Default::default()
             })
     }

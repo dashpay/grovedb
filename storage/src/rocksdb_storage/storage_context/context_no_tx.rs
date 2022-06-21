@@ -51,7 +51,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
 
     fn put<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> CostContext<Result<(), Self::Error>> {
         self.storage
-            .put(make_prefixed_key(self.prefix.clone(), key), value)
+            .put(make_prefixed_key(self.prefix.clone(), &key), value)
             .wrap_with_cost(OperationCost {
                 seek_count: 1,
                 storage_written_bytes: key.as_ref().len() + value.len(),
@@ -67,7 +67,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
         self.storage
             .put_cf(
                 self.cf_aux(),
-                make_prefixed_key(self.prefix.clone(), key),
+                make_prefixed_key(self.prefix.clone(), &key),
                 value,
             )
             .wrap_with_cost(OperationCost {
@@ -85,7 +85,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
         self.storage
             .put_cf(
                 self.cf_roots(),
-                make_prefixed_key(self.prefix.clone(), key),
+                make_prefixed_key(self.prefix.clone(), &key),
                 value,
             )
             .wrap_with_cost(OperationCost {
@@ -103,7 +103,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
         self.storage
             .put_cf(
                 self.cf_meta(),
-                make_prefixed_key(self.prefix.clone(), key),
+                make_prefixed_key(self.prefix.clone(), &key),
                 value,
             )
             .wrap_with_cost(OperationCost {
@@ -116,7 +116,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
     fn delete<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
-        let deleted_len = cost_return_on_error!(&mut cost, self.get(key))
+        let deleted_len = cost_return_on_error!(&mut cost, self.get(&key))
             .map(|x| x.len())
             .unwrap_or(0);
 
@@ -131,7 +131,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
     fn delete_aux<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
-        let deleted_len = cost_return_on_error!(&mut cost, self.get_aux(key))
+        let deleted_len = cost_return_on_error!(&mut cost, self.get_aux(&key))
             .map(|x| x.len())
             .unwrap_or(0);
 
@@ -146,7 +146,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
     fn delete_root<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
-        let deleted_len = cost_return_on_error!(&mut cost, self.get_root(key))
+        let deleted_len = cost_return_on_error!(&mut cost, self.get_root(&key))
             .map(|x| x.len())
             .unwrap_or(0);
 
@@ -161,7 +161,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
     fn delete_meta<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
-        let deleted_len = cost_return_on_error!(&mut cost, self.get_meta(key))
+        let deleted_len = cost_return_on_error!(&mut cost, self.get_meta(&key))
             .map(|x| x.len())
             .unwrap_or(0);
 
@@ -178,7 +178,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .get(make_prefixed_key(self.prefix.clone(), key))
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
-                storage_loaded_bytes: value.ok().flatten().map(|x| x.len()).unwrap_or(0),
+                storage_loaded_bytes: value
+                    .as_ref()
+                    .ok()
+                    .map(Option::as_ref)
+                    .flatten()
+                    .map(|x| x.len())
+                    .unwrap_or(0),
                 ..Default::default()
             })
     }
@@ -188,7 +194,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .get_cf(self.cf_aux(), make_prefixed_key(self.prefix.clone(), key))
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
-                storage_loaded_bytes: value.ok().flatten().map(|x| x.len()).unwrap_or(0),
+                storage_loaded_bytes: value
+                    .as_ref()
+                    .ok()
+                    .map(Option::as_ref)
+                    .flatten()
+                    .map(|x| x.len())
+                    .unwrap_or(0),
                 ..Default::default()
             })
     }
@@ -201,7 +213,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .get_cf(self.cf_roots(), make_prefixed_key(self.prefix.clone(), key))
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
-                storage_loaded_bytes: value.ok().flatten().map(|x| x.len()).unwrap_or(0),
+                storage_loaded_bytes: value
+                    .as_ref()
+                    .ok()
+                    .map(Option::as_ref)
+                    .flatten()
+                    .map(|x| x.len())
+                    .unwrap_or(0),
                 ..Default::default()
             })
     }
@@ -214,7 +232,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
-                storage_loaded_bytes: value.ok().flatten().map(|x| x.len()).unwrap_or(0),
+                storage_loaded_bytes: value
+                    .as_ref()
+                    .ok()
+                    .map(Option::as_ref)
+                    .flatten()
+                    .map(|x| x.len())
+                    .unwrap_or(0),
                 ..Default::default()
             })
     }

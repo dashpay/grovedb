@@ -1,10 +1,8 @@
 //! Prefixed storage batch implementation for RocksDB backend.
-use std::convert::Infallible;
-
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
-use super::{make_prefixed_key, PrefixedRocksDbTransactionContext};
-use crate::{Batch, BatchOperation, StorageBatch, StorageContext};
+use super::make_prefixed_key;
+use crate::{Batch, BatchOperation, StorageBatch};
 
 /// Wrapper to RocksDB batch
 pub struct PrefixedRocksDbBatch<'db, B> {
@@ -112,46 +110,6 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db, WriteBatchWithTransaction<true>> {
     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) {
         self.batch
             .delete_cf(self.cf_roots, make_prefixed_key(self.prefix.clone(), key));
-    }
-}
-
-/// Implementation of a batch inside a transaction.
-/// Basically just proxies all calls to the underlying transaction. TODO: that's wrong!
-impl<'ctx, 'db> Batch for &'ctx PrefixedRocksDbTransactionContext<'db> {
-    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
-        StorageContext::put(*self, key, value)
-            .unwrap()
-            .expect("TODO: batch append should not fail")
-    }
-
-    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
-        StorageContext::put_aux(*self, key, value)
-            .unwrap()
-            .expect("TODO: batch append should not fail")
-    }
-
-    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
-        StorageContext::put_root(*self, key, value)
-            .unwrap()
-            .expect("TODO: batch append should not fail")
-    }
-
-    fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
-        StorageContext::delete(*self, key)
-            .unwrap()
-            .expect("TODO: batch append should not fail")
-    }
-
-    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) {
-        StorageContext::delete_aux(*self, key)
-            .unwrap()
-            .expect("TODO: batch append should not fail")
-    }
-
-    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) {
-        StorageContext::delete_root(*self, key)
-            .unwrap()
-            .expect("TODO: batch append should not fail")
     }
 }
 
