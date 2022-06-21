@@ -50,8 +50,8 @@ impl GroveDb {
             return Ok(());
         }
 
-        let subtree = cost_return_on_error!(&mut cost, self.open_subtree(&path));
-        if subtree.root_hash().unwrap_add_cost(&mut cost) == EMPTY_TREE_HASH {
+        let subtree = self.open_subtree(&path)?;
+        if subtree.root_hash().unwrap() == EMPTY_TREE_HASH {
             write_to_vec(proofs, &[ProofType::EmptyTreeProof.into()]);
             return Ok(());
         }

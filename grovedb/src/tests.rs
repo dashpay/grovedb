@@ -694,11 +694,11 @@ fn test_proof_for_non_existent_data() {
     // path to empty subtree
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
-    let proof = temp_db.prove(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove(&path_query).unwrap();
     let (hash, result_set) =
         GroveDb::execute_proof(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
 }
 
