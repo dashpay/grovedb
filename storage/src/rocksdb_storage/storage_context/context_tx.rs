@@ -230,7 +230,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
     }
 
     fn commit_batch(&self, batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
-        // TODO: this one alters the transaction, but should not on failure
+        // TODO: this one alters the transaction, but it shouldn't be half done on failure
         let mut cost = OperationCost::default();
 
         for op in batch.operations {
@@ -264,10 +264,10 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         Ok(()).wrap_with_cost(cost)
     }
 
-    fn raw_iter(&self) -> CostContext<Self::RawIterator> {
+    fn raw_iter(&self) -> Self::RawIterator {
         PrefixedRocksDbRawIterator {
             prefix: self.prefix.clone(),
             raw_iterator: self.transaction.raw_iterator(),
-        }.wrap_with_cost(Default::default())
+        }
     }
 }
