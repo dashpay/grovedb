@@ -48,14 +48,14 @@ impl PathQuery {
             let paths: Vec<&[Vec<u8>]> = vec![&p1.path, &p2.path];
 
             let (common_path, next_index) = PathQuery::get_common_path(vec![&p1.path, &p2.path]);
-            dbg!(common_path);
+            dbg!(&common_path);
             dbg!(next_index);
 
             let query = PathQuery::build_query(paths, next_index);
-            dbg!(query);
+            dbg!(&query);
             // at this point, we need to create a new function that takes the paths and the
             // index then builds up the query.
-            panic!("path lengths are not the same");
+            PathQuery::new_unsized(common_path, query)
         }
     }
 
@@ -77,18 +77,17 @@ impl PathQuery {
             }
         }
 
+        dbg!(&path_branches);
+
         // for each key create a query that queries them
         let mut query = Query::new();
-        // TODO: remove clone
-        for key in path_branches.clone().into_keys() {
+        for key in path_branches.into_keys() {
             query.insert_key(key.to_vec());
             query.add_conditional_subquery(QueryItem::Key(key.to_vec()), None, None);
         }
 
         // add conditional queries for all the keys
 
-        // dbg!(&path_branches);
-        //
         // panic!("failed to build query");
         query
     }
@@ -199,10 +198,7 @@ mod tests {
         assert_eq!(result_set_two.len(), 1);
 
         let merged_path_query = PathQuery::merge(&path_query_one, &path_query_two);
-        assert_eq!(
-            merged_path_query.path,
-            vec![TEST_LEAF.to_vec(), b"innertree".to_vec()]
-        );
+        assert_eq!(merged_path_query.path, vec![TEST_LEAF.to_vec()]);
         assert_eq!(merged_path_query.query.query.items.len(), 2);
 
         let proof = temp_db.prove(&merged_path_query).unwrap().unwrap();
