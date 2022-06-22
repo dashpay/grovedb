@@ -59,7 +59,7 @@ fn add_test_leaves(db: &mut GroveDb) {
         .expect("successful root tree leaf 2 insert");
 }
 
-fn make_deep_tree() -> TempGroveDb {
+pub fn make_deep_tree() -> TempGroveDb {
     // Tree Structure
     // root
     //     test_leaf

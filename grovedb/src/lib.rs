@@ -1,11 +1,11 @@
 pub mod batch;
 mod operations;
+mod query;
 mod subtree;
 #[cfg(test)]
 mod tests;
 mod util;
 mod visualize;
-mod query;
 
 use std::{collections::BTreeMap, path::Path};
 
@@ -14,13 +14,13 @@ use costs::{
 };
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
+pub use query::{PathQuery, SizedQuery};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
     Storage, StorageContext,
 };
 pub use subtree::{Element, ElementFlags};
-pub use query::{PathQuery, SizedQuery};
 
 use crate::util::{merk_optional_tx, meta_storage_context_optional_tx};
 
@@ -71,7 +71,6 @@ pub enum Error {
     #[error("not supported: {0}")]
     NotSupported(&'static str),
 }
-
 
 pub struct GroveDb {
     db: RocksDbStorage,

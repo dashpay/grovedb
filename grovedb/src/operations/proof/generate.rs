@@ -27,6 +27,8 @@ impl GroveDb {
             return Err(Error::InvalidPath("can't generate proof for empty path"))
                 .wrap_with_cost(cost);
         }
+
+        // TODO: should prove that path does not exist, rather than returning an error
         cost_return_on_error!(
             &mut cost,
             self.check_subtree_exists_path_not_found(path_slices.clone(), None)
