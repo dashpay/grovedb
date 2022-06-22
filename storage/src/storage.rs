@@ -223,10 +223,10 @@ pub struct StorageBatch {
 
 #[derive(Default)]
 struct Operations {
-    data: HashMap<Vec<u8>, BatchOperation>,
-    roots: HashMap<Vec<u8>, BatchOperation>,
-    aux: HashMap<Vec<u8>, BatchOperation>,
-    meta: HashMap<Vec<u8>, BatchOperation>,
+    data: HashMap<Vec<u8>, AbstractBatchOperation>,
+    roots: HashMap<Vec<u8>, AbstractBatchOperation>,
+    aux: HashMap<Vec<u8>, AbstractBatchOperation>,
+    meta: HashMap<Vec<u8>, AbstractBatchOperation>,
 }
 
 impl std::fmt::Debug for Operations {
@@ -264,7 +264,7 @@ impl StorageBatch {
         self.operations
             .borrow_mut()
             .data
-            .insert(key.clone(), BatchOperation::Put { key, value });
+            .insert(key.clone(), AbstractBatchOperation::Put { key, value });
 
         ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
     }
@@ -274,7 +274,7 @@ impl StorageBatch {
         self.operations
             .borrow_mut()
             .aux
-            .insert(key.clone(), BatchOperation::PutAux { key, value });
+            .insert(key.clone(), AbstractBatchOperation::PutAux { key, value });
 
         ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
     }
@@ -284,7 +284,7 @@ impl StorageBatch {
         self.operations
             .borrow_mut()
             .roots
-            .insert(key.clone(), BatchOperation::PutRoot { key, value });
+            .insert(key.clone(), AbstractBatchOperation::PutRoot { key, value });
 
         ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
     }
@@ -294,7 +294,7 @@ impl StorageBatch {
         self.operations
             .borrow_mut()
             .meta
-            .insert(key.clone(), BatchOperation::PutMeta { key, value });
+            .insert(key.clone(), AbstractBatchOperation::PutMeta { key, value });
 
         ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
     }
@@ -303,7 +303,7 @@ impl StorageBatch {
     pub fn delete(&self, key: Vec<u8>) -> CostContext<()> {
         let operations = &mut self.operations.borrow_mut().data;
         if operations.get(&key).is_none() {
-            operations.insert(key.clone(), BatchOperation::Delete { key });
+            operations.insert(key.clone(), AbstractBatchOperation::Delete { key });
             ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
         } else {
             ().wrap_with_cost(OperationCost::default())
@@ -314,7 +314,7 @@ impl StorageBatch {
     pub fn delete_aux(&self, key: Vec<u8>) -> CostContext<()> {
         let operations = &mut self.operations.borrow_mut().aux;
         if operations.get(&key).is_none() {
-            operations.insert(key.clone(), BatchOperation::DeleteAux { key });
+            operations.insert(key.clone(), AbstractBatchOperation::DeleteAux { key });
             ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
         } else {
             ().wrap_with_cost(OperationCost::default())
@@ -325,7 +325,7 @@ impl StorageBatch {
     pub fn delete_root(&self, key: Vec<u8>) -> CostContext<()> {
         let operations = &mut self.operations.borrow_mut().roots;
         if operations.get(&key).is_none() {
-            operations.insert(key.clone(), BatchOperation::DeleteRoot { key });
+            operations.insert(key.clone(), AbstractBatchOperation::DeleteRoot { key });
             ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
         } else {
             ().wrap_with_cost(OperationCost::default())
@@ -336,7 +336,7 @@ impl StorageBatch {
     pub fn delete_meta(&self, key: Vec<u8>) -> CostContext<()> {
         let operations = &mut self.operations.borrow_mut().meta;
         if operations.get(&key).is_none() {
-            operations.insert(key.clone(), BatchOperation::DeleteMeta { key });
+            operations.insert(key.clone(), AbstractBatchOperation::DeleteMeta { key });
             ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
         } else {
             ().wrap_with_cost(OperationCost::default())
@@ -349,14 +349,14 @@ impl StorageBatch {
 
         for op in other.into_iter() {
             match op {
-                BatchOperation::Put { key, value } => self.put(key, value),
-                BatchOperation::PutAux { key, value } => self.put_aux(key, value),
-                BatchOperation::PutRoot { key, value } => self.put_root(key, value),
-                BatchOperation::PutMeta { key, value } => self.put_meta(key, value),
-                BatchOperation::Delete { key } => self.delete(key),
-                BatchOperation::DeleteAux { key } => self.delete_aux(key),
-                BatchOperation::DeleteRoot { key } => self.delete_root(key),
-                BatchOperation::DeleteMeta { key } => self.delete_meta(key),
+                AbstractBatchOperation::Put { key, value } => self.put(key, value),
+                AbstractBatchOperation::PutAux { key, value } => self.put_aux(key, value),
+                AbstractBatchOperation::PutRoot { key, value } => self.put_root(key, value),
+                AbstractBatchOperation::PutMeta { key, value } => self.put_meta(key, value),
+                AbstractBatchOperation::Delete { key } => self.delete(key),
+                AbstractBatchOperation::DeleteAux { key } => self.delete_aux(key),
+                AbstractBatchOperation::DeleteRoot { key } => self.delete_root(key),
+                AbstractBatchOperation::DeleteMeta { key } => self.delete_meta(key),
             }
             .unwrap_add_cost(&mut cost)
         }
@@ -366,14 +366,14 @@ impl StorageBatch {
 
 /// Iterator over storage batch operations.
 pub struct StorageBatchIter {
-    data: IntoValues<Vec<u8>, BatchOperation>,
-    aux: IntoValues<Vec<u8>, BatchOperation>,
-    meta: IntoValues<Vec<u8>, BatchOperation>,
-    roots: IntoValues<Vec<u8>, BatchOperation>,
+    data: IntoValues<Vec<u8>, AbstractBatchOperation>,
+    aux: IntoValues<Vec<u8>, AbstractBatchOperation>,
+    meta: IntoValues<Vec<u8>, AbstractBatchOperation>,
+    roots: IntoValues<Vec<u8>, AbstractBatchOperation>,
 }
 
 impl Iterator for StorageBatchIter {
-    type Item = BatchOperation;
+    type Item = AbstractBatchOperation;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.meta
@@ -386,7 +386,7 @@ impl Iterator for StorageBatchIter {
 
 impl IntoIterator for StorageBatch {
     type IntoIter = StorageBatchIter;
-    type Item = BatchOperation;
+    type Item = AbstractBatchOperation;
 
     fn into_iter(self) -> Self::IntoIter {
         let operations = self.operations.into_inner();
@@ -406,10 +406,11 @@ impl Default for StorageBatch {
     }
 }
 
-/// Deferred storage operation.
+/// Deferred storage operation not tied to any storage implementation, required
+/// for multi-tree batches.
 #[allow(missing_docs)]
 #[derive(strum::AsRefStr)]
-pub enum BatchOperation {
+pub enum AbstractBatchOperation {
     /// Deferred put operation
     Put { key: Vec<u8>, value: Vec<u8> },
     /// Deferred put operation for aux storage
@@ -428,7 +429,7 @@ pub enum BatchOperation {
     DeleteMeta { key: Vec<u8> },
 }
 
-impl std::fmt::Debug for BatchOperation {
+impl std::fmt::Debug for AbstractBatchOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut fmt = f.debug_struct(self.as_ref());
 
@@ -436,10 +437,10 @@ impl std::fmt::Debug for BatchOperation {
         let mut value_buf = Vec::new();
 
         match self {
-            BatchOperation::Put { key, value }
-            | BatchOperation::PutAux { key, value }
-            | BatchOperation::PutMeta { key, value }
-            | BatchOperation::PutRoot { key, value } => {
+            AbstractBatchOperation::Put { key, value }
+            | AbstractBatchOperation::PutAux { key, value }
+            | AbstractBatchOperation::PutMeta { key, value }
+            | AbstractBatchOperation::PutRoot { key, value } => {
                 key_buf.clear();
                 value_buf.clear();
                 visualize_to_vec(&mut key_buf, key.as_slice());
@@ -447,10 +448,10 @@ impl std::fmt::Debug for BatchOperation {
                 fmt.field("key", &String::from_utf8_lossy(&key_buf))
                     .field("value", &String::from_utf8_lossy(&value_buf));
             }
-            BatchOperation::Delete { key }
-            | BatchOperation::DeleteAux { key }
-            | BatchOperation::DeleteMeta { key }
-            | BatchOperation::DeleteRoot { key } => {
+            AbstractBatchOperation::Delete { key }
+            | AbstractBatchOperation::DeleteAux { key }
+            | AbstractBatchOperation::DeleteMeta { key }
+            | AbstractBatchOperation::DeleteRoot { key } => {
                 key_buf.clear();
                 visualize_to_vec(&mut key_buf, key.as_slice());
                 fmt.field("key", &String::from_utf8_lossy(&key_buf));
@@ -467,11 +468,11 @@ mod tests {
 
     #[test]
     fn test_debug_output_batch_operation() {
-        let op1 = BatchOperation::PutMeta {
+        let op1 = AbstractBatchOperation::PutMeta {
             key: b"key1".to_vec(),
             value: b"value1".to_vec(),
         };
-        let op2 = BatchOperation::DeleteRoot {
+        let op2 = AbstractBatchOperation::DeleteRoot {
             key: b"key1".to_vec(),
         };
         assert_eq!(

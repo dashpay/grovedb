@@ -12,7 +12,7 @@ use super::{
     PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext,
     PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
 };
-use crate::{BatchOperation, Storage, StorageBatch};
+use crate::{AbstractBatchOperation, Storage, StorageBatch};
 
 /// Name of column family used to store auxiliary data
 pub(crate) const AUX_CF_NAME: &str = "aux";
@@ -172,23 +172,23 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
         for op in batch.into_iter() {
             match op {
-                BatchOperation::Put { key, value } => {
+                AbstractBatchOperation::Put { key, value } => {
                     db_batch.put(&key, &value);
                     pending_storage_written_bytes += key.len() + value.len();
                 }
-                BatchOperation::PutAux { key, value } => {
+                AbstractBatchOperation::PutAux { key, value } => {
                     db_batch.put_cf(cf_aux(&self.db), &key, &value);
                     pending_storage_written_bytes += key.len() + value.len();
                 }
-                BatchOperation::PutRoot { key, value } => {
+                AbstractBatchOperation::PutRoot { key, value } => {
                     db_batch.put_cf(cf_roots(&self.db), &key, &value);
                     pending_storage_written_bytes += key.len() + value.len();
                 }
-                BatchOperation::PutMeta { key, value } => {
+                AbstractBatchOperation::PutMeta { key, value } => {
                     db_batch.put_cf(cf_meta(&self.db), &key, &value);
                     pending_storage_written_bytes += key.len() + value.len();
                 }
-                BatchOperation::Delete { key } => {
+                AbstractBatchOperation::Delete { key } => {
                     db_batch.delete(&key);
 
                     // TODO: fix not atomic freed size computation
@@ -200,7 +200,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
                     pending_storage_freed_bytes += key.len() + value_len;
                 }
-                BatchOperation::DeleteAux { key } => {
+                AbstractBatchOperation::DeleteAux { key } => {
                     db_batch.delete_cf(cf_aux(&self.db), &key);
 
                     // TODO: fix not atomic freed size computation
@@ -213,7 +213,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
                     pending_storage_freed_bytes += key.len() + value_len;
                 }
-                BatchOperation::DeleteRoot { key } => {
+                AbstractBatchOperation::DeleteRoot { key } => {
                     db_batch.delete_cf(cf_roots(&self.db), &key);
 
                     // TODO: fix not atomic freed size computation
@@ -228,7 +228,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
                     pending_storage_freed_bytes += key.len() + value_len;
                 }
-                BatchOperation::DeleteMeta { key } => {
+                AbstractBatchOperation::DeleteMeta { key } => {
                     db_batch.delete_cf(cf_meta(&self.db), &key);
 
                     // TODO: fix not atomic freed size computation
@@ -265,23 +265,23 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
         transaction.set_savepoint();
         let batch_result: Result<(), Self::Error> = batch.into_iter().try_for_each(|op| match op {
-            BatchOperation::Put { key, value } => {
+            AbstractBatchOperation::Put { key, value } => {
                 pending_storage_written_bytes += key.len() + value.len();
                 transaction.put(&key, &value)
             }
-            BatchOperation::PutAux { key, value } => {
+            AbstractBatchOperation::PutAux { key, value } => {
                 pending_storage_written_bytes += key.len() + value.len();
                 transaction.put_cf(cf_aux(&self.db), &key, &value)
             }
-            BatchOperation::PutRoot { key, value } => {
+            AbstractBatchOperation::PutRoot { key, value } => {
                 pending_storage_written_bytes += key.len() + value.len();
                 transaction.put_cf(cf_roots(&self.db), &key, &value)
             }
-            BatchOperation::PutMeta { key, value } => {
+            AbstractBatchOperation::PutMeta { key, value } => {
                 pending_storage_written_bytes += key.len() + value.len();
                 transaction.put_cf(cf_meta(&self.db), &key, &value)
             }
-            BatchOperation::Delete { key } => {
+            AbstractBatchOperation::Delete { key } => {
                 // TODO: fix not atomic freed size computation
                 cost.seek_count += 1;
                 let value_len = match self.db.get(&key) {
@@ -294,7 +294,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
                 transaction.delete(&key)
             }
-            BatchOperation::DeleteAux { key } => {
+            AbstractBatchOperation::DeleteAux { key } => {
                 // TODO: fix not atomic freed size computation
                 cost.seek_count += 1;
                 let value_len = match self.db.get_cf(cf_aux(&self.db), &key) {
@@ -306,7 +306,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
                 transaction.delete_cf(cf_aux(&self.db), &key)
             }
-            BatchOperation::DeleteRoot { key } => {
+            AbstractBatchOperation::DeleteRoot { key } => {
                 // TODO: fix not atomic freed size computation
                 cost.seek_count += 1;
                 let value_len = match self.db.get_cf(cf_roots(&self.db), &key) {
@@ -318,7 +318,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
                 transaction.delete_cf(cf_roots(&self.db), &key)
             }
-            BatchOperation::DeleteMeta { key } => {
+            AbstractBatchOperation::DeleteMeta { key } => {
                 // TODO: fix not atomic freed size computation
                 cost.seek_count += 1;
                 let value_len = match self.db.get_cf(cf_meta(&self.db), &key) {

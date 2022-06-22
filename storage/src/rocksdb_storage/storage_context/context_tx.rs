@@ -2,12 +2,12 @@
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
 };
-use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error};
+use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error, WriteBatchWithTransaction};
 
-use super::{batch::DummyBatch, make_prefixed_key, PrefixedRocksDbRawIterator};
+use super::{make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator};
 use crate::{
     rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
-    BatchOperation, StorageContext,
+    StorageContext,
 };
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
@@ -53,7 +53,7 @@ impl<'db> PrefixedRocksDbTransactionContext<'db> {
 }
 
 impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
-    type Batch = DummyBatch;
+    type Batch = PrefixedRocksDbBatch<'db>;
     type Error = Error;
     type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Tx<'db>>>;
 
@@ -252,94 +252,32 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
     }
 
     fn new_batch(&self) -> Self::Batch {
-        DummyBatch::default()
+        PrefixedRocksDbBatch {
+            prefix: self.prefix.clone(),
+            batch: WriteBatchWithTransaction::<true>::default(),
+            cf_aux: self.cf_aux(),
+            cf_roots: self.cf_roots(),
+            cost_acc: Default::default(),
+            delete_keys_for_costs: Default::default(),
+            delete_keys_for_costs_aux: Default::default(),
+            delete_keys_for_costs_roots: Default::default(),
+        }
     }
 
-    fn commit_batch(&self, batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
+    fn commit_batch(&self, mut batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
-        // Until batch is commited these costs are pending (should not be added in case
-        // of early termination).
-        let mut pending_storage_written_bytes = 0;
-        let mut pending_storage_freed_bytes = 0;
 
-        self.transaction.set_savepoint();
-        let batch_result: Result<(), Self::Error> =
-            batch.operations.into_iter().try_for_each(|op| match op {
-                BatchOperation::Put { key, value } => {
-                    pending_storage_written_bytes += key.len() + value.len();
-                    self.transaction.put(&key, &value)
-                }
-                BatchOperation::PutAux { key, value } => {
-                    pending_storage_written_bytes += key.len() + value.len();
-                    self.transaction.put_cf(self.cf_aux(), &key, &value)
-                }
-                BatchOperation::PutRoot { key, value } => {
-                    pending_storage_written_bytes += key.len() + value.len();
-                    self.transaction.put_cf(self.cf_roots(), &key, &value)
-                }
-                BatchOperation::PutMeta { key, value } => {
-                    pending_storage_written_bytes += key.len() + value.len();
-                    self.transaction.put_cf(self.cf_meta(), &key, &value)
-                }
-                BatchOperation::Delete { key } => {
-                    // TODO: fix not atomic freed size computation
-                    cost.seek_count += 1;
-                    let value_len = match self.transaction.get(&key) {
-                        Ok(value) => value.map(|x| x.len()).unwrap_or(0),
-                        Err(e) => return Err(e),
-                    };
+        // If deletion cost finalization fails, only cost of this finalization will be
+        // returned as no batch will be commited.
+        cost_return_on_error!(&mut cost, batch.finalize_deletion_costs(&self.storage));
 
-                    cost.storage_loaded_bytes += value_len;
-                    pending_storage_freed_bytes += key.len() + value_len;
+        // On unsuccessul batch commit only deletion finalization cost will be returned.
+        cost_return_on_error_no_add!(
+            &cost,
+            self.transaction.rebuild_from_writebatch(&batch.batch)
+        );
 
-                    self.transaction.delete(&key)
-                }
-                BatchOperation::DeleteAux { key } => {
-                    // TODO: fix not atomic freed size computation
-                    cost.seek_count += 1;
-                    let value_len = match self.transaction.get_cf(self.cf_aux(), &key) {
-                        Ok(value) => value.map(|x| x.len()).unwrap_or(0),
-                        Err(e) => return Err(e),
-                    };
-                    cost.storage_loaded_bytes += value_len;
-                    pending_storage_freed_bytes += key.len() + value_len;
-
-                    self.transaction.delete_cf(self.cf_aux(), &key)
-                }
-                BatchOperation::DeleteRoot { key } => {
-                    // TODO: fix not atomic freed size computation
-                    cost.seek_count += 1;
-                    let value_len = match self.transaction.get_cf(self.cf_roots(), &key) {
-                        Ok(value) => value.map(|x| x.len()).unwrap_or(0),
-                        Err(e) => return Err(e),
-                    };
-                    cost.storage_loaded_bytes += value_len;
-                    pending_storage_freed_bytes += key.len() + value_len;
-
-                    self.transaction.delete_cf(self.cf_roots(), &key)
-                }
-                BatchOperation::DeleteMeta { key } => {
-                    // TODO: fix not atomic freed size computation
-                    cost.seek_count += 1;
-                    let value_len = match self.transaction.get_cf(self.cf_meta(), &key) {
-                        Ok(value) => value.map(|x| x.len()).unwrap_or(0),
-                        Err(e) => return Err(e),
-                    };
-                    cost.storage_loaded_bytes += value_len;
-                    pending_storage_freed_bytes += key.len() + value_len;
-
-                    self.transaction.delete_cf(self.cf_meta(), &key)
-                }
-            });
-
-        if batch_result.is_err() {
-            cost_return_on_error_no_add!(&cost, self.transaction.rollback_to_savepoint());
-            return batch_result.wrap_with_cost(cost);
-        }
-
-        cost.storage_written_bytes += pending_storage_written_bytes;
-        cost.storage_freed_bytes += pending_storage_freed_bytes;
-        batch_result.wrap_with_cost(cost)
+        Ok(()).wrap_with_cost(cost).add_cost(batch.cost_acc)
     }
 
     fn raw_iter(&self) -> Self::RawIterator {

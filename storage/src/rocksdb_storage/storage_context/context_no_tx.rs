@@ -1,4 +1,6 @@
-use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+};
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error, WriteBatchWithTransaction};
 
 use super::{make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator};
@@ -45,7 +47,7 @@ impl<'db> PrefixedRocksDbStorageContext<'db> {
 }
 
 impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
-    type Batch = PrefixedRocksDbBatch<'db, WriteBatchWithTransaction<true>>;
+    type Batch = PrefixedRocksDbBatch<'db>;
     type Error = Error;
     type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Db>>;
 
@@ -249,14 +251,24 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             batch: WriteBatchWithTransaction::<true>::default(),
             cf_aux: self.cf_aux(),
             cf_roots: self.cf_roots(),
+            cost_acc: Default::default(),
+            delete_keys_for_costs: Default::default(),
+            delete_keys_for_costs_aux: Default::default(),
+            delete_keys_for_costs_roots: Default::default(),
         }
     }
 
-    fn commit_batch(&self, batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
-        // TODO: collect batch data in advance
-        self.storage
-            .write(batch.batch)
-            .wrap_with_cost(OperationCost::default())
+    fn commit_batch(&self, mut batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
+        let mut cost = OperationCost::default();
+
+        // If deletion cost finalization fails, only cost of this finalization will be
+        // returned as no batch will be commited.
+        cost_return_on_error!(&mut cost, batch.finalize_deletion_costs(&self.storage));
+
+        // On unsuccessul batch commit only deletion finalization cost will be returned.
+        cost_return_on_error_no_add!(&cost, self.storage.write(batch.batch));
+
+        Ok(()).wrap_with_cost(cost).add_cost(batch.cost_acc)
     }
 
     fn raw_iter(&self) -> Self::RawIterator {
