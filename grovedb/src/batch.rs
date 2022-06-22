@@ -401,19 +401,19 @@ impl GroveDb {
         } = cost_return_on_error!(&mut cost, BatchStructure::from_ops(ops, Some(&get_merk_fn)));
 
         if let MerkTreesByPath(ref mut merk_trees_by_path) = merk_tree_cache {
-            let mut current_last_level = last_level;
+            let mut current_level = last_level;
             // We will update up the tree
-            while let Some(ops_at_level) = ops_by_level_path.remove(&current_last_level) {
+            while let Some(ops_at_level) = ops_by_level_path.remove(&current_level) {
                 for (path, ops_at_path) in ops_at_level.into_iter() {
-                    if current_last_level == 1 {
+                    if current_level == 0 {
                         for (key, op) in ops_at_path.into_iter() {
                             match op {
                                 Op::Insert { element } => {
-                                    // if temp_root_leaves.get(key.as_slice()).
-                                    // is_none() {
-                                    //     temp_root_leaves.insert(key,
-                                    // temp_root_leaves.len());
-                                    // }
+                                    if temp_root_leaves.get(key.as_slice()).
+                                    is_none() {
+                                        temp_root_leaves.insert(key,
+                                    temp_root_leaves.len());
+                                    }
                                 }
                                 Op::Delete => {
                                     return Err(Error::InvalidBatchOperation(
@@ -461,59 +461,63 @@ impl GroveDb {
                             }
                         }
 
-                        let root_hash = merk.root_hash().unwrap_add_cost(&mut cost);
+                        if current_level > 1 {
+                            let root_hash = merk.root_hash().unwrap_add_cost(&mut cost);
 
-                        // We need to propagate up this root hash, this means adding grove_db
-                        // operations up for the level above
-                        if let Some((key, parent_path)) = path.split_last() {
-                            if let Some(ops_at_level_above) =
-                                ops_by_level_path.get_mut(&(current_last_level - 1))
-                            {
-                                if let Some(ops_on_path) = ops_at_level_above.get_mut(parent_path) {
-                                    if let Some(op) = ops_on_path.remove(key) {
-                                        match op {
-                                            Op::ReplaceTreeHash { mut hash } => hash = root_hash,
-                                            Op::Insert { element } => {
-                                                if let Element::Tree(mut hash, _) = element {
-                                                    hash = root_hash
+                            // We need to propagate up this root hash, this means adding grove_db
+                            // operations up for the level above
+                            if let Some((key, parent_path)) = path.split_last() {
+                                if let Some(ops_at_level_above) =
+                                ops_by_level_path.get_mut(&(current_level - 1))
+                                {
+                                    if let Some(ops_on_path) = ops_at_level_above.get_mut(parent_path) {
+                                        if let Some(op) = ops_on_path.remove(key) {
+                                            match op {
+                                                Op::ReplaceTreeHash { mut hash } => hash = root_hash,
+                                                Op::Insert { element } => {
+                                                    if let Element::Tree(mut hash, _) = element {
+                                                        hash = root_hash
+                                                    }
+                                                }
+                                                Op::Delete => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "insertion of element under a deleted tree",
+                                                    ))
+                                                        .wrap_with_cost(cost);
                                                 }
                                             }
-                                            Op::Delete => {
-                                                return Err(Error::InvalidBatchOperation(
-                                                    "insertion of element under a deleted tree",
-                                                ))
-                                                .wrap_with_cost(cost);
-                                            }
+                                        } else {
+                                            ops_on_path.insert(
+                                                key.clone(),
+                                                Op::ReplaceTreeHash { hash: root_hash },
+                                            );
                                         }
                                     } else {
+                                        let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
                                         ops_on_path.insert(
                                             key.clone(),
                                             Op::ReplaceTreeHash { hash: root_hash },
                                         );
+                                        ops_at_level_above.insert(parent_path.to_vec(), ops_on_path);
                                     }
                                 } else {
                                     let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
-                                    ops_on_path.insert(
-                                        key.clone(),
-                                        Op::ReplaceTreeHash { hash: root_hash },
-                                    );
-                                    ops_at_level_above.insert(parent_path.to_vec(), ops_on_path);
+                                    ops_on_path
+                                        .insert(key.clone(), Op::ReplaceTreeHash { hash: root_hash });
+                                    let mut ops_on_level: BTreeMap<
+                                        Vec<Vec<u8>>,
+                                        BTreeMap<Vec<u8>, Op>,
+                                    > = BTreeMap::new();
+                                    ops_on_level.insert(parent_path.to_vec(), ops_on_path);
+                                    ops_by_level_path.insert(current_level - 1, ops_on_level);
                                 }
-                            } else {
-                                let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
-                                ops_on_path
-                                    .insert(key.clone(), Op::ReplaceTreeHash { hash: root_hash });
-                                let mut ops_on_level: BTreeMap<
-                                    Vec<Vec<u8>>,
-                                    BTreeMap<Vec<u8>, Op>,
-                                > = BTreeMap::new();
-                                ops_on_level.insert(parent_path.to_vec(), ops_on_path);
-                                ops_by_level_path.insert(current_last_level - 1, ops_on_level);
                             }
                         }
+
+
                     }
                 }
-                current_last_level -= 1;
+                current_level -= 1;
             }
         } else {
             return Err(Error::CorruptedData(
@@ -1615,10 +1619,6 @@ mod tests {
         let full_path = vec![
             b"leaf1".to_vec(),
             b"sub1".to_vec(),
-            b"sub2".to_vec(),
-            b"sub3".to_vec(),
-            b"sub4".to_vec(),
-            b"sub5".to_vec(),
         ];
         let mut acc_path: Vec<Vec<u8>> = vec![];
         for p in full_path.into_iter() {
