@@ -46,12 +46,13 @@ impl PathQuery {
             PathQuery::new_unsized(p1.path.clone(), combined_query)
         } else {
             let paths: Vec<&[Vec<u8>]> = vec![&p1.path, &p2.path];
+            let queries = vec![p1.query.query.clone(), p2.query.query.clone()];
 
             let (common_path, next_index) = PathQuery::get_common_path(vec![&p1.path, &p2.path]);
             dbg!(&common_path);
             dbg!(next_index);
 
-            let query = PathQuery::build_query(paths, next_index);
+            let query = PathQuery::build_query(paths, queries, next_index);
             dbg!(&query);
             // at this point, we need to create a new function that takes the paths and the
             // index then builds up the query.
@@ -59,7 +60,7 @@ impl PathQuery {
         }
     }
 
-    fn build_query(paths: Vec<&[Vec<u8>]>, start_index: usize) -> Query {
+    fn build_query(paths: Vec<&[Vec<u8>]>, queries: Vec<Query>, start_index: usize) -> Query {
         let mut level = start_index;
         let keys_at_level = paths.iter().map(|&path| &path[level]).collect::<Vec<_>>();
 
@@ -79,16 +80,16 @@ impl PathQuery {
 
         dbg!(&path_branches);
 
-        // for each key create a query that queries them
         let mut query = Query::new();
-        for key in path_branches.into_keys() {
+        for (index, key) in path_branches.into_keys().enumerate() {
             query.insert_key(key.to_vec());
-            query.add_conditional_subquery(QueryItem::Key(key.to_vec()), None, None);
+            query.add_conditional_subquery(
+                QueryItem::Key(key.to_vec()),
+                None,
+                Some(queries[index].clone()),
+            );
         }
 
-        // add conditional queries for all the keys
-
-        // panic!("failed to build query");
         query
     }
 
