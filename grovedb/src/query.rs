@@ -81,12 +81,12 @@ impl PathQuery {
         dbg!(&path_branches);
 
         let mut query = Query::new();
-        for (index, key) in path_branches.into_keys().enumerate() {
+        for (key, value) in path_branches.drain() {
             query.insert_key(key.to_vec());
             query.add_conditional_subquery(
                 QueryItem::Key(key.to_vec()),
                 None,
-                Some(queries[index].clone()),
+                Some(queries[value[0]].clone()),
             );
         }
 
