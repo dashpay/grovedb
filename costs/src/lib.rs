@@ -20,6 +20,28 @@ pub struct OperationCost {
     pub hash_node_calls: usize,
 }
 
+impl OperationCost {
+    /// Add worst case for getting a merk tree
+    pub fn add_worst_case_get_merk(&mut self) {
+        self.seek_count += 0;
+        self.storage_written_bytes += 0;
+        self.storage_loaded_bytes += 0;
+        self.loaded_bytes += 0;
+        self.hash_byte_calls += 0;
+        self.hash_node_calls += 0;
+    }
+
+    /// Add worst case for getting a merk tree root hash
+    pub fn add_worst_case_merk_root_hash(&mut self) {
+        self.seek_count += 0;
+        self.storage_written_bytes += 0;
+        self.storage_loaded_bytes += 0;
+        self.loaded_bytes += 0;
+        self.hash_byte_calls += 0;
+        self.hash_node_calls += 0;
+    }
+}
+
 impl Add for OperationCost {
     type Output = Self;
 

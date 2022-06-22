@@ -4,6 +4,7 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, HashMap, HashSet},
     hash::Hash,
+    ops::Add,
 };
 
 use costs::{
@@ -17,13 +18,47 @@ use storage::{
 };
 use visualize::{Drawer, Visualize};
 
-use crate::{Element, Error, GroveDb, Transaction, TransactionArg, ROOT_LEAFS_SERIALIZED_KEY};
+use crate::{
+    batch::BatchMerkTreeCache::{KnownMerkTreePaths, MerkTreesByPath},
+    Element, Error, GroveDb, Transaction, TransactionArg, ROOT_LEAFS_SERIALIZED_KEY,
+};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
     ReplaceTreeHash { hash: [u8; 32] },
     Insert { element: Element },
     Delete,
+}
+
+impl Op {
+    fn worst_case_cost(&self) -> OperationCost {
+        match self {
+            Op::ReplaceTreeHash { .. } => OperationCost {
+                seek_count: 0,
+                storage_written_bytes: 0,
+                storage_loaded_bytes: 0,
+                loaded_bytes: 0,
+                hash_byte_calls: 0,
+                hash_node_calls: 0,
+            },
+            Op::Insert { element } => OperationCost {
+                seek_count: 0,
+                storage_written_bytes: 0,
+                storage_loaded_bytes: 0,
+                loaded_bytes: 0,
+                hash_byte_calls: 0,
+                hash_node_calls: 0,
+            },
+            Op::Delete => OperationCost {
+                seek_count: 0,
+                storage_written_bytes: 0,
+                storage_loaded_bytes: 0,
+                loaded_bytes: 0,
+                hash_byte_calls: 0,
+                hash_node_calls: 0,
+            },
+        }
+    }
 }
 
 impl PartialOrd for Op {
@@ -109,49 +144,12 @@ impl<'a> Ord for PathWrapper<'a> {
     }
 }
 
-// TODO: keep allocation number small
-intrusive_adapter!(GroveDbOpAdapter = Box<GroveDbOp> : GroveDbOp { link: RBTreeLink });
-
-impl<'a> KeyAdapter<'a> for GroveDbOpAdapter {
-    type Key = (PathWrapper<'a>, &'a [u8], &'a Op);
-
-    fn get_key(&self, value: &'a GroveDbOp) -> Self::Key {
-        (PathWrapper(&value.path), &value.key, &value.op)
-    }
-}
-
-/// Helper function to keep RBTree values unique on insertions.
-fn insert_unique_op(ops: &mut RBTree<GroveDbOpAdapter>, op: Box<GroveDbOp>) {
-    let mut cursor =
-        ops.lower_bound_mut(Bound::Included(&(PathWrapper(&op.path), &op.key, &op.op)));
-
-    match cursor.get() {
-        Some(found_op) if found_op == op.as_ref() => {
-            // skip as already inserted
-        }
-        Some(GroveDbOp {
-            path,
-            key,
-            op: Op::Insert { .. },
-            ..
-        }) if path == &op.path && key == &op.key => {
-            // not found but there is an insertion operation for that
-            // path/key which substitutes deletion
-        }
-        _ => {
-            // TODO: possibly unnecessary clone https://github.com/Amanieu/intrusive-rs/issues/70
-            cursor.insert_before(op.clone());
-        }
-    }
-}
-
 impl GroveDbOp {
     pub fn insert(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
         Self {
             path,
             key,
             op: Op::Insert { element },
-            link: RBTreeLink::new(),
         }
     }
 
@@ -160,8 +158,130 @@ impl GroveDbOp {
             path,
             key,
             op: Op::Delete,
-            link: RBTreeLink::new(),
         }
+    }
+}
+
+/// The batch merk tree cache can either cache merks trees, or in the case of
+/// worst case scenario calculation is can just identify which trees would
+/// normally be cached.
+enum BatchMerkTreeCache<S> {
+    MerkTreesByPath(HashMap<Vec<Vec<u8>>, Merk<S>>), // for batch operations
+    KnownMerkTreePaths(HashSet<Vec<Vec<u8>>>),       // for worst case scenario costs
+}
+
+impl<S> BatchMerkTreeCache<S> {
+    fn insert(
+        &mut self,
+        op: &GroveDbOp,
+        get_merk_fn: Option<&impl Fn(&[Vec<u8>]) -> CostContext<Result<Merk<S>, Error>>>,
+    ) -> CostContext<Result<(), Error>> {
+        match self {
+            MerkTreesByPath(ref mut merk_trees_by_path) => {
+                let mut cost = OperationCost::default();
+                let merk = cost_return_on_error!(&mut cost, get_merk_fn.unwrap()(&op.path));
+                let mut inserted_path = op.path.clone();
+                inserted_path.push(op.key.clone());
+                merk_trees_by_path.insert(inserted_path, merk);
+                Ok(()).wrap_with_cost(cost)
+            }
+            KnownMerkTreePaths(ref mut known_merk_tree_paths) => {
+                let mut inserted_path = op.path.clone();
+                inserted_path.push(op.key.clone());
+                known_merk_tree_paths.insert(inserted_path);
+                let worst_case_cost = OperationCost::default();
+                // let worst_case_cost = OperationCost::worst_case_get_merk();
+                Ok(()).wrap_with_cost(worst_case_cost)
+            }
+        }
+    }
+}
+
+struct BatchStructure<S> {
+    /// Operations by level path
+    ops_by_level_path: IntMap<usize, BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>>>,
+    /// Deleted paths (all elements)
+    deleted_paths: HashSet<Vec<Vec<u8>>>,
+    /// Merk trees
+    merk_tree_cache: BatchMerkTreeCache<S>,
+    /// Last level
+    last_level: usize,
+}
+
+impl<'db, S> BatchStructure<S>
+where
+    S: StorageContext<'db>,
+    <S as StorageContext<'db>>::Error: std::error::Error,
+{
+    fn from_ops(
+        ops: Vec<GroveDbOp>,
+        get_merk_fn: Option<impl Fn(&[Vec<u8>]) -> CostContext<Result<Merk<S>, Error>>>,
+    ) -> CostContext<Result<BatchStructure<S>, Error>> {
+        let mut cost = OperationCost::default();
+
+        let mut ops_by_level_path: IntMap<usize, BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>>> =
+            IntMap::default();
+
+        let mut current_last_level: usize = 0;
+
+        let mut deleted_paths: HashSet<Vec<Vec<u8>>> = HashSet::new();
+        let mut merk_tree_cache = if get_merk_fn.is_some() {
+            MerkTreesByPath(HashMap::new())
+        } else {
+            KnownMerkTreePaths(HashSet::new())
+        };
+
+        for op in ops.into_iter() {
+            let mut op_cost = OperationCost::default();
+            let op_result = match &op.op {
+                Op::Insert { element } => {
+                    if let Element::Tree(..) = element {
+                        merk_tree_cache.insert(&op, get_merk_fn.as_ref());
+                    }
+                    Ok(())
+                }
+                Op::Delete => {
+                    let mut deleted_path = op.path.clone();
+                    deleted_path.push(op.key.clone());
+                    deleted_paths.insert(deleted_path);
+                    Ok(())
+                }
+                Op::ReplaceTreeHash { .. } => Err(Error::InvalidBatchOperation(
+                    "replace tree hash is an internal operation only",
+                )),
+            };
+            if op_result.is_err() {
+                return Err(op_result.err().unwrap()).wrap_with_cost(op_cost);
+            }
+
+            let level = op.path.len();
+            if let Some(ops_on_level) = ops_by_level_path.get_mut(&level) {
+                if let Some(ops_on_path) = ops_on_level.get_mut(op.path.as_slice()) {
+                    ops_on_path.insert(op.key, op.op);
+                } else {
+                    let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
+                    ops_on_path.insert(op.key, op.op);
+                    ops_on_level.insert(op.path.clone(), ops_on_path);
+                }
+            } else {
+                let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
+                ops_on_path.insert(op.key, op.op);
+                let mut ops_on_level: BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>> =
+                    BTreeMap::new();
+                ops_on_level.insert(op.path, ops_on_path);
+                ops_by_level_path.insert(level, ops_on_level);
+                if current_last_level < level {
+                    current_last_level = level;
+                }
+            }
+        }
+        Ok(BatchStructure {
+            ops_by_level_path,
+            deleted_paths,
+            merk_tree_cache,
+            last_level: current_last_level,
+        })
+        .wrap_with_cost(cost)
     }
 }
 
@@ -232,8 +352,8 @@ impl GroveDb {
     //                             temp_subtrees
     //                                 .remove(&path)
     //                                 .map(|x|
-    // Ok(x).wrap_with_cost(Default::default()))                                
-    // .unwrap_or_else(|| get_merk_fn(&path))                                 
+    // Ok(x).wrap_with_cost(Default::default()))
+    // .unwrap_or_else(|| get_merk_fn(&path))
     // .flat_map_ok(|mut s| s                                     .clear()
     //                                     .map_err(|_| Error::InternalError("cannot
     // clear a Merk")))                         );
@@ -248,11 +368,11 @@ impl GroveDb {
     //                 match op.op {
     //                     Op::Insert { element } => {
     //                         cost_return_on_error!(&mut cost, element.insert(&mut
-    // merk, op.key));                         
+    // merk, op.key));
     // temp_subtrees.insert(op.path.clone(), merk);                     }
     //                     Op::Delete => {
     //                         cost_return_on_error!(&mut cost, Element::delete(&mut
-    // merk, op.key));                         
+    // merk, op.key));
     // temp_subtrees.insert(op.path.clone(), merk);                     }
     //                 }
     //             }
@@ -264,435 +384,455 @@ impl GroveDb {
     //     Ok(()).wrap_with_cost(cost)
     // }
 
-    fn decompose_ops(
-        ops: Vec<GroveDbOp>,
-    ) -> Result<IntMap<usize, BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>>>, Error> {
-        let mut ops_by_level_path: IntMap<usize, BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>>> =
-            IntMap::default();
-
-        let mut current_last_level: usize = 0;
-
-        let mut deleted_paths: HashSet<Vec<Vec<u8>>> = HashSet::new();
-        let mut temp_subtrees: HashMap<Vec<Vec<u8>>, Merk<_>> = HashMap::new();
-
-        ops.into_iter()
-            .map(|op| {
-                match &op.op {
-                    Op::Insert { element } => {
-                        if let Element::Tree(..) = element {
-                            let mut merk = cost_return_on_error!(&mut cost, get_merk_fn(&op.path));
-                            let mut inserted_path = op.path.clone();
-                            inserted_path.push(op.key.clone());
-                            temp_subtrees.insert(inserted_path, merk);
-                        }
-                        Ok(())
-                    }
-                    Op::Delete => {
-                        let mut deleted_path = op.path.clone();
-                        deleted_path.push(op.key.clone());
-                        deleted_paths.insert(deleted_path);
-                        Ok(())
-                    }
-                    Op::ReplaceTreeHash { .. } => Err(Error::InvalidBatchOperation(
-                        "replace tree hash is an internal operation only",
-                    )),
-                }?;
-
-                let level = op.path.len();
-                if let Some(mut ops_on_level) = ops_by_level_path.get_mut(&level) {
-                    if let Some(mut ops_on_path) = ops_on_level.get_mut(op.path.as_slice()) {
-                        ops_on_path.insert(op.key, op.op);
-                    } else {
-                        let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
-                        ops_on_path.insert(op.key, op.op);
-                        ops_on_level.insert(op.path.clone(), ops_on_path);
-                    }
-                } else {
-                    let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
-                    ops_on_path.insert(op.key, op.op);
-                    let mut ops_on_level: BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>> =
-                        BTreeMap::new();
-                    ops_on_level.insert(op.path, ops_on_path);
-                    ops_by_level_path.insert(level, ops_on_level);
-                    if current_last_level < level {
-                        current_last_level = level;
-                    }
-                }
-                Ok(()).wrap_with_cost(Default::default())
-            })
-            .collect()?;
-        Ok(ops_by_level_path)
-    }
-
     /// Method to propagate updated subtree root hashes up to GroveDB root
-    fn propagate_multiple_path_changes_on_transaction<'db, S: StorageContext<'db>>(
+    fn apply_body<'db, S: StorageContext<'db>>(
         &self,
         ops: Vec<GroveDbOp>,
-        get_merk_fn: impl Fn(&[Vec<u8>]) -> CostContext<Merk<S>>,
-    ) -> CostContext<Result<(), Error>> {
-        let mut cost = OperationCost::default();
-
-        let mut ops_by_level_path = Self::decompose_ops(ops)?;
-
-        // We will update up the tree
-        while let Some(ops_at_level) = ops_by_level_path.remove(&current_last_level) {
-            current_last_level -= 1;
-            for (path, ops_at_path) in ops_at_level.into_iter() {
-                let mut merk: Merk<_> = cost_return_on_error!(
-                    &mut cost,
-                    temp_subtrees
-                        .remove(&path)
-                        .map(|x| Some(x).wrap_with_cost(Default::default()))
-                        .unwrap_or_else(|| get_merk_fn(&path))
-                );
-                for (key, op) in ops_at_path.into_iter() {
-                    let mut path_with_key = path.clone();
-                    path_with_key.push(key);
-                    match op.op {
-                        Op::Insert { element } => {
-                            cost_return_on_error!(&mut cost, element.insert(&mut merk, op.key));
-                        }
-                        Op::Delete => {
-                            cost_return_on_error!(&mut cost, Element::delete(&mut merk, op.key));
-                        }
-                        Op::ReplaceTreeHash { hash } => {
-                            cost_return_on_error!(
-                                &mut cost,
-                                Self::update_tree_item_preserve_flag(
-                                    &mut merk,
-                                    op.key,
-                                    hash,
-                                )
-                            );
-                        }
-                    }
-                }
-
-                let root_hash = merk.root_hash().unwrap_add_cost(&mut cost);
-
-                // We need to propagate up this root hash, this means adding grove_db operations
-                // up for the level above
-                if let Some((key, parent_path)) = path.split_last() {
-                    if let Some(ops_at_level_above) = ops_by_level_path.get_mut(&current_last_level)
-                    {
-                        if let Some(ops_on_path) = ops_at_level_above.get_mut(parent_path) {
-                            if let Some(element) = ops_on_path.remove(key) {
-                                if let Element::Tree(mut hash, _) = element {
-                                    hash = root_hash
-                                }
-                            } else {
-                                ops_on_path
-                                    .insert(key.clone(), Op::ReplaceTreeHash { hash: root_hash })
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(()).wrap_with_cost(cost)
-    }
-
-    fn apply_body_direct<'db, S: StorageContext<'db>>(
-        &self,
-        sorted_operations: Vec<GroveDbOp>,
         temp_root_leaves: &mut BTreeMap<Vec<u8>, usize>,
         get_merk_fn: impl Fn(&[Vec<u8>]) -> CostContext<Result<Merk<S>, Error>>,
     ) -> CostContext<Result<(), Error>> {
         let mut cost = OperationCost::default();
-        let mut temp_subtrees: HashMap<Vec<Vec<u8>>, Merk<_>> = HashMap::new();
-        for op in sorted_operations.into_iter() {
-            if op.path.is_empty() {
-                // Altering root leaves
-                // We don't match operation here as only insertion is supported
-                if temp_root_leaves.get(&op.key).is_none() {
-                    temp_root_leaves.insert(op.key, temp_root_leaves.len());
-                }
-            } else {
-                // Keep opened Merk instances to accumulate changes before taking final root
-                // hash
-                let mut merk = cost_return_on_error!(
-                    &mut cost,
-                    temp_subtrees
-                        .remove(&op.path)
-                        .map(|x| Ok(x).wrap_with_cost(Default::default()))
-                        .unwrap_or_else(|| get_merk_fn(&op.path))
-                );
-                match op.op {
-                    Op::Insert { element } => {
-                        cost_return_on_error!(&mut cost, element.insert(&mut merk, op.key));
-                        temp_subtrees.insert(op.path, merk);
-                    }
-                    Op::Delete => {
-                        cost_return_on_error!(&mut cost, Element::delete(&mut merk, op.key));
-                        temp_subtrees.insert(op.path, merk);
-                    }
-                }
-            }
-        }
-        Ok(()).wrap_with_cost(cost)
-    }
 
-    /// Validates batch using a set of rules:
-    /// 1. Subtree must exist to perform operations on it;
-    /// 2. Subtree is treated as exising if it can be found in storage;
-    /// 3. Subtree is treated as exising if it is created within the same batch;
-    /// 4. Subtree is treated as not existing otherwise or if there is a delete
-    ///    operation with no subtree insertion counterpart;
-    /// 5. Subtree overwrite/deletion produces explicit delete operations for
-    ///    every descendant subtree
-    /// 6. Operations are unique
-    fn validate_batch(
-        &self,
-        mut ops: RBTree<GroveDbOpAdapter>,
-        root_leaves: &BTreeMap<Vec<u8>, usize>,
-        transaction: TransactionArg,
-    ) -> CostContext<Result<RBTree<GroveDbOpAdapter>, Error>> {
-        let mut cost = OperationCost::default();
+        let BatchStructure {
+            mut ops_by_level_path,
+            mut deleted_paths,
+            mut merk_tree_cache,
+            last_level,
+        } = cost_return_on_error!(&mut cost, BatchStructure::from_ops(ops, Some(&get_merk_fn)));
 
-        // To ensure that batch `[insert([a, b], c, t), insert([a, b, c], k, v)]` is
-        // valid we need to check that subtree `[a, b]` exists;
-        // If we add `insert([a], b, t)` we need to check (query the DB) only `[a]`
-        // subtree as all operations form a chain and we check only head to exist.
-        //
-        // `valid_subtrees` is used to cache check results for these chains
-        let mut valid_subtrees: HashSet<Vec<Vec<u8>>> = HashSet::new();
+        if let MerkTreesByPath(ref mut merk_trees_by_path) = merk_tree_cache {
+            let mut current_last_level = last_level;
+            // We will update up the tree
+            while let Some(ops_at_level) = ops_by_level_path.remove(&current_last_level) {
+                for (path, ops_at_path) in ops_at_level.into_iter() {
+                    if current_last_level == 1 {
+                        for (key, op) in ops_at_path.into_iter() {
+                            match op {
+                                Op::Insert { element } => {
+                                    // if temp_root_leaves.get(key.as_slice()).
+                                    // is_none() {
+                                    //     temp_root_leaves.insert(key,
+                                    // temp_root_leaves.len());
+                                    // }
+                                }
+                                Op::Delete => {
+                                    return Err(Error::InvalidBatchOperation(
+                                        "deletion of root tree not possible",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                                Op::ReplaceTreeHash { hash } => {}
+                            }
+                        }
+                    } else {
+                        let mut merk: Merk<_> = cost_return_on_error!(
+                            &mut cost,
+                            merk_trees_by_path
+                                .remove(&path)
+                                .map(|x| Ok(x).wrap_with_cost(Default::default()))
+                                .unwrap_or_else(|| get_merk_fn(&path))
+                        );
+                        for (key, op) in ops_at_path.into_iter() {
+                            let mut path_with_key = path.clone();
+                            path_with_key.push(key.clone());
+                            match op {
+                                Op::Insert { element } => {
+                                    cost_return_on_error!(
+                                        &mut cost,
+                                        element.insert(&mut merk, key)
+                                    );
+                                }
+                                Op::Delete => {
+                                    cost_return_on_error!(
+                                        &mut cost,
+                                        Element::delete(&mut merk, key)
+                                    );
+                                }
+                                Op::ReplaceTreeHash { hash } => {
+                                    cost_return_on_error!(
+                                        &mut cost,
+                                        Self::update_tree_item_preserve_flag(
+                                            &mut merk,
+                                            key.as_slice(),
+                                            hash,
+                                        )
+                                    );
+                                }
+                            }
+                        }
 
-        // An opposite to `valid_subtrees`, all overwritten and deleted subtrees are
-        // cached there; This is required as data might be staged for deletion
-        // and subtree will become invalid to insert to even if it exists in
-        // pre-batch database state.
-        let mut removed_subtrees: HashSet<Vec<Vec<u8>>> = HashSet::new();
+                        let root_hash = merk.root_hash().unwrap_add_cost(&mut cost);
 
-        // First pass is required to expand recursive deletions and possible subtree
-        // overwrites.
-        let mut delete_ops = Vec::new();
-        for op in ops.iter() {
-            let delete_paths = cost_return_on_error!(
-                &mut cost,
-                self.find_subtrees(
-                    op.path
-                        .iter()
-                        .map(|x| x.as_slice())
-                        .chain(std::iter::once(op.key.as_slice())),
-                    transaction,
-                )
-            );
-            delete_ops.extend(delete_paths.iter().map(|p| {
-                let (key, path) = p.split_last().expect("no empty paths expected");
-                Box::new(GroveDbOp::delete(path.to_vec(), key.to_vec()))
-            }));
-            for p in delete_paths {
-                removed_subtrees.insert(p);
-            }
-        }
-        for op in delete_ops {
-            insert_unique_op(&mut ops, op);
-        }
-
-        // Insertion to root tree is valid as root tree always exists
-        valid_subtrees.insert(Vec::new());
-
-        // Validation goes from top to bottom so each operation will be in context of
-        // what happened to ancestors of a subject subtree.
-        for op in ops.iter() {
-            let path: &[Vec<u8>] = &op.path;
-
-            // Insertion into subtree that was deleted in this batch is invalid
-            if matches!(op.op, Op::Insert { .. }) && removed_subtrees.contains(path) {
-                return Err(Error::InvalidPath("attempt to insert into deleted subtree"))
-                    .wrap_with_cost(cost);
-            }
-
-            // Attempt to subtrees cache to see if subtree exists or will exists within the
-            // batch
-            if !valid_subtrees.contains(path) {
-                // Tree wasn't checked before and won't be inserted within the batch, need to
-                // access pre-batch database state:
-                if path.len() == 0 {
-                    // We're working with root leaf subtree there
-                    if !root_leaves.contains_key(&op.key) {
-                        return Err(Error::PathNotFound("missing root leaf")).wrap_with_cost(cost);
-                    }
-                    if let Op::Delete = op.op {
-                        return Err(Error::InvalidPath(
-                            "deletion for root leafs is not supported",
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                } else {
-                    // Dealing with a deeper subtree (not a root leaf so to say)
-                    let (parent_key, parent_path) =
-                        path.split_last().expect("empty path already checked");
-                    let subtree = cost_return_on_error!(
-                        &mut cost,
-                        self.get(
-                            parent_path.iter().map(|x| x.as_slice()),
-                            parent_key,
-                            transaction,
-                        )
-                    );
-                    if !matches!(subtree, Element::Tree(_, _)) {
-                        // There is an attempt to insert into a scalar
-                        return Err(Error::InvalidPath("must be a tree")).wrap_with_cost(cost);
+                        // We need to propagate up this root hash, this means adding grove_db
+                        // operations up for the level above
+                        if let Some((key, parent_path)) = path.split_last() {
+                            if let Some(ops_at_level_above) =
+                                ops_by_level_path.get_mut(&(current_last_level - 1))
+                            {
+                                if let Some(ops_on_path) = ops_at_level_above.get_mut(parent_path) {
+                                    if let Some(op) = ops_on_path.remove(key) {
+                                        match op {
+                                            Op::ReplaceTreeHash { mut hash } => hash = root_hash,
+                                            Op::Insert { element } => {
+                                                if let Element::Tree(mut hash, _) = element {
+                                                    hash = root_hash
+                                                }
+                                            }
+                                            Op::Delete => {
+                                                return Err(Error::InvalidBatchOperation(
+                                                    "insertion of element under a deleted tree",
+                                                ))
+                                                .wrap_with_cost(cost);
+                                            }
+                                        }
+                                    } else {
+                                        ops_on_path.insert(
+                                            key.clone(),
+                                            Op::ReplaceTreeHash { hash: root_hash },
+                                        );
+                                    }
+                                } else {
+                                    let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
+                                    ops_on_path.insert(
+                                        key.clone(),
+                                        Op::ReplaceTreeHash { hash: root_hash },
+                                    );
+                                    ops_at_level_above.insert(parent_path.to_vec(), ops_on_path);
+                                }
+                            } else {
+                                let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
+                                ops_on_path
+                                    .insert(key.clone(), Op::ReplaceTreeHash { hash: root_hash });
+                                let mut ops_on_level: BTreeMap<
+                                    Vec<Vec<u8>>,
+                                    BTreeMap<Vec<u8>, Op>,
+                                > = BTreeMap::new();
+                                ops_on_level.insert(parent_path.to_vec(), ops_on_path);
+                                ops_by_level_path.insert(current_last_level - 1, ops_on_level);
+                            }
+                        }
                     }
                 }
+                current_last_level -= 1;
             }
-
-            match *op {
-                // Insertion of a tree makes this subtree valid
-                GroveDbOp {
-                    ref path,
-                    ref key,
-                    op:
-                        Op::Insert {
-                            element: Element::Tree(..),
-                        },
-                    ..
-                } => {
-                    let mut new_path = path.to_vec();
-                    new_path.push(key.to_vec());
-                    removed_subtrees.remove(&new_path);
-                    valid_subtrees.insert(new_path);
-                }
-                // Deletion of a tree makes a subtree unavailable
-                GroveDbOp {
-                    ref path,
-                    ref key,
-                    op: Op::Delete,
-                    ..
-                } => {
-                    let mut new_path = path.to_vec();
-                    new_path.push(key.to_vec());
-                    valid_subtrees.remove(&new_path);
-                    removed_subtrees.insert(new_path);
-                }
-                _ => {}
-            }
-        }
-
-        Ok(ops).wrap_with_cost(cost)
-    }
-
-    /// Applies batch of operations on GroveDB
-    /// While is extremely fast, it is also quite dangerous
-    pub fn apply_sorted_pre_validated_batch(
-        &self,
-        ops: Vec<GroveDbOp>,
-        transaction: TransactionArg,
-    ) -> CostContext<Result<(), Error>> {
-        let mut cost = OperationCost::default();
-
-        // Helper function to store updated root leaves
-        fn save_root_leaves<'db, S>(
-            storage: S,
-            temp_root_leaves: &BTreeMap<Vec<u8>, usize>,
-        ) -> CostContext<Result<(), Error>>
-        where
-            S: StorageContext<'db>,
-            Error: From<<S as storage::StorageContext<'db>>::Error>,
-        {
-            let cost = OperationCost::default();
-
-            let root_leaves_serialized = cost_return_on_error_no_add!(
-                &cost,
-                bincode::serialize(&temp_root_leaves).map_err(|_| {
-                    Error::CorruptedData(String::from("unable to serialize root leaves data"))
-                })
-            );
-            storage
-                .put_meta(ROOT_LEAFS_SERIALIZED_KEY, &root_leaves_serialized)
-                .map_err(|e| e.into())
-                .wrap_with_cost(OperationCost {
-                    storage_written_bytes: ROOT_LEAFS_SERIALIZED_KEY.len()
-                        + root_leaves_serialized.len(),
-                    ..Default::default()
-                })
-        }
-
-        if ops.is_empty() {
-            return Ok(()).wrap_with_cost(cost);
-        }
-
-        let mut temp_root_leaves =
-            cost_return_on_error!(&mut cost, self.get_root_leaf_keys(transaction));
-
-        // `StorageBatch` allows us to collect operations on different subtrees before
-        // execution
-        let storage_batch = StorageBatch::new();
-
-        // With the only one difference (if there is a transaction) do the following:
-        // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
-        //    one subtree and moved to another then add propagation operation to the
-        //    operations tree and drop Merk handle;
-        // 3. Take Merk from temp subtrees or open a new one with batched storage
-        //    context;
-        // 4. Apply operation to the Merk;
-        // 5. Remove operation from the tree, repeat until there are operations to do;
-        // 6. Add root leaves save operation to the batch
-        // 7. Apply storage batch
-        if let Some(tx) = transaction {
-            cost_return_on_error!(
-                &mut cost,
-                self.apply_body_direct(ops, &mut temp_root_leaves, |path| {
-                    let storage = self.db.get_batch_transactional_storage_context(
-                        path.iter().map(|x| x.as_slice()),
-                        &storage_batch,
-                        tx,
-                    );
-                    Merk::open(storage)
-                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                })
-            );
-
-            let meta_storage = self.db.get_batch_transactional_storage_context(
-                std::iter::empty(),
-                &storage_batch,
-                tx,
-            );
-
-            cost_return_on_error!(&mut cost, save_root_leaves(meta_storage, &temp_root_leaves));
-
-            // TODO: compute batch costs
-            cost_return_on_error_no_add!(
-                &cost,
-                self.db
-                    .commit_multi_context_batch(storage_batch, Some(tx))
-                    .map_err(|e| e.into())
-            );
         } else {
-            cost_return_on_error!(
-                &mut cost,
-                self.apply_body_direct(ops, &mut temp_root_leaves, |path| {
-                    let storage = self.db.get_batch_storage_context(
-                        path.iter().map(|x| x.as_slice()),
-                        &storage_batch,
-                    );
-                    Merk::open(storage)
-                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                })
-            );
-
-            let meta_storage = self
-                .db
-                .get_batch_storage_context(std::iter::empty(), &storage_batch);
-            cost_return_on_error!(&mut cost, save_root_leaves(meta_storage, &temp_root_leaves));
-
-            // TODO: compute batch costs
-            cost_return_on_error_no_add!(
-                &cost,
-                self.db
-                    .commit_multi_context_batch(storage_batch, None)
-                    .map_err(|e| e.into())
-            );
+            return Err(Error::CorruptedData(
+                "impossible code execution in batch apply body".to_string(),
+            ))
+            .wrap_with_cost(cost);
         }
         Ok(()).wrap_with_cost(cost)
     }
+
+    // fn apply_body_direct<'db, S: StorageContext<'db>>(
+    //     &self,
+    //     sorted_operations: Vec<GroveDbOp>,
+    //     temp_root_leaves: &mut BTreeMap<Vec<u8>, usize>,
+    //     get_merk_fn: impl Fn(&[Vec<u8>]) -> CostContext<Result<Merk<S>, Error>>,
+    // ) -> CostContext<Result<(), Error>> {
+    //     let mut cost = OperationCost::default();
+    //     let mut temp_subtrees: HashMap<Vec<Vec<u8>>, Merk<_>> = HashMap::new();
+    //     for op in sorted_operations.into_iter() {
+    //         if op.path.is_empty() {
+    //             // Altering root leaves
+    //             // We don't match operation here as only insertion is supported
+    //             if temp_root_leaves.get(&op.key).is_none() {
+    //                 temp_root_leaves.insert(op.key, temp_root_leaves.len());
+    //             }
+    //         } else {
+    //             // Keep opened Merk instances to accumulate changes before taking
+    // final root             // hash
+    //             let mut merk = cost_return_on_error!(
+    //                 &mut cost,
+    //                 temp_subtrees
+    //                     .remove(&op.path)
+    //                     .map(|x| Ok(x).wrap_with_cost(Default::default()))
+    //                     .unwrap_or_else(|| get_merk_fn(&op.path))
+    //             );
+    //             match op.op {
+    //                 Op::Insert { element } => {
+    //                     cost_return_on_error!(&mut cost, element.insert(&mut
+    // merk, op.key));                     temp_subtrees.insert(op.path, merk);
+    //                 }
+    //                 Op::Delete => {
+    //                     cost_return_on_error!(&mut cost, Element::delete(&mut
+    // merk, op.key));                     temp_subtrees.insert(op.path, merk);
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     Ok(()).wrap_with_cost(cost)
+    // }
+
+    // /// Validates batch using a set of rules:
+    // /// 1. Subtree must exist to perform operations on it;
+    // /// 2. Subtree is treated as exising if it can be found in storage;
+    // /// 3. Subtree is treated as exising if it is created within the same batch;
+    // /// 4. Subtree is treated as not existing otherwise or if there is a delete
+    // ///    operation with no subtree insertion counterpart;
+    // /// 5. Subtree overwrite/deletion produces explicit delete operations for
+    // ///    every descendant subtree
+    // /// 6. Operations are unique
+    // fn validate_batch(
+    //     &self,
+    //     mut ops: RBTree<GroveDbOpAdapter>,
+    //     root_leaves: &BTreeMap<Vec<u8>, usize>,
+    //     transaction: TransactionArg,
+    // ) -> CostContext<Result<RBTree<GroveDbOpAdapter>, Error>> {
+    //     let mut cost = OperationCost::default();
+    //
+    //     // To ensure that batch `[insert([a, b], c, t), insert([a, b, c], k, v)]`
+    // is     // valid we need to check that subtree `[a, b]` exists;
+    //     // If we add `insert([a], b, t)` we need to check (query the DB) only
+    // `[a]`     // subtree as all operations form a chain and we check only
+    // head to exist.     //
+    //     // `valid_subtrees` is used to cache check results for these chains
+    //     let mut valid_subtrees: HashSet<Vec<Vec<u8>>> = HashSet::new();
+    //
+    //     // An opposite to `valid_subtrees`, all overwritten and deleted subtrees
+    // are     // cached there; This is required as data might be staged for
+    // deletion     // and subtree will become invalid to insert to even if it
+    // exists in     // pre-batch database state.
+    //     let mut removed_subtrees: HashSet<Vec<Vec<u8>>> = HashSet::new();
+    //
+    //     // First pass is required to expand recursive deletions and possible
+    // subtree     // overwrites.
+    //     let mut delete_ops = Vec::new();
+    //     for op in ops.iter() {
+    //         let delete_paths = cost_return_on_error!(
+    //             &mut cost,
+    //             self.find_subtrees(
+    //                 op.path
+    //                     .iter()
+    //                     .map(|x| x.as_slice())
+    //                     .chain(std::iter::once(op.key.as_slice())),
+    //                 transaction,
+    //             )
+    //         );
+    //         delete_ops.extend(delete_paths.iter().map(|p| {
+    //             let (key, path) = p.split_last().expect("no empty paths
+    // expected");             Box::new(GroveDbOp::delete(path.to_vec(),
+    // key.to_vec()))         }));
+    //         for p in delete_paths {
+    //             removed_subtrees.insert(p);
+    //         }
+    //     }
+    //     for op in delete_ops {
+    //         insert_unique_op(&mut ops, op);
+    //     }
+    //
+    //     // Insertion to root tree is valid as root tree always exists
+    //     valid_subtrees.insert(Vec::new());
+    //
+    //     // Validation goes from top to bottom so each operation will be in
+    // context of     // what happened to ancestors of a subject subtree.
+    //     for op in ops.iter() {
+    //         let path: &[Vec<u8>] = &op.path;
+    //
+    //         // Insertion into subtree that was deleted in this batch is invalid
+    //         if matches!(op.op, Op::Insert { .. }) &&
+    // removed_subtrees.contains(path) {             return
+    // Err(Error::InvalidPath("attempt to insert into deleted subtree"))
+    //                 .wrap_with_cost(cost);
+    //         }
+    //
+    //         // Attempt to subtrees cache to see if subtree exists or will exists
+    // within the         // batch
+    //         if !valid_subtrees.contains(path) {
+    //             // Tree wasn't checked before and won't be inserted within the
+    // batch, need to             // access pre-batch database state:
+    //             if path.len() == 0 {
+    //                 // We're working with root leaf subtree there
+    //                 if !root_leaves.contains_key(&op.key) {
+    //                     return Err(Error::PathNotFound("missing root
+    // leaf")).wrap_with_cost(cost);                 }
+    //                 if let Op::Delete = op.op {
+    //                     return Err(Error::InvalidPath(
+    //                         "deletion for root leafs is not supported",
+    //                     ))
+    //                     .wrap_with_cost(cost);
+    //                 }
+    //             } else {
+    //                 // Dealing with a deeper subtree (not a root leaf so to say)
+    //                 let (parent_key, parent_path) =
+    //                     path.split_last().expect("empty path already checked");
+    //                 let subtree = cost_return_on_error!(
+    //                     &mut cost,
+    //                     self.get(
+    //                         parent_path.iter().map(|x| x.as_slice()),
+    //                         parent_key,
+    //                         transaction,
+    //                     )
+    //                 );
+    //                 if !matches!(subtree, Element::Tree(_, _)) {
+    //                     // There is an attempt to insert into a scalar
+    //                     return Err(Error::InvalidPath("must be a
+    // tree")).wrap_with_cost(cost);                 }
+    //             }
+    //         }
+    //
+    //         match *op {
+    //             // Insertion of a tree makes this subtree valid
+    //             GroveDbOp {
+    //                 ref path,
+    //                 ref key,
+    //                 op:
+    //                     Op::Insert {
+    //                         element: Element::Tree(..),
+    //                     },
+    //                 ..
+    //             } => {
+    //                 let mut new_path = path.to_vec();
+    //                 new_path.push(key.to_vec());
+    //                 removed_subtrees.remove(&new_path);
+    //                 valid_subtrees.insert(new_path);
+    //             }
+    //             // Deletion of a tree makes a subtree unavailable
+    //             GroveDbOp {
+    //                 ref path,
+    //                 ref key,
+    //                 op: Op::Delete,
+    //                 ..
+    //             } => {
+    //                 let mut new_path = path.to_vec();
+    //                 new_path.push(key.to_vec());
+    //                 valid_subtrees.remove(&new_path);
+    //                 removed_subtrees.insert(new_path);
+    //             }
+    //             _ => {}
+    //         }
+    //     }
+    //
+    //     Ok(ops).wrap_with_cost(cost)
+    // }
+
+    // pub fn worst_case_fees_for_batch(
+    //     &self,
+    //     ops: Vec<GroveDbOp>,
+    // ) -> CostContext<Result<(), Error>> {
+    //     let mut cost = OperationCost::default();
+    //
+    //     if ops.is_empty() {
+    //         return Ok(()).wrap_with_cost(cost);
+    //     }
+    //
+    //     let BatchStructure {
+    //         mut ops_by_level_path,
+    //         mut deleted_paths,
+    //         mut merk_tree_cache,
+    //         last_level
+    //     } = cost_return_on_error!(
+    //                 &mut cost, BatchStructure::from_ops(ops, &get_merk_fn));
+    //
+    //     if let KnownMerkTreePaths(known_merk_tree_paths) = merk_tree_cache {
+    //         let mut current_last_level = last_level;
+    //         // We will update up the tree
+    //         while let Some(ops_at_level) =
+    // ops_by_level_path.remove(&current_last_level) {             for (path,
+    // ops_at_path) in ops_at_level.into_iter() {                 if
+    // current_last_level == 1 {                     for (key, op) in
+    // ops_at_path.into_iter() {                         match op {
+    //                             Op::Insert { element } => {
+    //                                 // if
+    // temp_root_leaves.get(key.as_slice()).is_none() {                         
+    // //     temp_root_leaves.insert(key, temp_root_leaves.len());             
+    // // }                             }
+    //                             Op::Delete => {
+    //                                 return
+    // Err(Error::InvalidBatchOperation("deletion of root tree not
+    // possible")).wrap_with_cost(cost);                             }
+    //                             Op::ReplaceTreeHash { hash } => {}
+    //                         }
+    //                     }
+    //                 } else {
+    //                     let mut merk: Merk<_> = cost_return_on_error!(
+    //                 &mut cost,
+    //                 merk_trees_by_path
+    //                          .remove(&path)
+    //                          .map(|x| Ok(x).wrap_with_cost(Default::default()))
+    //                          .unwrap_or_else(|| get_merk_fn(&path))
+    //             );
+    //                     for (key, op) in ops_at_path.into_iter() {
+    //                         let mut path_with_key = path.clone();
+    //                         path_with_key.push(key.clone());
+    //                         match op {
+    //                             Op::Insert { element } => {
+    //                                 cost_return_on_error!(&mut cost,
+    // element.insert(&mut merk, key));                             }
+    //                             Op::Delete => {
+    //                                 cost_return_on_error!(&mut cost,
+    // Element::delete(&mut merk, key));                             }
+    //                             Op::ReplaceTreeHash { hash } => {
+    //                                 cost_return_on_error!(
+    //                             &mut cost,
+    //                             Self::update_tree_item_preserve_flag(
+    //                                 &mut merk,
+    //                                 key.as_slice(),
+    //                                 hash,
+    //                             )
+    //                         );
+    //                             }
+    //                         }
+    //                     }
+    //
+    //                     cost.add_worst_case_merk_root_hash();
+    //
+    //                     // We need to propagate up this root hash, this means
+    // adding grove_db operations                     // up for the level above
+    //                     if let Some((key, parent_path)) = path.split_last() {
+    //                         if let Some(ops_at_level_above) =
+    // ops_by_level_path.get_mut(&(current_last_level - 1))                     
+    // {                             if let Some(ops_on_path) =
+    // ops_at_level_above.get_mut(parent_path) {                                
+    // if let Some(op) = ops_on_path.remove(key) {                              
+    // match op {                                         Op::ReplaceTreeHash {
+    // mut hash } => {                                             hash =
+    // root_hash                                         }
+    //                                         Op::Insert { element } => {
+    //                                             if let Element::Tree(mut hash, _)
+    // = element {                                                 hash =
+    // root_hash                                             }
+    //                                         }
+    //                                         Op::Delete => {
+    //                                             return
+    // Err(Error::InvalidBatchOperation("insertion of element under a deleted
+    // tree")).wrap_with_cost(cost);                                         }
+    //                                     }
+    //                                 } else {
+    //                                     ops_on_path
+    //                                         .insert(key.clone(),
+    // Op::ReplaceTreeHash { hash: root_hash });                                
+    // }                             } else {
+    //                                 let mut ops_on_path: BTreeMap<Vec<u8>, Op> =
+    // BTreeMap::new();                                 
+    // ops_on_path.insert(key.clone(), Op::ReplaceTreeHash { hash: root_hash });
+    //                                 
+    // ops_at_level_above.insert(parent_path.to_vec(), ops_on_path);            
+    // }                         } else {
+    //                             let mut ops_on_path: BTreeMap<Vec<u8>, Op> =
+    // BTreeMap::new();                             
+    // ops_on_path.insert(key.clone(), Op::ReplaceTreeHash { hash: root_hash });
+    //                             let mut ops_on_level: BTreeMap<Vec<Vec<u8>>,
+    // BTreeMap<Vec<u8>, Op>> =                                 BTreeMap::new();
+    //                             ops_on_level.insert(parent_path.to_vec(),
+    // ops_on_path);                             
+    // ops_by_level_path.insert(current_last_level - 1, ops_on_level);
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //             current_last_level -= 1;
+    //         }
+    //         Ok(()).wrap_with_cost(cost)
+    //     } else {
+    //         Err(Error::CorruptedData("impossible code execution in
+    // worst_case_fees_for_batch".to_string())).wrap_with_cost(cost)     }
+    // }
 
     /// Applies batch of operations on GroveDB
     pub fn apply_batch(
         &self,
         ops: Vec<GroveDbOp>,
-        validate: bool,
         transaction: TransactionArg,
     ) -> CostContext<Result<(), Error>> {
         let mut cost = OperationCost::default();
@@ -731,21 +871,6 @@ impl GroveDb {
         let mut temp_root_leaves =
             cost_return_on_error!(&mut cost, self.get_root_leaf_keys(transaction));
 
-        // 1. Collect all batch operations into RBTree to keep them sorted and validated
-        let mut sorted_operations = RBTree::new(GroveDbOpAdapter::new());
-        for op in ops {
-            insert_unique_op(&mut sorted_operations, Box::new(op));
-        }
-
-        let mut validated_operations = if validate {
-            cost_return_on_error!(
-                &mut cost,
-                self.validate_batch(sorted_operations, &temp_root_leaves, transaction)
-            )
-        } else {
-            sorted_operations
-        };
-
         // `StorageBatch` allows us to collect operations on different subtrees before
         // execution
         let storage_batch = StorageBatch::new();
@@ -763,7 +888,7 @@ impl GroveDb {
         if let Some(tx) = transaction {
             cost_return_on_error!(
                 &mut cost,
-                self.apply_body(&mut validated_operations, &mut temp_root_leaves, |path| {
+                self.apply_body(ops, &mut temp_root_leaves, |path| {
                     let storage = self.db.get_batch_transactional_storage_context(
                         path.iter().map(|x| x.as_slice()),
                         &storage_batch,
@@ -792,7 +917,7 @@ impl GroveDb {
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.apply_body(&mut validated_operations, &mut temp_root_leaves, |path| {
+                self.apply_body(ops, &mut temp_root_leaves, |path| {
                     let storage = self.db.get_batch_storage_context(
                         path.iter().map(|x| x.as_slice()),
                         &storage_batch,
@@ -817,6 +942,139 @@ impl GroveDb {
         }
         Ok(()).wrap_with_cost(cost)
     }
+
+    // /// Applies batch of operations on GroveDB
+    // pub fn apply_batch(
+    //     &self,
+    //     ops: Vec<GroveDbOp>,
+    //     validate: bool,
+    //     transaction: TransactionArg,
+    // ) -> CostContext<Result<(), Error>> {
+    //     let mut cost = OperationCost::default();
+    //
+    //     // Helper function to store updated root leaves
+    //     fn save_root_leaves<'db, S>(
+    //         storage: S,
+    //         temp_root_leaves: &BTreeMap<Vec<u8>, usize>,
+    //     ) -> CostContext<Result<(), Error>>
+    //     where
+    //         S: StorageContext<'db>,
+    //         Error: From<<S as storage::StorageContext<'db>>::Error>,
+    //     {
+    //         let cost = OperationCost::default();
+    //
+    //         let root_leaves_serialized = cost_return_on_error_no_add!(
+    //             &cost,
+    //             bincode::serialize(&temp_root_leaves).map_err(|_| {
+    //                 Error::CorruptedData(String::from("unable to serialize root
+    // leaves data"))             })
+    //         );
+    //         storage
+    //             .put_meta(ROOT_LEAFS_SERIALIZED_KEY, &root_leaves_serialized)
+    //             .map_err(|e| e.into())
+    //             .wrap_with_cost(OperationCost {
+    //                 storage_written_bytes: ROOT_LEAFS_SERIALIZED_KEY.len()
+    //                     + root_leaves_serialized.len(),
+    //                 ..Default::default()
+    //             })
+    //     }
+    //
+    //     if ops.is_empty() {
+    //         return Ok(()).wrap_with_cost(cost);
+    //     }
+    //
+    //     let mut temp_root_leaves =
+    //         cost_return_on_error!(&mut cost,
+    // self.get_root_leaf_keys(transaction));
+    //
+    //     // 1. Collect all batch operations into RBTree to keep them sorted and
+    // validated     let mut sorted_operations =
+    // RBTree::new(GroveDbOpAdapter::new());     for op in ops {
+    //         insert_unique_op(&mut sorted_operations, Box::new(op));
+    //     }
+    //
+    //     let mut validated_operations = if validate {
+    //         cost_return_on_error!(
+    //             &mut cost,
+    //             self.validate_batch(sorted_operations, &temp_root_leaves,
+    // transaction)         )
+    //     } else {
+    //         sorted_operations
+    //     };
+    //
+    //     // `StorageBatch` allows us to collect operations on different subtrees
+    // before     // execution
+    //     let storage_batch = StorageBatch::new();
+    //
+    //     // With the only one difference (if there is a transaction) do the
+    // following:     // 2. If nothing left to do and we were on a non-leaf
+    // subtree or we're done with     //    one subtree and moved to another
+    // then add propagation operation to the     //    operations tree and drop
+    // Merk handle;     // 3. Take Merk from temp subtrees or open a new one
+    // with batched storage     //    context;
+    //     // 4. Apply operation to the Merk;
+    //     // 5. Remove operation from the tree, repeat until there are operations
+    // to do;     // 6. Add root leaves save operation to the batch
+    //     // 7. Apply storage batch
+    //     if let Some(tx) = transaction {
+    //         cost_return_on_error!(
+    //             &mut cost,
+    //             self.apply_body(&mut validated_operations, &mut temp_root_leaves,
+    // |path| {                 let storage =
+    // self.db.get_batch_transactional_storage_context(                     
+    // path.iter().map(|x| x.as_slice()),                     &storage_batch,
+    //                     tx,
+    //                 );
+    //                 Merk::open(storage)
+    //                     .map_err(|_| Error::CorruptedData("cannot open a
+    // subtree".to_owned()))             })
+    //         );
+    //
+    //         let meta_storage = self.db.get_batch_transactional_storage_context(
+    //             std::iter::empty(),
+    //             &storage_batch,
+    //             tx,
+    //         );
+    //
+    //         cost_return_on_error!(&mut cost, save_root_leaves(meta_storage,
+    // &temp_root_leaves));
+    //
+    //         // TODO: compute batch costs
+    //         cost_return_on_error_no_add!(
+    //             &cost,
+    //             self.db
+    //                 .commit_multi_context_batch(storage_batch, Some(tx))
+    //                 .map_err(|e| e.into())
+    //         );
+    //     } else {
+    //         cost_return_on_error!(
+    //             &mut cost,
+    //             self.apply_body(&mut validated_operations, &mut temp_root_leaves,
+    // |path| {                 let storage = self.db.get_batch_storage_context(
+    //                     path.iter().map(|x| x.as_slice()),
+    //                     &storage_batch,
+    //                 );
+    //                 Merk::open(storage)
+    //                     .map_err(|_| Error::CorruptedData("cannot open a
+    // subtree".to_owned()))             })
+    //         );
+    //
+    //         let meta_storage = self
+    //             .db
+    //             .get_batch_storage_context(std::iter::empty(), &storage_batch);
+    //         cost_return_on_error!(&mut cost, save_root_leaves(meta_storage,
+    // &temp_root_leaves));
+    //
+    //         // TODO: compute batch costs
+    //         cost_return_on_error_no_add!(
+    //             &cost,
+    //             self.db
+    //                 .commit_multi_context_batch(storage_batch, None)
+    //                 .map_err(|e| e.into())
+    //         );
+    //     }
+    //     Ok(()).wrap_with_cost(cost)
+    // }
 }
 
 #[cfg(test)]
@@ -857,7 +1115,7 @@ mod tests {
                 element2.clone(),
             ),
         ];
-        db.apply_batch(ops, true, None)
+        db.apply_batch(ops, None)
             .unwrap()
             .expect("cannot apply batch");
 
@@ -927,7 +1185,7 @@ mod tests {
                 element2.clone(),
             ),
         ];
-        db.apply_batch(ops, true, Some(&tx))
+        db.apply_batch(ops, Some(&tx))
             .unwrap()
             .expect("cannot apply batch");
         db.get([], b"keyb", None)
@@ -984,7 +1242,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, true, None).unwrap().is_err());
+        assert!(db.apply_batch(ops, None).unwrap().is_err());
         assert!(db.get([b"key1".as_ref()], b"key2", None).unwrap().is_err());
     }
 
@@ -1015,7 +1273,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, true, None).unwrap().is_err());
+        assert!(db.apply_batch(ops, None).unwrap().is_err());
         assert!(db.get([b"key1".as_ref()], b"key2", None).unwrap().is_err());
         assert!(db
             .get([TEST_LEAF, b"key1"], b"key2", None)
@@ -1048,7 +1306,7 @@ mod tests {
             ),
             GroveDbOp::delete(vec![b"key1".to_vec()], b"key2".to_vec()),
         ];
-        assert!(db.apply_batch(ops, true, None).unwrap().is_err());
+        assert!(db.apply_batch(ops, None).unwrap().is_err());
     }
 
     #[test]
@@ -1074,7 +1332,7 @@ mod tests {
             ),
             GroveDbOp::delete(vec![b"key1".to_vec()], b"key2".to_vec()),
         ];
-        db.apply_batch(ops, true, None)
+        db.apply_batch(ops, None)
             .unwrap()
             .expect("cannot apply batch");
         assert_eq!(
@@ -1103,7 +1361,7 @@ mod tests {
             b"key1".to_vec(),
             element.clone(),
         )];
-        assert!(db.apply_batch(ops, true, None).unwrap().is_err());
+        assert!(db.apply_batch(ops, None).unwrap().is_err());
 
         // Insertion into a tree is correct
         let ops = vec![GroveDbOp::insert(
@@ -1111,7 +1369,7 @@ mod tests {
             b"key1".to_vec(),
             element.clone(),
         )];
-        db.apply_batch(ops, true, None)
+        db.apply_batch(ops, None)
             .unwrap()
             .expect("cannot apply batch");
         assert_eq!(
@@ -1144,7 +1402,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, true, None).unwrap().is_err());
+        assert!(db.apply_batch(ops, None).unwrap().is_err());
 
         // TEST_LEAF will became a scalar, insertion into scalar is also invalid
         let ops = vec![
@@ -1155,7 +1413,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, true, None).unwrap().is_err());
+        assert!(db.apply_batch(ops, None).unwrap().is_err());
 
         // Here TEST_LEAF is overwritten and new data should be available why older data
         // shouldn't
@@ -1163,7 +1421,7 @@ mod tests {
             GroveDbOp::insert(vec![], TEST_LEAF.to_vec(), Element::empty_tree()),
             GroveDbOp::insert(vec![TEST_LEAF.to_vec()], b"key1".to_vec(), element2.clone()),
         ];
-        assert!(db.apply_batch(ops, true, None).unwrap().is_ok());
+        assert!(db.apply_batch(ops, None).unwrap().is_ok());
 
         assert_eq!(
             db.get([TEST_LEAF], b"key1", None)
@@ -1192,7 +1450,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, true, None).unwrap().is_err());
+        assert!(db.apply_batch(ops, None).unwrap().is_err());
     }
 
     #[test]
@@ -1218,7 +1476,7 @@ mod tests {
                 .expect("cannot get item"),
             element
         );
-        db.apply_batch(ops, true, None)
+        db.apply_batch(ops, None)
             .unwrap()
             .expect("cannot apply batch");
         assert!(db
@@ -1268,7 +1526,7 @@ mod tests {
             GroveDbOp::insert(vec![TEST_LEAF.to_vec()], b"key".to_vec(), element2.clone()),
             GroveDbOp::delete(vec![ANOTHER_TEST_LEAF.to_vec()], b"key1".to_vec()),
         ];
-        db.apply_batch(ops, true, None)
+        db.apply_batch(ops, None)
             .unwrap()
             .expect("cannot apply batch");
 
@@ -1337,7 +1595,7 @@ mod tests {
             b"key".to_vec(),
             element.clone(),
         )];
-        db.apply_batch(batch, true, None)
+        db.apply_batch(batch, None)
             .unwrap()
             .expect("cannot apply batch");
 
@@ -1346,7 +1604,7 @@ mod tests {
             b"key".to_vec(),
             element.clone(),
         )];
-        db.apply_batch(batch, true, None)
+        db.apply_batch(batch, None)
             .unwrap()
             .expect("cannot apply same batch twice");
     }
@@ -1382,7 +1640,7 @@ mod tests {
             b"key".to_vec(),
             element.clone(),
         )];
-        db.apply_sorted_pre_validated_batch(batch, None)
+        db.apply_batch(batch, None)
             .unwrap()
             .expect("cannot apply batch");
 
