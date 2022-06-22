@@ -235,6 +235,15 @@ impl Query {
 
         self.items.insert(item);
     }
+
+    /// Takes all the query items from a query instances and combines it with
+    /// the current query item set
+    pub fn merge(mut first: Query, other: Query) -> Self {
+        for item in other.items {
+            first.insert_item(item);
+        }
+        first
+    }
 }
 
 impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {

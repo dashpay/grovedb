@@ -39,7 +39,8 @@ impl PathQuery {
     }
 
     pub fn merge(p1: &PathQuery, p2: &PathQuery) -> Self {
-        return p1.clone();
+        let combined_query = Query::merge(p1.query.query.clone(), p2.query.query.clone());
+        PathQuery::new_unsized(p1.path.clone(), combined_query)
     }
 }
 
