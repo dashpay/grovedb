@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use merk::proofs::{query::QueryItem, Query};
 
@@ -41,24 +41,59 @@ impl PathQuery {
     }
 
     pub fn merge(p1: &PathQuery, p2: &PathQuery) -> Self {
-        // let mut common_path = vec![];
-        let min_length = vec![p1, p2].into_iter().map(|q| q.path.len()).min();
-
         if p1.path == p2.path {
             let combined_query = Query::merge(p1.query.query.clone(), p2.query.query.clone());
             PathQuery::new_unsized(p1.path.clone(), combined_query)
         } else {
-            let (common_path, next_index) =
-                PathQuery::get_common_path(vec![p1.path.clone(), p2.path.clone()]);
+            let paths: Vec<&[Vec<u8>]> = vec![&p1.path, &p2.path];
+
+            let (common_path, next_index) = PathQuery::get_common_path(vec![&p1.path, &p2.path]);
             dbg!(common_path);
             dbg!(next_index);
+
+            let query = PathQuery::build_query(paths, next_index);
+            dbg!(query);
             // at this point, we need to create a new function that takes the paths and the
             // index then builds up the query.
             panic!("path lengths are not the same");
         }
     }
 
-    fn get_common_path(paths: Vec<Vec<Vec<u8>>>) -> (Vec<Vec<u8>>, usize) {
+    fn build_query(paths: Vec<&[Vec<u8>]>, start_index: usize) -> Query {
+        let mut level = start_index;
+        let keys_at_level = paths.iter().map(|&path| &path[level]).collect::<Vec<_>>();
+
+        // we need to group the paths based on their distinct nature
+        let mut path_branches: HashMap<_, Vec<usize>> = HashMap::new();
+        for (path_index, key) in keys_at_level.iter().enumerate() {
+            if path_branches.contains_key(key) {
+                // get the current element then add the new path index to it
+                let current_path_index_array = path_branches
+                    .get_mut(key)
+                    .expect("confirmed hashmap contains key");
+                current_path_index_array.push(path_index);
+            } else {
+                path_branches.insert(key, vec![path_index]);
+            }
+        }
+
+        // for each key create a query that queries them
+        let mut query = Query::new();
+        // TODO: remove clone
+        for key in path_branches.clone().into_keys() {
+            query.insert_key(key.to_vec());
+            query.add_conditional_subquery(QueryItem::Key(key.to_vec()), None, None);
+        }
+
+        // add conditional queries for all the keys
+
+        // dbg!(&path_branches);
+        //
+        // panic!("failed to build query");
+        query
+    }
+
+    fn get_common_path(paths: Vec<&[Vec<u8>]>) -> (Vec<Vec<u8>>, usize) {
         if paths.len() == 0 {
             return (vec![], 0);
         }
@@ -79,7 +114,6 @@ impl PathQuery {
                 break;
             }
         }
-
         (common_path, level)
     }
 }
