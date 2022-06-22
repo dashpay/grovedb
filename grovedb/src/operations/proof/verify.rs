@@ -36,6 +36,7 @@ impl ProofVerifier {
         let mut proof_reader = ProofReader::new(proof);
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
+        // TODO: get rid of this error once root tree is also of type merk
         if path_slices.len() < 1 {
             return Err(Error::InvalidPath("can't verify proof for empty path"));
         }
