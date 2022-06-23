@@ -256,6 +256,7 @@ impl<'db, S> BatchMerkTreeCache<S>
 
 struct BatchStructure<S> {
     /// Operations by level path
+    ///                       LEVEL           PATH                   KEY      OP
     ops_by_level_path: IntMap<usize, BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>>>,
     /// Merk trees
     merk_tree_cache: BatchMerkTreeCache<S>,
