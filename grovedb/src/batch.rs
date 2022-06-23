@@ -416,7 +416,7 @@ impl GroveDb {
                         let root_hash = match merk {
                             None => {
                                 cost.add_worst_case_merk_root_hash();
-                                // We can just place 0s, it doesn't matter in worst case scenario
+                                // We can just place 255s, it doesn't matter in worst case scenario
                                 [0u8; 32]
                             }
                             Some(m) => m.root_hash().unwrap_add_cost(&mut cost),
@@ -450,10 +450,14 @@ impl GroveDb {
                                                 }
                                             }
                                             Op::Delete => {
-                                                return Err(Error::InvalidBatchOperation(
-                                                    "insertion of element under a deleted tree",
-                                                ))
-                                                .wrap_with_cost(cost);
+                                                if root_hash != [0u8; 32] {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "modification of tree when it will be deleted",
+                                                    ))
+                                                        .wrap_with_cost(cost);
+                                                } else {
+                                                    op
+                                                }
                                             }
                                         };
                                         ops_on_path.insert(key.clone(), new_op);
