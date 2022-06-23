@@ -2,6 +2,8 @@
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
 
+use core::fmt;
+
 use bincode::Options;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
@@ -14,6 +16,7 @@ use merk::{
 };
 use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+use visualize::{visualize_to_vec, DebugBytes};
 
 use crate::{
     util::{merk_optional_tx, storage_context_optional_tx},
@@ -26,7 +29,7 @@ pub type ElementFlags = Option<Vec<u8>>;
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Element {
     /// An ordinary value
     Item(Vec<u8>, ElementFlags),
@@ -36,6 +39,15 @@ pub enum Element {
     /// Hash is stored to make Merk become different when its subtrees have
     /// changed, otherwise changes won't be reflected in parent trees.
     Tree([u8; 32], ElementFlags),
+}
+
+impl fmt::Debug for Element {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut v = Vec::new();
+        visualize_to_vec(&mut v, self);
+
+        f.write_str(&String::from_utf8_lossy(&v))
+    }
 }
 
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>

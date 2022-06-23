@@ -1,5 +1,3 @@
-#![feature(explicit_generic_args_with_impl_trait)]
-
 pub mod batch;
 mod operations;
 mod subtree;
@@ -7,10 +5,7 @@ mod subtree;
 mod tests;
 mod util;
 mod visualize;
-use std::{
-    collections::{BTreeMap},
-    path::Path,
-};
+use std::{collections::BTreeMap, path::Path};
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
@@ -294,7 +289,11 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    pub(crate) fn update_tree_item_preserve_flag<'db, K: AsRef<[u8]> + Copy, S: StorageContext<'db>>(
+    pub(crate) fn update_tree_item_preserve_flag<
+        'db,
+        K: AsRef<[u8]> + Copy,
+        S: StorageContext<'db>,
+    >(
         parent_tree: &mut Merk<S>,
         key: K,
         root_hash: [u8; 32],
