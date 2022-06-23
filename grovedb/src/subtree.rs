@@ -630,6 +630,16 @@ impl Element {
         )
     }
 
+    /// Helper function that returns whether an element at the key for the element already exists.
+    pub fn element_at_key_already_exists<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+    ) -> CostContext<Result<bool, Error>> {
+        merk.exists(key.as_ref())
+            .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -648,6 +658,32 @@ impl Element {
         let batch_operations = [(key, Op::Put(serialized))];
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    /// Insert an element in Merk under a key if it doesn't yet exist; path should be resolved and
+    /// proper Merk should be loaded by this moment
+    /// If transaction is not passed, the batch will be written immediately.
+    /// If transaction is passed, the operation will be committed on the
+    /// transaction commit.
+    pub fn insert_if_not_exists<'db, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: &[u8],
+    ) -> CostContext<Result<bool, Error>> {
+        let mut cost = OperationCost::default();
+        let exists = cost_return_on_error!(
+                    &mut cost,
+                    self.element_at_key_already_exists(merk, key)
+                );
+        if exists {
+            Ok(false).wrap_with_cost(cost)
+        } else {
+            cost_return_on_error!(
+                    &mut cost,
+                    self.insert(merk, key)
+                );
+            Ok(true).wrap_with_cost(cost)
+        }
     }
 
     /// Insert a reference element in Merk under a key; path should be resolved

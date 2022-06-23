@@ -7,6 +7,7 @@ use std::{
     hash::Hash,
     ops::AddAssign,
 };
+use std::option::Option::None;
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
@@ -165,9 +166,9 @@ where
         match self {
             MerkTreesByPath(ref mut merk_trees_by_path) => {
                 let mut cost = OperationCost::default();
-                let merk = cost_return_on_error!(&mut cost, get_merk_fn(&op.path)).unwrap();
                 let mut inserted_path = op.path.clone();
                 inserted_path.push(op.key.clone());
+                let merk = cost_return_on_error!(&mut cost, get_merk_fn(&inserted_path)).unwrap();
                 merk_trees_by_path.insert(inserted_path, merk);
                 Ok(()).wrap_with_cost(cost)
             }
@@ -187,6 +188,7 @@ where
         &mut self,
         path: &Vec<Vec<u8>>,
         ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
+        batch_apply_options: &BatchApplyOptions,
         get_merk_fn: &impl Fn(&[Vec<u8>]) -> CostContext<Result<Option<Merk<S>>, Error>>,
     ) -> CostContext<Result<Option<Merk<S>>, Error>> {
         let mut cost = OperationCost::default();
@@ -203,7 +205,14 @@ where
                 for (key, op) in ops_at_path_by_key.into_iter() {
                     match op {
                         Op::Insert { element } => {
-                            cost_return_on_error!(&mut cost, element.insert(&mut merk, key));
+                            if batch_apply_options.validate_tree_insertion_does_not_override == true {
+                                let inserted = cost_return_on_error!(&mut cost, element.insert_if_not_exists(&mut merk, key.as_slice()));
+                                if inserted == false {
+                                    return Err(Error::InvalidBatchOperation("attempting to overwrite a tree")).wrap_with_cost(cost);
+                                }
+                            } else {
+                                cost_return_on_error!(&mut cost, element.insert(&mut merk, key));
+                            }
                         }
                         Op::Delete => {
                             cost_return_on_error!(&mut cost, Element::delete(&mut merk, key));
@@ -342,12 +351,18 @@ where
     }
 }
 
+#[derive(Debug, Default)]
+pub struct BatchApplyOptions {
+    validate_tree_insertion_does_not_override : bool
+}
+
 impl GroveDb {
     /// Method to propagate updated subtree root hashes up to GroveDB root
     fn apply_batch_structure<'db, S: StorageContext<'db>>(
         &self,
         batch_structure: BatchStructure<S>,
         temp_root_leaves: &mut BTreeMap<Vec<u8>, usize>,
+        batch_apply_options: Option<BatchApplyOptions>,
         get_merk_fn: &impl Fn(&[Vec<u8>]) -> CostContext<Result<Option<Merk<S>>, Error>>,
     ) -> CostContext<Result<(), Error>> {
         let mut cost = OperationCost::default();
@@ -357,6 +372,8 @@ impl GroveDb {
             last_level,
         } = batch_structure;
         let mut current_level = last_level;
+
+        let batch_apply_options = batch_apply_options.unwrap_or_default();
         // We will update up the tree
         while let Some(ops_at_level) = ops_by_level_path.remove(&current_level) {
             for (path, ops_at_path) in ops_at_level.into_iter() {
@@ -380,7 +397,7 @@ impl GroveDb {
                 } else {
                     let merk = cost_return_on_error!(
                         &mut cost,
-                        merk_tree_cache.execute_ops_on_path(&path, ops_at_path, get_merk_fn)
+                        merk_tree_cache.execute_ops_on_path(&path, ops_at_path, &batch_apply_options, get_merk_fn)
                     );
 
                     if current_level > 1 {
@@ -469,6 +486,7 @@ impl GroveDb {
         &self,
         ops: Vec<GroveDbOp>,
         temp_root_leaves: &mut BTreeMap<Vec<u8>, usize>,
+        batch_apply_options: Option<BatchApplyOptions>,
         get_merk_fn: impl Fn(&[Vec<u8>]) -> CostContext<Result<Option<Merk<S>>, Error>>,
     ) -> CostContext<Result<(), Error>> {
         let mut cost = OperationCost::default();
@@ -477,7 +495,7 @@ impl GroveDb {
             BatchStructure::from_ops(ops, false, &get_merk_fn)
         );
         dbg!(&batch_structure);
-        self.apply_batch_structure(batch_structure, temp_root_leaves, &get_merk_fn)
+        self.apply_batch_structure(batch_structure, temp_root_leaves, batch_apply_options, &get_merk_fn)
             .add_cost(cost)
     }
 
@@ -485,6 +503,7 @@ impl GroveDb {
     pub fn apply_batch(
         &self,
         ops: Vec<GroveDbOp>,
+        batch_apply_options: Option<BatchApplyOptions>,
         transaction: TransactionArg,
     ) -> CostContext<Result<(), Error>> {
         let mut cost = OperationCost::default();
@@ -540,7 +559,7 @@ impl GroveDb {
         if let Some(tx) = transaction {
             cost_return_on_error!(
                 &mut cost,
-                self.apply_body(ops, &mut temp_root_leaves, |path| {
+                self.apply_body(ops, &mut temp_root_leaves, batch_apply_options, |path| {
                     let storage = self.db.get_batch_transactional_storage_context(
                         path.iter().map(|x| x.as_slice()),
                         &storage_batch,
@@ -569,7 +588,7 @@ impl GroveDb {
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.apply_body(ops, &mut temp_root_leaves, |path| {
+                self.apply_body(ops, &mut temp_root_leaves, batch_apply_options, |path| {
                     let storage = self.db.get_batch_storage_context(
                         path.iter().map(|x| x.as_slice()),
                         &storage_batch,
@@ -598,6 +617,7 @@ impl GroveDb {
     pub fn worst_case_fees_for_batch<'db, S>(
         &self,
         ops: Vec<GroveDbOp>,
+        batch_apply_options: Option<BatchApplyOptions>,
     ) -> CostContext<Result<(), Error>>
     where
         S: StorageContext<'db>,
@@ -624,7 +644,7 @@ impl GroveDb {
         );
         cost_return_on_error!(
             &mut cost,
-            self.apply_batch_structure(batch_structure, &mut temp_root_leaves, &get_merk_none)
+            self.apply_batch_structure(batch_structure, &mut temp_root_leaves, batch_apply_options, &get_merk_none)
         );
 
         cost.add_worst_case_open_root_meta_storage();
@@ -637,6 +657,7 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
+    use std::option::Option::None;
     use visualize::visualize_stderr;
 
     use super::*;
@@ -675,7 +696,7 @@ mod tests {
                 element2.clone(),
             ),
         ];
-        db.apply_batch(ops, None)
+        db.apply_batch(ops, None, None)
             .unwrap()
             .expect("cannot apply batch");
 
@@ -746,7 +767,7 @@ mod tests {
                 element2.clone(),
             ),
         ];
-        db.apply_batch(ops, None)
+        db.apply_batch(ops, None, Some(&tx))
             .unwrap()
             .expect("cannot apply batch");
         db.get([], b"keyb", None)
@@ -803,7 +824,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, None).unwrap().is_err());
+        assert!(db.apply_batch(ops, None, None).unwrap().is_err());
         assert!(db.get([b"key1".as_ref()], b"key2", None).unwrap().is_err());
     }
 
@@ -834,7 +855,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, None).unwrap().is_err());
+        assert!(db.apply_batch(ops, None, None).unwrap().is_err());
         assert!(db.get([b"key1".as_ref()], b"key2", None).unwrap().is_err());
         assert!(db
             .get([TEST_LEAF, b"key1"], b"key2", None)
@@ -867,11 +888,11 @@ mod tests {
             ),
             GroveDbOp::delete(vec![b"key1".to_vec()], b"key2".to_vec()),
         ];
-        assert!(db.apply_batch(ops, None).unwrap().is_err());
+        assert!(db.apply_batch(ops, None, None).unwrap().is_err());
     }
 
     #[test]
-    fn test_batch_validation_deletion_and_insertion_restore_chain() {
+    fn test_batch_validation_insertion_under_deleted_tree() {
         let db = make_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
@@ -893,15 +914,12 @@ mod tests {
             ),
             GroveDbOp::delete(vec![b"key1".to_vec()], b"key2".to_vec()),
         ];
-        db.apply_batch(ops, None)
+        db.apply_batch(ops, None, None)
             .unwrap()
-            .expect("cannot apply batch");
-        assert_eq!(
+            .expect_err("insertion of element under a deleted tree should not be allowed");
             db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
                 .unwrap()
-                .expect("cannot get element"),
-            element
-        );
+                .expect_err("nothing should have been inserted");
     }
 
     #[test]
@@ -922,7 +940,7 @@ mod tests {
             b"key1".to_vec(),
             element.clone(),
         )];
-        assert!(db.apply_batch(ops, None).unwrap().is_err());
+        assert!(db.apply_batch(ops, None, None).unwrap().is_err());
 
         // Insertion into a tree is correct
         let ops = vec![GroveDbOp::insert(
@@ -930,7 +948,7 @@ mod tests {
             b"key1".to_vec(),
             element.clone(),
         )];
-        db.apply_batch(ops, None)
+        db.apply_batch(ops, None, None)
             .unwrap()
             .expect("cannot apply batch");
         assert_eq!(
@@ -953,8 +971,7 @@ mod tests {
             .unwrap()
             .expect("cannot insert an item");
 
-        // TEST_LEAF will be overwritten thus nested subtrees will be deleted and it is
-        // invalid to insert into them
+        // TEST_LEAF can not be overwritten
         let ops = vec![
             GroveDbOp::insert(vec![], TEST_LEAF.to_vec(), element2.clone()),
             GroveDbOp::insert(
@@ -963,37 +980,31 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, None).unwrap().is_err());
+        assert!(db.apply_batch(ops, Some(BatchApplyOptions { validate_tree_insertion_does_not_override: true }), None).unwrap().is_err());
 
-        // TEST_LEAF will became a scalar, insertion into scalar is also invalid
+        // TEST_LEAF will be deleted so you can not insert underneath it
         let ops = vec![
-            GroveDbOp::insert(vec![], TEST_LEAF.to_vec(), element2.clone()),
+            GroveDbOp::delete(vec![], TEST_LEAF.to_vec()),
             GroveDbOp::insert(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, None).unwrap().is_err());
+        assert!(db.apply_batch(ops, None, None).unwrap().is_err());
 
-        // Here TEST_LEAF is overwritten and new data should be available why older data
-        // shouldn't
+        // TEST_LEAF will be deleted so you can not insert underneath it
+        // We are testing with the batch apply option
+        // validate_tree_insertion_does_not_override set to true
         let ops = vec![
-            GroveDbOp::insert(vec![], TEST_LEAF.to_vec(), Element::empty_tree()),
-            GroveDbOp::insert(vec![TEST_LEAF.to_vec()], b"key1".to_vec(), element2.clone()),
+            GroveDbOp::delete(vec![], TEST_LEAF.to_vec()),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
         ];
-        assert!(db.apply_batch(ops, None).unwrap().is_ok());
-
-        assert_eq!(
-            db.get([TEST_LEAF], b"key1", None)
-                .unwrap()
-                .expect("cannot get data"),
-            element2
-        );
-        assert!(db
-            .get([TEST_LEAF, b"key_subtree"], b"key1", None)
-            .unwrap()
-            .is_err());
+        assert!(db.apply_batch(ops, Some(BatchApplyOptions { validate_tree_insertion_does_not_override: true }), None).unwrap().is_err());
     }
 
     #[test]
@@ -1011,7 +1022,7 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, None).unwrap().is_err());
+        assert!(db.apply_batch(ops, Some(BatchApplyOptions { validate_tree_insertion_does_not_override: true }), None).unwrap().is_err());
     }
 
     #[test]
@@ -1037,7 +1048,7 @@ mod tests {
                 .expect("cannot get item"),
             element
         );
-        db.apply_batch(ops, None)
+        db.apply_batch(ops, None, None)
             .unwrap()
             .expect("cannot apply batch");
         assert!(db
@@ -1087,7 +1098,7 @@ mod tests {
             GroveDbOp::insert(vec![TEST_LEAF.to_vec()], b"key".to_vec(), element2.clone()),
             GroveDbOp::delete(vec![ANOTHER_TEST_LEAF.to_vec()], b"key1".to_vec()),
         ];
-        db.apply_batch(ops, None)
+        db.apply_batch(ops, None, None)
             .unwrap()
             .expect("cannot apply batch");
 
@@ -1157,7 +1168,7 @@ mod tests {
             b"key".to_vec(),
             element.clone(),
         )];
-        db.apply_batch(batch, None)
+        db.apply_batch(batch, None, None)
             .unwrap()
             .expect("cannot apply batch");
 
@@ -1166,7 +1177,7 @@ mod tests {
             b"key".to_vec(),
             element.clone(),
         )];
-        db.apply_batch(batch, None)
+        db.apply_batch(batch, None, None)
             .unwrap()
             .expect("cannot apply same batch twice");
     }
@@ -1196,7 +1207,7 @@ mod tests {
             b"key".to_vec(),
             element.clone(),
         )];
-        db.apply_batch(batch, None)
+        db.apply_batch(batch, None, None)
             .unwrap()
             .expect("cannot apply batch");
 
