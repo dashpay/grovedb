@@ -40,17 +40,23 @@ impl PathQuery {
         Self { path, query }
     }
 
-    pub fn merge(p1: &PathQuery, p2: &PathQuery) -> Self {
-        if p1.path == p2.path {
-            let combined_query = Query::merge(p1.query.query.clone(), p2.query.query.clone());
-            PathQuery::new_unsized(p1.path.clone(), combined_query)
-        } else {
-            let path_queries = vec![p1, p2];
-            let (common_path, next_index) = PathQuery::get_common_path(vec![&p1.path, &p2.path]);
-            let query = PathQuery::build_query(path_queries, next_index, p1.path.len() - 1);
+    pub fn merge(path_queries: Vec<&PathQuery>) -> Self {
+        // TODO: add constraint checks to prevent invalid inputs
+        let last_index = path_queries[0].path.len() - 1;
+        let (common_path, next_index) = PathQuery::get_common_path(&path_queries);
 
-            PathQuery::new_unsized(common_path, query)
-        }
+        let query = if next_index > last_index {
+            // path's are equal
+            let queries = path_queries
+                .iter()
+                .map(|path_query| &path_query.query.query)
+                .collect();
+            Query::merge(queries)
+        } else {
+            PathQuery::build_query(path_queries, next_index, last_index)
+        };
+
+        PathQuery::new_unsized(common_path, query)
     }
 
     fn build_query(path_queries: Vec<&PathQuery>, start_index: usize, last_index: usize) -> Query {
@@ -96,16 +102,19 @@ impl PathQuery {
         query
     }
 
-    fn get_common_path(paths: Vec<&[Vec<u8>]>) -> (Vec<Vec<u8>>, usize) {
-        if paths.len() == 0 {
+    fn get_common_path(path_queries: &Vec<&PathQuery>) -> (Vec<Vec<u8>>, usize) {
+        if path_queries.len() == 0 {
             return (vec![], 0);
         }
 
         let mut common_path = vec![];
         let mut level = 0;
 
-        while level < paths[0].len() {
-            let keys_at_level = paths.iter().map(|path| &path[level]).collect::<Vec<_>>();
+        while level < path_queries[0].path.len() {
+            let keys_at_level = path_queries
+                .iter()
+                .map(|path_query| &path_query.path[level])
+                .collect::<Vec<_>>();
             let first_key = keys_at_level[0];
 
             let keys_are_uniform = keys_at_level.iter().all(|&curr_key| curr_key == first_key);
@@ -155,7 +164,7 @@ mod tests {
             .expect("should execute proof");
         assert_eq!(result_set_two.len(), 1);
 
-        let merged_path_query = PathQuery::merge(&path_query_one, &path_query_two);
+        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two]);
         assert_eq!(
             merged_path_query.path,
             vec![TEST_LEAF.to_vec(), b"innertree".to_vec()]
@@ -200,7 +209,7 @@ mod tests {
             .expect("should execute proof");
         assert_eq!(result_set_two.len(), 1);
 
-        let merged_path_query = PathQuery::merge(&path_query_one, &path_query_two);
+        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two]);
         assert_eq!(merged_path_query.path, vec![TEST_LEAF.to_vec()]);
         assert_eq!(merged_path_query.query.query.items.len(), 2);
 
@@ -249,7 +258,7 @@ mod tests {
             .expect("should execute proof");
         assert_eq!(result_set_two.len(), 2);
 
-        let merged_path_query = PathQuery::merge(&path_query_one, &path_query_two);
+        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two]);
         assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec()]);
         assert_eq!(merged_path_query.query.query.items.len(), 2);
 

@@ -238,11 +238,14 @@ impl Query {
 
     /// Takes all the query items from a query instances and combines it with
     /// the current query item set
-    pub fn merge(mut first: Query, other: Query) -> Self {
-        for item in other.items {
-            first.insert_item(item);
+    pub fn merge(queries: Vec<&Query>) -> Self {
+        let mut merged_query = queries[0].clone();
+        for query in &queries[1..] {
+            for item in &query.items {
+                merged_query.insert_item(item.clone())
+            }
         }
-        first
+        merged_query
     }
 }
 
