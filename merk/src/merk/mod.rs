@@ -231,8 +231,7 @@ where
     }
 
     /// See if a node's field exists
-    fn has_node(&self, key: &[u8]) -> CostContext<Result<bool>>
-    {
+    fn has_node(&self, key: &[u8]) -> CostContext<Result<bool>> {
         self.use_tree(move |maybe_tree| {
             let mut cursor = match maybe_tree {
                 None => return Ok(true).wrap_with_cost(Default::default()), // empty tree

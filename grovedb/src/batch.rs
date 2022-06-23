@@ -6,8 +6,8 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     hash::Hash,
     ops::AddAssign,
+    option::Option::None,
 };
-use std::option::Option::None;
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
@@ -205,10 +205,17 @@ where
                 for (key, op) in ops_at_path_by_key.into_iter() {
                     match op {
                         Op::Insert { element } => {
-                            if batch_apply_options.validate_tree_insertion_does_not_override == true {
-                                let inserted = cost_return_on_error!(&mut cost, element.insert_if_not_exists(&mut merk, key.as_slice()));
+                            if batch_apply_options.validate_tree_insertion_does_not_override == true
+                            {
+                                let inserted = cost_return_on_error!(
+                                    &mut cost,
+                                    element.insert_if_not_exists(&mut merk, key.as_slice())
+                                );
                                 if inserted == false {
-                                    return Err(Error::InvalidBatchOperation("attempting to overwrite a tree")).wrap_with_cost(cost);
+                                    return Err(Error::InvalidBatchOperation(
+                                        "attempting to overwrite a tree",
+                                    ))
+                                    .wrap_with_cost(cost);
                                 }
                             } else {
                                 cost_return_on_error!(&mut cost, element.insert(&mut merk, key));
@@ -353,7 +360,7 @@ where
 
 #[derive(Debug, Default)]
 pub struct BatchApplyOptions {
-    validate_tree_insertion_does_not_override : bool
+    validate_tree_insertion_does_not_override: bool,
 }
 
 impl GroveDb {
@@ -397,7 +404,12 @@ impl GroveDb {
                 } else {
                     let merk = cost_return_on_error!(
                         &mut cost,
-                        merk_tree_cache.execute_ops_on_path(&path, ops_at_path, &batch_apply_options, get_merk_fn)
+                        merk_tree_cache.execute_ops_on_path(
+                            &path,
+                            ops_at_path,
+                            &batch_apply_options,
+                            get_merk_fn
+                        )
                     );
 
                     if current_level > 1 {
@@ -495,8 +507,13 @@ impl GroveDb {
             BatchStructure::from_ops(ops, false, &get_merk_fn)
         );
         dbg!(&batch_structure);
-        self.apply_batch_structure(batch_structure, temp_root_leaves, batch_apply_options, &get_merk_fn)
-            .add_cost(cost)
+        self.apply_batch_structure(
+            batch_structure,
+            temp_root_leaves,
+            batch_apply_options,
+            &get_merk_fn,
+        )
+        .add_cost(cost)
     }
 
     /// Applies batch of operations on GroveDB
@@ -644,7 +661,12 @@ impl GroveDb {
         );
         cost_return_on_error!(
             &mut cost,
-            self.apply_batch_structure(batch_structure, &mut temp_root_leaves, batch_apply_options, &get_merk_none)
+            self.apply_batch_structure(
+                batch_structure,
+                &mut temp_root_leaves,
+                batch_apply_options,
+                &get_merk_none
+            )
         );
 
         cost.add_worst_case_open_root_meta_storage();
@@ -658,6 +680,7 @@ impl GroveDb {
 #[cfg(test)]
 mod tests {
     use std::option::Option::None;
+
     use visualize::visualize_stderr;
 
     use super::*;
@@ -917,9 +940,9 @@ mod tests {
         db.apply_batch(ops, None, None)
             .unwrap()
             .expect_err("insertion of element under a deleted tree should not be allowed");
-            db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
-                .unwrap()
-                .expect_err("nothing should have been inserted");
+        db.get([b"key1".as_ref(), b"key2", b"key3"], b"key4", None)
+            .unwrap()
+            .expect_err("nothing should have been inserted");
     }
 
     #[test]
@@ -980,7 +1003,16 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, Some(BatchApplyOptions { validate_tree_insertion_does_not_override: true }), None).unwrap().is_err());
+        assert!(db
+            .apply_batch(
+                ops,
+                Some(BatchApplyOptions {
+                    validate_tree_insertion_does_not_override: true
+                }),
+                None
+            )
+            .unwrap()
+            .is_err());
 
         // TEST_LEAF will be deleted so you can not insert underneath it
         let ops = vec![
@@ -1004,7 +1036,16 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, Some(BatchApplyOptions { validate_tree_insertion_does_not_override: true }), None).unwrap().is_err());
+        assert!(db
+            .apply_batch(
+                ops,
+                Some(BatchApplyOptions {
+                    validate_tree_insertion_does_not_override: true
+                }),
+                None
+            )
+            .unwrap()
+            .is_err());
     }
 
     #[test]
@@ -1022,7 +1063,16 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db.apply_batch(ops, Some(BatchApplyOptions { validate_tree_insertion_does_not_override: true }), None).unwrap().is_err());
+        assert!(db
+            .apply_batch(
+                ops,
+                Some(BatchApplyOptions {
+                    validate_tree_insertion_does_not_override: true
+                }),
+                None
+            )
+            .unwrap()
+            .is_err());
     }
 
     #[test]

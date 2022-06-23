@@ -1,6 +1,8 @@
-use std::cell::RefCell;
+use std::{
+    cell::RefCell,
+    collections::{btree_map::IntoValues, BTreeMap},
+};
 
-use indexmap::{map::IntoValues, IndexMap};
 use visualize::visualize_to_vec;
 
 /// Top-level storage abstraction.
@@ -203,10 +205,10 @@ pub struct StorageBatch {
 
 #[derive(Default)]
 struct Operations {
-    data: IndexMap<Vec<u8>, BatchOperation>,
-    roots: IndexMap<Vec<u8>, BatchOperation>,
-    aux: IndexMap<Vec<u8>, BatchOperation>,
-    meta: IndexMap<Vec<u8>, BatchOperation>,
+    data: BTreeMap<Vec<u8>, BatchOperation>,
+    roots: BTreeMap<Vec<u8>, BatchOperation>,
+    aux: BTreeMap<Vec<u8>, BatchOperation>,
+    meta: BTreeMap<Vec<u8>, BatchOperation>,
 }
 
 impl std::fmt::Debug for Operations {
@@ -432,7 +434,7 @@ mod tests {
         };
         assert_eq!(
             format!("{:?}", op1),
-            "PutMeta { key: \"[hex: 6b657931, str: key1]\", value: \"[hex: 76616c75, str: \
+            "PutMeta { key: \"[hex: 6b657931, str: key1]\", value: \"[hex: 76616c756531, str: \
              value1]\" }"
         );
         assert_eq!(
