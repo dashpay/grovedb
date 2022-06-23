@@ -510,7 +510,6 @@ impl GroveDb {
             &mut cost,
             BatchStructure::from_ops(ops, false, &get_merk_fn)
         );
-        dbg!(&batch_structure);
         self.apply_batch_structure(
             batch_structure,
             temp_root_leaves,
