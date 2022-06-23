@@ -1,3 +1,5 @@
+#![feature(explicit_generic_args_with_impl_trait)]
+
 pub mod batch;
 mod operations;
 mod subtree;
@@ -6,7 +8,7 @@ mod tests;
 mod util;
 mod visualize;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap},
     path::Path,
 };
 
@@ -15,9 +17,7 @@ use costs::{
 };
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
-use nohash_hasher::IntMap;
 use rs_merkle::{algorithms::Sha256, MerkleTree};
-use storage::rocksdb_storage::PrefixedRocksDbTransactionContext;
 pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
     Storage, StorageContext,
@@ -68,6 +68,9 @@ pub enum Error {
     StorageError(#[from] rocksdb_storage::Error),
     #[error("data corruption error: {0}")]
     CorruptedData(String),
+
+    #[error("corrupted code execution error: {0}")]
+    CorruptedCodeExecution(&'static str),
 
     #[error("invalid batch operation error: {0}")]
     InvalidBatchOperation(&'static str),
@@ -291,7 +294,7 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    fn update_tree_item_preserve_flag<'db, K: AsRef<[u8]> + Copy, S: StorageContext<'db>>(
+    pub(crate) fn update_tree_item_preserve_flag<'db, K: AsRef<[u8]> + Copy, S: StorageContext<'db>>(
         parent_tree: &mut Merk<S>,
         key: K,
         root_hash: [u8; 32],

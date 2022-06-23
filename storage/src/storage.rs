@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 
 use indexmap::{map::IntoValues, IndexMap};
-use rocksdb::{Transaction, WriteBatchWithTransaction};
 use visualize::visualize_to_vec;
 
 /// Top-level storage abstraction.

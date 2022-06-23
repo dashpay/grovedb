@@ -159,6 +159,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         transaction: Option<&'db Self::Transaction>,
     ) -> Result<(), Self::Error> {
         let mut db_batch = WriteBatchWithTransaction::<true>::default();
+        dbg!("{:#?}", &batch);
         for op in batch.into_iter() {
             match op {
                 BatchOperation::Put { key, value } => {
