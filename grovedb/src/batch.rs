@@ -360,7 +360,7 @@ where
 
 #[derive(Debug, Default)]
 pub struct BatchApplyOptions {
-    validate_tree_insertion_does_not_override: bool,
+    pub validate_tree_insertion_does_not_override: bool,
 }
 
 impl GroveDb {
