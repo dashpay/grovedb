@@ -42,11 +42,9 @@ impl PathQuery {
 
     pub fn merge(path_queries: Vec<&PathQuery>) -> Self {
         // TODO: add constraint checks to prevent invalid inputs
-        let last_index = path_queries[0].path.len() - 1;
-        let (common_path, next_index) = PathQuery::get_common_path(&path_queries);
+        let (common_path, next_index, all_paths_equal) = PathQuery::get_common_path(&path_queries);
 
-        let query = if next_index > last_index {
-            // paths are equal
+        let query = if all_paths_equal {
             let queries = path_queries
                 .iter()
                 .map(|path_query| &path_query.query.query)
@@ -105,13 +103,12 @@ impl PathQuery {
         query
     }
 
-    fn get_common_path(path_queries: &Vec<&PathQuery>) -> (Vec<Vec<u8>>, usize) {
-        if path_queries.len() == 0 {
-            return (vec![], 0);
-        }
+    fn get_common_path(path_queries: &Vec<&PathQuery>) -> (Vec<Vec<u8>>, usize, bool) {
+        // TODO: what happens if path_queries are less than 0
 
         let mut common_path = vec![];
         let mut level = 0;
+        let mut all_equal = true;
 
         while level < path_queries[0].path.len() {
             let keys_at_level = path_queries
@@ -126,10 +123,11 @@ impl PathQuery {
                 common_path.push(first_key.to_vec());
                 level += 1;
             } else {
+                all_equal = false;
                 break;
             }
         }
-        (common_path, level)
+        (common_path, level, all_equal)
     }
 }
 
@@ -337,19 +335,19 @@ mod tests {
 
         let mut query_three = Query::new();
         query_three.insert_all();
-        let path_query_three =
-            PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree4".to_vec()], query_three);
+        let path_query_three = PathQuery::new_unsized(
+            vec![TEST_LEAF.to_vec(), b"innertree4".to_vec()],
+            query_three,
+        );
 
         let proof = temp_db.prove(&path_query_three).unwrap().unwrap();
         let (_, result_set_two) = GroveDb::execute_proof(proof.as_slice(), &path_query_three)
             .expect("should execute proof");
         assert_eq!(result_set_two.len(), 2);
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three]);
-        assert_eq!(
-            merged_path_query.path,
-            vec![TEST_LEAF.to_vec()]
-        );
+        let merged_path_query =
+            PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three]);
+        assert_eq!(merged_path_query.path, vec![TEST_LEAF.to_vec()]);
         assert_eq!(merged_path_query.query.query.items.len(), 2);
 
         let proof = temp_db.prove(&merged_path_query).unwrap().unwrap();
@@ -357,25 +355,91 @@ mod tests {
             .expect("should execute proof");
         assert_eq!(result_set_merged.len(), 4);
 
-        let keys = [b"key1".to_vec(), b"key2".to_vec(), b"key4".to_vec(), b"key5".to_vec()];
-        let values = [b"value1".to_vec(), b"value2".to_vec(), b"value4".to_vec(), b"value5".to_vec()];
+        let keys = [
+            b"key1".to_vec(),
+            b"key2".to_vec(),
+            b"key4".to_vec(),
+            b"key5".to_vec(),
+        ];
+        let values = [
+            b"value1".to_vec(),
+            b"value2".to_vec(),
+            b"value4".to_vec(),
+            b"value5".to_vec(),
+        ];
         let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         assert_eq!(result_set_merged, expected_result_set);
     }
 
-    // #[test]
-    // fn test_different_length_paths_merge() {
-    //     let temp_db = make_deep_tree();
-    //
-    //     let mut query_one = Query::new();
-    //     query_one.insert_key(b"key1".to_vec());
-    //     let path_query_one =
-    //         PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query_one);
-    //
-    //     let proof = temp_db.prove(&path_query_one).unwrap().unwrap();
-    //     let (_, result_set_one) = GroveDb::execute_proof(proof.as_slice(), &path_query_one)
-    //         .expect("should execute proof");
-    //     assert_eq!(result_set_one.len(), 1);
-    // }
+    #[test]
+    fn test_different_length_paths_merge() {
+        let temp_db = make_deep_tree();
+
+        let mut query_one = Query::new();
+        query_one.insert_all();
+
+        let mut subq = Query::new();
+        subq.insert_all();
+        query_one.set_subquery(subq);
+
+        let path_query_one = PathQuery::new_unsized(
+            vec![b"deep_leaf".to_vec(), b"deep_node_1".to_vec()],
+            query_one,
+        );
+
+        let proof = temp_db.prove(&path_query_one).unwrap().unwrap();
+        let (_, result_set_one) = GroveDb::execute_proof(proof.as_slice(), &path_query_one)
+            .expect("should execute proof");
+        assert_eq!(result_set_one.len(), 6);
+
+        let mut query_two = Query::new();
+        query_two.insert_all();
+
+        let path_query_two = PathQuery::new_unsized(
+            vec![
+                b"deep_leaf".to_vec(),
+                b"deep_node_2".to_vec(),
+                b"deeper_node_4".to_vec(),
+            ],
+            query_two,
+        );
+
+        let proof = temp_db.prove(&path_query_two).unwrap().unwrap();
+        let (_, result_set_two) = GroveDb::execute_proof(proof.as_slice(), &path_query_two)
+            .expect("should execute proof");
+        assert_eq!(result_set_two.len(), 2);
+
+        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two]);
+        assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec()]);
+
+        let proof = temp_db.prove(&merged_path_query).unwrap().unwrap();
+        let (_, result_set_merged) = GroveDb::execute_proof(proof.as_slice(), &merged_path_query)
+            .expect("should execute proof");
+        assert_eq!(result_set_merged.len(), 8);
+
+        let keys = [
+            b"key1".to_vec(),
+            b"key2".to_vec(),
+            b"key3".to_vec(),
+            b"key4".to_vec(),
+            b"key5".to_vec(),
+            b"key6".to_vec(),
+            b"key10".to_vec(),
+            b"key11".to_vec(),
+        ];
+        let values = [
+            b"value1".to_vec(),
+            b"value2".to_vec(),
+            b"value3".to_vec(),
+            b"value4".to_vec(),
+            b"value5".to_vec(),
+            b"value6".to_vec(),
+            b"value10".to_vec(),
+            b"value11".to_vec(),
+        ];
+        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
+        assert_eq!(result_set_merged, expected_result_set);
+    }
 }
