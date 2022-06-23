@@ -224,7 +224,7 @@ mod tests {
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         assert_eq!(result_set_merged, expected_result_set);
 
-        // different from base
+        // longer length path queries
         let mut query_one = Query::new();
         query_one.insert_all();
         let path_query_one = PathQuery::new_unsized(
@@ -258,19 +258,39 @@ mod tests {
             .expect("should execute proof");
         assert_eq!(result_set_two.len(), 2);
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two]);
+        let mut query_three = Query::new();
+        query_three.insert_range_after(b"key7".to_vec()..);
+
+        let path_query_three = PathQuery::new_unsized(
+            vec![
+                b"deep_leaf".to_vec(),
+                b"deep_node_2".to_vec(),
+                b"deeper_node_3".to_vec(),
+            ],
+            query_three,
+        );
+
+        let proof = temp_db.prove(&path_query_three).unwrap().unwrap();
+        let (_, result_set_two) = GroveDb::execute_proof(proof.as_slice(), &path_query_three)
+            .expect("should execute proof");
+        assert_eq!(result_set_two.len(), 2);
+
+        let merged_path_query =
+            PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three]);
         assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec()]);
         assert_eq!(merged_path_query.query.query.items.len(), 2);
 
         let proof = temp_db.prove(&merged_path_query).unwrap().unwrap();
         let (_, result_set_merged) = GroveDb::execute_proof(proof.as_slice(), &merged_path_query)
             .expect("should execute proof");
-        assert_eq!(result_set_merged.len(), 5);
+        assert_eq!(result_set_merged.len(), 7);
 
         let keys = [
             b"key4".to_vec(),
             b"key5".to_vec(),
             b"key6".to_vec(),
+            b"key8".to_vec(),
+            b"key9".to_vec(),
             b"key10".to_vec(),
             b"key11".to_vec(),
         ];
@@ -278,6 +298,8 @@ mod tests {
             b"value4".to_vec(),
             b"value5".to_vec(),
             b"value6".to_vec(),
+            b"value8".to_vec(),
+            b"value9".to_vec(),
             b"value10".to_vec(),
             b"value11".to_vec(),
         ];
