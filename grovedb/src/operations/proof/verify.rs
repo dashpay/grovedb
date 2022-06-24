@@ -9,8 +9,14 @@ use crate::{
 impl GroveDb {
     pub fn execute_proof(
         proof: &[u8],
-        query: &PathQuery,
+        query: Vec<&PathQuery>,
     ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
+        let query = if query.len() > 1 {
+            PathQuery::merge(query)
+        } else {
+            query[0].clone()
+        };
+
         let mut verifier = ProofVerifier::new(&query);
         let hash = verifier.execute_proof(proof, &query)?;
         Ok((hash, verifier.result_set))

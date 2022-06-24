@@ -164,17 +164,15 @@ impl GroveDb {
         }
     }
 
-    pub fn get_path_queries(
+    pub fn query_many(
         &self,
         path_queries: &[&PathQuery],
         transaction: TransactionArg,
     ) -> CostContext<Result<Vec<Vec<u8>>, Error>> {
         let mut cost = OperationCost::default();
 
-        let elements = cost_return_on_error!(
-            &mut cost,
-            self.get_path_queries_raw(path_queries, transaction)
-        );
+        let elements =
+            cost_return_on_error!(&mut cost, self.query_many_raw(path_queries, transaction));
         let results_wrapped = elements
             .into_iter()
             .map(|(_, element)| match element {
@@ -197,19 +195,16 @@ impl GroveDb {
         results_wrapped.wrap_with_cost(cost)
     }
 
-    pub fn get_path_queries_raw(
+    pub fn query_many_raw(
         &self,
         path_queries: &[&PathQuery],
         transaction: TransactionArg,
     ) -> CostContext<Result<Vec<(Vec<u8>, Element)>, Error>> {
         let mut cost = OperationCost::default();
 
-        let mut result = Vec::new();
-        for query in path_queries {
-            let (query_results, _) =
-                cost_return_on_error!(&mut cost, self.get_path_query_raw(query, transaction));
-            result.extend_from_slice(&query_results);
-        }
+        // TODO: properly handle path query merge error
+        let query = PathQuery::merge(path_queries.to_vec());
+        let (result, _) = cost_return_on_error!(&mut cost, self.query_raw(&query, transaction));
         Ok(result).wrap_with_cost(cost)
     }
 
@@ -224,11 +219,11 @@ impl GroveDb {
             ))
             .wrap_with_cost(Default::default())
         } else {
-            self.prove(path_query)
+            self.prove(vec![path_query])
         }
     }
 
-    pub fn get_path_query(
+    pub fn query(
         &self,
         path_query: &PathQuery,
         transaction: TransactionArg,
@@ -236,7 +231,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         let (elements, skipped) =
-            cost_return_on_error!(&mut cost, self.get_path_query_raw(path_query, transaction));
+            cost_return_on_error!(&mut cost, self.query_raw(path_query, transaction));
 
         let results_wrapped = elements
             .into_iter()
@@ -266,7 +261,7 @@ impl GroveDb {
         Ok((results, skipped)).wrap_with_cost(cost)
     }
 
-    pub fn get_path_query_raw(
+    pub fn query_raw(
         &self,
         path_query: &PathQuery,
         transaction: TransactionArg,
