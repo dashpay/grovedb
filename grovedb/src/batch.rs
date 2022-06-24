@@ -634,7 +634,7 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    pub fn worst_case_fees_for_batch<'db, S>(
+    pub fn worst_case_operations_for_batch<'db, S>(
         &self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
