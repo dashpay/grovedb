@@ -14,7 +14,7 @@ use crate::{
 };
 
 impl GroveDb {
-    pub fn prove(&self, query: Vec<&PathQuery>) -> CostContext<Result<Vec<u8>, Error>> {
+    pub fn prove_query_many(&self, query: Vec<&PathQuery>) -> CostContext<Result<Vec<u8>, Error>> {
         let query = if query.len() > 1 {
             PathQuery::merge(query)
         } else {
@@ -22,6 +22,10 @@ impl GroveDb {
         };
         let query = &query;
 
+        self.prove_query(&query)
+    }
+
+    pub fn prove_query(&self, query: &PathQuery) -> CostContext<Result<Vec<u8>, Error>> {
         let mut cost = OperationCost::default();
 
         // TODO: should it be possible to generate proofs for tree items (currently yes)

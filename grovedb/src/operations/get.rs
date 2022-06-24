@@ -219,7 +219,7 @@ impl GroveDb {
             ))
             .wrap_with_cost(Default::default())
         } else {
-            self.prove(vec![path_query])
+            self.prove_query(path_query)
         }
     }
 
