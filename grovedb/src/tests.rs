@@ -1,7 +1,4 @@
-use std::{
-    ops::{Deref, DerefMut},
-    option::Option::None,
-};
+use std::ops::{Deref, DerefMut};
 
 use ::visualize::{Drawer, Visualize};
 use rand::Rng;
@@ -1054,7 +1051,7 @@ fn test_path_query_proofs_without_subquery() {
         SizedQuery::new(query, Some(2), None),
     );
 
-    let mut proof = temp_db.prove(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove(&path_query).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::execute_proof(proof.as_slice(), &path_query).expect("should execute proof");
 

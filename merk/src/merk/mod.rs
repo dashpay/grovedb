@@ -196,6 +196,14 @@ where
         Ok(value).wrap_with_cost(cost)
     }
 
+    /// Returns if the value at the given key exists
+    ///
+    /// Note that this is essentially the same as a normal RocksDB `get`, so
+    /// should be a fast operation and has almost no tree overhead.
+    pub fn exists(&self, key: &[u8]) -> CostContext<Result<bool>> {
+        self.has_node(key)
+    }
+
     /// Gets a value for the given key. If the key is not found, `None` is
     /// returned.
     ///
@@ -211,6 +219,50 @@ where
     /// when node not found by the key.
     pub fn get_hash(&self, key: &[u8]) -> CostContext<Result<Option<[u8; 32]>>> {
         self.get_node_fn(key, |node| node.hash())
+    }
+
+    /// See if a node's field exists
+    fn has_node(&self, key: &[u8]) -> CostContext<Result<bool>> {
+        self.use_tree(move |maybe_tree| {
+            let mut cursor = match maybe_tree {
+                None => return Ok(true).wrap_with_cost(Default::default()), // empty tree
+                Some(tree) => tree,
+            };
+
+            loop {
+                if key == cursor.key() {
+                    return Ok(true).wrap_with_cost(OperationCost::default());
+                }
+
+                let left = key < cursor.key();
+                let link = match cursor.link(left) {
+                    None => return Ok(true).wrap_with_cost(Default::default()), // not found
+                    Some(link) => link,
+                };
+
+                let maybe_child = link.tree();
+                match maybe_child {
+                    None => {
+                        // fetch from RocksDB
+                        break Tree::get(&self.storage, key).flat_map_ok(|maybe_node| {
+                            if let Some(node) = maybe_node {
+                                Ok(true).wrap_with_cost(OperationCost {
+                                    seek_count: 1,
+                                    loaded_bytes: node.value().len(),
+                                    ..Default::default()
+                                })
+                            } else {
+                                Ok(false).wrap_with_cost(OperationCost {
+                                    seek_count: 1,
+                                    ..Default::default()
+                                })
+                            }
+                        });
+                    }
+                    Some(child) => cursor = child, // traverse to child
+                }
+            }
+        })
     }
 
     /// Generic way to get a node's field
