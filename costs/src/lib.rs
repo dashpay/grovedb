@@ -41,7 +41,7 @@ impl OperationCost {
         self.hash_node_calls += 0;
     }
 
-    /// Add worst case for getting a merk tree root hash
+    /// Add worst case for opening a root meta storage
     pub fn add_worst_case_open_root_meta_storage(&mut self) {
         self.seek_count += 0;
         self.storage_written_bytes += 0;
@@ -51,7 +51,7 @@ impl OperationCost {
         self.hash_node_calls += 0;
     }
 
-    /// Add worst case for getting a merk tree root hash
+    /// Add worst case for saving the root tree
     pub fn add_worst_case_save_root_leaves(&mut self) {
         self.seek_count += 0;
         self.storage_written_bytes += 0;
@@ -61,7 +61,7 @@ impl OperationCost {
         self.hash_node_calls += 0;
     }
 
-    /// Add worst case for getting a merk tree root hash
+    /// Add worst case for loading the root tree
     pub fn add_worst_case_load_root_leaves(&mut self) {
         self.seek_count += 0;
         self.storage_written_bytes += 0;
