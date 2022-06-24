@@ -156,15 +156,6 @@ where
         merk.load_root().map_ok(|_| merk)
     }
 
-    pub fn open_optional(storage: S) -> CostContext<Result<Option<Self>>> {
-        let mut merk = Self {
-            tree: Cell::new(None),
-            storage,
-        };
-
-        merk.load_root().map_ok(|_| Some(merk))
-    }
-
     /// Deletes tree data
     pub fn clear(&mut self) -> CostContext<Result<()>> {
         let mut cost = OperationCost::default();
