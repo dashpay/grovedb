@@ -16,7 +16,7 @@ use merk::{
 };
 use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
-use visualize::{visualize_to_vec, DebugBytes};
+use visualize::visualize_to_vec;
 
 use crate::{
     util::{merk_optional_tx, storage_context_optional_tx},
