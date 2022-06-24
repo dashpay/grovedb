@@ -171,9 +171,10 @@ trait TreeCache {
     ) -> CostContext<Result<Self::ExecuteOpsReturn, Error>>;
 }
 
-impl<S, F> TreeCache for TreeCacheMerkByPath<S, F>
+impl<'db, S, F> TreeCache for TreeCacheMerkByPath<S, F>
 where
     F: Fn(&[Vec<u8>]) -> CostContext<Result<Merk<S>, Error>>,
+    S: StorageContext<'db>,
 {
     type ExecuteOpsReturn = Merk<S>;
 
@@ -194,45 +195,45 @@ where
         ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
         batch_apply_options: &BatchApplyOptions,
     ) -> CostContext<Result<Self::ExecuteOpsReturn, Error>> {
-        // let merk_result = merk_trees_by_path
-        //     .remove(path)
-        //     .map(|x| Ok(Some(x)))
-        //     .unwrap_or_else(|| get_merk_fn(path).unwrap_add_cost(&mut cost));
-        // let mut merk = match merk_result {
-        //     Ok(merk) => merk.unwrap(),
-        //     Err(e) => return Err(e).wrap_with_cost(cost),
-        // };
-        // for (key, op) in ops_at_path_by_key.into_iter() {
-        //     match op {
-        //         Op::Insert { element } => {
-        //             if batch_apply_options.validate_tree_insertion_does_not_override == true {
-        //                 let inserted = cost_return_on_error!(
-        //                     &mut cost,
-        //                     element.insert_if_not_exists(&mut merk, key.as_slice())
-        //                 );
-        //                 if inserted == false {
-        //                     return Err(Error::InvalidBatchOperation(
-        //                         "attempting to overwrite a tree",
-        //                     ))
-        //                     .wrap_with_cost(cost);
-        //                 }
-        //             } else {
-        //                 cost_return_on_error!(&mut cost, element.insert(&mut merk, key));
-        //             }
-        //         }
-        //         Op::Delete => {
-        //             cost_return_on_error!(&mut cost, Element::delete(&mut merk, key));
-        //         }
-        //         Op::ReplaceTreeHash { hash } => {
-        //             cost_return_on_error!(
-        //                 &mut cost,
-        //                 GroveDb::update_tree_item_preserve_flag(&mut merk, key.as_slice(), hash,)
-        //             );
-        //         }
-        //     }
-        // }
-        // Ok(Some(merk)).wrap_with_cost(cost)
-        todo!()
+        let mut cost = OperationCost::default();
+
+        let merk_wrapped = self
+            .merks
+            .remove(path)
+            .map(|x| Ok(x).wrap_with_cost(Default::default()))
+            .unwrap_or_else(|| (self.get_merk_fn)(path));
+        let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
+
+        for (key, op) in ops_at_path_by_key.into_iter() {
+            match op {
+                Op::Insert { element } => {
+                    if batch_apply_options.validate_tree_insertion_does_not_override == true {
+                        let inserted = cost_return_on_error!(
+                            &mut cost,
+                            element.insert_if_not_exists(&mut merk, key.as_slice())
+                        );
+                        if inserted == false {
+                            return Err(Error::InvalidBatchOperation(
+                                "attempting to overwrite a tree",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                    } else {
+                        cost_return_on_error!(&mut cost, element.insert(&mut merk, key));
+                    }
+                }
+                Op::Delete => {
+                    cost_return_on_error!(&mut cost, Element::delete(&mut merk, key));
+                }
+                Op::ReplaceTreeHash { hash } => {
+                    cost_return_on_error!(
+                        &mut cost,
+                        GroveDb::update_tree_item_preserve_flag(&mut merk, key.as_slice(), hash,)
+                    );
+                }
+            }
+        }
+        Ok(merk).wrap_with_cost(cost)
     }
 }
 
@@ -252,17 +253,18 @@ impl TreeCache for TreeCacheKnownPaths {
         &mut self,
         path: &Vec<Vec<u8>>,
         ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
-        batch_apply_options: &BatchApplyOptions,
+        _batch_apply_options: &BatchApplyOptions,
     ) -> CostContext<Result<Self::ExecuteOpsReturn, Error>> {
-        // if known_merk_paths.remove(path) == false {
-        //     // Then we have to get the tree
-        //     cost.add_worst_case_get_merk()
-        // }
-        // for (key, op) in ops_at_path_by_key.into_iter() {
-        //     cost.add_assign(op.worst_case_cost(key));
-        // }
-        // Ok(None).wrap_with_cost(cost)
-        todo!()
+        let mut cost = OperationCost::default();
+
+        if self.paths.remove(path) == false {
+            // Then we have to get the tree
+            cost.add_worst_case_get_merk()
+        }
+        for (key, op) in ops_at_path_by_key.into_iter() {
+            cost += op.worst_case_cost(key);
+        }
+        Ok(()).wrap_with_cost(cost)
     }
 }
 
