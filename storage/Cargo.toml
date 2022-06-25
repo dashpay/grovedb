@@ -14,8 +14,8 @@ strum = { version = "0.24.0", features = ["derive"] }
 
 
 [dependencies.rocksdb]
-git = "https://github.com/quantumexplorer/rust-rocksdb"
-branch = "fix/optimisticDBWriteBatch"
+git = "https://github.com/yiyuanliu/rust-rocksdb"
+branch = "transaction"
 optional = true
 
 [features]
