@@ -41,8 +41,8 @@ impl PathQuery {
 
     pub fn merge(path_queries: Vec<&PathQuery>) -> CostContext<Result<Self, Error>> {
         let mut cost = OperationCost::default();
+
         // TODO: add constraint checks to prevent invalid inputs
-        // you cannot merge if the path queries are not greater than 2
         if path_queries.len() < 2 {
             return Err(Error::InvalidInput(
                 "merge function requires at least 2 path queries",
@@ -111,9 +111,6 @@ impl PathQuery {
         query
     }
 
-    // TODO: modify how get common paths work
-    // Goal: I want to know what paths are common between the different paths
-    // at the same time want to merge the queries correctly
     fn get_common_path(path_queries: &Vec<&PathQuery>) -> (Vec<Vec<u8>>, usize, bool) {
         let min_path_length = path_queries
             .iter()
