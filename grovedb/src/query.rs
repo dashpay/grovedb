@@ -112,16 +112,20 @@ impl PathQuery {
     }
 
     // TODO: modify how get common paths work
-    // problem with this is that it depends on the length of the first path which
-    // should not be the case it has to work independent of the path length,
-    // actually it has to work with the minimum path length
-    //
+    // Goal: I want to know what paths are common between the different paths
+    // at the same time want to merge the queries correctly
     fn get_common_path(path_queries: &Vec<&PathQuery>) -> (Vec<Vec<u8>>, usize, bool) {
+        let min_path_length = path_queries
+            .iter()
+            .map(|path_query| path_query.path.len())
+            .min()
+            .expect("expect path_queries length to be 2 or more");
+
         let mut common_path = vec![];
         let mut level = 0;
         let mut all_equal = true;
 
-        while level < path_queries[0].path.len() {
+        while level < min_path_length {
             let keys_at_level = path_queries
                 .iter()
                 .map(|path_query| &path_query.path[level])
