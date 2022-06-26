@@ -40,6 +40,8 @@ pub enum Error {
     InternalError(&'static str),
     #[error("invalid proof: {0}")]
     InvalidProof(&'static str),
+    #[error("invalid input: {0}")]
+    InvalidInput(&'static str),
 
     // Path errors
 

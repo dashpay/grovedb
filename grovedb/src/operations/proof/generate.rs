@@ -15,8 +15,10 @@ use crate::{
 
 impl GroveDb {
     pub fn prove_query_many(&self, query: Vec<&PathQuery>) -> CostContext<Result<Vec<u8>, Error>> {
+        let mut cost = OperationCost::default();
+
         let query = if query.len() > 1 {
-            PathQuery::merge(query)
+            cost_return_on_error!(&mut cost, PathQuery::merge(query))
         } else {
             query[0].clone()
         };

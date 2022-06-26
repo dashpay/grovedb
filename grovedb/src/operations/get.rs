@@ -203,7 +203,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         // TODO: properly handle path query merge error
-        let query = PathQuery::merge(path_queries.to_vec());
+        let query = cost_return_on_error!(&mut cost, PathQuery::merge(path_queries.to_vec()));
         let (result, _) = cost_return_on_error!(&mut cost, self.query_raw(&query, transaction));
         Ok(result).wrap_with_cost(cost)
     }

@@ -1,4 +1,6 @@
 use std::path::Path;
+
+use costs::{cost_return_on_error, OperationCost};
 use merk::{proofs::Query, Hash};
 use rs_merkle::{algorithms::Sha256, MerkleProof};
 
@@ -8,9 +10,12 @@ use crate::{
 };
 
 impl GroveDb {
-    pub fn verify_query_many(proof: &[u8], query: Vec<&PathQuery>) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
+    pub fn verify_query_many(
+        proof: &[u8],
+        query: Vec<&PathQuery>,
+    ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
         let query = if query.len() > 1 {
-            PathQuery::merge(query)
+            PathQuery::merge(query).unwrap()?
         } else {
             query[0].clone()
         };
