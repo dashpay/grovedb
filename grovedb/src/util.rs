@@ -1,5 +1,3 @@
-use costs::cost_return_on_error;
-
 /// Macro to execute same piece of code on different storage contexts
 /// (transactional or not) using path argument.
 macro_rules! storage_context_optional_tx {

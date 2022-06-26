@@ -1,7 +1,4 @@
-use std::{
-    ops::{Deref, DerefMut},
-    option::Option::None,
-};
+use std::ops::{Deref, DerefMut};
 
 use ::visualize::{Drawer, Visualize};
 use rand::Rng;

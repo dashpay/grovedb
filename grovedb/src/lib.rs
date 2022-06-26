@@ -69,6 +69,12 @@ pub enum Error {
     #[error("data corruption error: {0}")]
     CorruptedData(String),
 
+    #[error("corrupted code execution error: {0}")]
+    CorruptedCodeExecution(&'static str),
+
+    #[error("invalid batch operation error: {0}")]
+    InvalidBatchOperation(&'static str),
+
     // Support errors
     #[error("not supported: {0}")]
     NotSupported(&'static str),
@@ -249,7 +255,11 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    fn update_tree_item_preserve_flag<'db, K: AsRef<[u8]> + Copy, S: StorageContext<'db>>(
+    pub(crate) fn update_tree_item_preserve_flag<
+        'db,
+        K: AsRef<[u8]> + Copy,
+        S: StorageContext<'db>,
+    >(
         parent_tree: &mut Merk<S>,
         key: K,
         root_hash: [u8; 32],

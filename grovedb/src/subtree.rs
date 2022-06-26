@@ -2,6 +2,8 @@
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
 
+use core::fmt;
+
 use bincode::Options;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
@@ -14,6 +16,7 @@ use merk::{
 };
 use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+use visualize::visualize_to_vec;
 
 use crate::{
     util::{merk_optional_tx, storage_context_optional_tx},
@@ -26,7 +29,7 @@ pub type ElementFlags = Option<Vec<u8>>;
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Element {
     /// An ordinary value
     Item(Vec<u8>, ElementFlags),
@@ -36,6 +39,15 @@ pub enum Element {
     /// Hash is stored to make Merk become different when its subtrees have
     /// changed, otherwise changes won't be reflected in parent trees.
     Tree([u8; 32], ElementFlags),
+}
+
+impl fmt::Debug for Element {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut v = Vec::new();
+        visualize_to_vec(&mut v, self);
+
+        f.write_str(&String::from_utf8_lossy(&v))
+    }
 }
 
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>
@@ -618,6 +630,17 @@ impl Element {
         )
     }
 
+    /// Helper function that returns whether an element at the key for the
+    /// element already exists.
+    pub fn element_at_key_already_exists<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+    ) -> CostContext<Result<bool, Error>> {
+        merk.exists(key.as_ref())
+            .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -636,6 +659,27 @@ impl Element {
         let batch_operations = [(key, Op::Put(serialized))];
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    /// Insert an element in Merk under a key if it doesn't yet exist; path
+    /// should be resolved and proper Merk should be loaded by this moment
+    /// If transaction is not passed, the batch will be written immediately.
+    /// If transaction is passed, the operation will be committed on the
+    /// transaction commit.
+    pub fn insert_if_not_exists<'db, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: &[u8],
+    ) -> CostContext<Result<bool, Error>> {
+        let mut cost = OperationCost::default();
+        let exists =
+            cost_return_on_error!(&mut cost, self.element_at_key_already_exists(merk, key));
+        if exists {
+            Ok(false).wrap_with_cost(cost)
+        } else {
+            cost_return_on_error!(&mut cost, self.insert(merk, key));
+            Ok(true).wrap_with_cost(cost)
+        }
     }
 
     /// Insert a reference element in Merk under a key; path should be resolved

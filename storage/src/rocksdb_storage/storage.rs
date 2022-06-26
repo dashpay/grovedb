@@ -82,6 +82,34 @@ impl RocksDbStorage {
         res = blake3::hash(&res).as_bytes().to_vec();
         res
     }
+
+    // /// A helper method to build a prefix to rocksdb keys or identify a subtree
+    // /// in `subtrees` map by tree path;
+    // pub fn build_prefix<'a, P>(path: P) -> Vec<u8>
+    // where
+    //     P: IntoIterator<Item = &'a [u8]>,
+    // {
+    //     let segments_iter = path.into_iter();
+    //     let mut segments_count: usize = 0;
+    //     let mut res = Vec::new();
+    //     // let mut lengthes = Vec::new();
+    //
+    //     // for s in segments_iter {
+    //     //     segments_count += 1;
+    //     //     res.extend_from_slice(s);
+    //     //     lengthes.extend(s.len().to_ne_bytes());
+    //     // }
+    //
+    //     // res.extend(segments_count.to_ne_bytes());
+    //     // res.extend(lengthes);
+    //     // res = blake3::hash(&res).as_bytes().to_vec();
+    //
+    //     for s in segments_iter {
+    //         res.extend_from_slice(s);
+    //     }
+    //
+    //     res
+    // }
 }
 
 impl<'db> Storage<'db> for RocksDbStorage {
