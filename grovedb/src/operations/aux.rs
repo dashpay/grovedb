@@ -22,7 +22,7 @@ impl GroveDb {
         });
 
         cost.seek_count = 1;
-        cost.storage_written_bytes = key.as_ref().len() + value.len();
+        cost.storage_written_bytes = key.as_ref().len() as u32 + value.len() as u32;
         Ok(()).wrap_with_cost(cost)
     }
 
@@ -41,7 +41,7 @@ impl GroveDb {
         });
 
         cost.seek_count = 1;
-        cost.storage_written_bytes = key.as_ref().len();
+        cost.storage_written_bytes = key.as_ref().len() as u32;
         Ok(()).wrap_with_cost(cost)
     }
 
@@ -58,7 +58,7 @@ impl GroveDb {
 
             cost = OperationCost {
                 seek_count: 1,
-                loaded_bytes: value.as_ref().map(|v| v.len()).unwrap_or(0),
+                loaded_bytes: value.as_ref().map(|v| v.len()).unwrap_or(0) as u32,
                 ..Default::default()
             };
 

@@ -167,7 +167,7 @@ where
         let mut to_delete = self.storage.new_batch();
         while iter.valid() {
             if let Some(key) = iter.key() {
-                cost.loaded_bytes += key.len();
+                cost.loaded_bytes += key.len() as u32;
                 // TODO compute cleared data for this storage batch
                 cost_return_on_error_no_add!(&cost, to_delete.delete(key).map_err(|e| e.into()));
             }
@@ -192,7 +192,7 @@ where
         let value =
             cost_return_on_error_no_add!(&cost, self.storage.get_aux(key).map_err(|e| e.into()));
 
-        cost.loaded_bytes = value.as_ref().map(|x| x.len()).unwrap_or(0);
+        cost.loaded_bytes = value.as_ref().map(|x| x.len()).unwrap_or(0) as u32;
         Ok(value).wrap_with_cost(cost)
     }
 
@@ -248,7 +248,7 @@ where
                             if let Some(node) = maybe_node {
                                 Ok(true).wrap_with_cost(OperationCost {
                                     seek_count: 1,
-                                    loaded_bytes: node.value().len(),
+                                    loaded_bytes: node.value().len() as u32,
                                     ..Default::default()
                                 })
                             } else {
@@ -523,7 +523,7 @@ where
                             .put_root(ROOT_KEY_KEY, tree.key())
                             .map_err(|e| e.into())
                             .wrap_with_cost(OperationCost {
-                                storage_written_bytes: tree.key().len(),
+                                storage_written_bytes: tree.key().len() as u32,
                                 ..Default::default()
                             })
                     })
@@ -544,7 +544,7 @@ where
                         .map(|_| vec![])
                         .map_err(|e| e.into())
                         .wrap_with_cost(OperationCost {
-                            storage_written_bytes: root_opt.map(|x| x.len()).unwrap_or(0),
+                            storage_written_bytes: root_opt.map(|x| x.len()).unwrap_or(0) as u32,
                             ..Default::default()
                         })
                 })
@@ -565,7 +565,7 @@ where
                         .put(&key, &value)
                         .map_err(|e| e.into())
                         .wrap_with_cost(OperationCost {
-                            storage_written_bytes: value.len(),
+                            storage_written_bytes: value.len() as u32,
                             ..Default::default()
                         })
                 );
@@ -584,7 +584,7 @@ where
                         .delete(&key)
                         .map_err(|e| e.into())
                         .wrap_with_cost(OperationCost {
-                            storage_written_bytes: value.map(|x| x.len()).unwrap_or(0),
+                            storage_written_bytes: value.map(|x| x.len()).unwrap_or(0) as u32,
                             ..Default::default()
                         }))
                 );
@@ -599,7 +599,7 @@ where
                         .put_aux(key, value)
                         .map_err(|e| e.into())
                         .wrap_with_cost(OperationCost {
-                            storage_written_bytes: value.len(),
+                            storage_written_bytes: value.len() as u32,
                             ..Default::default()
                         })
                 ),
@@ -609,7 +609,7 @@ where
                         .put_aux(key, value)
                         .map_err(|e| e.into())
                         .wrap_with_cost(OperationCost {
-                            storage_written_bytes: value.len(),
+                            storage_written_bytes: value.len() as u32,
                             ..Default::default()
                         })
                 ),
@@ -629,7 +629,7 @@ where
                             .delete_aux(key)
                             .map_err(|e| e.into())
                             .wrap_with_cost(OperationCost {
-                                storage_written_bytes: value.map(|x| x.len()).unwrap_or(0),
+                                storage_written_bytes: value.map(|x| x.len()).unwrap_or(0) as u32,
                                 ..Default::default()
                             }))
                     )
@@ -706,8 +706,9 @@ where
                     ..Default::default()
                 };
                 if let Ok(Some(key)) = key_res {
-                    cost.loaded_bytes = key.len(); // Successful seek means some
-                                                   // loaded bytes.
+                    cost.loaded_bytes = key.len() as u32; // Successful seek
+                                                          // means some
+                                                          // loaded bytes.
                 }
                 cost
             })

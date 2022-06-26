@@ -3,30 +3,46 @@
 
 use std::ops::{Add, AddAssign};
 
+use storage::rocksdb_storage::RocksDbStorage;
+
 /// Piece of data representing affected computer resources (approximately).
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct OperationCost {
     /// How many storage seeks were done.
-    pub seek_count: usize,
+    pub seek_count: u16,
     /// How many bytes were written on hard drive.
-    pub storage_written_bytes: usize,
+    pub storage_written_bytes: u32,
     /// How many bytes were loaded from hard drive.
-    pub storage_loaded_bytes: usize,
+    pub storage_loaded_bytes: u32,
     /// How many bytes were loaded into memory (usually keys and values).
-    pub loaded_bytes: usize,
+    pub loaded_bytes: u32,
     /// How many times hash was called for bytes (paths, keys, values).
-    pub hash_byte_calls: usize,
+    pub hash_byte_calls: u32,
     /// How many times node hashing was done (for merkelized tree).
-    pub hash_node_calls: usize,
+    pub hash_node_calls: u16,
 }
 
 impl OperationCost {
     /// Add worst case for getting a merk tree
-    pub fn add_worst_case_get_merk(&mut self) {
-        self.seek_count += 0;
+    pub fn add_worst_case_get_merk<'p, P>(&mut self, path: P)
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        self.seek_count += 1;
         self.storage_written_bytes += 0;
         self.storage_loaded_bytes += 0;
         self.loaded_bytes += 0;
+        self.hash_byte_calls += RocksDbStorage::build_prefix_hash_count(path) as u32;
+        self.hash_node_calls += 0;
+    }
+
+    /// Add worst case for getting a merk tree
+    pub fn add_worst_case_merk_has_element(&mut self, key: &[u8]) {
+        self.seek_count += 1;
+        self.storage_written_bytes += 0;
+        self.storage_loaded_bytes += 0;
+        self.loaded_bytes += key.len() as u32;
         self.hash_byte_calls += 0;
         self.hash_node_calls += 0;
     }
@@ -513,7 +529,7 @@ mod tests {
         let loaded_value = b"ayylmao";
         let costs_ctx = loaded_value.wrap_fn_cost(|x| OperationCost {
             seek_count: 1,
-            loaded_bytes: x.len(),
+            loaded_bytes: x.len() as u32,
             ..Default::default()
         });
         assert_eq!(

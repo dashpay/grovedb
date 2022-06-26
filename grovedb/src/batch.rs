@@ -253,7 +253,8 @@ impl TreeCache for TreeCacheKnownPaths {
 
         if self.paths.remove(path) == false {
             // Then we have to get the tree
-            cost.add_worst_case_get_merk()
+            let path_slices = path.iter().map(|k| k.as_slice()).collect::<Vec<&[u8]>>();
+            cost.add_worst_case_get_merk(path_slices);
         }
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost += op.worst_case_cost(key);
@@ -542,8 +543,8 @@ impl GroveDb {
                 .put_meta(ROOT_LEAFS_SERIALIZED_KEY, &root_leaves_serialized)
                 .map_err(|e| e.into())
                 .wrap_with_cost(OperationCost {
-                    storage_written_bytes: ROOT_LEAFS_SERIALIZED_KEY.len()
-                        + root_leaves_serialized.len(),
+                    storage_written_bytes: ROOT_LEAFS_SERIALIZED_KEY.len() as u32
+                        + root_leaves_serialized.len() as u32,
                     ..Default::default()
                 })
         }

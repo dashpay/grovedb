@@ -60,9 +60,7 @@ impl RocksDbStorage {
         Ok(RocksDbStorage { db })
     }
 
-    /// A helper method to build a prefix to rocksdb keys or identify a subtree
-    /// in `subtrees` map by tree path;
-    pub fn build_prefix<'a, P>(path: P) -> Vec<u8>
+    fn build_prefix_body<'a, P>(path: P) -> Vec<u8>
     where
         P: IntoIterator<Item = &'a [u8]>,
     {
@@ -79,8 +77,28 @@ impl RocksDbStorage {
 
         res.extend(segments_count.to_ne_bytes());
         res.extend(lengthes);
-        res = blake3::hash(&res).as_bytes().to_vec();
         res
+    }
+
+    /// A helper method to figure out how many blake3 hashes are needed to build
+    /// a prefix
+    pub fn build_prefix_hash_count<'a, P>(path: P) -> u16
+    where
+        P: IntoIterator<Item = &'a [u8]>,
+    {
+        let body = Self::build_prefix_body(path);
+        // the block size of blake3 is 64
+        (body.len() as u32 / 64 + 1) as u16
+    }
+
+    /// A helper method to build a prefix to rocksdb keys or identify a subtree
+    /// in `subtrees` map by tree path;
+    pub fn build_prefix<'a, P>(path: P) -> Vec<u8>
+    where
+        P: IntoIterator<Item = &'a [u8]>,
+    {
+        let body = Self::build_prefix_body(path);
+        blake3::hash(&body).as_bytes().to_vec()
     }
 
     // /// A helper method to build a prefix to rocksdb keys or identify a subtree
