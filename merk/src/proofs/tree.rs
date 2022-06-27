@@ -1,10 +1,7 @@
-use anyhow::{anyhow, bail, Result};
-use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
-};
+use anyhow::{bail, Result};
 
 use super::{Node, Op};
-use crate::tree::{kv_digest_to_kv_hash, kv_hash, node_hash, Hash, NULL_HASH};
+use crate::tree::{kv_hash, node_hash, Hash, NULL_HASH};
 
 /// Contains a tree's child node and its hash. The hash can always be assumed to
 /// be up-to-date.
@@ -45,18 +42,18 @@ impl PartialEq for Tree {
 
 impl Tree {
     /// Gets or computes the hash for this tree node.
-    pub fn hash(&self) -> CostContext<Hash> {
-        fn compute_hash(tree: &Tree, kv_hash: Hash) -> CostContext<Hash> {
+    pub fn hash(&self) -> Hash {
+        fn compute_hash(tree: &Tree, kv_hash: Hash) -> Hash {
             node_hash(&kv_hash, &tree.child_hash(true), &tree.child_hash(false))
         }
 
         match &self.node {
-            Node::Hash(hash) => (*hash).wrap_with_cost(Default::default()),
+            Node::Hash(hash) => *hash,
             Node::KVHash(kv_hash) => compute_hash(self, *kv_hash),
-            Node::KV(key, value) => kv_hash(key.as_slice(), value.as_slice())
-                .flat_map(|kv_hash| compute_hash(self, kv_hash)),
-            Node::KVDigest(key, value_hash) => kv_digest_to_kv_hash(key, value_hash)
-                .flat_map(|kv_hash| compute_hash(self, kv_hash)),
+            Node::KV(key, value) => {
+                let kv_hash = kv_hash(key.as_slice(), value.as_slice());
+                compute_hash(self, kv_hash)
+            }
         }
     }
 
@@ -115,23 +112,18 @@ impl Tree {
 
     /// Attaches the child to the `Tree`'s given side. Panics if there is
     /// already a child attached to this side.
-    pub(crate) fn attach(&mut self, left: bool, child: Self) -> CostContext<Result<()>> {
-        let mut cost = OperationCost::default();
-
+    pub(crate) fn attach(&mut self, left: bool, child: Self) -> Result<()> {
         if self.child(left).is_some() {
-            return Err(anyhow!(
-                "Tried to attach to left child, but it is already Some"
-            ))
-            .wrap_with_cost(cost);
+            bail!("Tried to attach to left child, but it is already Some");
         }
 
         self.height = self.height.max(child.height + 1);
 
-        let hash = child.hash().unwrap_add_cost(&mut cost);
+        let hash = child.hash();
         let tree = Box::new(child);
         *self.child_mut(left) = Some(Child { tree, hash });
 
-        Ok(()).wrap_with_cost(cost)
+        Ok(())
     }
 
     /// Returns the already-computed hash for this tree node's child on the
@@ -147,8 +139,8 @@ impl Tree {
 
     /// Consumes the tree node, calculates its hash, and returns a `Node::Hash`
     /// variant.
-    fn into_hash(self) -> CostContext<Self> {
-        self.hash().map(|hash| Node::Hash(hash).into())
+    fn into_hash(self) -> Self {
+        Node::Hash(self.hash()).into()
     }
 
     // #[cfg(feature = "full")]
@@ -241,13 +233,11 @@ impl<'a> Iterator for LayerIter<'a> {
 /// `visit_node` will be called once for every push operation in the proof, in
 /// key-order. If `visit_node` returns an `Err` result, it will halt the
 /// execution and `execute` will return the error.
-pub(crate) fn execute<I, F>(ops: I, collapse: bool, mut visit_node: F) -> CostContext<Result<Tree>>
+pub(crate) fn execute<I, F>(ops: I, collapse: bool, mut visit_node: F) -> Result<Tree>
 where
     I: IntoIterator<Item = Result<Op>>,
     F: FnMut(&Node) -> Result<()>,
 {
-    let mut cost = OperationCost::default();
-
     let mut stack: Vec<Tree> = Vec::with_capacity(32);
     let mut maybe_last_key = None;
 
@@ -259,77 +249,15 @@ where
     }
 
     for op in ops {
-        match cost_return_on_error_no_add!(&cost, op) {
+        match op? {
             Op::Parent => {
-                let (mut parent, child) = (
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
-                );
-                cost_return_on_error!(
-                    &mut cost,
-                    parent.attach(
-                        true,
-                        if collapse {
-                            child.into_hash().unwrap_add_cost(&mut cost)
-                        } else {
-                            child
-                        },
-                    )
-                );
+                let (mut parent, child) = (try_pop(&mut stack)?, try_pop(&mut stack)?);
+                parent.attach(true, if collapse { child.into_hash() } else { child })?;
                 stack.push(parent);
             }
             Op::Child => {
-                let (child, mut parent) = (
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
-                );
-                cost_return_on_error!(
-                    &mut cost,
-                    parent.attach(
-                        false,
-                        if collapse {
-                            child.into_hash().unwrap_add_cost(&mut cost)
-                        } else {
-                            child
-                        }
-                    )
-                );
-                stack.push(parent);
-            }
-            Op::ParentInverted => {
-                let (mut parent, child) = (
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
-                );
-                cost_return_on_error!(
-                    &mut cost,
-                    parent.attach(
-                        false,
-                        if collapse {
-                            child.into_hash().unwrap_add_cost(&mut cost)
-                        } else {
-                            child
-                        },
-                    )
-                );
-                stack.push(parent);
-            }
-            Op::ChildInverted => {
-                let (child, mut parent) = (
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
-                    cost_return_on_error_no_add!(&cost, try_pop(&mut stack)),
-                );
-                cost_return_on_error!(
-                    &mut cost,
-                    parent.attach(
-                        true,
-                        if collapse {
-                            child.into_hash().unwrap_add_cost(&mut cost)
-                        } else {
-                            child
-                        },
-                    )
-                );
+                let (child, mut parent) = (try_pop(&mut stack)?, try_pop(&mut stack)?);
+                parent.attach(false, if collapse { child.into_hash() } else { child })?;
                 stack.push(parent);
             }
             Op::Push(node) => {
@@ -337,31 +265,14 @@ where
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
                         if key <= last_key {
-                            return Err(anyhow!("Incorrect key ordering")).wrap_with_cost(cost);
+                            bail!("Incorrect key ordering");
                         }
                     }
 
                     maybe_last_key = Some(key.clone());
                 }
 
-                cost_return_on_error_no_add!(&cost, visit_node(&node));
-
-                let tree: Tree = node.into();
-                stack.push(tree);
-            }
-            Op::PushInverted(node) => {
-                if let Node::KV(key, _) = &node {
-                    // keys should always increase
-                    if let Some(last_key) = &maybe_last_key {
-                        if key >= last_key {
-                            return Err(anyhow!("Incorrect key ordering")).wrap_with_cost(cost);
-                        }
-                    }
-
-                    maybe_last_key = Some(key.clone());
-                }
-
-                cost_return_on_error_no_add!(&cost, visit_node(&node));
+                visit_node(&node)?;
 
                 let tree: Tree = node.into();
                 stack.push(tree);
@@ -370,13 +281,10 @@ where
     }
 
     if stack.len() != 1 {
-        return Err(anyhow!(
-            "Expected proof to result in exactly one stack item"
-        ))
-        .wrap_with_cost(cost);
+        bail!("Expected proof to result in exactly one stack item");
     }
 
-    Ok(stack.pop().unwrap()).wrap_with_cost(cost)
+    Ok(stack.pop().unwrap())
 }
 
 #[cfg(test)]
@@ -388,13 +296,13 @@ mod test {
 
         let mut tree = make_node(3);
         let mut left = make_node(1);
-        left.attach(true, make_node(0)).unwrap().unwrap();
-        left.attach(false, make_node(2)).unwrap().unwrap();
+        left.attach(true, make_node(0)).unwrap();
+        left.attach(false, make_node(2)).unwrap();
         let mut right = make_node(5);
-        right.attach(true, make_node(4)).unwrap().unwrap();
-        right.attach(false, make_node(6)).unwrap().unwrap();
-        tree.attach(true, left).unwrap().unwrap();
-        tree.attach(false, right).unwrap().unwrap();
+        right.attach(true, make_node(4)).unwrap();
+        right.attach(false, make_node(6)).unwrap();
+        tree.attach(true, left).unwrap();
+        tree.attach(false, right).unwrap();
 
         tree
     }

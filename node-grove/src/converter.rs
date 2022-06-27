@@ -1,11 +1,11 @@
 use grovedb::{Element, PathQuery, Query, SizedQuery};
-use neon::{prelude::*, types::buffer::TypedArray};
+use neon::{borrow::Borrow, prelude::*};
 
 fn element_to_string(element: Element) -> String {
     match element {
-        Element::Item(..) => "item".to_string(),
-        Element::Reference(..) => "reference".to_string(),
-        Element::Tree(..) => "tree".to_string(),
+        Element::Item(_) => "item".to_string(),
+        Element::Reference(_) => "reference".to_string(),
+        Element::Tree(_) => "tree".to_string(),
     }
 }
 
@@ -13,25 +13,26 @@ pub fn js_object_to_element<'a, C: Context<'a>>(
     js_object: Handle<JsObject>,
     cx: &mut C,
 ) -> NeonResult<Element> {
-    let js_element_string: Handle<JsString> = js_object.get(cx, "type")?;
+    let js_element_string = js_object.get(cx, "type")?.to_string(cx)?;
+    let value = js_object.get(cx, "value")?;
 
     let element_string: String = js_element_string.value(cx);
 
     match element_string.as_str() {
         "item" => {
-            let js_buffer: Handle<JsBuffer> = js_object.get(cx, "value")?;
+            let js_buffer = value.downcast_or_throw::<JsBuffer, _>(cx)?;
             let item = js_buffer_to_vec_u8(js_buffer, cx);
-            Ok(Element::new_item(item))
+            Ok(Element::Item(item))
         }
         "reference" => {
-            let js_array: Handle<JsArray> = js_object.get(cx, "value")?;
+            let js_array = value.downcast_or_throw::<JsArray, _>(cx)?;
             let reference = js_array_of_buffers_to_vec(js_array, cx)?;
-            Ok(Element::new_reference(reference))
+            Ok(Element::Reference(reference))
         }
         "tree" => {
-            let js_buffer: Handle<JsBuffer> = js_object.get(cx, "value")?;
+            let js_buffer = value.downcast_or_throw::<JsBuffer, _>(cx)?;
             let tree_vec = js_buffer_to_vec_u8(js_buffer, cx);
-            Ok(Element::new_tree(tree_vec.try_into().or_else(
+            Ok(Element::Tree(tree_vec.try_into().or_else(
                 |v: Vec<u8>| {
                     cx.throw_error(format!(
                         "Tree buffer is expected to be 32 bytes long, but got {}",
@@ -53,12 +54,12 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
     js_object.set(cx, "type", js_type_string)?;
 
     let js_value: Handle<JsValue> = match element {
-        Element::Item(item, _) => {
+        Element::Item(item) => {
             let js_buffer = JsBuffer::external(cx, item);
             js_buffer.upcast()
         }
-        Element::Reference(reference, _) => nested_vecs_to_js(reference, cx)?,
-        Element::Tree(tree, _) => {
+        Element::Reference(reference) => nested_vecs_to_js(reference, cx)?,
+        Element::Tree(tree) => {
             let js_buffer = JsBuffer::external(cx, tree);
             js_buffer.upcast()
         }
@@ -84,7 +85,11 @@ pub fn nested_vecs_to_js<'a, C: Context<'a>>(
 }
 
 pub fn js_buffer_to_vec_u8<'a, C: Context<'a>>(js_buffer: Handle<JsBuffer>, cx: &mut C) -> Vec<u8> {
-    js_buffer.as_slice(cx).to_vec()
+    let guard = cx.lock();
+    // let key_buffer = js_buffer.deref();
+    let key_memory_view = js_buffer.borrow(&guard);
+    let key_slice = key_memory_view.as_slice::<u8>();
+    key_slice.to_vec()
 }
 
 pub fn js_array_of_buffers_to_vec<'a, C: Context<'a>>(
@@ -118,19 +123,30 @@ fn js_object_get_vec_u8<'a, C: Context<'a>>(
     field: &str,
     cx: &mut C,
 ) -> NeonResult<Vec<u8>> {
-    Ok(js_buffer_to_vec_u8(js_object.get(cx, field)?, cx))
+    Ok(js_buffer_to_vec_u8(
+        js_object
+            .get(cx, field)?
+            .downcast_or_throw::<JsBuffer, _>(cx)?,
+        cx,
+    ))
 }
 
 fn js_object_to_query<'a, C: Context<'a>>(
     js_object: Handle<JsObject>,
     cx: &mut C,
 ) -> NeonResult<Query> {
-    let items: Handle<JsArray> = js_object.get(cx, "items")?;
+    let items = js_object
+        .get(cx, "items")?
+        .downcast_or_throw::<JsArray, _>(cx)?;
     let mut query = Query::new();
     for js_item in items.to_vec(cx)? {
         let item = js_item.downcast_or_throw::<JsObject, _>(cx)?;
-        let item_str: Handle<JsString> = item.get(cx, "type")?;
-        match item_str.value(cx).as_ref() {
+        match item
+            .get(cx, "type")?
+            .downcast_or_throw::<JsString, _>(cx)?
+            .value(cx)
+            .as_ref()
+        {
             "key" => {
                 query.insert_key(js_object_get_vec_u8(item, "key", cx)?);
             }
@@ -194,7 +210,12 @@ fn js_object_to_sized_query<'a, C: Context<'a>>(
     js_object: Handle<JsObject>,
     cx: &mut C,
 ) -> NeonResult<SizedQuery> {
-    let query = js_object_to_query(js_object.get(cx, "query")?, cx)?;
+    let query = js_object_to_query(
+        js_object
+            .get(cx, "query")?
+            .downcast_or_throw::<JsObject, _>(cx)?,
+        cx,
+    )?;
     let limit: Option<u16> = js_value_to_option::<JsNumber, _>(js_object.get(cx, "limit")?, cx)?
         .map(|x| {
             u16::try_from(x.value(cx) as i64)
@@ -214,7 +235,9 @@ pub fn js_path_query_to_path_query<'a, C: Context<'a>>(
     js_path_query: Handle<JsObject>,
     cx: &mut C,
 ) -> NeonResult<PathQuery> {
-    let path = js_array_of_buffers_to_vec(js_path_query.get(cx, "path")?, cx)?;
-    let query = js_object_to_sized_query(js_path_query.get(cx, "query")?, cx)?;
+    let path =
+        js_array_of_buffers_to_vec(js_path_query.get(cx, "path")?.downcast_or_throw(cx)?, cx)?;
+    let query =
+        js_object_to_sized_query(js_path_query.get(cx, "query")?.downcast_or_throw(cx)?, cx)?;
     Ok(PathQuery::new(path, query))
 }

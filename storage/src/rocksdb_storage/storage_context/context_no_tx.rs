@@ -1,8 +1,8 @@
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error, WriteBatchWithTransaction};
 
-use super::{make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator};
+use super::{make_prefixed_key, Db, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator};
 use crate::{
-    rocksdb_storage::storage::{Db, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
+    rocksdb_storage::storage::{AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
     StorageContext,
 };
 
@@ -43,7 +43,7 @@ impl<'db> PrefixedRocksDbStorageContext<'db> {
     }
 }
 
-impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
+impl<'db, 'ctx> StorageContext<'db, 'ctx> for PrefixedRocksDbStorageContext<'db> {
     type Batch = PrefixedRocksDbBatch<'db, WriteBatchWithTransaction<true>>;
     type Error = Error;
     type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Db>>;

@@ -1,9 +1,7 @@
 [workspace]
 members = [
-    "costs",
     "grovedb",
     "merk",
     "node-grove",
     "storage",
-    "visualize",
 ]

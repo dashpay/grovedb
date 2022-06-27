@@ -13,12 +13,6 @@ use super::super::Node;
 /// contained in a proof, in key-order.
 pub struct MapBuilder(Map);
 
-impl Default for MapBuilder {
-    fn default() -> Self {
-        MapBuilder::new()
-    }
-}
-
 impl MapBuilder {
     /// Creates a new `MapBuilder` with an empty internal `Map`.
     pub fn new() -> Self {

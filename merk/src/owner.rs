@@ -2,7 +2,6 @@ use std::ops::{Deref, DerefMut};
 
 /// A container type which holds a value that may be temporarily owned by a
 /// consumer.
-#[derive(Debug)]
 pub struct Owner<T> {
     inner: Option<T>,
 }

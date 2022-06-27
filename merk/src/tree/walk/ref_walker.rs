@@ -1,5 +1,4 @@
 use anyhow::Result;
-use costs::{CostContext, CostsExt, OperationCost};
 
 use super::{
     super::{Link, Tree},
@@ -38,28 +37,21 @@ where
     /// Traverses to the child on the given side (if any), fetching from the
     /// source if pruned. When fetching, the link is upgraded from
     /// `Link::Reference` to `Link::Loaded`.
-    pub fn walk(&mut self, left: bool) -> CostContext<Result<Option<RefWalker<S>>>> {
+    pub fn walk(&mut self, left: bool) -> Result<Option<RefWalker<S>>> {
         let link = match self.tree.link(left) {
-            None => return Ok(None).wrap_with_cost(Default::default()),
+            None => return Ok(None),
             Some(link) => link,
         };
 
-        let mut cost = OperationCost::default();
         match link {
             Link::Reference { .. } => {
-                let load_res = self
-                    .tree
-                    .load(left, &self.source)
-                    .unwrap_add_cost(&mut cost);
-                if let Err(e) = load_res {
-                    return Err(e).wrap_with_cost(cost);
-                }
+                self.tree.load(left, &self.source)?;
             }
             Link::Modified { .. } => panic!("Cannot traverse Link::Modified"),
             Link::Uncommitted { .. } | Link::Loaded { .. } => {}
         }
 
         let child = self.tree.child_mut(left).unwrap();
-        Ok(Some(RefWalker::new(child, self.source.clone()))).wrap_with_cost(cost)
+        Ok(Some(RefWalker::new(child, self.source.clone())))
     }
 }
