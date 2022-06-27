@@ -23,16 +23,9 @@ pub struct PrefixedMultiContextBatchPart {
 
 /// Batch used in transactional context (because RocksDB transactions doens't
 /// support its batches)
+#[derive(Default)]
 pub struct DummyBatch {
     pub operations: Vec<BatchOperation>,
-}
-
-impl Default for DummyBatch {
-    fn default() -> Self {
-        DummyBatch {
-            operations: Vec::new(),
-        }
-    }
 }
 
 impl Batch for DummyBatch {

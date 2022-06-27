@@ -38,7 +38,14 @@ macro_rules! meta_storage_context_optional_tx {
 
 /// Macro to execute same piece of code on Merk with varying storage contexts.
 macro_rules! merk_optional_tx {
-    (&mut $cost:ident, $db:expr, $path:expr, $transaction:ident, mut $subtree:ident, { $($body:tt)* }) => {
+    (
+        &mut $cost:ident,
+        $db:expr,
+        $path:expr,
+        $transaction:ident,
+        mut $subtree:ident,
+        { $($body:tt)* }
+    ) => {
         {
             use crate::util::storage_context_optional_tx;
             storage_context_optional_tx!($db, $path, $transaction, storage, {
@@ -47,7 +54,9 @@ macro_rules! merk_optional_tx {
                     ::merk::Merk::open(storage)
                         .map(|merk_res|
                              merk_res
-                                .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
+                                .map_err(|_| crate::Error::CorruptedData(
+                                    "cannot open a subtree".to_owned()
+                                ))
                              )
                 );
                 $($body)*
@@ -55,7 +64,14 @@ macro_rules! merk_optional_tx {
         }
     };
 
-    (&mut $cost:ident, $db:expr, $path:expr, $transaction:ident, $subtree:ident, { $($body:tt)* }) => {
+    (
+        &mut $cost:ident,
+        $db:expr,
+        $path:expr,
+        $transaction:ident,
+        $subtree:ident,
+        { $($body:tt)* }
+    ) => {
         {
             use crate::util::storage_context_optional_tx;
             storage_context_optional_tx!($db, $path, $transaction, storage, {
@@ -64,7 +80,9 @@ macro_rules! merk_optional_tx {
                     ::merk::Merk::open(storage)
                         .map(|merk_res|
                              merk_res
-                                .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
+                                .map_err(|_| crate::Error::CorruptedData(
+                                    "cannot open a subtree".to_owned()
+                                ))
                         )
                 );
                 $($body)*

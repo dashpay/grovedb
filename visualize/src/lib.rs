@@ -9,7 +9,7 @@ static INDENT_SPACES: usize = 4;
 
 /// Pretty visualization of GroveDB components.
 pub trait Visualize {
-    fn visualize<'a, W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>>;
+    fn visualize<W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>>;
 }
 
 /// Wrapper struct with a `Debug` implementation to represent bytes vector in
@@ -55,7 +55,7 @@ pub struct Drawer<W: Write> {
     write: W,
 }
 
-impl<'a, W: Write> Drawer<W> {
+impl<W: Write> Drawer<W> {
     pub fn new(write: W) -> Self {
         Drawer { level: 0, write }
     }
@@ -93,11 +93,11 @@ impl<'a, W: Write> Drawer<W> {
 
 pub fn to_hex(bytes: &[u8]) -> String {
     let encoded = hex::encode(bytes);
-    let remaining = encoded.len().checked_sub(HEX_LEN).unwrap_or(0);
+    let remaining = encoded.len().saturating_sub(HEX_LEN);
     if remaining >= 8 {
         format!("{}..{}", &encoded[0..HEX_LEN], &encoded[remaining..])
     } else {
-        format!("{}", encoded)
+        encoded
     }
 }
 

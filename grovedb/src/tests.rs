@@ -593,16 +593,8 @@ fn test_references() {
     )
     .unwrap()
     .expect("successful subtree insert");
-
-    let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"merk_1"]);
-    let subtree = Merk::open(subtree_storage)
-        .unwrap()
-        .expect("cannot open merk");
-
-    let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"merk_2"]);
-    let subtree = Merk::open(subtree_storage)
-        .unwrap()
-        .expect("cannot open merk");
+    assert!(db.get([TEST_LEAF], b"merk_1", None).unwrap().is_ok());
+    assert!(db.get([TEST_LEAF], b"merk_2", None).unwrap().is_ok());
 }
 
 #[test]
@@ -650,11 +642,6 @@ fn test_reference_must_point_to_item() {
         .unwrap();
 
     assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
-}
-
-fn test_cyclic_references() {
-    // impossible to have cyclic references
-    // see: test_reference_must_point_to_item
 }
 
 #[test]
@@ -1051,7 +1038,7 @@ fn test_path_query_proofs_without_subquery() {
         SizedQuery::new(query, Some(2), None),
     );
 
-    let mut proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 

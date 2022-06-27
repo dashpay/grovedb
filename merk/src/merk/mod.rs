@@ -21,6 +21,8 @@ use crate::{
 
 pub const ROOT_KEY_KEY: &[u8] = b"root";
 
+type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
+
 pub struct ProofConstructionResult {
     pub proof: Vec<u8>,
     pub limit: Option<u16>,
@@ -114,10 +116,10 @@ impl<'a, I: RawIterator> Iterator for KVIterator<'a, I> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(query_item) = self.current_query_item {
-            let kv_pair = self.get_kv(&query_item);
+            let kv_pair = self.get_kv(query_item);
 
             if kv_pair.is_some() {
-                return kv_pair;
+                kv_pair
             } else {
                 self.seek();
                 self.next()
@@ -293,12 +295,8 @@ where
                         // fetch from RocksDB
                         break Tree::get(&self.storage, key).flat_map_ok(|maybe_node| {
                             let mut cost = OperationCost::default();
-                            Ok(if let Some(node) = maybe_node {
-                                Some(f(&node).unwrap_add_cost(&mut cost))
-                            } else {
-                                None
-                            })
-                            .wrap_with_cost(cost)
+                            Ok(maybe_node.map(|node| f(&node).unwrap_add_cost(&mut cost)))
+                                .wrap_with_cost(cost)
                         });
                     }
                     Some(child) => cursor = child, // traverse to child
@@ -481,7 +479,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostContext<Result<(LinkedList<ProofOp>, Option<u16>, Option<u16>)>>
+    ) -> CostContext<Result<Proof>>
     where
         Q: Into<QueryItem>,
         I: IntoIterator<Item = Q>,
@@ -490,7 +488,7 @@ where
 
         self.use_tree_mut(|maybe_tree| {
             maybe_tree
-                .ok_or(anyhow!("Cannot create proof for empty tree"))
+                .ok_or_else(|| anyhow!("Cannot create proof for empty tree"))
                 .wrap_with_cost(Default::default())
                 .flat_map_ok(|tree| {
                     let mut ref_walker = RefWalker::new(tree, self.source());
@@ -670,7 +668,7 @@ where
             }
             iter.next()
         }
-        return true;
+        true
     }
 
     fn source(&self) -> MerkSource<S> {
@@ -765,7 +763,7 @@ where
 {
     fn fetch(&self, link: &Link) -> CostContext<Result<Tree>> {
         Tree::get(self.storage, link.key())
-            .map_ok(|x| x.ok_or(anyhow!("Key not found")))
+            .map_ok(|x| x.ok_or_else(|| anyhow!("Key not found")))
             .flatten()
     }
 }

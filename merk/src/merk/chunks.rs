@@ -158,7 +158,7 @@ where
     S: StorageContext<'db>,
     <S as StorageContext<'db>>::Error: Error + Sync + Send + 'static;
 
-impl<'db, 'ctx, S> Iterator for ChunkIter<'db, S>
+impl<'db, S> Iterator for ChunkIter<'db, S>
 where
     S: StorageContext<'db>,
     <S as StorageContext<'db>>::Error: Error + Sync + Send + 'static,

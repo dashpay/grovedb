@@ -1,4 +1,4 @@
-use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
+use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
 use crate::{util::merk_optional_tx, Error, GroveDb, TransactionArg};
 
@@ -7,7 +7,7 @@ impl GroveDb {
         &self,
         path: P,
         transaction: TransactionArg,
-    ) -> CostContext<Result<bool, Error>>
+    ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator + ExactSizeIterator,

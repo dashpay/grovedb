@@ -6,7 +6,8 @@ use core::fmt;
 
 use bincode::Options;
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
+    OperationCost,
 };
 use integer_encoding::VarInt;
 use merk::{
@@ -22,6 +23,9 @@ use crate::{
     util::{merk_optional_tx, storage_context_optional_tx},
     Error, Merk, PathQuery, SizedQuery, TransactionArg,
 };
+
+/// Type alias for key-element common pattern.
+pub(crate) type KeyElementPair = (Vec<u8>, Element);
 
 /// Optional single byte meta-data to be stored per element
 pub type ElementFlags = Option<Vec<u8>>;
@@ -62,7 +66,7 @@ where
     pub subquery_key: Option<Vec<u8>>,
     pub subquery: Option<Query>,
     pub left_to_right: bool,
-    pub results: &'a mut Vec<(Vec<u8>, Element)>,
+    pub results: &'a mut Vec<KeyElementPair>,
     pub limit: &'a mut Option<u16>,
     pub offset: &'a mut Option<u16>,
 }
@@ -204,7 +208,7 @@ impl Element {
         let node_size = node_value_size + node_key_size + HASH_LENGTH + HASH_LENGTH;
         // The node will be a child of another node which stores it's key and hash
         let parent_additions = node_key_size + HASH_LENGTH;
-        let child_sizes = 2 as usize;
+        let child_sizes = 2_usize;
         node_size + parent_additions + child_sizes
     }
 
@@ -212,7 +216,7 @@ impl Element {
     pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
         key: K,
-    ) -> CostContext<Result<(), Error>> {
+    ) -> CostResult<(), Error> {
         // TODO: delete references on this element
         let batch = [(key, Op::Delete)];
         merk.apply::<_, Vec<u8>>(&batch, &[])
@@ -224,7 +228,7 @@ impl Element {
     pub fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
         key: K,
-    ) -> CostContext<Result<Element, Error>> {
+    ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
         let value_opt = cost_return_on_error!(
@@ -251,7 +255,7 @@ impl Element {
         merk_path: &[&[u8]],
         query: &Query,
         transaction: TransactionArg,
-    ) -> CostContext<Result<Vec<(Vec<u8>, Element)>, Error>> {
+    ) -> CostResult<Vec<KeyElementPair>, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
         Element::get_sized_query(storage, merk_path, &sized_query, transaction)
             .map_ok(|(elements, _)| elements)
@@ -262,7 +266,7 @@ impl Element {
         merk_path: &[&[u8]],
         query: &Query,
         transaction: TransactionArg,
-    ) -> CostContext<Result<Vec<Element>, Error>> {
+    ) -> CostResult<Vec<Element>, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
         Element::get_sized_query(storage, merk_path, &sized_query, transaction)
             .map_ok(|(elements, _)| elements.into_iter().map(|(_, v)| v).collect())
@@ -289,7 +293,7 @@ impl Element {
         Ok(())
     }
 
-    fn path_query_push(args: PathQueryPushArgs) -> CostContext<Result<(), Error>> {
+    fn path_query_push(args: PathQueryPushArgs) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         let PathQueryPushArgs {
@@ -425,6 +429,8 @@ impl Element {
         (subquery_key, subquery)
     }
 
+    // TODO: refactor
+    #[allow(clippy::too_many_arguments)]
     fn query_item(
         storage: &RocksDbStorage,
         item: &QueryItem,
@@ -435,8 +441,8 @@ impl Element {
         transaction: TransactionArg,
         limit: &mut Option<u16>,
         offset: &mut Option<u16>,
-        add_element_function: fn(PathQueryPushArgs) -> CostContext<Result<(), Error>>,
-    ) -> CostContext<Result<(), Error>> {
+        add_element_function: fn(PathQueryPushArgs) -> CostResult<(), Error>,
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         if !item.is_range() {
@@ -529,8 +535,8 @@ impl Element {
         sized_query: &SizedQuery,
         path: Option<&[&[u8]]>,
         transaction: TransactionArg,
-        add_element_function: fn(PathQueryPushArgs) -> CostContext<Result<(), Error>>,
-    ) -> CostContext<Result<(Vec<(Vec<u8>, Element)>, u16), Error>> {
+        add_element_function: fn(PathQueryPushArgs) -> CostResult<(), Error>,
+    ) -> CostResult<(Vec<KeyElementPair>, u16), Error> {
         let mut cost = OperationCost::default();
 
         let mut results = Vec::new();
@@ -597,7 +603,7 @@ impl Element {
         merk_path: &[&[u8]],
         path_query: &PathQuery,
         transaction: TransactionArg,
-    ) -> CostContext<Result<(Vec<(Vec<u8>, Element)>, u16), Error>> {
+    ) -> CostResult<(Vec<KeyElementPair>, u16), Error> {
         let path_slices = path_query
             .path
             .iter()
@@ -619,7 +625,7 @@ impl Element {
         merk_path: &[&[u8]],
         sized_query: &SizedQuery,
         transaction: TransactionArg,
-    ) -> CostContext<Result<(Vec<(Vec<u8>, Element)>, u16), Error>> {
+    ) -> CostResult<(Vec<KeyElementPair>, u16), Error> {
         Element::get_query_apply_function(
             storage,
             merk_path,
@@ -636,7 +642,7 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: K,
-    ) -> CostContext<Result<bool, Error>> {
+    ) -> CostResult<bool, Error> {
         merk.exists(key.as_ref())
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -650,7 +656,7 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: K,
-    ) -> CostContext<Result<(), Error>> {
+    ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
@@ -670,7 +676,7 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
-    ) -> CostContext<Result<bool, Error>> {
+    ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
         let exists =
             cost_return_on_error!(&mut cost, self.element_at_key_already_exists(merk, key));
@@ -692,7 +698,7 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         referenced_value: Vec<u8>,
-    ) -> CostContext<Result<(), Error>> {
+    ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
@@ -743,7 +749,7 @@ impl<I: RawIterator> ElementsIterator<I> {
         ElementsIterator { raw_iter }
     }
 
-    pub fn next(&mut self) -> CostContext<Result<Option<(Vec<u8>, Element)>, Error>> {
+    pub fn next(&mut self) -> CostResult<Option<KeyElementPair>, Error> {
         let mut cost = OperationCost::default();
 
         Ok(if self.raw_iter.valid() {

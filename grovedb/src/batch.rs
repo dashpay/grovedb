@@ -8,7 +8,7 @@ use std::{
 };
 
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use merk::Merk;
 use nohash_hasher::IntMap;
@@ -159,22 +159,22 @@ impl fmt::Debug for TreeCacheKnownPaths {
 }
 
 trait TreeCache {
-    fn insert(&mut self, op: &GroveDbOp) -> CostContext<Result<(), Error>>;
+    fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error>;
 
     fn execute_ops_on_path(
         &mut self,
-        path: &Vec<Vec<u8>>,
+        path: &[Vec<u8>],
         ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
         batch_apply_options: &BatchApplyOptions,
-    ) -> CostContext<Result<[u8; 32], Error>>;
+    ) -> CostResult<[u8; 32], Error>;
 }
 
 impl<'db, S, F> TreeCache for TreeCacheMerkByPath<S, F>
 where
-    F: Fn(&[Vec<u8>]) -> CostContext<Result<Merk<S>, Error>>,
+    F: Fn(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
-    fn insert(&mut self, op: &GroveDbOp) -> CostContext<Result<(), Error>> {
+    fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         let mut inserted_path = op.path.clone();
@@ -187,10 +187,10 @@ where
 
     fn execute_ops_on_path(
         &mut self,
-        path: &Vec<Vec<u8>>,
+        path: &[Vec<u8>],
         ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
         batch_apply_options: &BatchApplyOptions,
-    ) -> CostContext<Result<[u8; 32], Error>> {
+    ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
 
         let merk_wrapped = self
@@ -203,12 +203,12 @@ where
         for (key, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } => {
-                    if batch_apply_options.validate_tree_insertion_does_not_override == true {
+                    if batch_apply_options.validate_tree_insertion_does_not_override {
                         let inserted = cost_return_on_error!(
                             &mut cost,
                             element.insert_if_not_exists(&mut merk, key.as_slice())
                         );
-                        if inserted == false {
+                        if !inserted {
                             return Err(Error::InvalidBatchOperation(
                                 "attempting to overwrite a tree",
                             ))
@@ -234,7 +234,7 @@ where
 }
 
 impl TreeCache for TreeCacheKnownPaths {
-    fn insert(&mut self, op: &GroveDbOp) -> CostContext<Result<(), Error>> {
+    fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
         self.paths.insert(inserted_path);
@@ -245,13 +245,13 @@ impl TreeCache for TreeCacheKnownPaths {
 
     fn execute_ops_on_path(
         &mut self,
-        path: &Vec<Vec<u8>>,
+        path: &[Vec<u8>],
         ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
         _batch_apply_options: &BatchApplyOptions,
-    ) -> CostContext<Result<[u8; 32], Error>> {
+    ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
 
-        if self.paths.remove(path) == false {
+        if !self.paths.remove(path) {
             // Then we have to get the tree
             let path_slices = path.iter().map(|k| k.as_slice()).collect::<Vec<&[u8]>>();
             cost.add_worst_case_get_merk(path_slices);
@@ -263,10 +263,12 @@ impl TreeCache for TreeCacheKnownPaths {
     }
 }
 
+///                          LEVEL           PATH                   KEY      OP
+type OpsByLevelPath = IntMap<usize, BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>>>;
+
 struct BatchStructure<C> {
     /// Operations by level path
-    ///                       LEVEL           PATH                   KEY      OP
-    ops_by_level_path: IntMap<usize, BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>>>,
+    ops_by_level_path: OpsByLevelPath,
     /// Merk trees
     merk_tree_cache: C,
     /// Last level
@@ -305,12 +307,10 @@ where
     fn from_ops(
         ops: Vec<GroveDbOp>,
         mut merk_tree_cache: C,
-    ) -> CostContext<Result<BatchStructure<C>, Error>> {
+    ) -> CostResult<BatchStructure<C>, Error> {
         let cost = OperationCost::default();
 
-        let mut ops_by_level_path: IntMap<usize, BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>>> =
-            IntMap::default();
-
+        let mut ops_by_level_path: OpsByLevelPath = IntMap::default();
         let mut current_last_level: usize = 0;
 
         for op in ops.into_iter() {
@@ -373,7 +373,7 @@ impl GroveDb {
         batch_structure: BatchStructure<C>,
         temp_root_leaves: &mut BTreeMap<Vec<u8>, usize>,
         batch_apply_options: Option<BatchApplyOptions>,
-    ) -> CostContext<Result<(), Error>> {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let BatchStructure {
             mut ops_by_level_path,
@@ -496,8 +496,8 @@ impl GroveDb {
         ops: Vec<GroveDbOp>,
         temp_root_leaves: &mut BTreeMap<Vec<u8>, usize>,
         batch_apply_options: Option<BatchApplyOptions>,
-        get_merk_fn: impl Fn(&[Vec<u8>]) -> CostContext<Result<Merk<S>, Error>>,
-    ) -> CostContext<Result<(), Error>> {
+        get_merk_fn: impl Fn(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
             &mut cost,
@@ -519,14 +519,14 @@ impl GroveDb {
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
         transaction: TransactionArg,
-    ) -> CostContext<Result<(), Error>> {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         // Helper function to store updated root leaves
         fn save_root_leaves<'db, S>(
             storage: S,
             temp_root_leaves: &BTreeMap<Vec<u8>, usize>,
-        ) -> CostContext<Result<(), Error>>
+        ) -> CostResult<(), Error>
         where
             S: StorageContext<'db>,
             Error: From<<S as storage::StorageContext<'db>>::Error>,
@@ -632,7 +632,7 @@ impl GroveDb {
         &self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
-    ) -> CostContext<Result<(), Error>> {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         if ops.is_empty() {
