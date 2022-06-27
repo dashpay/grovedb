@@ -14,7 +14,18 @@ use crate::{
 };
 
 impl GroveDb {
-    pub fn prove(&self, query: &PathQuery) -> CostContext<Result<Vec<u8>, Error>> {
+    pub fn prove_query_many(&self, query: Vec<&PathQuery>) -> CostContext<Result<Vec<u8>, Error>> {
+        let mut cost = OperationCost::default();
+
+        if query.len() > 1 {
+            let query = cost_return_on_error!(&mut cost, PathQuery::merge(query));
+            self.prove_query(&query)
+        } else {
+            self.prove_query(query[0])
+        }
+    }
+
+    pub fn prove_query(&self, query: &PathQuery) -> CostContext<Result<Vec<u8>, Error>> {
         let mut cost = OperationCost::default();
 
         // TODO: should it be possible to generate proofs for tree items (currently yes)
@@ -23,10 +34,13 @@ impl GroveDb {
         let mut offset: Option<u16> = query.query.offset;
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
+        // TODO: get rid of this error once root tree is also of type merk
         if path_slices.len() < 1 {
             return Err(Error::InvalidPath("can't generate proof for empty path"))
                 .wrap_with_cost(cost);
         }
+
+        // TODO: should prove that path does not exist, rather than returning an error
         cost_return_on_error!(
             &mut cost,
             self.check_subtree_exists_path_not_found(path_slices.clone(), None)

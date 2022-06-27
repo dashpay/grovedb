@@ -1,10 +1,12 @@
 pub mod batch;
 mod operations;
+mod query;
 mod subtree;
 #[cfg(test)]
 mod tests;
 mod util;
 mod visualize;
+
 use std::{collections::BTreeMap, path::Path};
 
 use costs::{
@@ -12,6 +14,7 @@ use costs::{
 };
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
+pub use query::{PathQuery, SizedQuery};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
@@ -37,6 +40,8 @@ pub enum Error {
     InternalError(&'static str),
     #[error("invalid proof: {0}")]
     InvalidProof(&'static str),
+    #[error("invalid input: {0}")]
+    InvalidInput(&'static str),
 
     // Path errors
 
@@ -73,45 +78,6 @@ pub enum Error {
     // Support errors
     #[error("not supported: {0}")]
     NotSupported(&'static str),
-}
-
-#[derive(Debug, Clone)]
-pub struct PathQuery {
-    // TODO: Make generic over path type
-    pub path: Vec<Vec<u8>>,
-    pub query: SizedQuery,
-}
-
-// If a subquery exists :
-// limit should be applied to the elements returned by the subquery
-// offset should be applied to the first item that will subqueried (first in the
-// case of a range)
-#[derive(Debug, Clone)]
-pub struct SizedQuery {
-    pub query: Query,
-    pub limit: Option<u16>,
-    pub offset: Option<u16>,
-}
-
-impl SizedQuery {
-    pub const fn new(query: Query, limit: Option<u16>, offset: Option<u16>) -> Self {
-        Self {
-            query,
-            limit,
-            offset,
-        }
-    }
-}
-
-impl PathQuery {
-    pub const fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> Self {
-        Self { path, query }
-    }
-
-    pub const fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> Self {
-        let query = SizedQuery::new(query, None, None);
-        Self { path, query }
-    }
 }
 
 pub struct GroveDb {

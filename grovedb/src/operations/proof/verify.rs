@@ -1,3 +1,6 @@
+use std::path::Path;
+
+use costs::{cost_return_on_error, OperationCost};
 use merk::{proofs::Query, Hash};
 use rs_merkle::{algorithms::Sha256, MerkleProof};
 
@@ -7,7 +10,19 @@ use crate::{
 };
 
 impl GroveDb {
-    pub fn execute_proof(
+    pub fn verify_query_many(
+        proof: &[u8],
+        query: Vec<&PathQuery>,
+    ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
+        if query.len() > 1 {
+            let query = PathQuery::merge(query).unwrap()?;
+            GroveDb::verify_query(proof, &query)
+        } else {
+            GroveDb::verify_query(proof, query[0])
+        }
+    }
+
+    pub fn verify_query(
         proof: &[u8],
         query: &PathQuery,
     ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
@@ -36,6 +51,7 @@ impl ProofVerifier {
         let mut proof_reader = ProofReader::new(proof);
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
+        // TODO: get rid of this error once root tree is also of type merk
         if path_slices.len() < 1 {
             return Err(Error::InvalidPath("can't verify proof for empty path"));
         }

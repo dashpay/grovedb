@@ -621,7 +621,7 @@ impl GroveDbWrapper {
 
         db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let result = grove_db
-                .get_path_query(
+                .query(
                     &path_query,
                     using_transaction.then(|| transaction).flatten(),
                 )
