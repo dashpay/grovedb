@@ -130,7 +130,7 @@ impl GroveDb {
                         root.map(|r| {
                             Ok(true).wrap_with_cost(OperationCost {
                                 seek_count: 1,
-                                loaded_bytes: r.len(),
+                                loaded_bytes: r.len() as u32,
                                 ..Default::default()
                             })
                         })
@@ -151,7 +151,7 @@ impl GroveDb {
                         root.map(|r| {
                             Ok(true).wrap_with_cost(OperationCost {
                                 seek_count: 1,
-                                loaded_bytes: r.len(),
+                                loaded_bytes: r.len() as u32,
                                 ..Default::default()
                             })
                         })
@@ -345,5 +345,25 @@ impl GroveDb {
             transaction,
             Error::InvalidPath("subtree doesn't exist"),
         )
+    }
+
+    /// Does tree element exist without following references
+    pub fn worst_case_for_has_raw<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+    ) -> CostContext<Result<bool, Error>>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+
+        // First we get the merk tree
+        cost.add_worst_case_get_merk(path);
+        cost.add_worst_case_merk_has_element(key);
+
+        // In the worst case, there will not be an error, but the item will not be found
+        Ok(false).wrap_with_cost(cost)
     }
 }

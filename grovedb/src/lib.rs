@@ -1,3 +1,5 @@
+extern crate core;
+
 pub mod batch;
 mod operations;
 mod query;
@@ -130,7 +132,7 @@ impl GroveDb {
                 .get_meta(ROOT_LEAFS_SERIALIZED_KEY)
                 .map_err(|e| e.into())
         ) {
-            cost.loaded_bytes += root_leaf_keys_serialized.len();
+            cost.loaded_bytes += root_leaf_keys_serialized.len() as u32;
             cost_return_on_error_no_add!(
                 &cost,
                 bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {

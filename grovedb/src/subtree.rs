@@ -491,7 +491,7 @@ impl Element {
                         raw_decode(iter.value().expect("if key exists then value should too"))
                     );
                     let key = iter.key().expect("key should exist");
-                    cost.loaded_bytes += key.len();
+                    cost.loaded_bytes += key.len() as u32;
                     let (subquery_key, subquery) =
                         Self::subquery_paths_for_sized_query(sized_query, key);
                     cost_return_on_error!(
@@ -748,7 +748,7 @@ impl<I: RawIterator> ElementsIterator<I> {
 
         Ok(if self.raw_iter.valid() {
             if let Some((key, value)) = self.raw_iter.key().zip(self.raw_iter.value()) {
-                cost.loaded_bytes += key.len() + value.len();
+                cost.loaded_bytes += key.len() as u32 + value.len() as u32;
 
                 let element = cost_return_on_error_no_add!(&cost, raw_decode(value));
                 let key_vec = key.to_vec();

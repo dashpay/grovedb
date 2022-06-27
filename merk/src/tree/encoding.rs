@@ -22,7 +22,7 @@ impl Tree {
         };
         let tree_bytes: Result<_, Error> = storage.get(&key).map_err(|e| e.into());
         if let Ok(Some(bytes)) = &tree_bytes {
-            cost.loaded_bytes = bytes.len();
+            cost.loaded_bytes = bytes.len() as u32;
         }
         let tree = tree_bytes.and_then(|raw_opt| raw_opt.map(|x| Tree::decode_raw(&x)).transpose());
 

@@ -131,7 +131,8 @@ impl GroveDb {
                     .put_meta(ROOT_LEAFS_SERIALIZED_KEY, &value)
                     .map_err(|e| e.into())
             );
-            cost.storage_written_bytes += ROOT_LEAFS_SERIALIZED_KEY.len() + value.len();
+            cost.storage_written_bytes +=
+                ROOT_LEAFS_SERIALIZED_KEY.len() as u32 + value.len() as u32;
         });
 
         // Persist root leaf as a regular subtree
@@ -140,7 +141,7 @@ impl GroveDb {
                 &cost,
                 storage.put_root(ROOT_KEY_KEY, key).map_err(|e| e.into())
             );
-            cost.storage_written_bytes += ROOT_KEY_KEY.len() + key.len()
+            cost.storage_written_bytes += ROOT_KEY_KEY.len() as u32 + key.len() as u32
         });
 
         Ok(()).wrap_with_cost(cost)
