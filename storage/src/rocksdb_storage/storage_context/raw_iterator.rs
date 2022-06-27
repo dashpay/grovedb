@@ -3,7 +3,7 @@ use rocksdb::DBRawIteratorWithThreadMode;
 
 use super::make_prefixed_key;
 use crate::{
-    rocksdb_storage::storage_context::{Db, Tx},
+    rocksdb_storage::storage::{Db, Tx},
     RawIterator,
 };
 

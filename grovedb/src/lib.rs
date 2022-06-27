@@ -1,32 +1,34 @@
+extern crate core;
+
+pub mod batch;
 mod operations;
+mod query;
 mod subtree;
 #[cfg(test)]
 mod tests;
 mod util;
-#[cfg(feature = "visualize")]
 mod visualize;
-use std::{
-    collections::{BTreeMap, HashMap},
-    path::Path,
-};
 
+use std::{collections::BTreeMap, path::Path};
+
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
+pub use query::{PathQuery, SizedQuery};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
-use serde::{Deserialize, Serialize};
 pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
     Storage, StorageContext,
 };
-pub use subtree::Element;
-#[cfg(feature = "visualize")]
-pub use visualize::{visualize_stderr, visualize_stdout, Drawer, Visualize};
+pub use subtree::{Element, ElementFlags};
 
 use crate::util::{merk_optional_tx, meta_storage_context_optional_tx};
 
 /// A key to store serialized data about subtree prefixes to restore HADS
 /// structure
-/// A key to store serialized data about root tree leafs keys and order
+/// A key to store serialized data about root tree leaves keys and order
 const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
 
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +42,8 @@ pub enum Error {
     InternalError(&'static str),
     #[error("invalid proof: {0}")]
     InvalidProof(&'static str),
+    #[error("invalid input: {0}")]
+    InvalidInput(&'static str),
 
     // Path errors
 
@@ -66,53 +70,16 @@ pub enum Error {
     StorageError(#[from] rocksdb_storage::Error),
     #[error("data corruption error: {0}")]
     CorruptedData(String),
-}
 
-#[derive(Debug)]
-pub struct PathQuery {
-    // TODO: Make generic over path type
-    path: Vec<Vec<u8>>,
-    query: SizedQuery,
-}
+    #[error("corrupted code execution error: {0}")]
+    CorruptedCodeExecution(&'static str),
 
-// If a subquery exists :
-// limit should be applied to the elements returned by the subquery
-// offset should be applied to the first item that will subqueried (first in the
-// case of a range)
-#[derive(Debug)]
-pub struct SizedQuery {
-    query: Query,
-    limit: Option<u16>,
-    offset: Option<u16>,
-}
+    #[error("invalid batch operation error: {0}")]
+    InvalidBatchOperation(&'static str),
 
-impl SizedQuery {
-    pub const fn new(query: Query, limit: Option<u16>, offset: Option<u16>) -> Self {
-        Self {
-            query,
-            limit,
-            offset,
-        }
-    }
-}
-
-impl PathQuery {
-    pub const fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> Self {
-        Self { path, query }
-    }
-
-    pub const fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> Self {
-        let query = SizedQuery::new(query, None, None);
-        Self { path, query }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Proof {
-    query_paths: Vec<Vec<Vec<u8>>>,
-    proofs: HashMap<Vec<u8>, Vec<u8>>,
-    root_proof: Vec<u8>,
-    root_leaf_keys: HashMap<Vec<u8>, usize>,
+    // Support errors
+    #[error("not supported: {0}")]
+    NotSupported(&'static str),
 }
 
 pub struct GroveDb {
@@ -140,33 +107,45 @@ impl GroveDb {
 
     /// Returns root hash of GroveDb.
     /// Will be `None` if GroveDb is empty.
-    pub fn root_hash(&self, transaction: TransactionArg) -> Result<Option<[u8; 32]>, Error> {
-        Ok(Self::get_root_tree_internal(&self.db, transaction)?.root())
+    pub fn root_hash(&self, transaction: TransactionArg) -> CostResult<Option<[u8; 32]>, Error> {
+        Self::get_root_tree_internal(&self.db, transaction).map_ok(|x| x.root())
     }
 
-    fn get_root_leaf_keys_internal<'db, 'ctx, S>(
+    fn get_root_leaf_keys_internal<'db, S>(
         meta_storage: &S,
-    ) -> Result<BTreeMap<Vec<u8>, usize>, Error>
+    ) -> CostResult<BTreeMap<Vec<u8>, usize>, Error>
     where
-        S: StorageContext<'db, 'ctx>,
-        Error: From<<S as StorageContext<'db, 'ctx>>::Error>,
+        S: StorageContext<'db>,
+        Error: From<<S as StorageContext<'db>>::Error>,
     {
-        let root_leaf_keys: BTreeMap<Vec<u8>, usize> = if let Some(root_leaf_keys_serialized) =
-            meta_storage.get_meta(ROOT_LEAFS_SERIALIZED_KEY)?
-        {
-            bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {
-                Error::CorruptedData(String::from("unable to deserialize root leafs"))
-            })?
+        let mut cost = OperationCost {
+            seek_count: 1,
+            ..Default::default()
+        };
+
+        let root_leaf_keys = if let Some(root_leaf_keys_serialized) = cost_return_on_error_no_add!(
+            &cost,
+            meta_storage
+                .get_meta(ROOT_LEAFS_SERIALIZED_KEY)
+                .map_err(|e| e.into())
+        ) {
+            cost.loaded_bytes += root_leaf_keys_serialized.len() as u32;
+            cost_return_on_error_no_add!(
+                &cost,
+                bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {
+                    Error::CorruptedData(String::from("unable to deserialize root leaves"))
+                })
+            )
         } else {
             BTreeMap::new()
         };
-        Ok(root_leaf_keys)
+        Ok(root_leaf_keys).wrap_with_cost(cost)
     }
 
     fn get_root_leaf_keys(
         &self,
         transaction: TransactionArg,
-    ) -> Result<BTreeMap<Vec<u8>, usize>, Error> {
+    ) -> CostResult<BTreeMap<Vec<u8>, usize>, Error> {
         meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
             Self::get_root_leaf_keys_internal(&meta_storage)
         })
@@ -175,30 +154,48 @@ impl GroveDb {
     fn get_root_tree_internal(
         db: &RocksDbStorage,
         transaction: TransactionArg,
-    ) -> Result<MerkleTree<Sha256>, Error> {
+    ) -> CostResult<MerkleTree<Sha256>, Error> {
+        let mut cost = OperationCost::default();
+
         let root_leaf_keys = meta_storage_context_optional_tx!(db, transaction, meta_storage, {
-            Self::get_root_leaf_keys_internal(&meta_storage)?
+            cost_return_on_error!(&mut cost, Self::get_root_leaf_keys_internal(&meta_storage))
         });
 
         let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
         for (subtree_path, root_leaf_idx) in root_leaf_keys {
-            merk_optional_tx!(db, [subtree_path.as_slice()], transaction, subtree, {
-                leaf_hashes[root_leaf_idx] = subtree.root_hash();
-            });
+            merk_optional_tx!(
+                &mut cost,
+                db,
+                [subtree_path.as_slice()],
+                transaction,
+                subtree,
+                {
+                    leaf_hashes[root_leaf_idx] = subtree.root_hash().unwrap_add_cost(&mut cost);
+                }
+            );
         }
-        Ok(MerkleTree::<Sha256>::from_leaves(&leaf_hashes))
+        Ok(MerkleTree::<Sha256>::from_leaves(&leaf_hashes)).wrap_with_cost(cost)
     }
 
-    pub fn get_root_tree(&self, transaction: TransactionArg) -> Result<MerkleTree<Sha256>, Error> {
+    pub fn get_root_tree(
+        &self,
+        transaction: TransactionArg,
+    ) -> CostResult<MerkleTree<Sha256>, Error> {
         Self::get_root_tree_internal(&self.db, transaction)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
-    fn propagate_changes<'p, P>(&self, path: P, transaction: TransactionArg) -> Result<(), Error>
+    fn propagate_changes<'p, P>(
+        &self,
+        path: P,
+        transaction: TransactionArg,
+    ) -> CostResult<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
+        let mut cost = OperationCost::default();
+
         // Go up until only one element in path, which means a key of a root tree
         let mut path_iter = path.into_iter();
 
@@ -207,30 +204,97 @@ impl GroveDb {
                 let subtree_storage = self
                     .db
                     .get_transactional_storage_context(path_iter.clone(), tx);
-                let subtree = Merk::open(subtree_storage)
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                let element = Element::Tree(subtree.root_hash());
+                let subtree = cost_return_on_error!(
+                    &mut cost,
+                    Merk::open(subtree_storage)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                );
                 let key = path_iter.next_back().expect("next element is `Some`");
                 let parent_storage = self
                     .db
                     .get_transactional_storage_context(path_iter.clone(), tx);
-                let mut parent_tree = Merk::open(parent_storage)
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                element.insert(&mut parent_tree, key.as_ref())?;
+                let mut parent_tree = cost_return_on_error!(
+                    &mut cost,
+                    Merk::open(parent_storage)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    Self::update_tree_item_preserve_flag(
+                        &mut parent_tree,
+                        key,
+                        subtree.root_hash().unwrap_add_cost(&mut cost),
+                    )
+                );
             } else {
                 let subtree_storage = self.db.get_storage_context(path_iter.clone());
-                let subtree = Merk::open(subtree_storage)
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                let element = Element::Tree(subtree.root_hash());
+                let subtree = cost_return_on_error!(
+                    &mut cost,
+                    Merk::open(subtree_storage)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                );
                 let key = path_iter.next_back().expect("next element is `Some`");
                 let parent_storage = self.db.get_storage_context(path_iter.clone());
-                let mut parent_tree = Merk::open(parent_storage)
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))?;
-                element.insert(&mut parent_tree, key.as_ref())?;
+                let mut parent_tree = cost_return_on_error!(
+                    &mut cost,
+                    Merk::open(parent_storage)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    Self::update_tree_item_preserve_flag(
+                        &mut parent_tree,
+                        key,
+                        subtree.root_hash().unwrap_add_cost(&mut cost),
+                    )
+                );
             }
         }
 
-        Ok(())
+        Ok(()).wrap_with_cost(cost)
+    }
+
+    pub(crate) fn update_tree_item_preserve_flag<
+        'db,
+        K: AsRef<[u8]> + Copy,
+        S: StorageContext<'db>,
+    >(
+        parent_tree: &mut Merk<S>,
+        key: K,
+        root_hash: [u8; 32],
+    ) -> CostResult<(), Error> {
+        Self::get_element_from_subtree(parent_tree, key).flat_map_ok(|element| {
+            if let Element::Tree(_, flag) = element {
+                let tree = Element::new_tree_with_flags(root_hash, flag);
+                tree.insert(parent_tree, key.as_ref())
+            } else {
+                Err(Error::InvalidPath("can only propagate on tree items"))
+                    .wrap_with_cost(Default::default())
+            }
+        })
+    }
+
+    fn get_element_from_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        subtree: &Merk<S>,
+        key: K,
+    ) -> CostResult<Element, Error> {
+        subtree
+            .get(key.as_ref())
+            .map_err(|_| Error::InvalidPath("can't find subtree in parent during propagation"))
+            .map_ok(|subtree_opt| {
+                subtree_opt.ok_or(Error::InvalidPath(
+                    "can't find subtree in parent during propagation",
+                ))
+            })
+            .flatten()
+            .map_ok(|element_bytes| {
+                Element::deserialize(&element_bytes).map_err(|_| {
+                    Error::CorruptedData(
+                        "failed to deserialized parent during propagation".to_owned(),
+                    )
+                })
+            })
+            .flatten()
     }
 
     pub fn flush(&self) -> Result<(), Error> {
@@ -252,24 +316,26 @@ impl GroveDb {
     ///
     /// let tmp_dir = TempDir::new().unwrap();
     /// let mut db = GroveDb::open(tmp_dir.path())?;
-    /// db.insert([], TEST_LEAF, Element::empty_tree(), None)?;
+    /// db.insert([], TEST_LEAF, Element::empty_tree(), None)
+    ///     .unwrap()?;
     ///
     /// let tx = db.start_transaction();
     ///
     /// let subtree_key = b"subtree_key";
-    /// db.insert([TEST_LEAF], subtree_key, Element::empty_tree(), Some(&tx))?;
+    /// db.insert([TEST_LEAF], subtree_key, Element::empty_tree(), Some(&tx))
+    ///     .unwrap()?;
     ///
     /// // This action exists only inside the transaction for now
-    /// let result = db.get([TEST_LEAF], subtree_key, None);
+    /// let result = db.get([TEST_LEAF], subtree_key, None).unwrap();
     /// assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
     ///
     /// // To access values inside the transaction, transaction needs to be passed to the `db::get`
-    /// let result_with_transaction = db.get([TEST_LEAF], subtree_key, Some(&tx))?;
+    /// let result_with_transaction = db.get([TEST_LEAF], subtree_key, Some(&tx)).unwrap()?;
     /// assert_eq!(result_with_transaction, Element::empty_tree());
     ///
     /// // After transaction is committed, the value from it can be accessed normally.
     /// db.commit_transaction(tx);
-    /// let result = db.get([TEST_LEAF], subtree_key, None)?;
+    /// let result = db.get([TEST_LEAF], subtree_key, None).unwrap()?;
     /// assert_eq!(result, Element::empty_tree());
     ///
     /// # Ok(())
