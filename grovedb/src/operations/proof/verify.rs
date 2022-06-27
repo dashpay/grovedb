@@ -14,13 +14,12 @@ impl GroveDb {
         proof: &[u8],
         query: Vec<&PathQuery>,
     ) -> Result<([u8; 32], Vec<(Vec<u8>, Vec<u8>)>), Error> {
-        let query = if query.len() > 1 {
-            PathQuery::merge(query).unwrap()?
+        if query.len() > 1 {
+            let query = PathQuery::merge(query).unwrap()?;
+            GroveDb::verify_query(proof, &query)
         } else {
-            query[0].clone()
-        };
-
-        GroveDb::verify_query(proof, &query)
+            GroveDb::verify_query(proof, query[0])
+        }
     }
 
     pub fn verify_query(

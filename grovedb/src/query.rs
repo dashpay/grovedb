@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path};
+use std::{collections::BTreeMap, path::Path};
 
 use costs::{CostContext, CostsExt, OperationCost};
 use merk::proofs::{query::QueryItem, Query};
@@ -73,13 +73,13 @@ impl PathQuery {
             .collect::<Vec<_>>();
 
         // we need to group the paths based on their distinct nature
-        let mut path_branches: HashMap<_, Vec<usize>> = HashMap::new();
-        for (path_index, key) in keys_at_level.iter().enumerate() {
+        let mut path_branches: BTreeMap<_, Vec<usize>> = BTreeMap::new();
+        for (path_index, key) in keys_at_level.into_iter().enumerate() {
             if path_branches.contains_key(key) {
                 // get the current element then add the new path index to it
                 let current_path_index_array = path_branches
                     .get_mut(key)
-                    .expect("confirmed hashmap contains key");
+                    .expect("confirmed map contains key");
                 current_path_index_array.push(path_index);
             } else {
                 path_branches.insert(key, vec![path_index]);
@@ -87,13 +87,13 @@ impl PathQuery {
         }
 
         let mut query = Query::new();
-        for (key, value) in path_branches.drain() {
+        for (key, value) in path_branches.into_iter() {
             query.insert_key(key.to_vec());
 
             let mut new_path_queries = vec![];
             let mut queries_for_exhausted_paths = vec![];
-            for a in value {
-                let curr_path_query = path_queries[a];
+            for path_index in value {
+                let curr_path_query = path_queries[path_index];
                 if curr_path_query.path.len() - 1 == start_index {
                     queries_for_exhausted_paths.push(&curr_path_query.query.query);
                 } else {

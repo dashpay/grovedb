@@ -17,14 +17,12 @@ impl GroveDb {
     pub fn prove_query_many(&self, query: Vec<&PathQuery>) -> CostContext<Result<Vec<u8>, Error>> {
         let mut cost = OperationCost::default();
 
-        let query = if query.len() > 1 {
-            cost_return_on_error!(&mut cost, PathQuery::merge(query))
+        if query.len() > 1 {
+            let query = cost_return_on_error!(&mut cost, PathQuery::merge(query));
+            self.prove_query(&query)
         } else {
-            query[0].clone()
-        };
-        let query = &query;
-
-        self.prove_query(&query)
+            self.prove_query(query[0])
+        }
     }
 
     pub fn prove_query(&self, query: &PathQuery) -> CostContext<Result<Vec<u8>, Error>> {
