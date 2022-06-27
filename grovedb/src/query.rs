@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 
 use costs::{CostContext, CostsExt, OperationCost};
 use merk::proofs::{query::QueryItem, Query};
@@ -40,7 +40,7 @@ impl PathQuery {
     }
 
     pub fn merge(path_queries: Vec<&PathQuery>) -> CostContext<Result<Self, Error>> {
-        let mut cost = OperationCost::default();
+        let cost = OperationCost::default();
 
         // TODO: add constraint checks to prevent invalid inputs
         if path_queries.len() < 2 {
@@ -66,15 +66,14 @@ impl PathQuery {
     }
 
     fn build_query(path_queries: Vec<&PathQuery>, start_index: usize) -> Query {
-        let mut level = start_index;
+        let level = start_index;
         let keys_at_level = path_queries
             .iter()
-            .map(|&path_query| &path_query.path[level])
-            .collect::<Vec<_>>();
+            .map(|&path_query| &path_query.path[level]);
 
         // we need to group the paths based on their distinct nature
         let mut path_branches: BTreeMap<_, Vec<usize>> = BTreeMap::new();
-        for (path_index, key) in keys_at_level.into_iter().enumerate() {
+        for (path_index, key) in keys_at_level.enumerate() {
             if path_branches.contains_key(key) {
                 // get the current element then add the new path index to it
                 let current_path_index_array = path_branches
@@ -111,7 +110,7 @@ impl PathQuery {
         query
     }
 
-    fn get_common_path(path_queries: &Vec<&PathQuery>) -> (Vec<Vec<u8>>, usize, bool) {
+    fn get_common_path(path_queries: &[&PathQuery]) -> (Vec<Vec<u8>>, usize, bool) {
         let min_path_length = path_queries
             .iter()
             .map(|path_query| path_query.path.len())
@@ -145,10 +144,10 @@ impl PathQuery {
 
 #[cfg(test)]
 mod tests {
-    use merk::proofs::{query::QueryItem, Query};
+    use merk::proofs::Query;
 
     use crate::{
-        tests::{make_deep_tree, ANOTHER_TEST_LEAF, TEST_LEAF},
+        tests::{make_deep_tree, TEST_LEAF},
         Element, GroveDb, PathQuery,
     };
 

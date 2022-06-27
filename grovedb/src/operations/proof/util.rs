@@ -6,21 +6,21 @@ pub const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
 
 #[derive(Debug, PartialEq)]
 pub enum ProofType {
-    MerkProof,
-    SizedMerkProof,
-    RootProof,
-    EmptyTreeProof,
-    InvalidProof,
+    Merk,
+    SizedMerk,
+    Root,
+    EmptyTree,
+    Invalid,
 }
 
 impl From<ProofType> for u8 {
     fn from(proof_type: ProofType) -> Self {
         match proof_type {
-            ProofType::MerkProof => 0x01,
-            ProofType::SizedMerkProof => 0x02,
-            ProofType::RootProof => 0x03,
-            ProofType::EmptyTreeProof => 0x04,
-            ProofType::InvalidProof => 0x10,
+            ProofType::Merk => 0x01,
+            ProofType::SizedMerk => 0x02,
+            ProofType::Root => 0x03,
+            ProofType::EmptyTree => 0x04,
+            ProofType::Invalid => 0x10,
         }
     }
 }
@@ -28,11 +28,11 @@ impl From<ProofType> for u8 {
 impl From<u8> for ProofType {
     fn from(val: u8) -> Self {
         match val {
-            0x01 => ProofType::MerkProof,
-            0x02 => ProofType::SizedMerkProof,
-            0x03 => ProofType::RootProof,
-            0x04 => ProofType::EmptyTreeProof,
-            _ => ProofType::InvalidProof,
+            0x01 => ProofType::Merk,
+            0x02 => ProofType::SizedMerk,
+            0x03 => ProofType::Root,
+            0x04 => ProofType::EmptyTree,
+            _ => ProofType::Invalid,
         }
     }
 }
@@ -83,11 +83,11 @@ impl<'a> ProofReader<'a> {
 
         let proof_type: ProofType = data_type[0].into();
 
-        if proof_type == ProofType::EmptyTreeProof {
+        if proof_type == ProofType::EmptyTree {
             return Ok((proof_type, vec![]));
         }
 
-        let mut proof_length = [0; 8 as usize];
+        let mut proof_length = [0; 8_usize];
         self.proof_data
             .read(&mut proof_length)
             .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;

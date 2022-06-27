@@ -7,6 +7,9 @@ use Op::*;
 use super::{Fetch, Link, Tree, Walker};
 use crate::tree::hash::value_hash;
 
+/// Type alias to add more sense to function signatures.
+type DeletedKeys = LinkedList<Vec<u8>>;
+
 /// An operation to be applied to a key in the store.
 #[derive(PartialEq)]
 pub enum Op {
@@ -59,7 +62,7 @@ where
         maybe_tree: Option<Self>,
         batch: &MerkBatch<K>,
         source: S,
-    ) -> CostContext<Result<(Option<Tree>, LinkedList<Vec<u8>>)>> {
+    ) -> CostContext<Result<(Option<Tree>, DeletedKeys)>> {
         let mut cost = OperationCost::default();
 
         let (maybe_walker, deleted_keys) = if batch.is_empty() {
@@ -142,7 +145,7 @@ where
     fn apply<K: AsRef<[u8]>>(
         self,
         batch: &MerkBatch<K>,
-    ) -> CostContext<Result<(Option<Self>, LinkedList<Vec<u8>>)>> {
+    ) -> CostContext<Result<(Option<Self>, DeletedKeys)>> {
         let mut cost = OperationCost::default();
 
         // binary search to see if this node's key is in the batch, and to split
@@ -156,7 +159,7 @@ where
                 PutReference(value, referenced_value) => self
                     .with_value_and_value_hash(
                         value.to_vec(),
-                        value_hash(&referenced_value).unwrap_add_cost(&mut cost),
+                        value_hash(referenced_value).unwrap_add_cost(&mut cost),
                     )
                     .unwrap_add_cost(&mut cost),
                 Delete => {
@@ -208,7 +211,7 @@ where
         batch: &MerkBatch<K>,
         mid: usize,
         exclusive: bool,
-    ) -> CostContext<Result<(Option<Self>, LinkedList<Vec<u8>>)>> {
+    ) -> CostContext<Result<(Option<Self>, DeletedKeys)>> {
         let mut cost = OperationCost::default();
 
         let left_batch = &batch[..mid];

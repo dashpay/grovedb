@@ -167,25 +167,25 @@ impl<T> CostContext<T> {
     }
 }
 
+/// Type alias for `Result` wrapped into `CostContext`.
+pub type CostResult<T, E> = CostContext<Result<T, E>>;
+
 /// Combinators to use with `Result` wrapped in `CostContext`.
-impl<T, E> CostContext<Result<T, E>> {
+impl<T, E> CostResult<T, E> {
     /// Applies function to wrapped value in case of `Ok` keeping cost the same
     /// as before.
-    pub fn map_ok<B>(self, f: impl FnOnce(T) -> B) -> CostContext<Result<B, E>> {
+    pub fn map_ok<B>(self, f: impl FnOnce(T) -> B) -> CostResult<B, E> {
         self.map(|result| result.map(f))
     }
 
     /// Applies function to wrapped value in case of `Err` keeping cost the same
     /// as before.
-    pub fn map_err<B>(self, f: impl FnOnce(E) -> B) -> CostContext<Result<T, B>> {
-        self.map(|result| result.map_err(|e| f(e)))
+    pub fn map_err<B>(self, f: impl FnOnce(E) -> B) -> CostResult<T, B> {
+        self.map(|result| result.map_err(f))
     }
 
     /// Applies function to wrapped result in case of `Ok` adding costs.
-    pub fn flat_map_ok<B>(
-        self,
-        f: impl FnOnce(T) -> CostContext<Result<B, E>>,
-    ) -> CostContext<Result<B, E>> {
+    pub fn flat_map_ok<B>(self, f: impl FnOnce(T) -> CostResult<B, E>) -> CostResult<B, E> {
         let mut cost = self.cost;
         let result = match self.value {
             Ok(x) => f(x).unwrap_add_cost(&mut cost),
@@ -198,9 +198,9 @@ impl<T, E> CostContext<Result<T, E>> {
     }
 }
 
-impl<T, E> CostContext<Result<Result<T, E>, E>> {
+impl<T, E> CostResult<Result<T, E>, E> {
     /// Flattens nested errors inside `CostContext`
-    pub fn flatten(self) -> CostContext<Result<T, E>> {
+    pub fn flatten(self) -> CostResult<T, E> {
         self.map(|value| match value {
             Err(e) => Err(e),
             Ok(Err(e)) => Err(e),
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn test_map_ok() {
-        let initial: CostContext<Result<usize, ()>> = CostContext {
+        let initial: CostResult<usize, ()> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 loaded_bytes: 3,
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_map_ok_err() {
-        let initial: CostContext<Result<usize, ()>> = CostContext {
+        let initial: CostResult<usize, ()> = CostContext {
             value: Err(()),
             cost: OperationCost {
                 loaded_bytes: 3,
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_flat_map_ok() {
-        let initial: CostContext<Result<usize, ()>> = CostContext {
+        let initial: CostResult<usize, ()> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 loaded_bytes: 3,
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn test_flat_map_err_first() {
-        let initial: CostContext<Result<usize, ()>> = CostContext {
+        let initial: CostResult<usize, ()> = CostContext {
             value: Err(()),
             cost: OperationCost {
                 loaded_bytes: 3,
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_flat_map_err_second() {
-        let initial: CostContext<Result<usize, ()>> = CostContext {
+        let initial: CostResult<usize, ()> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 loaded_bytes: 3,
@@ -460,7 +460,7 @@ mod tests {
             },
         };
         let mut executed = false;
-        let mapped: CostContext<Result<usize, ()>> = initial.flat_map_ok(|_| {
+        let mapped: CostResult<usize, ()> = initial.flat_map_ok(|_| {
             executed = true;
             CostContext {
                 value: Err(()),
@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn test_flatten_nested_errors() {
-        let initial: CostContext<Result<usize, &str>> = CostContext {
+        let initial: CostResult<usize, &str> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 loaded_bytes: 3,
@@ -500,26 +500,24 @@ mod tests {
         let ok = initial.map_ok(|x| Ok(x + 25));
         assert_eq!(ok.flatten().unwrap(), Ok(100));
 
-        let initial: CostContext<Result<usize, &str>> = CostContext {
+        let initial: CostResult<usize, &str> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 loaded_bytes: 3,
                 ..Default::default()
             },
         };
-        let error_inner: CostContext<Result<Result<usize, &str>, &str>> =
-            initial.map_ok(|_| Err("latter"));
+        let error_inner: CostResult<Result<usize, &str>, &str> = initial.map_ok(|_| Err("latter"));
         assert_eq!(error_inner.flatten().unwrap(), Err("latter"));
 
-        let initial: CostContext<Result<usize, &str>> = CostContext {
+        let initial: CostResult<usize, &str> = CostContext {
             value: Err("inner"),
             cost: OperationCost {
                 loaded_bytes: 3,
                 ..Default::default()
             },
         };
-        let error_inner: CostContext<Result<Result<usize, &str>, &str>> =
-            initial.map_ok(|x| Ok(x + 25));
+        let error_inner: CostResult<Result<usize, &str>, &str> = initial.map_ok(|x| Ok(x + 25));
         assert_eq!(error_inner.flatten().unwrap(), Err("inner"));
     }
 
@@ -547,7 +545,7 @@ mod tests {
 
     #[test]
     fn test_map_err() {
-        let initial: CostContext<Result<usize, ()>> = CostContext {
+        let initial: CostResult<usize, ()> = CostContext {
             value: Err(()),
             cost: OperationCost {
                 loaded_bytes: 3,

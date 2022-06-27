@@ -1,4 +1,4 @@
-use costs::{cost_return_on_error_no_add, CostContext, CostsExt, OperationCost};
+use costs::{cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
 use storage::StorageContext;
 
 use crate::{util::meta_storage_context_optional_tx, Error, GroveDb, TransactionArg};
@@ -9,7 +9,7 @@ impl GroveDb {
         key: K,
         value: &[u8],
         transaction: TransactionArg,
-    ) -> CostContext<Result<(), Error>> {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         meta_storage_context_optional_tx!(self.db, transaction, aux_storage, {
@@ -30,7 +30,7 @@ impl GroveDb {
         &self,
         key: K,
         transaction: TransactionArg,
-    ) -> CostContext<Result<(), Error>> {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         meta_storage_context_optional_tx!(self.db, transaction, aux_storage, {
@@ -49,7 +49,7 @@ impl GroveDb {
         &self,
         key: K,
         transaction: TransactionArg,
-    ) -> CostContext<Result<Option<Vec<u8>>, Error>> {
+    ) -> CostResult<Option<Vec<u8>>, Error> {
         let mut cost = OperationCost::default();
 
         meta_storage_context_optional_tx!(self.db, transaction, aux_storage, {

@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
+use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use storage::StorageContext;
 
 use crate::{
@@ -16,7 +16,7 @@ impl GroveDb {
         key: &'p [u8],
         stop_path_height: Option<u16>,
         transaction: TransactionArg,
-    ) -> CostContext<Result<u16, Error>>
+    ) -> CostResult<u16, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -56,14 +56,13 @@ impl GroveDb {
         key: &'p [u8],
         stop_path_height: Option<u16>,
         validate: bool,
-        current_batch_operations: &Vec<GroveDbOp>,
+        mut current_batch_operations: Vec<GroveDbOp>,
         transaction: TransactionArg,
-    ) -> CostContext<Result<Option<Vec<GroveDbOp>>, Error>>
+    ) -> CostResult<Option<Vec<GroveDbOp>>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
-        let mut current_batch_operations = current_batch_operations.clone();
         self.add_delete_operations_for_delete_up_tree_while_empty(
             path,
             key,
@@ -82,7 +81,7 @@ impl GroveDb {
         validate: bool,
         current_batch_operations: &mut Vec<GroveDbOp>,
         transaction: TransactionArg,
-    ) -> CostContext<Result<Option<Vec<GroveDbOp>>, Error>>
+    ) -> CostResult<Option<Vec<GroveDbOp>>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -140,7 +139,7 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         transaction: TransactionArg,
-    ) -> CostContext<Result<(), Error>>
+    ) -> CostResult<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -154,7 +153,7 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         transaction: TransactionArg,
-    ) -> CostContext<Result<bool, Error>>
+    ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -168,9 +167,9 @@ impl GroveDb {
         key: &'p [u8],
         only_delete_tree_if_empty: bool,
         validate: bool,
-        current_batch_operations: &Vec<GroveDbOp>,
+        current_batch_operations: &[GroveDbOp],
         transaction: TransactionArg,
-    ) -> CostContext<Result<Option<GroveDbOp>, Error>>
+    ) -> CostResult<Option<GroveDbOp>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -202,7 +201,8 @@ impl GroveDb {
                     .clone()
                     .map(|x| x.to_vec())
                     .collect::<Vec<Vec<u8>>>();
-                let subtrees_paths = cost_return_on_error!(
+                // TODO: may be a bug
+                let _subtrees_paths = cost_return_on_error!(
                     &mut cost,
                     self.find_subtrees(subtree_merk_path.clone(), transaction)
                 );
@@ -237,17 +237,15 @@ impl GroveDb {
 
                 let result = if only_delete_tree_if_empty && !is_empty {
                     Ok(None)
+                } else if is_empty {
+                    Ok(Some(GroveDbOp::delete(
+                        path_iter.map(|x| x.to_vec()).collect(),
+                        key.to_vec(),
+                    )))
                 } else {
-                    if is_empty {
-                        Ok(Some(GroveDbOp::delete(
-                            path_iter.map(|x| x.to_vec()).collect(),
-                            key.to_vec(),
-                        )))
-                    } else {
-                        Err(Error::NotSupported(
-                            "deletion operation for non empty tree not currently supported",
-                        ))
-                    }
+                    Err(Error::NotSupported(
+                        "deletion operation for non empty tree not currently supported",
+                    ))
                 };
                 result.wrap_with_cost(cost)
             } else {
@@ -266,7 +264,7 @@ impl GroveDb {
         key: &'p [u8],
         only_delete_tree_if_empty: bool,
         transaction: TransactionArg,
-    ) -> CostContext<Result<bool, Error>>
+    ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -370,7 +368,7 @@ impl GroveDb {
         &self,
         path: P,
         transaction: TransactionArg,
-    ) -> CostContext<Result<Vec<Vec<Vec<u8>>>, Error>>
+    ) -> CostResult<Vec<Vec<Vec<u8>>>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
     {
@@ -384,8 +382,7 @@ impl GroveDb {
         // slice which points into storage internals will remain valid if raw iterator
         // got altered so why that reference should be exclusive;
 
-        let mut queue: Vec<Vec<Vec<u8>>> =
-            vec![path.into_iter().map(|x| x.as_ref().to_vec()).collect()];
+        let mut queue: Vec<Vec<Vec<u8>>> = vec![path.into_iter().map(|x| x.to_vec()).collect()];
         let mut result: Vec<Vec<Vec<u8>>> = queue.clone();
 
         while let Some(q) = queue.pop() {

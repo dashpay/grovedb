@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use storage::StorageContext;
 
 use crate::{
+    subtree::KeyElementPair,
     util::{merk_optional_tx, meta_storage_context_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
@@ -19,7 +20,7 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         transaction: TransactionArg,
-    ) -> CostContext<Result<Element, Error>>
+    ) -> CostResult<Element, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -38,7 +39,7 @@ impl GroveDb {
         &self,
         mut path: Vec<Vec<u8>>,
         transaction: TransactionArg,
-    ) -> CostContext<Result<Element, Error>> {
+    ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
         let mut hops_left = MAX_REFERENCE_HOPS;
@@ -73,7 +74,7 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         transaction: TransactionArg,
-    ) -> CostContext<Result<Element, Error>>
+    ) -> CostResult<Element, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
@@ -110,7 +111,7 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         transaction: TransactionArg,
-    ) -> CostContext<Result<bool, Error>>
+    ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
@@ -134,10 +135,12 @@ impl GroveDb {
                                 ..Default::default()
                             })
                         })
-                        .unwrap_or(Ok(false).wrap_with_cost(OperationCost {
-                            seek_count: 1,
-                            ..Default::default()
-                        }))
+                        .unwrap_or_else(|| {
+                            Ok(false).wrap_with_cost(OperationCost {
+                                seek_count: 1,
+                                ..Default::default()
+                            })
+                        })
                     })
             })
         } else {
@@ -155,10 +158,12 @@ impl GroveDb {
                                 ..Default::default()
                             })
                         })
-                        .unwrap_or(Ok(false).wrap_with_cost(OperationCost {
-                            seek_count: 1,
-                            ..Default::default()
-                        }))
+                        .unwrap_or_else(|| {
+                            Ok(false).wrap_with_cost(OperationCost {
+                                seek_count: 1,
+                                ..Default::default()
+                            })
+                        })
                     })
             })
         }
@@ -168,7 +173,7 @@ impl GroveDb {
         &self,
         path_queries: &[&PathQuery],
         transaction: TransactionArg,
-    ) -> CostContext<Result<Vec<Vec<u8>>, Error>> {
+    ) -> CostResult<Vec<Vec<u8>>, Error> {
         let mut cost = OperationCost::default();
 
         let elements =
@@ -199,7 +204,7 @@ impl GroveDb {
         &self,
         path_queries: &[&PathQuery],
         transaction: TransactionArg,
-    ) -> CostContext<Result<Vec<(Vec<u8>, Element)>, Error>> {
+    ) -> CostResult<Vec<KeyElementPair>, Error> {
         let mut cost = OperationCost::default();
 
         let query = cost_return_on_error!(&mut cost, PathQuery::merge(path_queries.to_vec()));
@@ -211,7 +216,7 @@ impl GroveDb {
         &self,
         path_query: &PathQuery,
         transaction: TransactionArg,
-    ) -> CostContext<Result<Vec<u8>, Error>> {
+    ) -> CostResult<Vec<u8>, Error> {
         if transaction.is_some() {
             Err(Error::NotSupported(
                 "transactions are not currently supported",
@@ -226,7 +231,7 @@ impl GroveDb {
         &self,
         path_query: &PathQuery,
         transaction: TransactionArg,
-    ) -> CostContext<Result<(Vec<Vec<u8>>, u16), Error>> {
+    ) -> CostResult<(Vec<Vec<u8>>, u16), Error> {
         let mut cost = OperationCost::default();
 
         let (elements, skipped) =
@@ -264,7 +269,7 @@ impl GroveDb {
         &self,
         path_query: &PathQuery,
         transaction: TransactionArg,
-    ) -> CostContext<Result<(Vec<(Vec<u8>, Element)>, u16), Error>> {
+    ) -> CostResult<(Vec<KeyElementPair>, u16), Error> {
         let path_slices = path_query
             .path
             .iter()
@@ -278,7 +283,7 @@ impl GroveDb {
         path: P,
         transaction: TransactionArg,
         error: Error,
-    ) -> CostContext<Result<(), Error>>
+    ) -> CostResult<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -319,7 +324,7 @@ impl GroveDb {
         &self,
         path: P,
         transaction: TransactionArg,
-    ) -> CostContext<Result<(), Error>>
+    ) -> CostResult<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -335,7 +340,7 @@ impl GroveDb {
         &self,
         path: P,
         transaction: TransactionArg,
-    ) -> CostContext<Result<(), Error>>
+    ) -> CostResult<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -348,11 +353,7 @@ impl GroveDb {
     }
 
     /// Does tree element exist without following references
-    pub fn worst_case_for_has_raw<'p, P>(
-        &self,
-        path: P,
-        key: &'p [u8],
-    ) -> CostContext<Result<bool, Error>>
+    pub fn worst_case_for_has_raw<'p, P>(&self, path: P, key: &'p [u8]) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
