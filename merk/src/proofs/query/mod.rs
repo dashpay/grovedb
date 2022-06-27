@@ -1336,7 +1336,7 @@ pub fn execute_proof(
     .wrap_with_cost(cost)
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct ProofVerificationResult {
     pub result_set: Vec<(Vec<u8>, Vec<u8>)>,
     pub limit: Option<u16>,

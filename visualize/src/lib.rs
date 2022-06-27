@@ -55,7 +55,7 @@ pub struct Drawer<W: Write> {
     write: W,
 }
 
-impl<'a, W: Write> Drawer<W> {
+impl<W: Write> Drawer<W> {
     pub fn new(write: W) -> Self {
         Drawer { level: 0, write }
     }

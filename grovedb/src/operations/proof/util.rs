@@ -4,7 +4,7 @@ use crate::Error;
 
 pub const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ProofType {
     Merk,
     SizedMerk,
