@@ -7,9 +7,8 @@ mod tests;
 
 pub use rocksdb::Error;
 pub use storage_context::{
-    PrefixedRocksDbBatch, PrefixedRocksDbBatchStorageContext,
-    PrefixedRocksDbBatchTransactionContext, PrefixedRocksDbRawIterator,
-    PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
+    PrefixedRocksDbBatch, PrefixedRocksDbRawIterator, PrefixedRocksDbStorageContext,
+    PrefixedRocksDbTransactionContext,
 };
 
 pub use self::storage::RocksDbStorage;

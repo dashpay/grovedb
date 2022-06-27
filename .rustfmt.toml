@@ -7,6 +7,7 @@ error_on_unformatted = true
 format_code_in_doc_comments = true
 format_macro_matchers = true
 format_strings = true
+license_template_path = ""
 imports_granularity = "Crate"
 normalize_comments = true
 normalize_doc_attributes = true

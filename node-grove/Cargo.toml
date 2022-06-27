@@ -13,6 +13,6 @@ crate-type = ["cdylib"]
 grovedb = { path = "../grovedb" }
 
 [dependencies.neon]
-version = "0.10.1"
+version = "0.9"
 default-features = false
 features = ["napi-6", "event-queue-api", "try-catch-api"]

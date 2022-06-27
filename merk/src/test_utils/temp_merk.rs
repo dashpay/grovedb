@@ -22,7 +22,7 @@ impl TempMerk {
     pub fn new() -> Self {
         let storage = Box::leak(Box::new(TempStorage::new()));
         let context = storage.get_storage_context(empty());
-        let merk = Merk::open(context).unwrap().unwrap();
+        let merk = Merk::open(context).unwrap();
         TempMerk { storage, merk }
     }
 }

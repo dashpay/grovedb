@@ -1,10 +1,10 @@
 //! Storage context implementation with a transaction.
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error};
 
-use super::{batch::DummyBatch, make_prefixed_key, PrefixedRocksDbRawIterator};
+use super::{make_prefixed_key, Db, PrefixedRocksDbRawIterator, Tx};
 use crate::{
-    rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
-    BatchOperation, StorageContext,
+    rocksdb_storage::storage::{AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
+    StorageContext,
 };
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
@@ -49,8 +49,11 @@ impl<'db> PrefixedRocksDbTransactionContext<'db> {
     }
 }
 
-impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
-    type Batch = DummyBatch;
+impl<'db, 'ctx> StorageContext<'db, 'ctx> for PrefixedRocksDbTransactionContext<'db>
+where
+    'db: 'ctx,
+{
+    type Batch = &'ctx Self;
     type Error = Error;
     type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Tx<'db>>>;
 
@@ -123,39 +126,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
     }
 
-    fn new_batch(&self) -> Self::Batch {
-        DummyBatch::default()
+    fn new_batch(&'ctx self) -> Self::Batch {
+        self
     }
 
-    fn commit_batch(&self, batch: Self::Batch) -> Result<(), Self::Error> {
-        for op in batch.operations {
-            match op {
-                BatchOperation::Put { key, value } => {
-                    self.put(key, &value)?;
-                }
-                BatchOperation::PutAux { key, value } => {
-                    self.put_aux(key, &value)?;
-                }
-                BatchOperation::PutRoot { key, value } => {
-                    self.put_root(key, &value)?;
-                }
-                BatchOperation::PutMeta { key, value } => {
-                    self.put_meta(key, &value)?;
-                }
-                BatchOperation::Delete { key } => {
-                    self.delete(key)?;
-                }
-                BatchOperation::DeleteAux { key } => {
-                    self.delete_aux(key)?;
-                }
-                BatchOperation::DeleteRoot { key } => {
-                    self.delete_root(key)?;
-                }
-                BatchOperation::DeleteMeta { key } => {
-                    self.delete_meta(key)?;
-                }
-            }
-        }
+    fn commit_batch(&'ctx self, _batch: Self::Batch) -> Result<(), Self::Error> {
         Ok(())
     }
 
