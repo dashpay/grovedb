@@ -1,5 +1,6 @@
 extern crate core;
 
+mod costs;
 pub mod batch;
 mod operations;
 mod query;

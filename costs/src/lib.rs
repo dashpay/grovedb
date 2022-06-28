@@ -3,8 +3,6 @@
 
 use std::ops::{Add, AddAssign};
 
-use storage::rocksdb_storage::RocksDbStorage;
-
 /// Piece of data representing affected computer resources (approximately).
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct OperationCost {
@@ -13,9 +11,9 @@ pub struct OperationCost {
     /// How many bytes were written on hard drive.
     pub storage_written_bytes: u32,
     /// How many bytes were loaded from hard drive.
-    pub storage_loaded_bytes: usize,
+    pub storage_loaded_bytes: u32,
     /// How many bytes were removed on hard drive.
-    pub storage_freed_bytes: usize,
+    pub storage_freed_bytes: u32,
     /// How many times hash was called for bytes (paths, keys, values).
     pub hash_byte_calls: u32,
     /// How many times node hashing was done (for merkelized tree).
@@ -23,75 +21,12 @@ pub struct OperationCost {
 }
 
 impl OperationCost {
-    /// Add worst case for getting a merk tree
-    pub fn add_worst_case_get_merk<'p, P>(&mut self, path: P)
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
-        self.seek_count += 1;
-        self.storage_written_bytes += 0;
-        self.storage_loaded_bytes += 0;
-        self.loaded_bytes += 0;
-        self.hash_byte_calls += RocksDbStorage::build_prefix_hash_count(path) as u32;
-        self.hash_node_calls += 0;
-    }
-
-    /// Add worst case for getting a merk tree
-    pub fn add_worst_case_merk_has_element(&mut self, key: &[u8]) {
-        self.seek_count += 1;
-        self.storage_written_bytes += 0;
-        self.storage_loaded_bytes += 0;
-        self.loaded_bytes += key.len() as u32;
-        self.hash_byte_calls += 0;
-        self.hash_node_calls += 0;
-    }
-
-    /// Add worst case for getting a merk tree root hash
-    pub fn add_worst_case_merk_root_hash(&mut self) {
-        self.seek_count += 0;
-        self.storage_written_bytes += 0;
-        self.storage_loaded_bytes += 0;
-        self.loaded_bytes += 0;
-        self.hash_byte_calls += 0;
-        self.hash_node_calls += 0;
-    }
-
-    /// Add worst case for opening a root meta storage
-    pub fn add_worst_case_open_root_meta_storage(&mut self) {
-        self.seek_count += 0;
-        self.storage_written_bytes += 0;
-        self.storage_loaded_bytes += 0;
-        self.loaded_bytes += 0;
-        self.hash_byte_calls += 0;
-        self.hash_node_calls += 0;
-    }
-
-    /// Add worst case for saving the root tree
-    pub fn add_worst_case_save_root_leaves(&mut self) {
-        self.seek_count += 0;
-        self.storage_written_bytes += 0;
-        self.storage_loaded_bytes += 0;
-        self.loaded_bytes += 0;
-        self.hash_byte_calls += 0;
-        self.hash_node_calls += 0;
-    }
-
-    /// Add worst case for loading the root tree
-    pub fn add_worst_case_load_root_leaves(&mut self) {
-        self.seek_count += 0;
-        self.storage_written_bytes += 0;
-        self.storage_loaded_bytes += 0;
-        self.loaded_bytes += 0;
-        self.hash_byte_calls += 0;
-        self.hash_node_calls += 0;
-    }
 }
 
 impl OperationCost {
     /// Helper function to build default `OperationCost` with different
     /// `seek_count`.
-    pub fn with_seek_count(seek_count: usize) -> Self {
+    pub fn with_seek_count(seek_count: u16) -> Self {
         OperationCost {
             seek_count,
             ..Default::default()
@@ -100,7 +35,7 @@ impl OperationCost {
 
     /// Helper function to build default `OperationCost` with different
     /// `storage_written_bytes`.
-    pub fn with_storage_written_bytes(storage_written_bytes: usize) -> Self {
+    pub fn with_storage_written_bytes(storage_written_bytes: u32) -> Self {
         OperationCost {
             storage_written_bytes,
             ..Default::default()
@@ -109,7 +44,7 @@ impl OperationCost {
 
     /// Helper function to build default `OperationCost` with different
     /// `storage_loaded_bytes`.
-    pub fn with_storage_loaded_bytes(storage_loaded_bytes: usize) -> Self {
+    pub fn with_storage_loaded_bytes(storage_loaded_bytes: u32) -> Self {
         OperationCost {
             storage_loaded_bytes,
             ..Default::default()
@@ -118,7 +53,7 @@ impl OperationCost {
 
     /// Helper function to build default `OperationCost` with different
     /// `storage_freed_bytes`.
-    pub fn with_storage_freed_bytes(storage_freed_bytes: usize) -> Self {
+    pub fn with_storage_freed_bytes(storage_freed_bytes: u32) -> Self {
         OperationCost {
             storage_freed_bytes,
             ..Default::default()
@@ -127,7 +62,7 @@ impl OperationCost {
 
     /// Helper function to build default `OperationCost` with different
     /// `hash_byte_calls`.
-    pub fn with_hash_byte_calls(hash_byte_calls: usize) -> Self {
+    pub fn with_hash_byte_calls(hash_byte_calls: u32) -> Self {
         OperationCost {
             hash_byte_calls,
             ..Default::default()
@@ -136,7 +71,7 @@ impl OperationCost {
 
     /// Helper function to build default `OperationCost` with different
     /// `hash_node_calls`.
-    pub fn with_hash_node_calls(hash_node_calls: usize) -> Self {
+    pub fn with_hash_node_calls(hash_node_calls: u16) -> Self {
         OperationCost {
             hash_node_calls,
             ..Default::default()
