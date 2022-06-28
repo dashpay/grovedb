@@ -39,7 +39,6 @@ impl GroveDb {
                 .wrap_with_cost(cost);
         }
 
-        // TODO: should prove that path does not exist, rather than returning an error
         let subtree_exists = self
             .check_subtree_exists_path_not_found(path_slices.clone(), None)
             .unwrap_add_cost(&mut cost);
@@ -50,44 +49,39 @@ impl GroveDb {
                 let (root_key, path_slice) = path_slices
                     .split_first()
                     .expect("confirmed path is not empty above");
-                cost_return_on_error!(&mut cost, self.prove_root_key(&mut proof_result, root_key));
 
+                let mut root_proof = vec![];
+                cost_return_on_error!(&mut cost, self.prove_root_key(&mut root_proof, root_key));
 
-                // proof_type, proof length and proof data
-                // units like this but in reverse
-                // currently, we add them in reverse
-                // we add the proof type first
+                write_to_vec(&mut proof_result, &[ProofType::AbsentPath.into()]);
 
                 let mut current_path: Vec<&[u8]> = vec![root_key];
 
                 let mut split_path = path_slice.split_first();
                 while let Some((key, path_slice)) = split_path {
-                    // if the path slice is empty, that means we have the last key and just prove that absence
+                    // if the path slice is empty, that means we have the last key and just prove
+                    // that absence
                     let subtree = self
                         .open_subtree(current_path.iter().copied())
                         .unwrap()
                         .unwrap();
 
+                    let has_item = Element::get(&subtree, key).unwrap_add_cost(&mut cost);
+
                     let mut next_key_query = Query::new();
                     next_key_query.insert_key(key.to_vec());
-
-                    let mut proof_data = vec![];
-
                     self.generate_and_store_merk_proof(
                         &subtree,
                         &next_key_query,
                         None,
                         None,
                         ProofType::Merk,
-                        &mut proof_data,
+                        &mut proof_result,
                     );
 
-                    // proof result already contains the proof data for the root tree
-                    // we want to add a new proof to the front of it
-                    proof_data.append(&mut proof_result);
-                    proof_result = proof_data;
+                    current_path.push(key);
 
-                    if path_slice.len() == 1 {
+                    if has_item.is_err() || path_slice.len() == 0 {
                         // reached last key
                         break;
                     }
@@ -95,15 +89,10 @@ impl GroveDb {
                     split_path = path_slice.split_first();
                 }
 
-                dbg!(&proof_result);
+                proof_result.append(&mut root_proof);
                 return Ok(proof_result).wrap_with_cost(cost);
             }
         }
-
-        // cost_return_on_error!(
-        //     &mut cost,
-        //     self.check_subtree_exists_path_not_found(path_slices.clone(), None)
-        // );
 
         cost_return_on_error!(
             &mut cost,
