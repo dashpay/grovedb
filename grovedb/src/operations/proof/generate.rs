@@ -81,7 +81,7 @@ impl GroveDb {
 
                     current_path.push(key);
 
-                    if has_item.is_err() || path_slice.len() == 0 {
+                    if has_item.is_err() || path_slice.is_empty() {
                         // reached last key
                         break;
                     }
@@ -265,7 +265,7 @@ impl GroveDb {
     /// a valid path from the root of the db to that point.
     fn prove_path(
         &self,
-        mut proof_result: &mut Vec<u8>,
+        proof_result: &mut Vec<u8>,
         path_slices: Vec<&[u8]>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -274,8 +274,7 @@ impl GroveDb {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             if path_slice.is_empty() {
-                self.prove_root_key(&mut proof_result, &key)
-                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(&mut cost, self.prove_root_key(proof_result, key));
             } else {
                 // generate proofs for the intermediate paths
                 let subtree =
