@@ -54,8 +54,10 @@ impl ProofVerifier {
             return Err(Error::InvalidPath("can't verify proof for empty path"));
         }
 
+        let (proof_type, proof) = proof_reader.read_proof()?;
+
         let mut last_subtree_root_hash =
-            self.execute_subquery_proof(&mut proof_reader, query.clone())?;
+            self.execute_subquery_proof(proof_type, proof, &mut proof_reader, query.clone())?;
 
         // validate the path elements are connected
         self.verify_path_to_root(
@@ -73,11 +75,13 @@ impl ProofVerifier {
 
     fn execute_subquery_proof(
         &mut self,
+        proof_type: ProofType,
+        proof: Vec<u8>,
         proof_reader: &mut ProofReader,
         query: PathQuery,
     ) -> Result<[u8; 32], Error> {
         let last_root_hash: [u8; 32];
-        let (proof_type, proof) = proof_reader.read_proof()?;
+        // let (proof_type, proof) = proof_reader.read_proof()?;
 
         match proof_type {
             ProofType::SizedMerk => {
@@ -175,8 +179,9 @@ impl ProofVerifier {
                             let new_path_query =
                                 PathQuery::new_unsized(vec![], subquery_value.unwrap());
 
+                            let (child_proof_type, child_proof) = proof_reader.read_proof()?;
                             let child_hash =
-                                self.execute_subquery_proof(proof_reader, new_path_query)?;
+                                self.execute_subquery_proof(child_proof_type, child_proof, proof_reader, new_path_query)?;
 
                             if child_hash != expected_root_hash {
                                 return Err(Error::InvalidProof(
