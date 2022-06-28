@@ -41,8 +41,8 @@ impl<'db> PrefixedRocksDbBatch<'db> {
             let value = cost_return_on_error_no_add!(&cost, db.get(key));
             cost.seek_count += 1;
             if let Some(v) = value {
-                cost.storage_loaded_bytes += v.len();
-                self.cost_acc.storage_freed_bytes += v.len();
+                cost.storage_loaded_bytes += v.len() as u32;
+                self.cost_acc.storage_freed_bytes += v.len() as u32;
             }
         }
 
@@ -50,8 +50,8 @@ impl<'db> PrefixedRocksDbBatch<'db> {
             let value = cost_return_on_error_no_add!(&cost, db.get_cf(self.cf_aux, key));
             cost.seek_count += 1;
             if let Some(v) = value {
-                cost.storage_loaded_bytes += v.len();
-                self.cost_acc.storage_freed_bytes += v.len();
+                cost.storage_loaded_bytes += v.len() as u32;
+                self.cost_acc.storage_freed_bytes += v.len() as u32;
             }
         }
 
@@ -59,8 +59,8 @@ impl<'db> PrefixedRocksDbBatch<'db> {
             let value = cost_return_on_error_no_add!(&cost, db.get_cf(self.cf_roots, key));
             cost.seek_count += 1;
             if let Some(v) = value {
-                cost.storage_loaded_bytes += v.len();
-                self.cost_acc.storage_freed_bytes += v.len();
+                cost.storage_loaded_bytes += v.len() as u32;
+                self.cost_acc.storage_freed_bytes += v.len() as u32;
             }
         }
 
@@ -82,7 +82,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
-        self.cost_acc.storage_written_bytes += prefixed_key.len() + value.len();
+        self.cost_acc.storage_written_bytes += prefixed_key.len() as u32 + value.len() as u32;
 
         self.batch.put(prefixed_key, value);
     }
@@ -91,7 +91,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
-        self.cost_acc.storage_written_bytes += prefixed_key.len() + value.len();
+        self.cost_acc.storage_written_bytes += prefixed_key.len() as u32 + value.len() as u32;
 
         self.batch.put_cf(self.cf_aux, prefixed_key, value);
     }
@@ -100,7 +100,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
-        self.cost_acc.storage_written_bytes += prefixed_key.len() + value.len();
+        self.cost_acc.storage_written_bytes += prefixed_key.len() as u32 + value.len() as u32;
 
         self.batch.put_cf(self.cf_roots, prefixed_key, value);
     }

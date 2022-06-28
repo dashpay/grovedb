@@ -64,7 +64,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
 
         let value = if self.valid().unwrap_add_cost(&mut cost) {
             self.raw_iterator.value().map(|v| {
-                cost.storage_loaded_bytes += v.len();
+                cost.storage_loaded_bytes += v.len() as u32;
                 v
             })
         } else {
@@ -81,7 +81,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
             self.raw_iterator.key().map(|k| {
                 // Even if we truncate prefix, loaded cost should be maximum for the whole
                 // function
-                cost.storage_loaded_bytes += k.len();
+                cost.storage_loaded_bytes += k.len() as u32;
                 k.split_at(self.prefix.len()).1
             })
         } else {
@@ -97,7 +97,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
         self.raw_iterator
             .key()
             .map(|k| {
-                cost.storage_loaded_bytes += k.len();
+                cost.storage_loaded_bytes += k.len() as u32;
                 k.starts_with(&self.prefix)
             })
             .unwrap_or(false)
@@ -155,7 +155,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
 
         let value = if self.valid().unwrap_add_cost(&mut cost) {
             self.raw_iterator.value().map(|v| {
-                cost.storage_loaded_bytes += v.len();
+                cost.storage_loaded_bytes += v.len() as u32;
                 v
             })
         } else {
@@ -172,7 +172,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
             self.raw_iterator.key().map(|k| {
                 // Even if we truncate prefix, loaded cost should be maximum for the whole
                 // function
-                cost.storage_loaded_bytes += k.len();
+                cost.storage_loaded_bytes += k.len() as u32;
                 k.split_at(self.prefix.len()).1
             })
         } else {
@@ -188,7 +188,7 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
         self.raw_iterator
             .key()
             .map(|k| {
-                cost.storage_loaded_bytes += k.len();
+                cost.storage_loaded_bytes += k.len() as u32;
                 k.starts_with(&self.prefix)
             })
             .unwrap_or(false)

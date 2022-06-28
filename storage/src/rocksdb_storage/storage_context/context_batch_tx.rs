@@ -132,7 +132,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
                     .ok()
                     .map(Option::as_ref)
                     .flatten()
-                    .map(|x| x.len())
+                    .map(|x| x.len() as u32)
                     .unwrap_or(0),
                 ..Default::default()
             })
@@ -148,7 +148,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
                     .ok()
                     .map(Option::as_ref)
                     .flatten()
-                    .map(|x| x.len())
+                    .map(|x| x.len() as u32)
                     .unwrap_or(0),
                 ..Default::default()
             })
@@ -167,7 +167,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
                     .ok()
                     .map(Option::as_ref)
                     .flatten()
-                    .map(|x| x.len())
+                    .map(|x| x.len() as u32)
                     .unwrap_or(0),
                 ..Default::default()
             })
@@ -186,7 +186,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
                     .ok()
                     .map(Option::as_ref)
                     .flatten()
-                    .map(|x| x.len())
+                    .map(|x| x.len() as u32)
                     .unwrap_or(0),
                 ..Default::default()
             })

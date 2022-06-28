@@ -61,7 +61,7 @@ impl RocksDbStorage {
         Ok(RocksDbStorage { db })
     }
 
-    fn build_prefix_body<'a, P>(path: P) -> CostContext<Vec<u8>>
+    fn build_prefix_body<'a, P>(path: P) -> Vec<u8>
     where
         P: IntoIterator<Item = &'a [u8]>,
     {
@@ -78,7 +78,7 @@ impl RocksDbStorage {
 
         res.extend(segments_count.to_ne_bytes());
         res.extend(lengthes);
-        res.wrap_with_cost(OperationCost::default()) // TODO: actual cost
+        res
     }
 
     /// A helper method to figure out how many blake3 hashes are needed to build
@@ -94,12 +94,15 @@ impl RocksDbStorage {
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
-    pub fn build_prefix<'a, P>(path: P) -> Vec<u8>
+    pub fn build_prefix<'a, P>(path: P) -> CostContext<Vec<u8>>
     where
         P: IntoIterator<Item = &'a [u8]>,
     {
         let body = Self::build_prefix_body(path);
-        blake3::hash(&body).as_bytes().to_vec()
+        blake3::hash(&body)
+            .as_bytes()
+            .to_vec()
+            .wrap_with_cost(OperationCost::default()) // TODO: actual costs
     }
 }
 
@@ -186,26 +189,26 @@ impl<'db> Storage<'db> for RocksDbStorage {
         let mut cost = OperationCost::default();
         // Until batch is commited these costs are pending (should not be added in case
         // of early termination).
-        let mut pending_storage_written_bytes = 0;
-        let mut pending_storage_freed_bytes = 0;
+        let mut pending_storage_written_bytes: u32 = 0;
+        let mut pending_storage_freed_bytes: u32 = 0;
 
         for op in batch.into_iter() {
             match op {
                 AbstractBatchOperation::Put { key, value } => {
                     db_batch.put(&key, &value);
-                    pending_storage_written_bytes += key.len() + value.len();
+                    pending_storage_written_bytes += key.len() as u32 + value.len() as u32;
                 }
                 AbstractBatchOperation::PutAux { key, value } => {
                     db_batch.put_cf(cf_aux(&self.db), &key, &value);
-                    pending_storage_written_bytes += key.len() + value.len();
+                    pending_storage_written_bytes += key.len() as u32 + value.len() as u32;
                 }
                 AbstractBatchOperation::PutRoot { key, value } => {
                     db_batch.put_cf(cf_roots(&self.db), &key, &value);
-                    pending_storage_written_bytes += key.len() + value.len();
+                    pending_storage_written_bytes += key.len() as u32 + value.len() as u32;
                 }
                 AbstractBatchOperation::PutMeta { key, value } => {
                     db_batch.put_cf(cf_meta(&self.db), &key, &value);
-                    pending_storage_written_bytes += key.len() + value.len();
+                    pending_storage_written_bytes += key.len() as u32 + value.len() as u32;
                 }
                 AbstractBatchOperation::Delete { key } => {
                     db_batch.delete(&key);
@@ -213,11 +216,11 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     // TODO: fix not atomic freed size computation
                     cost.seek_count += 1;
                     let value_len = cost_return_on_error_no_add!(&cost, self.db.get(&key))
-                        .map(|x| x.len())
+                        .map(|x| x.len() as u32)
                         .unwrap_or(0);
                     cost.storage_loaded_bytes += value_len;
 
-                    pending_storage_freed_bytes += key.len() + value_len;
+                    pending_storage_freed_bytes += key.len() as u32 + value_len;
                 }
                 AbstractBatchOperation::DeleteAux { key } => {
                     db_batch.delete_cf(cf_aux(&self.db), &key);
@@ -226,11 +229,11 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     cost.seek_count += 1;
                     let value_len =
                         cost_return_on_error_no_add!(&cost, self.db.get_cf(cf_aux(&self.db), &key))
-                            .map(|x| x.len())
+                            .map(|x| x.len() as u32)
                             .unwrap_or(0);
                     cost.storage_loaded_bytes += value_len;
 
-                    pending_storage_freed_bytes += key.len() + value_len;
+                    pending_storage_freed_bytes += key.len() as u32 + value_len;
                 }
                 AbstractBatchOperation::DeleteRoot { key } => {
                     db_batch.delete_cf(cf_roots(&self.db), &key);
@@ -241,11 +244,11 @@ impl<'db> Storage<'db> for RocksDbStorage {
                         &cost,
                         self.db.get_cf(cf_roots(&self.db), &key)
                     )
-                    .map(|x| x.len())
+                    .map(|x| x.len() as u32)
                     .unwrap_or(0);
-                    cost.storage_loaded_bytes += value_len;
+                    cost.storage_loaded_bytes += value_len as u32;
 
-                    pending_storage_freed_bytes += key.len() + value_len;
+                    pending_storage_freed_bytes += key.len() as u32 + value_len;
                 }
                 AbstractBatchOperation::DeleteMeta { key } => {
                     db_batch.delete_cf(cf_meta(&self.db), &key);
@@ -256,19 +259,24 @@ impl<'db> Storage<'db> for RocksDbStorage {
                         &cost,
                         self.db.get_cf(cf_meta(&self.db), &key)
                     )
-                    .map(|x| x.len())
+                    .map(|x| x.len() as u32)
                     .unwrap_or(0);
                     cost.storage_loaded_bytes += value_len;
 
-                    pending_storage_freed_bytes += key.len() + value_len;
+                    pending_storage_freed_bytes += key.len() as u32 + value_len;
                 }
             }
         }
 
-        match transaction {
+        let result = match transaction {
             None => self.db.write(db_batch),
             Some(transaction) => transaction.rebuild_from_writebatch(&db_batch),
-        }
+        };
+
+        cost.storage_written_bytes += pending_storage_written_bytes;
+        cost.storage_freed_bytes += pending_storage_freed_bytes;
+
+        result.wrap_with_cost(cost)
     }
 }
 

@@ -21,9 +21,6 @@ pub struct OperationCost {
 }
 
 impl OperationCost {
-}
-
-impl OperationCost {
     /// Helper function to build default `OperationCost` with different
     /// `seek_count`.
     pub fn with_seek_count(seek_count: u16) -> Self {

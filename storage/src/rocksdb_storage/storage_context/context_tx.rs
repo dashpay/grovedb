@@ -61,7 +61,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         self.transaction
             .put(make_prefixed_key(self.prefix.clone(), &key), value)
             .wrap_with_cost(OperationCost {
-                storage_written_bytes: key.as_ref().len() + value.len(),
+                storage_written_bytes: key.as_ref().len() as u32 + value.len() as u32,
                 seek_count: 1,
                 ..Default::default()
             })
@@ -79,7 +79,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
                 value,
             )
             .wrap_with_cost(OperationCost {
-                storage_written_bytes: key.as_ref().len() + value.len(),
+                storage_written_bytes: key.as_ref().len() as u32 + value.len() as u32,
                 seek_count: 1,
                 ..Default::default()
             })
@@ -97,7 +97,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
                 value,
             )
             .wrap_with_cost(OperationCost {
-                storage_written_bytes: key.as_ref().len() + value.len(),
+                storage_written_bytes: key.as_ref().len() as u32 + value.len() as u32,
                 seek_count: 1,
                 ..Default::default()
             })
@@ -115,7 +115,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
                 value,
             )
             .wrap_with_cost(OperationCost {
-                storage_written_bytes: key.as_ref().len() + value.len(),
+                storage_written_bytes: key.as_ref().len() as u32 + value.len() as u32,
                 seek_count: 1,
                 ..Default::default()
             })
@@ -125,7 +125,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         let mut cost = OperationCost::default();
 
         let deleted_len = cost_return_on_error!(&mut cost, self.get(&key))
-            .map(|x| x.len())
+            .map(|x| x.len() as u32)
             .unwrap_or(0);
 
         cost.storage_freed_bytes += deleted_len;
@@ -140,7 +140,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         let mut cost = OperationCost::default();
 
         let deleted_len = cost_return_on_error!(&mut cost, self.get_aux(&key))
-            .map(|x| x.len())
+            .map(|x| x.len() as u32)
             .unwrap_or(0);
 
         cost.storage_freed_bytes += deleted_len;
@@ -155,7 +155,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         let mut cost = OperationCost::default();
 
         let deleted_len = cost_return_on_error!(&mut cost, self.get_root(&key))
-            .map(|x| x.len())
+            .map(|x| x.len() as u32)
             .unwrap_or(0);
 
         cost.storage_freed_bytes += deleted_len;
@@ -170,7 +170,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         let mut cost = OperationCost::default();
 
         let deleted_len = cost_return_on_error!(&mut cost, self.get_meta(&key))
-            .map(|x| x.len())
+            .map(|x| x.len() as u32)
             .unwrap_or(0);
 
         cost.storage_freed_bytes += deleted_len;
@@ -191,7 +191,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
                     .ok()
                     .map(Option::as_ref)
                     .flatten()
-                    .map(|x| x.len())
+                    .map(|x| x.len() as u32)
                     .unwrap_or(0),
                 ..Default::default()
             })
@@ -207,7 +207,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
                     .ok()
                     .map(Option::as_ref)
                     .flatten()
-                    .map(|x| x.len())
+                    .map(|x| x.len() as u32)
                     .unwrap_or(0),
                 ..Default::default()
             })
@@ -226,7 +226,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
                     .ok()
                     .map(Option::as_ref)
                     .flatten()
-                    .map(|x| x.len())
+                    .map(|x| x.len() as u32)
                     .unwrap_or(0),
                 ..Default::default()
             })
@@ -245,7 +245,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
                     .ok()
                     .map(Option::as_ref)
                     .flatten()
-                    .map(|x| x.len())
+                    .map(|x| x.len() as u32)
                     .unwrap_or(0),
                 ..Default::default()
             })
