@@ -319,7 +319,7 @@ impl ProofVerifier {
         if last_result_set.is_empty() {
             Self::execute_root_proof(proof_reader, root_key_hash.unwrap())
         } else {
-            Err(Error::InvalidProof("proof invalid: path no absent"))
+            Err(Error::InvalidProof("proof invalid: path not absent"))
         }
     }
 

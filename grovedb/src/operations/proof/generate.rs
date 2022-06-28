@@ -59,8 +59,6 @@ impl GroveDb {
 
                 let mut split_path = path_slice.split_first();
                 while let Some((key, path_slice)) = split_path {
-                    // if the path slice is empty, that means we have the last key and just prove
-                    // that absence
                     let subtree = self
                         .open_subtree(current_path.iter().copied())
                         .unwrap()
