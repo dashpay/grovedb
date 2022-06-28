@@ -61,15 +61,18 @@ impl GroveDb {
                 while let Some((key, path_slice)) = split_path {
                     let subtree = self
                         .open_subtree(current_path.iter().copied())
-                        .unwrap()
-                        .unwrap();
+                        .unwrap_add_cost(&mut cost);
 
-                    let has_item = Element::get(&subtree, key).unwrap_add_cost(&mut cost);
+                    if subtree.is_err() {
+                        break;
+                    }
+
+                    let has_item = Element::get(&subtree.as_ref().expect("confirmed not error above"), key).unwrap_add_cost(&mut cost);
 
                     let mut next_key_query = Query::new();
                     next_key_query.insert_key(key.to_vec());
                     self.generate_and_store_merk_proof(
-                        &subtree,
+                        &subtree.expect("confirmed not error above"),
                         &next_key_query,
                         None,
                         None,
