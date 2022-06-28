@@ -282,6 +282,7 @@ impl ProofVerifier {
     ) -> Result<[u8; 32], Error> {
         let mut root_key_hash = None;
         let mut last_subtree_hash = None;
+        let mut last_result_set = vec![];
 
         for key in &path_slices[1..] {
             let merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
@@ -297,15 +298,15 @@ impl ProofVerifier {
                 return Err(Error::InvalidProof("proof invalid: invalid parent"));
             }
 
-            let result_set = proof_result
+            last_result_set = proof_result
                 .1
                 .expect("MERK_PROOF always returns a result set");
-            if result_set.is_empty() {
+            if last_result_set.is_empty() {
                 // if result set is empty then we have reached the absence point, break
                 break;
             }
 
-            let elem = Element::deserialize(result_set[0].1.as_slice())?;
+            let elem = Element::deserialize(last_result_set[0].1.as_slice())?;
             let child_hash = match elem {
                 Element::Tree(hash, _) => Ok(hash),
                 _ => Err(Error::InvalidProof(
@@ -315,7 +316,11 @@ impl ProofVerifier {
             last_subtree_hash = Some(child_hash);
         }
 
-        Self::execute_root_proof(proof_reader, root_key_hash.unwrap())
+        if last_result_set.is_empty() {
+            Self::execute_root_proof(proof_reader, root_key_hash.unwrap())
+        } else {
+            Err(Error::InvalidProof("proof invalid: path no absent"))
+        }
     }
 
     /// Verifies that the correct proof was provided to confirm the path in
