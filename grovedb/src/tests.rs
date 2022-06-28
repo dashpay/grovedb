@@ -742,6 +742,21 @@ fn test_root_tree_leaves_are_noted() {
 }
 
 #[test]
+fn test_proof_for_invalid_path() {
+    let db = make_grovedb();
+
+    let mut query = Query::new();
+    let path_query = PathQuery::new_unsized(vec![b"invalid_path_key".to_vec()], query);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) =
+        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proog");
+
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(result_set.len(), 0);
+}
+
+#[test]
 fn test_proof_for_non_existent_data() {
     let temp_db = make_grovedb();
 
