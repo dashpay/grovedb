@@ -10,6 +10,7 @@ pub enum ProofType {
     SizedMerk,
     Root,
     EmptyTree,
+    AbsentPath,
     Invalid,
 }
 
@@ -20,6 +21,7 @@ impl From<ProofType> for u8 {
             ProofType::SizedMerk => 0x02,
             ProofType::Root => 0x03,
             ProofType::EmptyTree => 0x04,
+            ProofType::AbsentPath => 0x05,
             ProofType::Invalid => 0x10,
         }
     }
@@ -32,6 +34,7 @@ impl From<u8> for ProofType {
             0x02 => ProofType::SizedMerk,
             0x03 => ProofType::Root,
             0x04 => ProofType::EmptyTree,
+            0x05 => ProofType::AbsentPath,
             _ => ProofType::Invalid,
         }
     }
@@ -74,6 +77,7 @@ impl<'a> ProofReader<'a> {
         self.proof_data
             .read(&mut data_type)
             .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
+        dbg!(data_type);
 
         if let Some(expected_data_type) = expected_data_type_option {
             if data_type != [expected_data_type] {
@@ -83,7 +87,7 @@ impl<'a> ProofReader<'a> {
 
         let proof_type: ProofType = data_type[0].into();
 
-        if proof_type == ProofType::EmptyTree {
+        if proof_type == ProofType::EmptyTree || proof_type == ProofType::AbsentPath {
             return Ok((proof_type, vec![]));
         }
 

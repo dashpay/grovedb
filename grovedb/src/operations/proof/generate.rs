@@ -39,11 +39,61 @@ impl GroveDb {
                 .wrap_with_cost(cost);
         }
 
-        // TODO: should prove that path does not exist, rather than returning an error
-        cost_return_on_error!(
-            &mut cost,
-            self.check_subtree_exists_path_not_found(path_slices.clone(), None)
-        );
+        let subtree_exists = self
+            .check_subtree_exists_path_not_found(path_slices.clone(), None)
+            .unwrap_add_cost(&mut cost);
+
+        match subtree_exists {
+            Ok(_) => {}
+            Err(_) => {
+                let (root_key, path_slice) = path_slices
+                    .split_first()
+                    .expect("confirmed path is not empty above");
+
+                let mut root_proof = vec![];
+                cost_return_on_error!(&mut cost, self.prove_root_key(&mut root_proof, root_key));
+
+                write_to_vec(&mut proof_result, &[ProofType::AbsentPath.into()]);
+
+                let mut current_path: Vec<&[u8]> = vec![root_key];
+
+                let mut split_path = path_slice.split_first();
+                while let Some((key, path_slice)) = split_path {
+                    let subtree = self
+                        .open_subtree(current_path.iter().copied())
+                        .unwrap_add_cost(&mut cost);
+
+                    if subtree.is_err() {
+                        break;
+                    }
+
+                    let has_item = Element::get(subtree.as_ref().expect("confirmed not error above"), key).unwrap_add_cost(&mut cost);
+
+                    let mut next_key_query = Query::new();
+                    next_key_query.insert_key(key.to_vec());
+                    self.generate_and_store_merk_proof(
+                        &subtree.expect("confirmed not error above"),
+                        &next_key_query,
+                        None,
+                        None,
+                        ProofType::Merk,
+                        &mut proof_result,
+                    );
+
+                    current_path.push(key);
+
+                    if has_item.is_err() || path_slice.is_empty() {
+                        // reached last key
+                        break;
+                    }
+
+                    split_path = path_slice.split_first();
+                }
+
+                proof_result.append(&mut root_proof);
+                return Ok(proof_result).wrap_with_cost(cost);
+            }
+        }
 
         cost_return_on_error!(
             &mut cost,
@@ -216,7 +266,7 @@ impl GroveDb {
     /// a valid path from the root of the db to that point.
     fn prove_path(
         &self,
-        mut proof_result: &mut Vec<u8>,
+        proof_result: &mut Vec<u8>,
         path_slices: Vec<&[u8]>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -225,39 +275,7 @@ impl GroveDb {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             if path_slice.is_empty() {
-                // generate root proof
-                let meta_storage = self.db.get_storage_context(std::iter::empty());
-                let root_leaf_keys = cost_return_on_error!(
-                    &mut cost,
-                    Self::get_root_leaf_keys_internal(&meta_storage)
-                );
-                let mut index_to_prove: Vec<usize> = vec![];
-                match root_leaf_keys.get(&key.to_vec()) {
-                    Some(index) => index_to_prove.push(*index),
-                    None => {
-                        return Err(Error::InvalidPath("invalid root key")).wrap_with_cost(cost)
-                    }
-                }
-                let root_tree = cost_return_on_error!(&mut cost, self.get_root_tree(None));
-                let root_proof = root_tree.proof(&index_to_prove).to_bytes();
-
-                write_to_vec(&mut proof_result, &[ProofType::Root.into()]);
-                write_to_vec(&mut proof_result, &root_proof.len().to_be_bytes());
-                write_to_vec(&mut proof_result, &root_proof);
-
-                // write the number of root leafs
-                // this makes the assumption that 1 byte is enough to represent the number of
-                // root leafs i.e max of 255 root leaf keys
-                debug_assert!(root_leaf_keys.len() < 256);
-                write_to_vec(&mut proof_result, &[root_leaf_keys.len() as u8]);
-
-                // add the index values required to prove the root
-                let index_to_prove_as_bytes = index_to_prove
-                    .into_iter()
-                    .map(|index| index as u8)
-                    .collect::<Vec<u8>>();
-
-                write_to_vec(&mut proof_result, &index_to_prove_as_bytes);
+                cost_return_on_error!(&mut cost, self.prove_root_key(proof_result, key));
             } else {
                 // generate proofs for the intermediate paths
                 let subtree =
@@ -279,6 +297,43 @@ impl GroveDb {
             }
             split_path = path_slice.split_last();
         }
+        Ok(()).wrap_with_cost(cost)
+    }
+
+    fn prove_root_key(&self, mut proof_result: &mut Vec<u8>, key: &[u8]) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        // generate root proof
+        let meta_storage = self.db.get_storage_context(std::iter::empty());
+        let root_leaf_keys =
+            cost_return_on_error!(&mut cost, Self::get_root_leaf_keys_internal(&meta_storage));
+
+        let mut index_to_prove: Vec<usize> = vec![];
+        match root_leaf_keys.get(&key.to_vec()) {
+            Some(index) => index_to_prove.push(*index),
+            None => return Err(Error::InvalidPath("invalid root key")).wrap_with_cost(cost),
+        }
+        let root_tree = cost_return_on_error!(&mut cost, self.get_root_tree(None));
+        let root_proof = root_tree.proof(&index_to_prove).to_bytes();
+
+        write_to_vec(&mut proof_result, &[ProofType::Root.into()]);
+        write_to_vec(&mut proof_result, &root_proof.len().to_be_bytes());
+        write_to_vec(&mut proof_result, &root_proof);
+
+        // write the number of root leafs
+        // this makes the assumption that 1 byte is enough to represent the number of
+        // root leafs i.e max of 255 root leaf keys
+        debug_assert!(root_leaf_keys.len() < 256);
+        write_to_vec(&mut proof_result, &[root_leaf_keys.len() as u8]);
+
+        // add the index values required to prove the root
+        let index_to_prove_as_bytes = index_to_prove
+            .into_iter()
+            .map(|index| index as u8)
+            .collect::<Vec<u8>>();
+
+        write_to_vec(&mut proof_result, &index_to_prove_as_bytes);
+
         Ok(()).wrap_with_cost(cost)
     }
 

@@ -2,7 +2,7 @@ use merk::{proofs::Query, Hash};
 use rs_merkle::{algorithms::Sha256, MerkleProof};
 
 use crate::{
-    operations::proof::util::{ProofReader, ProofType, EMPTY_TREE_HASH},
+    operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
     Element, Error, GroveDb, PathQuery,
 };
 
@@ -54,30 +54,37 @@ impl ProofVerifier {
             return Err(Error::InvalidPath("can't verify proof for empty path"));
         }
 
-        let mut last_subtree_root_hash =
-            self.execute_subquery_proof(&mut proof_reader, query.clone())?;
+        let (proof_type, proof) = proof_reader.read_proof()?;
 
-        // validate the path elements are connected
-        self.verify_path_to_root(
-            query,
-            path_slices,
-            &mut proof_reader,
-            &mut last_subtree_root_hash,
-        )?;
+        let root_hash = if proof_type == AbsentPath {
+            self.verify_absent_path(&mut proof_reader, path_slices)?
+        } else {
+            let mut last_subtree_root_hash =
+                self.execute_subquery_proof(proof_type, proof, &mut proof_reader, query.clone())?;
 
-        // execute the root proof
-        let root_hash = Self::execute_root_proof(&mut proof_reader, last_subtree_root_hash)?;
+            // validate the path elements are connected
+            self.verify_path_to_root(
+                query,
+                path_slices,
+                &mut proof_reader,
+                &mut last_subtree_root_hash,
+            )?;
+
+            // execute the root proof
+            Self::execute_root_proof(&mut proof_reader, last_subtree_root_hash)?
+        };
 
         Ok(root_hash)
     }
 
     fn execute_subquery_proof(
         &mut self,
+        proof_type: ProofType,
+        proof: Vec<u8>,
         proof_reader: &mut ProofReader,
         query: PathQuery,
     ) -> Result<[u8; 32], Error> {
         let last_root_hash: [u8; 32];
-        let (proof_type, proof) = proof_reader.read_proof()?;
 
         match proof_type {
             ProofType::SizedMerk => {
@@ -175,8 +182,13 @@ impl ProofVerifier {
                             let new_path_query =
                                 PathQuery::new_unsized(vec![], subquery_value.unwrap());
 
-                            let child_hash =
-                                self.execute_subquery_proof(proof_reader, new_path_query)?;
+                            let (child_proof_type, child_proof) = proof_reader.read_proof()?;
+                            let child_hash = self.execute_subquery_proof(
+                                child_proof_type,
+                                child_proof,
+                                proof_reader,
+                                new_path_query,
+                            )?;
 
                             if child_hash != expected_root_hash {
                                 return Err(Error::InvalidProof(
@@ -260,6 +272,58 @@ impl ProofVerifier {
                 Ok(verification_result)
             }
             _ => Err(Error::InvalidProof("expected merk proof for subquery key")),
+        }
+    }
+
+    fn verify_absent_path(
+        &mut self,
+        proof_reader: &mut ProofReader,
+        path_slices: Vec<&[u8]>,
+    ) -> Result<[u8; 32], Error> {
+        let mut root_key_hash = None;
+        let mut expected_child_hash = None;
+        let mut last_result_set = vec![];
+
+        for key in &path_slices[1..] {
+            let merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
+
+            let mut child_query = Query::new();
+            child_query.insert_key(key.to_vec());
+
+            let proof_result =
+                self.execute_merk_proof(ProofType::Merk, &merk_proof, &child_query, true)?;
+            if expected_child_hash == None {
+                root_key_hash = Some(proof_result.0);
+            } else if Some(proof_result.0) != expected_child_hash {
+                return Err(Error::InvalidProof("proof invalid: invalid parent"));
+            }
+
+            last_result_set = proof_result
+                .1
+                .expect("MERK_PROOF always returns a result set");
+            if last_result_set.is_empty() {
+                // if result set is empty then we have reached the absence point, break
+                break;
+            }
+
+            let elem = Element::deserialize(last_result_set[0].1.as_slice())?;
+            let child_hash = match elem {
+                Element::Tree(hash, _) => Ok(hash),
+                _ => Err(Error::InvalidProof(
+                    "intermediate proofs should be for trees",
+                )),
+            }?;
+            expected_child_hash = Some(child_hash);
+        }
+
+        if last_result_set.is_empty() {
+            if let Some(hash) = root_key_hash {
+                Self::execute_root_proof(proof_reader, hash)
+            } else {
+                Err(Error::InvalidProof("proof invalid: no non root tree found"))
+            }
+        } else {
+            Err(Error::InvalidProof("proof invalid: path not absent"))
         }
     }
 

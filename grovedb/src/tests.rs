@@ -742,6 +742,96 @@ fn test_root_tree_leaves_are_noted() {
 }
 
 #[test]
+#[should_panic]
+fn test_proof_for_invalid_path_root_key() {
+    let db = make_grovedb();
+
+    let query = Query::new();
+    let path_query = PathQuery::new_unsized(vec![b"invalid_path_key".to_vec()], query);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) =
+        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(result_set.len(), 0);
+}
+
+#[test]
+fn test_proof_for_invalid_path() {
+    let db = make_deep_tree();
+
+    let query = Query::new();
+    let path_query = PathQuery::new_unsized(
+        vec![
+            b"deep_leaf".to_vec(),
+            b"invalid_key".to_vec(),
+        ],
+        query,
+    );
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) =
+        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(result_set.len(), 0);
+
+    let query = Query::new();
+    let path_query = PathQuery::new_unsized(
+        vec![
+            b"deep_leaf".to_vec(),
+            b"deep_node_1".to_vec(),
+            b"invalid_key".to_vec(),
+        ],
+        query,
+    );
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) =
+        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(result_set.len(), 0);
+
+    let query = Query::new();
+    let path_query = PathQuery::new_unsized(
+        vec![
+            b"deep_leaf".to_vec(),
+            b"deep_node_1".to_vec(),
+            b"deeper_node_1".to_vec(),
+            b"invalid_key".to_vec(),
+        ],
+        query,
+    );
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) =
+        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(result_set.len(), 0);
+
+    let query = Query::new();
+    let path_query = PathQuery::new_unsized(
+        vec![
+            b"deep_leaf".to_vec(),
+            b"early_invalid_key".to_vec(),
+            b"deeper_node_1".to_vec(),
+            b"invalid_key".to_vec(),
+        ],
+        query,
+    );
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) =
+        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(result_set.len(), 0);
+}
+
+#[test]
 fn test_proof_for_non_existent_data() {
     let temp_db = make_grovedb();
 
