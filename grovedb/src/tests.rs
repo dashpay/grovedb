@@ -746,7 +746,7 @@ fn test_root_tree_leaves_are_noted() {
 fn test_proof_for_invalid_path_root_key() {
     let db = make_grovedb();
 
-    let mut query = Query::new();
+    let query = Query::new();
     let path_query = PathQuery::new_unsized(vec![b"invalid_path_key".to_vec()], query);
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
@@ -761,7 +761,7 @@ fn test_proof_for_invalid_path_root_key() {
 fn test_proof_for_invalid_path() {
     let db = make_deep_tree();
 
-    let mut query = Query::new();
+    let query = Query::new();
     let path_query = PathQuery::new_unsized(
         vec![
             b"deep_leaf".to_vec(),
@@ -778,7 +778,7 @@ fn test_proof_for_invalid_path() {
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
 
-    let mut query = Query::new();
+    let query = Query::new();
     let path_query = PathQuery::new_unsized(
         vec![
             b"deep_leaf".to_vec(),
@@ -796,7 +796,7 @@ fn test_proof_for_invalid_path() {
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
 
-    let mut query = Query::new();
+    let query = Query::new();
     let path_query = PathQuery::new_unsized(
         vec![
             b"deep_leaf".to_vec(),
