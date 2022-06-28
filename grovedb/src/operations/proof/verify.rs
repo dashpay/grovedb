@@ -281,7 +281,7 @@ impl ProofVerifier {
         path_slices: Vec<&[u8]>,
     ) -> Result<[u8; 32], Error> {
         let mut root_key_hash = None;
-        let mut last_subtree_hash = None;
+        let mut expected_child_hash = None;
         let mut last_result_set = vec![];
 
         for key in &path_slices[1..] {
@@ -292,9 +292,9 @@ impl ProofVerifier {
 
             let proof_result =
                 self.execute_merk_proof(ProofType::Merk, &merk_proof, &child_query, true)?;
-            if last_subtree_hash == None {
+            if expected_child_hash == None {
                 root_key_hash = Some(proof_result.0);
-            } else if Some(proof_result.0) != last_subtree_hash {
+            } else if Some(proof_result.0) != expected_child_hash {
                 return Err(Error::InvalidProof("proof invalid: invalid parent"));
             }
 
@@ -313,11 +313,15 @@ impl ProofVerifier {
                     "intermediate proofs should be for trees",
                 )),
             }?;
-            last_subtree_hash = Some(child_hash);
+            expected_child_hash = Some(child_hash);
         }
 
         if last_result_set.is_empty() {
-            Self::execute_root_proof(proof_reader, root_key_hash.unwrap())
+            if let Some(hash) = root_key_hash {
+                Self::execute_root_proof(proof_reader, hash)
+            } else {
+                Err(Error::InvalidProof("proof invalid: no non root tree found"))
+            }
         } else {
             Err(Error::InvalidProof("proof invalid: path not absent"))
         }
