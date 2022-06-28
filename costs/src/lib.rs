@@ -47,6 +47,16 @@ impl OperationCost {
         self.hash_node_calls += 0;
     }
 
+    /// Add worst case for getting a merk tree
+    pub fn add_worst_case_merk_get_element(&mut self, key: &[u8], max_element_size: u32) {
+        self.seek_count += 1;
+        self.storage_written_bytes += 0;
+        self.storage_loaded_bytes += max_element_size;
+        self.loaded_bytes += key.len() as u32 + max_element_size;
+        self.hash_byte_calls += 0;
+        self.hash_node_calls += 0;
+    }
+
     /// Add worst case for getting a merk tree root hash
     pub fn add_worst_case_merk_root_hash(&mut self) {
         self.seek_count += 0;

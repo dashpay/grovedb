@@ -367,4 +367,25 @@ impl GroveDb {
         // In the worst case, there will not be an error, but the item will not be found
         Ok(false).wrap_with_cost(cost)
     }
+
+    /// Does tree element exist without following references
+    pub fn worst_case_for_get_raw<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        max_value_size: u32,
+    ) -> CostResult<(), Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+
+        // First we get the merk tree
+        cost.add_worst_case_get_merk(path);
+        cost.add_worst_case_merk_get_element(key, max_value_size);
+
+        // In the worst case, there will not be an error
+        Ok(()).wrap_with_cost(cost)
+    }
 }
