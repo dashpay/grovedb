@@ -3,21 +3,89 @@
 
 use std::ops::{Add, AddAssign};
 
+use storage::rocksdb_storage::RocksDbStorage;
+
 /// Piece of data representing affected computer resources (approximately).
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct OperationCost {
     /// How many storage seeks were done.
-    pub seek_count: usize,
+    pub seek_count: u16,
     /// How many bytes were written on hard drive.
-    pub storage_written_bytes: usize,
+    pub storage_written_bytes: u32,
     /// How many bytes were loaded from hard drive.
     pub storage_loaded_bytes: usize,
     /// How many bytes were removed on hard drive.
     pub storage_freed_bytes: usize,
     /// How many times hash was called for bytes (paths, keys, values).
-    pub hash_byte_calls: usize,
+    pub hash_byte_calls: u32,
     /// How many times node hashing was done (for merkelized tree).
-    pub hash_node_calls: usize,
+    pub hash_node_calls: u16,
+}
+
+impl OperationCost {
+    /// Add worst case for getting a merk tree
+    pub fn add_worst_case_get_merk<'p, P>(&mut self, path: P)
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        self.seek_count += 1;
+        self.storage_written_bytes += 0;
+        self.storage_loaded_bytes += 0;
+        self.loaded_bytes += 0;
+        self.hash_byte_calls += RocksDbStorage::build_prefix_hash_count(path) as u32;
+        self.hash_node_calls += 0;
+    }
+
+    /// Add worst case for getting a merk tree
+    pub fn add_worst_case_merk_has_element(&mut self, key: &[u8]) {
+        self.seek_count += 1;
+        self.storage_written_bytes += 0;
+        self.storage_loaded_bytes += 0;
+        self.loaded_bytes += key.len() as u32;
+        self.hash_byte_calls += 0;
+        self.hash_node_calls += 0;
+    }
+
+    /// Add worst case for getting a merk tree root hash
+    pub fn add_worst_case_merk_root_hash(&mut self) {
+        self.seek_count += 0;
+        self.storage_written_bytes += 0;
+        self.storage_loaded_bytes += 0;
+        self.loaded_bytes += 0;
+        self.hash_byte_calls += 0;
+        self.hash_node_calls += 0;
+    }
+
+    /// Add worst case for opening a root meta storage
+    pub fn add_worst_case_open_root_meta_storage(&mut self) {
+        self.seek_count += 0;
+        self.storage_written_bytes += 0;
+        self.storage_loaded_bytes += 0;
+        self.loaded_bytes += 0;
+        self.hash_byte_calls += 0;
+        self.hash_node_calls += 0;
+    }
+
+    /// Add worst case for saving the root tree
+    pub fn add_worst_case_save_root_leaves(&mut self) {
+        self.seek_count += 0;
+        self.storage_written_bytes += 0;
+        self.storage_loaded_bytes += 0;
+        self.loaded_bytes += 0;
+        self.hash_byte_calls += 0;
+        self.hash_node_calls += 0;
+    }
+
+    /// Add worst case for loading the root tree
+    pub fn add_worst_case_load_root_leaves(&mut self) {
+        self.seek_count += 0;
+        self.storage_written_bytes += 0;
+        self.storage_loaded_bytes += 0;
+        self.loaded_bytes += 0;
+        self.hash_byte_calls += 0;
+        self.hash_node_calls += 0;
+    }
 }
 
 impl OperationCost {
@@ -106,9 +174,9 @@ impl AddAssign for OperationCost {
 #[derive(Debug, Eq, PartialEq)]
 pub struct CostContext<T> {
     /// Wrapped operation's return value.
-    value: T,
+    pub value: T,
     /// Cost of the operation.
-    cost: OperationCost,
+    pub cost: OperationCost,
 }
 
 /// General combinators for `CostContext`.
@@ -155,25 +223,25 @@ impl<T> CostContext<T> {
     }
 }
 
+/// Type alias for `Result` wrapped into `CostContext`.
+pub type CostResult<T, E> = CostContext<Result<T, E>>;
+
 /// Combinators to use with `Result` wrapped in `CostContext`.
-impl<T, E> CostContext<Result<T, E>> {
+impl<T, E> CostResult<T, E> {
     /// Applies function to wrapped value in case of `Ok` keeping cost the same
     /// as before.
-    pub fn map_ok<B>(self, f: impl FnOnce(T) -> B) -> CostContext<Result<B, E>> {
+    pub fn map_ok<B>(self, f: impl FnOnce(T) -> B) -> CostResult<B, E> {
         self.map(|result| result.map(f))
     }
 
     /// Applies function to wrapped value in case of `Err` keeping cost the same
     /// as before.
-    pub fn map_err<B>(self, f: impl FnOnce(E) -> B) -> CostContext<Result<T, B>> {
-        self.map(|result| result.map_err(|e| f(e)))
+    pub fn map_err<B>(self, f: impl FnOnce(E) -> B) -> CostResult<T, B> {
+        self.map(|result| result.map_err(f))
     }
 
     /// Applies function to wrapped result in case of `Ok` adding costs.
-    pub fn flat_map_ok<B>(
-        self,
-        f: impl FnOnce(T) -> CostContext<Result<B, E>>,
-    ) -> CostContext<Result<B, E>> {
+    pub fn flat_map_ok<B>(self, f: impl FnOnce(T) -> CostResult<B, E>) -> CostResult<B, E> {
         let mut cost = self.cost;
         let result = match self.value {
             Ok(x) => f(x).unwrap_add_cost(&mut cost),
@@ -186,9 +254,9 @@ impl<T, E> CostContext<Result<T, E>> {
     }
 }
 
-impl<T, E> CostContext<Result<Result<T, E>, E>> {
+impl<T, E> CostResult<Result<T, E>, E> {
     /// Flattens nested errors inside `CostContext`
-    pub fn flatten(self) -> CostContext<Result<T, E>> {
+    pub fn flatten(self) -> CostResult<T, E> {
         self.map(|value| match value {
             Err(e) => Err(e),
             Ok(Err(e)) => Err(e),
@@ -330,7 +398,7 @@ mod tests {
 
     #[test]
     fn test_map_ok() {
-        let initial: CostContext<Result<usize, ()>> = CostContext {
+        let initial: CostResult<usize, ()> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 storage_loaded_bytes: 3,
@@ -353,7 +421,7 @@ mod tests {
 
     #[test]
     fn test_map_ok_err() {
-        let initial: CostContext<Result<usize, ()>> = CostContext {
+        let initial: CostResult<usize, ()> = CostContext {
             value: Err(()),
             cost: OperationCost {
                 storage_loaded_bytes: 3,
@@ -376,7 +444,7 @@ mod tests {
 
     #[test]
     fn test_flat_map_ok() {
-        let initial: CostContext<Result<usize, ()>> = CostContext {
+        let initial: CostResult<usize, ()> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 storage_loaded_bytes: 3,
@@ -405,7 +473,7 @@ mod tests {
 
     #[test]
     fn test_flat_map_err_first() {
-        let initial: CostContext<Result<usize, ()>> = CostContext {
+        let initial: CostResult<usize, ()> = CostContext {
             value: Err(()),
             cost: OperationCost {
                 storage_loaded_bytes: 3,
@@ -440,7 +508,7 @@ mod tests {
 
     #[test]
     fn test_flat_map_err_second() {
-        let initial: CostContext<Result<usize, ()>> = CostContext {
+        let initial: CostResult<usize, ()> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 storage_loaded_bytes: 3,
@@ -448,7 +516,7 @@ mod tests {
             },
         };
         let mut executed = false;
-        let mapped: CostContext<Result<usize, ()>> = initial.flat_map_ok(|_| {
+        let mapped: CostResult<usize, ()> = initial.flat_map_ok(|_| {
             executed = true;
             CostContext {
                 value: Err(()),
@@ -476,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_flatten_nested_errors() {
-        let initial: CostContext<Result<usize, &str>> = CostContext {
+        let initial: CostResult<usize, &str> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 storage_loaded_bytes: 3,
@@ -488,26 +556,24 @@ mod tests {
         let ok = initial.map_ok(|x| Ok(x + 25));
         assert_eq!(ok.flatten().unwrap(), Ok(100));
 
-        let initial: CostContext<Result<usize, &str>> = CostContext {
+        let initial: CostResult<usize, &str> = CostContext {
             value: Ok(75),
             cost: OperationCost {
                 storage_loaded_bytes: 3,
                 ..Default::default()
             },
         };
-        let error_inner: CostContext<Result<Result<usize, &str>, &str>> =
-            initial.map_ok(|_| Err("latter"));
+        let error_inner: CostResult<Result<usize, &str>, &str> = initial.map_ok(|_| Err("latter"));
         assert_eq!(error_inner.flatten().unwrap(), Err("latter"));
 
-        let initial: CostContext<Result<usize, &str>> = CostContext {
+        let initial: CostResult<usize, &str> = CostContext {
             value: Err("inner"),
             cost: OperationCost {
                 storage_loaded_bytes: 3,
                 ..Default::default()
             },
         };
-        let error_inner: CostContext<Result<Result<usize, &str>, &str>> =
-            initial.map_ok(|x| Ok(x + 25));
+        let error_inner: CostResult<Result<usize, &str>, &str> = initial.map_ok(|x| Ok(x + 25));
         assert_eq!(error_inner.flatten().unwrap(), Err("inner"));
     }
 
@@ -517,7 +583,7 @@ mod tests {
         let loaded_value = b"ayylmao";
         let costs_ctx = loaded_value.wrap_fn_cost(|x| OperationCost {
             seek_count: 1,
-            storage_loaded_bytes: x.len(),
+            storage_loaded_bytes: x.len() as u32,
             ..Default::default()
         });
         assert_eq!(
@@ -535,7 +601,7 @@ mod tests {
 
     #[test]
     fn test_map_err() {
-        let initial: CostContext<Result<usize, ()>> = CostContext {
+        let initial: CostResult<usize, ()> = CostContext {
             value: Err(()),
             cost: OperationCost {
                 storage_loaded_bytes: 3,

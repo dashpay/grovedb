@@ -1,9 +1,9 @@
 use std::{
     cell::RefCell,
-    collections::{hash_map::IntoValues, HashMap},
+    collections::{btree_map::IntoValues, BTreeMap},
 };
 
-use costs::{CostContext, CostsExt, OperationCost};
+use costs::{CostContext, CostResult, CostsExt, OperationCost};
 use visualize::visualize_to_vec;
 
 /// Top-level storage abstraction.
@@ -44,14 +44,8 @@ pub trait Storage<'db> {
     fn commit_multi_context_batch(
         &self,
         batch: StorageBatch,
-    ) -> CostContext<Result<(), Self::Error>>;
-
-    /// Consumes and applies multi-context batch on transaction.
-    fn commit_multi_context_batch_with_transaction(
-        &self,
-        batch: StorageBatch,
-        transaction: &'db Self::Transaction,
-    ) -> CostContext<Result<(), Self::Error>>;
+        transaction: Option<&'db Self::Transaction>,
+    ) -> CostResult<(), Self::Error>;
 
     /// Forces data to be written
     fn flush(&self) -> Result<(), Self::Error>;
@@ -223,10 +217,10 @@ pub struct StorageBatch {
 
 #[derive(Default)]
 struct Operations {
-    data: HashMap<Vec<u8>, AbstractBatchOperation>,
-    roots: HashMap<Vec<u8>, AbstractBatchOperation>,
-    aux: HashMap<Vec<u8>, AbstractBatchOperation>,
-    meta: HashMap<Vec<u8>, AbstractBatchOperation>,
+    data: BTreeMap<Vec<u8>, AbstractBatchOperation>,
+    roots: BTreeMap<Vec<u8>, AbstractBatchOperation>,
+    aux: BTreeMap<Vec<u8>, AbstractBatchOperation>,
+    meta: BTreeMap<Vec<u8>, AbstractBatchOperation>,
 }
 
 impl std::fmt::Debug for Operations {
@@ -477,7 +471,7 @@ mod tests {
         };
         assert_eq!(
             format!("{:?}", op1),
-            "PutMeta { key: \"[hex: 6b657931, str: key1]\", value: \"[hex: 76616c75, str: \
+            "PutMeta { key: \"[hex: 6b657931, str: key1]\", value: \"[hex: 76616c756531, str: \
              value1]\" }"
         );
         assert_eq!(

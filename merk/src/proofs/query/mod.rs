@@ -235,6 +235,18 @@ impl Query {
 
         self.items.insert(item);
     }
+
+    /// Takes all the query items from a query instances and combines it with
+    /// the current query item set
+    pub fn merge(queries: Vec<&Query>) -> Self {
+        let mut merged_query = queries[0].clone();
+        for query in &queries[1..] {
+            for item in &query.items {
+                merged_query.insert_item(item.clone())
+            }
+        }
+        merged_query
+    }
 }
 
 impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
@@ -998,12 +1010,10 @@ where
                     } else {
                         Op::PushInverted(self.to_kvdigest_node())
                     }
+                } else if left_to_right {
+                    Op::Push(self.to_kv_node())
                 } else {
-                    if left_to_right {
-                        Op::Push(self.to_kv_node())
-                    } else {
-                        Op::PushInverted(self.to_kv_node())
-                    }
+                    Op::PushInverted(self.to_kv_node())
                 }
             }
             Err(_) => {
@@ -1013,12 +1023,10 @@ where
                     } else {
                         Op::PushInverted(self.to_kvdigest_node())
                     }
+                } else if left_to_right {
+                    Op::Push(self.to_kvhash_node())
                 } else {
-                    if left_to_right {
-                        Op::Push(self.to_kvhash_node())
-                    } else {
-                        Op::PushInverted(self.to_kvhash_node())
-                    }
+                    Op::PushInverted(self.to_kvhash_node())
                 }
             }
         });
@@ -1139,31 +1147,24 @@ pub fn execute_proof(
                 let (lower_bound, start_non_inclusive) = query_item.lower_bound();
                 let (upper_bound, end_inclusive) = query_item.upper_bound();
 
-                if left_to_right {
+                let terminate = if left_to_right {
                     // we have not reached next queried part of tree
-                    if *query_item > key.as_slice() {
-                        // continue to next push
-                        break;
-                    } else if start_non_inclusive
-                        && lower_bound.is_some()
-                        && lower_bound.unwrap() == key.as_slice()
-                    {
-                        // we intersect with the query_item but at the start which is non inclusive
-                        // continue to the next push
-                        break;
-                    }
+                    // or we intersect with the query_item but at the start which is non inclusive;
+                    // continue to the next push
+                    *query_item > key.as_slice()
+                        || (start_non_inclusive
+                            && lower_bound.is_some()
+                            && lower_bound.unwrap() == key.as_slice())
                 } else {
-                    if *query_item < key.as_slice() {
-                        // continue to next push
-                        break;
-                    } else if !end_inclusive
-                        && upper_bound.is_some()
-                        && upper_bound.unwrap() == key.as_slice()
-                    {
-                        // we intersect with the query_item but at the end which is non inclusive
-                        // continue to the next push
-                        break;
-                    }
+                    // we intersect with the query_item but at the end which is non inclusive;
+                    // continue to the next push
+                    *query_item < key.as_slice()
+                        || (!end_inclusive
+                            && upper_bound.is_some()
+                            && upper_bound.unwrap() == key.as_slice())
+                };
+                if terminate {
+                    break;
                 }
 
                 if !in_range {
@@ -1234,21 +1235,19 @@ pub fn execute_proof(
                         // unabridged until we reach end of range)
                         in_range = true;
                     }
+                } else if query_item.lower_bound().0 != None
+                    && Some(key.as_slice()) <= query_item.lower_bound().0
+                {
+                    // at or before lower bound of range (or this was an exact
+                    // match on a single-key queryitem), advance to next query
+                    // item
+                    query.next();
+                    in_range = false;
                 } else {
-                    if query_item.lower_bound().0 != None
-                        && Some(key.as_slice()) <= query_item.lower_bound().0
-                    {
-                        // at or before lower bound of range (or this was an exact
-                        // match on a single-key queryitem), advance to next query
-                        // item
-                        query.next();
-                        in_range = false;
-                    } else {
-                        // have not reached lower bound, we expect more values
-                        // to be proven in the range (and all pushes should be
-                        // unabridged until we reach end of range)
-                        in_range = true;
-                    }
+                    // have not reached lower bound, we expect more values
+                    // to be proven in the range (and all pushes should be
+                    // unabridged until we reach end of range)
+                    in_range = true;
                 }
 
                 // this push matches the queried item
@@ -1337,7 +1336,7 @@ pub fn execute_proof(
     .wrap_with_cost(cost)
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct ProofVerificationResult {
     pub result_set: Vec<(Vec<u8>, Vec<u8>)>,
     pub limit: Option<u16>,

@@ -1,5 +1,5 @@
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use merk::{Merk, ROOT_KEY_KEY};
 use storage::{Storage, StorageContext};
@@ -16,7 +16,7 @@ impl GroveDb {
         key: &'p [u8],
         element: Element,
         transaction: TransactionArg,
-    ) -> CostContext<Result<(), Error>>
+    ) -> CostResult<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
@@ -106,13 +106,8 @@ impl GroveDb {
     }
 
     /// Add subtree to the root tree
-    fn add_root_leaf(
-        &self,
-        key: &[u8],
-        transaction: TransactionArg,
-    ) -> CostContext<Result<(), Error>> {
+    fn add_root_leaf(&self, key: &[u8], transaction: TransactionArg) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-
         meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
             let mut root_leaf_keys =
                 cost_return_on_error!(&mut cost, Self::get_root_leaf_keys_internal(&meta_storage));
@@ -132,7 +127,8 @@ impl GroveDb {
                     .put_meta(ROOT_LEAFS_SERIALIZED_KEY, &value)
                     .map_err(|e| e.into())
             );
-            cost.storage_written_bytes += ROOT_LEAFS_SERIALIZED_KEY.len() + value.len();
+            cost.storage_written_bytes +=
+                ROOT_LEAFS_SERIALIZED_KEY.len() as u32 + value.len() as u32;
         });
 
         // Persist root leaf as a regular subtree
@@ -141,7 +137,7 @@ impl GroveDb {
                 &cost,
                 storage.put_root(ROOT_KEY_KEY, key).map_err(|e| e.into())
             );
-            cost.storage_written_bytes += ROOT_KEY_KEY.len() + key.len()
+            cost.storage_written_bytes += ROOT_KEY_KEY.len() as u32 + key.len() as u32
         });
 
         Ok(()).wrap_with_cost(cost)
@@ -158,7 +154,7 @@ impl GroveDb {
         key: &'p [u8],
         element: Element,
         transaction: TransactionArg,
-    ) -> CostContext<Result<(), Error>>
+    ) -> CostResult<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -187,10 +183,9 @@ impl GroveDb {
                 Merk::open(parent_storage)
                     .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
             );
-            let child_storage = self.db.get_transactional_storage_context(
-                path_iter.clone().chain(std::iter::once(key)),
-                tx,
-            );
+            let child_storage = self
+                .db
+                .get_transactional_storage_context(path_iter.chain(std::iter::once(key)), tx);
             let child_subtree = cost_return_on_error!(
                 &mut cost,
                 Merk::open(child_storage)
@@ -210,7 +205,7 @@ impl GroveDb {
             );
             let child_storage = self
                 .db
-                .get_storage_context(path_iter.clone().chain(std::iter::once(key)));
+                .get_storage_context(path_iter.chain(std::iter::once(key)));
             let child_subtree = cost_return_on_error!(
                 &mut cost,
                 Merk::open(child_storage)
@@ -231,7 +226,7 @@ impl GroveDb {
         key: &'p [u8],
         element: Element,
         transaction: TransactionArg,
-    ) -> CostContext<Result<bool, Error>>
+    ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,

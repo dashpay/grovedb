@@ -1,3 +1,4 @@
+use core::fmt;
 use std::io::{Result, Write};
 
 use itertools::Itertools;
@@ -8,7 +9,44 @@ static INDENT_SPACES: usize = 4;
 
 /// Pretty visualization of GroveDB components.
 pub trait Visualize {
-    fn visualize<'a, W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>>;
+    fn visualize<W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>>;
+}
+
+/// Wrapper struct with a `Debug` implementation to represent bytes vector in
+/// human-friendly way.
+#[derive(PartialOrd, Ord, PartialEq, Eq, Hash)]
+pub struct DebugBytes(pub Vec<u8>);
+
+impl fmt::Debug for DebugBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut v = Vec::new();
+        visualize_to_vec(&mut v, self.0.as_slice());
+
+        f.write_str(&String::from_utf8_lossy(&v))
+    }
+}
+
+/// Wrapper struct with a `Debug` implementation to represent vector of bytes
+/// vectors in human-friendly way.
+#[derive(PartialOrd, Ord, PartialEq, Eq, Hash)]
+pub struct DebugByteVectors(pub Vec<Vec<u8>>);
+
+impl fmt::Debug for DebugByteVectors {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut v = Vec::new();
+        let mut drawer = Drawer::new(&mut v);
+
+        drawer.write(b"[ ").expect("write to a vector");
+
+        for v in self.0.iter() {
+            drawer = v.visualize(drawer).expect("write to a vector");
+            drawer.write(b", ").expect("write to a vector");
+        }
+
+        drawer.write(b" ]").expect("write to a vector");
+
+        f.write_str(&String::from_utf8_lossy(&v))
+    }
 }
 
 /// A `io::Write` proxy to prepend padding and symbols to draw trees
@@ -17,7 +55,7 @@ pub struct Drawer<W: Write> {
     write: W,
 }
 
-impl<'a, W: Write> Drawer<W> {
+impl<W: Write> Drawer<W> {
     pub fn new(write: W) -> Self {
         Drawer { level: 0, write }
     }
@@ -54,9 +92,13 @@ impl<'a, W: Write> Drawer<W> {
 }
 
 pub fn to_hex(bytes: &[u8]) -> String {
-    let mut result = hex::encode(bytes);
-    result.truncate(HEX_LEN);
-    result
+    let encoded = hex::encode(bytes);
+    let remaining = encoded.len().saturating_sub(HEX_LEN);
+    if remaining >= 8 {
+        format!("{}..{}", &encoded[0..HEX_LEN], &encoded[remaining..])
+    } else {
+        encoded
+    }
 }
 
 impl Visualize for [u8] {
@@ -95,7 +137,7 @@ pub fn visualize_stdout<T: Visualize + ?Sized>(value: &T) {
         .expect("IO error when trying to `visualize`");
 }
 
-/// `visulize` shortcut to write into provided buffer, should be a `Vec` not a
+/// `visualize` shortcut to write into provided buffer, should be a `Vec` not a
 /// slice because slices won't grow if needed.
 pub fn visualize_to_vec<T: Visualize + ?Sized>(v: &mut Vec<u8>, value: &T) {
     let drawer = Drawer::new(v);

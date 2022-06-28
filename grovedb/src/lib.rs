@@ -1,17 +1,22 @@
+extern crate core;
+
 pub mod batch;
 mod operations;
+mod query;
 mod subtree;
 #[cfg(test)]
 mod tests;
 mod util;
 mod visualize;
+
 use std::{collections::BTreeMap, path::Path};
 
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
+pub use query::{PathQuery, SizedQuery};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
 pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
@@ -37,6 +42,8 @@ pub enum Error {
     InternalError(&'static str),
     #[error("invalid proof: {0}")]
     InvalidProof(&'static str),
+    #[error("invalid input: {0}")]
+    InvalidInput(&'static str),
 
     // Path errors
 
@@ -64,48 +71,15 @@ pub enum Error {
     #[error("data corruption error: {0}")]
     CorruptedData(String),
 
+    #[error("corrupted code execution error: {0}")]
+    CorruptedCodeExecution(&'static str),
+
+    #[error("invalid batch operation error: {0}")]
+    InvalidBatchOperation(&'static str),
+
     // Support errors
     #[error("not supported: {0}")]
     NotSupported(&'static str),
-}
-
-#[derive(Debug, Clone)]
-pub struct PathQuery {
-    // TODO: Make generic over path type
-    pub path: Vec<Vec<u8>>,
-    pub query: SizedQuery,
-}
-
-// If a subquery exists :
-// limit should be applied to the elements returned by the subquery
-// offset should be applied to the first item that will subqueried (first in the
-// case of a range)
-#[derive(Debug, Clone)]
-pub struct SizedQuery {
-    pub query: Query,
-    pub limit: Option<u16>,
-    pub offset: Option<u16>,
-}
-
-impl SizedQuery {
-    pub const fn new(query: Query, limit: Option<u16>, offset: Option<u16>) -> Self {
-        Self {
-            query,
-            limit,
-            offset,
-        }
-    }
-}
-
-impl PathQuery {
-    pub const fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> Self {
-        Self { path, query }
-    }
-
-    pub const fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> Self {
-        let query = SizedQuery::new(query, None, None);
-        Self { path, query }
-    }
 }
 
 pub struct GroveDb {
@@ -133,16 +107,13 @@ impl GroveDb {
 
     /// Returns root hash of GroveDb.
     /// Will be `None` if GroveDb is empty.
-    pub fn root_hash(
-        &self,
-        transaction: TransactionArg,
-    ) -> CostContext<Result<Option<[u8; 32]>, Error>> {
+    pub fn root_hash(&self, transaction: TransactionArg) -> CostResult<Option<[u8; 32]>, Error> {
         Self::get_root_tree_internal(&self.db, transaction).map_ok(|x| x.root())
     }
 
     fn get_root_leaf_keys_internal<'db, S>(
         meta_storage: &S,
-    ) -> CostContext<Result<BTreeMap<Vec<u8>, usize>, Error>>
+    ) -> CostResult<BTreeMap<Vec<u8>, usize>, Error>
     where
         S: StorageContext<'db>,
         Error: From<<S as StorageContext<'db>>::Error>,
@@ -152,13 +123,13 @@ impl GroveDb {
             ..Default::default()
         };
 
-        let root_leaf_keys: BTreeMap<Vec<u8>, usize> = if let Some(root_leaf_keys_serialized) = cost_return_on_error_no_add!(
+        let root_leaf_keys = if let Some(root_leaf_keys_serialized) = cost_return_on_error_no_add!(
             &cost,
             meta_storage
                 .get_meta(ROOT_LEAFS_SERIALIZED_KEY)
                 .map_err(|e| e.into())
         ) {
-            cost.loaded_bytes += root_leaf_keys_serialized.len();
+            cost.loaded_bytes += root_leaf_keys_serialized.len() as u32;
             cost_return_on_error_no_add!(
                 &cost,
                 bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {
@@ -174,7 +145,7 @@ impl GroveDb {
     fn get_root_leaf_keys(
         &self,
         transaction: TransactionArg,
-    ) -> CostContext<Result<BTreeMap<Vec<u8>, usize>, Error>> {
+    ) -> CostResult<BTreeMap<Vec<u8>, usize>, Error> {
         meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
             Self::get_root_leaf_keys_internal(&meta_storage)
         })
@@ -183,7 +154,7 @@ impl GroveDb {
     fn get_root_tree_internal(
         db: &RocksDbStorage,
         transaction: TransactionArg,
-    ) -> CostContext<Result<MerkleTree<Sha256>, Error>> {
+    ) -> CostResult<MerkleTree<Sha256>, Error> {
         let mut cost = OperationCost::default();
 
         let root_leaf_keys = meta_storage_context_optional_tx!(db, transaction, meta_storage, {
@@ -209,7 +180,7 @@ impl GroveDb {
     pub fn get_root_tree(
         &self,
         transaction: TransactionArg,
-    ) -> CostContext<Result<MerkleTree<Sha256>, Error>> {
+    ) -> CostResult<MerkleTree<Sha256>, Error> {
         Self::get_root_tree_internal(&self.db, transaction)
     }
 
@@ -218,7 +189,7 @@ impl GroveDb {
         &self,
         path: P,
         transaction: TransactionArg,
-    ) -> CostContext<Result<(), Error>>
+    ) -> CostResult<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -283,12 +254,16 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    fn update_tree_item_preserve_flag<'db, K: AsRef<[u8]> + Copy, S: StorageContext<'db>>(
+    pub(crate) fn update_tree_item_preserve_flag<
+        'db,
+        K: AsRef<[u8]> + Copy,
+        S: StorageContext<'db>,
+    >(
         parent_tree: &mut Merk<S>,
         key: K,
         root_hash: [u8; 32],
-    ) -> CostContext<Result<(), Error>> {
-        Self::get_element_from_subtree(&parent_tree, key).flat_map_ok(|element| {
+    ) -> CostResult<(), Error> {
+        Self::get_element_from_subtree(parent_tree, key).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(root_hash, flag);
                 tree.insert(parent_tree, key.as_ref())
@@ -302,7 +277,7 @@ impl GroveDb {
     fn get_element_from_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         subtree: &Merk<S>,
         key: K,
-    ) -> CostContext<Result<Element, Error>> {
+    ) -> CostResult<Element, Error> {
         subtree
             .get(key.as_ref())
             .map_err(|_| Error::InvalidPath("can't find subtree in parent during propagation"))

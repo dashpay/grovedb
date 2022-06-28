@@ -4,21 +4,25 @@ use crate::Error;
 
 pub const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ProofType {
-    MerkProof,
-    SizedMerkProof,
-    RootProof,
-    InvalidProof,
+    Merk,
+    SizedMerk,
+    Root,
+    EmptyTree,
+    AbsentPath,
+    Invalid,
 }
 
 impl From<ProofType> for u8 {
     fn from(proof_type: ProofType) -> Self {
         match proof_type {
-            ProofType::MerkProof => 0x01,
-            ProofType::SizedMerkProof => 0x02,
-            ProofType::RootProof => 0x03,
-            ProofType::InvalidProof => 0x10,
+            ProofType::Merk => 0x01,
+            ProofType::SizedMerk => 0x02,
+            ProofType::Root => 0x03,
+            ProofType::EmptyTree => 0x04,
+            ProofType::AbsentPath => 0x05,
+            ProofType::Invalid => 0x10,
         }
     }
 }
@@ -26,10 +30,12 @@ impl From<ProofType> for u8 {
 impl From<u8> for ProofType {
     fn from(val: u8) -> Self {
         match val {
-            0x01 => ProofType::MerkProof,
-            0x02 => ProofType::SizedMerkProof,
-            0x03 => ProofType::RootProof,
-            _ => ProofType::InvalidProof,
+            0x01 => ProofType::Merk,
+            0x02 => ProofType::SizedMerk,
+            0x03 => ProofType::Root,
+            0x04 => ProofType::EmptyTree,
+            0x05 => ProofType::AbsentPath,
+            _ => ProofType::Invalid,
         }
     }
 }
@@ -71,6 +77,7 @@ impl<'a> ProofReader<'a> {
         self.proof_data
             .read(&mut data_type)
             .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
+        dbg!(data_type);
 
         if let Some(expected_data_type) = expected_data_type_option {
             if data_type != [expected_data_type] {
@@ -80,7 +87,11 @@ impl<'a> ProofReader<'a> {
 
         let proof_type: ProofType = data_type[0].into();
 
-        let mut proof_length = [0; 8 as usize];
+        if proof_type == ProofType::EmptyTree || proof_type == ProofType::AbsentPath {
+            return Ok((proof_type, vec![]));
+        }
+
+        let mut proof_length = [0; 8_usize];
         self.proof_data
             .read(&mut proof_length)
             .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;

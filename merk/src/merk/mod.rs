@@ -1,7 +1,12 @@
 pub mod chunks;
 // TODO
 // pub mod restore;
-use std::{cell::Cell, cmp::Ordering, collections::LinkedList, fmt};
+use std::{
+    cell::Cell,
+    cmp::Ordering,
+    collections::{BTreeSet, LinkedList},
+    fmt,
+};
 
 use anyhow::{anyhow, Result};
 use costs::{
@@ -15,6 +20,8 @@ use crate::{
 };
 
 pub const ROOT_KEY_KEY: &[u8] = b"root";
+
+type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
 
 pub struct ProofConstructionResult {
     pub proof: Vec<u8>,
@@ -109,10 +116,10 @@ impl<'a, I: RawIterator> Iterator for KVIterator<'a, I> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(query_item) = self.current_query_item {
-            let kv_pair = self.get_kv(&query_item);
+            let kv_pair = self.get_kv(query_item);
 
             if kv_pair.is_some() {
-                return kv_pair;
+                kv_pair
             } else {
                 self.seek();
                 self.next()
@@ -162,7 +169,7 @@ where
         let mut to_delete = self.storage.new_batch();
         while iter.valid() {
             if let Some(key) = iter.key() {
-                cost.loaded_bytes += key.len();
+                cost.loaded_bytes += key.len() as u32;
                 // TODO compute cleared data for this storage batch
                 cost_return_on_error_no_add!(&cost, to_delete.delete(key).map_err(|e| e.into()));
             }
@@ -187,8 +194,16 @@ where
         let value =
             cost_return_on_error_no_add!(&cost, self.storage.get_aux(key).map_err(|e| e.into()));
 
-        cost.loaded_bytes = value.as_ref().map(|x| x.len()).unwrap_or(0);
+        cost.loaded_bytes = value.as_ref().map(|x| x.len()).unwrap_or(0) as u32;
         Ok(value).wrap_with_cost(cost)
+    }
+
+    /// Returns if the value at the given key exists
+    ///
+    /// Note that this is essentially the same as a normal RocksDB `get`, so
+    /// should be a fast operation and has almost no tree overhead.
+    pub fn exists(&self, key: &[u8]) -> CostContext<Result<bool>> {
+        self.has_node(key)
     }
 
     /// Gets a value for the given key. If the key is not found, `None` is
@@ -206,6 +221,50 @@ where
     /// when node not found by the key.
     pub fn get_hash(&self, key: &[u8]) -> CostContext<Result<Option<[u8; 32]>>> {
         self.get_node_fn(key, |node| node.hash())
+    }
+
+    /// See if a node's field exists
+    fn has_node(&self, key: &[u8]) -> CostContext<Result<bool>> {
+        self.use_tree(move |maybe_tree| {
+            let mut cursor = match maybe_tree {
+                None => return Ok(true).wrap_with_cost(Default::default()), // empty tree
+                Some(tree) => tree,
+            };
+
+            loop {
+                if key == cursor.key() {
+                    return Ok(true).wrap_with_cost(OperationCost::default());
+                }
+
+                let left = key < cursor.key();
+                let link = match cursor.link(left) {
+                    None => return Ok(true).wrap_with_cost(Default::default()), // not found
+                    Some(link) => link,
+                };
+
+                let maybe_child = link.tree();
+                match maybe_child {
+                    None => {
+                        // fetch from RocksDB
+                        break Tree::get(&self.storage, key).flat_map_ok(|maybe_node| {
+                            if let Some(node) = maybe_node {
+                                Ok(true).wrap_with_cost(OperationCost {
+                                    seek_count: 1,
+                                    loaded_bytes: node.value().len() as u32,
+                                    ..Default::default()
+                                })
+                            } else {
+                                Ok(false).wrap_with_cost(OperationCost {
+                                    seek_count: 1,
+                                    ..Default::default()
+                                })
+                            }
+                        });
+                    }
+                    Some(child) => cursor = child, // traverse to child
+                }
+            }
+        })
     }
 
     /// Generic way to get a node's field
@@ -236,12 +295,8 @@ where
                         // fetch from RocksDB
                         break Tree::get(&self.storage, key).flat_map_ok(|maybe_node| {
                             let mut cost = OperationCost::default();
-                            Ok(if let Some(node) = maybe_node {
-                                Some(f(&node).unwrap_add_cost(&mut cost))
-                            } else {
-                                None
-                            })
-                            .wrap_with_cost(cost)
+                            Ok(maybe_node.map(|node| f(&node).unwrap_add_cost(&mut cost)))
+                                .wrap_with_cost(cost)
                         });
                     }
                     Some(child) => cursor = child, // traverse to child
@@ -424,7 +479,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostContext<Result<(LinkedList<ProofOp>, Option<u16>, Option<u16>)>>
+    ) -> CostContext<Result<Proof>>
     where
         Q: Into<QueryItem>,
         I: IntoIterator<Item = Q>,
@@ -433,7 +488,7 @@ where
 
         self.use_tree_mut(|maybe_tree| {
             maybe_tree
-                .ok_or(anyhow!("Cannot create proof for empty tree"))
+                .ok_or_else(|| anyhow!("Cannot create proof for empty tree"))
                 .wrap_with_cost(Default::default())
                 .flat_map_ok(|tree| {
                     let mut ref_walker = RefWalker::new(tree, self.source());
@@ -466,7 +521,7 @@ where
                             .put_root(ROOT_KEY_KEY, tree.key())
                             .map_err(|e| e.into())
                             .wrap_with_cost(OperationCost {
-                                storage_written_bytes: tree.key().len(),
+                                storage_written_bytes: tree.key().len() as u32,
                                 ..Default::default()
                             })
                     })
@@ -487,7 +542,7 @@ where
                         .map(|_| vec![])
                         .map_err(|e| e.into())
                         .wrap_with_cost(OperationCost {
-                            storage_written_bytes: root_opt.map(|x| x.len()).unwrap_or(0),
+                            storage_written_bytes: root_opt.map(|x| x.len()).unwrap_or(0) as u32,
                             ..Default::default()
                         })
                 })
@@ -508,7 +563,7 @@ where
                         .put(&key, &value)
                         .map_err(|e| e.into())
                         .wrap_with_cost(OperationCost {
-                            storage_written_bytes: value.len(),
+                            storage_written_bytes: value.len() as u32,
                             ..Default::default()
                         })
                 );
@@ -527,7 +582,7 @@ where
                         .delete(&key)
                         .map_err(|e| e.into())
                         .wrap_with_cost(OperationCost {
-                            storage_written_bytes: value.map(|x| x.len()).unwrap_or(0),
+                            storage_written_bytes: value.map(|x| x.len()).unwrap_or(0) as u32,
                             ..Default::default()
                         }))
                 );
@@ -542,7 +597,7 @@ where
                         .put_aux(key, value)
                         .map_err(|e| e.into())
                         .wrap_with_cost(OperationCost {
-                            storage_written_bytes: value.len(),
+                            storage_written_bytes: value.len() as u32,
                             ..Default::default()
                         })
                 ),
@@ -552,7 +607,7 @@ where
                         .put_aux(key, value)
                         .map_err(|e| e.into())
                         .wrap_with_cost(OperationCost {
-                            storage_written_bytes: value.len(),
+                            storage_written_bytes: value.len() as u32,
                             ..Default::default()
                         })
                 ),
@@ -572,7 +627,7 @@ where
                             .delete_aux(key)
                             .map_err(|e| e.into())
                             .wrap_with_cost(OperationCost {
-                                storage_written_bytes: value.map(|x| x.len()).unwrap_or(0),
+                                storage_written_bytes: value.map(|x| x.len()).unwrap_or(0) as u32,
                                 ..Default::default()
                             }))
                     )
@@ -602,6 +657,18 @@ where
         iter.seek_to_first();
 
         !iter.valid()
+    }
+
+    pub fn is_empty_tree_except(&self, mut except_keys: BTreeSet<&[u8]>) -> bool {
+        let mut iter = self.storage.raw_iter();
+        iter.seek_to_first();
+        while let Some(key) = iter.key() {
+            if except_keys.take(key).is_none() {
+                return false;
+            }
+            iter.next()
+        }
+        true
     }
 
     fn source(&self) -> MerkSource<S> {
@@ -637,8 +704,9 @@ where
                     ..Default::default()
                 };
                 if let Ok(Some(key)) = key_res {
-                    cost.loaded_bytes = key.len(); // Successful seek means some
-                                                   // loaded bytes.
+                    cost.loaded_bytes = key.len() as u32; // Successful seek
+                                                          // means some
+                                                          // loaded bytes.
                 }
                 cost
             })
@@ -695,7 +763,7 @@ where
 {
     fn fetch(&self, link: &Link) -> CostContext<Result<Tree>> {
         Tree::get(self.storage, link.key())
-            .map_ok(|x| x.ok_or(anyhow!("Key not found")))
+            .map_ok(|x| x.ok_or_else(|| anyhow!("Key not found")))
             .flatten()
     }
 }
