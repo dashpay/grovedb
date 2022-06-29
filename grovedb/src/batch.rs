@@ -10,7 +10,7 @@ use std::{
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use indexmap::IndexMap;
+use indexmap::{map::Entry, IndexMap};
 use merk::Merk;
 use nohash_hasher::IntMap;
 use storage::{Storage, StorageBatch, StorageContext};
@@ -422,45 +422,35 @@ impl GroveDb {
                                 ops_by_level_path.get_mut(&(current_level - 1))
                             {
                                 if let Some(ops_on_path) = ops_at_level_above.get_mut(parent_path) {
-                                    if let Some((index, _, op)) = ops_on_path.shift_remove_full(key) {
-                                        let new_op = match op {
-                                            Op::ReplaceTreeHash { .. } => {
-                                                Op::ReplaceTreeHash { hash: root_hash }
-                                            }
-                                            Op::Insert { element } => {
-                                                if let Element::Tree(_, storage_flags) = element {
-                                                    Op::Insert {
-                                                        element: Element::new_tree_with_flags(
-                                                            root_hash,
-                                                            storage_flags,
-                                                        ),
+                                    match ops_on_path.entry(key.to_vec()) {
+                                        Entry::Vacant(vaccant_entry) => {
+                                            vaccant_entry
+                                                .insert(Op::ReplaceTreeHash { hash: root_hash });
+                                        }
+                                        Entry::Occupied(occupied_entry) => {
+                                            match occupied_entry.into_mut() {
+                                                Op::ReplaceTreeHash { hash } => *hash = root_hash,
+                                                Op::Insert { element } => {
+                                                    if let Element::Tree(hash, _) = element {
+                                                        *hash = root_hash
+                                                    } else {
+                                                        return Err(Error::InvalidBatchOperation(
+                                                            "insertion of element under a non tree",
+                                                        ))
+                                                        .wrap_with_cost(cost);
                                                     }
-                                                } else {
-                                                    return Err(Error::InvalidBatchOperation(
-                                                        "insertion of element under a non tree",
-                                                    ))
-                                                    .wrap_with_cost(cost);
+                                                }
+                                                Op::Delete => {
+                                                    if root_hash != [0u8; 32] {
+                                                        return Err(Error::InvalidBatchOperation(
+                                                            "modification of tree when it will be \
+                                                             deleted",
+                                                        ))
+                                                        .wrap_with_cost(cost);
+                                                    }
                                                 }
                                             }
-                                            Op::Delete => {
-                                                if root_hash != [0u8; 32] {
-                                                    return Err(Error::InvalidBatchOperation(
-                                                        "modification of tree when it will be \
-                                                         deleted",
-                                                    ))
-                                                    .wrap_with_cost(cost);
-                                                } else {
-                                                    op
-                                                }
-                                            }
-                                        };
-                                        let (end_index, _) = ops_on_path.insert_full(key.clone(), new_op);
-                                        ops_on_path.move_index(end_index, index);
-                                    } else {
-                                        ops_on_path.insert(
-                                            key.clone(),
-                                            Op::ReplaceTreeHash { hash: root_hash },
-                                        );
+                                        }
                                     }
                                 } else {
                                     let mut ops_on_path: IndexMap<Vec<u8>, Op> = IndexMap::new();
