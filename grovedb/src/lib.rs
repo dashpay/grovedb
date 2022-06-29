@@ -377,6 +377,8 @@ impl GroveDb {
                     expected_root_hash,
                     subtree_root_hash
                 );
+            } else {
+                println!("root hash match {:?}", expected_root_hash);
             }
         }
 
@@ -400,6 +402,8 @@ impl GroveDb {
                             expected_root_hash,
                             actual_root_hash
                         );
+                    } else {
+                        println!("root hash match {:?}", expected_root_hash);
                     }
                 }
                 _ => {}
