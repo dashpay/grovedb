@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Error};
-use costs::{CostContext, CostsExt, OperationCost};
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+};
 use ed::{Decode, Encode};
 use storage::StorageContext;
 
@@ -16,25 +18,21 @@ impl Tree {
         K: AsRef<[u8]>,
         Error: From<S::Error>,
     {
-        let mut cost = OperationCost {
-            seek_count: 1,
-            ..Default::default()
-        };
-        let tree_bytes: Result<_, Error> = storage.get(&key).map_err(|e| e.into());
-        if let Ok(Some(bytes)) = &tree_bytes {
-            cost.loaded_bytes = bytes.len() as u32;
-        }
-        let tree = tree_bytes.and_then(|raw_opt| raw_opt.map(|x| Tree::decode_raw(&x)).transpose());
+        let mut cost = OperationCost::default();
+        let tree_bytes = cost_return_on_error!(&mut cost, storage.get(&key).map_err(|e| e.into()));
 
-        let res = match tree {
-            Ok(Some(mut t)) => {
-                t.set_key(key.as_ref().to_vec());
-                Ok(Some(t))
-            }
-            other => other,
-        };
+        let tree_opt = cost_return_on_error_no_add!(
+            &cost,
+            tree_bytes.map(|x| Tree::decode_raw(&x)).transpose()
+        );
 
-        res.wrap_with_cost(cost)
+        Ok(if let Some(tree) = tree_opt {
+            tree.set_key(key.as_ref().to_vec());
+            Some(tree)
+        } else {
+            None
+        })
+        .wrap_with_cost(cost)
     }
 }
 

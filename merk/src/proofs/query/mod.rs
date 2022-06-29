@@ -479,96 +479,116 @@ impl QueryItem {
         !matches!(self, QueryItem::Key(_))
     }
 
-    pub fn seek_for_iter<I: RawIterator>(&self, iter: &mut I, left_to_right: bool) {
+    pub fn seek_for_iter<I: RawIterator>(
+        &self,
+        iter: &mut I,
+        left_to_right: bool,
+    ) -> CostContext<()> {
         match self {
             QueryItem::Key(start) => iter.seek(start),
             QueryItem::Range(Range { start, end }) => {
                 if left_to_right {
-                    iter.seek(start);
+                    iter.seek(start)
                 } else {
-                    iter.seek(end);
-                    iter.prev();
+                    iter.seek(end).flat_map(|_| iter.prev())
                 }
             }
-            QueryItem::RangeInclusive(range_inclusive) => {
-                iter.seek(if left_to_right {
-                    range_inclusive.start()
-                } else {
-                    range_inclusive.end()
-                });
-            }
+            QueryItem::RangeInclusive(range_inclusive) => iter.seek(if left_to_right {
+                range_inclusive.start()
+            } else {
+                range_inclusive.end()
+            }),
             QueryItem::RangeFull(..) => {
                 if left_to_right {
-                    iter.seek_to_first();
+                    iter.seek_to_first()
                 } else {
-                    iter.seek_to_last();
+                    iter.seek_to_last()
                 }
             }
             QueryItem::RangeFrom(RangeFrom { start }) => {
                 if left_to_right {
-                    iter.seek(start);
+                    iter.seek(start)
                 } else {
-                    iter.seek_to_last();
+                    iter.seek_to_last()
                 }
             }
             QueryItem::RangeTo(RangeTo { end }) => {
                 if left_to_right {
-                    iter.seek_to_first();
+                    iter.seek_to_first()
                 } else {
-                    iter.seek(end);
-                    iter.prev();
+                    iter.seek(end).flat_map(|_| iter.prev())
                 }
             }
             QueryItem::RangeToInclusive(RangeToInclusive { end }) => {
                 if left_to_right {
-                    iter.seek_to_first();
+                    iter.seek_to_first()
                 } else {
-                    iter.seek_for_prev(end);
+                    iter.seek_for_prev(end)
                 }
             }
             QueryItem::RangeAfter(RangeFrom { start }) => {
                 if left_to_right {
-                    iter.seek(start);
-                    // if the key is the same as start we should go to next
-                    if let Some(key) = iter.key() {
-                        if key == start {
-                            iter.next()
-                        }
-                    }
+                    iter.seek(start)
+                        .flat_map(|_| iter.key())
+                        .flat_map(|key_opt| {
+                            // if the key is the same as start we should go to next
+                            if let Some(key) = key_opt {
+                                if key == start {
+                                    iter.next()
+                                } else {
+                                    ().wrap_with_cost(OperationCost::default())
+                                }
+                            } else {
+                                ().wrap_with_cost(OperationCost::default())
+                            }
+                        })
                 } else {
-                    iter.seek_to_last();
+                    iter.seek_to_last()
                 }
             }
             QueryItem::RangeAfterTo(Range { start, end }) => {
                 if left_to_right {
-                    iter.seek(start);
-                    // if the key is the same as start we should go to next
-                    if let Some(key) = iter.key() {
-                        if key == start {
-                            iter.next()
-                        }
-                    }
+                    iter.seek(start)
+                        .flat_map(|_| iter.key())
+                        .flat_map(|key_opt| {
+                            // if the key is the same as start we тshould go to next
+                            if let Some(key) = key_opt {
+                                if key == start {
+                                    iter.next()
+                                } else {
+                                    ().wrap_with_cost(OperationCost::default())
+                                }
+                            } else {
+                                ().wrap_with_cost(OperationCost::default())
+                            }
+                        })
                 } else {
-                    iter.seek(end);
-                    iter.prev();
+                    iter.seek(end).flat_map(|_| iter.prev())
                 }
             }
             QueryItem::RangeAfterToInclusive(range_inclusive) => {
                 if left_to_right {
                     let start = range_inclusive.start();
-                    iter.seek(start);
-                    // if the key is the same as start we should go to next
-                    if let Some(key) = iter.key() {
-                        if key == start {
-                            iter.next();
-                        }
-                    }
+                    iter.seek(start)
+                        .flat_map(|_| iter.key())
+                        .flat_map(|key_opt| {
+                            // if the key is the same as start we тshould go to next
+                            if let Some(key) = key_opt {
+                                if key == start {
+                                    iter.next()
+                                } else {
+                                    ().wrap_with_cost(OperationCost::default())
+                                }
+                            } else {
+                                ().wrap_with_cost(OperationCost::default())
+                            }
+                        })
                 } else {
                     let end = range_inclusive.end();
-                    iter.seek_for_prev(end);
+                    iter.seek_for_prev(end)
                 }
             }
-        };
+        }
     }
 
     fn compare(a: &[u8], b: &[u8]) -> cmp::Ordering {
@@ -588,119 +608,75 @@ impl QueryItem {
         iter: &I,
         limit: Option<u16>,
         left_to_right: bool,
-    ) -> bool {
-        match self {
-            QueryItem::Key(start) => iter.key() == Some(start),
+    ) -> CostContext<bool> {
+        let mut cost = OperationCost::default();
+
+        // Check that if limit is set it's greater than 0 and iterator points to a valid
+        // place.
+        let basic_valid =
+            limit.map(|l| l > 0).unwrap_or(true) && iter.valid().unwrap_add_cost(&mut cost);
+
+        if !basic_valid {
+            return false.wrap_with_cost(cost);
+        }
+
+        // Key should also be something, otherwise terminate early.
+        let key = if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
+            key
+        } else {
+            return false.wrap_with_cost(cost);
+        };
+
+        let is_valid = match self {
+            QueryItem::Key(start) => key == start,
             QueryItem::Range(Range { start, end }) => {
-                let basic_valid =
-                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
-                let valid = basic_valid
-                    && if left_to_right {
-                        iter.key() < Some(end)
-                    } else {
-                        iter.key() >= Some(start)
-                    };
-                valid
+                if left_to_right {
+                    key < end
+                } else {
+                    key >= start
+                }
             }
             QueryItem::RangeInclusive(range_inclusive) => {
-                let basic_valid =
-                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
-                let valid = basic_valid
-                    && if left_to_right {
-                        iter.key() <= Some(range_inclusive.end())
-                    } else {
-                        iter.key() >= Some(range_inclusive.start())
-                    };
-                valid
+                if left_to_right {
+                    key <= range_inclusive.end()
+                } else {
+                    key >= range_inclusive.start()
+                }
             }
             QueryItem::RangeFull(..) => {
-                let valid =
-                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
-                valid
+                true // requires only basic validation which is done above
             }
-            QueryItem::RangeFrom(RangeFrom { start }) => {
-                let basic_valid =
-                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
-                let valid = basic_valid
-                    && if left_to_right {
-                        true
-                    } else {
-                        iter.key() >= Some(start)
-                    };
-                valid
-            }
-            QueryItem::RangeTo(RangeTo { end }) => {
-                let basic_valid =
-                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
-                let valid = basic_valid
-                    && if left_to_right {
-                        iter.key() < Some(end)
-                    } else {
-                        true
-                    };
-                valid
-            }
-            QueryItem::RangeToInclusive(RangeToInclusive { end }) => {
-                let basic_valid =
-                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
-                let valid = basic_valid
-                    && if left_to_right {
-                        iter.key() <= Some(end)
-                    } else {
-                        true
-                    };
-                valid
-            }
-            QueryItem::RangeAfter(RangeFrom { start }) => {
-                let basic_valid =
-                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
-                let valid = basic_valid
-                    && if left_to_right {
-                        true
-                    } else {
-                        iter.key() > Some(start)
-                    };
-                valid
-            }
+            QueryItem::RangeFrom(RangeFrom { start }) => left_to_right || key >= start,
+            QueryItem::RangeTo(RangeTo { end }) => !left_to_right || key < end,
+            QueryItem::RangeToInclusive(RangeToInclusive { end }) => !left_to_right || key <= end,
+            QueryItem::RangeAfter(RangeFrom { start }) => left_to_right || key > start,
             QueryItem::RangeAfterTo(Range { start, end }) => {
-                let basic_valid =
-                    (limit == None || limit.unwrap() > 0) && iter.valid() && iter.key().is_some();
-                let valid = basic_valid
-                    && if left_to_right {
-                        iter.key() < Some(end)
-                    } else {
-                        iter.key() > Some(start)
-                    };
-                valid
+                if left_to_right {
+                    key < end
+                } else {
+                    key > start
+                }
             }
             QueryItem::RangeAfterToInclusive(range_inclusive) => {
-                let basic_valid = (limit == None || limit.unwrap() > 0) && iter.valid();
-                if !basic_valid {
-                    return false;
-                }
-                let valid = match iter.key() {
-                    None => false,
-                    Some(key) => {
-                        if left_to_right {
-                            let end = range_inclusive.end().as_slice();
-                            match Self::compare(key, end) {
-                                Ordering::Less => true,
-                                Ordering::Equal => true,
-                                Ordering::Greater => false,
-                            }
-                        } else {
-                            let start = range_inclusive.start().as_slice();
-                            match Self::compare(key, start) {
-                                Ordering::Less => false,
-                                Ordering::Equal => false,
-                                Ordering::Greater => true,
-                            }
-                        }
+                if left_to_right {
+                    let end = range_inclusive.end().as_slice();
+                    match Self::compare(key, end) {
+                        Ordering::Less => true,
+                        Ordering::Equal => true,
+                        Ordering::Greater => false,
                     }
-                };
-                valid
+                } else {
+                    let start = range_inclusive.start().as_slice();
+                    match Self::compare(key, start) {
+                        Ordering::Less => false,
+                        Ordering::Equal => false,
+                        Ordering::Greater => true,
+                    }
+                }
             }
-        }
+        };
+
+        is_valid.wrap_with_cost(cost)
     }
 }
 
