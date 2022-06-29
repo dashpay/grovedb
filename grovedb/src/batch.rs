@@ -6,11 +6,12 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     hash::Hash,
 };
+use indexmap::IndexMap;
+use indexmap::map::Entry;
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use indexmap::{map::Entry, IndexMap};
 use merk::Merk;
 use nohash_hasher::IntMap;
 use storage::{Storage, StorageBatch, StorageContext};
@@ -422,9 +423,9 @@ impl GroveDb {
                                 ops_by_level_path.get_mut(&(current_level - 1))
                             {
                                 if let Some(ops_on_path) = ops_at_level_above.get_mut(parent_path) {
-                                    match ops_on_path.entry(key.to_vec()) {
-                                        Entry::Vacant(vaccant_entry) => {
-                                            vaccant_entry
+                                    match ops_on_path.entry(key.clone()) {
+                                        Entry::Vacant(vacant_entry) => {
+                                            vacant_entry
                                                 .insert(Op::ReplaceTreeHash { hash: root_hash });
                                         }
                                         Entry::Occupied(occupied_entry) => {
