@@ -67,7 +67,9 @@ impl GroveDb {
                         break;
                     }
 
-                    let has_item = Element::get(subtree.as_ref().expect("confirmed not error above"), key).unwrap_add_cost(&mut cost);
+                    let has_item =
+                        Element::get(subtree.as_ref().expect("confirmed not error above"), key)
+                            .unwrap_add_cost(&mut cost);
 
                     let mut next_key_query = Query::new();
                     next_key_query.insert_key(key.to_vec());
@@ -402,7 +404,10 @@ impl GroveDb {
     }
 
     /// Opens merk at a given path without transaction
-    fn open_subtree<'p, P>(&self, path: P) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
+    pub fn open_subtree<'p, P>(
+        &self,
+        path: P,
+    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,

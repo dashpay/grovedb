@@ -18,6 +18,7 @@ pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 pub use query::{PathQuery, SizedQuery};
 use rs_merkle::{algorithms::Sha256, MerkleTree};
+use storage::RawIterator;
 pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
     Storage, StorageContext,
@@ -356,5 +357,54 @@ impl GroveDb {
     /// [`GroveDb::start_transaction`]
     pub fn rollback_transaction(&self, transaction: &Transaction) -> Result<(), Error> {
         Ok(self.db.rollback_transaction(transaction)?)
+    }
+
+    pub fn verify_tree_hash(&self) -> Result<(), Error> {
+        // TODO: remove unwraps
+        let root_tree = self.get_root_tree(None).unwrap().unwrap();
+        let expected_root_child_hashes = root_tree.leaves().unwrap();
+        let root_leaf_keys = self.get_root_leaf_keys(None).unwrap().unwrap();
+
+        for (key, index) in root_leaf_keys.iter() {
+            let path = vec![key.as_slice()];
+            let subtree_root_hash = self.verify_merk_tree_hash(&path);
+            let expected_root_hash = expected_root_child_hashes[index.clone()];
+            // subtree root hash should be equal to the expected root hash at that point
+            if subtree_root_hash != expected_root_hash {
+                println!(
+                    "root hash mismatch for tree at {:?} \n expected: {:?} \n got: {:?} \n",
+                    std::str::from_utf8(&key),
+                    expected_root_hash,
+                    subtree_root_hash
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn verify_merk_tree_hash(&self, path: &Vec<&[u8]>) -> [u8; 32] {
+        let subtree = self.open_subtree(path.iter().copied()).unwrap().unwrap();
+        let mut element_iterator = Element::iterator(subtree.storage.raw_iter()).unwrap();
+        while let Some((key, element)) = element_iterator.next().unwrap().unwrap() {
+            match element {
+                Element::Tree(expected_root_hash, _) => {
+                    // recurse this, the root hash should be the same as the subtree it points too
+                    let mut new_path = path.clone();
+                    new_path.push(key.as_slice());
+                    let actual_root_hash = self.verify_merk_tree_hash(&new_path);
+                    if actual_root_hash != expected_root_hash {
+                        println!(
+                            "root hash mismatch for tree at {:?} \n expected: {:?} \n got: {:?} \n",
+                            &new_path.iter().map(|key|std::str::from_utf8(key)).collect::<Vec<_>>(),
+                            expected_root_hash,
+                            actual_root_hash
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        subtree.root_hash().unwrap()
     }
 }

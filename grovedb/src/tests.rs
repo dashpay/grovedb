@@ -762,13 +762,8 @@ fn test_proof_for_invalid_path() {
     let db = make_deep_tree();
 
     let query = Query::new();
-    let path_query = PathQuery::new_unsized(
-        vec![
-            b"deep_leaf".to_vec(),
-            b"invalid_key".to_vec(),
-        ],
-        query,
-    );
+    let path_query =
+        PathQuery::new_unsized(vec![b"deep_leaf".to_vec(), b"invalid_key".to_vec()], query);
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) =
