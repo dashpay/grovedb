@@ -422,7 +422,7 @@ impl GroveDb {
                                 ops_by_level_path.get_mut(&(current_level - 1))
                             {
                                 if let Some(ops_on_path) = ops_at_level_above.get_mut(parent_path) {
-                                    if let Some(op) = ops_on_path.remove(key) {
+                                    if let Some((index, _, op)) = ops_on_path.shift_remove_full(key) {
                                         let new_op = match op {
                                             Op::ReplaceTreeHash { .. } => {
                                                 Op::ReplaceTreeHash { hash: root_hash }
@@ -454,7 +454,8 @@ impl GroveDb {
                                                 }
                                             }
                                         };
-                                        ops_on_path.insert(key.clone(), new_op);
+                                        let (end_index, _) = ops_on_path.insert_full(key.clone(), new_op);
+                                        ops_on_path.move_index(end_index, index);
                                     } else {
                                         ops_on_path.insert(
                                             key.clone(),
