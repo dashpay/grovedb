@@ -512,44 +512,26 @@ where
         let mut batch = self.storage.new_batch();
         let to_batch_wrapped = self.use_tree_mut(|maybe_tree| -> UseTreeMutResult {
             // TODO: concurrent commit
+            let mut inner_cost = OperationCost::default();
+
             if let Some(tree) = maybe_tree {
                 // TODO: configurable committer
                 let mut committer = MerkCommitter::new(tree.height(), 100);
-                tree.commit(&mut committer)
-                    .flat_map_ok(|_| {
-                        // update pointer to root node
-                        batch
-                            .put_root(ROOT_KEY_KEY, tree.key())
-                            .map_err(|e| e.into())
-                            .wrap_with_cost(OperationCost {
-                                storage_written_bytes: tree.key().len() as u32,
-                                ..Default::default()
-                            })
-                    })
-                    .map_ok(|_| committer.batch)
+                cost_return_on_error!(&mut inner_cost, tree.commit(&mut committer));
+                // update pointer to root node
+                batch.put_root(ROOT_KEY_KEY, tree.key());
+
+                committer.batch
             } else {
                 // empty tree, delete pointer to root
-                let root_wrapped = self
-                    .storage
-                    .get_root(ROOT_KEY_KEY)
-                    .map_err(|e| e.into())
-                    .wrap_with_cost(OperationCost {
-                        seek_count: 1,
-                        ..Default::default()
-                    });
-                root_wrapped.flat_map_ok(|root_opt| {
-                    batch
-                        .delete_root(ROOT_KEY_KEY)
-                        .map(|_| vec![])
-                        .map_err(|e| e.into())
-                        .wrap_with_cost(OperationCost {
-                            storage_written_bytes: root_opt.map(|x| x.len()).unwrap_or(0) as u32,
-                            ..Default::default()
-                        })
-                })
+                batch.delete_root(ROOT_KEY_KEY);
+
+                vec![]
             }
+            .wrap_with_cost(inner_cost)
         });
-        let mut to_batch = cost_return_on_error!(&mut cost, to_batch_wrapped);
+
+        let to_batch = cost_return_on_error!(&mut cost, to_batch_wrapped);
 
         // TODO: move this to MerkCommitter impl?
         for key in deleted_keys {
@@ -558,25 +540,9 @@ where
         to_batch.sort_by(|a, b| a.0.cmp(&b.0));
         for (key, maybe_value) in to_batch {
             if let Some(value) = maybe_value {
-                cost_return_on_error!(
-                    &mut cost,
-                    batch
-                        .put(&key, &value)
-                        .map_err(|e| e.into())
-                        .wrap_with_cost(OperationCost {
-                            storage_written_bytes: value.len() as u32,
-                            ..Default::default()
-                        })
-                );
+                batch.put(&key, &value);
             } else {
-                let value_wrapped =
-                    self.storage
-                        .get(&key)
-                        .map_err(|e| e.into())
-                        .wrap_with_cost(OperationCost {
-                            seek_count: 1,
-                            ..Default::default()
-                        });
+                let value_wrapped = self.storage.get(&key).map_err(|e| e.into());
                 cost_return_on_error!(
                     &mut cost,
                     value_wrapped.flat_map_ok(|value| batch
@@ -653,23 +619,23 @@ where
         res
     }
 
-    pub fn is_empty_tree(&self) -> bool {
+    pub fn is_empty_tree(&self) -> CostContext<bool> {
         let mut iter = self.storage.raw_iter();
-        iter.seek_to_first();
-
-        !iter.valid()
+        iter.seek_to_first().flat_map(|_| iter.valid().map(|x| !x))
     }
 
-    pub fn is_empty_tree_except(&self, mut except_keys: BTreeSet<&[u8]>) -> bool {
+    pub fn is_empty_tree_except(&self, mut except_keys: BTreeSet<&[u8]>) -> CostContext<bool> {
+        let mut cost = OperationCost::default();
+
         let mut iter = self.storage.raw_iter();
-        iter.seek_to_first();
-        while let Some(key) = iter.key() {
+        iter.seek_to_first().unwrap_add_cost(&mut cost);
+        while let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
             if except_keys.take(key).is_none() {
-                return false;
+                return false.wrap_with_cost(cost);
             }
-            iter.next()
+            iter.next().unwrap_add_cost(&mut cost)
         }
-        true
+        true.wrap_with_cost(cost)
     }
 
     fn source(&self) -> MerkSource<S> {
@@ -699,18 +665,6 @@ where
     pub(crate) fn load_root(&mut self) -> CostContext<Result<()>> {
         self.storage
             .get_root(ROOT_KEY_KEY)
-            .wrap_fn_cost(|key_res| {
-                let mut cost = OperationCost {
-                    seek_count: 1, // One seek required to get where root key could be stored.
-                    ..Default::default()
-                };
-                if let Ok(Some(key)) = key_res {
-                    cost.loaded_bytes = key.len() as u32; // Successful seek
-                                                          // means some
-                                                          // loaded bytes.
-                }
-                cost
-            })
             .map(|root_result| root_result.map_err(|e| anyhow!(e)))
             .flat_map_ok(|tree_root_key_opt| {
                 // In case of successful seek for root key check if it exists
