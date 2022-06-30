@@ -38,6 +38,8 @@ pub enum Error {
     CyclicReference,
     #[error("reference hops limit exceeded")]
     ReferenceLimit,
+    #[error("missing reference {0}")]
+    MissingReference(&'static str),
     #[error("internal error: {0}")]
     InternalError(&'static str),
     #[error("invalid proof: {0}")]

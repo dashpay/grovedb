@@ -2,6 +2,7 @@
 
 use core::fmt;
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     collections::{BTreeMap, HashMap, HashSet},
     hash::Hash,
@@ -16,7 +17,10 @@ use nohash_hasher::IntMap;
 use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
-use crate::{Element, Error, GroveDb, TransactionArg, ROOT_LEAFS_SERIALIZED_KEY};
+use crate::{
+    operations::get::MAX_REFERENCE_HOPS, Element, Error, GroveDb, TransactionArg,
+    ROOT_LEAFS_SERIALIZED_KEY,
+};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -167,9 +171,97 @@ trait TreeCache {
         &mut self,
         path: &[Vec<u8>],
         ops_at_path_by_key: IndexMap<Vec<u8>, Op>,
-        references: &HashMap<Vec<Vec<u8>>, Vec<u8>>,
+        ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
     ) -> CostResult<[u8; 32], Error>;
+}
+
+impl<'db, S, F> TreeCacheMerkByPath<S, F>
+where
+    F: Fn(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+    S: StorageContext<'db>,
+{
+    fn follow_reference<'a>(
+        &'a mut self,
+        qualified_path: &[Vec<u8>],
+        ops_by_qualified_paths: &'a HashMap<Vec<Vec<u8>>, Op>,
+        recursions_allowed: u8,
+    ) -> CostResult<Cow<Element>, Error> {
+        let mut cost = OperationCost::default();
+        if recursions_allowed == 0 {
+            return Err(Error::ReferenceLimit).wrap_with_cost(cost);
+        }
+        if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
+            // the path is being modified, inserted or deleted in the batch of operations
+            match op {
+                Op::ReplaceTreeHash { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "references can not point to trees being updated",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                Op::Insert { element } => match element {
+                    Element::Item(..) => Ok(Cow::Borrowed(element)).wrap_with_cost(cost),
+                    Element::Reference(path, _) => {
+                        self.follow_reference(path, ops_by_qualified_paths, recursions_allowed - 1)
+                    }
+                    Element::Tree(..) => {
+                        return Err(Error::InvalidBatchOperation(
+                            "references can not point to trees being updated",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                },
+                Op::Delete => {
+                    return Err(Error::InvalidBatchOperation(
+                        "references can not point to something currently being deleted",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
+        } else {
+            let (key, reference_path) = qualified_path.split_last().unwrap(); // already checked
+            let reference_merk_wrapped = self
+                .merks
+                .remove(reference_path)
+                .map(|x| Ok(x).wrap_with_cost(Default::default()))
+                .unwrap_or_else(|| (self.get_merk_fn)(reference_path));
+            let mut merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
+
+            let referenced_element = cost_return_on_error!(
+                &mut cost,
+                merk.get(key.as_ref())
+                    .map_err(|e| Error::CorruptedData(e.to_string()))
+            );
+
+            let referenced_element = cost_return_on_error_no_add!(
+                &cost,
+                referenced_element.ok_or(Error::MissingReference("reference in batch is missing"))
+            );
+
+            let element = cost_return_on_error_no_add!(
+                &cost,
+                Element::deserialize(referenced_element.as_slice()).map_err(|_| {
+                    Error::CorruptedData(String::from("unable to deserialize element"))
+                })
+            );
+
+            match element {
+                Element::Item(..) => Ok(Cow::Owned(element)).wrap_with_cost(cost),
+                Element::Reference(path, _) => self.follow_reference(
+                    path.as_slice(),
+                    ops_by_qualified_paths,
+                    recursions_allowed - 1,
+                ),
+                Element::Tree(..) => {
+                    return Err(Error::InvalidBatchOperation(
+                        "references can not point to trees being updated",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
+        }
+    }
 }
 
 impl<'db, S, F> TreeCache for TreeCacheMerkByPath<S, F>
@@ -194,7 +286,7 @@ where
         &mut self,
         path: &[Vec<u8>],
         ops_at_path_by_key: IndexMap<Vec<u8>, Op>,
-        references: &HashMap<Vec<Vec<u8>>, Vec<u8>>,
+        ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
@@ -208,66 +300,47 @@ where
 
         for (key, op) in ops_at_path_by_key.into_iter() {
             match op {
-                Op::Insert { element } => {
-                    match &element {
-                        Element::Reference(path_reference, _) => {
-                            if path_reference.len() == 0 {
-                                return Err(Error::InvalidBatchOperation(
-                                    "attempting to insert an empty reference",
-                                ))
-                                    .wrap_with_cost(cost);
-                            }
-                            let batch_reference = references.get(path_reference);
-                            match batch_reference {
-                                None => {
-                                    let (key, reference_path) = path_reference.split_last().unwrap(); //already checked
-                                    let reference_merk_wrapped = self
-                                        .merks
-                                        .remove(reference_path)
-                                        .map(|x| Ok(x).wrap_with_cost(Default::default()))
-                                        .unwrap_or_else(|| (self.get_merk_fn)(path));
-                                    let mut merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
-
-                                    let referenced_element = cost_return_on_error!(
-                                        &mut cost,
-                                        merk.get(key.as_ref()).map_err(|e| Error::CorruptedData(e.to_string()))
-                                    );
-                                    if let Some(referenced_element) = referenced_element {
-                                        cost_return_on_error!(
-                                            &mut cost,
-                                            element.insert_reference(&mut merk, key, referenced_element)
-                                        );
-                                    } else {
-                                        return Err(Error::InvalidBatchOperation(
-                                            "attempting to insert an unknown reference",
-                                        ))
-                                            .wrap_with_cost(cost);
-                                    }
-
-                                }
-                                Some(value) => {
-                                    cost_return_on_error!(&mut cost, element.insert_reference(&mut merk, key, value.clone()));
-                                }
-                            }
+                Op::Insert { element } => match &element {
+                    Element::Reference(path_reference, _) => {
+                        if path_reference.len() == 0 {
+                            return Err(Error::InvalidBatchOperation(
+                                "attempting to insert an empty reference",
+                            ))
+                            .wrap_with_cost(cost);
                         }
-                        Element::Item(_, _) | Element::Tree(_, _) => {
-                            if batch_apply_options.validate_insertion_does_not_override {
-                                let inserted = cost_return_on_error!(
-                                    &mut cost,
-                                    element.insert_if_not_exists(&mut merk, key.as_slice())
-                                );
-                                if !inserted {
-                                    return Err(Error::InvalidBatchOperation(
-                                        "attempting to overwrite a tree",
-                                    ))
-                                        .wrap_with_cost(cost);
-                                }
-                            } else {
-                                cost_return_on_error!(&mut cost, element.insert(&mut merk, key));
+                        let referenced_element = cost_return_on_error!(
+                            &mut cost,
+                            self.follow_reference(
+                                path_reference,
+                                ops_by_qualified_paths,
+                                MAX_REFERENCE_HOPS as u8
+                            )
+                        );
+                        let serialized =
+                            cost_return_on_error_no_add!(&cost, referenced_element.serialize());
+
+                        cost_return_on_error!(
+                            &mut cost,
+                            element.insert_reference(&mut merk, key, serialized)
+                        );
+                    }
+                    Element::Item(..) | Element::Tree(..) => {
+                        if batch_apply_options.validate_insertion_does_not_override {
+                            let inserted = cost_return_on_error!(
+                                &mut cost,
+                                element.insert_if_not_exists(&mut merk, key.as_slice())
+                            );
+                            if !inserted {
+                                return Err(Error::InvalidBatchOperation(
+                                    "attempting to overwrite a tree",
+                                ))
+                                .wrap_with_cost(cost);
                             }
+                        } else {
+                            cost_return_on_error!(&mut cost, element.insert(&mut merk, key));
                         }
                     }
-                }
+                },
                 Op::Delete => {
                     cost_return_on_error!(&mut cost, Element::delete(&mut merk, key));
                 }
@@ -297,7 +370,7 @@ impl TreeCache for TreeCacheKnownPaths {
         &mut self,
         path: &[Vec<u8>],
         ops_at_path_by_key: IndexMap<Vec<u8>, Op>,
-        _references: &HashMap<Vec<Vec<u8>>, Vec<u8>>,
+        _ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         _batch_apply_options: &BatchApplyOptions,
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
@@ -319,11 +392,11 @@ type OpsByLevelPath = IntMap<usize, IndexMap<Vec<Vec<u8>>, IndexMap<Vec<u8>, Op>
 
 struct BatchStructure<C> {
     /// Operations by level path
-    ops_by_level_path: OpsByLevelPath,
+    ops_by_level_paths: OpsByLevelPath,
+    /// This is for references
+    ops_by_qualified_paths: HashMap<Vec<Vec<u8>>, Op>,
     /// Merk trees
     merk_tree_cache: C,
-    /// Internal references
-    references: HashMap<Vec<Vec<u8>>, Vec<u8>>,
     /// Last level
     last_level: usize,
 }
@@ -331,7 +404,7 @@ struct BatchStructure<C> {
 impl<S: fmt::Debug> fmt::Debug for BatchStructure<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut fmt_int_map = IntMap::default();
-        for (level, path_map) in self.ops_by_level_path.iter() {
+        for (level, path_map) in self.ops_by_level_paths.iter() {
             let mut fmt_path_map = BTreeMap::default();
 
             for (path, key_map) in path_map.iter() {
@@ -346,7 +419,7 @@ impl<S: fmt::Debug> fmt::Debug for BatchStructure<S> {
         }
 
         f.debug_struct("BatchStructure")
-            .field("ops_by_level_path", &fmt_int_map)
+            .field("ops_by_level_paths", &fmt_int_map)
             .field("merk_tree_cache", &self.merk_tree_cache)
             .field("last_level", &self.last_level)
             .finish()
@@ -363,24 +436,21 @@ where
     ) -> CostResult<BatchStructure<C>, Error> {
         let cost = OperationCost::default();
 
-        let mut ops_by_level_path: OpsByLevelPath = IntMap::default();
+        let mut ops_by_level_paths: OpsByLevelPath = IntMap::default();
         let mut current_last_level: usize = 0;
 
-        let mut inserted_references : Vec<Vec<Vec<u8>>> = vec![];
-        let mut inserted_items : HashMap<Vec<Vec<u8>>, Vec<u8>> = HashMap::new();
+        // qualified paths meaning path + key
+        let mut ops_by_qualified_paths: HashMap<Vec<Vec<u8>>, Op> = HashMap::new();
 
         for op in ops.into_iter() {
+            let mut path = op.path.clone();
+            path.push(op.key.clone());
+            ops_by_qualified_paths.insert(path, op.op.clone());
             let op_cost = OperationCost::default();
             let op_result = match &op.op {
                 Op::Insert { element } => {
-                    match element {
-                        // Todo: this should be possible to do without cloning
-                        Element::Item(item, _) => {
-                            let mut path = op.path.clone();
-                            path.push(op.key.clone());
-                            inserted_items.insert(path, item.clone());}
-                        Element::Reference(reference_path, _) => { inserted_references.push(reference_path.clone());}
-                        Element::Tree(_, _) => { merk_tree_cache.insert(&op); }
+                    if let Element::Tree(..) = element {
+                        merk_tree_cache.insert(&op);
                     }
                     Ok(())
                 }
@@ -394,7 +464,7 @@ where
             }
 
             let level = op.path.len();
-            if let Some(ops_on_level) = ops_by_level_path.get_mut(&level) {
+            if let Some(ops_on_level) = ops_by_level_paths.get_mut(&level) {
                 if let Some(ops_on_path) = ops_on_level.get_mut(op.path.as_slice()) {
                     ops_on_path.insert(op.key, op.op);
                 } else {
@@ -408,21 +478,17 @@ where
                 let mut ops_on_level: IndexMap<Vec<Vec<u8>>, IndexMap<Vec<u8>, Op>> =
                     IndexMap::new();
                 ops_on_level.insert(op.path, ops_on_path);
-                ops_by_level_path.insert(level, ops_on_level);
+                ops_by_level_paths.insert(level, ops_on_level);
                 if current_last_level < level {
                     current_last_level = level;
                 }
             }
         }
 
-        let references: HashMap<Vec<Vec<u8>>, Vec<u8>> = inserted_references.into_iter().filter_map(|reference| {
-            inserted_items.get(reference.as_slice()).map(|item_value| (reference.clone(), item_value.clone()))
-        }).collect();
-
         Ok(BatchStructure {
-            ops_by_level_path,
+            ops_by_level_paths,
+            ops_by_qualified_paths,
             merk_tree_cache,
-            references,
             last_level: current_last_level,
         })
         .wrap_with_cost(cost)
@@ -444,16 +510,16 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let BatchStructure {
-            mut ops_by_level_path,
+            mut ops_by_level_paths,
+            ops_by_qualified_paths,
             mut merk_tree_cache,
-            references,
             last_level,
         } = batch_structure;
         let mut current_level = last_level;
 
         let batch_apply_options = batch_apply_options.unwrap_or_default();
         // We will update up the tree
-        while let Some(ops_at_level) = ops_by_level_path.remove(&current_level) {
+        while let Some(ops_at_level) = ops_by_level_paths.remove(&current_level) {
             for (path, ops_at_path) in ops_at_level.into_iter() {
                 if current_level == 0 {
                     for (key, op) in ops_at_path.into_iter() {
@@ -478,7 +544,7 @@ impl GroveDb {
                         merk_tree_cache.execute_ops_on_path(
                             &path,
                             ops_at_path,
-                            &references,
+                            &ops_by_qualified_paths,
                             &batch_apply_options,
                         )
                     );
@@ -488,7 +554,7 @@ impl GroveDb {
                         // operations up for the level above
                         if let Some((key, parent_path)) = path.split_last() {
                             if let Some(ops_at_level_above) =
-                                ops_by_level_path.get_mut(&(current_level - 1))
+                                ops_by_level_paths.get_mut(&(current_level - 1))
                             {
                                 if let Some(ops_on_path) = ops_at_level_above.get_mut(parent_path) {
                                     match ops_on_path.entry(key.clone()) {
@@ -538,7 +604,7 @@ impl GroveDb {
                                     IndexMap<Vec<u8>, Op>,
                                 > = IndexMap::new();
                                 ops_on_level.insert(parent_path.to_vec(), ops_on_path);
-                                ops_by_level_path.insert(current_level - 1, ops_on_level);
+                                ops_by_level_paths.insert(current_level - 1, ops_on_level);
                             }
                         }
                     }
