@@ -284,9 +284,11 @@ impl GroveDb {
             .get(key.as_ref())
             .map_err(|_| Error::InvalidPath("can't find subtree in parent during propagation"))
             .map_ok(|subtree_opt| {
-                subtree_opt.ok_or(Error::InvalidPath(
-                    "can't find subtree in parent during propagation",
-                ))
+                subtree_opt.ok_or_else(|| {
+                    Error::InvalidPath(
+                        "can't find subtree in parent during propagation",
+                    )
+                })
             })
             .flatten()
             .map_ok(|element_bytes| {
