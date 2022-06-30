@@ -102,11 +102,16 @@ impl fmt::Debug for GroveDbOp {
         let key_drawer = Drawer::new(&mut key_out);
         self.key.visualize(key_drawer).unwrap();
 
-        let op_dbg = match self.op {
+        let op_dbg = match &self.op {
             Op::Insert {
-                element: Element::Tree(..),
-            } => "Insert tree",
-            Op::Insert { .. } => "Insert",
+                element,
+            } => { 
+                match element {
+                    Element::Item(_, _) => "Insert Item",
+                    Element::Reference(_, _) => "Insert Ref",
+                    Element::Tree(_, _) => "Insert Tree",
+                }
+            },
             Op::Delete => "Delete",
             Op::ReplaceTreeHash { .. } => "Replace Tree Hash",
         };
