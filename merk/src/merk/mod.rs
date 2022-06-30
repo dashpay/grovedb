@@ -542,63 +542,15 @@ where
             if let Some(value) = maybe_value {
                 batch.put(&key, &value);
             } else {
-                let value_wrapped = self.storage.get(&key).map_err(|e| e.into());
-                cost_return_on_error!(
-                    &mut cost,
-                    value_wrapped.flat_map_ok(|value| batch
-                        .delete(&key)
-                        .map_err(|e| e.into())
-                        .wrap_with_cost(OperationCost {
-                            storage_written_bytes: value.map(|x| x.len()).unwrap_or(0) as u32,
-                            ..Default::default()
-                        }))
-                );
+                batch.delete(&key);
             }
         }
 
         for (key, value) in aux {
             match value {
-                Op::Put(value) => cost_return_on_error!(
-                    &mut cost,
-                    batch
-                        .put_aux(key, value)
-                        .map_err(|e| e.into())
-                        .wrap_with_cost(OperationCost {
-                            storage_written_bytes: value.len() as u32,
-                            ..Default::default()
-                        })
-                ),
-                Op::PutReference(value, _) => cost_return_on_error!(
-                    &mut cost,
-                    batch
-                        .put_aux(key, value)
-                        .map_err(|e| e.into())
-                        .wrap_with_cost(OperationCost {
-                            storage_written_bytes: value.len() as u32,
-                            ..Default::default()
-                        })
-                ),
-                Op::Delete => {
-                    let value_wrapped = self
-                        .storage
-                        .get_aux(&key)
-                        .map_err(|e| e.into())
-                        .wrap_with_cost(OperationCost {
-                            seek_count: 1,
-                            ..Default::default()
-                        });
-
-                    cost_return_on_error!(
-                        &mut cost,
-                        value_wrapped.flat_map_ok(|value| batch
-                            .delete_aux(key)
-                            .map_err(|e| e.into())
-                            .wrap_with_cost(OperationCost {
-                                storage_written_bytes: value.map(|x| x.len()).unwrap_or(0) as u32,
-                                ..Default::default()
-                            }))
-                    )
-                }
+                Op::Put(value) => batch.put_aux(key, value),
+                Op::PutReference(value, _) => batch.put_aux(key, value),
+                Op::Delete => batch.delete_aux(key),
             };
         }
 
@@ -606,7 +558,7 @@ where
         self.storage
             .commit_batch(batch)
             .map_err(|e| e.into())
-            .wrap_with_cost(cost)
+            .add_cost(cost)
     }
 
     pub fn walk<'s, T>(&'s self, f: impl FnOnce(Option<RefWalker<MerkSource<'s, S>>>) -> T) -> T {
