@@ -74,6 +74,7 @@ impl<'db> PrefixedRocksDbBatch<'db> {
 pub struct PrefixedMultiContextBatchPart {
     pub(crate) prefix: Vec<u8>,
     pub(crate) batch: StorageBatch,
+    pub(crate) acc_cost: OperationCost,
 }
 
 /// Implementation of a batch ouside a transaction

@@ -196,6 +196,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         PrefixedMultiContextBatchPart {
             prefix: self.prefix.clone(),
             batch: StorageBatch::new(),
+            acc_cost: OperationCost::default(),
         }
     }
 

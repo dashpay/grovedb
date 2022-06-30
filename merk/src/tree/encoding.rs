@@ -26,7 +26,7 @@ impl Tree {
             tree_bytes.map(|x| Tree::decode_raw(&x)).transpose()
         );
 
-        Ok(if let Some(tree) = tree_opt {
+        Ok(if let Some(mut tree) = tree_opt {
             tree.set_key(key.as_ref().to_vec());
             Some(tree)
         } else {

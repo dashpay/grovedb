@@ -528,61 +528,46 @@ impl QueryItem {
             }
             QueryItem::RangeAfter(RangeFrom { start }) => {
                 if left_to_right {
-                    iter.seek(start)
-                        .flat_map(|_| iter.key())
-                        .flat_map(|key_opt| {
-                            // if the key is the same as start we should go to next
-                            if let Some(key) = key_opt {
-                                if key == start {
-                                    iter.next()
-                                } else {
-                                    ().wrap_with_cost(OperationCost::default())
-                                }
-                            } else {
-                                ().wrap_with_cost(OperationCost::default())
-                            }
-                        })
+                    let mut cost = OperationCost::default();
+                    iter.seek(start).unwrap_add_cost(&mut cost);
+                    if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
+                        // if the key is the same as start we should go to next
+                        if key == start {
+                            iter.next().unwrap_add_cost(&mut cost)
+                        }
+                    }
+                    ().wrap_with_cost(cost)
                 } else {
                     iter.seek_to_last()
                 }
             }
             QueryItem::RangeAfterTo(Range { start, end }) => {
                 if left_to_right {
-                    iter.seek(start)
-                        .flat_map(|_| iter.key())
-                        .flat_map(|key_opt| {
-                            // if the key is the same as start we тshould go to next
-                            if let Some(key) = key_opt {
-                                if key == start {
-                                    iter.next()
-                                } else {
-                                    ().wrap_with_cost(OperationCost::default())
-                                }
-                            } else {
-                                ().wrap_with_cost(OperationCost::default())
-                            }
-                        })
+                    let mut cost = OperationCost::default();
+                    iter.seek(start).unwrap_add_cost(&mut cost);
+                    if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
+                        // if the key is the same as start we тshould go to next
+                        if key == start {
+                            iter.next().unwrap_add_cost(&mut cost);
+                        }
+                    }
+                    ().wrap_with_cost(cost)
                 } else {
                     iter.seek(end).flat_map(|_| iter.prev())
                 }
             }
             QueryItem::RangeAfterToInclusive(range_inclusive) => {
                 if left_to_right {
+                    let mut cost = OperationCost::default();
                     let start = range_inclusive.start();
-                    iter.seek(start)
-                        .flat_map(|_| iter.key())
-                        .flat_map(|key_opt| {
-                            // if the key is the same as start we тshould go to next
-                            if let Some(key) = key_opt {
-                                if key == start {
-                                    iter.next()
-                                } else {
-                                    ().wrap_with_cost(OperationCost::default())
-                                }
-                            } else {
-                                ().wrap_with_cost(OperationCost::default())
-                            }
-                        })
+                    iter.seek(start).unwrap_add_cost(&mut cost);
+                    if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
+                        // if the key is the same as start we тshould go to next
+                        if key == start {
+                            iter.next().unwrap_add_cost(&mut cost);
+                        }
+                    }
+                    ().wrap_with_cost(cost)
                 } else {
                     let end = range_inclusive.end();
                     iter.seek_for_prev(end)

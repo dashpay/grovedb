@@ -103,6 +103,7 @@ impl AddAssign for OperationCost {
 }
 
 /// Wrapped operation result with associated cost.
+#[must_use]
 #[derive(Debug, Eq, PartialEq)]
 pub struct CostContext<T> {
     /// Wrapped operation's return value.

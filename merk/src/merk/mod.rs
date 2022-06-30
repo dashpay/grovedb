@@ -80,53 +80,66 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
 
     /// Returns the current node the iter points to if it's valid for the given
     /// query item returns None otherwise
-    fn get_kv(&mut self, query_item: &QueryItem) -> Option<(Vec<u8>, Vec<u8>)> {
-        if query_item.iter_is_valid_for_type(&self.raw_iter, None, self.left_to_right) {
+    fn get_kv(&mut self, query_item: &QueryItem) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
+        let mut cost = OperationCost::default();
+
+        if query_item
+            .iter_is_valid_for_type(&self.raw_iter, None, self.left_to_right)
+            .unwrap_add_cost(&mut cost)
+        {
             let kv = (
                 self.raw_iter
                     .key()
+                    .unwrap_add_cost(&mut cost)
                     .expect("key must exist as iter is valid")
                     .to_vec(),
                 self.raw_iter
                     .value()
+                    .unwrap_add_cost(&mut cost)
                     .expect("value must exists as iter is valid")
                     .to_vec(),
             );
             if self.left_to_right {
-                self.raw_iter.next()
+                self.raw_iter.next().unwrap_add_cost(&mut cost)
             } else {
-                self.raw_iter.prev()
+                self.raw_iter.prev().unwrap_add_cost(&mut cost)
             }
-            Some(kv)
+            Some(kv).wrap_with_cost(cost)
         } else {
-            None
+            None.wrap_with_cost(cost)
         }
     }
 
     /// Moves the iter to the start of the next query item
-    fn seek(&mut self) {
+    fn seek(&mut self) -> CostContext<()> {
+        let mut cost = OperationCost::default();
+
         self.current_query_item = self.query_iterator.next();
         if let Some(query_item) = self.current_query_item {
-            query_item.seek_for_iter(&mut self.raw_iter, self.left_to_right);
+            query_item
+                .seek_for_iter(&mut self.raw_iter, self.left_to_right)
+                .unwrap_add_cost(&mut cost);
         }
+
+        ().wrap_with_cost(cost)
     }
 }
 
-impl<'a, I: RawIterator> Iterator for KVIterator<'a, I> {
-    type Item = (Vec<u8>, Vec<u8>);
+impl<'a, I: RawIterator> KVIterator<'a, I> {
+    fn next(&mut self) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
+        let mut cost = OperationCost::default();
 
-    fn next(&mut self) -> Option<Self::Item> {
         if let Some(query_item) = self.current_query_item {
-            let kv_pair = self.get_kv(query_item);
+            let kv_pair = self.get_kv(query_item).unwrap_add_cost(&mut cost);
 
             if kv_pair.is_some() {
-                kv_pair
+                kv_pair.wrap_with_cost(cost)
             } else {
-                self.seek();
-                self.next()
+                self.seek().unwrap_add_cost(&mut cost);
+                self.next().add_cost(cost)
             }
         } else {
-            None
+            None.wrap_with_cost(cost)
         }
     }
 }
@@ -164,21 +177,17 @@ where
         let mut cost = OperationCost::default();
 
         let mut iter = self.storage.raw_iter();
-        iter.seek_to_first();
-        cost.seek_count += 1;
+        iter.seek_to_first().unwrap_add_cost(&mut cost);
 
         let mut to_delete = self.storage.new_batch();
-        while iter.valid() {
-            if let Some(key) = iter.key() {
-                cost.loaded_bytes += key.len() as u32;
-                // TODO compute cleared data for this storage batch
-                cost_return_on_error_no_add!(&cost, to_delete.delete(key).map_err(|e| e.into()));
+        while iter.valid().unwrap_add_cost(&mut cost) {
+            if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
+                to_delete.delete(key);
             }
-            iter.next();
-            cost.seek_count += 1;
+            iter.next().unwrap_add_cost(&mut cost);
         }
-        cost_return_on_error_no_add!(
-            &cost,
+        cost_return_on_error!(
+            &mut cost,
             self.storage.commit_batch(to_delete).map_err(|e| e.into())
         );
         self.tree.set(None);
@@ -187,16 +196,7 @@ where
 
     /// Gets an auxiliary value.
     pub fn get_aux(&self, key: &[u8]) -> CostContext<Result<Option<Vec<u8>>>> {
-        let mut cost = OperationCost {
-            seek_count: 1,
-            ..Default::default()
-        };
-
-        let value =
-            cost_return_on_error_no_add!(&cost, self.storage.get_aux(key).map_err(|e| e.into()));
-
-        cost.loaded_bytes = value.as_ref().map(|x| x.len()).unwrap_or(0) as u32;
-        Ok(value).wrap_with_cost(cost)
+        self.storage.get_aux(key).map_err(|e| e.into())
     }
 
     /// Returns if the value at the given key exists
@@ -247,20 +247,7 @@ where
                 match maybe_child {
                     None => {
                         // fetch from RocksDB
-                        break Tree::get(&self.storage, key).flat_map_ok(|maybe_node| {
-                            if let Some(node) = maybe_node {
-                                Ok(true).wrap_with_cost(OperationCost {
-                                    seek_count: 1,
-                                    loaded_bytes: node.value().len() as u32,
-                                    ..Default::default()
-                                })
-                            } else {
-                                Ok(false).wrap_with_cost(OperationCost {
-                                    seek_count: 1,
-                                    ..Default::default()
-                                })
-                            }
-                        });
+                        break Tree::get(&self.storage, key).map_ok(|x| x.is_some());
                     }
                     Some(child) => cursor = child, // traverse to child
                 }
@@ -521,17 +508,17 @@ where
                 // update pointer to root node
                 batch.put_root(ROOT_KEY_KEY, tree.key());
 
-                committer.batch
+                Ok(committer.batch)
             } else {
                 // empty tree, delete pointer to root
                 batch.delete_root(ROOT_KEY_KEY);
 
-                vec![]
+                Ok(vec![])
             }
             .wrap_with_cost(inner_cost)
         });
 
-        let to_batch = cost_return_on_error!(&mut cost, to_batch_wrapped);
+        let mut to_batch = cost_return_on_error!(&mut cost, to_batch_wrapped);
 
         // TODO: move this to MerkCommitter impl?
         for key in deleted_keys {
@@ -735,7 +722,7 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let test_prefix = [b"ayy"].into_iter().map(|x| x.as_slice());
-        let mut merk = Merk::open(storage.get_storage_context(test_prefix.clone()))
+        let mut merk = Merk::open(storage.get_storage_context(test_prefix.clone()).unwrap())
             .unwrap()
             .unwrap();
 
@@ -745,7 +732,7 @@ mod test {
 
         let root_hash = merk.root_hash();
         drop(merk);
-        let merk = Merk::open(storage.get_storage_context(test_prefix))
+        let merk = Merk::open(storage.get_storage_context(test_prefix).unwrap())
             .unwrap()
             .unwrap();
         assert_eq!(merk.root_hash(), root_hash);
@@ -757,9 +744,11 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let test_prefix = [b"ayy"].into_iter().map(|x| x.as_slice());
-        let merk_fee_context = Merk::open(storage.get_storage_context(test_prefix.clone()));
+        let merk_fee_context =
+            Merk::open(storage.get_storage_context(test_prefix.clone()).unwrap());
 
-        // Opening not existing merk should cost only root key seek
+        // Opening not existing merk should cost only root key seek (except context
+        // creation)
         assert!(matches!(
             merk_fee_context.cost(),
             OperationCost { seek_count: 1, .. }
@@ -772,14 +761,14 @@ mod test {
 
         drop(merk);
 
-        let merk_fee_context = Merk::open(storage.get_storage_context(test_prefix));
+        let merk_fee_context = Merk::open(storage.get_storage_context(test_prefix).unwrap());
 
-        // Opening existing merk should cost two seeks.
+        // Opening existing merk should cost two seeks. (except context creation)
         assert!(matches!(
             merk_fee_context.cost(),
             OperationCost { seek_count: 2, .. }
         ));
-        assert!(merk_fee_context.cost().loaded_bytes > 0);
+        assert!(merk_fee_context.cost().storage_loaded_bytes > 0);
     }
 
     #[test]
@@ -848,7 +837,7 @@ mod test {
             .unwrap()
             .unwrap();
 
-        let value = merk.storage.get(key.as_slice()).unwrap();
+        let value = merk.storage.get(key.as_slice()).unwrap().unwrap();
         assert!(value.is_none());
     }
 
@@ -931,7 +920,7 @@ mod test {
         let original_nodes = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
-            let mut merk = Merk::open(storage.get_storage_context(empty()))
+            let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
                 .unwrap()
                 .expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
@@ -948,7 +937,7 @@ mod test {
 
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let merk = Merk::open(storage.get_storage_context(empty()))
+        let merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
         let mut tree = merk.tree.take().unwrap();
@@ -969,8 +958,11 @@ mod test {
             iter: PrefixedStorageIter<'db, 'ctx>,
             nodes: &mut Vec<(Vec<u8>, Vec<u8>)>,
         ) {
-            while iter.valid() {
-                nodes.push((iter.key().unwrap().to_vec(), iter.value().unwrap().to_vec()));
+            while iter.valid().unwrap() {
+                nodes.push((
+                    iter.key().unwrap().unwrap().to_vec(),
+                    iter.value().unwrap().unwrap().to_vec(),
+                ));
                 iter.next();
             }
         }
@@ -979,7 +971,7 @@ mod test {
         let original_nodes = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
-            let mut merk = Merk::open(storage.get_storage_context(empty()))
+            let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
                 .unwrap()
                 .expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
@@ -993,7 +985,7 @@ mod test {
         };
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let merk = Merk::open(storage.get_storage_context(empty()))
+        let merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
 
