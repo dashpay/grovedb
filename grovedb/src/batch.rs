@@ -6,12 +6,11 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     hash::Hash,
 };
-use indexmap::IndexMap;
-use indexmap::map::Entry;
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+use indexmap::{map::Entry, IndexMap};
 use merk::Merk;
 use nohash_hasher::IntMap;
 use storage::{Storage, StorageBatch, StorageContext};
@@ -103,14 +102,10 @@ impl fmt::Debug for GroveDbOp {
         self.key.visualize(key_drawer).unwrap();
 
         let op_dbg = match &self.op {
-            Op::Insert {
-                element,
-            } => { 
-                match element {
-                    Element::Item(_, _) => "Insert Item",
-                    Element::Reference(_, _) => "Insert Ref",
-                    Element::Tree(_, _) => "Insert Tree",
-                }
+            Op::Insert { element } => match element {
+                Element::Item(..) => "Insert Item",
+                Element::Reference(..) => "Insert Ref",
+                Element::Tree(..) => "Insert Tree",
             },
             Op::Delete => "Delete",
             Op::ReplaceTreeHash { .. } => "Replace Tree Hash",
@@ -511,6 +506,35 @@ impl GroveDb {
             .add_cost(cost)
     }
 
+    /// Applies operations on GroveDB without batching
+    pub fn apply_operations_without_batching(
+        &self,
+        ops: Vec<GroveDbOp>,
+        transaction: TransactionArg,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        for op in ops.into_iter() {
+            match op.op {
+                Op::Insert { element } => {
+                    let path_slices: Vec<&[u8]> = op.path.iter().map(|p| p.as_slice()).collect();
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.insert(path_slices, op.key.as_slice(), element, transaction,)
+                    );
+                }
+                Op::Delete => {
+                    let path_slices: Vec<&[u8]> = op.path.iter().map(|p| p.as_slice()).collect();
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.delete(path_slices, op.key.as_slice(), transaction,)
+                    );
+                }
+                _ => {}
+            }
+        }
+        Ok(()).wrap_with_cost(cost)
+    }
+
     /// Applies batch of operations on GroveDB
     pub fn apply_batch(
         &self,
@@ -810,6 +834,268 @@ mod tests {
                 .expect("cannot get element"),
             element2
         );
+    }
+
+    fn grove_db_ops_for_contract_insert() -> Vec<GroveDbOp> {
+        let mut grove_db_ops = vec![];
+
+        grove_db_ops.push(GroveDbOp {
+            path: vec![],
+            key: b"contract".to_vec(),
+            op: Op::Insert {
+                element: Element::empty_tree(),
+            },
+        });
+        grove_db_ops.push(GroveDbOp {
+            path: vec![b"contract".to_vec()],
+            key: (&[0u8]).to_vec(),
+            op: Op::Insert {
+                element: Element::new_item(b"serialized_contract".to_vec()),
+            },
+        });
+        grove_db_ops.push(GroveDbOp {
+            path: vec![b"contract".to_vec()],
+            key: (&[1u8]).to_vec(),
+            op: Op::Insert {
+                element: Element::empty_tree(),
+            },
+        });
+        grove_db_ops.push(GroveDbOp {
+            path: vec![b"contract".to_vec(), (&[1u8]).to_vec()],
+            key: b"domain".to_vec(),
+            op: Op::Insert {
+                element: Element::empty_tree(),
+            },
+        });
+        grove_db_ops.push(GroveDbOp {
+            path: vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
+            key: (&[0u8]).to_vec(),
+            op: Op::Insert {
+                element: Element::empty_tree(),
+            },
+        });
+        grove_db_ops.push(GroveDbOp {
+            path: vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
+            key: b"normalized_domain_label".to_vec(),
+            op: Op::Insert {
+                element: Element::empty_tree(),
+            },
+        });
+        grove_db_ops.push(GroveDbOp {
+            path: vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
+            key: b"unique_records".to_vec(),
+            op: Op::Insert {
+                element: Element::empty_tree(),
+            },
+        });
+        grove_db_ops.push(GroveDbOp {
+            path: vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
+            key: b"alias_records".to_vec(),
+            op: Op::Insert {
+                element: Element::empty_tree(),
+            },
+        });
+        grove_db_ops.push(GroveDbOp {
+            path: vec![b"contract".to_vec(), (&[1u8]).to_vec()],
+            key: b"preorder".to_vec(),
+            op: Op::Insert {
+                element: Element::empty_tree(),
+            },
+        });
+        grove_db_ops.push(GroveDbOp {
+            path: vec![
+                b"contract".to_vec(),
+                (&[1u8]).to_vec(),
+                b"preorder".to_vec(),
+            ],
+            key: (&[0u8]).to_vec(),
+            op: Op::Insert {
+                element: Element::empty_tree(),
+            },
+        });
+        grove_db_ops.push(GroveDbOp {
+            path: vec![
+                b"contract".to_vec(),
+                (&[1u8]).to_vec(),
+                b"preorder".to_vec(),
+            ],
+            key: b"salted_domain".to_vec(),
+            op: Op::Insert {
+                element: Element::empty_tree(),
+            },
+        });
+
+        grove_db_ops
+    }
+
+    fn grove_db_ops_for_contract_document_insert() -> Vec<GroveDbOp> {
+        let mut grove_db_ops = vec![];
+
+        grove_db_ops.push(GroveDbOp {
+            path: vec![
+                b"contract".to_vec(),
+                (&[1u8]).to_vec(),
+                b"domain".to_vec(),
+                (&[0u8]).to_vec(),
+            ],
+            key: b"serialized_domain_id".to_vec(),
+            op: Op::Insert {
+                element: Element::new_item(b"serialized_domain".to_vec()),
+            },
+        });
+
+        grove_db_ops.push(GroveDbOp {
+            path: vec![
+                b"contract".to_vec(),
+                (&[1u8]).to_vec(),
+                b"domain".to_vec(),
+                b"normalized_domain_label".to_vec(),
+            ],
+            key: b"dash".to_vec(),
+            op: Op::Insert {
+                element: Element::empty_tree(),
+            },
+        });
+
+        grove_db_ops.push(GroveDbOp {
+            path: vec![
+                b"contract".to_vec(),
+                (&[1u8]).to_vec(),
+                b"domain".to_vec(),
+                b"normalized_domain_label".to_vec(),
+                b"dash".to_vec(),
+            ],
+            key: b"normalized_label".to_vec(),
+            op: Op::Insert {
+                element: Element::empty_tree(),
+            },
+        });
+
+        grove_db_ops.push(GroveDbOp {
+            path: vec![
+                b"contract".to_vec(),
+                (&[1u8]).to_vec(),
+                b"domain".to_vec(),
+                b"normalized_domain_label".to_vec(),
+                b"dash".to_vec(),
+                b"normalized_label".to_vec(),
+            ],
+            key: b"sam".to_vec(),
+            op: Op::Insert {
+                element: Element::empty_tree(),
+            },
+        });
+
+        grove_db_ops.push(GroveDbOp {
+            path: vec![
+                b"contract".to_vec(),
+                (&[1u8]).to_vec(),
+                b"domain".to_vec(),
+                b"normalized_domain_label".to_vec(),
+                b"dash".to_vec(),
+                b"normalized_label".to_vec(),
+                b"sam".to_vec(),
+            ],
+            key: b"sam_id".to_vec(),
+            op: Op::Insert {
+                element: Element::new_reference(vec![
+                    b"contract".to_vec(),
+                    (&[1u8]).to_vec(),
+                    b"domain".to_vec(),
+                    (&[0u8]).to_vec(),
+                    b"serialized_domain_id".to_vec(),
+                ]),
+            },
+        });
+
+        grove_db_ops
+    }
+
+    #[test]
+    fn test_batch_produces_same_result() {
+        let db = make_grovedb();
+        let tx = db.start_transaction();
+
+        let ops = grove_db_ops_for_contract_insert();
+        db.apply_batch(ops, None, Some(&tx));
+
+        let hash = db
+            .root_hash(None)
+            .unwrap()
+            .ok()
+            .flatten()
+            .expect("cannot get root hash");
+
+        let db = make_grovedb();
+        let tx = db.start_transaction();
+
+        let ops = grove_db_ops_for_contract_insert();
+        db.apply_batch(ops.clone(), None, Some(&tx));
+
+        let batch_hash = db
+            .root_hash(Some(&tx))
+            .unwrap()
+            .ok()
+            .flatten()
+            .expect("cannot get root hash");
+
+        db.rollback_transaction(&tx).expect("expected to rollback");
+
+        db.apply_operations_without_batching(ops, Some(&tx));
+
+        let no_batch_hash = db
+            .root_hash(Some(&tx))
+            .unwrap()
+            .ok()
+            .flatten()
+            .expect("cannot get root hash");
+
+        assert_eq!(batch_hash, no_batch_hash);
+    }
+
+    #[test]
+    fn test_batch_contract_with_document_produces_same_result() {
+        let db = make_grovedb();
+        let tx = db.start_transaction();
+
+        let ops = grove_db_ops_for_contract_insert();
+        db.apply_batch(ops, None, Some(&tx));
+
+        let hash = db
+            .root_hash(None)
+            .unwrap()
+            .ok()
+            .flatten()
+            .expect("cannot get root hash");
+
+        let db = make_grovedb();
+        let tx = db.start_transaction();
+
+        let ops = grove_db_ops_for_contract_insert();
+        let document_ops = grove_db_ops_for_contract_document_insert();
+        db.apply_batch(ops.clone(), None, Some(&tx));
+        db.apply_batch(document_ops.clone(), None, Some(&tx));
+
+        let batch_hash = db
+            .root_hash(Some(&tx))
+            .unwrap()
+            .ok()
+            .flatten()
+            .expect("cannot get root hash");
+
+        db.rollback_transaction(&tx).expect("expected to rollback");
+
+        db.apply_operations_without_batching(ops, Some(&tx));
+        db.apply_operations_without_batching(document_ops, Some(&tx));
+
+        let no_batch_hash = db
+            .root_hash(Some(&tx))
+            .unwrap()
+            .ok()
+            .flatten()
+            .expect("cannot get root hash");
+
+        assert_eq!(batch_hash, no_batch_hash);
     }
 
     #[test]
