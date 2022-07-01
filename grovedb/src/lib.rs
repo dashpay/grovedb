@@ -9,31 +9,19 @@ mod tests;
 mod util;
 mod visualize;
 
-use std::{collections::BTreeMap, path::Path};
+use std::path::Path;
 
-use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
-    OperationCost,
-};
+use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 pub use query::{PathQuery, SizedQuery};
-use rs_merkle::{algorithms::Sha256, MerkleTree};
 pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
     Storage, StorageContext,
 };
 pub use subtree::{Element, ElementFlags};
 
-use crate::{
-    subtree::ElementsIterator,
-    util::{merk_optional_tx, meta_storage_context_optional_tx},
-};
-
-/// A key to store serialized data about subtree prefixes to restore HADS
-/// structure
-/// A key to store serialized data about root tree leaves keys and order
-const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
+use crate::util::merk_optional_tx;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -112,15 +100,14 @@ impl GroveDb {
     /// Returns root hash of GroveDb.
     /// Will be `None` if GroveDb is empty.
     pub fn root_hash(&self, transaction: TransactionArg) -> CostResult<[u8; 32], Error> {
-        // Self::get_root_tree_internal(&self.db, transaction).map_ok(|x| x.root())
         let mut cost = OperationCost {
             ..Default::default()
         };
 
         merk_optional_tx!(&mut cost, self.db, [], transaction, subtree, {
             // TODO: simplify this
-            return Ok(subtree.root_hash().unwrap_add_cost(&mut cost)).wrap_with_cost(cost);
-        });
+            Ok(subtree.root_hash().unwrap_add_cost(&mut cost)).wrap_with_cost(cost)
+        })
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
@@ -135,7 +122,6 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
 
-        // Go up until only one element in path, which means a key of a root tree
         let mut path_iter = path.into_iter();
 
         while path_iter.len() > 0 {

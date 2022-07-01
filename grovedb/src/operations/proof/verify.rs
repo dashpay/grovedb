@@ -1,5 +1,4 @@
 use merk::{proofs::Query, Hash};
-use rs_merkle::{algorithms::Sha256, MerkleProof};
 
 use crate::{
     operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
@@ -69,10 +68,6 @@ impl ProofVerifier {
                 &mut proof_reader,
                 &mut last_subtree_root_hash,
             )?
-
-            // execute the root proof
-            // Self::execute_root_proof(&mut proof_reader,
-            // last_subtree_root_hash)?
         };
 
         Ok(root_hash)
@@ -325,7 +320,7 @@ impl ProofVerifier {
                 Err(Error::InvalidProof("proof invalid: no non root tree found"))
             }
         } else {
-            return Err(Error::InvalidProof("proof invalid: path not absent"));
+            Err(Error::InvalidProof("proof invalid: path not absent"))
         }
     }
 
@@ -382,40 +377,6 @@ impl ProofVerifier {
         }
 
         Ok(*expected_root_hash)
-    }
-
-    /// Generate expected root hash based on root proof and leaf hashes
-    fn execute_root_proof(
-        proof_reader: &mut ProofReader,
-        leaf_hash: [u8; 32],
-    ) -> Result<[u8; 32], Error> {
-        let root_proof_bytes = proof_reader.read_proof_of_type(ProofType::Root.into())?;
-
-        // makes the assumption that 1 byte is enough to represent the root leaf count
-        // hence max of 255 root leaf keys
-        let root_leaf_count = proof_reader.read_byte()?;
-
-        let index_to_prove_as_bytes = proof_reader.read_to_end()?;
-        let index_to_prove_as_usize = index_to_prove_as_bytes
-            .into_iter()
-            .map(|index| index as usize)
-            .collect::<Vec<usize>>();
-
-        let root_proof = match MerkleProof::<Sha256>::try_from(root_proof_bytes) {
-            Ok(proof) => Ok(proof),
-            Err(_) => Err(Error::InvalidProof("invalid proof element")),
-        }?;
-
-        let root_hash = match root_proof.root(
-            &index_to_prove_as_usize,
-            &[leaf_hash],
-            root_leaf_count[0] as usize,
-        ) {
-            Ok(hash) => Ok(hash),
-            Err(_) => Err(Error::InvalidProof("Invalid proof element")),
-        }?;
-
-        Ok(root_hash)
     }
 
     /// Execute a merk proof, update the state when a sized proof is

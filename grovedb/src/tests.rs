@@ -5,7 +5,6 @@ use rand::Rng;
 use tempfile::TempDir;
 
 use super::*;
-use crate::subtree::ElementsIterator;
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
 pub const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";

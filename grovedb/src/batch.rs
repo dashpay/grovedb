@@ -15,7 +15,7 @@ use nohash_hasher::IntMap;
 use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
-use crate::{Element, Error, GroveDb, TransactionArg, ROOT_LEAFS_SERIALIZED_KEY};
+use crate::{Element, Error, GroveDb, TransactionArg};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -601,7 +601,6 @@ impl GroveDb {
 
         cost.add_worst_case_save_root_leaves();
 
-        let mut temp_root_leaves: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
         let batch_structure = cost_return_on_error!(
             &mut cost,
             BatchStructure::from_ops(ops, TreeCacheKnownPaths::default())
