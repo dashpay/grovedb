@@ -284,7 +284,7 @@ impl ProofVerifier {
         let mut expected_child_hash = None;
         let mut last_result_set = vec![];
 
-        for key in &path_slices[1..] {
+        for key in path_slices {
             let merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
 
             let mut child_query = Query::new();
@@ -292,6 +292,7 @@ impl ProofVerifier {
 
             let proof_result =
                 self.execute_merk_proof(ProofType::Merk, &merk_proof, &child_query, true)?;
+            // if this is the root we just want to store the last hash
             if expected_child_hash == None {
                 root_key_hash = Some(proof_result.0);
             } else if Some(proof_result.0) != expected_child_hash {
@@ -318,12 +319,12 @@ impl ProofVerifier {
 
         if last_result_set.is_empty() {
             if let Some(hash) = root_key_hash {
-                Self::execute_root_proof(proof_reader, hash)
+                Ok(hash)
             } else {
                 Err(Error::InvalidProof("proof invalid: no non root tree found"))
             }
         } else {
-            Err(Error::InvalidProof("proof invalid: path not absent"))
+            return Err(Error::InvalidProof("proof invalid: path not absent"))
         }
     }
 

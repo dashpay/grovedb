@@ -742,7 +742,6 @@ fn test_root_tree_leaves_are_noted() {
 }
 
 #[test]
-#[should_panic]
 fn test_proof_for_invalid_path_root_key() {
     let db = make_grovedb();
 
