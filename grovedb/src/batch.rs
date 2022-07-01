@@ -1105,8 +1105,8 @@ mod tests {
         let hash = db
             .root_hash(None)
             .unwrap()
-            .ok()
-            .flatten()
+            // .ok()
+            // .flatten()
             .expect("cannot get root hash");
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
@@ -1151,8 +1151,8 @@ mod tests {
         assert_ne!(
             db.root_hash(None)
                 .unwrap()
-                .ok()
-                .flatten()
+                // .ok()
+                // .flatten()
                 .expect("cannot get root hash"),
             hash
         );

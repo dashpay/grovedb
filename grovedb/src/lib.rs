@@ -11,9 +11,7 @@ mod visualize;
 
 use std::{collections::BTreeMap, path::Path};
 
-use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
-};
+use costs::{cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt, OperationCost};
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 pub use query::{PathQuery, SizedQuery};
@@ -107,8 +105,21 @@ impl GroveDb {
 
     /// Returns root hash of GroveDb.
     /// Will be `None` if GroveDb is empty.
-    pub fn root_hash(&self, transaction: TransactionArg) -> CostResult<Option<[u8; 32]>, Error> {
-        Self::get_root_tree_internal(&self.db, transaction).map_ok(|x| x.root())
+    pub fn root_hash(&self, transaction: TransactionArg) -> CostResult<[u8; 32], Error> {
+        // Self::get_root_tree_internal(&self.db, transaction).map_ok(|x| x.root())
+        let mut cost = OperationCost{ ..Default::default() };
+
+        merk_optional_tx!(
+                &mut cost,
+                self.db,
+                [],
+                transaction,
+                subtree,
+                {
+                    // TODO: simplify this
+                    return Ok(subtree.root_hash().unwrap_add_cost(&mut cost)).wrap_with_cost(cost);
+                }
+            );
     }
 
     fn get_root_leaf_keys_internal<'db, S>(
