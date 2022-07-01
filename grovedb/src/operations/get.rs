@@ -118,32 +118,32 @@ impl GroveDb {
     {
         let path_iter = path.into_iter();
 
-        if path_iter.len() == 0 {
-            // Root tree's items are serialized into meta storage and cannot be checked
-            // easily; Knowing that root tree's leafs are subtrees only, we can
-            // check them using roots storage.
-            storage_context_optional_tx!(self.db, [key], transaction, storage, {
-                storage
-                    .get_root(merk::ROOT_KEY_KEY)
-                    .wrap_with_cost(Default::default())
-                    .map_err(|e| e.into())
-                    .flat_map_ok(|root| {
-                        root.map(|r| {
-                            Ok(true).wrap_with_cost(OperationCost {
-                                seek_count: 1,
-                                loaded_bytes: r.len() as u32,
-                                ..Default::default()
-                            })
-                        })
-                        .unwrap_or_else(|| {
-                            Ok(false).wrap_with_cost(OperationCost {
-                                seek_count: 1,
-                                ..Default::default()
-                            })
-                        })
-                    })
-            })
-        } else {
+        // if path_iter.len() == 0 {
+        //     // Root tree's items are serialized into meta storage and cannot be checked
+        //     // easily; Knowing that root tree's leafs are subtrees only, we can
+        //     // check them using roots storage.
+        //     storage_context_optional_tx!(self.db, [key], transaction, storage, {
+        //         storage
+        //             .get_root(merk::ROOT_KEY_KEY)
+        //             .wrap_with_cost(Default::default())
+        //             .map_err(|e| e.into())
+        //             .flat_map_ok(|root| {
+        //                 root.map(|r| {
+        //                     Ok(true).wrap_with_cost(OperationCost {
+        //                         seek_count: 1,
+        //                         loaded_bytes: r.len() as u32,
+        //                         ..Default::default()
+        //                     })
+        //                 })
+        //                 .unwrap_or_else(|| {
+        //                     Ok(false).wrap_with_cost(OperationCost {
+        //                         seek_count: 1,
+        //                         ..Default::default()
+        //                     })
+        //                 })
+        //             })
+        //     })
+        // } else {
             // Merk's items should be written into data storage and checked accordingly
             storage_context_optional_tx!(self.db, path_iter, transaction, storage, {
                 storage
@@ -166,7 +166,7 @@ impl GroveDb {
                         })
                     })
             })
-        }
+        // }
     }
 
     pub fn query_many(
