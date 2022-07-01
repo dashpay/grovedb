@@ -77,7 +77,6 @@ impl<'a> ProofReader<'a> {
         self.proof_data
             .read(&mut data_type)
             .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
-        dbg!(data_type);
 
         if let Some(expected_data_type) = expected_data_type_option {
             if data_type != [expected_data_type] {

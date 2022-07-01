@@ -83,24 +83,9 @@ impl GroveDb {
         transaction: TransactionArg,
     ) -> Result<Drawer<W>> {
         drawer.down();
-        let root_leaf_keys = self
-            .get_root_leaf_keys(transaction)
-            .unwrap()
-            .expect("cannot get root leaf keys");
-        let keys = root_leaf_keys.iter().fold(
-            vec![Vec::new(); root_leaf_keys.len()],
-            |mut acc, (key, idx)| {
-                acc[*idx] = key.clone();
-                acc
-            },
-        );
 
-        for k in keys {
-            drawer.write(b"\n")?;
-            drawer = k.visualize(drawer)?;
-            drawer.write(b" tree:")?;
-            drawer = self.draw_subtree(drawer, vec![k], transaction)?
-        }
+        drawer = self.draw_subtree(drawer, vec![], transaction)?;
+
         drawer.up();
         Ok(drawer)
     }

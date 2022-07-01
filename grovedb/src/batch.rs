@@ -193,17 +193,14 @@ where
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
 
-        dbg!("executing ops on path", path);
         let merk_wrapped = self
             .merks
             .remove(path)
             .map(|x| Ok(x).wrap_with_cost(Default::default()))
             .unwrap_or_else(|| (self.get_merk_fn)(path));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
-        dbg!("got merk");
 
         for (key, op) in ops_at_path_by_key.into_iter() {
-            dbg!("applying operations", &op);
             match op {
                 Op::Insert { element } => {
                     if batch_apply_options.validate_tree_insertion_does_not_override {
@@ -314,7 +311,6 @@ where
         let cost = OperationCost::default();
 
         let mut ops_by_level_path: OpsByLevelPath = IntMap::default();
-        dbg!(&ops_by_level_path);
         let mut current_last_level: usize = 0;
 
         for op in ops.into_iter() {
@@ -387,26 +383,14 @@ impl GroveDb {
         let mut current_level = last_level;
 
         let batch_apply_options = batch_apply_options.unwrap_or_default();
-        // We will update up the tree
-        dbg!(&ops_by_level_path);
         while let Some(ops_at_level) = ops_by_level_path.remove(&current_level) {
-            dbg!(current_level);
             for (path, ops_at_path) in ops_at_level.into_iter() {
                 if current_level == 0 {
-                    // build up new ops maybe?? that only has the insert operation
-                    // then apply to merk_tree_cache
-                    // how does merk tree cache get built tho
-                    dbg!(&ops_at_path);
                     let mut root_tree_ops: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
                     for (key, op) in ops_at_path.into_iter() {
                         match op {
                             Op::Insert { .. } => {
-                                // inserts a root element (trees are not enforced)
-                                // how do we insert non root elements
                                 root_tree_ops.insert(key, op);
-                                // if temp_root_leaves.get(key.as_slice()).is_none() {
-                                //     temp_root_leaves.insert(key, temp_root_leaves.len());
-                                // }
                             }
                             Op::Delete => {
                                 return Err(Error::InvalidBatchOperation(
@@ -415,14 +399,12 @@ impl GroveDb {
                                 .wrap_with_cost(cost);
                             }
                             Op::ReplaceTreeHash { hash } => {
-                               root_tree_ops.insert(key, Op::ReplaceTreeHash { hash });
+                                root_tree_ops.insert(key, Op::ReplaceTreeHash { hash });
                             }
                         }
                     }
-                    dbg!("about to apply current level equals zero");
-                    dbg!(&root_tree_ops);
                     // execute the ops at this path
-                    merk_tree_cache.execute_ops_on_path(&path,root_tree_ops, &batch_apply_options);
+                    merk_tree_cache.execute_ops_on_path(&path, root_tree_ops, &batch_apply_options);
                 } else {
                     let root_hash = cost_return_on_error!(
                         &mut cost,
@@ -434,22 +416,14 @@ impl GroveDb {
                     );
 
                     if current_level > 0 {
-                        dbg!("current level inner", current_level);
                         // We need to propagate up this root hash, this means adding grove_db
                         // operations up for the level above
                         if let Some((key, parent_path)) = path.split_last() {
-                            dbg!("split last");
-                            dbg!(&root_hash);
                             if let Some(ops_at_level_above) =
                                 ops_by_level_path.get_mut(&(current_level - 1))
                             {
-                                dbg!("after split last");
                                 if let Some(ops_on_path) = ops_at_level_above.get_mut(parent_path) {
-                                    dbg!("after after split last");
-                                    dbg!(&ops_on_path);
-                                    dbg!(&key);
                                     if let Some(op) = ops_on_path.remove(key) {
-                                        dbg!("didn't get here");
                                         let new_op = match op {
                                             Op::ReplaceTreeHash { .. } => {
                                                 Op::ReplaceTreeHash { hash: root_hash }
@@ -487,7 +461,6 @@ impl GroveDb {
                                             key.clone(),
                                             Op::ReplaceTreeHash { hash: root_hash },
                                         );
-                                        dbg!(&ops_on_path);
                                     }
                                 } else {
                                     let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
@@ -539,7 +512,7 @@ impl GroveDb {
                 }
             )
         );
-        self.apply_batch_structure(batch_structure,  batch_apply_options)
+        self.apply_batch_structure(batch_structure, batch_apply_options)
             .add_cost(cost)
     }
 
@@ -552,39 +525,9 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        // Helper function to store updated root leaves
-        // fn save_root_leaves<'db, S>(
-        //     storage: S,
-        //     temp_root_leaves: &BTreeMap<Vec<u8>, usize>,
-        // ) -> CostResult<(), Error>
-        // where
-        //     S: StorageContext<'db>,
-        //     Error: From<<S as storage::StorageContext<'db>>::Error>,
-        // {
-        //     let cost = OperationCost::default();
-        //
-        //     let root_leaves_serialized = cost_return_on_error_no_add!(
-        //         &cost,
-        //         bincode::serialize(&temp_root_leaves).map_err(|_| {
-        //             Error::CorruptedData(String::from("unable to serialize root leaves data"))
-        //         })
-        //     );
-        //     storage
-        //         .put_meta(ROOT_LEAFS_SERIALIZED_KEY, &root_leaves_serialized)
-        //         .map_err(|e| e.into())
-        //         .wrap_with_cost(OperationCost {
-        //             storage_written_bytes: ROOT_LEAFS_SERIALIZED_KEY.len() as u32
-        //                 + root_leaves_serialized.len() as u32,
-        //             ..Default::default()
-        //         })
-        // }
-
         if ops.is_empty() {
             return Ok(()).wrap_with_cost(cost);
         }
-
-        // let mut temp_root_leaves =
-        //     cost_return_on_error!(&mut cost, self.get_root_leaf_keys(transaction));
 
         // `StorageBatch` allows us to collect operations on different subtrees before
         // execution
@@ -614,15 +557,6 @@ impl GroveDb {
                 })
             );
 
-            // let meta_storage = self.db.get_batch_transactional_storage_context(
-            //     std::iter::empty(),
-            //     &storage_batch,
-            //     tx,
-            // );
-
-            // saves the root leaves
-            // cost_return_on_error!(&mut cost, save_root_leaves(meta_storage, &temp_root_leaves));
-
             // TODO: compute batch costs
             cost_return_on_error_no_add!(
                 &cost,
@@ -642,13 +576,6 @@ impl GroveDb {
                         .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
                 })
             );
-
-            // let meta_storage = self
-            //     .db
-            //     .get_batch_storage_context(std::iter::empty(), &storage_batch);
-
-            // saves root leaves here also
-            // cost_return_on_error!(&mut cost, save_root_leaves(meta_storage, &temp_root_leaves));
 
             // TODO: compute batch costs
             cost_return_on_error_no_add!(
@@ -681,11 +608,7 @@ impl GroveDb {
         );
         cost_return_on_error!(
             &mut cost,
-            self.apply_batch_structure(
-                batch_structure,
-                // &mut temp_root_leaves,
-                batch_apply_options,
-            )
+            self.apply_batch_structure(batch_structure, batch_apply_options,)
         );
 
         cost.add_worst_case_open_root_meta_storage();
@@ -1135,12 +1058,7 @@ mod tests {
             .unwrap()
             .expect("cannot insert root leaf");
 
-        let hash = db
-            .root_hash(None)
-            .unwrap()
-            // .ok()
-            // .flatten()
-            .expect("cannot get root hash");
+        let hash = db.root_hash(None).unwrap().expect("cannot get root hash");
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
 
@@ -1182,20 +1100,16 @@ mod tests {
             element2
         );
         assert_ne!(
-            db.root_hash(None)
-                .unwrap()
-                // .ok()
-                // .flatten()
-                .expect("cannot get root hash"),
+            db.root_hash(None).unwrap().expect("cannot get root hash"),
             hash
         );
 
         // verify root leaves
         assert!(db.get([], TEST_LEAF, None).unwrap().is_ok());
-        assert!(db.get([],ANOTHER_TEST_LEAF, None).unwrap().is_ok());
-        assert!(db.get([],b"key1", None).unwrap().is_ok());
-        assert!(db.get([],b"key2", None).unwrap().is_ok());
-        assert!(db.get([],b"key3", None).unwrap().is_err());
+        assert!(db.get([], ANOTHER_TEST_LEAF, None).unwrap().is_ok());
+        assert!(db.get([], b"key1", None).unwrap().is_ok());
+        assert!(db.get([], b"key2", None).unwrap().is_ok());
+        assert!(db.get([], b"key3", None).unwrap().is_err());
     }
 
     #[test]
