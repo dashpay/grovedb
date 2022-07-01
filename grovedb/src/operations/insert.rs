@@ -28,7 +28,7 @@ impl GroveDb {
         match element {
             Element::Tree(..) => {
                 if path_iter.len() == 0 {
-                    cost_return_on_error!(&mut cost, self.add_root_leaf(key, transaction));
+                    cost_return_on_error!(&mut cost, self.add_root_leaf(key, element, transaction));
                 } else {
                     cost_return_on_error!(
                         &mut cost,
@@ -106,39 +106,103 @@ impl GroveDb {
     }
 
     /// Add subtree to the root tree
-    fn add_root_leaf(&self, key: &[u8], transaction: TransactionArg) -> CostResult<(), Error> {
+    fn add_root_leaf(
+        &self,
+        key: &[u8],
+        element: Element,
+        transaction: TransactionArg,
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-        meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
-            let mut root_leaf_keys =
-                cost_return_on_error!(&mut cost, Self::get_root_leaf_keys_internal(&meta_storage));
-            if root_leaf_keys.get(&key.to_vec()).is_none() {
-                root_leaf_keys.insert(key.to_vec(), root_leaf_keys.len());
+
+        // TODO: combine with add_non_root_subtree
+        let element_flag = cost_return_on_error_no_add!(
+            &cost,
+            match element {
+                Element::Tree(_, flag) => Ok(flag),
+                _ => Err(Error::CorruptedData("element should be a tree".to_owned())),
             }
-            let value = cost_return_on_error_no_add!(
-                &cost,
-                bincode::serialize(&root_leaf_keys).map_err(|_| {
-                    Error::CorruptedData(String::from("unable to serialize root leaves data"))
-                })
-            );
+        );
 
-            cost_return_on_error_no_add!(
-                &cost,
-                meta_storage
-                    .put_meta(ROOT_LEAFS_SERIALIZED_KEY, &value)
-                    .map_err(|e| e.into())
-            );
-            cost.storage_written_bytes +=
-                ROOT_LEAFS_SERIALIZED_KEY.len() as u32 + value.len() as u32;
-        });
+        let root_path: Vec<&[u8]> = vec![];
+        let path_iter = root_path.iter().copied();
 
-        // Persist root leaf as a regular subtree
-        storage_context_optional_tx!(self.db, [key], transaction, storage, {
-            cost_return_on_error_no_add!(
-                &cost,
-                storage.put_root(ROOT_KEY_KEY, key).map_err(|e| e.into())
+
+        if let Some(tx) = transaction {
+            let parent_storage = self
+                .db
+                .get_transactional_storage_context(path_iter.clone(), tx);
+            let mut parent_subtree = cost_return_on_error!(
+                &mut cost,
+                Merk::open(parent_storage)
+                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
             );
-            cost.storage_written_bytes += ROOT_KEY_KEY.len() as u32 + key.len() as u32
-        });
+            let child_storage = self
+                .db
+                .get_transactional_storage_context(path_iter.chain(std::iter::once(key)), tx);
+            let child_subtree = cost_return_on_error!(
+                &mut cost,
+                Merk::open(child_storage)
+                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
+            );
+            let element = Element::new_tree_with_flags(
+                child_subtree.root_hash().unwrap_add_cost(&mut cost),
+                element_flag,
+            );
+            cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
+        } else {
+            let parent_storage = self.db.get_storage_context(path_iter.clone());
+            let mut parent_subtree = cost_return_on_error!(
+                &mut cost,
+                Merk::open(parent_storage)
+                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
+            );
+            let child_storage = self
+                .db
+                .get_storage_context(path_iter.chain(std::iter::once(key)));
+            let child_subtree = cost_return_on_error!(
+                &mut cost,
+                Merk::open(child_storage)
+                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
+            );
+            let element = Element::new_tree_with_flags(
+                child_subtree.root_hash().unwrap_add_cost(&mut cost),
+                element_flag,
+            );
+            cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
+        }
+
+        // meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
+        //     let mut root_leaf_keys =
+        //         cost_return_on_error!(&mut cost,
+        // Self::get_root_leaf_keys_internal(&meta_storage));
+        //     if root_leaf_keys.get(&key.to_vec()).is_none() {
+        //         root_leaf_keys.insert(key.to_vec(), root_leaf_keys.len());
+        //     }
+        //     let value = cost_return_on_error_no_add!(
+        //         &cost,
+        //         bincode::serialize(&root_leaf_keys).map_err(|_| {
+        //             Error::CorruptedData(String::from("unable to serialize root
+        // leaves data"))         })
+        //     );
+        //
+        //     cost_return_on_error_no_add!(
+        //         &cost,
+        //         meta_storage
+        //             .put_meta(ROOT_LEAFS_SERIALIZED_KEY, &value)
+        //             .map_err(|e| e.into())
+        //     );
+        //     cost.storage_written_bytes +=
+        //         ROOT_LEAFS_SERIALIZED_KEY.len() as u32 + value.len() as u32;
+        // });
+        //
+        // // Persist root leaf as a regular subtree
+        // storage_context_optional_tx!(self.db, [key], transaction, storage, {
+        //     cost_return_on_error_no_add!(
+        //         &cost,
+        //         storage.put_root(ROOT_KEY_KEY, key).map_err(|e| e.into())
+        //     );
+        //     cost.storage_written_bytes += ROOT_KEY_KEY.len() as u32 + key.len() as
+        // u32 });
 
         Ok(()).wrap_with_cost(cost)
     }

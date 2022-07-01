@@ -174,6 +174,7 @@ impl GroveDb {
                 }
             );
         }
+
         Ok(MerkleTree::<Sha256>::from_leaves(&leaf_hashes)).wrap_with_cost(cost)
     }
 
