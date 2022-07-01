@@ -46,16 +46,8 @@ impl GroveDb {
         match subtree_exists {
             Ok(_) => {}
             Err(_) => {
-                // let (root_key, path_slice) = path_slices
-                //     .split_first()
-                //     .expect("confirmed path is not empty above");
-
-                // let mut root_proof = vec![];
-                // cost_return_on_error!(&mut cost, self.prove_root_key(&mut root_proof,
-                // root_key));
 
                 write_to_vec(&mut proof_result, &[ProofType::AbsentPath.into()]);
-
                 let mut current_path: Vec<&[u8]> = vec![];
 
                 let mut split_path = path_slices.split_first();
@@ -93,7 +85,6 @@ impl GroveDb {
                     split_path = path_slice.split_first();
                 }
 
-                // proof_result.append(&mut root_proof);
                 return Ok(proof_result).wrap_with_cost(cost);
             }
         }
@@ -277,10 +268,6 @@ impl GroveDb {
         // generate proof to show that the path leads up to the root
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
-            // if path_slice.is_empty() {
-            //     cost_return_on_error!(&mut cost, self.prove_root_key(proof_result, key));
-            // } else {
-            // generate proofs for the intermediate paths
             let subtree =
                 cost_return_on_error!(&mut cost, self.open_subtree(path_slice.iter().copied()));
             let mut query = Query::new();
@@ -297,7 +284,6 @@ impl GroveDb {
                     proof_result,
                 )
             );
-            // }
             split_path = path_slice.split_last();
         }
         Ok(()).wrap_with_cost(cost)

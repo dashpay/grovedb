@@ -371,7 +371,6 @@ impl GroveDb {
     fn apply_batch_structure<C: TreeCache>(
         &self,
         batch_structure: BatchStructure<C>,
-        // temp_root_leaves: &mut BTreeMap<Vec<u8>, usize>,
         batch_apply_options: Option<BatchApplyOptions>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -497,7 +496,6 @@ impl GroveDb {
     fn apply_body<'db, S: StorageContext<'db>>(
         &self,
         ops: Vec<GroveDbOp>,
-        // temp_root_leaves: &mut BTreeMap<Vec<u8>, usize>,
         batch_apply_options: Option<BatchApplyOptions>,
         get_merk_fn: impl Fn(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     ) -> CostResult<(), Error> {
@@ -607,7 +605,7 @@ impl GroveDb {
         );
         cost_return_on_error!(
             &mut cost,
-            self.apply_batch_structure(batch_structure, batch_apply_options,)
+            self.apply_batch_structure(batch_structure, batch_apply_options)
         );
 
         cost.add_worst_case_open_root_meta_storage();

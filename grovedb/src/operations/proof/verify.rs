@@ -288,7 +288,7 @@ impl ProofVerifier {
 
             let proof_result =
                 self.execute_merk_proof(ProofType::Merk, &merk_proof, &child_query, true)?;
-            // if this is the root we just want to store the last hash
+
             if expected_child_hash == None {
                 root_key_hash = Some(proof_result.0);
             } else if Some(proof_result.0) != expected_child_hash {
@@ -335,7 +335,6 @@ impl ProofVerifier {
     ) -> Result<[u8; 32], Error> {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
-            // if !path_slice.is_empty() {
             // for every subtree, there should be a corresponding proof for the parent
             // which should prove that this subtree is a child of the parent tree
             let parent_merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
@@ -370,9 +369,7 @@ impl ProofVerifier {
             }
 
             *expected_root_hash = proof_result.0;
-            // } else {
-            //     break;
-            // }
+
             split_path = path_slice.split_last();
         }
 
