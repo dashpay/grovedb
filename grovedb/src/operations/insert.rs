@@ -27,18 +27,11 @@ impl GroveDb {
 
         match element {
             Element::Tree(..) => {
-                if path_iter.len() == 0 {
-                    cost_return_on_error!(&mut cost, self.add_root_leaf(key, element, transaction));
-                } else {
-                    cost_return_on_error!(
-                        &mut cost,
-                        self.add_non_root_subtree(path_iter.clone(), key, element, transaction)
-                    );
-                    cost_return_on_error!(
-                        &mut cost,
-                        self.propagate_changes(path_iter, transaction)
-                    );
-                }
+                cost_return_on_error!(
+                    &mut cost,
+                    self.add_subtree(path_iter.clone(), key, element, transaction)
+                );
+                cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
             }
             Element::Reference(ref reference_path, _) => {
                 if path_iter.len() == 0 {
@@ -105,80 +98,12 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    /// Add subtree to the root tree
-    fn add_root_leaf(
-        &self,
-        key: &[u8],
-        element: Element,
-        transaction: TransactionArg,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-
-        // TODO: combine with add_non_root_subtree
-        let element_flag = cost_return_on_error_no_add!(
-            &cost,
-            match element {
-                Element::Tree(_, flag) => Ok(flag),
-                _ => Err(Error::CorruptedData("element should be a tree".to_owned())),
-            }
-        );
-
-        let root_path: Vec<&[u8]> = vec![];
-        let path_iter = root_path.iter().copied();
-
-        if let Some(tx) = transaction {
-            let parent_storage = self
-                .db
-                .get_transactional_storage_context(path_iter.clone(), tx);
-            let mut parent_subtree = cost_return_on_error!(
-                &mut cost,
-                Merk::open(parent_storage)
-                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            let child_storage = self
-                .db
-                .get_transactional_storage_context(path_iter.chain(std::iter::once(key)), tx);
-            let child_subtree = cost_return_on_error!(
-                &mut cost,
-                Merk::open(child_storage)
-                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            let element = Element::new_tree_with_flags(
-                child_subtree.root_hash().unwrap_add_cost(&mut cost),
-                element_flag,
-            );
-            cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
-        } else {
-            let parent_storage = self.db.get_storage_context(path_iter.clone());
-            let mut parent_subtree = cost_return_on_error!(
-                &mut cost,
-                Merk::open(parent_storage)
-                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            let child_storage = self
-                .db
-                .get_storage_context(path_iter.chain(std::iter::once(key)));
-            let child_subtree = cost_return_on_error!(
-                &mut cost,
-                Merk::open(child_storage)
-                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            let element = Element::new_tree_with_flags(
-                child_subtree.root_hash().unwrap_add_cost(&mut cost),
-                element_flag,
-            );
-            cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
-        }
-
-        Ok(()).wrap_with_cost(cost)
-    }
-
     /// Add subtree to another subtree.
     /// We want to add a new empty merk to another merk at a key
     /// first make sure other merk exist
     /// if it exists, then create merk to be inserted, and get root hash
     /// we only care about root hash of merk to be inserted
-    fn add_non_root_subtree<'p, P>(
+    fn add_subtree<'p, P>(
         &self,
         path: P,
         key: &'p [u8],
@@ -199,6 +124,7 @@ impl GroveDb {
             }
         );
         let path_iter = path.into_iter();
+
         cost_return_on_error!(
             &mut cost,
             self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)

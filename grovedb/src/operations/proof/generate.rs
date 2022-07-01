@@ -46,7 +46,6 @@ impl GroveDb {
         match subtree_exists {
             Ok(_) => {}
             Err(_) => {
-
                 write_to_vec(&mut proof_result, &[ProofType::AbsentPath.into()]);
                 let mut current_path: Vec<&[u8]> = vec![];
 

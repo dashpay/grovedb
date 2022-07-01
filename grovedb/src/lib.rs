@@ -105,8 +105,8 @@ impl GroveDb {
         };
 
         merk_optional_tx!(&mut cost, self.db, [], transaction, subtree, {
-            // TODO: simplify this
-            Ok(subtree.root_hash().unwrap_add_cost(&mut cost)).wrap_with_cost(cost)
+            let root_hash = subtree.root_hash().unwrap_add_cost(&mut cost);
+            Ok(root_hash).wrap_with_cost(cost)
         })
     }
 

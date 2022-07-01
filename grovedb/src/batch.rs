@@ -492,7 +492,6 @@ impl GroveDb {
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
-    // applies the batch body, updates temp_root_leaves
     fn apply_body<'db, S: StorageContext<'db>>(
         &self,
         ops: Vec<GroveDbOp>,
