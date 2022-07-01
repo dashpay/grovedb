@@ -68,10 +68,10 @@ impl ProofVerifier {
                 path_slices,
                 &mut proof_reader,
                 &mut last_subtree_root_hash,
-            )?;
+            )?
 
             // execute the root proof
-            Self::execute_root_proof(&mut proof_reader, last_subtree_root_hash)?
+            // Self::execute_root_proof(&mut proof_reader, last_subtree_root_hash)?
         };
 
         Ok(root_hash)
@@ -335,10 +335,10 @@ impl ProofVerifier {
         path_slices: Vec<&[u8]>,
         proof_reader: &mut ProofReader,
         expected_root_hash: &mut [u8; 32],
-    ) -> Result<(), Error> {
+    ) -> Result<[u8; 32], Error> {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
-            if !path_slice.is_empty() {
+            // if !path_slice.is_empty() {
                 // for every subtree, there should be a corresponding proof for the parent
                 // which should prove that this subtree is a child of the parent tree
                 let parent_merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
@@ -373,13 +373,13 @@ impl ProofVerifier {
                 }
 
                 *expected_root_hash = proof_result.0;
-            } else {
-                break;
-            }
+            // } else {
+            //     break;
+            // }
             split_path = path_slice.split_last();
         }
 
-        Ok(())
+        Ok(*expected_root_hash)
     }
 
     /// Generate expected root hash based on root proof and leaf hashes

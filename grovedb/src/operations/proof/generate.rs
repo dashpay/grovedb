@@ -276,9 +276,9 @@ impl GroveDb {
         // generate proof to show that the path leads up to the root
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
-            if path_slice.is_empty() {
-                cost_return_on_error!(&mut cost, self.prove_root_key(proof_result, key));
-            } else {
+            // if path_slice.is_empty() {
+            //     cost_return_on_error!(&mut cost, self.prove_root_key(proof_result, key));
+            // } else {
                 // generate proofs for the intermediate paths
                 let subtree =
                     cost_return_on_error!(&mut cost, self.open_subtree(path_slice.iter().copied()));
@@ -296,7 +296,7 @@ impl GroveDb {
                         proof_result,
                     )
                 );
-            }
+            // }
             split_path = path_slice.split_last();
         }
         Ok(()).wrap_with_cost(cost)
