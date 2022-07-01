@@ -211,7 +211,7 @@ impl GroveDb {
         // Go up until only one element in path, which means a key of a root tree
         let mut path_iter = path.into_iter();
 
-        while path_iter.len() > 1 {
+        while path_iter.len() > 0 {
             if let Some(tx) = transaction {
                 let subtree_storage = self
                     .db
