@@ -294,17 +294,17 @@ impl GroveDb {
         if path_iter.len() == 0 {
             return Ok(()).wrap_with_cost(cost);
         }
-        if path_iter.len() == 1 {
-            meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
-                let root_leaf_keys = cost_return_on_error!(
-                    &mut cost,
-                    Self::get_root_leaf_keys_internal(&meta_storage)
-                );
-                if !root_leaf_keys.contains_key(path_iter.next().expect("must contain an item")) {
-                    return Err(error).wrap_with_cost(cost);
-                }
-            });
-        } else {
+        // if path_iter.len() == 1 {
+        //     meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
+        //         let root_leaf_keys = cost_return_on_error!(
+        //             &mut cost,
+        //             Self::get_root_leaf_keys_internal(&meta_storage)
+        //         );
+        //         if !root_leaf_keys.contains_key(path_iter.next().expect("must contain an item")) {
+        //             return Err(error).wrap_with_cost(cost);
+        //         }
+        //     });
+        // } else {
             let mut parent_iter = path_iter;
             let parent_key = parent_iter.next_back().expect("path is not empty");
             merk_optional_tx!(&mut cost, self.db, parent_iter, transaction, parent, {
@@ -316,7 +316,7 @@ impl GroveDb {
                     Err(e) => return Err(e).wrap_with_cost(cost),
                 }
             });
-        }
+        // }
         Ok(()).wrap_with_cost(cost)
     }
 
