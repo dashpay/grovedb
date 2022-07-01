@@ -3,9 +3,9 @@ use std::ops::{Deref, DerefMut};
 use ::visualize::{Drawer, Visualize};
 use rand::Rng;
 use tempfile::TempDir;
-use crate::subtree::ElementsIterator;
 
 use super::*;
+use crate::subtree::ElementsIterator;
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
 pub const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
@@ -735,8 +735,12 @@ fn test_tree_structure_is_persistent() {
 #[test]
 fn test_root_tree_leaves_are_noted() {
     let db = make_grovedb();
-    db.check_subtree_exists_path_not_found([TEST_LEAF], None).unwrap().expect("should exist");
-    db.check_subtree_exists_path_not_found([ANOTHER_TEST_LEAF], None).unwrap().expect("should exist");
+    db.check_subtree_exists_path_not_found([TEST_LEAF], None)
+        .unwrap()
+        .expect("should exist");
+    db.check_subtree_exists_path_not_found([ANOTHER_TEST_LEAF], None)
+        .unwrap()
+        .expect("should exist");
 }
 
 #[test]

@@ -71,7 +71,8 @@ impl ProofVerifier {
             )?
 
             // execute the root proof
-            // Self::execute_root_proof(&mut proof_reader, last_subtree_root_hash)?
+            // Self::execute_root_proof(&mut proof_reader,
+            // last_subtree_root_hash)?
         };
 
         Ok(root_hash)
@@ -324,7 +325,7 @@ impl ProofVerifier {
                 Err(Error::InvalidProof("proof invalid: no non root tree found"))
             }
         } else {
-            return Err(Error::InvalidProof("proof invalid: path not absent"))
+            return Err(Error::InvalidProof("proof invalid: path not absent"));
         }
     }
 
@@ -340,40 +341,40 @@ impl ProofVerifier {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             // if !path_slice.is_empty() {
-                // for every subtree, there should be a corresponding proof for the parent
-                // which should prove that this subtree is a child of the parent tree
-                let parent_merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
+            // for every subtree, there should be a corresponding proof for the parent
+            // which should prove that this subtree is a child of the parent tree
+            let parent_merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
 
-                let mut parent_query = Query::new();
-                parent_query.insert_key(key.to_vec());
+            let mut parent_query = Query::new();
+            parent_query.insert_key(key.to_vec());
 
-                let proof_result = self.execute_merk_proof(
-                    ProofType::Merk,
-                    &parent_merk_proof,
-                    &parent_query,
-                    query.query.query.left_to_right,
-                )?;
+            let proof_result = self.execute_merk_proof(
+                ProofType::Merk,
+                &parent_merk_proof,
+                &parent_query,
+                query.query.query.left_to_right,
+            )?;
 
-                let result_set = proof_result
-                    .1
-                    .expect("MERK_PROOF always returns a result set");
-                if result_set.is_empty() || &result_set[0].0 != key {
-                    return Err(Error::InvalidProof("proof invalid: invalid parent"));
-                }
+            let result_set = proof_result
+                .1
+                .expect("MERK_PROOF always returns a result set");
+            if result_set.is_empty() || &result_set[0].0 != key {
+                return Err(Error::InvalidProof("proof invalid: invalid parent"));
+            }
 
-                let elem = Element::deserialize(result_set[0].1.as_slice())?;
-                let child_hash = match elem {
-                    Element::Tree(hash, _) => Ok(hash),
-                    _ => Err(Error::InvalidProof(
-                        "intermediate proofs should be for trees",
-                    )),
-                }?;
+            let elem = Element::deserialize(result_set[0].1.as_slice())?;
+            let child_hash = match elem {
+                Element::Tree(hash, _) => Ok(hash),
+                _ => Err(Error::InvalidProof(
+                    "intermediate proofs should be for trees",
+                )),
+            }?;
 
-                if child_hash != *expected_root_hash {
-                    return Err(Error::InvalidProof("Bad path"));
-                }
+            if child_hash != *expected_root_hash {
+                return Err(Error::InvalidProof("Bad path"));
+            }
 
-                *expected_root_hash = proof_result.0;
+            *expected_root_hash = proof_result.0;
             // } else {
             //     break;
             // }

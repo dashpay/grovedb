@@ -51,7 +51,8 @@ impl GroveDb {
                 //     .expect("confirmed path is not empty above");
 
                 // let mut root_proof = vec![];
-                // cost_return_on_error!(&mut cost, self.prove_root_key(&mut root_proof, root_key));
+                // cost_return_on_error!(&mut cost, self.prove_root_key(&mut root_proof,
+                // root_key));
 
                 write_to_vec(&mut proof_result, &[ProofType::AbsentPath.into()]);
 
@@ -279,52 +280,54 @@ impl GroveDb {
             // if path_slice.is_empty() {
             //     cost_return_on_error!(&mut cost, self.prove_root_key(proof_result, key));
             // } else {
-                // generate proofs for the intermediate paths
-                let subtree =
-                    cost_return_on_error!(&mut cost, self.open_subtree(path_slice.iter().copied()));
-                let mut query = Query::new();
-                query.insert_key(key.to_vec());
+            // generate proofs for the intermediate paths
+            let subtree =
+                cost_return_on_error!(&mut cost, self.open_subtree(path_slice.iter().copied()));
+            let mut query = Query::new();
+            query.insert_key(key.to_vec());
 
-                cost_return_on_error!(
-                    &mut cost,
-                    self.generate_and_store_merk_proof(
-                        &subtree,
-                        &query,
-                        None,
-                        None,
-                        ProofType::Merk,
-                        proof_result,
-                    )
-                );
+            cost_return_on_error!(
+                &mut cost,
+                self.generate_and_store_merk_proof(
+                    &subtree,
+                    &query,
+                    None,
+                    None,
+                    ProofType::Merk,
+                    proof_result,
+                )
+            );
             // }
             split_path = path_slice.split_last();
         }
         Ok(()).wrap_with_cost(cost)
     }
 
-    // fn prove_root_key(&self, mut proof_result: &mut Vec<u8>, key: &[u8]) -> CostResult<(), Error> {
-    //     let mut cost = OperationCost::default();
+    // fn prove_root_key(&self, mut proof_result: &mut Vec<u8>, key: &[u8]) ->
+    // CostResult<(), Error> {     let mut cost = OperationCost::default();
     //
     //     // generate root proof
     //     let meta_storage = self.db.get_storage_context(std::iter::empty());
     //     let root_leaf_keys =
-    //         cost_return_on_error!(&mut cost, Self::get_root_leaf_keys_internal(&meta_storage));
+    //         cost_return_on_error!(&mut cost,
+    // Self::get_root_leaf_keys_internal(&meta_storage));
     //
     //     let mut index_to_prove: Vec<usize> = vec![];
     //     match root_leaf_keys.get(&key.to_vec()) {
     //         Some(index) => index_to_prove.push(*index),
-    //         None => return Err(Error::InvalidPath("invalid root key")).wrap_with_cost(cost),
-    //     }
-    //     let root_tree = cost_return_on_error!(&mut cost, self.get_root_tree(None));
-    //     let root_proof = root_tree.proof(&index_to_prove).to_bytes();
+    //         None => return Err(Error::InvalidPath("invalid root
+    // key")).wrap_with_cost(cost),     }
+    //     let root_tree = cost_return_on_error!(&mut cost,
+    // self.get_root_tree(None));     let root_proof =
+    // root_tree.proof(&index_to_prove).to_bytes();
     //
     //     write_to_vec(&mut proof_result, &[ProofType::Root.into()]);
     //     write_to_vec(&mut proof_result, &root_proof.len().to_be_bytes());
     //     write_to_vec(&mut proof_result, &root_proof);
     //
     //     // write the number of root leafs
-    //     // this makes the assumption that 1 byte is enough to represent the number of
-    //     // root leafs i.e max of 255 root leaf keys
+    //     // this makes the assumption that 1 byte is enough to represent the
+    // number of     // root leafs i.e max of 255 root leaf keys
     //     debug_assert!(root_leaf_keys.len() < 256);
     //     write_to_vec(&mut proof_result, &[root_leaf_keys.len() as u8]);
     //

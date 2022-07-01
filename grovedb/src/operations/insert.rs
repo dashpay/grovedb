@@ -126,7 +126,6 @@ impl GroveDb {
         let root_path: Vec<&[u8]> = vec![];
         let path_iter = root_path.iter().copied();
 
-
         if let Some(tx) = transaction {
             let parent_storage = self
                 .db
