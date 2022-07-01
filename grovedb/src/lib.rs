@@ -21,6 +21,7 @@ pub use storage::{
     Storage, StorageContext,
 };
 pub use subtree::{Element, ElementFlags};
+use crate::subtree::ElementsIterator;
 
 use crate::util::{merk_optional_tx, meta_storage_context_optional_tx};
 
@@ -189,12 +190,24 @@ impl GroveDb {
         Ok(MerkleTree::<Sha256>::from_leaves(&leaf_hashes)).wrap_with_cost(cost)
     }
 
-    pub fn get_root_tree(
-        &self,
-        transaction: TransactionArg,
-    ) -> CostResult<MerkleTree<Sha256>, Error> {
-        Self::get_root_tree_internal(&self.db, transaction)
-    }
+    // pub fn get_root_tree_iterator<I>(
+    //     &self,
+    //     transaction: TransactionArg,
+    // ) -> CostResult<ElementsIterator<I>, Error>{
+    //     let mut cost = OperationCost::default();
+    //     let root_tree = merk_optional_tx!(
+    //             &mut cost,
+    //             self.db,
+    //             [],
+    //             transaction,
+    //             subtree,
+    //             {
+    //                 subtree
+    //             }
+    //         );
+    //     let iterator = Element::iterator(root_tree.storage.raw_iter());
+    //     Ok(iterator)
+    // }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
     fn propagate_changes<'p, P>(

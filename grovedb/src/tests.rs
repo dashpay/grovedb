@@ -3,6 +3,7 @@ use std::ops::{Deref, DerefMut};
 use ::visualize::{Drawer, Visualize};
 use rand::Rng;
 use tempfile::TempDir;
+use crate::subtree::ElementsIterator;
 
 use super::*;
 
@@ -734,11 +735,8 @@ fn test_tree_structure_is_persistent() {
 #[test]
 fn test_root_tree_leaves_are_noted() {
     let db = make_grovedb();
-    let mut hm = BTreeMap::new();
-    hm.insert(TEST_LEAF.to_vec(), 0);
-    hm.insert(ANOTHER_TEST_LEAF.to_vec(), 1);
-    assert_eq!(db.get_root_leaf_keys(None).unwrap().unwrap(), hm);
-    assert_eq!(db.get_root_tree(None).unwrap().unwrap().leaves_len(), 2);
+    db.check_subtree_exists_path_not_found([TEST_LEAF], None).unwrap().expect("should exist");
+    db.check_subtree_exists_path_not_found([ANOTHER_TEST_LEAF], None).unwrap().expect("should exist");
 }
 
 #[test]
