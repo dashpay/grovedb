@@ -241,6 +241,7 @@ impl GroveDbOp {
     }
 }
 
+#[derive(Debug)]
 pub struct GroveDbOpConsistencyResults {
     repeated_ops: Vec<(GroveDbOp, u16)>, // the u16 is count
     same_path_key_ops: Vec<(Vec<Vec<u8>>, Vec<u8>, Vec<Op>)>,
