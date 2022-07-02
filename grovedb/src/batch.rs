@@ -249,6 +249,14 @@ pub struct GroveDbOpConsistencyResults {
                                                                      * then inserts under */
 }
 
+impl GroveDbOpConsistencyResults {
+    pub fn is_empty(&self) -> bool {
+        self.repeated_ops.is_empty()
+            && self.same_path_key_ops.is_empty()
+            && self.insert_ops_below_deleted_ops.is_empty()
+    }
+}
+
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F> {
     merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
