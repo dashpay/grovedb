@@ -122,6 +122,7 @@ impl fmt::Debug for GroveDbOp {
             .finish()
     }
 }
+
 impl GroveDbOp {
     pub fn insert(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
         Self {
@@ -138,6 +139,113 @@ impl GroveDbOp {
             op: Op::Delete,
         }
     }
+
+    pub fn verify_consistency_of_operations(ops: &Vec<GroveDbOp>) -> GroveDbOpConsistencyResults {
+        let ops_len = ops.len();
+        // operations should not have any duplicates
+        let mut repeated_ops = vec![];
+        for (i, op) in ops.iter().enumerate() {
+            if i == ops_len {
+                continue;
+            } // Don't do last one
+            let count = ops
+                .split_at(i + 1)
+                .1
+                .iter()
+                .filter(|&current_op| current_op == op)
+                .count() as u16;
+            if count > 1 {
+                repeated_ops.push((op.clone(), count));
+            }
+        }
+
+        let mut same_path_key_ops = vec![];
+
+        // No double insert or delete of same key in same path
+        for (i, op) in ops.iter().enumerate() {
+            if i == ops_len {
+                continue;
+            } // Don't do last one
+            let mut doubled_ops = ops
+                .split_at(i + 1)
+                .1
+                .iter()
+                .filter_map(|current_op| {
+                    if current_op.path == op.path && current_op.key == op.key {
+                        Some(op.op.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<Op>>();
+            if doubled_ops.len() > 0 {
+                doubled_ops.push(op.op.clone());
+                same_path_key_ops.push((op.path.clone(), op.key.clone(), doubled_ops));
+            }
+        }
+
+        let inserts = ops
+            .iter()
+            .filter_map(|current_op| {
+                if let Op::Insert { .. } = current_op.op {
+                    Some(current_op.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<GroveDbOp>>();
+
+        let deletes = ops
+            .iter()
+            .filter_map(|current_op| {
+                if let Op::Delete = current_op.op {
+                    Some(current_op.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<GroveDbOp>>();
+
+        let mut insert_ops_below_deleted_ops = vec![];
+
+        // No inserts under a deleted path
+        for deleted_op in deletes.iter() {
+            let mut deleted_qualified_path = deleted_op.path.clone();
+            deleted_qualified_path.push(deleted_op.key.clone());
+            let inserts_with_deleted_ops_above = inserts
+                .iter()
+                .filter_map(|inserted_op| {
+                    if deleted_op.path.len() < inserted_op.path.len()
+                        && deleted_qualified_path
+                            .iter()
+                            .zip(inserted_op.path.iter())
+                            .all(|(a, b)| a == b)
+                    {
+                        Some(inserted_op.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<GroveDbOp>>();
+            if inserts_with_deleted_ops_above.len() > 0 {
+                insert_ops_below_deleted_ops
+                    .push((deleted_op.clone(), inserts_with_deleted_ops_above));
+            }
+        }
+
+        GroveDbOpConsistencyResults {
+            repeated_ops,
+            same_path_key_ops,
+            insert_ops_below_deleted_ops,
+        }
+    }
+}
+
+pub struct GroveDbOpConsistencyResults {
+    repeated_ops: Vec<(GroveDbOp, u16)>, // the u16 is count
+    same_path_key_ops: Vec<(Vec<Vec<u8>>, Vec<u8>, Vec<Op>)>,
+    insert_ops_below_deleted_ops: Vec<(GroveDbOp, Vec<GroveDbOp>)>, /* the deleted op first,
+                                                                     * then inserts under */
 }
 
 /// Cache for Merk trees by their paths.
