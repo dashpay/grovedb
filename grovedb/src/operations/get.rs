@@ -7,7 +7,7 @@ use storage::StorageContext;
 
 use crate::{
     subtree::KeyElementPair,
-    util::{merk_optional_tx, meta_storage_context_optional_tx, storage_context_optional_tx},
+    util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
 
@@ -118,55 +118,28 @@ impl GroveDb {
     {
         let path_iter = path.into_iter();
 
-        if path_iter.len() == 0 {
-            // Root tree's items are serialized into meta storage and cannot be checked
-            // easily; Knowing that root tree's leafs are subtrees only, we can
-            // check them using roots storage.
-            storage_context_optional_tx!(self.db, [key], transaction, storage, {
-                storage
-                    .get_root(merk::ROOT_KEY_KEY)
-                    .wrap_with_cost(Default::default())
-                    .map_err(|e| e.into())
-                    .flat_map_ok(|root| {
-                        root.map(|r| {
-                            Ok(true).wrap_with_cost(OperationCost {
-                                seek_count: 1,
-                                loaded_bytes: r.len() as u32,
-                                ..Default::default()
-                            })
-                        })
-                        .unwrap_or_else(|| {
-                            Ok(false).wrap_with_cost(OperationCost {
-                                seek_count: 1,
-                                ..Default::default()
-                            })
+        // Merk's items should be written into data storage and checked accordingly
+        storage_context_optional_tx!(self.db, path_iter, transaction, storage, {
+            storage
+                .get(key)
+                .wrap_with_cost(Default::default())
+                .map_err(|e| e.into())
+                .flat_map_ok(|root| {
+                    root.map(|r| {
+                        Ok(true).wrap_with_cost(OperationCost {
+                            seek_count: 1,
+                            loaded_bytes: r.len() as u32,
+                            ..Default::default()
                         })
                     })
-            })
-        } else {
-            // Merk's items should be written into data storage and checked accordingly
-            storage_context_optional_tx!(self.db, path_iter, transaction, storage, {
-                storage
-                    .get(key)
-                    .wrap_with_cost(Default::default())
-                    .map_err(|e| e.into())
-                    .flat_map_ok(|root| {
-                        root.map(|r| {
-                            Ok(true).wrap_with_cost(OperationCost {
-                                seek_count: 1,
-                                loaded_bytes: r.len() as u32,
-                                ..Default::default()
-                            })
-                        })
-                        .unwrap_or_else(|| {
-                            Ok(false).wrap_with_cost(OperationCost {
-                                seek_count: 1,
-                                ..Default::default()
-                            })
+                    .unwrap_or_else(|| {
+                        Ok(false).wrap_with_cost(OperationCost {
+                            seek_count: 1,
+                            ..Default::default()
                         })
                     })
-            })
-        }
+                })
+        })
     }
 
     pub fn query_many(
@@ -290,33 +263,21 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
 
-        let mut path_iter = path.into_iter();
+        let path_iter = path.into_iter();
         if path_iter.len() == 0 {
             return Ok(()).wrap_with_cost(cost);
         }
-        if path_iter.len() == 1 {
-            meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
-                let root_leaf_keys = cost_return_on_error!(
-                    &mut cost,
-                    Self::get_root_leaf_keys_internal(&meta_storage)
-                );
-                if !root_leaf_keys.contains_key(path_iter.next().expect("must contain an item")) {
-                    return Err(error).wrap_with_cost(cost);
-                }
-            });
-        } else {
-            let mut parent_iter = path_iter;
-            let parent_key = parent_iter.next_back().expect("path is not empty");
-            merk_optional_tx!(&mut cost, self.db, parent_iter, transaction, parent, {
-                match Element::get(&parent, parent_key).unwrap_add_cost(&mut cost) {
-                    Ok(Element::Tree(..)) => {}
-                    Ok(_) | Err(Error::PathKeyNotFound(_)) => {
-                        return Err(error).wrap_with_cost(cost)
-                    }
-                    Err(e) => return Err(e).wrap_with_cost(cost),
-                }
-            });
-        }
+
+        let mut parent_iter = path_iter;
+        let parent_key = parent_iter.next_back().expect("path is not empty");
+        merk_optional_tx!(&mut cost, self.db, parent_iter, transaction, parent, {
+            match Element::get(&parent, parent_key).unwrap_add_cost(&mut cost) {
+                Ok(Element::Tree(..)) => {}
+                Ok(_) | Err(Error::PathKeyNotFound(_)) => return Err(error).wrap_with_cost(cost),
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            }
+        });
+
         Ok(()).wrap_with_cost(cost)
     }
 

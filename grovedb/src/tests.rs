@@ -490,7 +490,7 @@ fn test_element_with_flags() {
         .expect("should successfully create proof");
     let (root_hash, result_set) =
         GroveDb::verify_query(&proof, &path_query).expect("should verify proof");
-    assert_eq!(root_hash, db.db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(root_hash, db.db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
     assert_eq!(
         Element::deserialize(&result_set[0].1).expect("should deserialize element"),
@@ -734,15 +734,15 @@ fn test_tree_structure_is_persistent() {
 #[test]
 fn test_root_tree_leaves_are_noted() {
     let db = make_grovedb();
-    let mut hm = BTreeMap::new();
-    hm.insert(TEST_LEAF.to_vec(), 0);
-    hm.insert(ANOTHER_TEST_LEAF.to_vec(), 1);
-    assert_eq!(db.get_root_leaf_keys(None).unwrap().unwrap(), hm);
-    assert_eq!(db.get_root_tree(None).unwrap().unwrap().leaves_len(), 2);
+    db.check_subtree_exists_path_not_found([TEST_LEAF], None)
+        .unwrap()
+        .expect("should exist");
+    db.check_subtree_exists_path_not_found([ANOTHER_TEST_LEAF], None)
+        .unwrap()
+        .expect("should exist");
 }
 
 #[test]
-#[should_panic]
 fn test_proof_for_invalid_path_root_key() {
     let db = make_grovedb();
 
@@ -753,7 +753,7 @@ fn test_proof_for_invalid_path_root_key() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
 }
 
@@ -769,7 +769,7 @@ fn test_proof_for_invalid_path() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
 
     let query = Query::new();
@@ -786,7 +786,7 @@ fn test_proof_for_invalid_path() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
 
     let query = Query::new();
@@ -804,7 +804,7 @@ fn test_proof_for_invalid_path() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
 
     let query = Query::new();
@@ -822,7 +822,7 @@ fn test_proof_for_invalid_path() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
 }
 
@@ -840,7 +840,7 @@ fn test_proof_for_non_existent_data() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
 }
 
@@ -972,7 +972,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value1".to_vec()).serialize().unwrap();
     let r2 = Element::new_item(b"value4".to_vec()).serialize().unwrap();
 
@@ -1079,7 +1079,7 @@ fn test_path_query_proofs_without_subquery() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value1".to_vec()).serialize().unwrap();
     assert_eq!(result_set, vec![(b"key1".to_vec(), r1)]);
 
@@ -1095,7 +1095,7 @@ fn test_path_query_proofs_without_subquery() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value2".to_vec()).serialize().unwrap();
     assert_eq!(result_set, vec![(b"key2".to_vec(), r1)]);
 
@@ -1111,7 +1111,7 @@ fn test_path_query_proofs_without_subquery() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value3".to_vec()).serialize().unwrap();
     assert_eq!(result_set, vec![(b"key3".to_vec(), r1)]);
 
@@ -1127,7 +1127,7 @@ fn test_path_query_proofs_without_subquery() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value3".to_vec()).serialize().unwrap();
     let r2 = Element::new_item(b"value2".to_vec()).serialize().unwrap();
     assert_eq!(
@@ -1153,7 +1153,7 @@ fn test_path_query_proofs_with_default_subquery() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 5);
 
     let keys = [
@@ -1187,7 +1187,7 @@ fn test_path_query_proofs_with_default_subquery() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 2);
 
     let keys = [b"key4".to_vec(), b"key5".to_vec()];
@@ -1212,7 +1212,7 @@ fn test_path_query_proofs_with_default_subquery() {
     execute proof",
     );
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
 
     let keys = [b"key2".to_vec(), b"key3".to_vec(), b"key4".to_vec()];
@@ -1240,7 +1240,7 @@ fn test_path_query_proofs_with_default_subquery() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 11);
 
     let keys = [
@@ -1293,7 +1293,7 @@ fn test_path_query_proofs_with_subquery_key() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
 
     let keys = [b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()];
@@ -1322,7 +1322,7 @@ fn test_path_query_proofs_with_key_and_subquery() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
 
     let keys = [b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()];
@@ -1358,7 +1358,7 @@ fn test_path_query_proofs_with_conditional_subquery() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
 
     let keys = [
         b"deeper_node_1".to_vec(),
@@ -1400,7 +1400,7 @@ fn test_path_query_proofs_with_conditional_subquery() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 6);
 
     let keys = [
@@ -1458,7 +1458,7 @@ fn test_path_query_proofs_with_sized_query() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
 
     let keys = [b"key4".to_vec(), b"key5".to_vec(), b"key6".to_vec()];
@@ -1501,7 +1501,7 @@ fn test_path_query_proofs_with_direction() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
 
     let keys = [b"key10".to_vec(), b"key6".to_vec(), b"key5".to_vec()];
@@ -1529,7 +1529,7 @@ fn test_path_query_proofs_with_direction() {
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
-    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 11);
 
     let keys = [
@@ -2693,7 +2693,7 @@ fn test_get_range_query_with_non_unique_subquery() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 200);
     compare_result_sets(&elements, &result_set);
 }
@@ -2728,7 +2728,7 @@ fn test_get_range_query_with_unique_subquery() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 4);
     compare_result_sets(&elements, &result_set);
 }
@@ -2763,7 +2763,7 @@ fn test_get_range_query_with_unique_subquery_on_references() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 4);
     compare_result_sets(&elements, &result_set);
 }
@@ -2807,7 +2807,7 @@ fn test_get_range_query_with_unique_subquery_with_non_unique_null_values() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 115);
     compare_result_sets(&elements, &result_set);
 }
@@ -2850,7 +2850,7 @@ fn test_get_range_query_with_unique_subquery_ignore_non_unique_null_values() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 15);
     compare_result_sets(&elements, &result_set);
 }
@@ -2890,7 +2890,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 400);
     compare_result_sets(&elements, &result_set);
 }
@@ -2933,7 +2933,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 400);
     compare_result_sets(&elements, &result_set);
 }
@@ -2968,7 +2968,7 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 8);
     compare_result_sets(&elements, &result_set);
 }
@@ -3008,7 +3008,7 @@ fn test_get_range_from_query_with_non_unique_subquery() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 250);
     compare_result_sets(&elements, &result_set);
 }
@@ -3043,7 +3043,7 @@ fn test_get_range_from_query_with_unique_subquery() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 5);
     compare_result_sets(&elements, &result_set);
 }
@@ -3083,7 +3083,7 @@ fn test_get_range_to_query_with_non_unique_subquery() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 500);
     compare_result_sets(&elements, &result_set);
 }
@@ -3118,7 +3118,7 @@ fn test_get_range_to_query_with_unique_subquery() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 10);
     compare_result_sets(&elements, &result_set);
 }
@@ -3158,7 +3158,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 550);
     compare_result_sets(&elements, &result_set);
 }
@@ -3198,7 +3198,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bou
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 750);
     compare_result_sets(&elements, &result_set);
 }
@@ -3233,7 +3233,7 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 11);
     compare_result_sets(&elements, &result_set);
 }
@@ -3273,7 +3273,7 @@ fn test_get_range_after_query_with_non_unique_subquery() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 200);
     compare_result_sets(&elements, &result_set);
 }
@@ -3313,7 +3313,7 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 50);
     compare_result_sets(&elements, &result_set);
 }
@@ -3355,7 +3355,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 100);
     compare_result_sets(&elements, &result_set);
 }
@@ -3397,7 +3397,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery_and_key_out_
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 200);
     compare_result_sets(&elements, &result_set);
 }
@@ -3443,7 +3443,7 @@ fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 60);
     compare_result_sets(&elements, &result_set);
 }
@@ -3484,7 +3484,7 @@ fn test_get_range_query_with_limit_and_offset() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 250);
     compare_result_sets(&elements, &result_set);
 
@@ -3515,7 +3515,7 @@ fn test_get_range_query_with_limit_and_offset() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 250);
     compare_result_sets(&elements, &result_set);
 
@@ -3547,7 +3547,7 @@ fn test_get_range_query_with_limit_and_offset() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 55);
     compare_result_sets(&elements, &result_set);
 
@@ -3582,7 +3582,7 @@ fn test_get_range_query_with_limit_and_offset() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 60);
     compare_result_sets(&elements, &result_set);
 
@@ -3618,7 +3618,7 @@ fn test_get_range_query_with_limit_and_offset() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 60);
     compare_result_sets(&elements, &result_set);
 
@@ -3642,7 +3642,7 @@ fn test_get_range_query_with_limit_and_offset() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 0);
 
     query.set_subquery_key(subquery_key.clone());
@@ -3663,7 +3663,7 @@ fn test_get_range_query_with_limit_and_offset() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 250);
 
     // Test on unique subtree build
@@ -3692,7 +3692,7 @@ fn test_get_range_query_with_limit_and_offset() {
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap().unwrap());
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 5);
     compare_result_sets(&elements, &result_set);
 }
