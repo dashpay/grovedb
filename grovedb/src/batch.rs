@@ -894,7 +894,6 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
 
     use super::*;
     use crate::tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF};
@@ -1226,7 +1225,7 @@ mod tests {
         let ops = grove_db_ops_for_contract_insert();
         db.apply_batch(ops, None, Some(&tx));
 
-        let hash = db.root_hash(None).unwrap().expect("cannot get root hash");
+        db.root_hash(None).unwrap().expect("cannot get root hash");
 
         let db = make_grovedb();
         let tx = db.start_transaction();
@@ -1259,7 +1258,7 @@ mod tests {
         let ops = grove_db_ops_for_contract_insert();
         db.apply_batch(ops, None, Some(&tx));
 
-        let hash = db.root_hash(None).unwrap().expect("cannot get root hash");
+        db.root_hash(None).unwrap().expect("cannot get root hash");
 
         let db = make_grovedb();
         let tx = db.start_transaction();
