@@ -17,9 +17,7 @@ use nohash_hasher::IntMap;
 use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
-use crate::{
-    operations::get::MAX_REFERENCE_HOPS, Element, Error, GroveDb, TransactionArg,
-}
+use crate::{operations::get::MAX_REFERENCE_HOPS, Element, Error, GroveDb, TransactionArg};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -342,7 +340,7 @@ where
                 .remove(reference_path)
                 .map(|x| Ok(x).wrap_with_cost(Default::default()))
                 .unwrap_or_else(|| (self.get_merk_fn)(reference_path));
-            let mut merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
+            let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
 
             let referenced_element = cost_return_on_error!(
                 &mut cost,
@@ -638,7 +636,7 @@ impl GroveDb {
         while let Some(ops_at_level) = ops_by_level_paths.remove(&current_level) {
             for (path, ops_at_path) in ops_at_level.into_iter() {
                 if current_level == 0 {
-                    let mut root_tree_ops: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
+                    let mut root_tree_ops: IndexMap<Vec<u8>, Op> = IndexMap::new();
                     for (key, op) in ops_at_path.into_iter() {
                         match op {
                             Op::Insert { .. } => {
@@ -656,7 +654,12 @@ impl GroveDb {
                         }
                     }
                     // execute the ops at this path
-                    merk_tree_cache.execute_ops_on_path(&path, root_tree_ops, &batch_apply_options);
+                    merk_tree_cache.execute_ops_on_path(
+                        &path,
+                        root_tree_ops,
+                        &ops_by_qualified_paths,
+                        &batch_apply_options,
+                    );
                 } else {
                     let root_hash = cost_return_on_error!(
                         &mut cost,
@@ -1223,12 +1226,7 @@ mod tests {
         let ops = grove_db_ops_for_contract_insert();
         db.apply_batch(ops, None, Some(&tx));
 
-        let hash = db
-            .root_hash(None)
-            .unwrap()
-            .ok()
-            .flatten()
-            .expect("cannot get root hash");
+        let hash = db.root_hash(None).unwrap().expect("cannot get root hash");
 
         let db = make_grovedb();
         let tx = db.start_transaction();
@@ -1239,8 +1237,6 @@ mod tests {
         let batch_hash = db
             .root_hash(Some(&tx))
             .unwrap()
-            .ok()
-            .flatten()
             .expect("cannot get root hash");
 
         db.rollback_transaction(&tx).expect("expected to rollback");
@@ -1250,8 +1246,6 @@ mod tests {
         let no_batch_hash = db
             .root_hash(Some(&tx))
             .unwrap()
-            .ok()
-            .flatten()
             .expect("cannot get root hash");
 
         assert_eq!(batch_hash, no_batch_hash);
@@ -1265,12 +1259,7 @@ mod tests {
         let ops = grove_db_ops_for_contract_insert();
         db.apply_batch(ops, None, Some(&tx));
 
-        let hash = db
-            .root_hash(None)
-            .unwrap()
-            .ok()
-            .flatten()
-            .expect("cannot get root hash");
+        let hash = db.root_hash(None).unwrap().expect("cannot get root hash");
 
         let db = make_grovedb();
         let tx = db.start_transaction();
@@ -1283,8 +1272,6 @@ mod tests {
         let batch_hash = db
             .root_hash(Some(&tx))
             .unwrap()
-            .ok()
-            .flatten()
             .expect("cannot get root hash");
 
         db.rollback_transaction(&tx).expect("expected to rollback");
@@ -1295,8 +1282,6 @@ mod tests {
         let no_batch_hash = db
             .root_hash(Some(&tx))
             .unwrap()
-            .ok()
-            .flatten()
             .expect("cannot get root hash");
 
         assert_eq!(batch_hash, no_batch_hash);

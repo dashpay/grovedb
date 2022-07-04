@@ -211,7 +211,10 @@ impl GroveDb {
             .map_ok(|subtree_opt| {
                 subtree_opt.ok_or_else(|| {
                     let key = hex::encode(key.as_ref());
-                    Error::PathKeyNotFound(format!("can't find subtree with key {} in parent during propagation", key))
+                    Error::PathKeyNotFound(format!(
+                        "can't find subtree with key {} in parent during propagation",
+                        key
+                    ))
                 })
             })
             .flatten()
