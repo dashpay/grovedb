@@ -161,8 +161,8 @@ pub(crate) fn get_next_chunk(
     let mut stack = Vec::with_capacity(32);
     let mut node = Tree::new(vec![], vec![]).unwrap_add_cost(&mut cost);
 
-    while iter.valid() {
-        let key = iter.key().unwrap();
+    while iter.valid().unwrap_add_cost(&mut cost) {
+        let key = iter.key().unwrap_add_cost(&mut cost).unwrap();
 
         if let Some(end_key) = end_key {
             if key == end_key {
@@ -170,7 +170,7 @@ pub(crate) fn get_next_chunk(
             }
         }
 
-        let encoded_node = iter.value().unwrap();
+        let encoded_node = iter.value().unwrap_add_cost(&mut cost).unwrap();
         Tree::decode_into(&mut node, vec![], encoded_node);
 
         let kv = Node::KV(key.to_vec(), node.value().to_vec());
@@ -195,8 +195,8 @@ pub(crate) fn get_next_chunk(
         iter.next();
     }
 
-    if iter.valid() {
-        iter.next();
+    if iter.valid().unwrap_add_cost(&mut cost) {
+        iter.next().unwrap_add_cost(&mut cost);
     }
 
     Ok(chunk).wrap_with_cost(cost)

@@ -3,8 +3,6 @@
 
 use std::ops::{Add, AddAssign};
 
-use storage::rocksdb_storage::RocksDbStorage;
-
 /// Piece of data representing affected computer resources (approximately).
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct OperationCost {
@@ -14,8 +12,8 @@ pub struct OperationCost {
     pub storage_written_bytes: u32,
     /// How many bytes were loaded from hard drive.
     pub storage_loaded_bytes: u32,
-    /// How many bytes were loaded into memory (usually keys and values).
-    pub loaded_bytes: u32,
+    /// How many bytes were removed on hard drive.
+    pub storage_freed_bytes: u32,
     /// How many times hash was called for bytes (paths, keys, values).
     pub hash_byte_calls: u32,
     /// How many times node hashing was done (for merkelized tree).
@@ -23,68 +21,58 @@ pub struct OperationCost {
 }
 
 impl OperationCost {
-    /// Add worst case for getting a merk tree
-    pub fn add_worst_case_get_merk<'p, P>(&mut self, path: P)
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
-        self.seek_count += 1;
-        self.storage_written_bytes += 0;
-        self.storage_loaded_bytes += 0;
-        self.loaded_bytes += 0;
-        self.hash_byte_calls += RocksDbStorage::build_prefix_hash_count(path) as u32;
-        self.hash_node_calls += 0;
+    /// Helper function to build default `OperationCost` with different
+    /// `seek_count`.
+    pub fn with_seek_count(seek_count: u16) -> Self {
+        OperationCost {
+            seek_count,
+            ..Default::default()
+        }
     }
 
-    /// Add worst case for getting a merk tree
-    pub fn add_worst_case_merk_has_element(&mut self, key: &[u8]) {
-        self.seek_count += 1;
-        self.storage_written_bytes += 0;
-        self.storage_loaded_bytes += 0;
-        self.loaded_bytes += key.len() as u32;
-        self.hash_byte_calls += 0;
-        self.hash_node_calls += 0;
+    /// Helper function to build default `OperationCost` with different
+    /// `storage_written_bytes`.
+    pub fn with_storage_written_bytes(storage_written_bytes: u32) -> Self {
+        OperationCost {
+            storage_written_bytes,
+            ..Default::default()
+        }
     }
 
-    /// Add worst case for getting a merk tree root hash
-    pub fn add_worst_case_merk_root_hash(&mut self) {
-        self.seek_count += 0;
-        self.storage_written_bytes += 0;
-        self.storage_loaded_bytes += 0;
-        self.loaded_bytes += 0;
-        self.hash_byte_calls += 0;
-        self.hash_node_calls += 0;
+    /// Helper function to build default `OperationCost` with different
+    /// `storage_loaded_bytes`.
+    pub fn with_storage_loaded_bytes(storage_loaded_bytes: u32) -> Self {
+        OperationCost {
+            storage_loaded_bytes,
+            ..Default::default()
+        }
     }
 
-    /// Add worst case for opening a root meta storage
-    pub fn add_worst_case_open_root_meta_storage(&mut self) {
-        self.seek_count += 0;
-        self.storage_written_bytes += 0;
-        self.storage_loaded_bytes += 0;
-        self.loaded_bytes += 0;
-        self.hash_byte_calls += 0;
-        self.hash_node_calls += 0;
+    /// Helper function to build default `OperationCost` with different
+    /// `storage_freed_bytes`.
+    pub fn with_storage_freed_bytes(storage_freed_bytes: u32) -> Self {
+        OperationCost {
+            storage_freed_bytes,
+            ..Default::default()
+        }
     }
 
-    /// Add worst case for saving the root tree
-    pub fn add_worst_case_save_root_leaves(&mut self) {
-        self.seek_count += 0;
-        self.storage_written_bytes += 0;
-        self.storage_loaded_bytes += 0;
-        self.loaded_bytes += 0;
-        self.hash_byte_calls += 0;
-        self.hash_node_calls += 0;
+    /// Helper function to build default `OperationCost` with different
+    /// `hash_byte_calls`.
+    pub fn with_hash_byte_calls(hash_byte_calls: u32) -> Self {
+        OperationCost {
+            hash_byte_calls,
+            ..Default::default()
+        }
     }
 
-    /// Add worst case for loading the root tree
-    pub fn add_worst_case_load_root_leaves(&mut self) {
-        self.seek_count += 0;
-        self.storage_written_bytes += 0;
-        self.storage_loaded_bytes += 0;
-        self.loaded_bytes += 0;
-        self.hash_byte_calls += 0;
-        self.hash_node_calls += 0;
+    /// Helper function to build default `OperationCost` with different
+    /// `hash_node_calls`.
+    pub fn with_hash_node_calls(hash_node_calls: u16) -> Self {
+        OperationCost {
+            hash_node_calls,
+            ..Default::default()
+        }
     }
 }
 
@@ -96,7 +84,7 @@ impl Add for OperationCost {
             seek_count: self.seek_count + rhs.seek_count,
             storage_written_bytes: self.storage_written_bytes + rhs.storage_written_bytes,
             storage_loaded_bytes: self.storage_loaded_bytes + rhs.storage_loaded_bytes,
-            loaded_bytes: self.loaded_bytes + rhs.loaded_bytes,
+            storage_freed_bytes: self.storage_freed_bytes + rhs.storage_freed_bytes,
             hash_byte_calls: self.hash_byte_calls + rhs.hash_byte_calls,
             hash_node_calls: self.hash_node_calls + rhs.hash_node_calls,
         }
@@ -108,13 +96,14 @@ impl AddAssign for OperationCost {
         self.seek_count += rhs.seek_count;
         self.storage_written_bytes += rhs.storage_written_bytes;
         self.storage_loaded_bytes += rhs.storage_loaded_bytes;
-        self.loaded_bytes += rhs.loaded_bytes;
+        self.storage_freed_bytes += rhs.storage_freed_bytes;
         self.hash_byte_calls += rhs.hash_byte_calls;
         self.hash_node_calls += rhs.hash_node_calls;
     }
 }
 
 /// Wrapped operation result with associated cost.
+#[must_use]
 #[derive(Debug, Eq, PartialEq)]
 pub struct CostContext<T> {
     /// Wrapped operation's return value.
@@ -293,7 +282,7 @@ mod tests {
         let initial = CostContext {
             value: 75,
             cost: OperationCost {
-                loaded_bytes: 3,
+                storage_loaded_bytes: 3,
                 ..Default::default()
             },
         };
@@ -304,7 +293,7 @@ mod tests {
             CostContext {
                 value: 100,
                 cost: OperationCost {
-                    loaded_bytes: 3,
+                    storage_loaded_bytes: 3,
                     ..Default::default()
                 },
             }
@@ -316,7 +305,7 @@ mod tests {
         let initial = CostContext {
             value: 75,
             cost: OperationCost {
-                loaded_bytes: 3,
+                storage_loaded_bytes: 3,
                 ..Default::default()
             },
         };
@@ -324,7 +313,7 @@ mod tests {
         let mapped = initial.flat_map(|x| CostContext {
             value: x + 25,
             cost: OperationCost {
-                loaded_bytes: 7,
+                storage_loaded_bytes: 7,
                 ..Default::default()
             },
         });
@@ -333,7 +322,7 @@ mod tests {
             CostContext {
                 value: 100,
                 cost: OperationCost {
-                    loaded_bytes: 10,
+                    storage_loaded_bytes: 10,
                     ..Default::default()
                 },
             }
@@ -345,7 +334,7 @@ mod tests {
         let initial: CostResult<usize, ()> = CostContext {
             value: Ok(75),
             cost: OperationCost {
-                loaded_bytes: 3,
+                storage_loaded_bytes: 3,
                 ..Default::default()
             },
         };
@@ -356,7 +345,7 @@ mod tests {
             CostContext {
                 value: Ok(100),
                 cost: OperationCost {
-                    loaded_bytes: 3,
+                    storage_loaded_bytes: 3,
                     ..Default::default()
                 },
             }
@@ -368,7 +357,7 @@ mod tests {
         let initial: CostResult<usize, ()> = CostContext {
             value: Err(()),
             cost: OperationCost {
-                loaded_bytes: 3,
+                storage_loaded_bytes: 3,
                 ..Default::default()
             },
         };
@@ -379,7 +368,7 @@ mod tests {
             CostContext {
                 value: Err(()),
                 cost: OperationCost {
-                    loaded_bytes: 3,
+                    storage_loaded_bytes: 3,
                     ..Default::default()
                 },
             }
@@ -391,7 +380,7 @@ mod tests {
         let initial: CostResult<usize, ()> = CostContext {
             value: Ok(75),
             cost: OperationCost {
-                loaded_bytes: 3,
+                storage_loaded_bytes: 3,
                 ..Default::default()
             },
         };
@@ -399,7 +388,7 @@ mod tests {
         let mapped = initial.flat_map_ok(|x| CostContext {
             value: Ok(x + 25),
             cost: OperationCost {
-                loaded_bytes: 7,
+                storage_loaded_bytes: 7,
                 ..Default::default()
             },
         });
@@ -408,7 +397,7 @@ mod tests {
             CostContext {
                 value: Ok(100),
                 cost: OperationCost {
-                    loaded_bytes: 10,
+                    storage_loaded_bytes: 10,
                     ..Default::default()
                 },
             }
@@ -420,7 +409,7 @@ mod tests {
         let initial: CostResult<usize, ()> = CostContext {
             value: Err(()),
             cost: OperationCost {
-                loaded_bytes: 3,
+                storage_loaded_bytes: 3,
                 ..Default::default()
             },
         };
@@ -430,7 +419,7 @@ mod tests {
             CostContext {
                 value: Ok(x + 25),
                 cost: OperationCost {
-                    loaded_bytes: 7,
+                    storage_loaded_bytes: 7,
                     ..Default::default()
                 },
             }
@@ -443,7 +432,7 @@ mod tests {
             CostContext {
                 value: Err(()),
                 cost: OperationCost {
-                    loaded_bytes: 3,
+                    storage_loaded_bytes: 3,
                     ..Default::default()
                 },
             }
@@ -455,7 +444,7 @@ mod tests {
         let initial: CostResult<usize, ()> = CostContext {
             value: Ok(75),
             cost: OperationCost {
-                loaded_bytes: 3,
+                storage_loaded_bytes: 3,
                 ..Default::default()
             },
         };
@@ -465,7 +454,7 @@ mod tests {
             CostContext {
                 value: Err(()),
                 cost: OperationCost {
-                    loaded_bytes: 7,
+                    storage_loaded_bytes: 7,
                     ..Default::default()
                 },
             }
@@ -479,7 +468,7 @@ mod tests {
             CostContext {
                 value: Err(()),
                 cost: OperationCost {
-                    loaded_bytes: 10,
+                    storage_loaded_bytes: 10,
                     ..Default::default()
                 },
             }
@@ -491,7 +480,7 @@ mod tests {
         let initial: CostResult<usize, &str> = CostContext {
             value: Ok(75),
             cost: OperationCost {
-                loaded_bytes: 3,
+                storage_loaded_bytes: 3,
                 ..Default::default()
             },
         };
@@ -503,7 +492,7 @@ mod tests {
         let initial: CostResult<usize, &str> = CostContext {
             value: Ok(75),
             cost: OperationCost {
-                loaded_bytes: 3,
+                storage_loaded_bytes: 3,
                 ..Default::default()
             },
         };
@@ -513,7 +502,7 @@ mod tests {
         let initial: CostResult<usize, &str> = CostContext {
             value: Err("inner"),
             cost: OperationCost {
-                loaded_bytes: 3,
+                storage_loaded_bytes: 3,
                 ..Default::default()
             },
         };
@@ -527,7 +516,7 @@ mod tests {
         let loaded_value = b"ayylmao";
         let costs_ctx = loaded_value.wrap_fn_cost(|x| OperationCost {
             seek_count: 1,
-            loaded_bytes: x.len() as u32,
+            storage_loaded_bytes: x.len() as u32,
             ..Default::default()
         });
         assert_eq!(
@@ -536,7 +525,7 @@ mod tests {
                 value: loaded_value,
                 cost: OperationCost {
                     seek_count: 1,
-                    loaded_bytes: 7,
+                    storage_loaded_bytes: 7,
                     ..Default::default()
                 }
             }
@@ -548,7 +537,7 @@ mod tests {
         let initial: CostResult<usize, ()> = CostContext {
             value: Err(()),
             cost: OperationCost {
-                loaded_bytes: 3,
+                storage_loaded_bytes: 3,
                 ..Default::default()
             },
         };
@@ -559,7 +548,7 @@ mod tests {
             CostContext {
                 value: Err("ayyerror"),
                 cost: OperationCost {
-                    loaded_bytes: 3,
+                    storage_loaded_bytes: 3,
                     ..Default::default()
                 },
             }

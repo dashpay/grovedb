@@ -1,6 +1,7 @@
 //! Impementation for a storage abstraction over RocksDB.
 use std::path::Path;
 
+use costs::{cost_return_on_error_no_add, CostContext, CostResult, CostsExt, OperationCost};
 use lazy_static::lazy_static;
 use rocksdb::{
     ColumnFamily, ColumnFamilyDescriptor, Error, OptimisticTransactionDB, Transaction,
@@ -11,7 +12,7 @@ use super::{
     PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext,
     PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
 };
-use crate::{BatchOperation, Storage, StorageBatch};
+use crate::{AbstractBatchOperation, Storage, StorageBatch};
 
 /// Name of column family used to store auxiliary data
 pub(crate) const AUX_CF_NAME: &str = "aux";
@@ -93,41 +94,16 @@ impl RocksDbStorage {
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
     /// in `subtrees` map by tree path;
-    pub fn build_prefix<'a, P>(path: P) -> Vec<u8>
+    pub fn build_prefix<'a, P>(path: P) -> CostContext<Vec<u8>>
     where
         P: IntoIterator<Item = &'a [u8]>,
     {
         let body = Self::build_prefix_body(path);
-        blake3::hash(&body).as_bytes().to_vec()
+        blake3::hash(&body)
+            .as_bytes()
+            .to_vec()
+            .wrap_with_cost(OperationCost::default()) // TODO: actual costs
     }
-
-    // /// A helper method to build a prefix to rocksdb keys or identify a subtree
-    // /// in `subtrees` map by tree path;
-    // pub fn build_prefix<'a, P>(path: P) -> Vec<u8>
-    // where
-    //     P: IntoIterator<Item = &'a [u8]>,
-    // {
-    //     let segments_iter = path.into_iter();
-    //     let mut segments_count: usize = 0;
-    //     let mut res = Vec::new();
-    //     // let mut lengthes = Vec::new();
-    //
-    //     // for s in segments_iter {
-    //     //     segments_count += 1;
-    //     //     res.extend_from_slice(s);
-    //     //     lengthes.extend(s.len().to_ne_bytes());
-    //     // }
-    //
-    //     // res.extend(segments_count.to_ne_bytes());
-    //     // res.extend(lengthes);
-    //     // res = blake3::hash(&res).as_bytes().to_vec();
-    //
-    //     for s in segments_iter {
-    //         res.extend_from_slice(s);
-    //     }
-    //
-    //     res
-    // }
 }
 
 impl<'db> Storage<'db> for RocksDbStorage {
@@ -142,8 +118,12 @@ impl<'db> Storage<'db> for RocksDbStorage {
         self.db.transaction()
     }
 
-    fn commit_transaction(&self, transaction: Self::Transaction) -> Result<(), Self::Error> {
-        transaction.commit()
+    fn commit_transaction(
+        &self,
+        transaction: Self::Transaction,
+    ) -> CostContext<Result<(), Self::Error>> {
+        // All transaction costs were provided on method calls
+        transaction.commit().wrap_with_cost(Default::default())
     }
 
     fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Self::Error> {
@@ -154,36 +134,35 @@ impl<'db> Storage<'db> for RocksDbStorage {
         self.db.flush()
     }
 
-    fn get_storage_context<'p, P>(&'db self, path: P) -> Self::StorageContext
+    fn get_storage_context<'p, P>(&'db self, path: P) -> CostContext<Self::StorageContext>
     where
         P: IntoIterator<Item = &'p [u8]>,
     {
-        let prefix = Self::build_prefix(path);
-        PrefixedRocksDbStorageContext::new(&self.db, prefix)
+        Self::build_prefix(path).map(|prefix| PrefixedRocksDbStorageContext::new(&self.db, prefix))
     }
 
     fn get_transactional_storage_context<'p, P>(
         &'db self,
         path: P,
         transaction: &'db Self::Transaction,
-    ) -> Self::TransactionalStorageContext
+    ) -> CostContext<Self::TransactionalStorageContext>
     where
         P: IntoIterator<Item = &'p [u8]>,
     {
-        let prefix = Self::build_prefix(path);
-        PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix)
+        Self::build_prefix(path)
+            .map(|prefix| PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix))
     }
 
     fn get_batch_storage_context<'p, P>(
         &'db self,
         path: P,
         batch: &'db StorageBatch,
-    ) -> Self::BatchStorageContext
+    ) -> CostContext<Self::BatchStorageContext>
     where
         P: IntoIterator<Item = &'p [u8]>,
     {
-        let prefix = Self::build_prefix(path);
-        PrefixedRocksDbBatchStorageContext::new(&self.db, prefix, batch)
+        Self::build_prefix(path)
+            .map(|prefix| PrefixedRocksDbBatchStorageContext::new(&self.db, prefix, batch))
     }
 
     fn get_batch_transactional_storage_context<'p, P>(
@@ -191,52 +170,113 @@ impl<'db> Storage<'db> for RocksDbStorage {
         path: P,
         batch: &'db StorageBatch,
         transaction: &'db Self::Transaction,
-    ) -> Self::BatchTransactionalStorageContext
+    ) -> CostContext<Self::BatchTransactionalStorageContext>
     where
         P: IntoIterator<Item = &'p [u8]>,
     {
-        let prefix = Self::build_prefix(path);
-        PrefixedRocksDbBatchTransactionContext::new(&self.db, transaction, prefix, batch)
+        Self::build_prefix(path).map(|prefix| {
+            PrefixedRocksDbBatchTransactionContext::new(&self.db, transaction, prefix, batch)
+        })
     }
 
     fn commit_multi_context_batch(
         &self,
         batch: StorageBatch,
         transaction: Option<&'db Self::Transaction>,
-    ) -> Result<(), Self::Error> {
+    ) -> CostResult<(), Self::Error> {
         let mut db_batch = WriteBatchWithTransaction::<true>::default();
+
+        let mut cost = OperationCost::default();
+        // Until batch is commited these costs are pending (should not be added in case
+        // of early termination).
+        let mut pending_storage_written_bytes: u32 = 0;
+        let mut pending_storage_freed_bytes: u32 = 0;
+
         for op in batch.into_iter() {
             match op {
-                BatchOperation::Put { key, value } => {
-                    db_batch.put(key, value);
+                AbstractBatchOperation::Put { key, value } => {
+                    db_batch.put(&key, &value);
+                    pending_storage_written_bytes += key.len() as u32 + value.len() as u32;
                 }
-                BatchOperation::PutAux { key, value } => {
-                    db_batch.put_cf(cf_aux(&self.db), key, value);
+                AbstractBatchOperation::PutAux { key, value } => {
+                    db_batch.put_cf(cf_aux(&self.db), &key, &value);
+                    pending_storage_written_bytes += key.len() as u32 + value.len() as u32;
                 }
-                BatchOperation::PutRoot { key, value } => {
-                    db_batch.put_cf(cf_roots(&self.db), key, value);
+                AbstractBatchOperation::PutRoot { key, value } => {
+                    db_batch.put_cf(cf_roots(&self.db), &key, &value);
+                    pending_storage_written_bytes += key.len() as u32 + value.len() as u32;
                 }
-                BatchOperation::PutMeta { key, value } => {
-                    db_batch.put_cf(cf_meta(&self.db), key, value);
+                AbstractBatchOperation::PutMeta { key, value } => {
+                    db_batch.put_cf(cf_meta(&self.db), &key, &value);
+                    pending_storage_written_bytes += key.len() as u32 + value.len() as u32;
                 }
-                BatchOperation::Delete { key } => {
-                    db_batch.delete(key);
+                AbstractBatchOperation::Delete { key } => {
+                    db_batch.delete(&key);
+
+                    // TODO: fix not atomic freed size computation
+                    cost.seek_count += 1;
+                    let value_len = cost_return_on_error_no_add!(&cost, self.db.get(&key))
+                        .map(|x| x.len() as u32)
+                        .unwrap_or(0);
+                    cost.storage_loaded_bytes += value_len;
+
+                    pending_storage_freed_bytes += key.len() as u32 + value_len;
                 }
-                BatchOperation::DeleteAux { key } => {
-                    db_batch.delete_cf(cf_aux(&self.db), key);
+                AbstractBatchOperation::DeleteAux { key } => {
+                    db_batch.delete_cf(cf_aux(&self.db), &key);
+
+                    // TODO: fix not atomic freed size computation
+                    cost.seek_count += 1;
+                    let value_len =
+                        cost_return_on_error_no_add!(&cost, self.db.get_cf(cf_aux(&self.db), &key))
+                            .map(|x| x.len() as u32)
+                            .unwrap_or(0);
+                    cost.storage_loaded_bytes += value_len;
+
+                    pending_storage_freed_bytes += key.len() as u32 + value_len;
                 }
-                BatchOperation::DeleteRoot { key } => {
-                    db_batch.delete_cf(cf_roots(&self.db), key);
+                AbstractBatchOperation::DeleteRoot { key } => {
+                    db_batch.delete_cf(cf_roots(&self.db), &key);
+
+                    // TODO: fix not atomic freed size computation
+                    cost.seek_count += 1;
+                    let value_len = cost_return_on_error_no_add!(
+                        &cost,
+                        self.db.get_cf(cf_roots(&self.db), &key)
+                    )
+                    .map(|x| x.len() as u32)
+                    .unwrap_or(0);
+                    cost.storage_loaded_bytes += value_len as u32;
+
+                    pending_storage_freed_bytes += key.len() as u32 + value_len;
                 }
-                BatchOperation::DeleteMeta { key } => {
-                    db_batch.delete_cf(cf_meta(&self.db), key);
+                AbstractBatchOperation::DeleteMeta { key } => {
+                    db_batch.delete_cf(cf_meta(&self.db), &key);
+
+                    // TODO: fix not atomic freed size computation
+                    cost.seek_count += 1;
+                    let value_len = cost_return_on_error_no_add!(
+                        &cost,
+                        self.db.get_cf(cf_meta(&self.db), &key)
+                    )
+                    .map(|x| x.len() as u32)
+                    .unwrap_or(0);
+                    cost.storage_loaded_bytes += value_len;
+
+                    pending_storage_freed_bytes += key.len() as u32 + value_len;
                 }
             }
         }
-        match transaction {
+
+        let result = match transaction {
             None => self.db.write(db_batch),
             Some(transaction) => transaction.rebuild_from_writebatch(&db_batch),
-        }
+        };
+
+        cost.storage_written_bytes += pending_storage_written_bytes;
+        cost.storage_freed_bytes += pending_storage_freed_bytes;
+
+        result.wrap_with_cost(cost)
     }
 }
 

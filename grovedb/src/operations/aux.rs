@@ -16,13 +16,13 @@ impl GroveDb {
             cost_return_on_error_no_add!(
                 &cost,
                 aux_storage
+                    .unwrap_add_cost(&mut cost)
                     .put_aux(key.as_ref(), value)
+                    .unwrap_add_cost(&mut cost)
                     .map_err(|e| e.into())
             );
         });
 
-        cost.seek_count = 1;
-        cost.storage_written_bytes = key.as_ref().len() as u32 + value.len() as u32;
         Ok(()).wrap_with_cost(cost)
     }
 
@@ -36,12 +36,14 @@ impl GroveDb {
         meta_storage_context_optional_tx!(self.db, transaction, aux_storage, {
             cost_return_on_error_no_add!(
                 &cost,
-                aux_storage.delete_aux(key.as_ref()).map_err(|e| e.into())
+                aux_storage
+                    .unwrap_add_cost(&mut cost)
+                    .delete_aux(key.as_ref())
+                    .unwrap_add_cost(&mut cost)
+                    .map_err(|e| e.into())
             );
         });
 
-        cost.seek_count = 1;
-        cost.storage_written_bytes = key.as_ref().len() as u32;
         Ok(()).wrap_with_cost(cost)
     }
 
@@ -53,14 +55,14 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         meta_storage_context_optional_tx!(self.db, transaction, aux_storage, {
-            let value =
-                cost_return_on_error_no_add!(&cost, aux_storage.get_aux(key).map_err(|e| e.into()));
-
-            cost = OperationCost {
-                seek_count: 1,
-                loaded_bytes: value.as_ref().map(|v| v.len()).unwrap_or(0) as u32,
-                ..Default::default()
-            };
+            let value = cost_return_on_error_no_add!(
+                &cost,
+                aux_storage
+                    .unwrap_add_cost(&mut cost)
+                    .get_aux(key)
+                    .unwrap_add_cost(&mut cost)
+                    .map_err(|e| e.into())
+            );
 
             Ok(value).wrap_with_cost(cost)
         })

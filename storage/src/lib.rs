@@ -7,5 +7,5 @@ pub mod rocksdb_storage;
 mod storage;
 
 pub use crate::storage::{
-    Batch, BatchOperation, RawIterator, Storage, StorageBatch, StorageContext,
+    AbstractBatchOperation, Batch, RawIterator, Storage, StorageBatch, StorageContext,
 };

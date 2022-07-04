@@ -1871,7 +1871,11 @@ fn test_subtree_pairs_iterator() {
     // let mut iter = db
     //     .elements_iterator(&[TEST_LEAF, b"subtree1"], None)
     //     .expect("cannot create iterator");
-    let storage_context = db.db.db.get_storage_context([TEST_LEAF, b"subtree1"]);
+    let storage_context = db
+        .db
+        .db
+        .get_storage_context([TEST_LEAF, b"subtree1"])
+        .unwrap();
     let mut iter = Element::iterator(storage_context.raw_iter()).unwrap();
     assert_eq!(
         iter.next().unwrap().unwrap(),
@@ -1978,7 +1982,11 @@ fn test_get_subtree() {
     // Retrieve subtree instance
     // Check if it returns the same instance that was inserted
     {
-        let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"key1", b"key2"]);
+        let subtree_storage = db
+            .db
+            .db
+            .get_storage_context([TEST_LEAF, b"key1", b"key2"])
+            .unwrap();
         let subtree = Merk::open(subtree_storage)
             .unwrap()
             .expect("cannot open merk");
@@ -2010,7 +2018,8 @@ fn test_get_subtree() {
     let subtree_storage = db
         .db
         .db
-        .get_transactional_storage_context([TEST_LEAF, b"key1", b"innertree"], &transaction);
+        .get_transactional_storage_context([TEST_LEAF, b"key1", b"innertree"], &transaction)
+        .unwrap();
     let subtree = Merk::open(subtree_storage)
         .unwrap()
         .expect("cannot open merk");
@@ -2018,7 +2027,11 @@ fn test_get_subtree() {
     assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 
     // Should be able to retrieve instances created before transaction
-    let subtree_storage = db.db.db.get_storage_context([TEST_LEAF, b"key1", b"key2"]);
+    let subtree_storage = db
+        .db
+        .db
+        .get_storage_context([TEST_LEAF, b"key1", b"key2"])
+        .unwrap();
     let subtree = Merk::open(subtree_storage)
         .unwrap()
         .expect("cannot open merk");
@@ -2113,6 +2126,7 @@ fn test_subtree_deletion_if_empty() {
     .expect("successful subtree insert B on level 1");
 
     db.commit_transaction(transaction)
+        .unwrap()
         .expect("cannot commit changes");
 
     // Currently we have:
@@ -2406,6 +2420,7 @@ fn test_aux_with_transaction() {
     );
     // And should be able to get data when committed
     db.commit_transaction(transaction)
+        .unwrap()
         .expect("unable to commit transaction");
     assert_eq!(
         db.get_aux(&key, None)
@@ -3889,6 +3904,7 @@ fn test_tree_value_exists_method_tx() {
     assert!(!db.has_raw([], b"leaf", None).unwrap().unwrap());
 
     db.commit_transaction(tx)
+        .unwrap()
         .expect("cannot commit transaction");
     assert!(db.has_raw([TEST_LEAF], b"key", None).unwrap().unwrap());
     assert!(db.has_raw([], b"leaf", None).unwrap().unwrap());

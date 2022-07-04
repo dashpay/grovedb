@@ -225,7 +225,11 @@ impl GroveDb {
                     subtree_merk_path,
                     transaction,
                     subtree,
-                    { subtree.is_empty_tree_except(batch_deleted_keys) }
+                    {
+                        subtree
+                            .is_empty_tree_except(batch_deleted_keys)
+                            .unwrap_add_cost(&mut cost)
+                    }
                 );
 
                 // If there is any current batch operation that is inserting something in this
@@ -300,7 +304,7 @@ impl GroveDb {
                     subtree_merk_path,
                     transaction,
                     subtree,
-                    { subtree.is_empty_tree() }
+                    { subtree.is_empty_tree().unwrap_add_cost(&mut cost) }
                 );
 
                 if only_delete_tree_if_empty && !is_empty {
@@ -389,6 +393,7 @@ impl GroveDb {
             // Get the correct subtree with q_ref as path
             let path_iter = q.iter().map(|x| x.as_slice());
             storage_context_optional_tx!(self.db, path_iter.clone(), transaction, storage, {
+                let storage = storage.unwrap_add_cost(&mut cost);
                 let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
                 while let Some((key, value)) = cost_return_on_error!(&mut cost, raw_iter.next()) {
                     if let Element::Tree(..) = value {

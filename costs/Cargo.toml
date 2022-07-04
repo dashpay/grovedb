@@ -3,6 +3,3 @@ name = "costs"
 version = "0.0.0"
 edition = "2021"
 publish = false
-
-[dependencies]
-storage = { path = "../storage", features = ["rocksdb_storage"] }

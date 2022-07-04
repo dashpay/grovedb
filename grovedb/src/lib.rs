@@ -8,6 +8,7 @@ mod subtree;
 mod tests;
 mod util;
 mod visualize;
+mod worst_case_costs;
 
 use std::path::Path;
 
@@ -130,7 +131,8 @@ impl GroveDb {
             if let Some(tx) = transaction {
                 let subtree_storage = self
                     .db
-                    .get_transactional_storage_context(path_iter.clone(), tx);
+                    .get_transactional_storage_context(path_iter.clone(), tx)
+                    .unwrap_add_cost(&mut cost);
                 let subtree = cost_return_on_error!(
                     &mut cost,
                     Merk::open(subtree_storage)
@@ -139,7 +141,8 @@ impl GroveDb {
                 let key = path_iter.next_back().expect("next element is `Some`");
                 let parent_storage = self
                     .db
-                    .get_transactional_storage_context(path_iter.clone(), tx);
+                    .get_transactional_storage_context(path_iter.clone(), tx)
+                    .unwrap_add_cost(&mut cost);
                 let mut parent_tree = cost_return_on_error!(
                     &mut cost,
                     Merk::open(parent_storage)
@@ -154,14 +157,20 @@ impl GroveDb {
                     )
                 );
             } else {
-                let subtree_storage = self.db.get_storage_context(path_iter.clone());
+                let subtree_storage = self
+                    .db
+                    .get_storage_context(path_iter.clone())
+                    .unwrap_add_cost(&mut cost);
                 let subtree = cost_return_on_error!(
                     &mut cost,
                     Merk::open(subtree_storage)
                         .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
                 );
                 let key = path_iter.next_back().expect("next element is `Some`");
-                let parent_storage = self.db.get_storage_context(path_iter.clone());
+                let parent_storage = self
+                    .db
+                    .get_storage_context(path_iter.clone())
+                    .unwrap_add_cost(&mut cost);
                 let mut parent_tree = cost_return_on_error!(
                     &mut cost,
                     Merk::open(parent_storage)
@@ -278,8 +287,8 @@ impl GroveDb {
 
     /// Commits previously started db transaction. For more details on the
     /// transaction usage, please check [`GroveDb::start_transaction`]
-    pub fn commit_transaction(&self, transaction: Transaction) -> Result<(), Error> {
-        Ok(self.db.commit_transaction(transaction)?)
+    pub fn commit_transaction(&self, transaction: Transaction) -> CostResult<(), Error> {
+        self.db.commit_transaction(transaction).map_err(Into::into)
     }
 
     /// Rollbacks previously started db transaction to initial state.

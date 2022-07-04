@@ -33,25 +33,25 @@ impl Op {
                 seek_count: 0,
                 storage_written_bytes: 0,
                 storage_loaded_bytes: 0,
-                loaded_bytes: 0,
                 hash_byte_calls: 0,
                 hash_node_calls: 0,
+                storage_freed_bytes: 0,
             },
             Op::Insert { .. } => OperationCost {
                 seek_count: 0,
                 storage_written_bytes: 0,
                 storage_loaded_bytes: 0,
-                loaded_bytes: 0,
                 hash_byte_calls: 0,
                 hash_node_calls: 0,
+                storage_freed_bytes: 0,
             },
             Op::Delete => OperationCost {
                 seek_count: 0,
                 storage_written_bytes: 0,
                 storage_loaded_bytes: 0,
-                loaded_bytes: 0,
                 hash_byte_calls: 0,
                 hash_node_calls: 0,
+                storage_freed_bytes: 0,
             },
         }
     }
@@ -380,7 +380,7 @@ where
 
 impl<'db, S, F> TreeCache for TreeCacheMerkByPath<S, F>
 where
-    F: Fn(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+    F: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
@@ -492,7 +492,7 @@ impl TreeCache for TreeCacheKnownPaths {
         if !self.paths.remove(path) {
             // Then we have to get the tree
             let path_slices = path.iter().map(|k| k.as_slice()).collect::<Vec<&[u8]>>();
-            cost.add_worst_case_get_merk(path_slices);
+            GroveDb::add_worst_case_get_merk(&mut cost, path_slices);
         }
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost += op.worst_case_cost(key);
@@ -744,7 +744,7 @@ impl GroveDb {
         &self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
-        get_merk_fn: impl Fn(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+        get_merk_fn: impl FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
@@ -821,11 +821,14 @@ impl GroveDb {
             cost_return_on_error!(
                 &mut cost,
                 self.apply_body(ops, batch_apply_options, |path| {
-                    let storage = self.db.get_batch_transactional_storage_context(
-                        path.iter().map(|x| x.as_slice()),
-                        &storage_batch,
-                        tx,
-                    );
+                    let storage = self
+                        .db
+                        .get_batch_transactional_storage_context(
+                            path.iter().map(|x| x.as_slice()),
+                            &storage_batch,
+                            tx,
+                        )
+                        .unwrap_add_cost(&mut cost);
                     Merk::open(storage)
                         .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
                 })
@@ -836,16 +839,20 @@ impl GroveDb {
                 &cost,
                 self.db
                     .commit_multi_context_batch(storage_batch, Some(tx))
+                    .unwrap_add_cost(&mut cost)
                     .map_err(|e| e.into())
             );
         } else {
             cost_return_on_error!(
                 &mut cost,
                 self.apply_body(ops, batch_apply_options, |path| {
-                    let storage = self.db.get_batch_storage_context(
-                        path.iter().map(|x| x.as_slice()),
-                        &storage_batch,
-                    );
+                    let storage = self
+                        .db
+                        .get_batch_storage_context(
+                            path.iter().map(|x| x.as_slice()),
+                            &storage_batch,
+                        )
+                        .unwrap_add_cost(&mut cost);
                     Merk::open(storage)
                         .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
                 })
@@ -856,6 +863,7 @@ impl GroveDb {
                 &cost,
                 self.db
                     .commit_multi_context_batch(storage_batch, None)
+                    .unwrap_add_cost(&mut cost)
                     .map_err(|e| e.into())
             );
         }
@@ -873,7 +881,7 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
-        cost.add_worst_case_save_root_leaves();
+        Self::add_worst_case_save_root_leaves(&mut cost);
 
         let batch_structure = cost_return_on_error!(
             &mut cost,
@@ -884,8 +892,8 @@ impl GroveDb {
             self.apply_batch_structure(batch_structure, batch_apply_options)
         );
 
-        cost.add_worst_case_open_root_meta_storage();
-        cost.add_worst_case_save_root_leaves();
+        Self::add_worst_case_open_root_meta_storage(&mut cost);
+        Self::add_worst_case_save_root_leaves(&mut cost);
 
         // nothing for the commit multi batch?
         Ok(()).wrap_with_cost(cost)
