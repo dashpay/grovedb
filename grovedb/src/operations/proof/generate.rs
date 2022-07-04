@@ -128,8 +128,8 @@ impl GroveDb {
 
         let mut is_leaf_tree = true;
 
-        let kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query);
-        for (key, value_bytes) in kv_iterator {
+        let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query);
+        while let Some((key, value_bytes)) = kv_iterator.next().unwrap_add_cost(&mut cost) {
             let (subquery_key, subquery_value) =
                 Element::subquery_paths_for_sized_query(&query.query, &key);
 
@@ -358,7 +358,9 @@ impl GroveDb {
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
-        let storage = self.db.get_storage_context(path);
-        Merk::open(storage).map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+        self.db.get_storage_context(path).flat_map(|storage| {
+            Merk::open(storage)
+                .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+        })
     }
 }

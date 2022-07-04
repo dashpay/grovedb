@@ -125,8 +125,9 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
     }
 }
 
+// Cannot be an Iterator as it should return cost
 impl<'a, I: RawIterator> KVIterator<'a, I> {
-    fn next(&mut self) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
+    pub fn next(&mut self) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
         let mut cost = OperationCost::default();
 
         if let Some(query_item) = self.current_query_item {

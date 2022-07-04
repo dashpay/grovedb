@@ -1,4 +1,5 @@
 use costs::OperationCost;
+use storage::rocksdb_storage::RocksDbStorage;
 
 use super::GroveDb;
 
@@ -8,7 +9,6 @@ impl GroveDb {
         cost.seek_count += 0;
         cost.storage_written_bytes += 0;
         cost.storage_loaded_bytes += 0;
-        cost.loaded_bytes += 0;
         cost.hash_byte_calls += 0;
         cost.hash_node_calls += 0;
     }
@@ -18,17 +18,15 @@ impl GroveDb {
         cost.seek_count += 0;
         cost.storage_written_bytes += 0;
         cost.storage_loaded_bytes += 0;
-        cost.loaded_bytes += 0;
         cost.hash_byte_calls += 0;
         cost.hash_node_calls += 0;
     }
 
     /// Add worst case for loading the root tree
-    pub fn add_worst_case_load_root_leaves(cost: &mut OperationCOst) {
+    pub fn add_worst_case_load_root_leaves(cost: &mut OperationCost) {
         cost.seek_count += 0;
         cost.storage_written_bytes += 0;
         cost.storage_loaded_bytes += 0;
-        cost.loaded_bytes += 0;
         cost.hash_byte_calls += 0;
         cost.hash_node_calls += 0;
     }
@@ -42,7 +40,6 @@ impl GroveDb {
         cost.seek_count += 1;
         cost.storage_written_bytes += 0;
         cost.storage_loaded_bytes += 0;
-        cost.loaded_bytes += 0;
         cost.hash_byte_calls += RocksDbStorage::build_prefix_hash_count(path) as u32;
         cost.hash_node_calls += 0;
     }
@@ -51,8 +48,7 @@ impl GroveDb {
     pub fn add_worst_case_merk_has_element(cost: &mut OperationCost, key: &[u8]) {
         cost.seek_count += 1;
         cost.storage_written_bytes += 0;
-        cost.storage_loaded_bytes += 0;
-        cost.loaded_bytes += key.len() as u32;
+        cost.storage_loaded_bytes += key.len() as u32;
         cost.hash_byte_calls += 0;
         cost.hash_node_calls += 0;
     }
@@ -62,7 +58,6 @@ impl GroveDb {
         cost.seek_count += 0;
         cost.storage_written_bytes += 0;
         cost.storage_loaded_bytes += 0;
-        cost.loaded_bytes += 0;
         cost.hash_byte_calls += 0;
         cost.hash_node_calls += 0;
     }

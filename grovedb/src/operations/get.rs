@@ -120,25 +120,7 @@ impl GroveDb {
 
         // Merk's items should be written into data storage and checked accordingly
         storage_context_optional_tx!(self.db, path_iter, transaction, storage, {
-            storage
-                .get(key)
-                .wrap_with_cost(Default::default())
-                .map_err(|e| e.into())
-                .flat_map_ok(|root| {
-                    root.map(|r| {
-                        Ok(true).wrap_with_cost(OperationCost {
-                            seek_count: 1,
-                            loaded_bytes: r.len() as u32,
-                            ..Default::default()
-                        })
-                    })
-                    .unwrap_or_else(|| {
-                        Ok(false).wrap_with_cost(OperationCost {
-                            seek_count: 1,
-                            ..Default::default()
-                        })
-                    })
-                })
+            storage.flat_map(|s| s.get(key).map_err(|e| e.into()).map_ok(|x| x.is_some()))
         })
     }
 
@@ -322,8 +304,8 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         // First we get the merk tree
-        cost.add_worst_case_get_merk(path);
-        cost.add_worst_case_merk_has_element(key);
+        Self::add_worst_case_get_merk(&mut cost, path);
+        Self::add_worst_case_merk_has_element(&mut cost, key);
 
         // In the worst case, there will not be an error, but the item will not be found
         Ok(false).wrap_with_cost(cost)

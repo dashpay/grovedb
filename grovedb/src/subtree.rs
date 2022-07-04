@@ -486,18 +486,28 @@ impl Element {
         } else {
             // this is a query on a range
             storage_context_optional_tx!(storage, merk_path.iter().copied(), transaction, ctx, {
+                let ctx = ctx.unwrap_add_cost(&mut cost);
                 let mut iter = ctx.raw_iter();
 
-                item.seek_for_iter(&mut iter, sized_query.query.left_to_right);
-                cost.seek_count += 1;
+                item.seek_for_iter(&mut iter, sized_query.query.left_to_right)
+                    .unwrap_add_cost(&mut cost);
 
-                while item.iter_is_valid_for_type(&iter, *limit, sized_query.query.left_to_right) {
+                while item
+                    .iter_is_valid_for_type(&iter, *limit, sized_query.query.left_to_right)
+                    .unwrap_add_cost(&mut cost)
+                {
                     let element = cost_return_on_error_no_add!(
                         &cost,
-                        raw_decode(iter.value().expect("if key exists then value should too"))
+                        raw_decode(
+                            iter.value()
+                                .unwrap_add_cost(&mut cost)
+                                .expect("if key exists then value should too")
+                        )
                     );
-                    let key = iter.key().expect("key should exist");
-                    cost.loaded_bytes += key.len() as u32;
+                    let key = iter
+                        .key()
+                        .unwrap_add_cost(&mut cost)
+                        .expect("key should exist");
                     let (subquery_key, subquery) =
                         Self::subquery_paths_for_sized_query(sized_query, key);
                     cost_return_on_error!(
@@ -752,10 +762,13 @@ impl<I: RawIterator> ElementsIterator<I> {
     pub fn next(&mut self) -> CostResult<Option<KeyElementPair>, Error> {
         let mut cost = OperationCost::default();
 
-        Ok(if self.raw_iter.valid() {
-            if let Some((key, value)) = self.raw_iter.key().zip(self.raw_iter.value()) {
-                cost.loaded_bytes += key.len() as u32 + value.len() as u32;
-
+        Ok(if self.raw_iter.valid().unwrap_add_cost(&mut cost) {
+            if let Some((key, value)) = self
+                .raw_iter
+                .key()
+                .unwrap_add_cost(&mut cost)
+                .zip(self.raw_iter.value().unwrap_add_cost(&mut cost))
+            {
                 let element = cost_return_on_error_no_add!(&cost, raw_decode(value));
                 let key_vec = key.to_vec();
                 self.raw_iter.next();

@@ -133,7 +133,8 @@ impl GroveDb {
         if let Some(tx) = transaction {
             let parent_storage = self
                 .db
-                .get_transactional_storage_context(path_iter.clone(), tx);
+                .get_transactional_storage_context(path_iter.clone(), tx)
+                .unwrap_add_cost(&mut cost);
             let mut parent_subtree = cost_return_on_error!(
                 &mut cost,
                 Merk::open(parent_storage)
@@ -141,7 +142,8 @@ impl GroveDb {
             );
             let child_storage = self
                 .db
-                .get_transactional_storage_context(path_iter.chain(std::iter::once(key)), tx);
+                .get_transactional_storage_context(path_iter.chain(std::iter::once(key)), tx)
+                .unwrap_add_cost(&mut cost);
             let child_subtree = cost_return_on_error!(
                 &mut cost,
                 Merk::open(child_storage)
@@ -153,7 +155,10 @@ impl GroveDb {
             );
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
         } else {
-            let parent_storage = self.db.get_storage_context(path_iter.clone());
+            let parent_storage = self
+                .db
+                .get_storage_context(path_iter.clone())
+                .unwrap_add_cost(&mut cost);
             let mut parent_subtree = cost_return_on_error!(
                 &mut cost,
                 Merk::open(parent_storage)
@@ -161,7 +166,8 @@ impl GroveDb {
             );
             let child_storage = self
                 .db
-                .get_storage_context(path_iter.chain(std::iter::once(key)));
+                .get_storage_context(path_iter.chain(std::iter::once(key)))
+                .unwrap_add_cost(&mut cost);
             let child_subtree = cost_return_on_error!(
                 &mut cost,
                 Merk::open(child_storage)
