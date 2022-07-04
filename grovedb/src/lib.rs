@@ -30,6 +30,8 @@ pub enum Error {
     CyclicReference,
     #[error("reference hops limit exceeded")]
     ReferenceLimit,
+    #[error("missing reference {0}")]
+    MissingReference(&'static str),
     #[error("internal error: {0}")]
     InternalError(&'static str),
     #[error("invalid proof: {0}")]
@@ -207,9 +209,10 @@ impl GroveDb {
             .get(key.as_ref())
             .map_err(|_| Error::InvalidPath("can't find subtree in parent during propagation"))
             .map_ok(|subtree_opt| {
-                subtree_opt.ok_or(Error::InvalidPath(
-                    "can't find subtree in parent during propagation",
-                ))
+                subtree_opt.ok_or_else(|| {
+                    let key = hex::encode(key.as_ref());
+                    Error::PathKeyNotFound(format!("can't find subtree with key {} in parent during propagation", key))
+                })
             })
             .flatten()
             .map_ok(|element_bytes| {
