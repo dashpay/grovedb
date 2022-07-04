@@ -292,7 +292,7 @@ trait TreeCache {
 
 impl<'db, S, F> TreeCacheMerkByPath<S, F>
 where
-    F: Fn(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+    F: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
     fn follow_reference<'a>(
