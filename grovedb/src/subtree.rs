@@ -878,7 +878,7 @@ mod tests {
         let db = make_grovedb();
 
         let storage = &db.db;
-        let storage_context = storage.get_storage_context([TEST_LEAF]);
+        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
         let mut merk = Merk::open(storage_context)
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
@@ -966,7 +966,7 @@ mod tests {
         let db = make_grovedb();
 
         let storage = &db.db;
-        let storage_context = storage.get_storage_context([TEST_LEAF]);
+        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
         let mut merk = Merk::open(storage_context)
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
@@ -1030,7 +1030,7 @@ mod tests {
         let db = make_grovedb();
 
         let storage = &db.db;
-        let storage_context = storage.get_storage_context([TEST_LEAF]);
+        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
         let mut merk = Merk::open(storage_context)
             .unwrap()
             .expect("cannot open Merk");
@@ -1110,7 +1110,7 @@ mod tests {
         let db = make_grovedb();
 
         let storage = &db.db;
-        let storage_context = storage.get_storage_context([TEST_LEAF]);
+        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
         let mut merk = Merk::open(storage_context)
             .unwrap()
             .expect("cannot open Merk");
