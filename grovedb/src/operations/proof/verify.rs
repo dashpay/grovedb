@@ -1,5 +1,4 @@
 use merk::{proofs::Query, Hash};
-use rs_merkle::{algorithms::Sha256, MerkleProof};
 
 use crate::{
     operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
@@ -68,10 +67,7 @@ impl ProofVerifier {
                 path_slices,
                 &mut proof_reader,
                 &mut last_subtree_root_hash,
-            )?;
-
-            // execute the root proof
-            Self::execute_root_proof(&mut proof_reader, last_subtree_root_hash)?
+            )?
         };
 
         Ok(root_hash)
@@ -284,7 +280,7 @@ impl ProofVerifier {
         let mut expected_child_hash = None;
         let mut last_result_set = vec![];
 
-        for key in &path_slices[1..] {
+        for key in path_slices {
             let merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
 
             let mut child_query = Query::new();
@@ -292,6 +288,7 @@ impl ProofVerifier {
 
             let proof_result =
                 self.execute_merk_proof(ProofType::Merk, &merk_proof, &child_query, true)?;
+
             if expected_child_hash == None {
                 root_key_hash = Some(proof_result.0);
             } else if Some(proof_result.0) != expected_child_hash {
@@ -318,7 +315,7 @@ impl ProofVerifier {
 
         if last_result_set.is_empty() {
             if let Some(hash) = root_key_hash {
-                Self::execute_root_proof(proof_reader, hash)
+                Ok(hash)
             } else {
                 Err(Error::InvalidProof("proof invalid: no non root tree found"))
             }
@@ -335,85 +332,48 @@ impl ProofVerifier {
         path_slices: Vec<&[u8]>,
         proof_reader: &mut ProofReader,
         expected_root_hash: &mut [u8; 32],
-    ) -> Result<(), Error> {
+    ) -> Result<[u8; 32], Error> {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
-            if !path_slice.is_empty() {
-                // for every subtree, there should be a corresponding proof for the parent
-                // which should prove that this subtree is a child of the parent tree
-                let parent_merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
+            // for every subtree, there should be a corresponding proof for the parent
+            // which should prove that this subtree is a child of the parent tree
+            let parent_merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
 
-                let mut parent_query = Query::new();
-                parent_query.insert_key(key.to_vec());
+            let mut parent_query = Query::new();
+            parent_query.insert_key(key.to_vec());
 
-                let proof_result = self.execute_merk_proof(
-                    ProofType::Merk,
-                    &parent_merk_proof,
-                    &parent_query,
-                    query.query.query.left_to_right,
-                )?;
+            let proof_result = self.execute_merk_proof(
+                ProofType::Merk,
+                &parent_merk_proof,
+                &parent_query,
+                query.query.query.left_to_right,
+            )?;
 
-                let result_set = proof_result
-                    .1
-                    .expect("MERK_PROOF always returns a result set");
-                if result_set.is_empty() || &result_set[0].0 != key {
-                    return Err(Error::InvalidProof("proof invalid: invalid parent"));
-                }
-
-                let elem = Element::deserialize(result_set[0].1.as_slice())?;
-                let child_hash = match elem {
-                    Element::Tree(hash, _) => Ok(hash),
-                    _ => Err(Error::InvalidProof(
-                        "intermediate proofs should be for trees",
-                    )),
-                }?;
-
-                if child_hash != *expected_root_hash {
-                    return Err(Error::InvalidProof("Bad path"));
-                }
-
-                *expected_root_hash = proof_result.0;
-            } else {
-                break;
+            let result_set = proof_result
+                .1
+                .expect("MERK_PROOF always returns a result set");
+            if result_set.is_empty() || &result_set[0].0 != key {
+                return Err(Error::InvalidProof("proof invalid: invalid parent"));
             }
+
+            let elem = Element::deserialize(result_set[0].1.as_slice())?;
+            let child_hash = match elem {
+                Element::Tree(hash, _) => Ok(hash),
+                _ => Err(Error::InvalidProof(
+                    "intermediate proofs should be for trees",
+                )),
+            }?;
+
+            if child_hash != *expected_root_hash {
+                return Err(Error::InvalidProof("Bad path"));
+            }
+
+            *expected_root_hash = proof_result.0;
+
             split_path = path_slice.split_last();
         }
 
-        Ok(())
-    }
-
-    /// Generate expected root hash based on root proof and leaf hashes
-    fn execute_root_proof(
-        proof_reader: &mut ProofReader,
-        leaf_hash: [u8; 32],
-    ) -> Result<[u8; 32], Error> {
-        let root_proof_bytes = proof_reader.read_proof_of_type(ProofType::Root.into())?;
-
-        // makes the assumption that 1 byte is enough to represent the root leaf count
-        // hence max of 255 root leaf keys
-        let root_leaf_count = proof_reader.read_byte()?;
-
-        let index_to_prove_as_bytes = proof_reader.read_to_end()?;
-        let index_to_prove_as_usize = index_to_prove_as_bytes
-            .into_iter()
-            .map(|index| index as usize)
-            .collect::<Vec<usize>>();
-
-        let root_proof = match MerkleProof::<Sha256>::try_from(root_proof_bytes) {
-            Ok(proof) => Ok(proof),
-            Err(_) => Err(Error::InvalidProof("invalid proof element")),
-        }?;
-
-        let root_hash = match root_proof.root(
-            &index_to_prove_as_usize,
-            &[leaf_hash],
-            root_leaf_count[0] as usize,
-        ) {
-            Ok(hash) => Ok(hash),
-            Err(_) => Err(Error::InvalidProof("Invalid proof element")),
-        }?;
-
-        Ok(root_hash)
+        Ok(*expected_root_hash)
     }
 
     /// Execute a merk proof, update the state when a sized proof is

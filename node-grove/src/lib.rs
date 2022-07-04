@@ -726,13 +726,9 @@ impl GroveDbWrapper {
                 let this = task_context.undefined();
 
                 let callback_arguments: Vec<Handle<JsValue>> = match result {
-                    Ok(Some(hash)) => vec![
+                    Ok(hash) => vec![
                         task_context.null().upcast(),
                         JsBuffer::external(&mut task_context, hash).upcast(),
-                    ],
-                    Ok(None) => vec![
-                        task_context.null().upcast(),
-                        task_context.buffer(32)?.upcast(),
                     ],
                     Err(err) => vec![task_context.error(err.to_string())?.upcast()],
                 };

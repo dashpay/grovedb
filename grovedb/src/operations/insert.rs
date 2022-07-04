@@ -1,12 +1,12 @@
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use merk::{Merk, ROOT_KEY_KEY};
-use storage::{Storage, StorageContext};
+use merk::Merk;
+use storage::Storage;
 
 use crate::{
-    util::{merk_optional_tx, meta_storage_context_optional_tx, storage_context_optional_tx},
-    Element, Error, GroveDb, TransactionArg, ROOT_LEAFS_SERIALIZED_KEY,
+    util::{merk_optional_tx, storage_context_optional_tx},
+    Element, Error, GroveDb, TransactionArg,
 };
 
 impl GroveDb {
@@ -27,18 +27,11 @@ impl GroveDb {
 
         match element {
             Element::Tree(..) => {
-                if path_iter.len() == 0 {
-                    cost_return_on_error!(&mut cost, self.add_root_leaf(key, transaction));
-                } else {
-                    cost_return_on_error!(
-                        &mut cost,
-                        self.add_non_root_subtree(path_iter.clone(), key, element, transaction)
-                    );
-                    cost_return_on_error!(
-                        &mut cost,
-                        self.propagate_changes(path_iter, transaction)
-                    );
-                }
+                cost_return_on_error!(
+                    &mut cost,
+                    self.add_subtree(path_iter.clone(), key, element, transaction)
+                );
+                cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
             }
             Element::Reference(ref reference_path, _) => {
                 if path_iter.len() == 0 {
@@ -105,50 +98,12 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    /// Add subtree to the root tree
-    fn add_root_leaf(&self, key: &[u8], transaction: TransactionArg) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-        meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
-            let mut root_leaf_keys =
-                cost_return_on_error!(&mut cost, Self::get_root_leaf_keys_internal(&meta_storage));
-            if root_leaf_keys.get(&key.to_vec()).is_none() {
-                root_leaf_keys.insert(key.to_vec(), root_leaf_keys.len());
-            }
-            let value = cost_return_on_error_no_add!(
-                &cost,
-                bincode::serialize(&root_leaf_keys).map_err(|_| {
-                    Error::CorruptedData(String::from("unable to serialize root leaves data"))
-                })
-            );
-
-            cost_return_on_error_no_add!(
-                &cost,
-                meta_storage
-                    .put_meta(ROOT_LEAFS_SERIALIZED_KEY, &value)
-                    .map_err(|e| e.into())
-            );
-            cost.storage_written_bytes +=
-                ROOT_LEAFS_SERIALIZED_KEY.len() as u32 + value.len() as u32;
-        });
-
-        // Persist root leaf as a regular subtree
-        storage_context_optional_tx!(self.db, [key], transaction, storage, {
-            cost_return_on_error_no_add!(
-                &cost,
-                storage.put_root(ROOT_KEY_KEY, key).map_err(|e| e.into())
-            );
-            cost.storage_written_bytes += ROOT_KEY_KEY.len() as u32 + key.len() as u32
-        });
-
-        Ok(()).wrap_with_cost(cost)
-    }
-
     /// Add subtree to another subtree.
     /// We want to add a new empty merk to another merk at a key
     /// first make sure other merk exist
     /// if it exists, then create merk to be inserted, and get root hash
     /// we only care about root hash of merk to be inserted
-    fn add_non_root_subtree<'p, P>(
+    fn add_subtree<'p, P>(
         &self,
         path: P,
         key: &'p [u8],
@@ -169,6 +124,7 @@ impl GroveDb {
             }
         );
         let path_iter = path.into_iter();
+
         cost_return_on_error!(
             &mut cost,
             self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)

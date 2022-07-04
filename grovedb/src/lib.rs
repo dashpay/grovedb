@@ -9,27 +9,19 @@ mod tests;
 mod util;
 mod visualize;
 
-use std::{collections::BTreeMap, path::Path};
+use std::path::Path;
 
-use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
-};
+use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, Merk};
 pub use query::{PathQuery, SizedQuery};
-use rs_merkle::{algorithms::Sha256, MerkleTree};
 pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
     Storage, StorageContext,
 };
 pub use subtree::{Element, ElementFlags};
 
-use crate::util::{merk_optional_tx, meta_storage_context_optional_tx};
-
-/// A key to store serialized data about subtree prefixes to restore HADS
-/// structure
-/// A key to store serialized data about root tree leaves keys and order
-const ROOT_LEAFS_SERIALIZED_KEY: &[u8] = b"rootLeafsSerialized";
+use crate::util::merk_optional_tx;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -109,81 +101,15 @@ impl GroveDb {
 
     /// Returns root hash of GroveDb.
     /// Will be `None` if GroveDb is empty.
-    pub fn root_hash(&self, transaction: TransactionArg) -> CostResult<Option<[u8; 32]>, Error> {
-        Self::get_root_tree_internal(&self.db, transaction).map_ok(|x| x.root())
-    }
-
-    fn get_root_leaf_keys_internal<'db, S>(
-        meta_storage: &S,
-    ) -> CostResult<BTreeMap<Vec<u8>, usize>, Error>
-    where
-        S: StorageContext<'db>,
-        Error: From<<S as StorageContext<'db>>::Error>,
-    {
+    pub fn root_hash(&self, transaction: TransactionArg) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost {
-            seek_count: 1,
             ..Default::default()
         };
 
-        let root_leaf_keys = if let Some(root_leaf_keys_serialized) = cost_return_on_error_no_add!(
-            &cost,
-            meta_storage
-                .get_meta(ROOT_LEAFS_SERIALIZED_KEY)
-                .map_err(|e| e.into())
-        ) {
-            cost.loaded_bytes += root_leaf_keys_serialized.len() as u32;
-            cost_return_on_error_no_add!(
-                &cost,
-                bincode::deserialize(&root_leaf_keys_serialized).map_err(|_| {
-                    Error::CorruptedData(String::from("unable to deserialize root leaves"))
-                })
-            )
-        } else {
-            BTreeMap::new()
-        };
-        Ok(root_leaf_keys).wrap_with_cost(cost)
-    }
-
-    fn get_root_leaf_keys(
-        &self,
-        transaction: TransactionArg,
-    ) -> CostResult<BTreeMap<Vec<u8>, usize>, Error> {
-        meta_storage_context_optional_tx!(self.db, transaction, meta_storage, {
-            Self::get_root_leaf_keys_internal(&meta_storage)
+        merk_optional_tx!(&mut cost, self.db, [], transaction, subtree, {
+            let root_hash = subtree.root_hash().unwrap_add_cost(&mut cost);
+            Ok(root_hash).wrap_with_cost(cost)
         })
-    }
-
-    fn get_root_tree_internal(
-        db: &RocksDbStorage,
-        transaction: TransactionArg,
-    ) -> CostResult<MerkleTree<Sha256>, Error> {
-        let mut cost = OperationCost::default();
-
-        let root_leaf_keys = meta_storage_context_optional_tx!(db, transaction, meta_storage, {
-            cost_return_on_error!(&mut cost, Self::get_root_leaf_keys_internal(&meta_storage))
-        });
-
-        let mut leaf_hashes: Vec<[u8; 32]> = vec![[0; 32]; root_leaf_keys.len()];
-        for (subtree_path, root_leaf_idx) in root_leaf_keys {
-            merk_optional_tx!(
-                &mut cost,
-                db,
-                [subtree_path.as_slice()],
-                transaction,
-                subtree,
-                {
-                    leaf_hashes[root_leaf_idx] = subtree.root_hash().unwrap_add_cost(&mut cost);
-                }
-            );
-        }
-        Ok(MerkleTree::<Sha256>::from_leaves(&leaf_hashes)).wrap_with_cost(cost)
-    }
-
-    pub fn get_root_tree(
-        &self,
-        transaction: TransactionArg,
-    ) -> CostResult<MerkleTree<Sha256>, Error> {
-        Self::get_root_tree_internal(&self.db, transaction)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
@@ -198,10 +124,9 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
 
-        // Go up until only one element in path, which means a key of a root tree
         let mut path_iter = path.into_iter();
 
-        while path_iter.len() > 1 {
+        while path_iter.len() > 0 {
             if let Some(tx) = transaction {
                 let subtree_storage = self
                     .db
@@ -286,7 +211,10 @@ impl GroveDb {
             .map_ok(|subtree_opt| {
                 subtree_opt.ok_or_else(|| {
                     let key = hex::encode(key.as_ref());
-                    Error::PathKeyNotFound(format!("can't find subtree with key {} in parent during propagation", key))
+                    Error::PathKeyNotFound(format!(
+                        "can't find subtree with key {} in parent during propagation",
+                        key
+                    ))
                 })
             })
             .flatten()

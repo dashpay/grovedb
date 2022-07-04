@@ -50,14 +50,6 @@ impl<'a> ProofReader<'a> {
         Self { proof_data }
     }
 
-    pub fn read_byte(&mut self) -> Result<[u8; 1], Error> {
-        let mut data = [0; 1];
-        self.proof_data
-            .read(&mut data)
-            .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
-        Ok(data)
-    }
-
     pub fn read_proof(&mut self) -> Result<(ProofType, Vec<u8>), Error> {
         self.read_proof_with_optional_type(None)
     }
@@ -77,7 +69,6 @@ impl<'a> ProofReader<'a> {
         self.proof_data
             .read(&mut data_type)
             .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
-        dbg!(data_type);
 
         if let Some(expected_data_type) = expected_data_type_option {
             if data_type != [expected_data_type] {
@@ -103,14 +94,6 @@ impl<'a> ProofReader<'a> {
             .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
 
         Ok((proof_type, proof))
-    }
-
-    pub fn read_to_end(&mut self) -> Result<Vec<u8>, Error> {
-        let mut data = vec![];
-        self.proof_data
-            .read_to_end(&mut data)
-            .map_err(|_| Error::CorruptedData(String::from("failed to read proof data")))?;
-        Ok(data)
     }
 }
 
