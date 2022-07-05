@@ -13,7 +13,7 @@ use integer_encoding::VarInt;
 use merk::{
     proofs::{query::QueryItem, Query},
     tree::Tree,
-    Op, HASH_LENGTH,
+    BatchEntry, MerkBatch, Op, HASH_LENGTH,
 };
 use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
@@ -221,6 +221,16 @@ impl Element {
         let batch = [(key, Op::Delete)];
         merk.apply::<_, Vec<u8>>(&batch, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    /// Delete an element from Merk under a key to batch operations
+    pub fn delete_into_batch_operations<K: AsRef<[u8]>>(
+        key: K,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+    ) -> CostResult<(), Error> {
+        let entry = (key, Op::Delete);
+        batch_operations.push(entry);
+        Ok(()).wrap_with_cost(Default::default())
     }
 
     /// Get an element from Merk under a key; path should be resolved and proper
@@ -677,6 +687,21 @@ impl Element {
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
+    pub fn insert_into_batch_operations<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+    ) -> CostResult<(), Error> {
+        let serialized = match self.serialize() {
+            Ok(s) => s,
+            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+        };
+
+        let entry = (key, Op::Put(serialized));
+        batch_operations.push(entry);
+        Ok(()).wrap_with_cost(Default::default())
+    }
+
     /// Insert an element in Merk under a key if it doesn't yet exist; path
     /// should be resolved and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -717,6 +742,21 @@ impl Element {
         let batch_operations = [(key, Op::PutReference(serialized, referenced_value))];
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    pub fn insert_reference_into_batch_operations<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        referenced_value: Vec<u8>,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+    ) -> CostResult<(), Error> {
+        let serialized = match self.serialize() {
+            Ok(s) => s,
+            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+        };
+        let entry = (key, Op::PutReference(serialized, referenced_value));
+        batch_operations.push(entry);
+        Ok(()).wrap_with_cost(Default::default())
     }
 
     pub fn serialize(&self) -> Result<Vec<u8>, Error> {

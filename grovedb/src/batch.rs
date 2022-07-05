@@ -412,6 +412,7 @@ where
             .unwrap_or_else(|| (self.get_merk_fn)(path));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
 
+        let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
         for (key, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } => match &element {
@@ -435,7 +436,11 @@ where
 
                         cost_return_on_error!(
                             &mut cost,
-                            element.insert_reference(&mut merk, key, serialized)
+                            element.insert_reference_into_batch_operations(
+                                key,
+                                serialized,
+                                &mut batch_operations
+                            )
                         );
                     }
                     Element::Item(..) | Element::Tree(..) => {
@@ -451,21 +456,37 @@ where
                                 .wrap_with_cost(cost);
                             }
                         } else {
-                            cost_return_on_error!(&mut cost, element.insert(&mut merk, key));
+                            cost_return_on_error!(
+                                &mut cost,
+                                element.insert_into_batch_operations(key, &mut batch_operations)
+                            );
                         }
                     }
                 },
                 Op::Delete => {
-                    cost_return_on_error!(&mut cost, Element::delete(&mut merk, key));
+                    cost_return_on_error!(
+                        &mut cost,
+                        Element::delete_into_batch_operations(key, &mut batch_operations)
+                    );
                 }
                 Op::ReplaceTreeHash { hash } => {
                     cost_return_on_error!(
                         &mut cost,
-                        GroveDb::update_tree_item_preserve_flag(&mut merk, key.as_slice(), hash,)
+                        GroveDb::update_tree_item_preserve_flag_into_batch_operations(
+                            &merk,
+                            key,
+                            hash,
+                            &mut batch_operations
+                        )
                     );
                 }
             }
         }
+        cost_return_on_error!(
+            &mut cost,
+            merk.apply::<_, Vec<u8>>(&batch_operations, &[])
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+        );
         merk.root_hash().add_cost(cost).map(Ok)
     }
 }

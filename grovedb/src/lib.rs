@@ -14,7 +14,7 @@ use std::path::Path;
 
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 pub use merk::proofs::{query::QueryItem, Query};
-use merk::{self, Merk};
+use merk::{self, BatchEntry, Merk};
 pub use query::{PathQuery, SizedQuery};
 pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
@@ -203,6 +203,27 @@ impl GroveDb {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(root_hash, flag);
                 tree.insert(parent_tree, key.as_ref())
+            } else {
+                Err(Error::InvalidPath("can only propagate on tree items"))
+                    .wrap_with_cost(Default::default())
+            }
+        })
+    }
+
+    pub(crate) fn update_tree_item_preserve_flag_into_batch_operations<
+        'db,
+        K: AsRef<[u8]>,
+        S: StorageContext<'db>,
+    >(
+        parent_tree: &Merk<S>,
+        key: K,
+        root_hash: [u8; 32],
+        batch_operations: &mut Vec<BatchEntry<K>>,
+    ) -> CostResult<(), Error> {
+        Self::get_element_from_subtree(parent_tree, key.as_ref()).flat_map_ok(|element| {
+            if let Element::Tree(_, flag) = element {
+                let tree = Element::new_tree_with_flags(root_hash, flag);
+                tree.insert_into_batch_operations(key, batch_operations)
             } else {
                 Err(Error::InvalidPath("can only propagate on tree items"))
                     .wrap_with_cost(Default::default())
