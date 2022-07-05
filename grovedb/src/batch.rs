@@ -412,6 +412,8 @@ where
             .unwrap_or_else(|| (self.get_merk_fn)(path));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
 
+        let ops_at_path_by_key: BTreeMap<Vec<u8>, Op> = ops_at_path_by_key.into_iter().map(| (key, value)| (key, value)).collect();
+
         let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
         for (key, op) in ops_at_path_by_key.into_iter() {
             match op {
