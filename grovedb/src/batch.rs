@@ -412,7 +412,10 @@ where
             .unwrap_or_else(|| (self.get_merk_fn)(path));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
 
-        let ops_at_path_by_key: BTreeMap<Vec<u8>, Op> = ops_at_path_by_key.into_iter().map(| (key, value)| (key, value)).collect();
+        let ops_at_path_by_key: BTreeMap<Vec<u8>, Op> = ops_at_path_by_key
+            .into_iter()
+            .map(|(key, value)| (key, value))
+            .collect();
 
         let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
         for (key, op) in ops_at_path_by_key.into_iter() {
@@ -449,7 +452,11 @@ where
                         if batch_apply_options.validate_insertion_does_not_override {
                             let inserted = cost_return_on_error!(
                                 &mut cost,
-                                element.insert_if_not_exists(&mut merk, key.as_slice())
+                                element.insert_if_not_exists_into_batch_operations(
+                                    &mut merk,
+                                    key,
+                                    &mut batch_operations
+                                )
                             );
                             if !inserted {
                                 return Err(Error::InvalidBatchOperation(
@@ -484,11 +491,10 @@ where
                 }
             }
         }
-        cost_return_on_error!(
-            &mut cost,
-            merk.apply::<_, Vec<u8>>(&batch_operations, &[])
+        cost_return_on_error!(&mut cost, unsafe {
+            merk.apply_unchecked::<_, Vec<u8>>(&batch_operations, &[])
                 .map_err(|e| Error::CorruptedData(e.to_string()))
-        );
+        });
         merk.root_hash().add_cost(cost).map(Ok)
     }
 }

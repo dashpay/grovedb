@@ -723,6 +723,32 @@ impl Element {
         }
     }
 
+    pub fn insert_if_not_exists_into_batch_operations<
+        'db,
+        S: StorageContext<'db>,
+        K: AsRef<[u8]>,
+    >(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+    ) -> CostResult<bool, Error> {
+        let mut cost = OperationCost::default();
+        let exists = cost_return_on_error!(
+            &mut cost,
+            self.element_at_key_already_exists(merk, key.as_ref())
+        );
+        if exists {
+            Ok(false).wrap_with_cost(cost)
+        } else {
+            cost_return_on_error!(
+                &mut cost,
+                self.insert_into_batch_operations(key, batch_operations)
+            );
+            Ok(true).wrap_with_cost(cost)
+        }
+    }
+
     /// Insert a reference element in Merk under a key; path should be resolved
     /// and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
