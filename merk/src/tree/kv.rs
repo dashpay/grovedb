@@ -67,7 +67,7 @@ impl KV {
     /// Replaces the `KV`'s value with the given value, updates the hash,
     /// value hash and returns the modified `KV`.
     #[inline]
-    pub fn with_value(mut self, value: Vec<u8>) -> CostContext<Self> {
+    pub fn put_value_then_update(mut self, value: Vec<u8>) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         // TODO: length check?
         self.value = value;
@@ -79,7 +79,7 @@ impl KV {
     /// Replaces the `KV`'s value with the given value and value hash,
     /// updates the hash and returns the modified `KV`.
     #[inline]
-    pub fn with_value_and_value_hash(
+    pub fn put_value_and_value_hash_then_update(
         mut self,
         value: Vec<u8>,
         value_hash: Hash,
@@ -184,7 +184,7 @@ mod test {
     fn with_value() {
         let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6])
             .unwrap()
-            .with_value(vec![7, 8, 9])
+            .put_value_then_update(vec![7, 8, 9])
             .unwrap();
 
         assert_eq!(kv.key(), &[1, 2, 3]);

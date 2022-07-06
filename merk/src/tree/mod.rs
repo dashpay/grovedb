@@ -347,16 +347,16 @@ impl Tree {
     /// Replaces the root node's value with the given value and returns the
     /// modified `Tree`.
     #[inline]
-    pub fn with_value(mut self, value: Vec<u8>) -> CostContext<Self> {
+    pub fn put_value(mut self, value: Vec<u8>) -> CostContext<Self> {
         let mut cost = OperationCost::default();
-        self.inner.kv = self.inner.kv.with_value(value).unwrap_add_cost(&mut cost);
+        self.inner.kv = self.inner.kv.put_value_then_update(value).unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
     }
 
     /// Replaces the root node's value with the given value and value hash
     /// and returns the modified `Tree`.
     #[inline]
-    pub fn with_value_and_value_hash(
+    pub fn put_value_and_value_hash(
         mut self,
         value: Vec<u8>,
         value_hash: Hash,
@@ -365,7 +365,7 @@ impl Tree {
         self.inner.kv = self
             .inner
             .kv
-            .with_value_and_value_hash(value, value_hash)
+            .put_value_and_value_hash_then_update(value, value_hash)
             .unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
     }

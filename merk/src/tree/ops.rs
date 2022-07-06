@@ -72,7 +72,7 @@ where
                 None => {
                     return Self::build(batch, source).map_ok(|tree| (tree, LinkedList::default()))
                 }
-                Some(tree) => cost_return_on_error!(&mut cost, tree.apply(batch)),
+                Some(tree) => cost_return_on_error!(&mut cost, tree.apply_sorted(batch)),
             }
         };
 
@@ -101,7 +101,7 @@ where
                     cost_return_on_error!(&mut cost, Self::build(left_batch, source.clone()))
                         .map(|tree| Self::new(tree, source.clone()));
                 let maybe_tree = match maybe_tree {
-                    Some(tree) => cost_return_on_error!(&mut cost, tree.apply(right_batch)).0,
+                    Some(tree) => cost_return_on_error!(&mut cost, tree.apply_sorted(right_batch)).0,
                     None => {
                         cost_return_on_error!(&mut cost, Self::build(right_batch, source.clone()))
                             .map(|tree| Self::new(tree, source.clone()))
@@ -142,7 +142,7 @@ where
     /// `Walker<S>::apply`_to, but requires a populated tree.
     ///
     /// Keys in batch must be sorted and unique.
-    fn apply<K: AsRef<[u8]>>(
+    fn apply_sorted<K: AsRef<[u8]>>(
         self,
         batch: &MerkBatch<K>,
     ) -> CostContext<Result<(Option<Self>, DeletedKeys)>> {
@@ -155,9 +155,9 @@ where
             // a key matches this node's key, apply op to this node
             match &batch[index].1 {
                 // TODO: take vec from batch so we don't need to clone
-                Put(value) => self.with_value(value.to_vec()).unwrap_add_cost(&mut cost),
+                Put(value) => self.put_value(value.to_vec()).unwrap_add_cost(&mut cost),
                 PutReference(value, referenced_value) => self
-                    .with_value_and_value_hash(
+                    .put_value_and_value_hash(
                         value.to_vec(),
                         value_hash(referenced_value).unwrap_add_cost(&mut cost),
                     )
@@ -387,7 +387,7 @@ mod test {
         let batch = [(b"foo2".to_vec(), Op::Put(b"bar2".to_vec()))];
         let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap();
         let (maybe_walker, deleted_keys) = Walker::new(tree, PanicSource {})
-            .apply(&batch)
+            .apply_sorted(&batch)
             .unwrap()
             .expect("apply errored");
         let walker = maybe_walker.expect("should be Some");
@@ -401,7 +401,7 @@ mod test {
         let batch = [(b"foo".to_vec(), Op::Put(b"bar2".to_vec()))];
         let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap();
         let (maybe_walker, deleted_keys) = Walker::new(tree, PanicSource {})
-            .apply(&batch)
+            .apply_sorted(&batch)
             .unwrap()
             .expect("apply errored");
         let walker = maybe_walker.expect("should be Some");
@@ -428,7 +428,7 @@ mod test {
         )
         .unwrap();
         let (maybe_walker, deleted_keys) = Walker::new(tree, PanicSource {})
-            .apply(&batch)
+            .apply_sorted(&batch)
             .unwrap()
             .expect("apply errored");
         let walker = maybe_walker.expect("should be Some");
@@ -445,7 +445,7 @@ mod test {
         let batch = [(b"foo2".to_vec(), Op::Delete)];
         let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap();
         Walker::new(tree, PanicSource {})
-            .apply(&batch)
+            .apply_sorted(&batch)
             .unwrap()
             .unwrap();
     }
@@ -455,7 +455,7 @@ mod test {
         let batch = [(b"foo".to_vec(), Op::Delete)];
         let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap();
         let (maybe_walker, deleted_keys) = Walker::new(tree, PanicSource {})
-            .apply(&batch)
+            .apply_sorted(&batch)
             .unwrap()
             .expect("apply errored");
         assert!(maybe_walker.is_none());
@@ -468,7 +468,7 @@ mod test {
         let tree = make_tree_seq(50);
         let batch = [del_entry(5)];
         let (maybe_walker, deleted_keys) = Walker::new(tree, PanicSource {})
-            .apply(&batch)
+            .apply_sorted(&batch)
             .unwrap()
             .expect("apply errored");
         maybe_walker.expect("should be Some");
@@ -481,7 +481,7 @@ mod test {
         let tree = make_tree_seq(50);
         let batch = [del_entry(29), del_entry(34)];
         let (maybe_walker, mut deleted_keys) = Walker::new(tree, PanicSource {})
-            .apply(&batch)
+            .apply_sorted(&batch)
             .unwrap()
             .expect("apply errored");
         maybe_walker.expect("should be Some");
@@ -495,7 +495,7 @@ mod test {
         let tree = make_tree_seq(10);
         let batch = [del_entry(7), del_entry(9)];
         let (maybe_walker, deleted_keys) = Walker::new(tree, PanicSource {})
-            .apply(&batch)
+            .apply_sorted(&batch)
             .unwrap()
             .expect("apply errored");
         maybe_walker.expect("should be Some");
