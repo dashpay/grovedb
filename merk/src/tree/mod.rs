@@ -349,7 +349,11 @@ impl Tree {
     #[inline]
     pub fn put_value(mut self, value: Vec<u8>) -> CostContext<Self> {
         let mut cost = OperationCost::default();
-        self.inner.kv = self.inner.kv.put_value_then_update(value).unwrap_add_cost(&mut cost);
+        self.inner.kv = self
+            .inner
+            .kv
+            .put_value_then_update(value)
+            .unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
     }
 

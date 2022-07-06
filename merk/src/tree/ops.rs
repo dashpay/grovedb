@@ -101,7 +101,9 @@ where
                     cost_return_on_error!(&mut cost, Self::build(left_batch, source.clone()))
                         .map(|tree| Self::new(tree, source.clone()));
                 let maybe_tree = match maybe_tree {
-                    Some(tree) => cost_return_on_error!(&mut cost, tree.apply_sorted(right_batch)).0,
+                    Some(tree) => {
+                        cost_return_on_error!(&mut cost, tree.apply_sorted(right_batch)).0
+                    }
                     None => {
                         cost_return_on_error!(&mut cost, Self::build(right_batch, source.clone()))
                             .map(|tree| Self::new(tree, source.clone()))
