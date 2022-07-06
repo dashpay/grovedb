@@ -229,7 +229,7 @@ where
     fn has_node(&self, key: &[u8]) -> CostContext<Result<bool>> {
         self.use_tree(move |maybe_tree| {
             let mut cursor = match maybe_tree {
-                None => return Ok(true).wrap_with_cost(Default::default()), // empty tree
+                None => return Ok(false).wrap_with_cost(Default::default()), // empty tree
                 Some(tree) => tree,
             };
 
@@ -240,7 +240,7 @@ where
 
                 let left = key < cursor.key();
                 let link = match cursor.link(left) {
-                    None => return Ok(true).wrap_with_cost(Default::default()), // not found
+                    None => return Ok(false).wrap_with_cost(Default::default()), // not found
                     Some(link) => link,
                 };
 
@@ -807,6 +807,29 @@ mod test {
             .unwrap()
             .expect("apply failed");
         assert_invariants(&merk);
+    }
+
+    #[test]
+    fn test_has_node_with_empty_tree() {
+        let mut merk = TempMerk::new();
+
+        let key = b"something";
+
+        let result = merk.has_node(key).unwrap().unwrap();
+
+        assert!(!result);
+
+        let batch_entry = (key, Op::Put(vec![123; 60]));
+
+        let batch = vec![batch_entry];
+
+        merk.apply::<_, Vec<_>>(&batch, &[])
+            .unwrap()
+            .expect("should ...");
+
+        let result = merk.has_node(key).unwrap().unwrap();
+
+        assert!(result);
     }
 
     #[test]
