@@ -4,14 +4,13 @@ use core::fmt;
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{btree_map::Entry, BTreeMap, HashMap, HashSet},
     hash::Hash,
 };
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use indexmap::{map::Entry, IndexMap};
 use merk::Merk;
 use nohash_hasher::IntMap;
 use storage::{Storage, StorageBatch, StorageContext};
@@ -284,7 +283,7 @@ trait TreeCache {
     fn execute_ops_on_path(
         &mut self,
         path: &[Vec<u8>],
-        ops_at_path_by_key: IndexMap<Vec<u8>, Op>,
+        ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
         ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
     ) -> CostResult<[u8; 32], Error>;
@@ -399,7 +398,7 @@ where
     fn execute_ops_on_path(
         &mut self,
         path: &[Vec<u8>],
-        ops_at_path_by_key: IndexMap<Vec<u8>, Op>,
+        ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
         ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
     ) -> CostResult<[u8; 32], Error> {
@@ -411,11 +410,6 @@ where
             .map(|x| Ok(x).wrap_with_cost(Default::default()))
             .unwrap_or_else(|| (self.get_merk_fn)(path));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
-
-        let ops_at_path_by_key: BTreeMap<Vec<u8>, Op> = ops_at_path_by_key
-            .into_iter()
-            .map(|(key, value)| (key, value))
-            .collect();
 
         let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
         for (key, op) in ops_at_path_by_key.into_iter() {
@@ -512,7 +506,7 @@ impl TreeCache for TreeCacheKnownPaths {
     fn execute_ops_on_path(
         &mut self,
         path: &[Vec<u8>],
-        ops_at_path_by_key: IndexMap<Vec<u8>, Op>,
+        ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
         _ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         _batch_apply_options: &BatchApplyOptions,
     ) -> CostResult<[u8; 32], Error> {
@@ -531,7 +525,7 @@ impl TreeCache for TreeCacheKnownPaths {
 }
 
 ///                          LEVEL           PATH                   KEY      OP
-type OpsByLevelPath = IntMap<usize, IndexMap<Vec<Vec<u8>>, IndexMap<Vec<u8>, Op>>>;
+type OpsByLevelPath = IntMap<usize, BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>>>;
 
 struct BatchStructure<C> {
     /// Operations by level path
@@ -577,7 +571,7 @@ where
         ops: Vec<GroveDbOp>,
         mut merk_tree_cache: C,
     ) -> CostResult<BatchStructure<C>, Error> {
-        let cost = OperationCost::default();
+        let mut cost = OperationCost::default();
 
         let mut ops_by_level_paths: OpsByLevelPath = IntMap::default();
         let mut current_last_level: usize = 0;
@@ -593,7 +587,7 @@ where
             let op_result = match &op.op {
                 Op::Insert { element } => {
                     if let Element::Tree(..) = element {
-                        merk_tree_cache.insert(&op);
+                        cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op));
                     }
                     Ok(())
                 }
@@ -611,15 +605,15 @@ where
                 if let Some(ops_on_path) = ops_on_level.get_mut(op.path.as_slice()) {
                     ops_on_path.insert(op.key, op.op);
                 } else {
-                    let mut ops_on_path: IndexMap<Vec<u8>, Op> = IndexMap::new();
+                    let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
                     ops_on_path.insert(op.key, op.op);
                     ops_on_level.insert(op.path.clone(), ops_on_path);
                 }
             } else {
-                let mut ops_on_path: IndexMap<Vec<u8>, Op> = IndexMap::new();
+                let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
                 ops_on_path.insert(op.key, op.op);
-                let mut ops_on_level: IndexMap<Vec<Vec<u8>>, IndexMap<Vec<u8>, Op>> =
-                    IndexMap::new();
+                let mut ops_on_level: BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>> =
+                    BTreeMap::new();
                 ops_on_level.insert(op.path, ops_on_path);
                 ops_by_level_paths.insert(level, ops_on_level);
                 if current_last_level < level {
@@ -665,7 +659,7 @@ impl GroveDb {
         while let Some(ops_at_level) = ops_by_level_paths.remove(&current_level) {
             for (path, ops_at_path) in ops_at_level.into_iter() {
                 if current_level == 0 {
-                    let mut root_tree_ops: IndexMap<Vec<u8>, Op> = IndexMap::new();
+                    let mut root_tree_ops: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
                     for (key, op) in ops_at_path.into_iter() {
                         match op {
                             Op::Insert { .. } => {
@@ -683,11 +677,14 @@ impl GroveDb {
                         }
                     }
                     // execute the ops at this path
-                    merk_tree_cache.execute_ops_on_path(
-                        &path,
-                        root_tree_ops,
-                        &ops_by_qualified_paths,
-                        &batch_apply_options,
+                    cost_return_on_error!(
+                        &mut cost,
+                        merk_tree_cache.execute_ops_on_path(
+                            &path,
+                            root_tree_ops,
+                            &ops_by_qualified_paths,
+                            &batch_apply_options,
+                        )
                     );
                 } else {
                     let root_hash = cost_return_on_error!(
@@ -739,7 +736,7 @@ impl GroveDb {
                                         }
                                     }
                                 } else {
-                                    let mut ops_on_path: IndexMap<Vec<u8>, Op> = IndexMap::new();
+                                    let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
                                     ops_on_path.insert(
                                         key.clone(),
                                         Op::ReplaceTreeHash { hash: root_hash },
@@ -747,13 +744,13 @@ impl GroveDb {
                                     ops_at_level_above.insert(parent_path.to_vec(), ops_on_path);
                                 }
                             } else {
-                                let mut ops_on_path: IndexMap<Vec<u8>, Op> = IndexMap::new();
+                                let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
                                 ops_on_path
                                     .insert(key.clone(), Op::ReplaceTreeHash { hash: root_hash });
-                                let mut ops_on_level: IndexMap<
+                                let mut ops_on_level: BTreeMap<
                                     Vec<Vec<u8>>,
-                                    IndexMap<Vec<u8>, Op>,
-                                > = IndexMap::new();
+                                    BTreeMap<Vec<u8>, Op>,
+                                > = BTreeMap::new();
                                 ops_on_level.insert(parent_path.to_vec(), ops_on_path);
                                 ops_by_level_paths.insert(current_level - 1, ops_on_level);
                             }
@@ -1303,7 +1300,9 @@ mod tests {
         let tx = db.start_transaction();
 
         let ops = grove_db_ops_for_contract_insert();
-        db.apply_batch(ops, None, Some(&tx));
+        db.apply_batch(ops, None, Some(&tx))
+            .unwrap()
+            .expect("expected to apply batch");
 
         db.root_hash(None).unwrap().expect("cannot get root hash");
 
@@ -1312,8 +1311,12 @@ mod tests {
 
         let ops = grove_db_ops_for_contract_insert();
         let document_ops = grove_db_ops_for_contract_document_insert();
-        db.apply_batch(ops.clone(), None, Some(&tx));
-        db.apply_batch(document_ops.clone(), None, Some(&tx));
+        db.apply_batch(ops.clone(), None, Some(&tx))
+            .unwrap()
+            .expect("expected to apply batch");
+        db.apply_batch(document_ops.clone(), None, Some(&tx))
+            .unwrap()
+            .expect("expected to apply batch");
 
         let batch_hash = db
             .root_hash(Some(&tx))
@@ -1322,8 +1325,12 @@ mod tests {
 
         db.rollback_transaction(&tx).expect("expected to rollback");
 
-        db.apply_operations_without_batching(ops, Some(&tx));
-        db.apply_operations_without_batching(document_ops, Some(&tx));
+        db.apply_operations_without_batching(ops, Some(&tx))
+            .unwrap()
+            .expect("expected to apply batch");
+        db.apply_operations_without_batching(document_ops, Some(&tx))
+            .unwrap()
+            .expect("expected to apply batch");
 
         let no_batch_hash = db
             .root_hash(Some(&tx))
