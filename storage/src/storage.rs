@@ -82,6 +82,11 @@ pub trait Storage<'db> {
     ) -> CostContext<Self::BatchTransactionalStorageContext>
     where
         P: IntoIterator<Item = &'p [u8]>;
+
+    /// Return worst case cost for storage context creation.
+    fn get_storage_context_cost<'a, P>(path: P) -> OperationCost
+    where
+        P: IntoIterator<Item = &'a [u8]>;
 }
 
 /// Storage context.
