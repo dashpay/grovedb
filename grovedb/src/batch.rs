@@ -17,7 +17,8 @@ use storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch, StorageCon
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
 use crate::{
-    operations::get::MAX_REFERENCE_HOPS, Element, Error, GroveDb, TransactionArg, MAX_ELEMENT_SIZE,
+    operations::get::MAX_REFERENCE_HOPS, worst_case_costs::MerkWorstCaseInput, Element, Error,
+    GroveDb, TransactionArg, MAX_ELEMENTS_NUMBER, MAX_ELEMENT_SIZE,
 };
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -28,29 +29,23 @@ pub enum Op {
 }
 
 impl Op {
-    fn worst_case_cost(&self, _key: Vec<u8>) -> OperationCost {
+    fn worst_case_cost(&self, key: Vec<u8>, input: MerkWorstCaseInput) -> OperationCost {
         match self {
             Op::ReplaceTreeHash { .. } => OperationCost {
                 seek_count: 1,
                 storage_written_bytes: 32,
                 ..Default::default()
             },
-            Op::Insert { element } => OperationCost {
-                seek_count: 0,
-                storage_written_bytes: 0,
-                storage_loaded_bytes: 0,
-                hash_byte_calls: 0,
-                hash_node_calls: 0,
-                storage_freed_bytes: 0,
-            },
-            Op::Delete => OperationCost {
-                seek_count: 0,
-                storage_written_bytes: 0,
-                storage_loaded_bytes: 0,
-                hash_byte_calls: 0,
-                hash_node_calls: 0,
-                storage_freed_bytes: 0,
-            },
+            Op::Insert { element } => {
+                let mut cost = OperationCost::default();
+                GroveDb::add_worst_case_merk_insert(&mut cost, &key, &element, input);
+                cost
+            }
+            Op::Delete => {
+                let mut cost = OperationCost::default();
+                GroveDb::add_worst_case_merk_propagate(&mut cost, input);
+                cost
+            }
         }
     }
 }
@@ -521,8 +516,15 @@ impl TreeCache for TreeCacheKnownPaths {
             );
         }
         for (key, op) in ops_at_path_by_key.into_iter() {
-            cost += op.worst_case_cost(key);
+            cost += op.worst_case_cost(
+                key,
+                MerkWorstCaseInput::MaxElementsNumber(MAX_ELEMENTS_NUMBER),
+            );
         }
+        GroveDb::add_worst_case_merk_propagate(
+            &mut cost,
+            MerkWorstCaseInput::NumberOfLevels(path.len() as u32),
+        );
         Ok([0u8; 32]).wrap_with_cost(cost)
     }
 }

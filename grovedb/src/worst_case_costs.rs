@@ -1,9 +1,8 @@
 use costs::OperationCost;
 use storage::Storage;
 
-use crate::Element;
-
 use super::GroveDb;
+use crate::Element;
 
 impl GroveDb {
     /// Add worst case for getting a merk tree
@@ -44,11 +43,11 @@ impl GroveDb {
     }
 
     /// Add worst case for insertion into merk
-    pub fn add_worst_case_merk_insert(
+    pub(crate) fn add_worst_case_merk_insert(
         cost: &mut OperationCost,
         key: &[u8],
-        value: Element,
-        max_elements_number: u32,
+        value: &Element,
+        input: MerkWorstCaseInput,
     ) {
         // TODO is is safe to unwrap?
         let bytes_len = key.len() + value.serialize().expect("element is serializeable").len();
@@ -57,11 +56,23 @@ impl GroveDb {
         // .. and hash computation for the inserted element iteslf
         cost.hash_node_calls += ((bytes_len - 64 + 1) / 64) as u16;
 
+        Self::add_worst_case_merk_propagate(cost, input);
+    }
+
+    pub(crate) fn add_worst_case_merk_propagate(
+        cost: &mut OperationCost,
+        input: MerkWorstCaseInput,
+    ) {
         let mut nodes_updated = 0;
         // Propagation requires to recompute and write hashes up to the root
-        nodes_updated += ((max_elements_number + 1) as f32).log2().ceil() as u32;
-        // In AVL tree two rotation may happen at most on insertion, some of them may update
-        // one more node except one we already have on our path to the root, thus two more updates.
+        let levels = match input {
+            MerkWorstCaseInput::MaxElementsNumber(n) => ((n + 1) as f32).log2().ceil() as u32,
+            MerkWorstCaseInput::NumberOfLevels(n) => n,
+        };
+        nodes_updated += levels;
+        // In AVL tree two rotation may happen at most on insertion, some of them may
+        // update one more node except one we already have on our path to the
+        // root, thus two more updates.
         nodes_updated += 2;
 
         // TODO: use separate field for hash propagation rather than written bytes
@@ -69,4 +80,9 @@ impl GroveDb {
         // Same number of hash recomputations for propagation
         cost.hash_node_calls += (nodes_updated as u16) * Self::node_hash_update_count();
     }
+}
+
+pub(crate) enum MerkWorstCaseInput {
+    MaxElementsNumber(u32),
+    NumberOfLevels(u32),
 }

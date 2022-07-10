@@ -304,35 +304,15 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         // First we get the merk tree
-        Self::add_worst_case_get_merk::<_, RocksDbStorage>(&mut cost, path, crate::MAX_ELEMENT_SIZE); // TODO: use GroveDb's storage type parameter when it will be finally abstract
-                                                                                                   // over it
+        Self::add_worst_case_get_merk::<_, RocksDbStorage>(
+            &mut cost,
+            path,
+            crate::MAX_ELEMENT_SIZE,
+        ); // TODO: use GroveDb's storage type parameter when it will be finally abstract
+           // over it
         Self::add_worst_case_merk_has_element(&mut cost, key, crate::MAX_ELEMENT_SIZE);
 
         // In the worst case, there will not be an error, but the item will not be found
         Ok(false).wrap_with_cost(cost)
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use costs::OperationCost;
-    use merk::Merk;
-    use storage::Storage;
-
-    use crate::{Element, tests::{make_grovedb, TEST_LEAF}};
-
-    #[test]
-    fn piss() {
-        let db = make_grovedb();
-
-        let mut cost = OperationCost::default();
-
-        let storage = db.db.get_storage_context([]).unwrap();
-        let mut merk = Merk::open(storage).unwrap().unwrap();
-
-        let element = Element::Item(b"ayy".to_vec(), None);
-        element.insert(&mut merk, b"assf").unwrap_add_cost(&mut cost);
-
-        dbg!(cost);
     }
 }
