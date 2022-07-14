@@ -110,6 +110,55 @@ impl PathQuery {
         query
     }
 
+    /// Checks if any path query is a subset of another by path
+    /// i.e [a,b] in [a,b,c]
+    /// Also checks for duplicated paths [a,x] and [a,x]
+    /// returns false for any other case
+    fn has_subpaths(path_queries: &[&PathQuery]) -> bool {
+        // Naive solution n^2 time complexity
+        for i in 0..path_queries.len() {
+            for j in 0..path_queries.len() {
+                if i == j {
+                    // don't compare the same path instance
+                    continue
+                }
+                let path_one = &path_queries[i].path;
+                let path_two = &path_queries[j].path;
+
+                let bigger_path;
+                let smaller_path;
+
+                if path_one.len() > path_two.len() {
+                    bigger_path = path_one;
+                    smaller_path = path_two;
+                } else {
+                    bigger_path = path_two;
+                    smaller_path = path_one;
+                }
+
+                let mut is_subpath = true;
+
+                // here we basically want to check if one vector is an extension of another
+                // that means it contains all elements at the same index
+                // what we have to do is check that they match at all points
+                for n in 0..smaller_path.len() {
+                    if bigger_path[n] != smaller_path[n] {
+                        // we have divergence before exhausting the smaller path
+                        // not subset
+                        is_subpath = false;
+                    }
+                }
+
+                if is_subpath == true {
+                    return true;
+                }
+            }
+        }
+
+        // didn't find a subpath
+        false
+    }
+
     fn get_common_path(path_queries: &[&PathQuery]) -> (Vec<Vec<u8>>, usize, bool) {
         let min_path_length = path_queries
             .iter()
@@ -150,6 +199,29 @@ mod tests {
         tests::{make_deep_tree, TEST_LEAF},
         Element, GroveDb, PathQuery,
     };
+
+    #[test]
+    fn test_has_subpaths() {
+        let path_query_one = PathQuery::new_unsized(vec![b"a".to_vec()], Query::new());
+        let path_query_two = PathQuery::new_unsized(vec![b"c".to_vec(), b"b".to_vec()], Query::new());
+        let has_subpaths = PathQuery::has_subpaths(&[&path_query_one, &path_query_two]);
+        assert_eq!(has_subpaths, false);
+
+        let path_query_one = PathQuery::new_unsized(vec![b"a".to_vec()], Query::new());
+        let path_query_two = PathQuery::new_unsized(vec![b"a".to_vec(), b"b".to_vec()], Query::new());
+        let has_subpaths = PathQuery::has_subpaths(&[&path_query_one, &path_query_two]);
+        assert_eq!(has_subpaths, true);
+
+        let path_query_one = PathQuery::new_unsized(vec![b"a".to_vec(), b"b".to_vec()], Query::new());
+        let path_query_two = PathQuery::new_unsized(vec![b"a".to_vec(), b"b".to_vec()], Query::new());
+        let has_subpaths = PathQuery::has_subpaths(&[&path_query_one, &path_query_two]);
+        assert_eq!(has_subpaths, true);
+
+        let path_query_one = PathQuery::new_unsized(vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec(), b"d".to_vec()], Query::new());
+        let path_query_two = PathQuery::new_unsized(vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()], Query::new());
+        let has_subpaths = PathQuery::has_subpaths(&[&path_query_one, &path_query_two]);
+        assert_eq!(has_subpaths, true);
+    }
 
     #[test]
     fn test_same_path_different_query_merge() {
