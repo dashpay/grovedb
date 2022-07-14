@@ -236,16 +236,23 @@ impl Query {
         self.items.insert(item);
     }
 
-    /// Takes all the query items from a query instances and combines it with
-    /// the current query item set
-    pub fn merge(queries: Vec<&Query>) -> Self {
-        let mut merged_query = queries[0].clone();
-        for query in &queries[1..] {
-            for item in &query.items {
-                merged_query.insert_item(item.clone())
+    pub fn merge(&mut self, other: &Query) {
+        // merge query items as they point to the same context
+        for item in &other.items {
+            self.insert_item(item.clone())
+        }
+
+        for (query_item, subquery_branch) in other.conditional_subquery_branches.iter() {
+            let subquery_branch_option = self.conditional_subquery_branches.get_mut(query_item);
+            if let Some(subquery_branch_old) = subquery_branch_option {
+                (subquery_branch_old.subquery.as_mut().unwrap())
+                    .merge(subquery_branch.subquery.as_ref().unwrap());
+            } else {
+                // we don't have that branch just assign the query
+                self.conditional_subquery_branches
+                    .insert(query_item.clone(), subquery_branch.clone());
             }
         }
-        merged_query
     }
 }
 

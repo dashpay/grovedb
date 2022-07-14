@@ -65,65 +65,72 @@ impl PathQuery {
             .collect();
 
         // merge the queries into one
-        dbg!(queries_for_common_path);
+        // we can use an accumulator query maybe
+        dbg!(&queries_for_common_path);
+        let mut final_query = Query::new();
 
-        let query = if all_paths_equal {
-            let queries = path_queries
-                .iter()
-                .map(|path_query| &path_query.query.query)
-                .collect();
-            Query::merge(queries)
-        } else {
-            PathQuery::build_query(path_queries, next_index)
-        };
+        // let query = if all_paths_equal {
+        //     let queries = path_queries
+        //         .iter()
+        //         .map(|path_query| &path_query.query.query)
+        //         .collect();
+        //     Query::merge(queries)
+        // } else {
+        //     PathQuery::build_query(path_queries, next_index)
+        // };
 
-        Ok(PathQuery::new_unsized(common_path, query)).wrap_with_cost(cost)
+        Ok(PathQuery::new_unsized(
+            common_path,
+            queries_for_common_path[0].clone(),
+        ))
+        .wrap_with_cost(cost)
     }
 
-    fn build_query(path_queries: Vec<&PathQuery>, start_index: usize) -> Query {
-        let level = start_index;
-        let keys_at_level = path_queries
-            .iter()
-            .map(|&path_query| &path_query.path[level]);
-
-        // we need to group the paths based on their distinct nature
-        let mut path_branches: BTreeMap<_, Vec<usize>> = BTreeMap::new();
-        for (path_index, key) in keys_at_level.enumerate() {
-            if path_branches.contains_key(key) {
-                // get the current element then add the new path index to it
-                let current_path_index_array = path_branches
-                    .get_mut(key)
-                    .expect("confirmed map contains key");
-                current_path_index_array.push(path_index);
-            } else {
-                path_branches.insert(key, vec![path_index]);
-            }
-        }
-
-        let mut query = Query::new();
-        for (key, value) in path_branches.into_iter() {
-            query.insert_key(key.to_vec());
-
-            let mut new_path_queries = vec![];
-            let mut queries_for_exhausted_paths = vec![];
-            for path_index in value {
-                let curr_path_query = path_queries[path_index];
-                if curr_path_query.path.len() - 1 == start_index {
-                    queries_for_exhausted_paths.push(&curr_path_query.query.query);
-                } else {
-                    new_path_queries.push(curr_path_query)
-                }
-            }
-            let deep_query = Self::build_query(new_path_queries, start_index + 1);
-            queries_for_exhausted_paths.push(&deep_query);
-
-            let next_query = Query::merge(queries_for_exhausted_paths);
-
-            query.add_conditional_subquery(QueryItem::Key(key.to_vec()), None, Some(next_query));
-        }
-
-        query
-    }
+    // fn build_query(path_queries: Vec<&PathQuery>, start_index: usize) -> Query {
+    //     let level = start_index;
+    //     let keys_at_level = path_queries
+    //         .iter()
+    //         .map(|&path_query| &path_query.path[level]);
+    //
+    //     // we need to group the paths based on their distinct nature
+    //     let mut path_branches: BTreeMap<_, Vec<usize>> = BTreeMap::new();
+    //     for (path_index, key) in keys_at_level.enumerate() {
+    //         if path_branches.contains_key(key) {
+    //             // get the current element then add the new path index to it
+    //             let current_path_index_array = path_branches
+    //                 .get_mut(key)
+    //                 .expect("confirmed map contains key");
+    //             current_path_index_array.push(path_index);
+    //         } else {
+    //             path_branches.insert(key, vec![path_index]);
+    //         }
+    //     }
+    //
+    //     let mut query = Query::new();
+    //     for (key, value) in path_branches.into_iter() {
+    //         query.insert_key(key.to_vec());
+    //
+    //         let mut new_path_queries = vec![];
+    //         let mut queries_for_exhausted_paths = vec![];
+    //         for path_index in value {
+    //             let curr_path_query = path_queries[path_index];
+    //             if curr_path_query.path.len() - 1 == start_index {
+    //
+    // queries_for_exhausted_paths.push(&curr_path_query.query.query);
+    //             } else {
+    //                 new_path_queries.push(curr_path_query)
+    //             }
+    //         }
+    //         let deep_query = Self::build_query(new_path_queries, start_index +
+    // 1);         queries_for_exhausted_paths.push(&deep_query);
+    //
+    //         let next_query = Query::merge(queries_for_exhausted_paths);
+    //
+    //         query.add_conditional_subquery(QueryItem::Key(key.to_vec()), None,
+    // Some(next_query));     }
+    //
+    //     query
+    // }
 
     /// Checks if any path query is a subset of another by path
     /// i.e [a,b] in [a,b,c]
