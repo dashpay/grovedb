@@ -50,6 +50,10 @@ impl PathQuery {
             .wrap_with_cost(cost);
         }
 
+        if Self::has_subpaths(&path_queries) {
+            return Err(Error::InvalidInput("path query path's should be unique")).wrap_with_cost(cost);
+        }
+
         let (common_path, next_index, all_paths_equal) = PathQuery::get_common_path(&path_queries);
 
         let query = if all_paths_equal {
@@ -224,6 +228,7 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
     fn test_same_path_different_query_merge() {
         let temp_db = make_deep_tree();
 
@@ -472,6 +477,7 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
     fn test_same_path_and_different_path_query_merge() {
         let temp_db = make_deep_tree();
 
