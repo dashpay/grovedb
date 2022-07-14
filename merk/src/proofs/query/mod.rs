@@ -19,7 +19,7 @@ use {super::Op, std::collections::LinkedList};
 use super::{tree::execute, Decoder, Node};
 use crate::tree::{Fetch, Hash as MerkHash, Link, RefWalker};
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct SubqueryBranch {
     pub subquery_key: Option<Vec<u8>>,
     pub subquery: Option<Box<Query>>,
@@ -27,7 +27,7 @@ pub struct SubqueryBranch {
 
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all of the requested values.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Query {
     pub items: BTreeSet<QueryItem>,
     pub default_subquery_branch: SubqueryBranch,
@@ -1433,6 +1433,92 @@ mod test {
         for (key, expected_value) in keys.iter().zip(expected_result.iter()) {
             assert_eq!(values.get(key), expected_value.as_ref());
         }
+    }
+
+    #[test]
+    fn test_query_merge() {
+        // single key test
+        let mut query_one = Query::new();
+        query_one.insert_key(b"a".to_vec());
+        let mut query_two = Query::new();
+        query_two.insert_key(b"b".to_vec());
+        query_one.merge(&query_two);
+        let mut expected_query = Query::new();
+        expected_query.insert_key(b"a".to_vec());
+        expected_query.insert_key(b"b".to_vec());
+        assert_eq!(query_one, expected_query);
+
+        // range test
+        let mut query_one = Query::new();
+        query_one.insert_range(b"a".to_vec()..b"c".to_vec());
+        let mut query_two = Query::new();
+        query_two.insert_key(b"b".to_vec());
+        query_one.merge(&query_two);
+        let mut expected_query = Query::new();
+        expected_query.insert_range(b"a".to_vec()..b"c".to_vec());
+        assert_eq!(query_one, expected_query);
+
+        // conditional query test
+        let mut query_one = Query::new();
+        query_one.insert_key(b"a".to_vec());
+        let mut insert_all_query = Query::new();
+        insert_all_query.insert_all();
+        query_one.add_conditional_subquery(
+            QueryItem::Key(b"a".to_vec()),
+            None,
+            Some(insert_all_query),
+        );
+
+        let mut query_two = Query::new();
+        query_two.insert_key(b"b".to_vec());
+        query_one.merge(&query_two);
+
+        let mut expected_query = Query::new();
+        expected_query.insert_key(b"a".to_vec());
+        expected_query.insert_key(b"b".to_vec());
+        let mut insert_all_query = Query::new();
+        insert_all_query.insert_all();
+        expected_query.add_conditional_subquery(
+            QueryItem::Key(b"a".to_vec()),
+            None,
+            Some(insert_all_query),
+        );
+        assert_eq!(query_one, expected_query);
+
+        // deep conditional query
+        // [a, b, c]
+        // [a, c, d]
+        let mut query_one = Query::new();
+        query_one.insert_key(b"a".to_vec());
+        let mut query_one_b = Query::new();
+        query_one_b.insert_key(b"b".to_vec());
+        let mut query_one_c = Query::new();
+        query_one_c.insert_key(b"c".to_vec());
+        query_one_b.add_conditional_subquery(
+            QueryItem::Key(b"b".to_vec()),
+            None,
+            Some(query_one_c),
+        );
+        query_one.add_conditional_subquery(QueryItem::Key(b"a".to_vec()), None, Some(query_one_b));
+
+        let mut query_two = Query::new();
+        query_two.insert_key(b"a".to_vec());
+        let mut query_two_c = Query::new();
+        query_two_c.insert_key(b"c".to_vec());
+        let mut query_two_d = Query::new();
+        query_two_d.insert_key(b"d".to_vec());
+        query_two_c.add_conditional_subquery(
+            QueryItem::Key(b"c".to_vec()),
+            None,
+            Some(query_two_d),
+        );
+        query_two.add_conditional_subquery(QueryItem::Key(b"a".to_vec()), None, Some(query_two_c));
+        query_one.merge(&query_two);
+
+        // TODO: build expected query
+        // let mut expected_query = Query::new();
+        // expected_query.insert_key(b"a".to_vec());
+        // let mu
     }
 
     #[test]
