@@ -242,6 +242,13 @@ impl Query {
             self.insert_item(item.clone())
         }
 
+        // TODO: deal with default subquery branch
+        //  this is not needed currently for path_query merge as are enforced as
+        // non-subset  but might be useful in the future
+        //  Need to create a stretching function for queries that expands default
+        // subqueries  to conditional subqueries.
+
+        // merge conditional query branches.
         for (query_item, subquery_branch) in other.conditional_subquery_branches.iter() {
             let subquery_branch_option = self.conditional_subquery_branches.get_mut(query_item);
             if let Some(subquery_branch_old) = subquery_branch_option {

@@ -286,8 +286,6 @@ mod tests {
         let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         assert_eq!(result_set_merged, expected_result_set);
-
-        // TODO: add test for range
     }
 
     #[test]
@@ -531,13 +529,7 @@ mod tests {
             PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three])
                 .unwrap()
                 .expect("expect to merge path queries");
-        // assert_eq!(merged_path_query.path, vec![TEST_LEAF.to_vec()]);
-        // assert_eq!(merged_path_query.query.query.items.len(), 2);
 
-        // let proof = temp_db.prove(&merged_path_query).unwrap().unwrap();
-        // let (_, result_set_merged) = GroveDb::execute_proof(proof.as_slice(),
-        // &merged_path_query)     .expect("should execute proof");
-        // assert_eq!(result_set_merged.len(), 4);
         let proof = temp_db
             .prove_query_many(vec![&path_query_one, &path_query_two, &path_query_three])
             .unwrap()
@@ -561,59 +553,5 @@ mod tests {
         let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
         assert_eq!(result_set_merged, expected_result_set);
-
-        // Different path levels
-        // let mut query_one = Query::new();
-        // query_one.insert_all();
-        //
-        // let path_query_one =
-        //     PathQuery::new_unsized(vec![b"deep_leaf".to_vec(),
-        // b"deep_node_1".to_vec()], query_one);
-        //
-        // let proof = temp_db.prove(&path_query_one).unwrap().unwrap();
-        // let (_, result_set_one) = GroveDb::execute_proof(proof.as_slice(),
-        // &path_query_one)     .expect("should execute proof");
-        // assert_eq!(result_set_one.len(), 2);
-        //
-        // let mut query_three = Query::new();
-        // query_three.insert_key(b"key6".to_vec());
-        // let path_query_three = PathQuery::new_unsized(
-        //     vec![b"deep_leaf".to_vec(), b"deep_node_1".to_vec(),
-        // b"deeper_node_2".to_vec()],     query_three,
-        // );
-        //
-        // let proof = temp_db.prove(&path_query_three).unwrap().unwrap();
-        // let (_, result_set_two) = GroveDb::execute_proof(proof.as_slice(),
-        // &path_query_three)     .expect("should execute proof");
-        // assert_eq!(result_set_two.len(), 1);
-        //
-        // let merged_path_query =
-        //     PathQuery::merge(vec![&path_query_one, &path_query_three]);
-        // dbg!(&merged_path_query);
-        // assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec(),
-        // b"deep_node_1".to_vec()]);
-        //
-        // let proof =
-        // temp_db.prove(&merged_path_query).unwrap().unwrap();
-        // let (_, result_set_merged) = GroveDb::execute_proof(proof.as_slice(),
-        // &merged_path_query)     .expect("should execute
-        // proof"); dbg!(&result_set_merged);
-        // assert_eq!(result_set_merged.len(), 3);
-        //
-        // let keys = [
-        //     b"key1".to_vec(),
-        //     b"key2".to_vec(),
-        //     b"key6".to_vec(),
-        // ];
-        // let values = [
-        //     b"value1".to_vec(),
-        //     b"value2".to_vec(),
-        //     b"value6".to_vec(),
-        // ];
-        // let elements = values.map(|x|
-        // Element::new_item(x).serialize().unwrap());
-        // let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> =
-        // keys.into_iter().zip(elements).collect();
-        // assert_eq!(result_set_merged, expected_result_set);
     }
 }
