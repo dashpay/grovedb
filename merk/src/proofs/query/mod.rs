@@ -244,9 +244,9 @@ impl Query {
 
         // TODO: deal with default subquery branch
         //  this is not needed currently for path_query merge as are enforced as
-        // non-subset  but might be useful in the future
+        //  non-subset  but might be useful in the future
         //  Need to create a stretching function for queries that expands default
-        // subqueries  to conditional subqueries.
+        //  subqueries  to conditional subqueries.
 
         // merge conditional query branches.
         for (query_item, subquery_branch) in other.conditional_subquery_branches.iter() {
@@ -1522,10 +1522,25 @@ mod test {
         query_two.add_conditional_subquery(QueryItem::Key(b"a".to_vec()), None, Some(query_two_c));
         query_one.merge(&query_two);
 
-        // TODO: build expected query
-        // let mut expected_query = Query::new();
-        // expected_query.insert_key(b"a".to_vec());
-        // let mu
+        let mut expected_query = Query::new();
+        expected_query.insert_key(b"a".to_vec());
+        let mut query_b_c = Query::new();
+        query_b_c.insert_key(b"b".to_vec());
+        query_b_c.insert_key(b"c".to_vec());
+        let mut query_c = Query::new();
+        query_c.insert_key(b"c".to_vec());
+        let mut query_d = Query::new();
+        query_d.insert_key(b"d".to_vec());
+
+        query_b_c.add_conditional_subquery(QueryItem::Key(b"b".to_vec()), None, Some(query_c));
+        query_b_c.add_conditional_subquery(QueryItem::Key(b"c".to_vec()), None, Some(query_d));
+
+        expected_query.add_conditional_subquery(
+            QueryItem::Key(b"a".to_vec()),
+            None,
+            Some(query_b_c),
+        );
+        assert_eq!(query_one, expected_query);
     }
 
     #[test]
