@@ -51,10 +51,21 @@ impl PathQuery {
         }
 
         if Self::has_subpaths(&path_queries) {
-            return Err(Error::InvalidInput("path query path's should be unique")).wrap_with_cost(cost);
+            return Err(Error::InvalidInput("path query path's should be unique"))
+                .wrap_with_cost(cost);
         }
 
         let (common_path, next_index, all_paths_equal) = PathQuery::get_common_path(&path_queries);
+
+        // we know the common path (this describes the context)
+        // we need to convert all the paths to queries at the next index
+        let queries_for_common_path: Vec<Query> = path_queries
+            .iter()
+            .map(|path_query| Self::convert_path_to_query(path_query, next_index))
+            .collect();
+
+        // merge the queries into one
+        dbg!(queries_for_common_path);
 
         let query = if all_paths_equal {
             let queries = path_queries
@@ -124,7 +135,7 @@ impl PathQuery {
             for j in 0..path_queries.len() {
                 if i == j {
                     // don't compare the same path instance
-                    continue
+                    continue;
                 }
                 let path_one = &path_queries[i].path;
                 let path_two = &path_queries[j].path;
@@ -193,6 +204,37 @@ impl PathQuery {
         }
         (common_path, level, all_equal)
     }
+
+    fn convert_path_to_query(path_query: &PathQuery, start_index: usize) -> Query {
+        let path = &path_query.path;
+        let mut last_query = None;
+
+        for i in (start_index..path.len()).rev() {
+            let mut current_query = Query::new();
+            current_query.insert_key(path[i].clone());
+            if last_query.is_none() {
+                // add the path queries query as condition
+                current_query.add_conditional_subquery(
+                    QueryItem::Key(path[i].clone()),
+                    None,
+                    Some(path_query.query.query.clone()),
+                )
+            } else {
+                current_query.add_conditional_subquery(
+                    QueryItem::Key(path[i].clone()),
+                    None,
+                    last_query,
+                )
+            }
+            last_query = Some(current_query)
+        }
+
+        if let Some(final_query) = last_query {
+            final_query
+        } else {
+            path_query.query.query.clone()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -207,25 +249,43 @@ mod tests {
     #[test]
     fn test_has_subpaths() {
         let path_query_one = PathQuery::new_unsized(vec![b"a".to_vec()], Query::new());
-        let path_query_two = PathQuery::new_unsized(vec![b"c".to_vec(), b"b".to_vec()], Query::new());
+        let path_query_two =
+            PathQuery::new_unsized(vec![b"c".to_vec(), b"b".to_vec()], Query::new());
         let has_subpaths = PathQuery::has_subpaths(&[&path_query_one, &path_query_two]);
         assert_eq!(has_subpaths, false);
 
         let path_query_one = PathQuery::new_unsized(vec![b"a".to_vec()], Query::new());
-        let path_query_two = PathQuery::new_unsized(vec![b"a".to_vec(), b"b".to_vec()], Query::new());
+        let path_query_two =
+            PathQuery::new_unsized(vec![b"a".to_vec(), b"b".to_vec()], Query::new());
         let has_subpaths = PathQuery::has_subpaths(&[&path_query_one, &path_query_two]);
         assert_eq!(has_subpaths, true);
 
-        let path_query_one = PathQuery::new_unsized(vec![b"a".to_vec(), b"b".to_vec()], Query::new());
-        let path_query_two = PathQuery::new_unsized(vec![b"a".to_vec(), b"b".to_vec()], Query::new());
+        let path_query_one =
+            PathQuery::new_unsized(vec![b"a".to_vec(), b"b".to_vec()], Query::new());
+        let path_query_two =
+            PathQuery::new_unsized(vec![b"a".to_vec(), b"b".to_vec()], Query::new());
         let has_subpaths = PathQuery::has_subpaths(&[&path_query_one, &path_query_two]);
         assert_eq!(has_subpaths, true);
 
-        let path_query_one = PathQuery::new_unsized(vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec(), b"d".to_vec()], Query::new());
-        let path_query_two = PathQuery::new_unsized(vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()], Query::new());
+        let path_query_one = PathQuery::new_unsized(
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec(), b"d".to_vec()],
+            Query::new(),
+        );
+        let path_query_two = PathQuery::new_unsized(
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()],
+            Query::new(),
+        );
         let has_subpaths = PathQuery::has_subpaths(&[&path_query_one, &path_query_two]);
         assert_eq!(has_subpaths, true);
     }
+
+    // #[test]
+    // fn test_convert_path_to_query() {
+    //     // how do I test this?
+    //     let path_query = PathQuery::new_unsized(vec![b"a".to_vec(),
+    // b"b".to_vec()], Query::new());     let query =
+    // PathQuery::convert_path_to_query(&path_query, 0);     dbg!(query);
+    // }
 
     #[test]
     #[should_panic]
