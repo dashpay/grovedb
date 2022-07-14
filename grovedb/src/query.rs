@@ -39,10 +39,14 @@ impl PathQuery {
         Self { path, query }
     }
 
+    /// Combines multiple path queries into one equivalent path query
+    /// Restriction: all path must be unique and non subset path
+    /// i.e. [a, b] + [a, b] (invalid)
+    /// [a] + [a, b] (invalid [a, b] is an extension of [a])
+    /// [a] + [b] (valid, unique and non subset)
     pub fn merge(path_queries: Vec<&PathQuery>) -> CostContext<Result<Self, Error>> {
         let cost = OperationCost::default();
 
-        // TODO: add constraint checks to prevent invalid inputs
         if path_queries.len() < 2 {
             return Err(Error::InvalidInput(
                 "merge function requires at least 2 path queries",
@@ -57,15 +61,13 @@ impl PathQuery {
 
         let (common_path, next_index) = PathQuery::get_common_path(&path_queries);
 
-        // we know the common path (this describes the context)
-        // we need to convert all the paths to queries at the next index
+        // convert all the paths after the common path to queries
         let queries_for_common_path: Vec<Query> = path_queries
             .iter()
             .map(|path_query| Self::convert_path_to_query(path_query, next_index))
             .collect();
 
         // merge the queries into one
-        // we can use an accumulator query maybe
         let mut merged_query = Query::new();
         queries_for_common_path
             .iter()
@@ -126,6 +128,9 @@ impl PathQuery {
         false
     }
 
+    /// Given a set of path queries, this returns an array of path keys that are
+    /// common across all the path queries.
+    /// Also returns the point at which they stopped being equal.
     fn get_common_path(path_queries: &[&PathQuery]) -> (Vec<Vec<u8>>, usize) {
         let min_path_length = path_queries
             .iter()
@@ -155,6 +160,13 @@ impl PathQuery {
         (common_path, level)
     }
 
+    /// Given a path and a starting point, a query that is equivalent to the
+    /// path is generated example: [a, b, c] =>
+    ///     query a
+    ///         cond a
+    ///             query b
+    ///                 cond b
+    ///                    query c
     fn convert_path_to_query(path_query: &PathQuery, start_index: usize) -> Query {
         let path = &path_query.path;
         let mut last_query = None;
@@ -228,14 +240,6 @@ mod tests {
         let has_subpaths = PathQuery::has_subpaths(&[&path_query_one, &path_query_two]);
         assert_eq!(has_subpaths, true);
     }
-
-    // #[test]
-    // fn test_convert_path_to_query() {
-    //     // how do I test this?
-    //     let path_query = PathQuery::new_unsized(vec![b"a".to_vec(),
-    // b"b".to_vec()], Query::new());     let query =
-    // PathQuery::convert_path_to_query(&path_query, 0);     dbg!(query);
-    // }
 
     #[test]
     #[should_panic]
