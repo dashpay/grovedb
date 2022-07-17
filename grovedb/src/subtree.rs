@@ -66,6 +66,7 @@ where
     pub subquery_key: Option<Vec<u8>>,
     pub subquery: Option<Query>,
     pub left_to_right: bool,
+    pub allow_get_raw: bool,
     pub results: &'a mut Vec<KeyElementPair>,
     pub limit: &'a mut Option<u16>,
     pub offset: &'a mut Option<u16>,
@@ -315,6 +316,7 @@ impl Element {
             subquery_key,
             subquery,
             left_to_right,
+            allow_get_raw,
             results,
             limit,
             offset,
@@ -382,11 +384,31 @@ impl Element {
                         *offset -= 1;
                     }
                 } else {
-                    return Err(Error::InvalidPath(
-                        "you must provide a subquery or a subquery_key when interacting with a \
-                         Tree of trees",
-                    ))
-                    .wrap_with_cost(cost);
+                    if allow_get_raw {
+                        cost_return_on_error_no_add!(
+                            &cost,
+                            Element::basic_push(PathQueryPushArgs {
+                                storage,
+                                transaction,
+                                key: Some(key),
+                                element,
+                                path,
+                                subquery_key,
+                                subquery,
+                                left_to_right,
+                                allow_get_raw,
+                                results,
+                                limit,
+                                offset,
+                            })
+                        );
+                    } else {
+                        return Err(Error::InvalidPath(
+                            "you must provide a subquery or a subquery_key when interacting with \
+                             a Tree of trees",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
                 }
             }
             _ => {
@@ -401,6 +423,7 @@ impl Element {
                         subquery_key,
                         subquery,
                         left_to_right,
+                        allow_get_raw,
                         results,
                         limit,
                         offset,
@@ -451,6 +474,7 @@ impl Element {
         transaction: TransactionArg,
         limit: &mut Option<u16>,
         offset: &mut Option<u16>,
+        allow_get_raw: bool,
         add_element_function: fn(PathQueryPushArgs) -> CostResult<(), Error>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -479,6 +503,7 @@ impl Element {
                             subquery_key,
                             subquery,
                             left_to_right: sized_query.query.left_to_right,
+                            allow_get_raw,
                             results,
                             limit,
                             offset,
@@ -531,6 +556,7 @@ impl Element {
                             subquery_key,
                             subquery,
                             left_to_right: sized_query.query.left_to_right,
+                            allow_get_raw,
                             results,
                             limit,
                             offset,
@@ -554,6 +580,7 @@ impl Element {
         merk_path: &[&[u8]],
         sized_query: &SizedQuery,
         path: Option<&[&[u8]]>,
+        allow_get_raw: bool,
         transaction: TransactionArg,
         add_element_function: fn(PathQueryPushArgs) -> CostResult<(), Error>,
     ) -> CostResult<(Vec<KeyElementPair>, u16), Error> {
@@ -579,6 +606,7 @@ impl Element {
                         transaction,
                         &mut limit,
                         &mut offset,
+                        allow_get_raw,
                         add_element_function,
                     )
                 );
@@ -600,6 +628,7 @@ impl Element {
                         transaction,
                         &mut limit,
                         &mut offset,
+                        allow_get_raw,
                         add_element_function,
                     )
                 );
@@ -617,7 +646,8 @@ impl Element {
         Ok((results, skipped)).wrap_with_cost(cost)
     }
 
-    // Returns a vector of elements, and the number of skipped elements
+    // Returns a vector of elements excluding trees, and the number of skipped
+    // elements
     pub fn get_path_query(
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
@@ -634,6 +664,31 @@ impl Element {
             merk_path,
             &path_query.query,
             Some(path_slices.as_slice()),
+            false,
+            transaction,
+            Element::path_query_push,
+        )
+    }
+
+    // Returns a vector of elements including trees, and the number of skipped
+    // elements
+    pub fn get_raw_path_query(
+        storage: &RocksDbStorage,
+        merk_path: &[&[u8]],
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+    ) -> CostResult<(Vec<KeyElementPair>, u16), Error> {
+        let path_slices = path_query
+            .path
+            .iter()
+            .map(|x| x.as_slice())
+            .collect::<Vec<_>>();
+        Element::get_query_apply_function(
+            storage,
+            merk_path,
+            &path_query.query,
+            Some(path_slices.as_slice()),
+            true,
             transaction,
             Element::path_query_push,
         )
@@ -651,6 +706,7 @@ impl Element {
             merk_path,
             sized_query,
             None,
+            false,
             transaction,
             Element::path_query_push,
         )
