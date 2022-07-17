@@ -25,7 +25,7 @@ use crate::{
 };
 
 /// Type alias for key-element common pattern.
-pub(crate) type KeyElementPair = (Vec<u8>, Element);
+pub type KeyElementPair = (Vec<u8>, Element);
 
 /// Optional single byte meta-data to be stored per element
 pub type ElementFlags = Option<Vec<u8>>;
