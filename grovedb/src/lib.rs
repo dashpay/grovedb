@@ -90,15 +90,9 @@ impl GroveDb {
         Ok(GroveDb { db })
     }
 
-    // TODO: Checkpoints are currently not implemented for the transactional DB
-    // pub fn checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<GroveDb, Error> {
-    //     // let snapshot = self.db.transaction().snapshot();
-    //
-    //     storage::rocksdb_storage::Checkpoint::new(&self.db)
-    //         .and_then(|x| x.create_checkpoint(&path))
-    //         .map_err(PrefixedRocksDbStorageError::RocksDbError)?;
-    //     GroveDb::open(path)
-    // }
+    pub fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
+        self.db.create_checkpoint(path).map_err(|e| e.into())
+    }
 
     /// Returns root hash of GroveDb.
     /// Will be `None` if GroveDb is empty.
