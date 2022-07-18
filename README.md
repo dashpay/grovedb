@@ -146,6 +146,62 @@ The conditional subquery holds a map QueryItem to SubqueryBranch
 For every node in the result set, we check if there is a query item that matches it, if there is then the associated subquery branch is applied to that node.
 Note, once a conditional_subquery has been applied to a node, the default subquery does run on that node.
 
+## Merging Path Queries
+This section describes how grovedb deals with the merging of path queries.
+
+Mergeable path queries allows for the combination of separate path queries that do different things into a single equivalent path query.  
+A path query can be represented as a set of keys (path to a subtree), and a query to apply to that subtree (query can have unknown depth).  
+p<sub>i</sub> = [k<sub>1</sub>, k<sub>2</sub>, .., k<sub>n</sub>, Query]
+
+Something very important to show is that a path query chain can be compressed at any point i.e you can turn a sequence of keys into a single query.  
+Consider p<sub>1</sub> = [k<sub>1</sub>, k<sub>2</sub>, k<sub>3</sub>], this reads as: 
+- From the root tree, select node with key k1
+- Change the context to k1, then select the node with key k2
+- Change the context to k2 and finally select the node with key k3
+
+We can create an equivalent query to represent this, which can look like this:
+```
+    Query
+        query k1
+        cond on k1
+            query k2
+            cond on k2
+                query k3
+                cond on k3
+```
+[k<sub>1</sub>, k<sub>2</sub>, k<sub>3</sub>] => [Q<sub>1</sub>]  where Q1 is equivalent to the path array  
+This can also be done at any point in the path array, so we can have:  
+[k<sub>1</sub>, k<sub>2</sub>, k<sub>3</sub>] => [k<sub>1</sub>, Q<sub>2</sub>]  
+[k<sub>1</sub>, k<sub>2</sub>, k<sub>3</sub>] => [K<sub>1</sub>, K<sub>2</sub> Q<sub>3</sub>]
+
+Path merge algorithm becomes:
+- Find the common path across the path queries
+- Compress each path array to a query after the common path index
+- Merge the compressed query into a single query
+- Return new path query with common path as path and combined query as query
+
+Example  
+p<sub>1</sub> =  [k<sub>1</sub>, k<sub>2</sub>, k<sub>3</sub>, Q<sub>1</sub>]  
+p<sub>2</sub> =  [k<sub>1</sub>, k<sub>2</sub>, k<sub>4</sub>, Q<sub>1</sub>]
+
+Common path = [k1, k2]  
+
+Compress each path array after common path  
+p<sub>1</sub> = [k<sub>1</sub>, k<sub>2</sub>, Q<sub>a</sub>]
+p<sub>1</sub> = [k<sub>1</sub>, k<sub>2</sub>, Q<sub>b</sub>]  
+
+Merge compressed queries  
+Q<sub>p</sub> = Q<sub>a</sub> + Q<sub>b</sub> 
+
+Return final PathQuery  
+PathQuery { common_path, Q<sub>p</sub> }
+
+
+
+
+
+
+
 ## Usage
 GroveDB is built for use with Dash Platform. See its use in [rs-drive](https://github.com/dashevo/rs-drive) ([example](https://github.com/dashevo/rs-drive-example)). 
 
