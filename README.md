@@ -114,12 +114,14 @@ The limit determines the maximum size of the result set and the offset specifies
 The query object is a recursive structure, it specifies how to select nodes from the current subtree and has the option to recursively apply another query to the result set gotten from the previous query. 
 - items: a collection of query items that decide what nodes to select from the current context (this builds a result set).  
 
+before describing default and conditional subqueries, we need to define their building block (subquery_branch)
+
 ##### subquery_branch
 ```
     subquery_key: Optional<Key>
     subquery_value: Optional<Query>
 ```
-Cases  
+**Cases**  
 subquery_key: true, subquery_value: false  
 the node with the subquery key is selected and returned as the result set
 
@@ -132,10 +134,10 @@ next the subquery value is applied to this new context, result is returned as th
 
 the subquery branch is used on a single node but can be applied to the result set of a previous query with the use of **default_subquery_branch** and **conditional_subquery_branches**
 
-**default_subquery_branch**  
+#### default_subquery_branch
 If this exists, the specified subquery_branch is applied to every node in the result set of the previous query.
 
-**conditional_subquery_branch**  
+#### conditional_subquery_branch
 Rather than applying a subquery branch to every node in the result set, you might want to apply it to a subset of the result set.  In such cases we make use of a conditional subquery.  
 The conditional subquery holds a map QueryItem to SubqueryBranch 
 ```
