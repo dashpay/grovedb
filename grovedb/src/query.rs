@@ -55,7 +55,7 @@ impl PathQuery {
         }
 
         if Self::has_subpaths(&path_queries) {
-            return Err(Error::InvalidInput("path query path's should be unique"))
+            return Err(Error::InvalidInput("path query path's should be non subset"))
                 .wrap_with_cost(cost);
         }
 
@@ -203,10 +203,7 @@ impl PathQuery {
 mod tests {
     use merk::proofs::Query;
 
-    use crate::{
-        tests::{make_deep_tree, TEST_LEAF},
-        Element, GroveDb, PathQuery,
-    };
+    use crate::{tests::{make_deep_tree, TEST_LEAF}, Element, GroveDb, PathQuery, Error};
 
     #[test]
     fn test_has_subpaths() {
@@ -242,7 +239,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn test_same_path_different_query_merge() {
         let temp_db = make_deep_tree();
 
@@ -267,25 +263,8 @@ mod tests {
             GroveDb::verify_query(proof.as_slice(), &path_query_two).expect("should execute proof");
         assert_eq!(result_set_two.len(), 1);
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .unwrap()
-            .expect("expect to merge path queries");
-        assert_eq!(
-            merged_path_query.path,
-            vec![TEST_LEAF.to_vec(), b"innertree".to_vec()]
-        );
-        assert_eq!(merged_path_query.query.query.items.len(), 2);
-
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
-        let (_, result_set_merged) = GroveDb::verify_query(proof.as_slice(), &merged_path_query)
-            .expect("should execute proof");
-        assert_eq!(result_set_merged.len(), 2);
-
-        let keys = [b"key1".to_vec(), b"key2".to_vec()];
-        let values = [b"value1".to_vec(), b"value2".to_vec()];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
-        let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-        assert_eq!(result_set_merged, expected_result_set);
+        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two]).unwrap();
+        assert!(matches!(merged_path_query, Err(Error::InvalidInput("path query path's should be non subset"))));
     }
 
     #[test]
@@ -489,7 +468,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn test_same_path_and_different_path_query_merge() {
         let temp_db = make_deep_tree();
 
@@ -527,31 +505,7 @@ mod tests {
 
         let merged_path_query =
             PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three])
-                .unwrap()
-                .expect("expect to merge path queries");
-
-        let proof = temp_db
-            .prove_query_many(vec![&path_query_one, &path_query_two, &path_query_three])
-            .unwrap()
-            .unwrap();
-        let (_, result_set_merged) = GroveDb::verify_query(proof.as_slice(), &merged_path_query)
-            .expect("should execute proof");
-        assert_eq!(result_set_merged.len(), 4);
-
-        let keys = [
-            b"key1".to_vec(),
-            b"key2".to_vec(),
-            b"key4".to_vec(),
-            b"key5".to_vec(),
-        ];
-        let values = [
-            b"value1".to_vec(),
-            b"value2".to_vec(),
-            b"value4".to_vec(),
-            b"value5".to_vec(),
-        ];
-        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
-        let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-        assert_eq!(result_set_merged, expected_result_set);
+                .unwrap();
+        assert!(matches!(merged_path_query, Err(Error::InvalidInput("path query path's should be non subset"))));
     }
 }
