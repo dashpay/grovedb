@@ -55,8 +55,10 @@ impl PathQuery {
         }
 
         if Self::has_subpaths(&path_queries) {
-            return Err(Error::InvalidInput("path query path's should be non subset"))
-                .wrap_with_cost(cost);
+            return Err(Error::InvalidInput(
+                "path query path's should be non subset",
+            ))
+            .wrap_with_cost(cost);
         }
 
         let (common_path, next_index) = PathQuery::get_common_path(&path_queries);
@@ -84,6 +86,7 @@ impl PathQuery {
     /// Also checks for duplicated paths [a,x] and [a,x]
     /// returns false for any other case
     fn has_subpaths(path_queries: &[&PathQuery]) -> bool {
+        // TODO: Improve this
         // Naive solution n^2 time complexity
         for i in 0..path_queries.len() {
             for j in 0..path_queries.len() {
@@ -203,7 +206,10 @@ impl PathQuery {
 mod tests {
     use merk::proofs::Query;
 
-    use crate::{tests::{make_deep_tree, TEST_LEAF}, Element, GroveDb, PathQuery, Error};
+    use crate::{
+        tests::{make_deep_tree, TEST_LEAF},
+        Element, Error, GroveDb, PathQuery,
+    };
 
     #[test]
     fn test_has_subpaths() {
@@ -264,7 +270,12 @@ mod tests {
         assert_eq!(result_set_two.len(), 1);
 
         let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two]).unwrap();
-        assert!(matches!(merged_path_query, Err(Error::InvalidInput("path query path's should be non subset"))));
+        assert!(matches!(
+            merged_path_query,
+            Err(Error::InvalidInput(
+                "path query path's should be non subset"
+            ))
+        ));
     }
 
     #[test]
@@ -504,8 +515,12 @@ mod tests {
         assert_eq!(result_set_two.len(), 2);
 
         let merged_path_query =
-            PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three])
-                .unwrap();
-        assert!(matches!(merged_path_query, Err(Error::InvalidInput("path query path's should be non subset"))));
+            PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three]).unwrap();
+        assert!(matches!(
+            merged_path_query,
+            Err(Error::InvalidInput(
+                "path query path's should be non subset"
+            ))
+        ));
     }
 }

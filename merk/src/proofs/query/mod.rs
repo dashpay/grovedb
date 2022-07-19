@@ -252,8 +252,8 @@ impl Query {
         for (query_item, subquery_branch) in other.conditional_subquery_branches.iter() {
             let subquery_branch_option = self.conditional_subquery_branches.get_mut(query_item);
             if let Some(subquery_branch_old) = subquery_branch_option {
-                    (subquery_branch_old.subquery.as_mut().unwrap())
-                        .merge(subquery_branch.subquery.as_ref().unwrap());
+                (subquery_branch_old.subquery.as_mut().unwrap())
+                    .merge(subquery_branch.subquery.as_ref().unwrap());
             } else {
                 // we don't have that branch just assign the query
                 self.conditional_subquery_branches
