@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     collections::{btree_map::IntoValues, BTreeMap},
+    path::Path,
 };
 
 use costs::{CostContext, CostResult, CostsExt, OperationCost};
@@ -82,6 +83,9 @@ pub trait Storage<'db> {
     ) -> CostContext<Self::BatchTransactionalStorageContext>
     where
         P: IntoIterator<Item = &'p [u8]>;
+
+    /// Creates a database checkpoint in a specified path
+    fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Self::Error>;
 
     /// Return worst case cost for storage context creation.
     fn get_storage_context_cost<'a, P>(path: P) -> OperationCost

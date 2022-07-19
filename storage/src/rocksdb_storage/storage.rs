@@ -4,8 +4,8 @@ use std::path::Path;
 use costs::{cost_return_on_error_no_add, CostContext, CostResult, CostsExt, OperationCost};
 use lazy_static::lazy_static;
 use rocksdb::{
-    ColumnFamily, ColumnFamilyDescriptor, Error, OptimisticTransactionDB, Transaction,
-    WriteBatchWithTransaction,
+    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, Error, OptimisticTransactionDB,
+    Transaction, WriteBatchWithTransaction,
 };
 
 use super::{
@@ -280,6 +280,10 @@ impl<'db> Storage<'db> for RocksDbStorage {
         // the block size of blake3 is 64
         let blocks_num = (body.len() / BLAKE_BLOCK_LEN + 1) as u16;
         OperationCost::with_hash_node_calls(blocks_num)
+    }
+
+    fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Self::Error> {
+        Checkpoint::new(&self.db).and_then(|x| x.create_checkpoint(path))
     }
 }
 

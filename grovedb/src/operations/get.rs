@@ -230,7 +230,7 @@ impl GroveDb {
             .iter()
             .map(|x| x.as_slice())
             .collect::<Vec<_>>();
-        Element::get_path_query(&self.db, &path_slices, path_query, transaction)
+        Element::get_raw_path_query(&self.db, &path_slices, path_query, transaction)
     }
 
     fn check_subtree_exists<'p, P>(
