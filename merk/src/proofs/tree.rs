@@ -151,13 +151,12 @@ impl Tree {
         self.hash().map(|hash| Node::Hash(hash).into())
     }
 
-    // #[cfg(feature = "full")]
-    // pub(crate) fn key(&self) -> &[u8] {
-    //     match self.node {
-    //         Node::KV(ref key, _) => key,
-    //         _ => panic!("Expected node to be type KV"),
-    //     }
-    // }
+    pub(crate) fn key(&self) -> &[u8] {
+        match self.node {
+            Node::KV(ref key, _) => key,
+            _ => panic!("Expected node to be type KV"),
+        }
+    }
 }
 
 /// `LayerIter` iterates over the nodes in a `Tree` at a given depth. Nodes are

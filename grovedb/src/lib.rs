@@ -1,6 +1,7 @@
 extern crate core;
 
 pub mod batch;
+mod chunks;
 mod operations;
 mod query;
 mod subtree;

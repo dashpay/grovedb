@@ -1,7 +1,5 @@
 pub mod chunks;
-
-// TODO
-// pub mod restore;
+pub mod restore;
 use std::{
     cell::Cell,
     cmp::Ordering,
@@ -10,9 +8,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
-};
+use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
@@ -598,9 +594,9 @@ where
         res
     }
 
-    // pub(crate) fn set_root_key(&mut self, key: &[u8]) -> Result<()> {
-    //     Ok(self.storage.put_root(ROOT_KEY_KEY, key)?)
-    // }
+    pub(crate) fn set_root_key(&mut self, key: &[u8]) -> Result<()> {
+        Ok(self.storage.put_root(ROOT_KEY_KEY, key).unwrap()?)
+    }
 
     pub(crate) fn load_root(&mut self) -> CostContext<Result<()>> {
         self.storage
@@ -618,6 +614,15 @@ where
                     Ok(()).wrap_with_cost(Default::default())
                 }
             })
+    }
+}
+
+fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<Tree>> {
+    let bytes = db.get(key).unwrap()?; // TODO: get_pinned ?
+    if let Some(bytes) = bytes {
+        Ok(Some(Tree::decode(key.to_vec(), &bytes)))
+    } else {
+        Ok(None)
     }
 }
 
