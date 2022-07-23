@@ -6,8 +6,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::subtree::{
-    query_result_items_to_key_elements,
-    QueryResultType::QueryKeyElementPairResultType,
+    query_result_items_to_key_elements, QueryResultType::QueryKeyElementPairResultType,
 };
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";

@@ -383,10 +383,7 @@ impl Element {
                 }
                 QueryResultType::QueryPathKeyElementTrioResultType => {
                     let key = key.ok_or(Error::CorruptedPath("basic push must have a key"))?;
-                    let path = path
-                        .iter()
-                        .map(|a| a.to_vec())
-                        .collect();
+                    let path = path.iter().map(|a| a.to_vec()).collect();
                     results.push(QueryResultItem::PathKeyElementTrioResultItem((
                         path,
                         Vec::from(key),
@@ -497,10 +494,7 @@ impl Element {
                                 );
                             }
                             QueryResultType::QueryPathKeyElementTrioResultType => {
-                                let original_path_vec = path
-                                .iter()
-                                .map(|a| a.to_vec())
-                                .collect();
+                                let original_path_vec = path.iter().map(|a| a.to_vec()).collect();
                                 merk_optional_tx!(
                                     &mut cost,
                                     storage,
@@ -1062,11 +1056,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        subtree::QueryResultType::{QueryKeyElementPairResultType},
+        subtree::QueryResultType::{
+            QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType,
+        },
         tests::{make_grovedb, TEST_LEAF},
     };
-    
-    use crate::subtree::QueryResultType::QueryPathKeyElementTrioResultType;
 
     #[test]
     fn test_success_insert() {
@@ -1238,7 +1232,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn test_get_query_with_path() {
         let db = make_grovedb();
@@ -1271,12 +1264,28 @@ mod tests {
         query.insert_key(b"c".to_vec());
         query.insert_key(b"a".to_vec());
         assert_eq!(
-            query_result_items_to_path_key_elements(Element::get_query(&storage, &[TEST_LEAF], &query, QueryPathKeyElementTrioResultType, None)
+            query_result_items_to_path_key_elements(
+                Element::get_query(
+                    &storage,
+                    &[TEST_LEAF],
+                    &query,
+                    QueryPathKeyElementTrioResultType,
+                    None
+                )
                 .unwrap()
-                .expect("expected successful get_query")),
+                .expect("expected successful get_query")
+            ),
             vec![
-                (vec![TEST_LEAF.to_vec()], b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
-                (vec![TEST_LEAF.to_vec()], b"c".to_vec(), Element::new_item(b"ayyc".to_vec()))
+                (
+                    vec![TEST_LEAF.to_vec()],
+                    b"a".to_vec(),
+                    Element::new_item(b"ayya".to_vec())
+                ),
+                (
+                    vec![TEST_LEAF.to_vec()],
+                    b"c".to_vec(),
+                    Element::new_item(b"ayyc".to_vec())
+                )
             ]
         );
     }
