@@ -6,7 +6,7 @@ use costs::{
 use storage::StorageContext;
 
 use crate::{
-    subtree::KeyElementPair,
+    subtree::{KeyElementPair, QueryResultItem, QueryResultType},
     util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
@@ -131,12 +131,18 @@ impl GroveDb {
     ) -> CostResult<Vec<Vec<u8>>, Error> {
         let mut cost = OperationCost::default();
 
-        let elements =
-            cost_return_on_error!(&mut cost, self.query_many_raw(path_queries, transaction));
+        let elements = cost_return_on_error!(
+            &mut cost,
+            self.query_many_raw(
+                path_queries,
+                QueryResultType::QueryElementResultType,
+                transaction
+            )
+        );
         let results_wrapped = elements
             .into_iter()
-            .map(|(_, element)| match element {
-                Element::Reference(reference_path, _) => {
+            .map(|result_item| match result_item {
+                QueryResultItem::ElementResultItem(Element::Reference(reference_path, _)) => {
                     let maybe_item = self
                         .follow_reference(reference_path, transaction)
                         .unwrap_add_cost(&mut cost)?;
@@ -158,12 +164,15 @@ impl GroveDb {
     pub fn query_many_raw(
         &self,
         path_queries: &[&PathQuery],
+        result_type: QueryResultType,
         transaction: TransactionArg,
-    ) -> CostResult<Vec<KeyElementPair>, Error> {
+    ) -> CostResult<Vec<QueryResultItem>, Error>
+where {
         let mut cost = OperationCost::default();
 
         let query = cost_return_on_error!(&mut cost, PathQuery::merge(path_queries.to_vec()));
-        let (result, _) = cost_return_on_error!(&mut cost, self.query_raw(&query, transaction));
+        let (result, _) =
+            cost_return_on_error!(&mut cost, self.query_raw(&query, result_type, transaction));
         Ok(result).wrap_with_cost(cost)
     }
 
@@ -189,29 +198,43 @@ impl GroveDb {
     ) -> CostResult<(Vec<Vec<u8>>, u16), Error> {
         let mut cost = OperationCost::default();
 
-        let (elements, skipped) =
-            cost_return_on_error!(&mut cost, self.query_raw(path_query, transaction));
+        let (elements, skipped) = cost_return_on_error!(
+            &mut cost,
+            self.query_raw(
+                path_query,
+                QueryResultType::QueryElementResultType,
+                transaction
+            )
+        );
 
         let results_wrapped = elements
             .into_iter()
-            .map(|(_, element)| match element {
-                Element::Reference(reference_path, _) => {
-                    // While `map` on iterator is lazy, we should accumulate costs even if `collect`
-                    // will end in `Err`, so we'll use external costs accumulator instead of
-                    // returning costs from `map` call.
-                    let maybe_item = self
-                        .follow_reference(reference_path, transaction)
-                        .unwrap_add_cost(&mut cost)?;
+            .map(|result_item| match result_item {
+                QueryResultItem::ElementResultItem(element) => {
+                    match element {
+                        Element::Reference(reference_path, _) => {
+                            // While `map` on iterator is lazy, we should accumulate costs even if
+                            // `collect` will end in `Err`, so we'll use
+                            // external costs accumulator instead of
+                            // returning costs from `map` call.
+                            let maybe_item = self
+                                .follow_reference(reference_path, transaction)
+                                .unwrap_add_cost(&mut cost)?;
 
-                    if let Element::Item(item, _) = maybe_item {
-                        Ok(item)
-                    } else {
-                        Err(Error::InvalidQuery("the reference must result in an item"))
+                            if let Element::Item(item, _) = maybe_item {
+                                Ok(item)
+                            } else {
+                                Err(Error::InvalidQuery("the reference must result in an item"))
+                            }
+                        }
+                        Element::Item(item, _) => Ok(item),
+                        Element::Tree(..) => Err(Error::InvalidQuery(
+                            "path_queries can only refer to items and references",
+                        )),
                     }
                 }
-                Element::Item(item, _) => Ok(item),
-                Element::Tree(..) => Err(Error::InvalidQuery(
-                    "path_queries can only refer to items and references",
+                _ => Err(Error::CorruptedCodeExecution(
+                    "query returned incorrect result type",
                 )),
             })
             .collect::<Result<Vec<Vec<u8>>, Error>>();
@@ -223,14 +246,15 @@ impl GroveDb {
     pub fn query_raw(
         &self,
         path_query: &PathQuery,
+        result_type: QueryResultType,
         transaction: TransactionArg,
-    ) -> CostResult<(Vec<KeyElementPair>, u16), Error> {
+    ) -> CostResult<(Vec<QueryResultItem>, u16), Error> {
         let path_slices = path_query
             .path
             .iter()
             .map(|x| x.as_slice())
             .collect::<Vec<_>>();
-        Element::get_raw_path_query(&self.db, &path_slices, path_query, transaction)
+        Element::get_raw_path_query(&self.db, &path_slices, path_query, result_type, transaction)
     }
 
     fn check_subtree_exists<'p, P>(
