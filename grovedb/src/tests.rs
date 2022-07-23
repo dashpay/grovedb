@@ -6,7 +6,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::subtree::{
-    query_result_items_to_key_elements, QueryResultType,
+    query_result_items_to_key_elements,
     QueryResultType::QueryKeyElementPairResultType,
 };
 

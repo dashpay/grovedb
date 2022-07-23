@@ -13,7 +13,7 @@ use integer_encoding::VarInt;
 use merk::{
     proofs::{query::QueryItem, Query},
     tree::Tree,
-    BatchEntry, MerkBatch, Op, HASH_LENGTH,
+    BatchEntry, Op, HASH_LENGTH,
 };
 use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
@@ -1062,10 +1062,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        subtree::QueryResultType::{QueryElementResultType, QueryKeyElementPairResultType},
+        subtree::QueryResultType::{QueryKeyElementPairResultType},
         tests::{make_grovedb, TEST_LEAF},
     };
-    use crate::subtree::QueryResultItem::PathKeyElementTrioResultItem;
+    
     use crate::subtree::QueryResultType::QueryPathKeyElementTrioResultType;
 
     #[test]
@@ -1326,7 +1326,7 @@ mod tests {
         let elements: Vec<KeyElementPair> = elements
             .into_iter()
             .filter_map(|result_item| match result_item {
-                QueryResultItem::ElementResultItem(element) => None,
+                QueryResultItem::ElementResultItem(_element) => None,
                 QueryResultItem::KeyElementPairResultItem(key_element_pair) => {
                     Some(key_element_pair)
                 }
@@ -1359,7 +1359,7 @@ mod tests {
         let elements: Vec<KeyElementPair> = elements
             .into_iter()
             .filter_map(|result_item| match result_item {
-                QueryResultItem::ElementResultItem(element) => None,
+                QueryResultItem::ElementResultItem(_element) => None,
                 QueryResultItem::KeyElementPairResultItem(key_element_pair) => {
                     Some(key_element_pair)
                 }

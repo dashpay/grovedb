@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+    cost_return_on_error, CostContext, CostsExt, OperationCost,
 };
 use storage::{self, Batch, RawIterator, StorageContext};
 
