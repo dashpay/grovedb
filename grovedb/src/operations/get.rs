@@ -6,7 +6,7 @@ use costs::{
 use storage::StorageContext;
 
 use crate::{
-    subtree::{KeyElementPair, QueryResultItem, QueryResultType},
+    subtree::{QueryResultItem, QueryResultType},
     util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
@@ -249,12 +249,7 @@ where {
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<(Vec<QueryResultItem>, u16), Error> {
-        let path_slices = path_query
-            .path
-            .iter()
-            .map(|x| x.as_slice())
-            .collect::<Vec<_>>();
-        Element::get_raw_path_query(&self.db, &path_slices, path_query, result_type, transaction)
+        Element::get_raw_path_query(&self.db, path_query, result_type, transaction)
     }
 
     fn check_subtree_exists<'p, P>(

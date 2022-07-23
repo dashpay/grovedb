@@ -120,7 +120,7 @@ where
     pub transaction: TransactionArg<'db, 'ctx>,
     pub key: Option<&'a [u8]>,
     pub element: Element,
-    pub path: Option<&'a [&'a [u8]]>,
+    pub path: &'a [&'a [u8]],
     pub subquery_key: Option<Vec<u8>>,
     pub subquery: Option<Query>,
     pub left_to_right: bool,
@@ -384,7 +384,6 @@ impl Element {
                 QueryResultType::QueryPathKeyElementTrioResultType => {
                     let key = key.ok_or(Error::CorruptedPath("basic push must have a key"))?;
                     let path = path
-                        .ok_or(Error::CorruptedPath("basic push must have a path"))?
                         .iter()
                         .map(|a| a.to_vec())
                         .collect();
@@ -424,13 +423,7 @@ impl Element {
         } = args;
         match element {
             Element::Tree(..) => {
-                let mut path_vec = cost_return_on_error_no_add!(
-                    &cost,
-                    path.ok_or(Error::MissingParameter(
-                        "the path must be provided when using a subquery key",
-                    ))
-                )
-                .to_vec();
+                let mut path_vec = path.to_vec();
                 let key = cost_return_on_error_no_add!(
                     &cost,
                     key.ok_or(Error::MissingParameter(
@@ -452,7 +445,6 @@ impl Element {
                         &mut cost,
                         Element::get_path_query(
                             storage,
-                            &path_vec,
                             &inner_path_query,
                             result_type,
                             transaction
@@ -505,12 +497,7 @@ impl Element {
                                 );
                             }
                             QueryResultType::QueryPathKeyElementTrioResultType => {
-                                let original_path_vec = cost_return_on_error_no_add!(
-                                    &cost,
-                                    path.ok_or(Error::MissingParameter(
-                                        "the path must be provided when using a subquery key",
-                                    ))
-                                )
+                                let original_path_vec = path
                                 .iter()
                                 .map(|a| a.to_vec())
                                 .collect();
@@ -628,9 +615,8 @@ impl Element {
         storage: &RocksDbStorage,
         item: &QueryItem,
         results: &mut Vec<QueryResultItem>,
-        merk_path: &[&[u8]],
+        path: &[&[u8]],
         sized_query: &SizedQuery,
-        path: Option<&[&[u8]]>,
         transaction: TransactionArg,
         limit: &mut Option<u16>,
         offset: &mut Option<u16>,
@@ -646,7 +632,7 @@ impl Element {
                 let element_res = merk_optional_tx!(
                     &mut cost,
                     storage,
-                    merk_path.iter().copied(),
+                    path.iter().copied(),
                     transaction,
                     subtree,
                     { Element::get(&subtree, key).unwrap_add_cost(&mut cost) }
@@ -682,7 +668,7 @@ impl Element {
             }
         } else {
             // this is a query on a range
-            storage_context_optional_tx!(storage, merk_path.iter().copied(), transaction, ctx, {
+            storage_context_optional_tx!(storage, path.iter().copied(), transaction, ctx, {
                 let ctx = ctx.unwrap_add_cost(&mut cost);
                 let mut iter = ctx.raw_iter();
 
@@ -740,9 +726,8 @@ impl Element {
 
     pub fn get_query_apply_function(
         storage: &RocksDbStorage,
-        merk_path: &[&[u8]],
+        path: &[&[u8]],
         sized_query: &SizedQuery,
-        path: Option<&[&[u8]]>,
         allow_get_raw: bool,
         result_type: QueryResultType,
         transaction: TransactionArg,
@@ -764,9 +749,8 @@ impl Element {
                         storage,
                         item,
                         &mut results,
-                        merk_path,
-                        sized_query,
                         path,
+                        sized_query,
                         transaction,
                         &mut limit,
                         &mut offset,
@@ -787,9 +771,8 @@ impl Element {
                         storage,
                         item,
                         &mut results,
-                        merk_path,
-                        sized_query,
                         path,
+                        sized_query,
                         transaction,
                         &mut limit,
                         &mut offset,
@@ -816,7 +799,6 @@ impl Element {
     // elements
     pub fn get_path_query(
         storage: &RocksDbStorage,
-        merk_path: &[&[u8]],
         path_query: &PathQuery,
         result_type: QueryResultType,
         transaction: TransactionArg,
@@ -828,9 +810,8 @@ impl Element {
             .collect::<Vec<_>>();
         Element::get_query_apply_function(
             storage,
-            merk_path,
+            path_slices.as_slice(),
             &path_query.query,
-            Some(path_slices.as_slice()),
             false,
             result_type,
             transaction,
@@ -842,7 +823,6 @@ impl Element {
     // elements
     pub fn get_raw_path_query(
         storage: &RocksDbStorage,
-        merk_path: &[&[u8]],
         path_query: &PathQuery,
         result_type: QueryResultType,
         transaction: TransactionArg,
@@ -854,9 +834,8 @@ impl Element {
             .collect::<Vec<_>>();
         Element::get_query_apply_function(
             storage,
-            merk_path,
+            path_slices.as_slice(),
             &path_query.query,
-            Some(path_slices.as_slice()),
             true,
             result_type,
             transaction,
@@ -867,16 +846,15 @@ impl Element {
     /// Returns a vector of elements, and the number of skipped elements
     pub fn get_sized_query(
         storage: &RocksDbStorage,
-        merk_path: &[&[u8]],
+        path: &[&[u8]],
         sized_query: &SizedQuery,
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<(Vec<QueryResultItem>, u16), Error> {
         Element::get_query_apply_function(
             storage,
-            merk_path,
+            path,
             sized_query,
-            None,
             false,
             result_type,
             transaction,
@@ -1087,6 +1065,8 @@ mod tests {
         subtree::QueryResultType::{QueryElementResultType, QueryKeyElementPairResultType},
         tests::{make_grovedb, TEST_LEAF},
     };
+    use crate::subtree::QueryResultItem::PathKeyElementTrioResultItem;
+    use crate::subtree::QueryResultType::QueryPathKeyElementTrioResultType;
 
     #[test]
     fn test_success_insert() {
@@ -1258,6 +1238,49 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn test_get_query_with_path() {
+        let db = make_grovedb();
+
+        let storage = &db.db;
+        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
+        let mut merk = Merk::open(storage_context)
+            .unwrap()
+            .expect("cannot open Merk"); // TODO implement costs
+
+        Element::new_item(b"ayyd".to_vec())
+            .insert(&mut merk, b"d")
+            .unwrap()
+            .expect("expected successful insertion");
+        Element::new_item(b"ayyc".to_vec())
+            .insert(&mut merk, b"c")
+            .unwrap()
+            .expect("expected successful insertion");
+        Element::new_item(b"ayya".to_vec())
+            .insert(&mut merk, b"a")
+            .unwrap()
+            .expect("expected successful insertion");
+        Element::new_item(b"ayyb".to_vec())
+            .insert(&mut merk, b"b")
+            .unwrap()
+            .expect("expected successful insertion");
+
+        // Test queries by key
+        let mut query = Query::new();
+        query.insert_key(b"c".to_vec());
+        query.insert_key(b"a".to_vec());
+        assert_eq!(
+            query_result_items_to_path_key_elements(Element::get_query(&storage, &[TEST_LEAF], &query, QueryPathKeyElementTrioResultType, None)
+                .unwrap()
+                .expect("expected successful get_query")),
+            vec![
+                (vec![TEST_LEAF.to_vec()], b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
+                (vec![TEST_LEAF.to_vec()], b"c".to_vec(), Element::new_item(b"ayyc".to_vec()))
+            ]
+        );
+    }
+
     #[test]
     fn test_get_range_query() {
         let db = make_grovedb();
@@ -1327,7 +1350,7 @@ mod tests {
             &storage,
             &[TEST_LEAF],
             &backwards_query,
-            QueryElementResultType,
+            QueryKeyElementPairResultType,
             None,
         )
         .unwrap()
@@ -1408,7 +1431,7 @@ mod tests {
                 &storage,
                 &[TEST_LEAF],
                 &ascending_query,
-                QueryElementResultType,
+                QueryKeyElementPairResultType,
                 None,
             )
             .unwrap()
@@ -1424,7 +1447,7 @@ mod tests {
                 &storage,
                 &[TEST_LEAF],
                 &backwards_query,
-                QueryElementResultType,
+                QueryKeyElementPairResultType,
                 None,
             )
             .unwrap()
@@ -1443,7 +1466,7 @@ mod tests {
                 &storage,
                 &[TEST_LEAF],
                 &backwards_query,
-                QueryElementResultType,
+                QueryKeyElementPairResultType,
                 None,
             )
             .unwrap()
@@ -1490,7 +1513,7 @@ mod tests {
             &storage,
             &[TEST_LEAF],
             &backwards_query,
-            QueryElementResultType,
+            QueryKeyElementPairResultType,
             None,
         )
         .unwrap()
@@ -1515,7 +1538,7 @@ mod tests {
             &storage,
             &[TEST_LEAF],
             &backwards_query,
-            QueryElementResultType,
+            QueryKeyElementPairResultType,
             None,
         )
         .unwrap()
@@ -1535,7 +1558,7 @@ mod tests {
             &storage,
             &[TEST_LEAF],
             &limit_query,
-            QueryElementResultType,
+            QueryKeyElementPairResultType,
             None,
         )
         .unwrap()
@@ -1555,7 +1578,7 @@ mod tests {
             &storage,
             &[TEST_LEAF],
             &limit_query,
-            QueryElementResultType,
+            QueryKeyElementPairResultType,
             None,
         )
         .unwrap()
@@ -1574,7 +1597,7 @@ mod tests {
             &storage,
             &[TEST_LEAF],
             &limit_offset_query,
-            QueryElementResultType,
+            QueryKeyElementPairResultType,
             None,
         )
         .unwrap()
@@ -1598,7 +1621,7 @@ mod tests {
             &storage,
             &[TEST_LEAF],
             &limit_offset_backwards_query,
-            QueryElementResultType,
+            QueryKeyElementPairResultType,
             None,
         )
         .unwrap()
@@ -1621,7 +1644,7 @@ mod tests {
             &storage,
             &[TEST_LEAF],
             &limit_full_query,
-            QueryElementResultType,
+            QueryKeyElementPairResultType,
             None,
         )
         .unwrap()
@@ -1645,7 +1668,7 @@ mod tests {
             &storage,
             &[TEST_LEAF],
             &limit_offset_backwards_query,
-            QueryElementResultType,
+            QueryKeyElementPairResultType,
             None,
         )
         .unwrap()
@@ -1669,7 +1692,7 @@ mod tests {
             &storage,
             &[TEST_LEAF],
             &limit_backwards_query,
-            QueryElementResultType,
+            QueryKeyElementPairResultType,
             None,
         )
         .unwrap()

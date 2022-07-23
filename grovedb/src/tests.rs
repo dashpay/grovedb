@@ -1749,7 +1749,7 @@ fn transaction_insert_item_with_transaction_should_use_transaction() {
     assert_eq!(result_with_transaction, Element::new_item(b"ayy".to_vec()));
 
     // Test that commit works
-    db.commit_transaction(transaction).unwrap();
+    db.commit_transaction(transaction).unwrap().unwrap();
 
     // Check that the change was committed
     let result = db
@@ -1788,7 +1788,7 @@ fn transaction_insert_tree_with_transaction_should_use_transaction() {
         .expect("Expected to work");
     assert_eq!(result_with_transaction, Element::empty_tree());
 
-    db.commit_transaction(transaction).unwrap();
+    db.commit_transaction(transaction).unwrap().unwrap();
 
     let result = db
         .get([TEST_LEAF], subtree_key, None)
@@ -3777,7 +3777,7 @@ fn test_root_hash() {
     );
 
     assert_eq!(db.root_hash(None).unwrap().unwrap(), root_hash_outside);
-    db.commit_transaction(transaction).unwrap();
+    db.commit_transaction(transaction).unwrap().unwrap();
     assert_ne!(db.root_hash(None).unwrap().unwrap(), root_hash_outside);
 }
 
