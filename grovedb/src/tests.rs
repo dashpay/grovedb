@@ -5,9 +5,7 @@ use rand::Rng;
 use tempfile::TempDir;
 
 use super::*;
-use crate::query_result_type::{
-    query_result_items_to_key_elements, QueryResultType::QueryKeyElementPairResultType,
-};
+use crate::query_result_type::{GetItemResults, QueryResultType::QueryKeyElementPairResultType};
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
 pub const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
@@ -469,7 +467,7 @@ fn test_element_with_flags() {
         Element::Item(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec()))
     );
     assert_eq!(
-        query_result_items_to_key_elements(flagged_ref_no_follow)[0],
+        flagged_ref_no_follow.to_key_elements()[0],
         (
             b"elem4".to_vec(),
             Element::Reference(
@@ -2338,15 +2336,14 @@ fn test_get_full_query() {
     let path_query2 = PathQuery::new_unsized(path2, query2);
 
     assert_eq!(
-        query_result_items_to_key_elements(
-            db.query_many_raw(
-                &[&path_query1, &path_query2],
-                QueryKeyElementPairResultType,
-                None
-            )
-            .unwrap()
-            .expect("expected successful get_query")
-        ),
+        db.query_many_raw(
+            &[&path_query1, &path_query2],
+            QueryKeyElementPairResultType,
+            None
+        )
+        .unwrap()
+        .expect("expected successful get_query")
+        .to_key_elements(),
         vec![
             (b"key3".to_vec(), Element::new_item(b"ayya".to_vec())),
             (b"key4".to_vec(), Element::new_item(b"ayyb".to_vec())),

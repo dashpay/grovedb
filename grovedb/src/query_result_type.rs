@@ -9,31 +9,53 @@ pub enum QueryResultType {
 
 pub type QueryResultItems = Vec<QueryResultItem>;
 
-pub fn query_result_items_to_elements(query_result_items: QueryResultItems) -> Vec<Element> {
+pub trait GetItemResults {
+    fn to_elements(self) -> Vec<Element>;
+    fn to_key_elements(self) -> Vec<KeyElementPair>;
+    fn to_path_key_elements(self) -> Vec<PathKeyElementTrio>;
+}
+
+impl GetItemResults for QueryResultItems {
+    fn to_elements(self) -> Vec<Element> {
+        query_result_items_to_elements(self)
+    }
+
+    fn to_key_elements(self) -> Vec<KeyElementPair> {
+        query_result_items_to_key_elements(self)
+    }
+
+    fn to_path_key_elements(self) -> Vec<PathKeyElementTrio> {
+        query_result_items_to_path_key_elements(self)
+    }
+}
+
+fn query_result_items_to_elements(query_result_items: QueryResultItems) -> Vec<Element> {
     query_result_items
         .into_iter()
         .filter_map(|result_item| match result_item {
             QueryResultItem::ElementResultItem(element) => Some(element),
-            QueryResultItem::KeyElementPairResultItem(_) => None,
-            QueryResultItem::PathKeyElementTrioResultItem(_) => None,
+            QueryResultItem::KeyElementPairResultItem(element_key_pair) => Some(element_key_pair.1),
+            QueryResultItem::PathKeyElementTrioResultItem(path_key_element_trio) => {
+                Some(path_key_element_trio.2)
+            }
         })
         .collect()
 }
 
-pub fn query_result_items_to_key_elements(
-    query_result_items: QueryResultItems,
-) -> Vec<KeyElementPair> {
+fn query_result_items_to_key_elements(query_result_items: QueryResultItems) -> Vec<KeyElementPair> {
     query_result_items
         .into_iter()
         .filter_map(|result_item| match result_item {
             QueryResultItem::ElementResultItem(_) => None,
             QueryResultItem::KeyElementPairResultItem(key_element_pair) => Some(key_element_pair),
-            QueryResultItem::PathKeyElementTrioResultItem(_) => None,
+            QueryResultItem::PathKeyElementTrioResultItem(path_key_element_trio) => {
+                Some((path_key_element_trio.1, path_key_element_trio.2))
+            }
         })
         .collect()
 }
 
-pub fn query_result_items_to_path_key_elements(
+fn query_result_items_to_path_key_elements(
     query_result_items: QueryResultItems,
 ) -> Vec<PathKeyElementTrio> {
     query_result_items

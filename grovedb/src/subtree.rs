@@ -998,9 +998,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        query_result_type::{
-            query_result_items_to_key_elements, query_result_items_to_path_key_elements,
-        },
+        query_result_type::GetItemResults,
         subtree::QueryResultType::{
             QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType,
         },
@@ -1209,17 +1207,16 @@ mod tests {
         query.insert_key(b"c".to_vec());
         query.insert_key(b"a".to_vec());
         assert_eq!(
-            query_result_items_to_path_key_elements(
-                Element::get_query(
-                    &storage,
-                    &[TEST_LEAF],
-                    &query,
-                    QueryPathKeyElementTrioResultType,
-                    None
-                )
-                .unwrap()
-                .expect("expected successful get_query")
-            ),
+            Element::get_query(
+                &storage,
+                &[TEST_LEAF],
+                &query,
+                QueryPathKeyElementTrioResultType,
+                None
+            )
+            .unwrap()
+            .expect("expected successful get_query")
+            .to_path_key_elements(),
             vec![
                 (
                     vec![TEST_LEAF.to_vec()],
@@ -1376,7 +1373,7 @@ mod tests {
             if reverse {
                 expected.reverse();
             }
-            assert_eq!(query_result_items_to_key_elements(elements), expected);
+            assert_eq!(elements.to_key_elements(), expected);
             assert_eq!(skipped, 0);
         }
 
@@ -1473,7 +1470,7 @@ mod tests {
         .unwrap()
         .expect("expected successful get_query");
         assert_eq!(
-            query_result_items_to_key_elements(elements),
+            elements.to_key_elements(),
             vec![
                 (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
                 (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
@@ -1498,7 +1495,7 @@ mod tests {
         .unwrap()
         .expect("expected successful get_query");
         assert_eq!(
-            query_result_items_to_key_elements(elements),
+            elements.to_key_elements(),
             vec![
                 (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
                 (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
@@ -1518,7 +1515,7 @@ mod tests {
         .unwrap()
         .expect("expected successful get_query");
         assert_eq!(
-            query_result_items_to_key_elements(elements),
+            elements.to_key_elements(),
             vec![(b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),]
         );
         assert_eq!(skipped, 0);
@@ -1538,7 +1535,7 @@ mod tests {
         .unwrap()
         .expect("expected successful get_query");
         assert_eq!(
-            query_result_items_to_key_elements(elements),
+            elements.to_key_elements(),
             vec![
                 (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
                 (b"b".to_vec(), Element::new_item(b"ayyb".to_vec()))
@@ -1557,7 +1554,7 @@ mod tests {
         .unwrap()
         .expect("expected successful get_query");
         assert_eq!(
-            query_result_items_to_key_elements(elements),
+            elements.to_key_elements(),
             vec![
                 (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
                 (b"c".to_vec(), Element::new_item(b"ayyc".to_vec()))
@@ -1581,7 +1578,7 @@ mod tests {
         .unwrap()
         .expect("expected successful get_query");
         assert_eq!(
-            query_result_items_to_key_elements(elements),
+            elements.to_key_elements(),
             vec![
                 (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
                 (b"a".to_vec(), Element::new_item(b"ayya".to_vec()))
@@ -1604,7 +1601,7 @@ mod tests {
         .unwrap()
         .expect("expected successful get_query");
         assert_eq!(
-            query_result_items_to_key_elements(elements),
+            elements.to_key_elements(),
             vec![
                 (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
                 (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
@@ -1628,7 +1625,7 @@ mod tests {
         .unwrap()
         .expect("expected successful get_query");
         assert_eq!(
-            query_result_items_to_key_elements(elements),
+            elements.to_key_elements(),
             vec![
                 (b"c".to_vec(), Element::new_item(b"ayyc".to_vec())),
                 (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
@@ -1652,7 +1649,7 @@ mod tests {
         .unwrap()
         .expect("expected successful get_query");
         assert_eq!(
-            query_result_items_to_key_elements(elements),
+            elements.to_key_elements(),
             vec![
                 (b"b".to_vec(), Element::new_item(b"ayyb".to_vec())),
                 (b"a".to_vec(), Element::new_item(b"ayya".to_vec())),
