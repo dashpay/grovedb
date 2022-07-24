@@ -5,7 +5,7 @@ use rand::Rng;
 use tempfile::TempDir;
 
 use super::*;
-use crate::subtree::{
+use crate::query_result_type::{
     query_result_items_to_key_elements, QueryResultType::QueryKeyElementPairResultType,
 };
 

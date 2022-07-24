@@ -6,7 +6,7 @@ use costs::{
 use storage::StorageContext;
 
 use crate::{
-    subtree::{QueryResultItem, QueryResultType},
+    query_result_type::{QueryResultItem, QueryResultType},
     util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
