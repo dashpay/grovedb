@@ -1,10 +1,9 @@
 //! Provides `Restorer`, which can create a replica of a Merk instance by
 //! receiving chunk proofs.
 
-use std::{iter::Peekable, path::Path, u8};
+use std::{iter::Peekable, u8};
 
 use anyhow::{anyhow, Error};
-use failure::bail;
 use storage::{Batch, StorageContext};
 
 use super::Merk;
@@ -28,7 +27,6 @@ pub struct Restorer<S> {
     trunk_height: Option<usize>,
     merk: Merk<S>,
     expected_root_hash: Hash,
-    stated_length: usize,
 }
 
 impl<'db, S: StorageContext<'db>> Restorer<S> {
@@ -37,15 +35,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// `expected_root_hash`, then each subsequent chunk will be compared
     /// against the hashes stored in the trunk, so that the restore process will
     /// never allow malicious peers to send more than a single invalid chunk.
-    ///
-    /// The `stated_length` should be the number of chunks stated by the peer,
-    /// which will be verified after processing a valid first chunk to make it
-    /// easier to download chunks from peers without needing to trust this
-    /// length.
-    pub fn new(merk: Merk<S>, expected_root_hash: Hash, stated_length: usize) -> Self {
+    pub fn new(merk: Merk<S>, expected_root_hash: Hash) -> Self {
         Self {
             expected_root_hash,
-            stated_length,
             trunk_height: None,
             merk,
             leaf_hashes: None,
@@ -73,7 +65,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// processing all chunks (e.g. `restorer.remaining_chunks()` is not equal
     /// to 0).
     pub fn finalize(mut self) -> Result<Merk<S>, Error> {
-        if self.remaining_chunks().is_none() || self.remaining_chunks().unwrap() != 0 {
+        if self.remaining_chunks().unwrap_or(0) != 0 {
             anyhow!("Called finalize before all chunks were processed");
         }
 
@@ -118,10 +110,6 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     }
 
     /// Verifies the trunk then writes its data to the RocksDB.
-    ///
-    /// The trunk contains a height proof which lets us verify the total number
-    /// of expected chunks is the same as `stated_length` as passed into
-    /// `Restorer::new()`. We also verify the expected root hash at this step.
     fn process_trunk(&mut self, ops: Decoder) -> Result<usize, Error> {
         let (trunk, height) = verify_trunk(ops).unwrap()?;
 
@@ -167,9 +155,6 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             self.parent_keys = Some(vec![].into_iter().peekable());
             0
         };
-
-        // FIXME: this one shouldn't be an assert because it comes from a peer
-        assert_eq!(self.stated_length, chunks_remaining + 1);
 
         // note that these writes don't happen atomically, which is fine here
         // because if anything fails during the restore process we will just
@@ -283,13 +268,8 @@ impl<'db, S: StorageContext<'db>> Merk<S> {
     /// Creates a new `Restorer`, which can be used to verify chunk proofs to
     /// replicate an entire Merk tree. A new Merk instance will be initialized
     /// by creating a RocksDB at `path`.
-    ///
-    /// The restoration process will verify integrity by checking that the
-    /// incoming chunk proofs match `expected_root_hash`. The `stated_length`
-    /// should be the number of chunks as stated by peers, which will also be
-    /// verified during the restoration process.
-    pub fn restore(merk: Merk<S>, expected_root_hash: Hash, stated_length: usize) -> Restorer<S> {
-        Restorer::new(merk, expected_root_hash, stated_length)
+    pub fn restore(merk: Merk<S>, expected_root_hash: Hash) -> Restorer<S> {
+        Restorer::new(merk, expected_root_hash)
     }
 }
 
@@ -324,7 +304,10 @@ impl Child {
 mod tests {
     use std::iter::empty;
 
-    use storage::{RawIterator, Storage, rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext}};
+    use storage::{
+        rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
+        RawIterator, Storage,
+    };
 
     use super::*;
     use crate::{test_utils::*, tree::Op, MerkBatch};
@@ -332,7 +315,10 @@ mod tests {
     fn restore_test(batches: &[&MerkBatch<Vec<u8>>], expected_nodes: usize) {
         let mut original = TempMerk::new();
         for batch in batches {
-            original.apply::<Vec<_>, Vec<_>>(batch, &[]).unwrap().unwrap();
+            original
+                .apply::<Vec<_>, Vec<_>>(batch, &[])
+                .unwrap()
+                .unwrap();
         }
 
         let chunks = original.chunks().unwrap().unwrap();
@@ -340,7 +326,7 @@ mod tests {
         let storage = TempStorage::default();
         let ctx = storage.get_storage_context(empty()).unwrap();
         let merk = Merk::open(ctx).unwrap().unwrap();
-        let mut restorer = Merk::restore(merk, original.root_hash().unwrap(), chunks.len());
+        let mut restorer = Merk::restore(merk, original.root_hash().unwrap());
 
         assert_eq!(restorer.remaining_chunks(), None);
 

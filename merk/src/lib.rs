@@ -2,6 +2,8 @@
 #[cfg(feature = "full")]
 mod merk;
 
+pub use crate::merk::restore::Restorer;
+
 /// Provides a container type that allows temporarily taking ownership of a
 /// value.
 // TODO: move this into its own crate
