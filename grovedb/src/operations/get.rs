@@ -6,7 +6,7 @@ use costs::{
 use storage::StorageContext;
 
 use crate::{
-    query_result_type::{QueryResultItem, QueryResultType},
+    query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
@@ -142,7 +142,7 @@ impl GroveDb {
         let results_wrapped = elements
             .into_iter()
             .map(|result_item| match result_item {
-                QueryResultItem::ElementResultItem(Element::Reference(reference_path, _)) => {
+                QueryResultElement::ElementResultItem(Element::Reference(reference_path, _)) => {
                     let maybe_item = self
                         .follow_reference(reference_path, transaction)
                         .unwrap_add_cost(&mut cost)?;
@@ -166,7 +166,7 @@ impl GroveDb {
         path_queries: &[&PathQuery],
         result_type: QueryResultType,
         transaction: TransactionArg,
-    ) -> CostResult<Vec<QueryResultItem>, Error>
+    ) -> CostResult<QueryResultElements, Error>
 where {
         let mut cost = OperationCost::default();
 
@@ -210,7 +210,7 @@ where {
         let results_wrapped = elements
             .into_iter()
             .map(|result_item| match result_item {
-                QueryResultItem::ElementResultItem(element) => {
+                QueryResultElement::ElementResultItem(element) => {
                     match element {
                         Element::Reference(reference_path, _) => {
                             // While `map` on iterator is lazy, we should accumulate costs even if
@@ -248,7 +248,7 @@ where {
         path_query: &PathQuery,
         result_type: QueryResultType,
         transaction: TransactionArg,
-    ) -> CostResult<(Vec<QueryResultItem>, u16), Error> {
+    ) -> CostResult<(QueryResultElements, u16), Error> {
         Element::get_raw_path_query(&self.db, path_query, result_type, transaction)
     }
 

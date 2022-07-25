@@ -21,7 +21,8 @@ use visualize::visualize_to_vec;
 
 use crate::{
     query_result_type::{
-        KeyElementPair, QueryResultItem, QueryResultType, QueryResultType::QueryElementResultType,
+        KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType,
+        QueryResultType::QueryElementResultType,
     },
     util::{merk_optional_tx, storage_context_optional_tx},
     Error, Merk, PathQuery, SizedQuery, TransactionArg,
@@ -68,7 +69,7 @@ where
     pub left_to_right: bool,
     pub allow_get_raw: bool,
     pub result_type: QueryResultType,
-    pub results: &'a mut Vec<QueryResultItem>,
+    pub results: &'a mut Vec<QueryResultElement>,
     pub limit: &'a mut Option<u16>,
     pub offset: &'a mut Option<u16>,
 }
@@ -268,7 +269,7 @@ impl Element {
         query: &Query,
         result_type: QueryResultType,
         transaction: TransactionArg,
-    ) -> CostResult<Vec<QueryResultItem>, Error> {
+    ) -> CostResult<QueryResultElements, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
         Element::get_sized_query(storage, merk_path, &sized_query, result_type, transaction)
             .map_ok(|(elements, _)| elements)
@@ -289,11 +290,12 @@ impl Element {
         )
         .flat_map_ok(|result_items| {
             let elements: Vec<Element> = result_items
+                .elements
                 .into_iter()
                 .filter_map(|result_item| match result_item {
-                    QueryResultItem::ElementResultItem(element) => Some(element),
-                    QueryResultItem::KeyElementPairResultItem(_) => None,
-                    QueryResultItem::PathKeyElementTrioResultItem(_) => None,
+                    QueryResultElement::ElementResultItem(element) => Some(element),
+                    QueryResultElement::KeyElementPairResultItem(_) => None,
+                    QueryResultElement::PathKeyElementTrioResultItem(_) => None,
                 })
                 .collect();
             Ok(elements).wrap_with_cost(OperationCost::default())
@@ -314,11 +316,11 @@ impl Element {
         if offset.unwrap_or(0) == 0 {
             match result_type {
                 QueryResultType::QueryElementResultType => {
-                    results.push(QueryResultItem::ElementResultItem(element));
+                    results.push(QueryResultElement::ElementResultItem(element));
                 }
                 QueryResultType::QueryKeyElementPairResultType => {
                     let key = key.ok_or(Error::CorruptedPath("basic push must have a key"))?;
-                    results.push(QueryResultItem::KeyElementPairResultItem((
+                    results.push(QueryResultElement::KeyElementPairResultItem((
                         Vec::from(key),
                         element,
                     )));
@@ -326,7 +328,7 @@ impl Element {
                 QueryResultType::QueryPathKeyElementTrioResultType => {
                     let key = key.ok_or(Error::CorruptedPath("basic push must have a key"))?;
                     let path = path.iter().map(|a| a.to_vec()).collect();
-                    results.push(QueryResultItem::PathKeyElementTrioResultItem((
+                    results.push(QueryResultElement::PathKeyElementTrioResultItem((
                         path,
                         Vec::from(key),
                         element,
@@ -396,7 +398,7 @@ impl Element {
                     if let Some(offset) = offset {
                         *offset -= skipped;
                     }
-                    results.append(&mut sub_elements);
+                    results.append(&mut sub_elements.elements);
                 } else if let Some(subquery_key) = subquery_key {
                     if offset.unwrap_or(0) == 0 {
                         match result_type {
@@ -408,7 +410,7 @@ impl Element {
                                     transaction,
                                     subtree,
                                     {
-                                        results.push(QueryResultItem::ElementResultItem(
+                                        results.push(QueryResultElement::ElementResultItem(
                                             cost_return_on_error!(
                                                 &mut cost,
                                                 Element::get(&subtree, subquery_key.as_slice())
@@ -425,13 +427,15 @@ impl Element {
                                     transaction,
                                     subtree,
                                     {
-                                        results.push(QueryResultItem::KeyElementPairResultItem((
-                                            subquery_key.clone(),
-                                            cost_return_on_error!(
-                                                &mut cost,
-                                                Element::get(&subtree, subquery_key.as_slice())
+                                        results.push(QueryResultElement::KeyElementPairResultItem(
+                                            (
+                                                subquery_key.clone(),
+                                                cost_return_on_error!(
+                                                    &mut cost,
+                                                    Element::get(&subtree, subquery_key.as_slice())
+                                                ),
                                             ),
-                                        )));
+                                        ));
                                     }
                                 );
                             }
@@ -445,7 +449,7 @@ impl Element {
                                     subtree,
                                     {
                                         results.push(
-                                            QueryResultItem::PathKeyElementTrioResultItem((
+                                            QueryResultElement::PathKeyElementTrioResultItem((
                                                 original_path_vec,
                                                 subquery_key.clone(),
                                                 cost_return_on_error!(
@@ -550,7 +554,7 @@ impl Element {
     fn query_item(
         storage: &RocksDbStorage,
         item: &QueryItem,
-        results: &mut Vec<QueryResultItem>,
+        results: &mut Vec<QueryResultElement>,
         path: &[&[u8]],
         sized_query: &SizedQuery,
         transaction: TransactionArg,
@@ -668,7 +672,7 @@ impl Element {
         result_type: QueryResultType,
         transaction: TransactionArg,
         add_element_function: fn(PathQueryPushArgs) -> CostResult<(), Error>,
-    ) -> CostResult<(Vec<QueryResultItem>, u16), Error> {
+    ) -> CostResult<(QueryResultElements, u16), Error> {
         let mut cost = OperationCost::default();
 
         let mut results = Vec::new();
@@ -728,7 +732,7 @@ impl Element {
         } else {
             0
         };
-        Ok((results, skipped)).wrap_with_cost(cost)
+        Ok((QueryResultElements::from_elements(results), skipped)).wrap_with_cost(cost)
     }
 
     // Returns a vector of elements excluding trees, and the number of skipped
@@ -738,7 +742,7 @@ impl Element {
         path_query: &PathQuery,
         result_type: QueryResultType,
         transaction: TransactionArg,
-    ) -> CostResult<(Vec<QueryResultItem>, u16), Error> {
+    ) -> CostResult<(QueryResultElements, u16), Error> {
         let path_slices = path_query
             .path
             .iter()
@@ -762,7 +766,7 @@ impl Element {
         path_query: &PathQuery,
         result_type: QueryResultType,
         transaction: TransactionArg,
-    ) -> CostResult<(Vec<QueryResultItem>, u16), Error> {
+    ) -> CostResult<(QueryResultElements, u16), Error> {
         let path_slices = path_query
             .path
             .iter()
@@ -786,7 +790,7 @@ impl Element {
         sized_query: &SizedQuery,
         result_type: QueryResultType,
         transaction: TransactionArg,
-    ) -> CostResult<(Vec<QueryResultItem>, u16), Error> {
+    ) -> CostResult<(QueryResultElements, u16), Error> {
         Element::get_query_apply_function(
             storage,
             path,
@@ -998,7 +1002,6 @@ mod tests {
 
     use super::*;
     use crate::{
-        query_result_type::GetItemResults,
         subtree::QueryResultType::{
             QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType,
         },
@@ -1277,11 +1280,11 @@ mod tests {
         let elements: Vec<KeyElementPair> = elements
             .into_iter()
             .filter_map(|result_item| match result_item {
-                QueryResultItem::ElementResultItem(_element) => None,
-                QueryResultItem::KeyElementPairResultItem(key_element_pair) => {
+                QueryResultElement::ElementResultItem(_element) => None,
+                QueryResultElement::KeyElementPairResultItem(key_element_pair) => {
                     Some(key_element_pair)
                 }
-                QueryResultItem::PathKeyElementTrioResultItem(_) => None,
+                QueryResultElement::PathKeyElementTrioResultItem(_) => None,
             })
             .collect();
         assert_eq!(
@@ -1310,11 +1313,11 @@ mod tests {
         let elements: Vec<KeyElementPair> = elements
             .into_iter()
             .filter_map(|result_item| match result_item {
-                QueryResultItem::ElementResultItem(_element) => None,
-                QueryResultItem::KeyElementPairResultItem(key_element_pair) => {
+                QueryResultElement::ElementResultItem(_element) => None,
+                QueryResultElement::KeyElementPairResultItem(key_element_pair) => {
                     Some(key_element_pair)
                 }
-                QueryResultItem::PathKeyElementTrioResultItem(_) => None,
+                QueryResultElement::PathKeyElementTrioResultItem(_) => None,
             })
             .collect();
         assert_eq!(
@@ -1361,7 +1364,7 @@ mod tests {
 
         let ascending_query = SizedQuery::new(query.clone(), None, None);
         fn check_elements_no_skipped(
-            (elements, skipped): (Vec<QueryResultItem>, u16),
+            (elements, skipped): (QueryResultElements, u16),
             reverse: bool,
         ) {
             let mut expected = vec![

@@ -5,7 +5,7 @@ use rand::Rng;
 use tempfile::TempDir;
 
 use super::*;
-use crate::query_result_type::{GetItemResults, QueryResultType::QueryKeyElementPairResultType};
+use crate::query_result_type::QueryResultType::QueryKeyElementPairResultType;
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
 pub const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
