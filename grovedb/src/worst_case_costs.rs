@@ -5,6 +5,29 @@ use super::GroveDb;
 use crate::Element;
 
 impl GroveDb {
+    // Worst case costs for operations within a single merk
+    fn worst_case_encoded_link_size() -> u32 {
+        1 + 1 + 32 + 1 + 1 + 8
+    }
+
+    fn worst_case_encoded_kv_node_size(max_element_size: u32) -> u32 {
+        32 + 32 + max_element_size
+    }
+
+    /// Add worst case for getting a merk node
+    pub(crate) fn add_worst_case_get_merk_node(
+        cost: &mut OperationCost,
+        max_element_size: u32,
+    ) {
+        // Worst case, element is not loaded in memory so we have to seek from db
+        cost.seek_count += 1;
+        // element size is the value.
+        // the encoded tree is what is loaded to storage
+        // to encode a tree, we encode left and right links + kv nod
+        let loaded_storage_bytes = (2 * Self::worst_case_encoded_link_size()) + Self::worst_case_encoded_kv_node_size(max_element_size);
+        cost.storage_loaded_bytes += loaded_storage_bytes;
+    }
+
     /// Add worst case for getting a merk tree
     pub fn add_worst_case_get_merk<'db, 'p, P, S: Storage<'db>>(
         cost: &mut OperationCost,
@@ -85,4 +108,45 @@ impl GroveDb {
 pub(crate) enum MerkWorstCaseInput {
     MaxElementsNumber(u32),
     NumberOfLevels(u32),
+}
+
+#[cfg(test)]
+mod test {
+    use std::iter::empty;
+    use tempfile::TempDir;
+    use costs::{CostContext, OperationCost};
+    use merk::Merk;
+    use merk::test_utils::make_batch_seq;
+    use storage::rocksdb_storage::RocksDbStorage;
+    use storage::Storage;
+    use crate::GroveDb;
+
+    #[test]
+    fn test_get_worst_case() {
+        // Try to replicate a worst case scenario
+        // open a merk, insert elements in the merk
+        // get one of the elements that must have both a right and left child node
+        // and is currently not loaded in the tree.
+        let tmp_dir = TempDir::new().expect("cannot open tempdir");
+        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+            .expect("cannot open rocksdb storage");
+        let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
+            .unwrap()
+            .expect("cannot open merk");
+        let batch = make_batch_seq(1..10);
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[])
+            .unwrap()
+            .unwrap();
+        drop(merk);
+
+        let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
+            .unwrap()
+            .expect("cannot open merk");
+        dbg!("getting node 8");
+        let m = merk.get(&8_u64.to_be_bytes());
+        let mut cost = OperationCost::default();
+        // make_batch_seq creates values of 60 bytes
+        GroveDb::add_worst_case_get_merk_node(&mut cost, 60);
+        assert_eq!(cost, m.cost);
+    }
 }

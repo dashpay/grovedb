@@ -20,6 +20,7 @@ impl Tree {
     {
         let mut cost = OperationCost::default();
         let tree_bytes = cost_return_on_error!(&mut cost, storage.get(&key).map_err(|e| e.into()));
+        dbg!(tree_bytes.as_ref().unwrap().len());
 
         let tree_opt = cost_return_on_error_no_add!(
             &cost,

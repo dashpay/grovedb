@@ -272,7 +272,6 @@ impl<'db> Storage<'db> for RocksDbStorage {
         result.wrap_with_cost(cost)
     }
 
-
     fn get_storage_context_cost<'a, P>(path: P) -> OperationCost
     where
         P: IntoIterator<Item = &'a [u8]>,
