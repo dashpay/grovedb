@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use costs::{CostContext, CostsExt, OperationCost};
 use merk::proofs::{query::QueryItem, Query};
 

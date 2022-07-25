@@ -5,6 +5,7 @@ use rand::Rng;
 use tempfile::TempDir;
 
 use super::*;
+use crate::query_result_type::QueryResultType::QueryKeyElementPairResultType;
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
 pub const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
@@ -448,7 +449,7 @@ fn test_element_with_flags() {
         SizedQuery::new(query, None, None),
     );
     let (flagged_ref_no_follow, _) = db
-        .query_raw(&path_query, None)
+        .query_raw(&path_query, QueryKeyElementPairResultType, None)
         .unwrap()
         .expect("should get successfully");
 
@@ -466,7 +467,7 @@ fn test_element_with_flags() {
         Element::Item(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec()))
     );
     assert_eq!(
-        flagged_ref_no_follow[0],
+        flagged_ref_no_follow.to_key_elements()[0],
         (
             b"elem4".to_vec(),
             Element::Reference(
@@ -1745,7 +1746,7 @@ fn transaction_insert_item_with_transaction_should_use_transaction() {
     assert_eq!(result_with_transaction, Element::new_item(b"ayy".to_vec()));
 
     // Test that commit works
-    db.commit_transaction(transaction).unwrap();
+    db.commit_transaction(transaction).unwrap().unwrap();
 
     // Check that the change was committed
     let result = db
@@ -1784,7 +1785,7 @@ fn transaction_insert_tree_with_transaction_should_use_transaction() {
         .expect("Expected to work");
     assert_eq!(result_with_transaction, Element::empty_tree());
 
-    db.commit_transaction(transaction).unwrap();
+    db.commit_transaction(transaction).unwrap().unwrap();
 
     let result = db
         .get([TEST_LEAF], subtree_key, None)
@@ -2335,9 +2336,14 @@ fn test_get_full_query() {
     let path_query2 = PathQuery::new_unsized(path2, query2);
 
     assert_eq!(
-        db.query_many_raw(&[&path_query1, &path_query2], None)
-            .unwrap()
-            .expect("expected successful get_query"),
+        db.query_many_raw(
+            &[&path_query1, &path_query2],
+            QueryKeyElementPairResultType,
+            None
+        )
+        .unwrap()
+        .expect("expected successful get_query")
+        .to_key_elements(),
         vec![
             (b"key3".to_vec(), Element::new_item(b"ayya".to_vec())),
             (b"key4".to_vec(), Element::new_item(b"ayyb".to_vec())),
@@ -3767,7 +3773,7 @@ fn test_root_hash() {
     );
 
     assert_eq!(db.root_hash(None).unwrap().unwrap(), root_hash_outside);
-    db.commit_transaction(transaction).unwrap();
+    db.commit_transaction(transaction).unwrap().unwrap();
     assert_ne!(db.root_hash(None).unwrap().unwrap(), root_hash_outside);
 }
 

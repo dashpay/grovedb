@@ -90,6 +90,7 @@ impl GroveDbWrapper {
                     DbMessage::CommitTransaction(callback) => {
                         grove_db
                             .commit_transaction(transaction.take().unwrap())
+                            .unwrap()
                             .unwrap();
                         callback(&channel);
                     }
