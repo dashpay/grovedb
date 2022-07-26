@@ -682,9 +682,9 @@ impl MerkCommitter {
 impl Commit for MerkCommitter {
     fn write(&mut self, tree: &Tree) -> Result<()> {
         let mut buf = Vec::with_capacity(tree.encoding_length());
-        dbg!(&tree);
+        // dbg!(&tree);
         tree.encode_into(&mut buf);
-        dbg!(buf.len());
+        // dbg!(buf.len());
         self.batch.push((tree.key().to_vec(), Some(buf)));
         Ok(())
     }
