@@ -9,17 +9,83 @@ use storage::{
     Storage,
 };
 
-use crate::{Element, GroveDb, Hash};
+use crate::{Element, Error, GroveDb, Hash};
 
 impl GroveDb {
     /// Creates a chunk producer to replicate GroveDb.
     pub fn chunks(&self) -> ChunkProducer {
-        ChunkProducer {}
+        ChunkProducer::new(&self.db)
     }
 }
 
 /// GroveDb chunks producer.
-pub struct ChunkProducer {}
+pub struct ChunkProducer<'db> {
+    storage: &'db RocksDbStorage,
+    cache: Option<ChunkProducerCache<'db>>,
+}
+
+struct ChunkProducerCache<'db> {
+    current_merk_path: Vec<Vec<u8>>,
+    current_merk: Merk<PrefixedRocksDbStorageContext<'db>>,
+    // This needed to be an `Option` becase it requres a reference on Merk but it's within the same
+    // struct and during struct init a referenced Merk would be moved inside a struct, using
+    // `Option` this init happens in two steps.
+    current_chunk_producer: Option<merk::ChunkProducer<'db, PrefixedRocksDbStorageContext<'db>>>,
+}
+
+impl<'db> ChunkProducer<'db> {
+    fn new(storage: &'db RocksDbStorage) -> Self {
+        ChunkProducer {
+            storage,
+            cache: None,
+        }
+    }
+
+    pub fn get_chunk<'p, P>(&mut self, path: P, index: usize) -> Result<Vec<u8>, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: Clone,
+    {
+        let path_iter = path.into_iter();
+
+        // If chunk producer cache contains different path we clear it.
+        if let Some(ChunkProducerCache {
+            current_merk_path, ..
+        }) = &self.cache
+        {
+            if itertools::equal(current_merk_path, path_iter.clone()) {
+                self.cache = None;
+            }
+        }
+
+        if self.cache.is_none() {
+            let ctx = self.storage.get_storage_context(path_iter.clone()).unwrap();
+            self.cache = Some(ChunkProducerCache {
+                current_merk_path: path_iter.map(|p| p.to_vec()).collect(),
+                current_merk: Merk::open(ctx)
+                    .unwrap()
+                    .map_err(|e| Error::CorruptedData(e.to_string()))?,
+                current_chunk_producer: None,
+            });
+            let cache = self.cache.as_mut().expect("exists at this point");
+            cache.current_chunk_producer = Some(
+                merk::ChunkProducer::new(&cache.current_merk)
+                    .unwrap()
+                    .map_err(|e| Error::CorruptedData(e.to_string()))?,
+            );
+        }
+
+        self.cache
+            .as_mut()
+            .expect("must exist at this point")
+            .current_chunk_producer
+            .as_mut()
+            .expect("must exist at this point")
+            .chunk(index)
+            .unwrap()
+            .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+}
 
 // TODO: make generic over storage context
 type MerkRestorer<'db> = merk::Restorer<PrefixedRocksDbStorageContext<'db>>;
@@ -69,7 +135,7 @@ impl<'db> Restorer<'db> {
     pub fn process_chunk(&mut self, chunk: &[u8]) -> Result<RestorerResponse, RestorerError> {
         if self.current_merk_restorer.is_none() {
             // Last restorer was consumed and no more Merks to process.
-            return Ok(RestorerResponse::Ready)
+            return Ok(RestorerResponse::Ready);
         }
         // First we decode a chunk to take out info about nested trees to add them into
         // todo list.

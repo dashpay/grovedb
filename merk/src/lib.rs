@@ -2,7 +2,7 @@
 #[cfg(feature = "full")]
 mod merk;
 
-pub use crate::merk::restore::Restorer;
+pub use crate::merk::{chunks::ChunkProducer, restore::Restorer};
 
 /// Provides a container type that allows temporarily taking ownership of a
 /// value.
