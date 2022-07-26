@@ -6,25 +6,39 @@ use crate::Element;
 
 impl GroveDb {
     // Worst case costs for operations within a single merk
-    fn worst_case_encoded_link_size() -> u32 {
-        1 + 1 + 32 + 1 + 1 + 8
+    fn worst_case_encoded_link_size(key: &[u8]) -> u32 {
+        // Links are optional values that represent the right or left node for a given
+        // tree 1 byte to represent the option state
+        // 1 byte to represent key_length
+        // key_length to represent the actual key
+        // 32 bytes for the hash of the node
+        // 1 byte for the left child height
+        // 1 byte for the right child height
+        1 + 1 + key.len() as u32 + 32 + 1 + 1
     }
 
     fn worst_case_encoded_kv_node_size(max_element_size: u32) -> u32 {
+        // KV holds the state of a node
+        // 32 bytes to encode the hash of the node
+        // 32 bytes to encode the value hash
+        // max_element_size to encode the worst case value size
         32 + 32 + max_element_size
     }
 
     /// Add worst case for getting a merk node
     pub(crate) fn add_worst_case_get_merk_node(
         cost: &mut OperationCost,
+        key: &[u8],
         max_element_size: u32,
     ) {
-        // Worst case, element is not loaded in memory so we have to seek from db
+        // Worst case scenario, the element is not already in memory.
+        // One direct seek has to be performed to read the node from storage.
         cost.seek_count += 1;
-        // element size is the value.
-        // the encoded tree is what is loaded to storage
-        // to encode a tree, we encode left and right links + kv nod
-        let loaded_storage_bytes = (2 * Self::worst_case_encoded_link_size()) + Self::worst_case_encoded_kv_node_size(max_element_size);
+
+        // To write a node to disk, the left link, right link and kv nodes are encoded.
+        // worst case, the node has both the left and right link present.
+        let loaded_storage_bytes = (2 * Self::worst_case_encoded_link_size(key))
+            + Self::worst_case_encoded_kv_node_size(max_element_size);
         cost.storage_loaded_bytes += loaded_storage_bytes;
     }
 
@@ -113,12 +127,12 @@ pub(crate) enum MerkWorstCaseInput {
 #[cfg(test)]
 mod test {
     use std::iter::empty;
-    use tempfile::TempDir;
+
     use costs::{CostContext, OperationCost};
-    use merk::Merk;
-    use merk::test_utils::make_batch_seq;
-    use storage::rocksdb_storage::RocksDbStorage;
-    use storage::Storage;
+    use merk::{test_utils::make_batch_seq, Merk};
+    use storage::{rocksdb_storage::RocksDbStorage, Storage};
+    use tempfile::TempDir;
+
     use crate::GroveDb;
 
     #[test]
@@ -146,7 +160,7 @@ mod test {
         let m = merk.get(&8_u64.to_be_bytes());
         let mut cost = OperationCost::default();
         // make_batch_seq creates values of 60 bytes
-        GroveDb::add_worst_case_get_merk_node(&mut cost, 60);
+        GroveDb::add_worst_case_get_merk_node(&mut cost, &8_u64.to_be_bytes(), 60);
         assert_eq!(cost, m.cost);
     }
 }
