@@ -136,11 +136,8 @@ mod test {
     use crate::GroveDb;
 
     #[test]
-    fn test_get_worst_case() {
-        // Try to replicate a worst case scenario
-        // open a merk, insert elements in the merk
-        // get one of the elements that must have both a right and left child node
-        // and is currently not loaded in the tree.
+    fn test_get_merk_node_worst_case() {
+        // Open a merk and insert 10 elements.
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
@@ -151,16 +148,27 @@ mod test {
         merk.apply::<_, Vec<_>>(batch.as_slice(), &[])
             .unwrap()
             .unwrap();
+
+        // drop merk, so nothing is stored in memory
         drop(merk);
 
+        // Reopen merk: this time, only root node is loaded to memory
         let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
-        dbg!("getting node 8");
-        let m = merk.get(&8_u64.to_be_bytes());
+
+        // To simulate worst case, we need to pick a node that:
+        // 1. Is not in memory
+        // 2. Left link exists
+        // 3. Right link exists
+        // Based on merk's avl rotation algorithm node is key 8 satisfies this
+        let node_result = merk.get(&8_u64.to_be_bytes());
+
+        // By tweaking the max element size, we can adapt the worst case function to
+        // this scenario make_batch_seq creates values that are 60 bytes in size
+        // (this will be the max_element_size)
         let mut cost = OperationCost::default();
-        // make_batch_seq creates values of 60 bytes
         GroveDb::add_worst_case_get_merk_node(&mut cost, &8_u64.to_be_bytes(), 60);
-        assert_eq!(cost, m.cost);
+        assert_eq!(cost, node_result.cost);
     }
 }
