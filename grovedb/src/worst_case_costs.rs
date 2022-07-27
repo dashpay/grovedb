@@ -171,4 +171,31 @@ mod test {
         GroveDb::add_worst_case_get_merk_node(&mut cost, &8_u64.to_be_bytes(), 60);
         assert_eq!(cost, node_result.cost);
     }
+
+    #[test]
+    fn test_insert_merk_node_worst_case() {
+        // Open a merk and insert 10 elements.
+        let tmp_dir = TempDir::new().expect("cannot open tempdir");
+        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+            .expect("cannot open rocksdb storage");
+        let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
+            .unwrap()
+            .expect("cannot open merk");
+        let batch = make_batch_seq(1..10);
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[])
+            .unwrap()
+            .unwrap();
+
+        // drop merk, so nothing is stored in memory
+        drop(merk);
+        //
+        // // Reopen merk: this time, only root node is loaded to memory
+        let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
+            .unwrap()
+            .expect("cannot open merk");
+
+        let batch = make_batch_seq(10..11);
+        let m = merk.apply::<_, Vec<_>>(batch.as_slice(), &[]);
+        dbg!(m);
+    }
 }
