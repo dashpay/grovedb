@@ -101,6 +101,7 @@ pub struct Restorer<'db> {
 
 /// Indicates what next piece of information `Restorer` expects or wraps a
 /// successful result.
+#[derive(Debug)]
 pub enum RestorerResponse<'a> {
     AwaitNextChunk {
         path: slice::Iter<'a, Vec<u8>>,
@@ -214,33 +215,25 @@ impl<'db> Restorer<'db> {
 
 #[cfg(test)]
 mod test {
+    use storage::rocksdb_storage::test_utils::TempStorage;
     use tempfile::TempDir;
 
     use super::*;
-    use crate::tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF};
+    use crate::tests::{make_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF};
 
-    #[test]
-    fn replicate_easy() {
-        let db = make_grovedb();
-        db.insert(
-            [TEST_LEAF],
-            b"key1",
-            Element::Item(b"ayy".to_vec(), None),
-            None,
-        )
-        .unwrap()
-        .expect("cannot insert an element");
-
-        let expected_root_hash = db.root_hash(None).unwrap().unwrap();
-
+    fn replicate(original_db: &TempGroveDb) -> TempDir {
         let replica_tempdir = TempDir::new().unwrap();
+
         {
             let replica_storage =
                 RocksDbStorage::default_rocksdb_with_path(replica_tempdir.path()).unwrap();
-            let mut chunk_producer = db.chunks();
+            let mut chunk_producer = original_db.chunks();
 
-            let mut restorer = Restorer::new(&replica_storage, expected_root_hash)
-                .expect("cannot create restorer");
+            let mut restorer = Restorer::new(
+                &replica_storage,
+                original_db.root_hash(None).unwrap().unwrap(),
+            )
+            .expect("cannot create restorer");
 
             // That means root tree chunk with index 0
             let mut next_chunk: (Vec<Vec<u8>>, usize) = (vec![], 0);
@@ -261,23 +254,86 @@ mod test {
             }
         }
 
+        replica_tempdir
+    }
+
+    fn test_replication(original_db: TempGroveDb, to_compare: &[&[&[u8]]]) {
+        let expected_root_hash = original_db.root_hash(None).unwrap().unwrap();
+
+        let replica_tempdir = replicate(&original_db);
+
         let replica = GroveDb::open(replica_tempdir.path()).unwrap();
         assert_eq!(
             replica.root_hash(None).unwrap().unwrap(),
             expected_root_hash
         );
 
-        let to_check = [
-            [TEST_LEAF].as_ref(),
-            [ANOTHER_TEST_LEAF].as_ref(),
-            [TEST_LEAF, b"key1"].as_ref(),
-        ];
-        for full_path in to_check {
+        for full_path in to_compare {
             let (key, path) = full_path.split_last().unwrap();
             assert_eq!(
-                db.get(path.iter().map(|x| *x), *key, None).unwrap().unwrap(),
-                replica.get(path.iter().map(|x| *x), *key, None).unwrap().unwrap()
+                original_db
+                    .get(path.iter().map(|x| *x), *key, None)
+                    .unwrap()
+                    .unwrap(),
+                replica
+                    .get(path.iter().map(|x| *x), *key, None)
+                    .unwrap()
+                    .unwrap()
             );
         }
+    }
+
+    #[test]
+    fn replicate_wrong_root_hash() {
+        let db = make_grovedb();
+        let mut bad_hash = db.root_hash(None).unwrap().unwrap();
+        bad_hash[0] = bad_hash[0].wrapping_add(1);
+
+        let temp_storage = TempStorage::default();
+        let mut restorer = Restorer::new(&temp_storage, bad_hash).unwrap();
+        let mut chunks = db.chunks();
+        assert!(dbg!(restorer.process_chunk(&chunks.get_chunk([], 0).unwrap())).is_err());
+    }
+
+    #[test]
+    fn replicate_nested_grovedb() {
+        let db = make_grovedb();
+        db.insert(
+            [TEST_LEAF],
+            b"key1",
+            Element::new_item(b"ayya".to_vec()),
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+        db.insert([ANOTHER_TEST_LEAF], b"key2", Element::empty_tree(), None)
+            .unwrap()
+            .expect("cannot insert an element");
+        db.insert(
+            [ANOTHER_TEST_LEAF, b"key2"],
+            b"key3",
+            Element::empty_tree(),
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+        db.insert(
+            [ANOTHER_TEST_LEAF, b"key2", b"key3"],
+            b"key4",
+            Element::new_item(b"ayyb".to_vec()),
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+
+        let to_compare = [
+            [TEST_LEAF].as_ref(),
+            [TEST_LEAF, b"key1"].as_ref(),
+            [ANOTHER_TEST_LEAF].as_ref(),
+            [ANOTHER_TEST_LEAF, b"key2"].as_ref(),
+            [ANOTHER_TEST_LEAF, b"key2", b"key3"].as_ref(),
+            [ANOTHER_TEST_LEAF, b"key2", b"key3", b"key4"].as_ref(),
+        ];
+        test_replication(db, &to_compare);
     }
 }
