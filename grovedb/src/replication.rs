@@ -47,13 +47,11 @@ impl<'db> ChunkProducer<'db> {
         <P as IntoIterator>::IntoIter: Clone,
     {
         let path_iter = path.into_iter();
-
-        // If chunk producer cache contains different path we clear it.
         if let Some(ChunkProducerCache {
             current_merk_path, ..
         }) = &self.cache
         {
-            if itertools::equal(current_merk_path, path_iter.clone()) {
+            if !itertools::equal(current_merk_path, path_iter.clone()) {
                 self.cache = None;
             }
         }
@@ -149,6 +147,11 @@ impl<'db> Restorer<'db> {
                     if let Element::Tree(hash, _) =
                         Element::deserialize(bytes).map_err(|e| RestorerError(e.to_string()))?
                     {
+                        if hash == [0; 32] || self.current_merk_path.last() == Some(key) {
+                            // We add only subtrees of the current subtree to queue, skipping
+                            // itself; Also skipping empty Merks.
+                            continue;
+                        }
                         let mut path = self.current_merk_path.clone();
                         path.push(key.clone());
                         self.queue.push_back((path, hash));
@@ -211,10 +214,10 @@ impl<'db> Restorer<'db> {
 
 #[cfg(test)]
 mod test {
-    use storage::rocksdb_storage::test_utils::TempStorage;
+    use tempfile::TempDir;
 
     use super::*;
-    use crate::tests::{make_grovedb, TEST_LEAF};
+    use crate::tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF};
 
     #[test]
     fn replicate_easy() {
@@ -228,30 +231,53 @@ mod test {
         .unwrap()
         .expect("cannot insert an element");
 
-        let cloned_storage = TempStorage::default();
-        let mut chunk_producer = db.chunks();
-
         let expected_root_hash = db.root_hash(None).unwrap().unwrap();
-        let mut restorer =
-            Restorer::new(&cloned_storage, expected_root_hash).expect("cannot create restorer");
 
-        // That means root tree chunk with index 0
-        let mut next_chunk: (Vec<Vec<u8>>, usize) = (vec![], 0);
+        let replica_tempdir = TempDir::new().unwrap();
+        {
+            let replica_storage =
+                RocksDbStorage::default_rocksdb_with_path(replica_tempdir.path()).unwrap();
+            let mut chunk_producer = db.chunks();
 
-        loop {
-            dbg!();
-            let chunk = chunk_producer
-                .get_chunk(next_chunk.0.iter().map(|x| x.as_slice()), next_chunk.1)
-                .expect("cannot get next chunk");
-            match restorer
-                .process_chunk(&chunk)
-                .expect("cannot process chunk")
-            {
-                RestorerResponse::Ready => break,
-                RestorerResponse::AwaitNextChunk { path, index } => {
-                    next_chunk = (path.map(|x| x.to_vec()).collect(), index);
+            let mut restorer = Restorer::new(&replica_storage, expected_root_hash)
+                .expect("cannot create restorer");
+
+            // That means root tree chunk with index 0
+            let mut next_chunk: (Vec<Vec<u8>>, usize) = (vec![], 0);
+
+            loop {
+                let chunk = chunk_producer
+                    .get_chunk(next_chunk.0.iter().map(|x| x.as_slice()), next_chunk.1)
+                    .expect("cannot get next chunk");
+                match restorer
+                    .process_chunk(&chunk)
+                    .expect("cannot process chunk")
+                {
+                    RestorerResponse::Ready => break,
+                    RestorerResponse::AwaitNextChunk { path, index } => {
+                        next_chunk = (path.map(|x| x.to_vec()).collect(), index);
+                    }
                 }
             }
+        }
+
+        let replica = GroveDb::open(replica_tempdir.path()).unwrap();
+        assert_eq!(
+            replica.root_hash(None).unwrap().unwrap(),
+            expected_root_hash
+        );
+
+        let to_check = [
+            [TEST_LEAF].as_ref(),
+            [ANOTHER_TEST_LEAF].as_ref(),
+            [TEST_LEAF, b"key1"].as_ref(),
+        ];
+        for full_path in to_check {
+            let (key, path) = full_path.split_last().unwrap();
+            assert_eq!(
+                db.get(path.iter().map(|x| *x), *key, None).unwrap().unwrap(),
+                replica.get(path.iter().map(|x| *x), *key, None).unwrap().unwrap()
+            );
         }
     }
 }

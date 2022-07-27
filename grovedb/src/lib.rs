@@ -3,8 +3,8 @@ extern crate core;
 pub mod batch;
 mod operations;
 mod query;
-mod replication;
 pub mod query_result_type;
+mod replication;
 mod subtree;
 #[cfg(test)]
 mod tests;
