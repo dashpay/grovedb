@@ -208,3 +208,50 @@ impl<'db> Restorer<'db> {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use storage::rocksdb_storage::test_utils::TempStorage;
+
+    use super::*;
+    use crate::tests::{make_grovedb, TEST_LEAF};
+
+    #[test]
+    fn replicate_easy() {
+        let db = make_grovedb();
+        db.insert(
+            [TEST_LEAF],
+            b"key1",
+            Element::Item(b"ayy".to_vec(), None),
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+
+        let cloned_storage = TempStorage::default();
+        let mut chunk_producer = db.chunks();
+
+        let expected_root_hash = db.root_hash(None).unwrap().unwrap();
+        let mut restorer =
+            Restorer::new(&cloned_storage, expected_root_hash).expect("cannot create restorer");
+
+        // That means root tree chunk with index 0
+        let mut next_chunk: (Vec<Vec<u8>>, usize) = (vec![], 0);
+
+        loop {
+            dbg!();
+            let chunk = chunk_producer
+                .get_chunk(next_chunk.0.iter().map(|x| x.as_slice()), next_chunk.1)
+                .expect("cannot get next chunk");
+            match restorer
+                .process_chunk(&chunk)
+                .expect("cannot process chunk")
+            {
+                RestorerResponse::Ready => break,
+                RestorerResponse::AwaitNextChunk { path, index } => {
+                    next_chunk = (path.map(|x| x.to_vec()).collect(), index);
+                }
+            }
+        }
+    }
+}

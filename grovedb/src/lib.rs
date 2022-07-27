@@ -17,6 +17,7 @@ use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, BatchEntry, Merk};
 pub use query::{PathQuery, SizedQuery};
+pub use replication::{ChunkProducer, Restorer};
 pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
     Storage, StorageContext,
