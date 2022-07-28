@@ -54,7 +54,7 @@ where
         };
 
         let mut raw_iter = merk.storage.raw_iter();
-        raw_iter.seek_to_first();
+        raw_iter.seek_to_first().unwrap_add_cost(&mut cost);
         cost.seek_count += 1;
 
         Ok(ChunkProducer {
@@ -78,12 +78,12 @@ where
         self.index = index;
 
         if index == 0 || index == 1 {
-            self.raw_iter.seek_to_first();
+            self.raw_iter.seek_to_first().unwrap_add_cost(&mut cost);
             cost.seek_count += 1;
         } else {
             let preceding_key = self.chunk_boundaries.get(index - 2).unwrap();
-            self.raw_iter.seek(preceding_key);
-            self.raw_iter.next();
+            self.raw_iter.seek(preceding_key).unwrap_add_cost(&mut cost);
+            self.raw_iter.next().unwrap_add_cost(&mut cost);
             cost.seek_count += 1;
         }
 
