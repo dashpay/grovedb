@@ -65,13 +65,16 @@ impl GroveDb {
 
                     let mut next_key_query = Query::new();
                     next_key_query.insert_key(key.to_vec());
-                    self.generate_and_store_merk_proof(
-                        &subtree.expect("confirmed not error above"),
-                        &next_key_query,
-                        None,
-                        None,
-                        ProofType::Merk,
-                        &mut proof_result,
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.generate_and_store_merk_proof(
+                            &subtree.expect("confirmed not error above"),
+                            &next_key_query,
+                            None,
+                            None,
+                            ProofType::Merk,
+                            &mut proof_result,
+                        )
                     );
 
                     current_path.push(key);
@@ -128,7 +131,8 @@ impl GroveDb {
 
         let mut is_leaf_tree = true;
 
-        let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query);
+        let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query)
+            .unwrap_add_cost(&mut cost);
         while let Some((key, value_bytes)) = kv_iterator.next().unwrap_add_cost(&mut cost) {
             let (subquery_key, subquery_value) =
                 Element::subquery_paths_for_sized_query(&query.query, &key);

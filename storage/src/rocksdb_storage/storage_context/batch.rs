@@ -139,31 +139,37 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
 impl Batch for PrefixedMultiContextBatchPart {
     fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.batch
-            .put(make_prefixed_key(self.prefix.clone(), key), value.to_vec());
+            .put(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
+            .unwrap_add_cost(&mut self.acc_cost);
     }
 
     fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.batch
-            .put_aux(make_prefixed_key(self.prefix.clone(), key), value.to_vec());
+            .put_aux(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
+            .unwrap_add_cost(&mut self.acc_cost);
     }
 
     fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
         self.batch
-            .put_root(make_prefixed_key(self.prefix.clone(), key), value.to_vec());
+            .put_root(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
+            .unwrap_add_cost(&mut self.acc_cost);
     }
 
     fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
         self.batch
-            .delete(make_prefixed_key(self.prefix.clone(), key));
+            .delete(make_prefixed_key(self.prefix.clone(), key))
+            .unwrap_add_cost(&mut self.acc_cost);
     }
 
     fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) {
         self.batch
-            .delete_aux(make_prefixed_key(self.prefix.clone(), key));
+            .delete_aux(make_prefixed_key(self.prefix.clone(), key))
+            .unwrap_add_cost(&mut self.acc_cost);
     }
 
     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) {
         self.batch
-            .delete_root(make_prefixed_key(self.prefix.clone(), key));
+            .delete_root(make_prefixed_key(self.prefix.clone(), key))
+            .unwrap_add_cost(&mut self.acc_cost);
     }
 }
