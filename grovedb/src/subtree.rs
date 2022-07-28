@@ -652,9 +652,9 @@ impl Element {
                         })
                     );
                     if sized_query.query.left_to_right {
-                        iter.next();
+                        iter.next().unwrap_add_cost(&mut cost);
                     } else {
-                        iter.prev();
+                        iter.prev().unwrap_add_cost(&mut cost);
                     }
                     cost.seek_count += 1;
                 }
@@ -948,11 +948,9 @@ impl Element {
     }
 
     pub fn iterator<I: RawIterator>(mut raw_iter: I) -> CostContext<ElementsIterator<I>> {
-        raw_iter.seek_to_first();
-        ElementsIterator::new(raw_iter).wrap_with_cost(OperationCost {
-            seek_count: 1,
-            ..Default::default()
-        })
+        let mut cost = OperationCost::default();
+        raw_iter.seek_to_first().unwrap_add_cost(&mut cost);
+        ElementsIterator::new(raw_iter).wrap_with_cost(cost)
     }
 }
 
@@ -983,7 +981,7 @@ impl<I: RawIterator> ElementsIterator<I> {
             {
                 let element = cost_return_on_error_no_add!(&cost, raw_decode(value));
                 let key_vec = key.to_vec();
-                self.raw_iter.next();
+                self.raw_iter.next().unwrap_add_cost(&mut cost);
                 Some((key_vec, element))
             } else {
                 None

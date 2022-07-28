@@ -64,7 +64,8 @@ pub struct KVIterator<'a, I: RawIterator> {
 }
 
 impl<'a, I: RawIterator> KVIterator<'a, I> {
-    pub fn new(raw_iter: I, query: &'a Query) -> Self {
+    pub fn new(raw_iter: I, query: &'a Query) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
         let mut iterator = KVIterator {
             raw_iter,
             _query: query,
@@ -72,8 +73,8 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
             current_query_item: None,
             query_iterator: query.directional_iter(query.left_to_right),
         };
-        iterator.seek();
-        iterator
+        iterator.seek().unwrap_add_cost(&mut cost);
+        iterator.wrap_with_cost(cost)
     }
 
     /// Returns the current node the iter points to if it's valid for the given
