@@ -192,7 +192,7 @@ pub(crate) fn get_next_chunk(
             }
         }
 
-        iter.next();
+        iter.next().unwrap_add_cost(&mut cost);
     }
 
     if iter.valid().unwrap_add_cost(&mut cost) {

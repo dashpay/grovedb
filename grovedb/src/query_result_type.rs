@@ -14,7 +14,7 @@ pub struct QueryResultElements {
 }
 
 impl QueryResultElements {
-    fn new() -> Self {
+    pub fn new() -> Self {
         QueryResultElements { elements: vec![] }
     }
 
