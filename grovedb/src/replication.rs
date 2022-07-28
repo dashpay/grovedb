@@ -215,11 +215,15 @@ impl<'db> Restorer<'db> {
 
 #[cfg(test)]
 mod test {
+    use rand::RngCore;
     use storage::rocksdb_storage::test_utils::TempStorage;
     use tempfile::TempDir;
 
     use super::*;
-    use crate::tests::{make_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF};
+    use crate::{
+        batch::GroveDbOp,
+        tests::{make_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF},
+    };
 
     fn replicate(original_db: &TempGroveDb) -> TempDir {
         let replica_tempdir = TempDir::new().unwrap();
@@ -257,7 +261,11 @@ mod test {
         replica_tempdir
     }
 
-    fn test_replication(original_db: TempGroveDb, to_compare: &[&[&[u8]]]) {
+    fn test_replication<'a, I, R>(original_db: TempGroveDb, to_compare: I)
+    where
+        R: AsRef<[u8]> + 'a,
+        I: Iterator<Item = &'a [R]>,
+    {
         let expected_root_hash = original_db.root_hash(None).unwrap().unwrap();
 
         let replica_tempdir = replicate(&original_db);
@@ -272,11 +280,11 @@ mod test {
             let (key, path) = full_path.split_last().unwrap();
             assert_eq!(
                 original_db
-                    .get(path.iter().map(|x| *x), *key, None)
+                    .get(path.iter().map(|x| x.as_ref()), key.as_ref(), None)
                     .unwrap()
                     .unwrap(),
                 replica
-                    .get(path.iter().map(|x| *x), *key, None)
+                    .get(path.iter().map(|x| x.as_ref()), key.as_ref(), None)
                     .unwrap()
                     .unwrap()
             );
@@ -292,7 +300,53 @@ mod test {
         let temp_storage = TempStorage::default();
         let mut restorer = Restorer::new(&temp_storage, bad_hash).unwrap();
         let mut chunks = db.chunks();
-        assert!(dbg!(restorer.process_chunk(&chunks.get_chunk([], 0).unwrap())).is_err());
+        assert!(restorer
+            .process_chunk(&chunks.get_chunk([], 0).unwrap())
+            .is_err());
+    }
+
+    #[test]
+    fn replicate_provide_wrong_tree() {
+        let db = make_grovedb();
+        db.insert(
+            [TEST_LEAF],
+            b"key1",
+            Element::new_item(b"ayya".to_vec()),
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+        db.insert(
+            [ANOTHER_TEST_LEAF],
+            b"key1",
+            Element::new_item(b"ayyb".to_vec()),
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+
+        let expected_hash = db.root_hash(None).unwrap().unwrap();
+
+        let temp_storage = TempStorage::default();
+        let mut restorer = Restorer::new(&temp_storage, expected_hash).unwrap();
+        let mut chunks = db.chunks();
+
+        let next_op = restorer
+            .process_chunk(&chunks.get_chunk([], 0).unwrap())
+            .unwrap();
+        match next_op {
+            RestorerResponse::AwaitNextChunk { path, index } => {
+                // Feed restorer a wrong Merk!
+                let path_vec = path.clone().collect::<Vec<_>>();
+                let chunk = if path_vec == [TEST_LEAF] {
+                    chunks.get_chunk([ANOTHER_TEST_LEAF], index).unwrap()
+                } else {
+                    chunks.get_chunk([TEST_LEAF], index).unwrap()
+                };
+                assert!(restorer.process_chunk(&chunk).is_err());
+            }
+            _ => {}
+        }
     }
 
     #[test]
@@ -334,6 +388,73 @@ mod test {
             [ANOTHER_TEST_LEAF, b"key2", b"key3"].as_ref(),
             [ANOTHER_TEST_LEAF, b"key2", b"key3", b"key4"].as_ref(),
         ];
-        test_replication(db, &to_compare);
+        test_replication(db, to_compare.into_iter());
+    }
+
+    #[test]
+    fn replicate_a_big_one() {
+        const HEIGHT: usize = 3;
+        const SUBTREES_FOR_EACH: usize = 3;
+        const SCALARS_FOR_EACH: usize = 300;
+
+        let db = make_grovedb();
+        let mut to_compare = Vec::new();
+
+        let mut rng = rand::thread_rng();
+        let mut subtrees: VecDeque<Vec<[u8; 8]>> = VecDeque::new();
+
+        // Generate root tree leafs
+        for _ in 0..SUBTREES_FOR_EACH {
+            let mut bytes = [0; 8];
+            rng.fill_bytes(&mut bytes);
+            db.insert([], &bytes, Element::empty_tree(), None)
+                .unwrap()
+                .unwrap();
+            subtrees.push_front(vec![bytes.clone()]);
+            to_compare.push(vec![bytes.clone()]);
+        }
+
+        while let Some(path) = subtrees.pop_front() {
+            let mut batch = Vec::new();
+
+            if path.len() < HEIGHT {
+                for _ in 0..SUBTREES_FOR_EACH {
+                    let mut bytes = [0; 8];
+                    rng.fill_bytes(&mut bytes);
+
+                    batch.push(GroveDbOp::insert(
+                        path.iter().map(|x| x.to_vec()).collect(),
+                        bytes.to_vec(),
+                        Element::empty_tree(),
+                    ));
+
+                    let mut new_path = path.clone();
+                    new_path.push(bytes);
+                    subtrees.push_front(new_path.clone());
+                    to_compare.push(new_path.clone());
+                }
+            }
+
+            for _ in 0..SCALARS_FOR_EACH {
+                let mut bytes = [0; 8];
+                let mut bytes_val = vec![];
+                rng.fill_bytes(&mut bytes);
+                rng.fill_bytes(&mut bytes_val);
+
+                batch.push(GroveDbOp::insert(
+                    path.iter().map(|x| x.to_vec()).collect(),
+                    bytes.to_vec(),
+                    Element::new_item(bytes_val),
+                ));
+
+                let mut new_path = path.clone();
+                new_path.push(bytes);
+                to_compare.push(new_path.clone());
+            }
+
+            db.apply_batch(batch, None, None).unwrap().unwrap();
+        }
+
+        test_replication(db, to_compare.iter().map(|x| x.as_slice()));
     }
 }

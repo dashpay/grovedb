@@ -51,6 +51,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     ///
     /// Once there are no remaining chunks to be processed, `finalize` should
     /// be called.
+    ///
+    /// TODO: `anyhow::Error` is too vague
     pub fn process_chunk(&mut self, chunk_bytes: &[u8]) -> Result<usize, Error> {
         let ops = Decoder::new(chunk_bytes);
 
@@ -66,7 +68,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// to 0).
     pub fn finalize(mut self) -> Result<Merk<S>, Error> {
         if self.remaining_chunks().unwrap_or(0) != 0 {
-            anyhow!("Called finalize before all chunks were processed");
+            return Err(anyhow!("Called finalize before all chunks were processed"));
         }
 
         if self.trunk_height.unwrap() >= MIN_TRUNK_HEIGHT {
@@ -114,11 +116,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let (trunk, height) = verify_trunk(ops).unwrap()?;
 
         if trunk.hash().unwrap() != self.expected_root_hash {
-            anyhow!(
+            return Err(anyhow!(
                 "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
                 self.expected_root_hash,
                 trunk.hash()
-            );
+            ));
         }
 
         let root_key = trunk.key().to_vec();
