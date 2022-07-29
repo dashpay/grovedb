@@ -6,7 +6,7 @@ use crate::Element;
 
 impl GroveDb {
     // Worst case costs for operations within a single merk
-    fn worst_case_encoded_link_size(key: &[u8]) -> u32 {
+    fn worst_case_encoded_link_size(key_size: u32) -> u32 {
         // Links are optional values that represent the right or left node for a given
         // tree 1 byte to represent the option state
         // 1 byte to represent key_length
@@ -14,7 +14,7 @@ impl GroveDb {
         // 32 bytes for the hash of the node
         // 1 byte for the left child height
         // 1 byte for the right child height
-        1 + 1 + key.len() as u32 + 32 + 1 + 1
+        1 + 1 + key_size + 32 + 1 + 1
     }
 
     fn worst_case_encoded_kv_node_size(max_element_size: u32) -> u32 {
@@ -28,7 +28,7 @@ impl GroveDb {
     /// Add worst case for getting a merk node
     pub(crate) fn add_worst_case_get_merk_node(
         cost: &mut OperationCost,
-        key: &[u8],
+        key_size: u32,
         max_element_size: u32,
     ) {
         // Worst case scenario, the element is not already in memory.
@@ -37,9 +37,74 @@ impl GroveDb {
 
         // To write a node to disk, the left link, right link and kv nodes are encoded.
         // worst case, the node has both the left and right link present.
-        let loaded_storage_bytes = (2 * Self::worst_case_encoded_link_size(key))
+        let loaded_storage_bytes = (2 * Self::worst_case_encoded_link_size(key_size))
             + Self::worst_case_encoded_kv_node_size(max_element_size);
         cost.storage_loaded_bytes += loaded_storage_bytes;
+    }
+
+    pub(crate) fn add_merk_worst_case_insert_reference(
+        cost: &mut OperationCost,
+        max_element_size: u32,
+        max_element_number: u32,
+    ) {
+        // same as insert node but one less hash node call as that is done on the
+        // grovedb layer
+        Self::add_worst_case_insert_merk_node(cost, max_element_size, max_element_number);
+        cost.hash_node_calls -= 1;
+    }
+
+    pub(crate) fn add_worst_case_insert_merk_node(
+        cost: &mut OperationCost,
+        // key: &[u8],
+        max_element_size: u32,
+        max_element_number: u32,
+    ) {
+        // For worst case conditions, we can assume the merk tree is just opened hence
+        // only the root node and corresponding links are loaded
+
+        // Walks / Seeks
+        // Building new node
+        // Balancing
+        // Node hash recomputation
+
+        // How many walks and seeks,
+        // going to walk at most 1.44 * log n times
+        // each of those times, we have to retrieve the node from backing store
+        let max_tree_height = (1.44 * (max_element_number as f32).log2()).floor() as u32;
+        // would have to seek all but the root node
+        let max_number_of_walks = max_tree_height - 1;
+        // for each walk, we have to seek and load from storage
+        // Need some form of max key size, sadly
+        let max_key_size = 256;
+        for _ in 0..max_number_of_walks {
+            GroveDb::add_worst_case_get_merk_node(cost, max_key_size, max_element_size)
+        }
+
+        // build new node
+        // this creates a new kv node with values already in memory (key value pair)
+        // value_hash and kv_hash are computed
+        cost.hash_node_calls += 2;
+
+        // Walking back up, each node gets reattached
+        // marking them as modified, this bears no additional cost
+        // TODO: balancing also happens here, map this out
+
+        // commit stage
+        // for every modified node, recursively call commit on all modified children
+        // at base, write the node to storage
+        // at base, have to write the tree to storage
+        // we create a batch entry [key, encoded_tree]
+        // prefixed key is created during get storage context for merk open
+        let prefix_size: u32 = 32;
+        let prefixed_key_size = prefix_size + max_key_size;
+        let value_size = (2 * Self::worst_case_encoded_link_size(max_key_size))
+            + Self::worst_case_encoded_kv_node_size(max_element_size);
+
+        for _ in 0..max_number_of_walks {
+            cost.seek_count += 1;
+            cost.hash_node_calls += 1;
+            cost.storage_written_bytes += (prefixed_key_size + value_size)
+        }
     }
 
     /// Add worst case for getting a merk tree
@@ -168,34 +233,40 @@ mod test {
         // this scenario make_batch_seq creates values that are 60 bytes in size
         // (this will be the max_element_size)
         let mut cost = OperationCost::default();
-        GroveDb::add_worst_case_get_merk_node(&mut cost, &8_u64.to_be_bytes(), 60);
+        let key = &8_u64.to_be_bytes();
+        GroveDb::add_worst_case_get_merk_node(&mut cost, key.len() as u32, 60);
         assert_eq!(cost, node_result.cost);
     }
 
     #[test]
     fn test_insert_merk_node_worst_case() {
+        let mut cost = OperationCost::default();
+        GroveDb::add_worst_case_insert_merk_node(&mut cost, 30, 10);
         // Open a merk and insert 10 elements.
-        let tmp_dir = TempDir::new().expect("cannot open tempdir");
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
-        let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
-            .unwrap()
-            .expect("cannot open merk");
-        let batch = make_batch_seq(1..10);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[])
-            .unwrap()
-            .unwrap();
-
-        // drop merk, so nothing is stored in memory
-        drop(merk);
+        // let tmp_dir = TempDir::new().expect("cannot open tempdir");
+        // let storage =
+        // RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+        //     .expect("cannot open rocksdb storage");
+        // let mut merk =
+        // Merk::open(storage.get_storage_context(empty()).unwrap())
+        //     .unwrap()
+        //     .expect("cannot open merk");
+        // let batch = make_batch_seq(1..10);
+        // merk.apply::<_, Vec<_>>(batch.as_slice(), &[])
+        //     .unwrap()
+        //     .unwrap();
         //
-        // // Reopen merk: this time, only root node is loaded to memory
-        let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
-            .unwrap()
-            .expect("cannot open merk");
-
-        let batch = make_batch_seq(10..11);
-        let m = merk.apply::<_, Vec<_>>(batch.as_slice(), &[]);
-        dbg!(m);
+        // // drop merk, so nothing is stored in memory
+        // drop(merk);
+        // //
+        // // // Reopen merk: this time, only root node is loaded to memory
+        // let mut merk =
+        // Merk::open(storage.get_storage_context(empty()).unwrap())
+        //     .unwrap()
+        //     .expect("cannot open merk");
+        //
+        // let batch = make_batch_seq(10..11);
+        // let m = merk.apply::<_, Vec<_>>(batch.as_slice(), &[]);
+        // dbg!(m);
     }
 }
