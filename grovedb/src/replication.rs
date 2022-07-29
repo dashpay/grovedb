@@ -225,7 +225,7 @@ mod test {
         tests::{make_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF},
     };
 
-    fn replicate(original_db: &TempGroveDb) -> TempDir {
+    fn replicate(original_db: &GroveDb) -> TempDir {
         let replica_tempdir = TempDir::new().unwrap();
 
         {
@@ -456,5 +456,101 @@ mod test {
         }
 
         test_replication(db, to_compare.iter().map(|x| x.as_slice()));
+    }
+
+    #[test]
+    fn replicate_from_checkpoint() {
+        // Create a simple GroveDb first
+        let db = make_grovedb();
+        db.insert(
+            [TEST_LEAF],
+            b"key1",
+            Element::new_item(b"ayya".to_vec()),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            [ANOTHER_TEST_LEAF],
+            b"key2",
+            Element::new_item(b"ayyb".to_vec()),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+        // Save its state with checkpoint
+        let checkpoint_dir_parent = TempDir::new().unwrap();
+        let checkpoint_dir = checkpoint_dir_parent.path().join("cp");
+        db.create_checkpoint(&checkpoint_dir).unwrap();
+
+        // Alter the db to make difference between current state and checkpoint
+        db.delete([TEST_LEAF], b"key1", None).unwrap().unwrap();
+        db.insert(
+            [TEST_LEAF],
+            b"key3",
+            Element::new_item(b"ayyd".to_vec()),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        db.insert(
+            [ANOTHER_TEST_LEAF],
+            b"key2",
+            Element::new_item(b"ayyc".to_vec()),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+        let checkpoint_db = GroveDb::open(&checkpoint_dir).unwrap();
+
+        // Ensure checkpoint differs from current state
+        assert_ne!(
+            checkpoint_db
+                .get([ANOTHER_TEST_LEAF], b"key2", None)
+                .unwrap()
+                .unwrap(),
+            db.get([ANOTHER_TEST_LEAF], b"key2", None).unwrap().unwrap(),
+        );
+
+        // Build a replica from checkpoint
+        let replica_dir = replicate(&checkpoint_db);
+        let replica_db = GroveDb::open(&replica_dir).unwrap();
+
+        assert_eq!(
+            checkpoint_db
+                .get([TEST_LEAF], b"key1", None)
+                .unwrap()
+                .unwrap(),
+            replica_db.get([TEST_LEAF], b"key1", None).unwrap().unwrap(),
+        );
+        assert_eq!(
+            checkpoint_db
+                .get([ANOTHER_TEST_LEAF], b"key2", None)
+                .unwrap()
+                .unwrap(),
+            replica_db
+                .get([ANOTHER_TEST_LEAF], b"key2", None)
+                .unwrap()
+                .unwrap(),
+        );
+        assert!(matches!(
+            replica_db.get([TEST_LEAF], b"key3", None).unwrap(),
+            Err(Error::PathKeyNotFound(_))
+        ));
+
+        // Drop original db and checkpoint dir too to ensure there is no dependency
+        drop(db);
+        drop(checkpoint_db);
+        drop(checkpoint_dir);
+
+        assert_eq!(
+            replica_db
+                .get([ANOTHER_TEST_LEAF], b"key2", None)
+                .unwrap()
+                .unwrap(),
+            Element::new_item(b"ayyb".to_vec())
+        );
     }
 }
