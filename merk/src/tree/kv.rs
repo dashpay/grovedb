@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use costs::{CostContext, CostsExt, OperationCost};
 use ed::{Decode, Encode, Result, Terminated};
 
-use super::hash::{kv_hash, Hash, HASH_LENGTH, NULL_HASH};
+use super::hash::{Hash, HASH_LENGTH, NULL_HASH};
 use crate::tree::{hash::value_hash, kv_digest_to_kv_hash};
 
 // TODO: maybe use something similar to Vec but without capacity field,

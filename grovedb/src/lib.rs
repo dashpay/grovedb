@@ -4,6 +4,7 @@ pub mod batch;
 mod operations;
 mod query;
 pub mod query_result_type;
+mod replication;
 mod subtree;
 #[cfg(test)]
 mod tests;
@@ -17,6 +18,7 @@ use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, BatchEntry, Merk};
 pub use query::{PathQuery, SizedQuery};
+pub use replication::{ChunkProducer, Restorer};
 pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
     Storage, StorageContext,
@@ -24,6 +26,8 @@ pub use storage::{
 pub use subtree::{Element, ElementFlags};
 
 use crate::util::merk_optional_tx;
+
+type Hash = [u8; 32];
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -97,7 +101,7 @@ impl GroveDb {
 
     /// Returns root hash of GroveDb.
     /// Will be `None` if GroveDb is empty.
-    pub fn root_hash(&self, transaction: TransactionArg) -> CostResult<[u8; 32], Error> {
+    pub fn root_hash(&self, transaction: TransactionArg) -> CostResult<Hash, Error> {
         let mut cost = OperationCost {
             ..Default::default()
         };
@@ -192,7 +196,7 @@ impl GroveDb {
     >(
         parent_tree: &mut Merk<S>,
         key: K,
-        root_hash: [u8; 32],
+        root_hash: Hash,
     ) -> CostResult<(), Error> {
         Self::get_element_from_subtree(parent_tree, key).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
@@ -212,7 +216,7 @@ impl GroveDb {
     >(
         parent_tree: &Merk<S>,
         key: K,
-        root_hash: [u8; 32],
+        root_hash: Hash,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         Self::get_element_from_subtree(parent_tree, key.as_ref()).flat_map_ok(|element| {

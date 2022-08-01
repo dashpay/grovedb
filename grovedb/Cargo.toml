@@ -14,7 +14,7 @@ serde = { version = "1.0.136", features = ["derive"] }
 storage = { path = "../storage", features = ["rocksdb_storage"] }
 visualize = { path = "../visualize" }
 hex = "0.4.3"
-itertools = { version = "0.10.3", optional = true }
+itertools = { version = "0.10.3" }
 integer-encoding = "3.0.3"
 costs = { version = "0.0.0", path = "../costs" }
 nohash-hasher = "0.2.0"
