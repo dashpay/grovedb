@@ -993,7 +993,7 @@ mod test {
                     iter.key().unwrap().unwrap().to_vec(),
                     iter.value().unwrap().unwrap().to_vec(),
                 ));
-                iter.next();
+                iter.next().unwrap();
             }
         }
         let tmp_dir = TempDir::new().expect("cannot open tempdir");

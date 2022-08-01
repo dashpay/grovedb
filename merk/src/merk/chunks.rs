@@ -3,7 +3,7 @@
 use std::error::Error;
 
 use anyhow::{anyhow, Result};
-use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
+use costs::CostsExt;
 use ed::Encode;
 use storage::{RawIterator, StorageContext};
 
@@ -30,16 +30,13 @@ where
 {
     /// Creates a new `ChunkProducer` for the given `Merk` instance. In the
     /// constructor, the first chunk (the "trunk") will be created.
-    pub fn new(merk: &Merk<S>) -> CostContext<Result<Self>> {
-        let mut cost = OperationCost::default();
-
-        let (trunk, has_more) = cost_return_on_error!(
-            &mut cost,
-            merk.walk(|maybe_walker| match maybe_walker {
+    pub fn new(merk: &Merk<S>) -> Result<Self> {
+        let (trunk, has_more) = merk
+            .walk(|maybe_walker| match maybe_walker {
                 Some(mut walker) => walker.create_trunk_proof(),
                 None => Ok((vec![], false)).wrap_with_cost(Default::default()),
             })
-        );
+            .unwrap()?;
 
         let chunk_boundaries = if has_more {
             trunk
@@ -54,8 +51,7 @@ where
         };
 
         let mut raw_iter = merk.storage.raw_iter();
-        raw_iter.seek_to_first().unwrap_add_cost(&mut cost);
-        cost.seek_count += 1;
+        raw_iter.seek_to_first().unwrap();
 
         Ok(ChunkProducer {
             trunk,
@@ -63,31 +59,27 @@ where
             raw_iter,
             index: 0,
         })
-        .wrap_with_cost(cost)
     }
 
     /// Gets the chunk with the given index. Errors if the index is out of
     /// bounds or the tree is empty - the number of chunks can be checked by
     /// calling `producer.len()`.
-    pub fn chunk(&mut self, index: usize) -> CostContext<Result<Vec<u8>>> {
-        let mut cost = OperationCost::default();
+    pub fn chunk(&mut self, index: usize) -> Result<Vec<u8>> {
         if index >= self.len() {
-            return Err(anyhow!("Chunk index out-of-bounds")).wrap_with_cost(cost);
+            return Err(anyhow!("Chunk index out-of-bounds"));
         }
 
         self.index = index;
 
         if index == 0 || index == 1 {
-            self.raw_iter.seek_to_first().unwrap_add_cost(&mut cost);
-            cost.seek_count += 1;
+            self.raw_iter.seek_to_first().unwrap();
         } else {
             let preceding_key = self.chunk_boundaries.get(index - 2).unwrap();
-            self.raw_iter.seek(preceding_key).unwrap_add_cost(&mut cost);
-            self.raw_iter.next().unwrap_add_cost(&mut cost);
-            cost.seek_count += 1;
+            self.raw_iter.seek(preceding_key).unwrap();
+            self.raw_iter.next().unwrap();
         }
 
-        self.next_chunk().add_cost(cost)
+        self.next_chunk()
     }
 
     /// Returns the total number of chunks for the underlying Merk tree.
@@ -104,18 +96,16 @@ where
     /// Gets the next chunk based on the `ChunkProducer`'s internal index state.
     /// This is mostly useful for letting `ChunkIter` yield the chunks in order,
     /// optimizing throughput compared to random access.
-    fn next_chunk(&mut self) -> CostContext<Result<Vec<u8>>> {
+    fn next_chunk(&mut self) -> Result<Vec<u8>> {
         if self.index == 0 {
             if self.trunk.is_empty() {
-                return Err(anyhow!("Attempted to fetch chunk on empty tree"))
-                    .wrap_with_cost(Default::default());
+                return Err(anyhow!("Attempted to fetch chunk on empty tree"));
             }
             self.index += 1;
             return self
                 .trunk
                 .encode()
-                .map_err(|e| anyhow!("cannot get next chunk: {}", e))
-                .wrap_with_cost(Default::default());
+                .map_err(|e| anyhow!("cannot get next chunk: {}", e));
         }
 
         if self.index >= self.len() {
@@ -128,12 +118,9 @@ where
         self.index += 1;
 
         get_next_chunk(&mut self.raw_iter, end_key_slice)
-            .map_ok(|chunk| {
-                chunk
-                    .encode()
-                    .map_err(|e| anyhow!("cannot get next chunk: {}", e))
-            })
-            .flatten()
+            .unwrap()?
+            .encode()
+            .map_err(|e| anyhow!("cannot get next chunk: {}", e))
     }
 }
 
@@ -163,7 +150,7 @@ where
     S: StorageContext<'db>,
     <S as StorageContext<'db>>::Error: Error + Sync + Send + 'static,
 {
-    type Item = CostContext<Result<Vec<u8>>>;
+    type Item = Result<Vec<u8>>;
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.0.len(), Some(self.0.len()))
@@ -185,7 +172,7 @@ where
 {
     /// Creates a `ChunkProducer` which can return chunk proofs for replicating
     /// the entire Merk tree.
-    pub fn chunks(&self) -> CostContext<Result<ChunkProducer<'db, S>>> {
+    pub fn chunks(&self) -> Result<ChunkProducer<'db, S>> {
         ChunkProducer::new(self)
     }
 }
@@ -212,7 +199,7 @@ mod tests {
         let batch = make_batch_seq(1..256);
         merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
 
-        let chunks = merk.chunks().unwrap().unwrap();
+        let chunks = merk.chunks().unwrap();
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks.into_iter().size_hint().0, 1);
     }
@@ -223,7 +210,7 @@ mod tests {
         let batch = make_batch_seq(1..10_000);
         merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
 
-        let chunks = merk.chunks().unwrap().unwrap();
+        let chunks = merk.chunks().unwrap();
         assert_eq!(chunks.len(), 129);
         assert_eq!(chunks.into_iter().size_hint().0, 129);
     }
@@ -234,12 +221,7 @@ mod tests {
         let batch = make_batch_seq(1..10_000);
         merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
 
-        let mut chunks = merk
-            .chunks()
-            .unwrap()
-            .unwrap()
-            .into_iter()
-            .map(|x| x.unwrap().unwrap());
+        let mut chunks = merk.chunks().unwrap().into_iter().map(|x| x.unwrap());
 
         let chunk = chunks.next().unwrap();
         let ops = Decoder::new(chunk.as_slice());
@@ -270,9 +252,8 @@ mod tests {
 
             merk.chunks()
                 .unwrap()
-                .unwrap()
                 .into_iter()
-                .map(|x| x.unwrap().unwrap())
+                .map(|x| x.unwrap())
                 .collect::<Vec<_>>()
                 .into_iter()
         };
@@ -281,12 +262,7 @@ mod tests {
         let merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .unwrap();
-        let reopen_chunks = merk
-            .chunks()
-            .unwrap()
-            .unwrap()
-            .into_iter()
-            .map(|x| x.unwrap().unwrap());
+        let reopen_chunks = merk.chunks().unwrap().into_iter().map(|x| x.unwrap());
 
         for (original, checkpoint) in original_chunks.zip(reopen_chunks) {
             assert_eq!(original.len(), checkpoint.len());
@@ -326,15 +302,14 @@ mod tests {
         let chunks = merk
             .chunks()
             .unwrap()
-            .unwrap()
             .into_iter()
-            .map(|x| x.unwrap().unwrap())
+            .map(|x| x.unwrap())
             .collect::<Vec<_>>();
 
-        let mut producer = merk.chunks().unwrap().unwrap();
+        let mut producer = merk.chunks().unwrap();
         for i in 0..chunks.len() * 2 {
             let index = i % chunks.len();
-            assert_eq!(producer.chunk(index).unwrap().unwrap(), chunks[index]);
+            assert_eq!(producer.chunk(index).unwrap(), chunks[index]);
         }
     }
 
@@ -346,9 +321,8 @@ mod tests {
         let _chunks = merk
             .chunks()
             .unwrap()
-            .unwrap()
             .into_iter()
-            .map(|x| x.unwrap().unwrap())
+            .map(|x| x.unwrap())
             .collect::<Vec<_>>();
     }
 
@@ -359,8 +333,8 @@ mod tests {
         let batch = make_batch_seq(1..42);
         merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
 
-        let mut producer = merk.chunks().unwrap().unwrap();
-        let _chunk = producer.chunk(50000).unwrap().unwrap();
+        let mut producer = merk.chunks().unwrap();
+        let _chunk = producer.chunk(50000).unwrap();
     }
 
     #[test]
@@ -369,9 +343,9 @@ mod tests {
         let batch = make_batch_seq(1..513);
         merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
 
-        let mut producer = merk.chunks().unwrap().unwrap();
+        let mut producer = merk.chunks().unwrap();
         println!("length: {}", producer.len());
-        let chunk = producer.chunk(2).unwrap().unwrap();
+        let chunk = producer.chunk(2).unwrap();
         assert_eq!(
             chunk,
             vec![
@@ -450,7 +424,7 @@ mod tests {
         let batch = make_batch_seq(1..42);
         merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
 
-        let mut producer = merk.chunks().unwrap().unwrap();
+        let mut producer = merk.chunks().unwrap();
         let _chunk1 = producer.next_chunk();
         let _chunk2 = producer.next_chunk();
     }

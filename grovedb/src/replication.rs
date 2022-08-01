@@ -68,7 +68,6 @@ impl<'db> ChunkProducer<'db> {
             let cache = self.cache.as_mut().expect("exists at this point");
             cache.current_chunk_producer = Some(
                 merk::ChunkProducer::new(&cache.current_merk)
-                    .unwrap()
                     .map_err(|e| Error::CorruptedData(e.to_string()))?,
             );
         }
@@ -80,7 +79,6 @@ impl<'db> ChunkProducer<'db> {
             .as_mut()
             .expect("must exist at this point")
             .chunk(index)
-            .unwrap()
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 }

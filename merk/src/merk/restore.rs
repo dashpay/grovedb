@@ -323,7 +323,7 @@ mod tests {
                 .unwrap();
         }
 
-        let chunks = original.chunks().unwrap().unwrap();
+        let chunks = original.chunks().unwrap();
 
         let storage = TempStorage::default();
         let ctx = storage.get_storage_context(empty()).unwrap();
@@ -334,7 +334,7 @@ mod tests {
 
         let mut expected_remaining = chunks.len();
         for chunk in chunks {
-            let remaining = restorer.process_chunk(&chunk.unwrap().unwrap()).unwrap();
+            let remaining = restorer.process_chunk(&chunk.unwrap()).unwrap();
 
             expected_remaining -= 1;
             assert_eq!(remaining, expected_remaining);

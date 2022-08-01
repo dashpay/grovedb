@@ -466,7 +466,7 @@ mod tests {
 
         // whole tree as 1 leaf
         let mut iter = merk.storage.raw_iter();
-        iter.seek_to_first();
+        iter.seek_to_first().unwrap();
         let chunk = get_next_chunk(&mut iter, None).unwrap().unwrap();
         let ops = chunk.into_iter().map(Ok);
         let chunk = verify_leaf(ops, merk.root_hash().unwrap())
@@ -479,7 +479,7 @@ mod tests {
         drop(iter);
 
         let mut iter = merk.storage.raw_iter();
-        iter.seek_to_first();
+        iter.seek_to_first().unwrap();
 
         // left leaf
         let chunk = get_next_chunk(&mut iter, Some(root_key.as_slice()))
