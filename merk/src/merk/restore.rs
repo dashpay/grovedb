@@ -12,7 +12,7 @@ use crate::{
     proofs::{
         chunk::{verify_leaf, verify_trunk, MIN_TRUNK_HEIGHT},
         tree::{Child, Tree as ProofTree},
-        Decoder, Node,
+        Node, Op,
     },
     tree::{Link, RefWalker, Tree},
     Hash,
@@ -53,9 +53,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// be called.
     ///
     /// TODO: `anyhow::Error` is too vague
-    pub fn process_chunk(&mut self, chunk_bytes: &[u8]) -> Result<usize, Error> {
-        let ops = Decoder::new(chunk_bytes);
-
+    pub fn process_chunk(&mut self, ops: impl IntoIterator<Item = Op>) -> Result<usize, Error> {
         match self.leaf_hashes {
             None => self.process_trunk(ops),
             Some(_) => self.process_leaf(ops),
@@ -112,8 +110,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     }
 
     /// Verifies the trunk then writes its data to the RocksDB.
-    fn process_trunk(&mut self, ops: Decoder) -> Result<usize, Error> {
-        let (trunk, height) = verify_trunk(ops).unwrap()?;
+    fn process_trunk(&mut self, ops: impl IntoIterator<Item = Op>) -> Result<usize, Error> {
+        let (trunk, height) = verify_trunk(ops.into_iter().map(Ok)).unwrap()?;
 
         if trunk.hash().unwrap() != self.expected_root_hash {
             return Err(anyhow!(
@@ -169,13 +167,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
     /// Verifies a leaf chunk then writes it to the RocksDB. This needs to be
     /// called in order, retrying the last chunk for any failed verifications.
-    fn process_leaf(&mut self, ops: Decoder) -> Result<usize, Error> {
+    fn process_leaf(&mut self, ops: impl IntoIterator<Item = Op>) -> Result<usize, Error> {
         let leaf_hashes = self.leaf_hashes.as_mut().unwrap();
         let leaf_hash = leaf_hashes
             .peek()
             .expect("Received more chunks than expected");
 
-        let leaf = verify_leaf(ops, *leaf_hash).unwrap()?;
+        let leaf = verify_leaf(ops.into_iter().map(Ok), *leaf_hash).unwrap()?;
         self.rewrite_parent_link(&leaf)?;
         self.write_chunk(leaf)?;
 
@@ -334,7 +332,7 @@ mod tests {
 
         let mut expected_remaining = chunks.len();
         for chunk in chunks {
-            let remaining = restorer.process_chunk(&chunk.unwrap()).unwrap();
+            let remaining = restorer.process_chunk(chunk.unwrap()).unwrap();
 
             expected_remaining -= 1;
             assert_eq!(remaining, expected_remaining);

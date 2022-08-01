@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, iter::empty, slice};
 
 use merk::{
-    proofs::{Decoder, Node, Op},
+    proofs::{Node, Op},
     Merk,
 };
 use storage::{
@@ -41,7 +41,7 @@ impl<'db> ChunkProducer<'db> {
         }
     }
 
-    pub fn get_chunk<'p, P>(&mut self, path: P, index: usize) -> Result<Vec<u8>, Error>
+    pub fn get_chunk<'p, P>(&mut self, path: P, index: usize) -> Result<Vec<Op>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: Clone,
@@ -129,19 +129,20 @@ impl<'db> Restorer<'db> {
     }
 
     /// Process next chunk and receive instruction on what to do next.
-    pub fn process_chunk(&mut self, chunk: &[u8]) -> Result<RestorerResponse, RestorerError> {
+    pub fn process_chunk(
+        &mut self,
+        chunk_ops: impl IntoIterator<Item = Op>,
+    ) -> Result<RestorerResponse, RestorerError> {
         if self.current_merk_restorer.is_none() {
             // Last restorer was consumed and no more Merks to process.
             return Ok(RestorerResponse::Ready);
         }
         // First we decode a chunk to take out info about nested trees to add them into
         // todo list.
-        //
-        // TODO: do not decode twice (because Merk does the same too)
         let mut ops = Vec::new();
-        for op in Decoder::new(chunk) {
-            let op = op.map_err(|e| RestorerError(e.to_string()))?;
-            match &op {
+        for op in chunk_ops {
+            ops.push(op);
+            match ops.last().expect("just inserted") {
                 Op::Push(Node::KV(key, bytes)) | Op::PushInverted(Node::KV(key, bytes)) => {
                     if let Element::Tree(hash, _) =
                         Element::deserialize(bytes).map_err(|e| RestorerError(e.to_string()))?
@@ -158,7 +159,6 @@ impl<'db> Restorer<'db> {
                 }
                 _ => {}
             }
-            ops.push(op);
         }
 
         // Process chunk using Merk's possibilities.
@@ -166,7 +166,7 @@ impl<'db> Restorer<'db> {
             .current_merk_restorer
             .as_mut()
             .expect("restorer exists at this point")
-            .process_chunk(chunk)
+            .process_chunk(ops)
             .map_err(|e| RestorerError(e.to_string()))?;
 
         self.current_merk_chunk_index += 1;
@@ -244,10 +244,7 @@ mod test {
                 let chunk = chunk_producer
                     .get_chunk(next_chunk.0.iter().map(|x| x.as_slice()), next_chunk.1)
                     .expect("cannot get next chunk");
-                match restorer
-                    .process_chunk(&chunk)
-                    .expect("cannot process chunk")
-                {
+                match restorer.process_chunk(chunk).expect("cannot process chunk") {
                     RestorerResponse::Ready => break,
                     RestorerResponse::AwaitNextChunk { path, index } => {
                         next_chunk = (path.map(|x| x.to_vec()).collect(), index);
@@ -299,7 +296,7 @@ mod test {
         let mut restorer = Restorer::new(&temp_storage, bad_hash).unwrap();
         let mut chunks = db.chunks();
         assert!(restorer
-            .process_chunk(&chunks.get_chunk([], 0).unwrap())
+            .process_chunk(chunks.get_chunk([], 0).unwrap())
             .is_err());
     }
 
@@ -330,7 +327,7 @@ mod test {
         let mut chunks = db.chunks();
 
         let next_op = restorer
-            .process_chunk(&chunks.get_chunk([], 0).unwrap())
+            .process_chunk(chunks.get_chunk([], 0).unwrap())
             .unwrap();
         match next_op {
             RestorerResponse::AwaitNextChunk { path, index } => {
@@ -341,7 +338,7 @@ mod test {
                 } else {
                     chunks.get_chunk([TEST_LEAF], index).unwrap()
                 };
-                assert!(restorer.process_chunk(&chunk).is_err());
+                assert!(restorer.process_chunk(chunk).is_err());
             }
             _ => {}
         }
