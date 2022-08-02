@@ -81,45 +81,30 @@ impl GroveDb {
         cost.hash_node_calls += 2;
 
         // on insertion, we need to balance the tree
-        // worst case, every node up to the root needs to be rebalanced
-        // A
-        //  B
-        //   C
-        // effect of a single rotation either left or right
-        //  - A becomes child of B and sibiling of C
-        //      B
-        //    A   C
-        // looking at this, B and A get new node_hashes, as their child content has changed.
-        // C remains the same.
-        //
-        //  A
-        //    C
-        //  B
-        // effect of a double rotation
-        // - first B goes to the middle, then A becomes the child of B
-        // A
-        //  B
-        //   C
-        // then
-        //    B
-        //  A  C
-        // this modifies the child content of all nodes involved
-        // hence node_hash has to be recomputed for all involved nodes.
+        // worst case for insertion, one rotation at some subtree point A
+        // where a rotation can be single or double.
+        // at most one rotation because before insertion the tree is balanced
+        // after insertion the height of a subtree on the insertion path is increased by one
+        // after rotation, the height of that subtree is same as it was before insertion
+        // hence the nodes above do not need to change.
+        // Summary: insertion leads to an unbalance at a single point, once we fix that point the tree is balanced.
 
-        // TODO: This doesn't feel very accurate
-        // Walking back up, each node gets reattached
-        // marking them as modified, this bears no additional cost
-        // TODO: balancing also happens here, map this out
-        // after base insertion or updates, balancing occurs
-        // the only effect this has is increasing the number of modified nodes for future hash re computation
-        // worst case, it adds one additional node per balancing operation
-        let max_number_of_modified_nodes = max_number_of_walks * 2;
+        // Effects of rotation
+        // Rotation rearranges nodes on the insertion path
+        // Since merk already marks all nodes on the insertion path as modified hash re computation will be performed.
+        // We are concerned more with the effect of rotating towards an already occupied point
+        // In this case we first have to detach the node at the target location, and connect it to the node we are rotating.
+        // Merk marks any moved node as modified even when their children do not change (this feels inefficient and unnecessary)
+        // TODO: Look into if there is a legitimate for doing this.
+        // Hence worst case, we have an additional modified node during the insertion.
+
+        let max_number_of_modified_nodes = max_number_of_walks + 1;
 
         // commit stage
         // for every modified node, recursively call commit on all modified children
         // at base, write the node to storage
-        // we create a batch entry [key, encoded_tree]
-        // prefixed key is created during get storage context for merk open
+        // we create a batch entry [prefixed_key, encoded_tree]
+        // the prefix is created during get storage context for merk open
         let prefix_size: u32 = 32;
         let prefixed_key_size = prefix_size + max_key_size;
         let value_size = (2 * Self::worst_case_encoded_link_size(max_key_size))
@@ -133,7 +118,7 @@ impl GroveDb {
 
         // Write the root key
         cost.seek_count += 1;
-        cost.storage_written_bytes += (b"root".len() + max_key_size);
+        cost.storage_written_bytes += (b"root".len() as u32 + max_key_size);
     }
 
     /// Add worst case for getting a merk tree
@@ -282,7 +267,7 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
         // let batch = make_batch_seq(1..209);
-        let a = vec![b"1".to_vec(), b"12".to_vec(), b"13".to_vec(), b"3".to_vec(), b"2".to_vec(), b"11".to_vec()];
+        let a = vec![b"2".to_vec(), b"4".to_vec(), b"1".to_vec(), b"3".to_vec(), b"5".to_vec(), b"6".to_vec()];
         for m in a {
             println!();
             println!("inserting {}", std::str::from_utf8(&m).unwrap());
