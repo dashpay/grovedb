@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, iter::empty, slice};
+use std::{
+    collections::VecDeque,
+    iter::{empty, once},
+    slice,
+};
 
 use merk::{
     proofs::{Node, Op},
@@ -6,10 +10,12 @@ use merk::{
 };
 use storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
-    Storage,
+    Storage, StorageContext,
 };
 
 use crate::{Element, Error, GroveDb, Hash};
+
+const OPS_PER_CHUNK: usize = 128;
 
 impl GroveDb {
     /// Creates a chunk producer to replicate GroveDb.
@@ -39,6 +45,14 @@ impl<'db> ChunkProducer<'db> {
             storage,
             cache: None,
         }
+    }
+
+    pub fn chunks_in_current_producer(&self) -> usize {
+        self.cache
+            .as_ref()
+            .map(|c| c.current_chunk_producer.as_ref().map(|p| p.len()))
+            .flatten()
+            .unwrap_or(0)
     }
 
     pub fn get_chunk<'p, P>(&mut self, path: P, index: usize) -> Result<Vec<Op>, Error>
@@ -208,6 +222,99 @@ impl<'db> Restorer<'db> {
                 index: self.current_merk_chunk_index,
             })
         }
+    }
+}
+
+/// Chunk producer wrapper which uses bigger messages that may include chunks of
+/// requested subtree with its right siblings.
+///
+/// Because `Restorer` builds GroveDb replica breadth-first way from top to
+/// bottom it makes sense to send a subtree's siblings next instead of its own
+/// subtrees.
+pub struct SiblingsChunkProducer<'db> {
+    chunk_producer: ChunkProducer<'db>,
+}
+
+pub struct GroveChunk {
+    path: Vec<Vec<u8>>,
+    subtree_chunks: Vec<(usize, Vec<Op>)>,
+}
+
+impl<'db> SiblingsChunkProducer<'db> {
+    pub fn new(chunk_producer: ChunkProducer<'db>) -> Self {
+        SiblingsChunkProducer { chunk_producer }
+    }
+
+    /// Get a collection of chunks possibly from different Merks with the first
+    /// one as requested.
+    pub fn get_chunk<'p, P>(&mut self, path: P, index: usize) -> Result<Vec<GroveChunk>, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
+    {
+        let path_iter = path.into_iter();
+        let mut result = Vec::new();
+        let mut ops_count = 0;
+
+        // Get siblings on the right to send chunks of multiple Merks if it meets the
+        // limit.
+
+        let mut parent_path = path_iter.clone();
+        let this_key = parent_path.next_back().unwrap(); // TODO
+
+        let parent_ctx = self
+            .chunk_producer
+            .storage
+            .get_storage_context(parent_path.clone())
+            .unwrap();
+        let mut siblings_iter = Element::iterator(parent_ctx.raw_iter()).unwrap();
+        siblings_iter.fast_forward(this_key)?;
+
+        let mut siblings_keys: VecDeque<Vec<u8>> = VecDeque::new();
+        while let Some(element) = siblings_iter.next().unwrap()? {
+            if let (key, Element::Tree(..)) = element {
+                siblings_keys.push_back(key);
+            }
+        }
+
+        let mut current_index = index;
+        // Process each subtree
+        while let Some(subtree_key) = siblings_keys.pop_front() {
+            // Accumulate chunks of one subtree
+            let mut subtree_chunks = Vec::new();
+
+            let subtree_path: Vec<Vec<u8>> = parent_path
+                .clone()
+                .map(|x| x.to_vec())
+                .chain(once(subtree_key))
+                .collect();
+            // Process one subtree's chunks
+            while current_index < self.chunk_producer.chunks_in_current_producer()
+                && ops_count < OPS_PER_CHUNK
+            {
+                let ops = self
+                    .chunk_producer
+                    .get_chunk(subtree_path.iter().map(|x| x.as_slice()), current_index)?;
+
+                ops_count += ops.len();
+                subtree_chunks.push((current_index, ops));
+                current_index += 1;
+            }
+
+            result.push(GroveChunk {
+                path: subtree_path.clone(),
+                subtree_chunks,
+            });
+
+            if ops_count >= OPS_PER_CHUNK {
+                return Ok(result);
+            }
+
+            // Going to a next sibling, should start from 0.
+            current_index = 0;
+        }
+
+        Ok(result)
     }
 }
 
@@ -390,7 +497,7 @@ mod test {
     fn replicate_a_big_one() {
         const HEIGHT: usize = 3;
         const SUBTREES_FOR_EACH: usize = 3;
-        const SCALARS_FOR_EACH: usize = 300;
+        const SCALARS_FOR_EACH: usize = 600;
 
         let db = make_grovedb();
         let mut to_compare = Vec::new();
