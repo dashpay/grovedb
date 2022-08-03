@@ -315,7 +315,7 @@ where {
     }
 
     /// Does tree element exist without following references
-    pub fn worst_case_for_has_raw<'p, P>(&self, path: P, key: &'p [u8]) -> CostResult<bool, Error>
+    pub fn worst_case_for_has_raw<'p, P>(&self, path: P, key: &'p [u8], max_element_size: u32) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
@@ -326,10 +326,10 @@ where {
         Self::add_worst_case_get_merk::<_, RocksDbStorage>(
             &mut cost,
             path,
-            crate::MAX_ELEMENT_SIZE,
+            max_element_size,
         ); // TODO: use GroveDb's storage type parameter when it will be finally abstract
            // over it
-        Self::add_worst_case_merk_has_element(&mut cost, key, crate::MAX_ELEMENT_SIZE);
+        Self::add_worst_case_merk_has_element(&mut cost, key, max_element_size);
 
         // In the worst case, there will not be an error, but the item will not be found
         Ok(false).wrap_with_cost(cost)

@@ -95,10 +95,10 @@ impl GroveDb {
         // We are concerned more with the effect of rotating towards an already occupied point
         // In this case we first have to detach the node at the target location, and connect it to the node we are rotating.
         // Merk marks any moved node as modified even when their children do not change (this feels inefficient and unnecessary)
-        // TODO: Look into if there is a legitimate for doing this.
+        // TODO: Look into if there is a legitimate reason for doing this.
         // Hence worst case, we have an additional modified node during the insertion.
 
-        let max_number_of_modified_nodes = max_number_of_walks + 1;
+        let max_number_of_modified_nodes = max_number_of_walks + 2;
 
         // commit stage
         // for every modified node, recursively call commit on all modified children
@@ -254,9 +254,9 @@ mod test {
 
     #[test]
     fn test_insert_merk_node_worst_case() {
-        // let mut cost = OperationCost::default();
-        // GroveDb::add_worst_case_insert_merk_node(&mut cost, 30, 10, 256);
-        // dbg!(cost);
+        let mut cost = OperationCost::default();
+        GroveDb::add_worst_case_insert_merk_node(&mut cost, 30, 10, 8);
+        dbg!(cost);
         // Open a merk and insert 10 elements.
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage =
@@ -266,27 +266,28 @@ mod test {
         Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
-        // let batch = make_batch_seq(1..209);
-        let a = vec![b"2".to_vec(), b"4".to_vec(), b"1".to_vec(), b"3".to_vec(), b"5".to_vec(), b"6".to_vec()];
-        for m in a {
-            println!();
-            println!("inserting {}", std::str::from_utf8(&m).unwrap());
-            merk.apply::<_, Vec<_>>(&[(m, Op::Put(b"a".to_vec()))], &[])
-                .unwrap()
-                .unwrap();
-        }
+        let batch = make_batch_seq(1..10);
+        let m = merk.apply::<_, Vec<_>>(batch.as_slice(), &[]);
+        // let a = vec![b"2".to_vec(), b"4".to_vec(), b"1".to_vec(), b"3".to_vec(), b"5".to_vec(), b"6".to_vec()];
+        // for m in a {
+        //     println!();
+        //     println!("inserting {}", std::str::from_utf8(&m).unwrap());
+        //     merk.apply::<_, Vec<_>>(&[(m, Op::Put(b"a".to_vec()))], &[])
+        //         .unwrap()
+        //         .unwrap();
+        // }
         //
         // // drop merk, so nothing is stored in memory
-        // drop(merk);
+        drop(merk);
         // //
         // // // Reopen merk: this time, only root node is loaded to memory
-        // let mut merk =
-        // Merk::open(storage.get_storage_context(empty()).unwrap())
-        //     .unwrap()
-        //     .expect("cannot open merk");
-        //
-        // let batch = make_batch_seq(10..11);
-        // let m = merk.apply::<_, Vec<_>>(batch.as_slice(), &[]);
-        // dbg!(m);
+        let mut merk =
+        Merk::open(storage.get_storage_context(empty()).unwrap())
+            .unwrap()
+            .expect("cannot open merk");
+
+        let batch = make_batch_seq(10..11);
+        let m = merk.apply::<_, Vec<_>>(batch.as_slice(), &[]);
+        dbg!(m);
     }
 }
