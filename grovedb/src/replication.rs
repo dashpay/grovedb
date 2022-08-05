@@ -260,12 +260,9 @@ impl<'db> SiblingsChunkProducer<'db> {
         let mut ops_count = 0;
 
         if path_iter.len() == 0 {
-            // We're at the root of GroveDb.
+            // We're at the root of GroveDb, no siblings here.
             self.process_subtree_chunks(&mut result, &mut ops_count, empty(), index)?;
-
-            if ops_count >= OPS_PER_CHUNK {
-                return Ok(result);
-            }
+            return Ok(result);
         };
 
         // Get siblings on the right to send chunks of multiple Merks if it meets the
