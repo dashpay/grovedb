@@ -258,8 +258,21 @@ mod test {
 
     #[test]
     fn test_insert_merk_node_worst_case() {
+        // Want to test this
+        // Need to create the worst case scenario
+        // We should already have a certain number of elements (max_element_number - 1)
+        // need an accurate representation of the key size (in bytes)
+        // also the max element size (in bytes)
+        // if we control those variables, we should get the same value with actual cost.
+
+        // we need to insert on the branch that has the maximum number of walks
+        // need to get an accurate representation of the max element size
+        //  believe this should be 60 bytes
+        // max element number will be used quite differently, might have been using it wrong in fact
+        // we need to use 1 - max element number as our current size
+
         let mut cost = OperationCost::default();
-        GroveDb::add_worst_case_insert_merk_node(&mut cost, 30, 10, 8);
+        GroveDb::add_worst_case_insert_merk_node(&mut cost, 60, 10, 8);
         dbg!(cost);
         // Open a merk and insert 10 elements.
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
