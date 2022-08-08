@@ -10,7 +10,7 @@ pub use tree::Tree;
 use crate::tree::Hash;
 
 /// A proof operator, executed to verify the data in a Merkle proof.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     /// Pushes a node on the stack.
     /// Signifies ascending node keys
