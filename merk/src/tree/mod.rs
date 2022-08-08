@@ -256,6 +256,14 @@ impl Tree {
             "Tried to attach tree with same key"
         );
 
+        // let parent = std::str::from_utf8(self.key());
+        // if maybe_child.is_some(){
+        //     let child = std::str::from_utf8(maybe_child.as_ref().unwrap().key());
+        //     println!("attaching {} to {}", child.unwrap(), parent.unwrap());
+        // } else {
+        //     println!("attaching nothing to {}", parent.unwrap());
+        // }
+
         let slot = self.slot_mut(left);
 
         if slot.is_some() {
@@ -283,8 +291,9 @@ impl Tree {
             Some(Link::Uncommitted { tree, .. }) => Some(tree),
             Some(Link::Loaded { tree, .. }) => Some(tree),
         };
+        println!("detaching {}", std::str::from_utf8(maybe_child.as_ref().unwrap().key()).unwrap());
 
-        (self, maybe_child)
+            (self, maybe_child)
     }
 
     /// Detaches the child on the given side from the root node, and
@@ -388,15 +397,18 @@ impl Tree {
         // TODO: make this method less ugly
         // TODO: call write in-order for better performance in writing batch to db?
 
+        // println!("about to commit {}", std::str::from_utf8(self.key()).unwrap());
         let mut cost = OperationCost::default();
 
         if let Some(Link::Modified { .. }) = self.inner.left {
+            println!("left is modified");
             if let Some(Link::Modified {
                 mut tree,
                 child_heights,
                 ..
             }) = self.inner.left.take()
             {
+                // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
                 cost_return_on_error!(&mut cost, tree.commit(c));
                 self.inner.left = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
@@ -409,12 +421,14 @@ impl Tree {
         }
 
         if let Some(Link::Modified { .. }) = self.inner.right {
+            println!("right is modified");
             if let Some(Link::Modified {
                 mut tree,
                 child_heights,
                 ..
             }) = self.inner.right.take()
             {
+                // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
                 cost_return_on_error!(&mut cost, tree.commit(c));
                 self.inner.right = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
@@ -427,6 +441,8 @@ impl Tree {
         }
 
         cost_return_on_error_no_add!(&cost, c.write(self));
+
+        // println!("done committing {}", std::str::from_utf8(self.key()).unwrap());
 
         let (prune_left, prune_right) = c.prune(self);
         if prune_left {
