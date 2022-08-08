@@ -196,6 +196,10 @@ impl GroveDb {
         // Same number of hash recomputations for propagation
         cost.hash_node_calls += (nodes_updated as u16) * Self::node_hash_update_count();
     }
+
+    pub fn add_worst_case_delete_cost(cost: &mut OperationCost, max_element_size: u32, max_key_size: u32){
+        // does nothing for now
+    }
 }
 
 pub(crate) enum MerkWorstCaseInput {
