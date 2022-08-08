@@ -261,6 +261,17 @@ impl Query {
             }
         }
     }
+
+    pub fn has_subquery(&self) -> bool {
+        // checks if a query has subquery items
+        if self.default_subquery_branch.subquery != None
+            || self.default_subquery_branch.subquery_key != None
+            || self.conditional_subquery_branches.len() != 0
+        {
+            return true;
+        }
+        false
+    }
 }
 
 impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
