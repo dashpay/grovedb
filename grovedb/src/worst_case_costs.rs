@@ -56,7 +56,6 @@ impl GroveDb {
 
     pub(crate) fn add_worst_case_insert_merk_node(
         cost: &mut OperationCost,
-        // key: &[u8],
         max_element_size: u32,
         max_element_number: u32,
         max_key_size: u32,
@@ -66,7 +65,10 @@ impl GroveDb {
 
         // maximum height of a tree
         // 1.44 * log n
-        let max_tree_height = (1.44 * (max_element_number as f32).log2()).floor() as u32;
+        // subtracting 1 from the max_element_number as we can't be adding an element to an already
+        // filled tree.
+        let worst_case_element_number = max_element_number - 1;
+        let max_tree_height = (1.44 * (worst_case_element_number as f32).log2()).floor() as u32;
 
         // to insert a node, we have to walk from the root to some leaf node
         let max_number_of_walks = max_tree_height - 1;
@@ -83,7 +85,7 @@ impl GroveDb {
         // on insertion, we need to balance the tree
         // worst case for insertion, one rotation at some subtree point A
         // where a rotation can be single or double.
-        // at most one rotation because before insertion the tree is balanced
+        // at most one rotation, because before insertion the tree is balanced
         // after insertion the height of a subtree on the insertion path is increased by one
         // after rotation, the height of that subtree is same as it was before insertion
         // hence the nodes above do not need to change.
@@ -98,7 +100,7 @@ impl GroveDb {
         // TODO: Look into if there is a legitimate reason for doing this.
         // Hence worst case, we have an additional modified node during the insertion.
 
-        let max_number_of_modified_nodes = max_number_of_walks + 2;
+        let max_number_of_modified_nodes = max_number_of_walks + 2 + 1;
 
         // commit stage
         // for every modified node, recursively call commit on all modified children
@@ -212,7 +214,7 @@ mod test {
     use std::iter::empty;
 
     use costs::{CostContext, OperationCost};
-    use merk::{test_utils::make_batch_seq, Merk, Op};
+    use merk::{test_utils::make_batch_seq, Merk, Op, BatchEntry};
     use storage::{rocksdb_storage::RocksDbStorage, Storage};
     use tempfile::TempDir;
 
@@ -271,8 +273,16 @@ mod test {
         // max element number will be used quite differently, might have been using it wrong in fact
         // we need to use 1 - max element number as our current size
 
+
+        // why is written storage bytes wrong??
+        // when do we write??
+        // We write the new inserted node
+        // We also write during modification
+        // all the trees we walk get modified so they have to be re-written
+
         let mut cost = OperationCost::default();
-        GroveDb::add_worst_case_insert_merk_node(&mut cost, 60, 10, 8);
+        GroveDb::add_worst_case_insert_merk_node(&mut cost, 60, 11, 8);
+
         dbg!(cost);
         // Open a merk and insert 10 elements.
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
@@ -284,8 +294,11 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
-        let m = merk.apply::<_, Vec<_>>(batch.as_slice(), &[]);
-        // let a = vec![b"2".to_vec(), b"4".to_vec(), b"1".to_vec(), b"3".to_vec(), b"5".to_vec(), b"6".to_vec()];
+        for b in batch {
+            merk.apply::<_, Vec<_>>(&[b.clone()], &[]).unwrap().unwrap()
+        }
+        // let m = merk.apply::<_, Vec<_>>(batch.as_slice(), &[]);
+        // let a = vec![b"1".to_vec(), b"2".to_vec(), b"3".to_vec(), b"4".to_vec(), b"5".to_vec(), b"6".to_vec(), b"7".to_vec(), b"8".to_vec(), b"9".to_vec(), b"10".to_vec()];
         // for m in a {
         //     println!();
         //     println!("inserting {}", std::str::from_utf8(&m).unwrap());
@@ -293,7 +306,7 @@ mod test {
         //         .unwrap()
         //         .unwrap();
         // }
-        //
+
         // // drop merk, so nothing is stored in memory
         drop(merk);
         // //

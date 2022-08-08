@@ -11,7 +11,7 @@ use crate::tree::hash::value_hash;
 type DeletedKeys = LinkedList<Vec<u8>>;
 
 /// An operation to be applied to a key in the store.
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Clone, Eq)]
 pub enum Op {
     Put(Vec<u8>),
     PutReference(Vec<u8>, Vec<u8>),
