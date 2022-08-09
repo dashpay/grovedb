@@ -14,7 +14,7 @@ use storage::{
 
 use crate::{Element, Error, GroveDb, Hash};
 
-const OPS_PER_CHUNK: usize = 128;
+const OPS_PER_CHUNK: usize = 2048;
 
 impl GroveDb {
     /// Creates a chunk producer to replicate GroveDb.
