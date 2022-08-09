@@ -238,7 +238,7 @@ pub struct SiblingsChunkProducer<'db> {
     chunk_producer: SubtreeChunkProducer<'db>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct GroveChunk {
     subtree_chunks: Vec<(usize, Vec<Op>)>,
 }
