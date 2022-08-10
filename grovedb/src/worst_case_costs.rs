@@ -46,11 +46,16 @@ impl GroveDb {
         cost: &mut OperationCost,
         max_element_size: u32,
         max_element_number: u32,
-        max_key_size: u32
+        max_key_size: u32,
     ) {
         // same as insert node but one less hash node call as that is done on the
         // grovedb layer
-        Self::add_worst_case_insert_merk_node(cost, max_element_size, max_element_number, max_key_size);
+        Self::add_worst_case_insert_merk_node(
+            cost,
+            max_element_size,
+            max_element_number,
+            max_key_size,
+        );
         cost.hash_node_calls -= 1;
     }
 
@@ -61,12 +66,13 @@ impl GroveDb {
         max_key_size: u32,
     ) {
         // For worst case conditions:
-        // - merk tree was just opened hence only root node and corresponding links are loaded
+        // - merk tree was just opened hence only root node and corresponding links are
+        //   loaded
 
         // maximum height of a tree
         // 1.44 * log n
-        // subtracting 1 from the max_element_number as we can't be adding an element to an already
-        // filled tree.
+        // subtracting 1 from the max_element_number as we can't be adding an element to
+        // an already filled tree.
         let worst_case_element_number = max_element_number - 1;
         let max_tree_height = (1.44 * (worst_case_element_number as f32).log2()).floor() as u32;
 
@@ -86,19 +92,22 @@ impl GroveDb {
         // worst case for insertion, one rotation at some subtree point A
         // where a rotation can be single or double.
         // at most one rotation, because before insertion the tree is balanced
-        // after insertion the height of a subtree on the insertion path is increased by one
-        // after rotation, the height of that subtree is same as it was before insertion
-        // hence the nodes above do not need to change.
-        // Summary: insertion leads to an unbalance at a single point, once we fix that point the tree is balanced.
+        // after insertion the height of a subtree on the insertion path is increased by
+        // one after rotation, the height of that subtree is same as it was
+        // before insertion hence the nodes above do not need to change.
+        // Summary: insertion leads to an unbalance at a single point, once we fix that
+        // point the tree is balanced.
 
         // Effects of rotation
         // Rotation rearranges nodes on the insertion path
-        // Since merk already marks all nodes on the insertion path as modified hash re computation will be performed.
-        // We are concerned more with the effect of rotating towards an already occupied point
-        // In this case we first have to detach the node at the target location, and connect it to the node we are rotating.
-        // Merk marks any moved node as modified even when their children do not change (this feels inefficient and unnecessary)
-        // TODO: Look into if there is a legitimate reason for doing this.
-        // Hence worst case, we have an additional modified node during the insertion.
+        // Since merk already marks all nodes on the insertion path as modified hash re
+        // computation will be performed. We are concerned more with the effect
+        // of rotating towards an already occupied point In this case we first
+        // have to detach the node at the target location, and connect it to the node we
+        // are rotating. Merk marks any moved node as modified even when their
+        // children do not change (this feels inefficient and unnecessary) TODO:
+        // Look into if there is a legitimate reason for doing this. Hence worst
+        // case, we have an additional modified node during the insertion.
 
         let max_number_of_modified_nodes = max_number_of_walks + 2 + 1;
 
@@ -199,15 +208,28 @@ impl GroveDb {
         cost.hash_node_calls += (nodes_updated as u16) * Self::node_hash_update_count();
     }
 
-    pub fn add_worst_case_delete_cost(cost: &mut OperationCost, max_element_size: u32, max_key_size: u32){
+    pub fn add_worst_case_delete_cost(
+        cost: &mut OperationCost,
+        max_element_size: u32,
+        max_key_size: u32,
+    ) {
         // does nothing for now
     }
 
-    pub fn add_worst_case_has_raw_cost(cost: &mut OperationCost, key_size: u32, max_element_size: u32) {
+    pub fn add_worst_case_has_raw_cost<'db, 'p, P, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: P,
+        key_size: u32,
+        max_element_size: u32,
+    ) where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
         let value_size = (2 * Self::worst_case_encoded_link_size(key_size))
             + Self::worst_case_encoded_kv_node_size(max_element_size);
         cost.seek_count += 1;
         cost.storage_loaded_bytes += value_size;
+        *cost += S::get_storage_context_cost(path);
     }
 }
 
@@ -221,11 +243,15 @@ mod test {
     use std::iter::empty;
 
     use costs::{CostContext, OperationCost};
-    use merk::{test_utils::make_batch_seq, Merk, Op, BatchEntry};
+    use integer_encoding::VarInt;
+    use merk::{test_utils::make_batch_seq, BatchEntry, Merk, Op};
     use storage::{rocksdb_storage::RocksDbStorage, Storage};
     use tempfile::TempDir;
 
-    use crate::GroveDb;
+    use crate::{
+        tests::{make_deep_tree, make_grovedb, TEST_LEAF},
+        Element, GroveDb,
+    };
 
     #[test]
     fn test_get_merk_node_worst_case() {
@@ -257,7 +283,7 @@ mod test {
         let node_result = merk.get(&8_u64.to_be_bytes());
 
         // By tweaking the max element size, we can adapt the worst case function to
-        // this scenario make_batch_seq creates values that are 60 bytes in size
+        // this scenario. make_batch_seq creates values that are 60 bytes in size
         // (this will be the max_element_size)
         let mut cost = OperationCost::default();
         let key = &8_u64.to_be_bytes();
@@ -277,9 +303,9 @@ mod test {
         // we need to insert on the branch that has the maximum number of walks
         // need to get an accurate representation of the max element size
         //  believe this should be 60 bytes
-        // max element number will be used quite differently, might have been using it wrong in fact
-        // we need to use 1 - max element number as our current size
-
+        // max element number will be used quite differently, might have been using it
+        // wrong in fact we need to use 1 - max element number as our current
+        // size
 
         // why is written storage bytes wrong??
         // when do we write??
@@ -293,11 +319,9 @@ mod test {
         dbg!(cost);
         // Open a merk and insert 10 elements.
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
-        let storage =
-        RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let mut merk =
-        Merk::open(storage.get_storage_context(empty()).unwrap())
+        let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
@@ -305,8 +329,9 @@ mod test {
             merk.apply::<_, Vec<_>>(&[b.clone()], &[]).unwrap().unwrap()
         }
         // let m = merk.apply::<_, Vec<_>>(batch.as_slice(), &[]);
-        // let a = vec![b"1".to_vec(), b"2".to_vec(), b"3".to_vec(), b"4".to_vec(), b"5".to_vec(), b"6".to_vec(), b"7".to_vec(), b"8".to_vec(), b"9".to_vec(), b"10".to_vec()];
-        // for m in a {
+        // let a = vec![b"1".to_vec(), b"2".to_vec(), b"3".to_vec(), b"4".to_vec(),
+        // b"5".to_vec(), b"6".to_vec(), b"7".to_vec(), b"8".to_vec(), b"9".to_vec(),
+        // b"10".to_vec()]; for m in a {
         //     println!();
         //     println!("inserting {}", std::str::from_utf8(&m).unwrap());
         //     merk.apply::<_, Vec<_>>(&[(m, Op::Put(b"a".to_vec()))], &[])
@@ -318,8 +343,7 @@ mod test {
         drop(merk);
         // //
         // // // Reopen merk: this time, only root node is loaded to memory
-        let mut merk =
-        Merk::open(storage.get_storage_context(empty()).unwrap())
+        let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
 
@@ -330,6 +354,32 @@ mod test {
 
     #[test]
     fn test_has_raw_worst_case() {
+        let tmp_dir = TempDir::new().unwrap();
+        let mut db = GroveDb::open(tmp_dir.path()).unwrap();
 
+        // insert empty tree to start
+        db.insert([], TEST_LEAF, Element::empty_tree(), None)
+            .unwrap()
+            .expect("successful root tree leaf insert");
+
+        // In this tree, we insert 3 items with keys [1, 2, 3]
+        // after tree rotation, 2 will be at the top hence would have both left and
+        // right links this will serve as our worst case candidate.
+        let elem = Element::new_item(b"value".to_vec());
+        db.insert([TEST_LEAF], &[1], elem.clone(), None);
+        db.insert([TEST_LEAF], &[2], elem.clone(), None);
+        db.insert([TEST_LEAF], &[3], elem.clone(), None);
+
+        let mut worst_case_has_raw_cost = OperationCost::default();
+        GroveDb::add_worst_case_has_raw_cost::<_, RocksDbStorage>(
+            &mut worst_case_has_raw_cost,
+            [TEST_LEAF],
+            1,
+            elem.serialized_byte_size() as u32,
+        );
+
+        let actual_cost = db.has_raw([TEST_LEAF], &[2], None);
+
+        assert_eq!(worst_case_has_raw_cost, actual_cost.cost);
     }
 }

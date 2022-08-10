@@ -291,9 +291,10 @@ impl Tree {
             Some(Link::Uncommitted { tree, .. }) => Some(tree),
             Some(Link::Loaded { tree, .. }) => Some(tree),
         };
-        // println!("detaching {}", std::str::from_utf8(maybe_child.as_ref().unwrap().key()).unwrap());
+        // println!("detaching {}",
+        // std::str::from_utf8(maybe_child.as_ref().unwrap().key()).unwrap());
 
-            (self, maybe_child)
+        (self, maybe_child)
     }
 
     /// Detaches the child on the given side from the root node, and
