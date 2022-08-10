@@ -429,7 +429,7 @@ mod test {
             None,
             Some(Link::Loaded {
                 hash: [123; 32],
-                sum: 0,
+                sum: None,
                 child_heights: (0, 0),
                 tree: Tree::new(b"foo2".to_vec(), b"bar2".to_vec(), BasicMerk).unwrap(),
             }),

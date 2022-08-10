@@ -296,7 +296,7 @@ impl Child {
 
         Link::Reference {
             hash: self.hash,
-            sum: 0,
+            sum: None,
             child_heights: self.tree.child_heights(),
             key: key.to_vec(),
         }

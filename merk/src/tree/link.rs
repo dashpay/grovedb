@@ -17,9 +17,9 @@ pub enum Link {
     /// fetched from the backing store by this key when necessary.
     Reference {
         hash: Hash,
-        sum: u64,
         child_heights: (u8, u8),
         key: Vec<u8>,
+        sum: Option<u64>,
     },
 
     /// Represents a tree node which has been modified since the `Tree`'s last
@@ -37,18 +37,18 @@ pub enum Link {
     /// stored in the link.
     Uncommitted {
         hash: Hash,
-        sum: u64,
         child_heights: (u8, u8),
         tree: Tree,
+        sum: Option<u64>,
     },
 
     /// Represents a tree node which has not been modified, has an up-to-date
     /// hash, and which is being retained in memory.
     Loaded {
         hash: Hash,
-        sum: u64,
         child_heights: (u8, u8),
         tree: Tree,
+        sum: Option<u64>,
     },
 }
 
@@ -136,7 +136,7 @@ impl Link {
     /// of variant `Link::Modified` since we have not yet recomputed the tree's
     /// hash.
     #[inline]
-    pub const fn sum(&self) -> u64 {
+    pub const fn sum(&self) -> Option<u64> {
         match self {
             Link::Modified { .. } => panic!("Cannot get hash from modified link"),
             Link::Reference { sum, .. } => *sum,
@@ -259,6 +259,10 @@ impl Encode for Link {
 
         out.write_all(&[*left_height, *right_height])?;
 
+        if let Some(sum) = sum {
+            out.write_all(sum.to_be_bytes().as_slice())?;
+        }
+
         Ok(())
     }
 
@@ -267,10 +271,10 @@ impl Encode for Link {
         debug_assert!(self.key().len() < 256, "Key length must be less than 256");
 
         Ok(match self {
-            Link::Reference { key, .. } => 1 + key.len() + 32 + 2,
+            Link::Reference { key, sum, .. } => 1 + key.len() + 32 + 2 + (sum.is_some() as usize * 8),
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
-            Link::Uncommitted { tree, .. } => 1 + tree.key().len() + 32 + 2,
-            Link::Loaded { tree, .. } => 1 + tree.key().len() + 32 + 2,
+            Link::Uncommitted { tree, sum, .. } => 1 + tree.key().len() + 32 + 2 + (sum.is_some() as usize * 8),
+            Link::Loaded { tree, sum,.. } => 1 + tree.key().len() + 32 + 2 + (sum.is_some() as usize * 8),
         })
     }
 }
@@ -281,7 +285,7 @@ impl Link {
         Self::Reference {
             key: Vec::with_capacity(64),
             hash: Default::default(),
-            sum: 0,
+            sum: None,
             child_heights: (0, 0),
         }
     }
@@ -315,10 +319,11 @@ impl Decode for Link {
             input.read_exact(key.as_mut())?;
 
             input.read_exact(&mut hash[..])?;
-            *sum = input.read_u64::<BigEndian>()?;
 
             child_heights.0 = read_u8(&mut input)?;
             child_heights.1 = read_u8(&mut input)?;
+
+            *sum = input.read_u64::<BigEndian>().ok();
         } else {
             unreachable!()
         }
@@ -371,7 +376,7 @@ mod test {
     #[test]
     fn types() {
         let hash = NULL_HASH;
-        let sum = 0;
+        let sum = None;
         let child_heights = (0, 0);
         let pending_writes = 1;
         let key = vec![0];
@@ -462,7 +467,7 @@ mod test {
     fn uncommitted_into_reference() {
         Link::Uncommitted {
             hash: [1; 32],
-            sum: 0,
+            sum: None,
             child_heights: (1, 1),
             tree: Tree::new(vec![0], vec![1], BasicMerk).unwrap(),
         }
@@ -473,7 +478,7 @@ mod test {
     fn encode_link() {
         let link = Link::Reference {
             key: vec![1, 2, 3],
-            sum: 0,
+            sum: None,
             child_heights: (123, 124),
             hash: [55; 32],
         };
@@ -491,15 +496,44 @@ mod test {
     }
 
     #[test]
+    fn encode_link_with_sum() {
+        let link = Link::Reference {
+            key: vec![1, 2, 3],
+            sum: Some(50),
+            child_heights: (123, 124),
+            hash: [55; 32],
+        };
+        assert_eq!(link.encoding_length().unwrap(), 46);
+
+        let mut bytes = vec![];
+        link.encode_into(&mut bytes).unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                3, 1, 2, 3, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
+                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 0, 0, 0, 0, 0, 0, 0, 50
+            ]
+        );
+    }
+
+    #[test]
     #[should_panic]
     fn encode_link_long_key() {
         let link = Link::Reference {
             key: vec![123; 300],
-            sum: 0,
+            sum: None,
             child_heights: (123, 124),
             hash: [55; 32],
         };
         let mut bytes = vec![];
         link.encode_into(&mut bytes).unwrap();
+    }
+
+    #[test]
+    fn decode_link() {
+        let bytes = vec![3, 1, 2, 3, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
+        55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124];
+        let link = Link::decode(bytes.as_slice()).expect("expected to decode a link");
+        assert_eq!(link.sum(), None);
     }
 }
