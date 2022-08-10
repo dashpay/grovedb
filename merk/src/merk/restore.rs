@@ -17,6 +17,8 @@ use crate::{
     tree::{Link, RefWalker, Tree},
     Hash,
 };
+use crate::merk::OptionOrMerkType;
+use crate::merk::TreeFeatureType::BasicMerk;
 
 /// A `Restorer` handles decoding, verifying, and storing chunk proofs to
 /// replicate an entire Merk tree. It expects the chunks to be processed in
@@ -97,7 +99,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             };
 
             // TODO: encode tree node without cloning key/value
-            let mut node = Tree::new(key.clone(), value.clone()).unwrap();
+            let mut node = Tree::new(key.clone(), value.clone(), BasicMerk).unwrap();
             *node.slot_mut(true) = proof_node.left.as_ref().map(Child::as_link);
             *node.slot_mut(false) = proof_node.right.as_ref().map(Child::as_link);
 
@@ -294,6 +296,7 @@ impl Child {
 
         Link::Reference {
             hash: self.hash,
+            sum: 0,
             child_heights: self.tree.child_heights(),
             key: key.to_vec(),
         }

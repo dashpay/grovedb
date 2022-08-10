@@ -74,11 +74,12 @@ impl Tree {
 
 #[cfg(test)]
 mod tests {
+    use crate::tree::TreeFeatureType::BasicMerk;
     use super::{super::Link, *};
 
     #[test]
     fn encode_leaf_tree() {
-        let tree = Tree::from_fields(vec![0], vec![1], [55; 32], None, None).unwrap();
+        let tree = Tree::from_fields(vec![0], vec![1], [55; 32], None, None, BasicMerk).unwrap();
         assert_eq!(tree.encoding_length(), 67);
         assert_eq!(
             tree.encode(),
@@ -101,9 +102,10 @@ mod tests {
             Some(Link::Modified {
                 pending_writes: 1,
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3]).unwrap(),
+                tree: Tree::new(vec![2], vec![3], BasicMerk).unwrap(),
             }),
             None,
+            BasicMerk,
         )
         .unwrap();
         tree.encode();
@@ -117,10 +119,12 @@ mod tests {
             [55; 32],
             Some(Link::Loaded {
                 hash: [66; 32],
+                sum: 0,
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3]).unwrap(),
+                tree: Tree::new(vec![2], vec![3], BasicMerk).unwrap(),
             }),
             None,
+            BasicMerk,
         )
         .unwrap();
         assert_eq!(
@@ -144,10 +148,12 @@ mod tests {
             [55; 32],
             Some(Link::Uncommitted {
                 hash: [66; 32],
+                sum: 0,
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3]).unwrap(),
+                tree: Tree::new(vec![2], vec![3], BasicMerk).unwrap(),
             }),
             None,
+            BasicMerk,
         )
         .unwrap();
         assert_eq!(
@@ -171,10 +177,12 @@ mod tests {
             [55; 32],
             Some(Link::Reference {
                 hash: [66; 32],
+                sum: 0,
                 child_heights: (123, 124),
                 key: vec![2],
             }),
             None,
+            BasicMerk,
         )
         .unwrap();
         assert_eq!(tree.encoding_length(), 103);
@@ -220,6 +228,7 @@ mod tests {
             key,
             child_heights,
             hash,
+            sum,
         }) = tree.link(true)
         {
             assert_eq!(*key, [2]);

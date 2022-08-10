@@ -1,3 +1,6 @@
+#![feature(const_trait_impl)]
+extern crate core;
+
 /// The top-level store API.
 #[cfg(feature = "full")]
 mod merk;

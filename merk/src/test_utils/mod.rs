@@ -6,6 +6,9 @@ use std::{convert::TryInto, ops::Range};
 pub use crash_merk::CrashMerk;
 use rand::prelude::*;
 pub use temp_merk::TempMerk;
+use crate::merk::OptionOrMerkType;
+use crate::merk::OptionOrMerkType::SomeMerk;
+use crate::merk::TreeFeatureType::BasicMerk;
 
 use crate::tree::{BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker};
 
@@ -24,17 +27,17 @@ pub fn assert_tree_invariants(tree: &Tree) {
         assert!(!right.is_modified());
     }
 
-    if let Some(left) = tree.child(true) {
+    if let SomeMerk(left) = tree.child(true) {
         assert_tree_invariants(left);
     }
-    if let Some(right) = tree.child(false) {
+    if let SomeMerk(right) = tree.child(false) {
         assert_tree_invariants(right);
     }
 }
 
 pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     let walker = Walker::<PanicSource>::new(tree, PanicSource {});
-    let mut tree = Walker::<PanicSource>::apply_to(Some(walker), batch, PanicSource {})
+    let mut tree = Walker::<PanicSource>::apply_to(SomeMerk(walker), batch, PanicSource {})
         .unwrap()
         .expect("apply failed")
         .0
@@ -51,7 +54,7 @@ pub fn apply_memonly(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     tree
 }
 
-pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) -> Option<Tree> {
+pub fn apply_to_memonly(maybe_tree: OptionOrMerkType<Tree>, batch: &MerkBatch<Vec<u8>>) -> OptionOrMerkType<Tree> {
     let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
     Walker::<PanicSource>::apply_to(maybe_walker, batch, PanicSource {})
         .unwrap()
@@ -122,7 +125,7 @@ pub fn make_tree_rand(node_count: u64, batch_size: u64, initial_seed: u64) -> Tr
     assert_eq!((node_count % batch_size), 0);
 
     let value = vec![123; 60];
-    let mut tree = Tree::new(vec![0; 20], value).unwrap();
+    let mut tree = Tree::new(vec![0; 20], value, BasicMerk).unwrap();
 
     let mut seed = initial_seed;
 
@@ -145,7 +148,7 @@ pub fn make_tree_seq(node_count: u64) -> Tree {
     };
 
     let value = vec![123; 60];
-    let mut tree = Tree::new(vec![0; 20], value).unwrap();
+    let mut tree = Tree::new(vec![0; 20], value, BasicMerk).unwrap();
 
     let batch_count = node_count / batch_size;
     for i in 0..batch_count {

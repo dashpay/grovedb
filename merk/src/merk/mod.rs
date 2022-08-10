@@ -1,11 +1,9 @@
 pub mod chunks;
 pub mod restore;
-use std::{
-    cell::Cell,
-    cmp::Ordering,
-    collections::{BTreeSet, LinkedList},
-    fmt,
-};
+
+use std::{cell::Cell, cmp::Ordering, collections::{BTreeSet, LinkedList}, fmt, mem};
+use std::marker::Destruct;
+use ed::{Decode, Encode};
 
 use anyhow::{anyhow, Result};
 use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
@@ -15,6 +13,7 @@ use crate::{
     proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
     tree::{Commit, Fetch, Hash, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
 };
+use crate::merk::OptionOrMerkType::{NoneOfType, SomeMerk};
 
 pub const ROOT_KEY_KEY: &[u8] = b"root";
 
@@ -142,10 +141,112 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Encode, Decode)]
+pub enum TreeFeatureType {
+    BasicMerk,
+    SummedMerk(u64)
+}
+
+#[derive(PartialEq, Eq, Debug)]
+pub enum OptionOrMerkType<T> {
+    NoneOfType(TreeFeatureType),
+    SomeMerk(T)
+}
+
+impl<T> OptionOrMerkType<T> {
+    #[inline]
+    pub fn to_option(self) -> Option<T> {
+        match self {
+            NoneOfType(_) => { None }
+            SomeMerk(T) => { Some(T) }
+        }
+    }
+
+    #[inline]
+    pub fn from_option(option: Option<T>, default_tree_feature_type: TreeFeatureType) -> Self {
+        match option {
+            None => { NoneOfType(default_tree_feature_type) }
+            Some(T) => { SomeMerk(T) }
+        }
+    }
+
+    #[inline]
+    pub fn map<U, F>(self, f: F) -> OptionOrMerkType<U>
+        where
+            F: ~const FnOnce(T) -> U,
+    {
+        match self {
+            SomeMerk(x) => SomeMerk(f(x)),
+            NoneOfType(t) => NoneOfType(t),
+        }
+    }
+
+    #[inline]
+    pub fn map_to_option<U, F>(self, f: F) -> Option<U>
+        where
+            F: ~const FnOnce(T) -> U,
+    {
+        match self {
+            SomeMerk(x) => Some(f(x)),
+            NoneOfType(_) => None,
+        }
+    }
+
+    #[inline]
+    pub fn expect(self, msg: &str) -> T
+    {
+        match self {
+            SomeMerk(val) => val,
+            NoneOfType(_) => panic!("{}", msg),
+        }
+    }
+
+    #[inline]
+    pub fn take(&mut self, t: TreeFeatureType) -> OptionOrMerkType<T> {
+        mem::replace(self, NoneOfType(t))
+    }
+
+    #[inline]
+    pub fn unwrap(self) -> T
+    {
+        match self {
+            SomeMerk(val) => val,
+            NoneOfType(_) => panic!("panicked on unwrap"),
+        }
+    }
+
+    #[inline]
+    pub fn as_mut(&mut self) -> OptionOrMerkType<&mut T> {
+        match *self {
+            SomeMerk(ref mut x) => SomeMerk(x),
+            NoneOfType(T) => NoneOfType(T),
+        }
+    }
+
+    #[inline]
+    pub const fn as_ref(&self) -> OptionOrMerkType<&T> {
+        match *self {
+            SomeMerk(ref x) => SomeMerk(x),
+            NoneOfType(T) => NoneOfType(T),
+        }
+    }
+
+    #[inline]
+    pub const fn is_some(&self) -> bool {
+        matches!(*self, SomeMerk(_))
+    }
+
+    #[inline]
+    pub const fn is_none(&self) -> bool {
+        matches!(*self, NoneOfType(_))
+    }
+}
+
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk<S> {
     pub(crate) tree: Cell<Option<Tree>>,
     pub storage: S,
+    pub tree_feature_type: TreeFeatureType,
 }
 
 impl<S> fmt::Debug for Merk<S> {
@@ -165,6 +266,7 @@ where
         let mut merk = Self {
             tree: Cell::new(None),
             storage,
+            tree_feature_type: TreeFeatureType::BasicMerk
         };
 
         merk.load_root().map_ok(|_| merk)
@@ -383,15 +485,15 @@ where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
     {
-        let maybe_walker = self
+        let maybe_walker = OptionOrMerkType::from_option(self
             .tree
             .take()
             .take()
-            .map(|tree| Walker::new(tree, self.source()));
+            .map(|tree| Walker::new(tree, self.source())), self.tree_feature_type);
 
         Walker::apply_to(maybe_walker, batch, self.source()).flat_map_ok(
             |(maybe_tree, deleted_keys)| {
-                self.tree.set(maybe_tree);
+                self.tree.set(maybe_tree.to_option());
                 // commit changes to db
                 self.commit(deleted_keys, aux)
             },

@@ -1,6 +1,8 @@
 use std::io::{Read, Write};
+use byteorder::{BigEndian, ReadBytesExt};
 
 use ed::{Decode, Encode, Result, Terminated};
+use crate::merk::OptionOrMerkType;
 
 use super::{hash::Hash, Tree};
 
@@ -15,6 +17,7 @@ pub enum Link {
     /// fetched from the backing store by this key when necessary.
     Reference {
         hash: Hash,
+        sum: u64,
         child_heights: (u8, u8),
         key: Vec<u8>,
     },
@@ -29,11 +32,12 @@ pub enum Link {
         tree: Tree
     },
 
-    // Represents a tree node which has been modified since the `Tree`'s last
-    // commit, but which has an up-to-date hash. The child's `Tree` instance is
-    // stored in the link.
+    /// Represents a tree node which has been modified since the `Tree`'s last
+    /// commit, but which has an up-to-date hash. The child's `Tree` instance is
+    /// stored in the link.
     Uncommitted {
         hash: Hash,
+        sum: u64,
         child_heights: (u8, u8),
         tree: Tree,
     },
@@ -42,6 +46,7 @@ pub enum Link {
     /// hash, and which is being retained in memory.
     Loaded {
         hash: Hash,
+        sum: u64,
         child_heights: (u8, u8),
         tree: Tree,
     },
@@ -127,6 +132,19 @@ impl Link {
         }
     }
 
+    /// Returns the sum of the tree referenced by the link. Panics if link is
+    /// of variant `Link::Modified` since we have not yet recomputed the tree's
+    /// hash.
+    #[inline]
+    pub const fn sum(&self) -> u64 {
+        match self {
+            Link::Modified { .. } => panic!("Cannot get hash from modified link"),
+            Link::Reference { sum, .. } => *sum,
+            Link::Uncommitted { sum, .. } => *sum,
+            Link::Loaded { sum, .. } => *sum,
+        }
+    }
+
     /// Returns the height of the children of the tree referenced by the link,
     /// if any (note: not the height of the referenced tree itself). Return
     /// value is `(left_child_height, right_child_height)`.
@@ -171,10 +189,12 @@ impl Link {
             Link::Uncommitted { .. } => panic!("Cannot prune Uncommitted tree"),
             Link::Loaded {
                 hash,
+                sum,
                 child_heights,
                 tree,
             } => Self::Reference {
                 hash,
+                sum,
                 child_heights,
                 key: tree.take_key(),
             },
@@ -207,22 +227,25 @@ impl Link {
 impl Encode for Link {
     #[inline]
     fn encode_into<W: Write>(&self, out: &mut W) -> Result<()> {
-        let (hash, key, (left_height, right_height)) = match self {
+        let (hash, sum, key, (left_height, right_height)) = match self {
             Link::Reference {
                 hash,
+                sum,
                 key,
                 child_heights,
-            } => (hash, key.as_slice(), child_heights),
+            } => (hash, sum, key.as_slice(), child_heights),
             Link::Loaded {
                 hash,
+                sum,
                 tree,
                 child_heights,
-            } => (hash, tree.key(), child_heights),
+            } => (hash, sum, tree.key(), child_heights),
             Link::Uncommitted {
                 hash,
+                sum,
                 tree,
                 child_heights,
-            } => (hash, tree.key(), child_heights),
+            } => (hash, sum, tree.key(), child_heights),
 
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
         };
@@ -258,6 +281,7 @@ impl Link {
         Self::Reference {
             key: Vec::with_capacity(64),
             hash: Default::default(),
+            sum: 0,
             child_heights: (0, 0),
         }
     }
@@ -280,7 +304,7 @@ impl Decode for Link {
         }
 
         if let Link::Reference {
-            ref mut key,
+            ref mut sum, ref mut key,
             ref mut hash,
             ref mut child_heights,
         } = self
@@ -291,6 +315,7 @@ impl Decode for Link {
             input.read_exact(key.as_mut())?;
 
             input.read_exact(&mut hash[..])?;
+            *sum = input.read_u64::<BigEndian>()?;
 
             child_heights.0 = read_u8(&mut input)?;
             child_heights.1 = read_u8(&mut input)?;
@@ -313,6 +338,7 @@ fn read_u8<R: Read>(mut input: R) -> Result<u8> {
 
 #[cfg(test)]
 mod test {
+    use crate::merk::TreeFeatureType::BasicMerk;
     use super::{
         super::{hash::NULL_HASH, Tree},
         *,
@@ -320,7 +346,7 @@ mod test {
 
     #[test]
     fn from_modified_tree() {
-        let tree = Tree::new(vec![0], vec![1]).unwrap();
+        let tree = Tree::new(vec![0], vec![1], BasicMerk).unwrap();
         let link = Link::from_modified_tree(tree);
         assert!(link.is_modified());
         assert_eq!(link.height(), 1);
@@ -337,7 +363,7 @@ mod test {
         let link = Link::maybe_from_modified_tree(None);
         assert!(link.is_none());
 
-        let tree = Tree::new(vec![0], vec![1]).unwrap();
+        let tree = Tree::new(vec![0], vec![1], BasicMerk).unwrap();
         let link = Link::maybe_from_modified_tree(Some(tree));
         assert!(link.expect("expected link").is_modified());
     }
@@ -345,13 +371,15 @@ mod test {
     #[test]
     fn types() {
         let hash = NULL_HASH;
+        let sum = 0;
         let child_heights = (0, 0);
         let pending_writes = 1;
         let key = vec![0];
-        let tree = || Tree::new(vec![0], vec![1]).unwrap();
+        let tree = || Tree::new(vec![0], vec![1], BasicMerk).unwrap();
 
         let reference = Link::Reference {
             hash,
+            sum,
             child_heights,
             key,
         };
@@ -362,11 +390,13 @@ mod test {
         };
         let uncommitted = Link::Uncommitted {
             hash,
+            sum,
             child_heights,
             tree: tree(),
         };
         let loaded = Link::Loaded {
             hash,
+            sum,
             child_heights,
             tree: tree(),
         };
@@ -411,7 +441,7 @@ mod test {
         Link::Modified {
             pending_writes: 1,
             child_heights: (1, 1),
-            tree: Tree::new(vec![0], vec![1]).unwrap(),
+            tree: Tree::new(vec![0], vec![1], BasicMerk).unwrap(),
         }
         .hash();
     }
@@ -422,7 +452,7 @@ mod test {
         Link::Modified {
             pending_writes: 1,
             child_heights: (1, 1),
-            tree: Tree::new(vec![0], vec![1]).unwrap(),
+            tree: Tree::new(vec![0], vec![1], BasicMerk).unwrap(),
         }
         .into_reference();
     }
@@ -432,8 +462,9 @@ mod test {
     fn uncommitted_into_reference() {
         Link::Uncommitted {
             hash: [1; 32],
+            sum: 0,
             child_heights: (1, 1),
-            tree: Tree::new(vec![0], vec![1]).unwrap(),
+            tree: Tree::new(vec![0], vec![1], BasicMerk).unwrap(),
         }
         .into_reference();
     }
@@ -442,6 +473,7 @@ mod test {
     fn encode_link() {
         let link = Link::Reference {
             key: vec![1, 2, 3],
+            sum: 0,
             child_heights: (123, 124),
             hash: [55; 32],
         };
@@ -463,6 +495,7 @@ mod test {
     fn encode_link_long_key() {
         let link = Link::Reference {
             key: vec![123; 300],
+            sum: 0,
             child_heights: (123, 124),
             hash: [55; 32],
         };
