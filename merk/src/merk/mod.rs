@@ -392,7 +392,7 @@ where
             .map(|tree| Walker::new(tree, self.source()));
 
         if maybe_walker.is_some() {
-            dbg!(&maybe_walker.as_ref().unwrap().tree());
+            // dbg!(&maybe_walker.as_ref().unwrap().tree());
         }
 
         Walker::apply_to(maybe_walker, batch, self.source()).flat_map_ok(
@@ -498,7 +498,7 @@ where
     where
         K: AsRef<[u8]>,
     {
-        dbg!("committing");
+        // dbg!("committing");
         let mut cost = OperationCost::default();
 
         let mut batch = self.storage.new_batch();

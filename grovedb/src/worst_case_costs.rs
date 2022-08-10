@@ -327,4 +327,9 @@ mod test {
         let m = merk.apply::<_, Vec<_>>(batch.as_slice(), &[]);
         dbg!(m);
     }
+
+    #[test]
+    fn test_has_raw_worst_case() {
+
+    }
 }

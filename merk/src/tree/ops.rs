@@ -300,7 +300,7 @@ where
     /// Applies an AVL tree rotation, a constant-time operation which only needs
     /// to swap pointers in order to rebalance a tree.
     fn rotate(self, left: bool) -> CostContext<Result<Self>> {
-        dbg!("about to rotate");
+        // dbg!("about to rotate");
         let mut cost = OperationCost::default();
 
         let (tree, child) = cost_return_on_error!(&mut cost, self.detach_expect(left));

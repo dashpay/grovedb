@@ -291,7 +291,7 @@ impl Tree {
             Some(Link::Uncommitted { tree, .. }) => Some(tree),
             Some(Link::Loaded { tree, .. }) => Some(tree),
         };
-        println!("detaching {}", std::str::from_utf8(maybe_child.as_ref().unwrap().key()).unwrap());
+        // println!("detaching {}", std::str::from_utf8(maybe_child.as_ref().unwrap().key()).unwrap());
 
             (self, maybe_child)
     }
@@ -401,7 +401,7 @@ impl Tree {
         let mut cost = OperationCost::default();
 
         if let Some(Link::Modified { .. }) = self.inner.left {
-            println!("left is modified");
+            // println!("left is modified");
             if let Some(Link::Modified {
                 mut tree,
                 child_heights,
@@ -421,7 +421,7 @@ impl Tree {
         }
 
         if let Some(Link::Modified { .. }) = self.inner.right {
-            println!("right is modified");
+            // println!("right is modified");
             if let Some(Link::Modified {
                 mut tree,
                 child_heights,
