@@ -202,6 +202,13 @@ impl GroveDb {
     pub fn add_worst_case_delete_cost(cost: &mut OperationCost, max_element_size: u32, max_key_size: u32){
         // does nothing for now
     }
+
+    pub fn add_worst_case_has_raw_cost(cost: &mut OperationCost, key_size: u32, max_element_size: u32) {
+        let value_size = (2 * Self::worst_case_encoded_link_size(key_size))
+            + Self::worst_case_encoded_kv_node_size(max_element_size);
+        cost.seek_count += 1;
+        cost.storage_loaded_bytes += value_size;
+    }
 }
 
 pub(crate) enum MerkWorstCaseInput {
