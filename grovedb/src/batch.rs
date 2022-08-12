@@ -422,22 +422,37 @@ where
                             ))
                             .wrap_with_cost(cost);
                         }
-                        let referenced_element = cost_return_on_error!(
+
+                        // Here we should just get the merk at the referenced path
+                        // then get the value_hash at the key
+                        // use the value hash when inserting into batch operations
+                        // TODO: remove unwrap
+                        let (key, reference_path) = path_reference.split_last().unwrap();
+                        // TODO: Extract into it's own function
+                        let reference_merk_wrapped = self
+                            .merks
+                            .remove(reference_path)
+                            .map(|x| Ok(x).wrap_with_cost(Default::default()))
+                            .unwrap_or_else(|| (self.get_merk_fn)(reference_path));
+                        let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
+
+                        let referenced_value_hash_opt = cost_return_on_error!(
                             &mut cost,
-                            self.follow_reference(
-                                path_reference,
-                                ops_by_qualified_paths,
-                                MAX_REFERENCE_HOPS as u8
-                            )
+                            merk.get_value_hash(key)
+                                .map_err(|e| Error::CorruptedData(e.to_string()))
                         );
-                        let serialized =
-                            cost_return_on_error_no_add!(&cost, referenced_element.serialize());
+
+                        let referenced_value_hash = cost_return_on_error_no_add!(
+                            &cost,
+                            referenced_value_hash_opt
+                                .ok_or(Error::MissingReference("reference in batch is missing"))
+                        );
 
                         cost_return_on_error!(
                             &mut cost,
                             element.insert_reference_into_batch_operations(
-                                key,
-                                serialized,
+                                key.clone(),
+                                referenced_value_hash,
                                 &mut batch_operations
                             )
                         );

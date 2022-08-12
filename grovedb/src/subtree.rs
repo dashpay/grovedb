@@ -13,7 +13,7 @@ use integer_encoding::VarInt;
 use merk::{
     proofs::{query::QueryItem, Query},
     tree::Tree,
-    BatchEntry, Op, HASH_LENGTH,
+    BatchEntry, Hash, Op, HASH_LENGTH,
 };
 use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
@@ -261,6 +261,22 @@ impl Element {
                 .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
         );
         Ok(element).wrap_with_cost(cost)
+    }
+
+    /// Get an element's value hash from Merk under a key
+    pub fn get_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        merk: &Merk<S>,
+        key: K,
+    ) -> CostResult<Option<Hash>, Error> {
+        let mut cost = OperationCost::default();
+
+        let value_hash = cost_return_on_error!(
+            &mut cost,
+            merk.get_value_hash(key.as_ref())
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+        );
+
+        Ok(value_hash).wrap_with_cost(cost)
     }
 
     pub fn get_query(
@@ -904,7 +920,7 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: K,
-        referenced_value: Vec<u8>,
+        referenced_value: Hash,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
@@ -919,7 +935,7 @@ impl Element {
     pub fn insert_reference_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
-        referenced_value: Vec<u8>,
+        referenced_value: Hash,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
