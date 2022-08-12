@@ -45,6 +45,9 @@ impl GroveDb {
                     &mut cost,
                     self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
                 );
+
+                // Rather than getting the referenced element, can't we get the serialized value
+                // directly??
                 let referenced_element = cost_return_on_error!(
                     &mut cost,
                     self.follow_reference(reference_path.to_owned(), transaction)
