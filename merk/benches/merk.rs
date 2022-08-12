@@ -4,11 +4,12 @@ extern crate test;
 
 use std::thread;
 
-use merk::{
-    proofs::encode_into as encode_proof_into, restore::Restorer, test_utils::*, Merk, Result,
-};
+use merk::{proofs::encode_into as encode_proof_into, test_utils::*, Merk, Restorer};
 use rand::prelude::*;
 use test::Bencher;
+use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
+use storage::rocksdb_storage::test_utils::TempStorage;
+use storage::Storage;
 
 #[bench]
 fn get_1m_rocksdb(b: &mut Bencher) {
@@ -16,13 +17,12 @@ fn get_1m_rocksdb(b: &mut Bencher) {
     let batch_size = 2_000;
     let num_batches = initial_size / batch_size;
 
-    let path = thread::current().name().unwrap().to_owned();
-    let mut merk = TempMerk::open(path).expect("failed to open merk");
+    let mut merk = TempMerk::new();
 
     let mut batches = vec![];
     for i in 0..num_batches {
         let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
         batches.push(batch);
     }
 
@@ -32,7 +32,7 @@ fn get_1m_rocksdb(b: &mut Bencher) {
         let key_index = (i / num_batches) as usize;
 
         let key = &batches[batch_index][key_index].0;
-        merk.get(key).expect("get failed");
+        merk.get(key).unwrap().expect("get failed");
 
         i = (i + 1) % initial_size;
     });
@@ -43,18 +43,17 @@ fn insert_1m_2k_seq_rocksdb_noprune(b: &mut Bencher) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
-    let path = thread::current().name().unwrap().to_owned();
-    let mut merk = TempMerk::open(path).expect("failed to open merk");
+        let mut merk = TempMerk::new();
 
     for i in 0..(initial_size / batch_size) {
         let batch = make_batch_seq((i * batch_size)..((i + 1) * batch_size));
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
     }
 
     let mut i = initial_size / batch_size;
     b.iter(|| {
         let batch = make_batch_seq((i * batch_size)..((i + 1) * batch_size));
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
         i += 1;
     });
 }
@@ -64,18 +63,17 @@ fn insert_1m_2k_rand_rocksdb_noprune(b: &mut Bencher) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
-    let path = thread::current().name().unwrap().to_owned();
-    let mut merk = TempMerk::open(path).expect("failed to open merk");
+        let mut merk = TempMerk::new();
 
     for i in 0..(initial_size / batch_size) {
         let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
     }
 
     let mut i = initial_size / batch_size;
     b.iter(|| {
         let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
         i += 1;
     });
 }
@@ -85,18 +83,17 @@ fn update_1m_2k_seq_rocksdb_noprune(b: &mut Bencher) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
-    let path = thread::current().name().unwrap().to_owned();
-    let mut merk = TempMerk::open(path).expect("failed to open merk");
+        let mut merk = TempMerk::new();
 
     for i in 0..(initial_size / batch_size) {
         let batch = make_batch_seq((i * batch_size)..((i + 1) * batch_size));
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
     }
 
     let mut i = 0;
     b.iter(|| {
         let batch = make_batch_seq((i * batch_size)..((i + 1) * batch_size));
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
         i = (i + 1) % (initial_size / batch_size);
     });
 }
@@ -106,18 +103,17 @@ fn update_1m_2k_rand_rocksdb_noprune(b: &mut Bencher) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
-    let path = thread::current().name().unwrap().to_owned();
-    let mut merk = TempMerk::open(path).expect("failed to open merk");
+        let mut merk = TempMerk::new();
 
     for i in 0..(initial_size / batch_size) {
         let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
     }
 
     let mut i = 0;
     b.iter(|| {
         let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
         i = (i + 1) % (initial_size / batch_size);
     });
 }
@@ -127,12 +123,11 @@ fn delete_1m_2k_rand_rocksdb_noprune(b: &mut Bencher) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
-    let path = thread::current().name().unwrap().to_owned();
-    let mut merk = TempMerk::open(path).expect("failed to open merk");
+        let mut merk = TempMerk::new();
 
     for i in 0..(initial_size / batch_size) {
         let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
     }
 
     let mut i = 0;
@@ -142,7 +137,7 @@ fn delete_1m_2k_rand_rocksdb_noprune(b: &mut Bencher) {
             return;
         }
         let batch = make_del_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
         i = (i + 1) % (initial_size / batch_size);
     });
 }
@@ -153,12 +148,11 @@ fn prove_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
     let batch_size = 1_000;
     let proof_size = 1;
 
-    let path = thread::current().name().unwrap().to_owned();
-    let mut merk = TempMerk::open(path).expect("failed to open merk");
+        let mut merk = TempMerk::new();
 
     for i in 0..(initial_size / batch_size) {
         let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
     }
 
     let mut i = 0;
@@ -168,11 +162,11 @@ fn prove_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
         for (key, _) in batch {
             keys.push(merk::proofs::query::QueryItem::Key(key));
         }
-        merk.prove_unchecked(keys).expect("prove failed");
+        merk.prove_unchecked(keys, None, None, true).unwrap().expect("prove failed");
         i = (i + 1) % (initial_size / batch_size);
 
         merk.commit(std::collections::LinkedList::new(), &[])
-            .unwrap();
+            .unwrap().unwrap();
     });
 }
 
@@ -181,12 +175,11 @@ fn build_trunk_chunk_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
     let initial_size = 1_000_000;
     let batch_size = 1_000;
 
-    let path = thread::current().name().unwrap().to_owned();
-    let mut merk = TempMerk::open(path).expect("failed to open merk");
+        let mut merk = TempMerk::new();
 
     for i in 0..(initial_size / batch_size) {
         let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
     }
 
     let mut bytes = vec![];
@@ -194,11 +187,11 @@ fn build_trunk_chunk_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
     b.iter(|| {
         bytes.clear();
 
-        let (ops, _) = merk.walk(|walker| walker.unwrap().create_trunk_proof().unwrap());
+        let (ops, _) = merk.walk(|walker| walker.unwrap().create_trunk_proof().unwrap().unwrap());
         encode_proof_into(ops.iter(), &mut bytes);
 
         merk.commit(std::collections::LinkedList::new(), &[])
-            .unwrap();
+            .unwrap().unwrap();
     });
 
     b.bytes = bytes.len() as u64;
@@ -211,12 +204,11 @@ fn chunkproducer_rand_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
     let initial_size = 1_000_000;
     let batch_size = 1_000;
 
-    let path = thread::current().name().unwrap().to_owned();
-    let mut merk = TempMerk::open(path).expect("failed to open merk");
+        let mut merk = TempMerk::new();
 
     for i in 0..(initial_size / batch_size) {
         let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
     }
 
     let mut chunks = merk.chunks().unwrap();
@@ -242,12 +234,11 @@ fn chunk_iter_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
     let initial_size = 1_000_000;
     let batch_size = 1_000;
 
-    let path = thread::current().name().unwrap().to_owned();
-    let mut merk = TempMerk::open(path).expect("failed to open merk");
+        let mut merk = TempMerk::new();
 
     for i in 0..(initial_size / batch_size) {
         let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
     }
 
     let mut chunks = merk.chunks().unwrap().into_iter();
@@ -277,22 +268,19 @@ fn restore_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
     let batch_size = 1_000;
 
     let path = thread::current().name().unwrap().to_owned();
-    let mut merk = TempMerk::open(path).expect("failed to open merk");
+    let mut merk = TempMerk::new();
 
     for i in 0..(initial_size / batch_size) {
         let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
     }
 
     let chunks = merk
         .chunks()
-        .unwrap()
-        .into_iter()
-        .collect::<Result<Vec<_>>>()
         .unwrap();
 
     let path = thread::current().name().unwrap().to_owned() + "_restore";
-    let mut restorer: Option<Restorer> = None;
+    let mut restorer: Option<Restorer<PrefixedRocksDbStorageContext>> = None;
 
     let mut total_bytes = 0;
     let mut i = 0;
@@ -305,7 +293,7 @@ fn restore_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
                 std::fs::remove_dir_all(&path).unwrap();
             }
 
-            restorer = Some(Merk::restore(&path, merk.root_hash(), chunks.len()).unwrap());
+            restorer = Some(Merk::restore(merk, merk.root_hash()).unwrap());
         }
 
         let restorer = restorer.as_mut().unwrap();
@@ -327,11 +315,11 @@ fn checkpoint_create_destroy_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
     let batch_size = 1_000;
 
     let path = thread::current().name().unwrap().to_owned();
-    let mut merk = TempMerk::open(&path).expect("failed to open merk");
+    let mut merk = TempMerk::new();
 
     for i in 0..(initial_size / batch_size) {
         let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked(&batch, &[]).expect("apply failed") };
+        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
     }
 
     let path = path + ".checkpoint";
