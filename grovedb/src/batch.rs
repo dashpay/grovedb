@@ -253,7 +253,7 @@ struct TreeCacheMerkByPath<S, F> {
     get_merk_fn: F,
 }
 
-/// Cache for subtee paths for worst case scenario costs.
+/// Cache for subtree paths for worst case scenario costs.
 #[derive(Default)]
 struct TreeCacheKnownPaths {
     paths: HashSet<Vec<Vec<u8>>>,
