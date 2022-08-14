@@ -48,20 +48,22 @@ impl GroveDb {
 
                 // Rather than getting the referenced element, can't we get the serialized value
                 // directly??
-                let referenced_path_iter = reference_path.iter().map(|x| x.as_slice());
-                let referenced_element = cost_return_on_error!(
-                    &mut cost,
-                    self.follow_reference(reference_path.to_owned(), transaction)
-                );
+                let referenced_path_iter = reference_path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
+                let (reference_key, reference_path) = referenced_path_iter.split_last().unwrap();
+                // let referenced_element = cost_return_on_error!(
+                //     &mut cost,
+                //     self.follow_reference(reference_path.to_owned(), transaction)
+                // );
 
+                // need
                 let referenced_element_value_hash_opt = merk_optional_tx!(
                     &mut cost,
                     self.db,
-                    referenced_path_iter,
+                    reference_path.to_vec(),
                     transaction,
                     subtree,
                     {
-                        Element::get_value_hash(&subtree, key)
+                        Element::get_value_hash(&subtree, reference_key)
                             .unwrap_add_cost(&mut cost)
                             .unwrap()
                     }

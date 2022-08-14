@@ -641,8 +641,9 @@ fn test_reference_must_point_to_item() {
             None,
         )
         .unwrap();
+    dbg!(&result);
 
-    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
+    assert!(matches!(result, Err(Error::MissingReference(_))));
 }
 
 #[test]
@@ -672,15 +673,18 @@ fn test_too_many_indirections() {
         .expect("successful reference insert");
     }
 
+    let result = db.insert(
+        [TEST_LEAF],
+        &keygen(MAX_REFERENCE_HOPS + 1),
+        Element::new_reference(vec![TEST_LEAF.to_vec(), keygen(MAX_REFERENCE_HOPS)]),
+        None,
+    )
+        .unwrap();
+
+    // No longer doing max hops on insertion as value hash is in previous element
     assert!(matches!(
-        db.insert(
-            [TEST_LEAF],
-            &keygen(MAX_REFERENCE_HOPS + 1),
-            Element::new_reference(vec![TEST_LEAF.to_vec(), keygen(MAX_REFERENCE_HOPS)]),
-            None,
-        )
-        .unwrap(),
-        Err(Error::ReferenceLimit)
+        result,
+        Ok(_)
     ))
 }
 
