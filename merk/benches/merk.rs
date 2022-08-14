@@ -1,18 +1,11 @@
-#![feature(test)]
+use std::iter::empty;
 
-extern crate test;
-
-use std::thread;
-
-use merk::{proofs::encode_into as encode_proof_into, test_utils::*, Merk, Restorer};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use merk::{proofs::encode_into as encode_proof_into, test_utils::*, Merk};
 use rand::prelude::*;
-use test::Bencher;
-use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
-use storage::rocksdb_storage::test_utils::TempStorage;
-use storage::Storage;
+use storage::{rocksdb_storage::test_utils::TempStorage, Storage};
 
-#[bench]
-fn get_1m_rocksdb(b: &mut Bencher) {
+pub fn get(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
     let num_batches = initial_size / batch_size;
@@ -22,228 +15,318 @@ fn get_1m_rocksdb(b: &mut Bencher) {
     let mut batches = vec![];
     for i in 0..num_batches {
         let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
+        unsafe {
+            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
+                .unwrap()
+                .expect("apply failed")
+        };
         batches.push(batch);
     }
 
-    let mut i = 0;
-    b.iter(|| {
-        let batch_index = (i % num_batches) as usize;
-        let key_index = (i / num_batches) as usize;
+    c.bench_function("get", |b| {
+        let mut i = 0;
 
-        let key = &batches[batch_index][key_index].0;
-        merk.get(key).unwrap().expect("get failed");
+        b.iter(|| {
+            let batch_index = (i % num_batches) as usize;
+            let key_index = (i / num_batches) as usize;
 
-        i = (i + 1) % initial_size;
+            let key = &batches[batch_index][key_index].0;
+            merk.get(key).unwrap().expect("get failed");
+
+            i = (i + 1) % initial_size;
+        })
     });
 }
 
-#[bench]
-fn insert_1m_2k_seq_rocksdb_noprune(b: &mut Bencher) {
+pub fn insert_1m_2k_seq(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
-        let mut merk = TempMerk::new();
+    let n_batches: usize = initial_size / batch_size;
+    let mut batches = Vec::with_capacity(n_batches);
 
-    for i in 0..(initial_size / batch_size) {
-        let batch = make_batch_seq((i * batch_size)..((i + 1) * batch_size));
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
+    for i in 0..n_batches {
+        let batch = make_batch_seq(((i * batch_size) as u64)..((i + 1) * batch_size) as u64);
+        batches.push(batch);
     }
 
-    let mut i = initial_size / batch_size;
-    b.iter(|| {
-        let batch = make_batch_seq((i * batch_size)..((i + 1) * batch_size));
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
-        i += 1;
+    c.bench_function("insert_1m_2k_seq", |b| {
+        let mut merk = TempMerk::new();
+        let mut i = 0;
+
+        b.iter_with_large_drop(|| {
+            let batch = &batches[i % n_batches];
+            unsafe {
+                merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
+                    .unwrap()
+                    .expect("apply failed")
+            };
+            i += 1;
+        });
     });
 }
 
-#[bench]
-fn insert_1m_2k_rand_rocksdb_noprune(b: &mut Bencher) {
+pub fn insert_1m_2k_rand(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
-        let mut merk = TempMerk::new();
+    let n_batches: usize = initial_size / batch_size;
+    let mut batches = Vec::with_capacity(n_batches);
 
-    for i in 0..(initial_size / batch_size) {
-        let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
+    for i in 0..n_batches {
+        let batch = make_batch_rand(batch_size as u64, i as u64);
+        batches.push(batch);
     }
 
-    let mut i = initial_size / batch_size;
-    b.iter(|| {
-        let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
-        i += 1;
+    c.bench_function("insert_1m_2k_rand", |b| {
+        let mut merk = TempMerk::new();
+        let mut i = 0;
+
+        b.iter_with_large_drop(|| {
+            let batch = &batches[i % n_batches];
+            unsafe {
+                merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
+                    .unwrap()
+                    .expect("apply failed")
+            };
+            i += 1;
+        });
     });
 }
 
-#[bench]
-fn update_1m_2k_seq_rocksdb_noprune(b: &mut Bencher) {
+pub fn update_1m_2k_seq(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
-        let mut merk = TempMerk::new();
+    let n_batches: usize = initial_size / batch_size;
+    let mut batches = Vec::with_capacity(n_batches);
 
-    for i in 0..(initial_size / batch_size) {
-        let batch = make_batch_seq((i * batch_size)..((i + 1) * batch_size));
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
+    let mut merk = TempMerk::new();
+
+    for i in 0..n_batches {
+        let batch = make_batch_seq(((i * batch_size) as u64)..((i + 1) * batch_size) as u64);
+        unsafe {
+            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
+                .unwrap()
+                .expect("apply failed")
+        };
+
+        batches.push(batch);
     }
 
-    let mut i = 0;
-    b.iter(|| {
-        let batch = make_batch_seq((i * batch_size)..((i + 1) * batch_size));
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
-        i = (i + 1) % (initial_size / batch_size);
+    c.bench_function("update_1m_2k_seq", |b| {
+        let mut i = 0;
+
+        b.iter_with_large_drop(|| {
+            let batch = &batches[i % n_batches];
+            unsafe {
+                merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
+                    .unwrap()
+                    .expect("apply failed")
+            };
+            i += 1;
+        });
     });
 }
 
-#[bench]
-fn update_1m_2k_rand_rocksdb_noprune(b: &mut Bencher) {
+pub fn update_1m_2k_rand(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
-        let mut merk = TempMerk::new();
+    let n_batches: usize = initial_size / batch_size;
+    let mut batches = Vec::with_capacity(n_batches);
 
-    for i in 0..(initial_size / batch_size) {
-        let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
+    let mut merk = TempMerk::new();
+
+    for i in 0..n_batches {
+        let batch = make_batch_rand(batch_size as u64, i as u64);
+        unsafe {
+            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
+                .unwrap()
+                .expect("apply failed")
+        };
+
+        batches.push(batch);
     }
 
-    let mut i = 0;
-    b.iter(|| {
-        let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
-        i = (i + 1) % (initial_size / batch_size);
+    c.bench_function("update_1m_2k_rand", |b| {
+        let mut i = 0;
+
+        b.iter_with_large_drop(|| {
+            let batch = &batches[i % n_batches];
+            unsafe {
+                merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
+                    .unwrap()
+                    .expect("apply failed")
+            };
+            i += 1;
+        });
     });
 }
 
-#[bench]
-fn delete_1m_2k_rand_rocksdb_noprune(b: &mut Bencher) {
+pub fn delete_1m_2k_rand(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
 
-        let mut merk = TempMerk::new();
+    let n_batches: usize = initial_size / batch_size;
+    let mut batches = Vec::with_capacity(n_batches);
+    let mut delete_batches = Vec::with_capacity(n_batches);
 
-    for i in 0..(initial_size / batch_size) {
-        let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
+    let mut merk = TempMerk::new();
+
+    for i in 0..n_batches {
+        let batch = make_batch_rand(batch_size as u64, i as u64);
+        let delete_batch = make_del_batch_rand(batch_size as u64, i as u64);
+        unsafe {
+            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
+                .unwrap()
+                .expect("apply failed")
+        };
+
+        batches.push(batch);
+        delete_batches.push(delete_batch);
     }
 
-    let mut i = 0;
-    b.iter(|| {
-        if i >= (initial_size / batch_size) {
-            println!("WARNING: too many bench iterations, whole tree deleted");
-            return;
+    c.bench_function("delete_1m_2k_rand", |b| {
+        let mut i = 0;
+
+        let delete_batch = &delete_batches[i % n_batches];
+        let insert_batch = &batches[i % n_batches];
+
+        // Merk tree is kept with 1m elements before each bench iteration for more or
+        // less same inputs.
+        unsafe {
+            merk.apply_unchecked::<_, Vec<u8>>(&insert_batch, &[])
+                .unwrap()
+                .expect("apply failed")
+        };
+
+        b.iter_with_large_drop(|| {
+            unsafe {
+                merk.apply_unchecked::<_, Vec<u8>>(&delete_batch, &[])
+                    .unwrap()
+                    .expect("apply failed")
+            };
+            i += 1;
+        });
+    });
+}
+
+pub fn prove_1m_2k_rand(c: &mut Criterion) {
+    let initial_size = 1_000_000;
+    let batch_size = 2_000;
+
+    let n_batches: usize = initial_size / batch_size;
+    let mut batches = Vec::with_capacity(n_batches);
+    let mut prove_keys_per_batch = Vec::with_capacity(n_batches);
+
+    let mut merk = TempMerk::new();
+
+    for i in 0..n_batches {
+        let batch = make_batch_rand(batch_size as u64, i as u64);
+        unsafe {
+            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
+                .unwrap()
+                .expect("apply failed")
+        };
+        let mut prove_keys = Vec::with_capacity(batch_size);
+        for (key, _) in batch.iter() {
+            prove_keys.push(merk::proofs::query::QueryItem::Key(key.clone()));
         }
-        let batch = make_del_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
-        i = (i + 1) % (initial_size / batch_size);
-    });
-}
-
-#[bench]
-fn prove_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
-    let initial_size = 1_000_000;
-    let batch_size = 1_000;
-    let proof_size = 1;
-
-        let mut merk = TempMerk::new();
-
-    for i in 0..(initial_size / batch_size) {
-        let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
+        prove_keys_per_batch.push(prove_keys);
+        batches.push(batch);
     }
 
-    let mut i = 0;
-    b.iter(|| {
-        let batch = make_batch_rand(proof_size, i);
-        let mut keys = Vec::with_capacity(batch.len());
-        for (key, _) in batch {
-            keys.push(merk::proofs::query::QueryItem::Key(key));
-        }
-        merk.prove_unchecked(keys, None, None, true).unwrap().expect("prove failed");
-        i = (i + 1) % (initial_size / batch_size);
+    c.bench_function("prove_1m_2k_rand", |b| {
+        let mut i = 0;
 
-        merk.commit(std::collections::LinkedList::new(), &[])
-            .unwrap().unwrap();
+        b.iter_with_large_drop(|| {
+            let keys = prove_keys_per_batch[i % n_batches].clone();
+
+            merk.prove_unchecked(keys, None, None, true)
+                .unwrap()
+                .expect("prove failed");
+            i += 1;
+        });
     });
 }
 
-#[bench]
-fn build_trunk_chunk_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
+pub fn build_trunk_chunk_1m_2k_rand(c: &mut Criterion) {
     let initial_size = 1_000_000;
-    let batch_size = 1_000;
+    let batch_size = 2_000;
 
-        let mut merk = TempMerk::new();
+    let n_batches: usize = initial_size / batch_size;
 
-    for i in 0..(initial_size / batch_size) {
-        let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
+    let mut merk = TempMerk::new();
+
+    for i in 0..n_batches {
+        let batch = make_batch_rand(batch_size as u64, i as u64);
+        unsafe {
+            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
+                .unwrap()
+                .expect("apply failed")
+        };
     }
 
-    let mut bytes = vec![];
+    c.bench_function("build_trunk_chunk_1m_2k_rand", |b| {
+        let mut bytes = Vec::new();
 
-    b.iter(|| {
-        bytes.clear();
+        b.iter(|| {
+            bytes.clear();
 
-        let (ops, _) = merk.walk(|walker| walker.unwrap().create_trunk_proof().unwrap().unwrap());
-        encode_proof_into(ops.iter(), &mut bytes);
-
-        merk.commit(std::collections::LinkedList::new(), &[])
-            .unwrap().unwrap();
+            let (ops, _) =
+                merk.walk(|walker| walker.unwrap().create_trunk_proof().unwrap().unwrap());
+            encode_proof_into(ops.iter(), &mut bytes);
+        });
     });
-
-    b.bytes = bytes.len() as u64;
 }
 
-#[bench]
-fn chunkproducer_rand_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
+pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
+    let initial_size = 1_000_000;
+    let batch_size = 2_000;
+
+    let n_batches: usize = initial_size / batch_size;
+
+    let mut merk = TempMerk::new();
+
+    for i in 0..n_batches {
+        let batch = make_batch_rand(batch_size as u64, i as u64);
+        unsafe {
+            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
+                .unwrap()
+                .expect("apply failed")
+        };
+    }
+
     let mut rng = rand::thread_rng();
-
-    let initial_size = 1_000_000;
-    let batch_size = 1_000;
-
-        let mut merk = TempMerk::new();
-
-    for i in 0..(initial_size / batch_size) {
-        let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
-    }
-
     let mut chunks = merk.chunks().unwrap();
-    let mut total_bytes = 0;
-    let mut i = 0;
 
-    let mut next = || {
-        let index = rng.gen::<usize>() % chunks.len();
-        chunks.chunk(index).unwrap()
-    };
-
-    b.iter(|| {
-        let chunk = next();
-        total_bytes += chunk.len();
-        i += 1;
+    c.bench_function("chunkproducer_rand_1m_1_rand", |b| {
+        b.iter_with_large_drop(|| {
+            let i = rng.gen::<usize>() % chunks.len();
+            let _chunk = chunks.chunk(i).unwrap();
+        });
     });
-
-    b.bytes = (total_bytes / i) as u64;
 }
 
-#[bench]
-fn chunk_iter_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
+pub fn chunk_iter_1m_1(c: &mut Criterion) {
     let initial_size = 1_000_000;
-    let batch_size = 1_000;
+    let batch_size = 2_000;
 
-        let mut merk = TempMerk::new();
+    let n_batches: usize = initial_size / batch_size;
 
-    for i in 0..(initial_size / batch_size) {
-        let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
+    let mut merk = TempMerk::new();
+
+    for i in 0..n_batches {
+        let batch = make_batch_rand(batch_size as u64, i as u64);
+        unsafe {
+            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
+                .unwrap()
+                .expect("apply failed")
+        };
     }
 
     let mut chunks = merk.chunks().unwrap().into_iter();
-    let mut total_bytes = 0;
-    let mut i = 0;
 
     let mut next = || match chunks.next() {
         Some(chunk) => chunk,
@@ -253,78 +336,59 @@ fn chunk_iter_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
         }
     };
 
-    b.iter(|| {
-        let chunk = next();
-        total_bytes += chunk.unwrap().len();
-        i += 1;
+    c.bench_function("chunk_iter_1m_1", |b| {
+        b.iter_with_large_drop(|| {
+            let _chunk = next();
+        });
     });
-
-    b.bytes = (total_bytes / i) as u64;
 }
 
-#[bench]
-fn restore_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
-    let initial_size = 1_000_000;
-    let batch_size = 1_000;
+pub fn restore_500_1(c: &mut Criterion) {
+    let merk_size = 500;
 
-    let path = thread::current().name().unwrap().to_owned();
     let mut merk = TempMerk::new();
 
-    for i in 0..(initial_size / batch_size) {
-        let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
-    }
+    let batch = make_batch_rand(merk_size as u64, 0 as u64);
+    unsafe {
+        merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
+            .unwrap()
+            .expect("apply failed")
+    };
 
-    let chunks = merk
-        .chunks()
-        .unwrap();
+    let root_hash = merk.root_hash().unwrap();
 
-    let path = thread::current().name().unwrap().to_owned() + "_restore";
-    let mut restorer: Option<Restorer<PrefixedRocksDbStorageContext>> = None;
+    c.bench_function("restore_500_1", |b| {
+        b.iter_batched(
+            || {
+                let storage = TempStorage::new();
+                (storage, merk.chunks().unwrap().into_iter())
+            },
+            |data| {
+                let ctx = data.0.get_storage_context(empty()).unwrap();
+                let m = Merk::open(ctx).unwrap().unwrap();
+                let mut restorer = Merk::restore(m, root_hash);
 
-    let mut total_bytes = 0;
-    let mut i = 0;
-
-    b.iter(|| {
-        if i % chunks.len() == 0 {
-            if i != 0 {
-                let restorer_merk = restorer.take().unwrap().finalize();
-                drop(restorer_merk);
-                std::fs::remove_dir_all(&path).unwrap();
-            }
-
-            restorer = Some(Merk::restore(merk, merk.root_hash()).unwrap());
-        }
-
-        let restorer = restorer.as_mut().unwrap();
-        let chunk = chunks[i % chunks.len()].as_slice();
-        restorer.process_chunk(chunk).unwrap();
-
-        total_bytes += chunk.len();
-        i += 1;
-    });
-
-    std::fs::remove_dir_all(&path).unwrap();
-
-    b.bytes = (total_bytes / i) as u64;
-}
-
-#[bench]
-fn checkpoint_create_destroy_1m_1_rand_rocksdb_noprune(b: &mut Bencher) {
-    let initial_size = 1_000_000;
-    let batch_size = 1_000;
-
-    let path = thread::current().name().unwrap().to_owned();
-    let mut merk = TempMerk::new();
-
-    for i in 0..(initial_size / batch_size) {
-        let batch = make_batch_rand(batch_size, i);
-        unsafe { merk.apply_unchecked::<_, Vec<u8>>(&batch, &[]).unwrap().expect("apply failed") };
-    }
-
-    let path = path + ".checkpoint";
-    b.iter(|| {
-        let checkpoint = merk.checkpoint(&path).unwrap();
-        checkpoint.destroy().unwrap();
+                for chunk in data.1 {
+                    restorer.process_chunk(chunk.unwrap()).unwrap();
+                }
+            },
+            BatchSize::SmallInput,
+        );
     });
 }
+
+criterion_group!(
+    benches,
+    get,
+    insert_1m_2k_seq,
+    insert_1m_2k_rand,
+    update_1m_2k_seq,
+    update_1m_2k_rand,
+    delete_1m_2k_rand,
+    prove_1m_2k_rand,
+    build_trunk_chunk_1m_2k_rand,
+    chunkproducer_rand_1m_1_rand,
+    chunk_iter_1m_1,
+    restore_500_1,
+);
+criterion_main!(benches);

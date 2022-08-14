@@ -10,7 +10,8 @@ pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
     let db = GroveDb::open(dir.path()).unwrap();
     let test_leaf: &[u8] = b"leaf1";
     db.insert([], test_leaf, Element::empty_tree(), None)
-        .unwrap().unwrap();
+        .unwrap()
+        .unwrap();
     let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(N_ITEMS);
 
     c.bench_function("scalars insertion without transaction", |b| {
@@ -28,7 +29,8 @@ pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
     let db = GroveDb::open(dir.path()).unwrap();
     let test_leaf: &[u8] = b"leaf1";
     db.insert([], test_leaf, Element::empty_tree(), None)
-        .unwrap().unwrap();
+        .unwrap()
+        .unwrap();
     let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(N_ITEMS);
 
     c.bench_function("scalars insertion with transaction", |b| {
@@ -84,7 +86,8 @@ pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) 
             Element::empty_tree(),
             None,
         )
-        .unwrap().unwrap();
+        .unwrap()
+        .unwrap();
         nested_subtrees.push(s);
     }
 
@@ -99,7 +102,8 @@ pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) 
                     Element::new_item(k.to_vec()),
                     None,
                 )
-                .unwrap().unwrap();
+                .unwrap()
+                .unwrap();
             }
         })
     });
@@ -116,7 +120,8 @@ pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
             Element::empty_tree(),
             None,
         )
-        .unwrap().unwrap();
+        .unwrap()
+        .unwrap();
         nested_subtrees.push(s);
     }
 
@@ -132,7 +137,8 @@ pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
                     Element::new_item(k.to_vec()),
                     Some(&tx),
                 )
-                .unwrap().unwrap();
+                .unwrap()
+                .unwrap();
             }
             db.commit_transaction(tx).unwrap().unwrap();
         })
