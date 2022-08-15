@@ -5,7 +5,7 @@ use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};
-use crate::{Hash};
+use crate::Hash;
 
 /// Type alias to add more sense to function signatures.
 type DeletedKeys = LinkedList<Vec<u8>>;
