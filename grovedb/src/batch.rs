@@ -17,7 +17,7 @@ use nohash_hasher::IntMap;
 use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
-use crate::{operations::get::MAX_REFERENCE_HOPS, Element, Error, GroveDb, TransactionArg};
+use crate::{Element, Error, GroveDb, TransactionArg};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -285,7 +285,6 @@ trait TreeCache {
         &mut self,
         path: &[Vec<u8>],
         ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
-        ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
     ) -> CostResult<[u8; 32], Error>;
 }
@@ -407,7 +406,6 @@ where
         &mut self,
         path: &[Vec<u8>],
         ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
-        ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
@@ -519,7 +517,6 @@ impl TreeCache for TreeCacheKnownPaths {
         &mut self,
         path: &[Vec<u8>],
         ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
-        _ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         _batch_apply_options: &BatchApplyOptions,
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
@@ -659,7 +656,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let BatchStructure {
             mut ops_by_level_paths,
-            ops_by_qualified_paths,
+            ops_by_qualified_paths: _,
             mut merk_tree_cache,
             last_level,
         } = batch_structure;
@@ -694,7 +691,6 @@ impl GroveDb {
                         merk_tree_cache.execute_ops_on_path(
                             &path,
                             root_tree_ops,
-                            &ops_by_qualified_paths,
                             &batch_apply_options,
                         )
                     );
@@ -704,7 +700,6 @@ impl GroveDb {
                         merk_tree_cache.execute_ops_on_path(
                             &path,
                             ops_at_path,
-                            &ops_by_qualified_paths,
                             &batch_apply_options,
                         )
                     );

@@ -57,7 +57,7 @@ impl GroveDb {
                     transaction,
                     subtree,
                     {
-                        Element::get_value_hash(&subtree, reference_key)
+                        Element::get_value_hash(&subtree,referenced_key)
                             .unwrap_add_cost(&mut cost)
                             .unwrap()
                     }
