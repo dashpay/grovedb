@@ -46,20 +46,14 @@ impl GroveDb {
                     self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
                 );
 
-                // Rather than getting the referenced element, can't we get the serialized value
-                // directly??
-                let referenced_path_iter = reference_path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
-                let (reference_key, reference_path) = referenced_path_iter.split_last().unwrap();
-                // let referenced_element = cost_return_on_error!(
-                //     &mut cost,
-                //     self.follow_reference(reference_path.to_owned(), transaction)
-                // );
+                let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
 
-                // need
+                let referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
+
                 let referenced_element_value_hash_opt = merk_optional_tx!(
                     &mut cost,
                     self.db,
-                    reference_path.to_vec(),
+                    referenced_path_iter,
                     transaction,
                     subtree,
                     {
@@ -72,7 +66,7 @@ impl GroveDb {
                 let referenced_element_value_hash = cost_return_on_error!(
                     &mut cost,
                     referenced_element_value_hash_opt
-                        .ok_or(Error::MissingReference("bsdf"))
+                        .ok_or(Error::MissingReference("cannot find referenced value"))
                         .wrap_with_cost(OperationCost::default())
                 );
 

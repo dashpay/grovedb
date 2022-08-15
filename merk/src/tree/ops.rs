@@ -124,7 +124,7 @@ where
             PutReference(_, referenced_value) => Tree::new_with_value_hash(
                 mid_key.as_ref().to_vec(),
                 mid_value.to_vec(),
-                referenced_value.clone(),
+                referenced_value.to_owned(),
             )
             .unwrap_add_cost(&mut cost),
             Delete => unreachable!("cannot get here, should return at the top"),

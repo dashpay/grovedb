@@ -9,7 +9,8 @@ use std::{
 };
 
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
+    OperationCost,
 };
 use merk::Merk;
 use nohash_hasher::IntMap;
@@ -375,6 +376,13 @@ where
             }
         }
     }
+
+    fn get_merk(&mut self, path: &[Vec<u8>]) -> CostContext<Result<Merk<S>, Error>> {
+        self.merks
+            .remove(path)
+            .map(|x| Ok(x).wrap_with_cost(Default::default()))
+            .unwrap_or_else(|| (self.get_merk_fn)(path))
+    }
 }
 
 impl<'db, S, F> TreeCache for TreeCacheMerkByPath<S, F>
@@ -404,11 +412,7 @@ where
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
 
-        let merk_wrapped = self
-            .merks
-            .remove(path)
-            .map(|x| Ok(x).wrap_with_cost(Default::default()))
-            .unwrap_or_else(|| (self.get_merk_fn)(path));
+        let merk_wrapped = self.get_merk(path);
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
 
         let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
@@ -423,18 +427,11 @@ where
                             .wrap_with_cost(cost);
                         }
 
-                        // Here we should just get the merk at the referenced path
-                        // then get the value_hash at the key
-                        // use the value hash when inserting into batch operations
-                        // TODO: remove unwrap
-                        let (key, reference_path) = path_reference.split_last().unwrap();
-                        // TODO: Extract into it's own function
-                        let reference_merk_wrapped = self
-                            .merks
-                            .remove(reference_path)
-                            .map(|x| Ok(x).wrap_with_cost(Default::default()))
-                            .unwrap_or_else(|| (self.get_merk_fn)(reference_path));
-                        let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
+                        let (key, reference_path) = path_reference
+                            .split_last()
+                            .expect("confirmed path len is greater than 0");
+                        let referenced_merk_wrapped = self.get_merk(reference_path);
+                        let merk = cost_return_on_error!(&mut cost, referenced_merk_wrapped);
 
                         let referenced_value_hash_opt = cost_return_on_error!(
                             &mut cost,
@@ -451,7 +448,7 @@ where
                         cost_return_on_error!(
                             &mut cost,
                             element.insert_reference_into_batch_operations(
-                                key.clone(),
+                                key.to_owned(),
                                 referenced_value_hash,
                                 &mut batch_operations
                             )
