@@ -13,6 +13,7 @@ use costs::{
 };
 use merk::Merk;
 use nohash_hasher::IntMap;
+use merk::tree::value_hash;
 use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
@@ -432,12 +433,13 @@ where
                         );
                         let serialized =
                             cost_return_on_error_no_add!(&cost, referenced_element.serialize());
+                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
 
                         cost_return_on_error!(
                             &mut cost,
                             element.insert_reference_into_batch_operations(
                                 key,
-                                serialized,
+                                val_hash,
                                 &mut batch_operations
                             )
                         );
@@ -928,7 +930,9 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-
+    use std::path::Path;
+    use merk::proofs::Query;
+    use crate::{PathQuery, SizedQuery};
     use super::*;
     use crate::tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF};
 
@@ -1758,5 +1762,48 @@ mod tests {
             .expect("cannot apply batch");
 
         assert_ne!(db.root_hash(None).unwrap().unwrap(), root_hash);
+    }
+
+    #[test]
+    fn test_references() {
+        // insert reference that points to non-existent item
+        let db = make_grovedb();
+        let batch = vec![GroveDbOp::insert(
+          vec![TEST_LEAF.to_vec()],
+            b"key1".to_vec(),
+                Element::new_reference(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
+        )];
+        assert!(matches!(db.apply_batch(batch, None, None).unwrap(), Err(Error::MissingReference("reference in batch is missing"))));
+
+        // insert reference with item it points to in the same batch
+        let db = make_grovedb();
+        let elem = Element::new_item(b"ayy".to_vec());
+        let batch = vec![GroveDbOp::insert(
+            vec![TEST_LEAF.to_vec()],
+            b"key1".to_vec(),
+            Element::new_reference(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
+        ),
+        GroveDbOp::insert(
+            vec![TEST_LEAF.to_vec()],
+            b"invalid_path".to_vec(),
+            elem.clone()
+        )];
+        assert!(matches!(db.apply_batch(batch, None, None).unwrap(), Ok(_)));
+        assert_eq!(db.get([TEST_LEAF], b"key1", None).unwrap().unwrap(), elem);
+
+        // should successfully prove reference as the value hash is valid
+        let mut reference_key_query = Query::new();
+        reference_key_query.insert_key(b"key1".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], reference_key_query);
+        let proof = db.prove_query(&path_query).unwrap().expect("should generate proof");
+        let verification_result = GroveDb::verify_query(&proof, &path_query);
+        assert!(matches!(verification_result, Ok(_)));
+
+        // when we change the base element type, since we don't have bi-directional references, everything goes to shit
+        // how does things change in batches if we did have bidirectional references
+        // before replacement, we need to know everything pointing to the changing slot
+        // then update their value hashes respectively
+        // things pointing to this slot might be further down, in terms of level
+        // what if the value hash was part of the grovedb operation?
     }
 }

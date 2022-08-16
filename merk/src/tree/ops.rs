@@ -3,9 +3,9 @@ use std::{collections::LinkedList, fmt};
 use anyhow::Result;
 use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use Op::*;
+use crate::{Hash};
 
 use super::{Fetch, Link, Tree, Walker};
-use crate::tree::hash::value_hash;
 
 /// Type alias to add more sense to function signatures.
 type DeletedKeys = LinkedList<Vec<u8>>;
@@ -14,7 +14,7 @@ type DeletedKeys = LinkedList<Vec<u8>>;
 #[derive(PartialEq, Eq)]
 pub enum Op {
     Put(Vec<u8>),
-    PutReference(Vec<u8>, Vec<u8>),
+    PutReference(Vec<u8>, Hash),
     Delete,
 }
 
@@ -124,7 +124,7 @@ where
             PutReference(_, referenced_value) => Tree::new_with_value_hash(
                 mid_key.as_ref().to_vec(),
                 mid_value.to_vec(),
-                value_hash(referenced_value).unwrap_add_cost(&mut cost),
+                referenced_value.to_owned(),
             )
             .unwrap_add_cost(&mut cost),
             Delete => unreachable!("cannot get here, should return at the top"),
@@ -161,7 +161,7 @@ where
                 PutReference(value, referenced_value) => self
                     .put_value_and_value_hash(
                         value.to_vec(),
-                        value_hash(referenced_value).unwrap_add_cost(&mut cost),
+                        referenced_value.to_owned(),
                     )
                     .unwrap_add_cost(&mut cost),
                 Delete => {

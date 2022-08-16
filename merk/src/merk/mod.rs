@@ -218,8 +218,18 @@ where
 
     /// Gets a hash of a node by a given key, `None` is returned in case
     /// when node not found by the key.
-    pub fn get_hash(&self, key: &[u8]) -> CostContext<Result<Option<[u8; 32]>>> {
+    pub fn get_hash(&self, key: &[u8]) -> CostContext<Result<Option<Hash>>> {
         self.get_node_fn(key, |node| node.hash())
+    }
+
+    /// Gets the value hash of a node by a given key, `None` is returned in case
+    /// when node not found by the key.
+    pub fn get_value_hash(&self, key: &[u8]) -> CostContext<Result<Option<Hash>>> {
+        self.get_node_fn(key, |node| {
+            node.value_hash()
+                .clone()
+                .wrap_with_cost(OperationCost::default())
+        })
     }
 
     /// See if a node's field exists

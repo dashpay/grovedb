@@ -19,14 +19,10 @@ use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 use visualize::visualize_to_vec;
 
-use crate::{
-    query_result_type::{
-        KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType,
-        QueryResultType::QueryElementResultType,
-    },
-    util::{merk_optional_tx, storage_context_optional_tx},
-    Error, Merk, PathQuery, SizedQuery, TransactionArg,
-};
+use crate::{query_result_type::{
+    KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType,
+    QueryResultType::QueryElementResultType,
+}, util::{merk_optional_tx, storage_context_optional_tx}, Error, Merk, PathQuery, SizedQuery, TransactionArg, Hash};
 
 /// Optional single byte meta-data to be stored per element
 pub type ElementFlags = Option<Vec<u8>>;
@@ -261,6 +257,22 @@ impl Element {
                 .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
         );
         Ok(element).wrap_with_cost(cost)
+    }
+
+    /// Get an element's value hash from Merk under a key
+    pub fn get_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        merk: &Merk<S>,
+        key: K,
+    ) -> CostResult<Option<Hash>, Error> {
+        let mut cost = OperationCost::default();
+
+        let value_hash = cost_return_on_error!(
+            &mut cost,
+            merk.get_value_hash(key.as_ref())
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+        );
+
+        Ok(value_hash).wrap_with_cost(cost)
     }
 
     pub fn get_query(
@@ -904,7 +916,7 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: K,
-        referenced_value: Vec<u8>,
+        referenced_value: Hash,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
@@ -919,7 +931,7 @@ impl Element {
     pub fn insert_reference_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
-        referenced_value: Vec<u8>,
+        referenced_value: Hash,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {

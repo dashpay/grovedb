@@ -18,13 +18,11 @@ use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
 };
 use ed::{Decode, Encode, Terminated};
-pub use hash::{kv_digest_to_kv_hash, kv_hash, node_hash, Hash, HASH_LENGTH, NULL_HASH};
+pub use hash::{kv_digest_to_kv_hash, kv_hash, node_hash, Hash, HASH_LENGTH, NULL_HASH, value_hash};
 use kv::KV;
 pub use link::Link;
 pub use ops::{BatchEntry, MerkBatch, Op, PanicSource};
 pub use walk::{Fetch, RefWalker, Walker};
-
-use crate::tree::hash::value_hash;
 
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods

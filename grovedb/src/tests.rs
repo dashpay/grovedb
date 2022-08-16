@@ -642,7 +642,7 @@ fn test_reference_must_point_to_item() {
         )
         .unwrap();
 
-    assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
+    assert!(matches!(result, Err(Error::MissingReference(_))));
 }
 
 #[test]
@@ -672,16 +672,20 @@ fn test_too_many_indirections() {
         .expect("successful reference insert");
     }
 
-    assert!(matches!(
-        db.insert(
-            [TEST_LEAF],
-            &keygen(MAX_REFERENCE_HOPS + 1),
-            Element::new_reference(vec![TEST_LEAF.to_vec(), keygen(MAX_REFERENCE_HOPS)]),
-            None,
-        )
-        .unwrap(),
-        Err(Error::ReferenceLimit)
-    ))
+    // Add one more reference
+    db.insert(
+        [TEST_LEAF],
+        &keygen(MAX_REFERENCE_HOPS + 1),
+        Element::new_reference(vec![TEST_LEAF.to_vec(), keygen(MAX_REFERENCE_HOPS)]),
+        None,
+    )
+        .unwrap();
+
+    let result = db
+        .get([TEST_LEAF], &keygen(MAX_REFERENCE_HOPS + 1), None)
+        .unwrap();
+
+    assert!(matches!(result, Err(Error::ReferenceLimit)));
 }
 
 #[test]
