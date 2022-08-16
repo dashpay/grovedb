@@ -429,8 +429,7 @@ where
                                 path_reference,
                                 ops_by_qualified_paths,
                                 element_max_reference_hop
-                                    .or(Some(MAX_REFERENCE_HOPS as u8))
-                                    .expect("should have a value as MAX_REFERENCE_HOP has a value")
+                                    .unwrap_or(MAX_REFERENCE_HOPS as u8)
                             )
                         );
 
