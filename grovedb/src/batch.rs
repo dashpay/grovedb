@@ -11,9 +11,8 @@ use std::{
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use merk::Merk;
+use merk::{tree::value_hash, Merk};
 use nohash_hasher::IntMap;
-use merk::tree::value_hash;
 use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
@@ -316,7 +315,7 @@ where
                 }
                 Op::Insert { element } => match element {
                     Element::Item(..) => Ok(Cow::Borrowed(element)).wrap_with_cost(cost),
-                    Element::Reference(path,_, _) => {
+                    Element::Reference(path, ..) => {
                         self.follow_reference(path, ops_by_qualified_paths, recursions_allowed - 1)
                     }
                     Element::Tree(..) => {
@@ -362,7 +361,7 @@ where
 
             match element {
                 Element::Item(..) => Ok(Cow::Owned(element)).wrap_with_cost(cost),
-                Element::Reference(path,_,  _) => self.follow_reference(
+                Element::Reference(path, ..) => self.follow_reference(
                     path.as_slice(),
                     ops_by_qualified_paths,
                     recursions_allowed - 1,
@@ -416,7 +415,7 @@ where
         for (key, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } => match &element {
-                    Element::Reference(path_reference,_, _) => {
+                    Element::Reference(path_reference, element_max_reference_hop, _) => {
                         if path_reference.len() == 0 {
                             return Err(Error::InvalidBatchOperation(
                                 "attempting to insert an empty reference",
@@ -428,7 +427,9 @@ where
                             self.follow_reference(
                                 path_reference,
                                 ops_by_qualified_paths,
-                                MAX_REFERENCE_HOPS as u8
+                                element_max_reference_hop
+                                    .or(Some(MAX_REFERENCE_HOPS as u8))
+                                    .expect("should have a value as MAX_REFERENCE_HOP has a value")
                             )
                         );
                         let serialized =
@@ -931,10 +932,14 @@ impl GroveDb {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
     use merk::proofs::Query;
-    use crate::{PathQuery, SizedQuery};
+
     use super::*;
-    use crate::tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF};
+    use crate::{
+        tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
+        PathQuery, SizedQuery,
+    };
 
     #[test]
     fn test_batch_validation_ok() {
@@ -1769,25 +1774,30 @@ mod tests {
         // insert reference that points to non-existent item
         let db = make_grovedb();
         let batch = vec![GroveDbOp::insert(
-          vec![TEST_LEAF.to_vec()],
+            vec![TEST_LEAF.to_vec()],
             b"key1".to_vec(),
-                Element::new_reference(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
+            Element::new_reference(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
         )];
-        assert!(matches!(db.apply_batch(batch, None, None).unwrap(), Err(Error::MissingReference("reference in batch is missing"))));
+        assert!(matches!(
+            db.apply_batch(batch, None, None).unwrap(),
+            Err(Error::MissingReference("reference in batch is missing"))
+        ));
 
         // insert reference with item it points to in the same batch
         let db = make_grovedb();
         let elem = Element::new_item(b"ayy".to_vec());
-        let batch = vec![GroveDbOp::insert(
-            vec![TEST_LEAF.to_vec()],
-            b"key1".to_vec(),
-            Element::new_reference(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
-        ),
-        GroveDbOp::insert(
-            vec![TEST_LEAF.to_vec()],
-            b"invalid_path".to_vec(),
-            elem.clone()
-        )];
+        let batch = vec![
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"key1".to_vec(),
+                Element::new_reference(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"invalid_path".to_vec(),
+                elem.clone(),
+            ),
+        ];
         assert!(matches!(db.apply_batch(batch, None, None).unwrap(), Ok(_)));
         assert_eq!(db.get([TEST_LEAF], b"key1", None).unwrap().unwrap(), elem);
 
@@ -1795,15 +1805,20 @@ mod tests {
         let mut reference_key_query = Query::new();
         reference_key_query.insert_key(b"key1".to_vec());
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], reference_key_query);
-        let proof = db.prove_query(&path_query).unwrap().expect("should generate proof");
+        let proof = db
+            .prove_query(&path_query)
+            .unwrap()
+            .expect("should generate proof");
         let verification_result = GroveDb::verify_query(&proof, &path_query);
         assert!(matches!(verification_result, Ok(_)));
 
-        // when we change the base element type, since we don't have bi-directional references, everything goes to shit
-        // how does things change in batches if we did have bidirectional references
-        // before replacement, we need to know everything pointing to the changing slot
-        // then update their value hashes respectively
-        // things pointing to this slot might be further down, in terms of level
-        // what if the value hash was part of the grovedb operation?
+        // when we change the base element type, since we don't have
+        // bi-directional references, everything goes to shit
+        // how does things change in batches if we did have bidirectional
+        // references before replacement, we need to know everything
+        // pointing to the changing slot then update their value hashes
+        // respectively things pointing to this slot might be further
+        // down, in terms of level what if the value hash was part of
+        // the grovedb operation?
     }
 }

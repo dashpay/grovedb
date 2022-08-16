@@ -76,7 +76,11 @@ impl GroveDb {
                     {
                         cost_return_on_error!(
                             &mut cost,
-                            element.insert_reference(&mut subtree, key, referenced_element_value_hash)
+                            element.insert_reference(
+                                &mut subtree,
+                                key,
+                                referenced_element_value_hash
+                            )
                         );
                     }
                 );

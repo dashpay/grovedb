@@ -3,9 +3,9 @@ use std::{collections::LinkedList, fmt};
 use anyhow::Result;
 use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use Op::*;
-use crate::{Hash};
 
 use super::{Fetch, Link, Tree, Walker};
+use crate::Hash;
 
 /// Type alias to add more sense to function signatures.
 type DeletedKeys = LinkedList<Vec<u8>>;
@@ -159,10 +159,7 @@ where
                 // TODO: take vec from batch so we don't need to clone
                 Put(value) => self.put_value(value.to_vec()).unwrap_add_cost(&mut cost),
                 PutReference(value, referenced_value) => self
-                    .put_value_and_value_hash(
-                        value.to_vec(),
-                        referenced_value.to_owned(),
-                    )
+                    .put_value_and_value_hash(value.to_vec(), referenced_value.to_owned())
                     .unwrap_add_cost(&mut cost),
                 Delete => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply

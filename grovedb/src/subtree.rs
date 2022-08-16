@@ -19,15 +19,20 @@ use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 use visualize::visualize_to_vec;
 
-use crate::{query_result_type::{
-    KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType,
-    QueryResultType::QueryElementResultType,
-}, util::{merk_optional_tx, storage_context_optional_tx}, Error, Merk, PathQuery, SizedQuery, TransactionArg, Hash};
+use crate::{
+    query_result_type::{
+        KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType,
+        QueryResultType::QueryElementResultType,
+    },
+    util::{merk_optional_tx, storage_context_optional_tx},
+    Error, Hash, Merk, PathQuery, SizedQuery, TransactionArg,
+};
 
 /// Optional meta-data to be stored per element
 pub type ElementFlags = Option<Vec<u8>>;
 
-/// Optional single byte to represent the maximum number of reference hop to base element
+/// Optional single byte to represent the maximum number of reference hop to
+/// base element
 pub type MaxReferenceHop = Option<u8>;
 
 /// Variants of GroveDB stored entities
@@ -126,7 +131,7 @@ impl Element {
                     item.len()
                 }
             }
-            Element::Reference(path_reference,_,  element_flag) => {
+            Element::Reference(path_reference, _, element_flag) => {
                 let path_length = path_reference
                     .iter()
                     .map(|inner| inner.len())
@@ -180,10 +185,10 @@ impl Element {
                     })
                     .sum::<usize>()
                     + path_reference.len().required_space()
-                    + 1 // +1 for max_hop_count
                     + flag_len
                     + flag_len.required_space()
-                    + 1 // + 1 for enum
+                    + 1
+                    + 1 // + 1 for enum and +1 for max reference hop
             }
             Element::Tree(_, element_flag) => {
                 let flag_len = if let Some(flag) = element_flag {

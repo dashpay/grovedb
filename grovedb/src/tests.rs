@@ -680,7 +680,7 @@ fn test_too_many_indirections() {
         Element::new_reference(vec![TEST_LEAF.to_vec(), keygen(MAX_REFERENCE_HOPS)]),
         None,
     )
-        .unwrap();
+    .unwrap();
 
     let result = db
         .get([TEST_LEAF], &keygen(MAX_REFERENCE_HOPS + 1), None)
