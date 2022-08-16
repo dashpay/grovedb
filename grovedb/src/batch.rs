@@ -2,16 +2,14 @@
 
 use core::fmt;
 use std::{
-    borrow::Cow,
     cmp::Ordering,
     collections::{btree_map::Entry, BTreeMap, HashMap, HashSet},
-    hash::Hash,
 };
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use merk::{tree::value_hash, Merk};
+use merk::{tree::value_hash, Hash, Merk};
 use nohash_hasher::IntMap;
 use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
@@ -294,12 +292,12 @@ where
     F: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
-    fn follow_reference<'a>(
+    fn follow_reference_get_value_hash<'a>(
         &'a mut self,
         qualified_path: &[Vec<u8>],
         ops_by_qualified_paths: &'a HashMap<Vec<Vec<u8>>, Op>,
         recursions_allowed: u8,
-    ) -> CostResult<Cow<Element>, Error> {
+    ) -> CostResult<Hash, Error> {
         let mut cost = OperationCost::default();
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
@@ -314,9 +312,13 @@ where
                     .wrap_with_cost(cost);
                 }
                 Op::Insert { element } => match element {
-                    Element::Item(..) => Ok(Cow::Borrowed(element)).wrap_with_cost(cost),
+                    Element::Item(..) => {
+                        let serialized = cost_return_on_error_no_add!(&cost, element.serialize());
+                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                        Ok(val_hash).wrap_with_cost(cost)
+                    }
                     Element::Reference(path, ..) => {
-                        self.follow_reference(path, ops_by_qualified_paths, recursions_allowed - 1)
+                        self.follow_reference_get_value_hash(path, ops_by_qualified_paths, recursions_allowed - 1)
                     }
                     Element::Tree(..) => {
                         return Err(Error::InvalidBatchOperation(
@@ -341,38 +343,20 @@ where
                 .unwrap_or_else(|| (self.get_merk_fn)(reference_path));
             let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
 
-            let referenced_element = cost_return_on_error!(
+            let referenced_element_value_hash_opt = cost_return_on_error!(
                 &mut cost,
-                merk.get(key.as_ref())
+                merk.get_value_hash(key.as_ref())
                     .map_err(|e| Error::CorruptedData(e.to_string()))
             );
 
-            let referenced_element = cost_return_on_error_no_add!(
-                &cost,
-                referenced_element.ok_or(Error::MissingReference("reference in batch is missing"))
+            let referenced_element_value_hash = cost_return_on_error!(
+                &mut cost,
+                referenced_element_value_hash_opt
+                    .ok_or(Error::MissingReference("reference in batch is missing"))
+                    .wrap_with_cost(OperationCost::default())
             );
 
-            let element = cost_return_on_error_no_add!(
-                &cost,
-                Element::deserialize(referenced_element.as_slice()).map_err(|_| {
-                    Error::CorruptedData(String::from("unable to deserialize element"))
-                })
-            );
-
-            match element {
-                Element::Item(..) => Ok(Cow::Owned(element)).wrap_with_cost(cost),
-                Element::Reference(path, ..) => self.follow_reference(
-                    path.as_slice(),
-                    ops_by_qualified_paths,
-                    recursions_allowed - 1,
-                ),
-                Element::Tree(..) => {
-                    return Err(Error::InvalidBatchOperation(
-                        "references can not point to trees being updated",
-                    ))
-                    .wrap_with_cost(cost);
-                }
-            }
+            return Ok(referenced_element_value_hash).wrap_with_cost(cost);
         }
     }
 }
@@ -423,25 +407,24 @@ where
                             .wrap_with_cost(cost);
                         }
 
-                        let referenced_element = cost_return_on_error!(
+                        let referenced_element_value_hash = cost_return_on_error!(
                             &mut cost,
-                            self.follow_reference(
+                            self.follow_reference_get_value_hash(
                                 path_reference,
                                 ops_by_qualified_paths,
-                                element_max_reference_hop
-                                    .unwrap_or(MAX_REFERENCE_HOPS as u8)
+                                element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8)
                             )
                         );
 
-                        let serialized =
-                            cost_return_on_error_no_add!(&cost, referenced_element.serialize());
-                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                        // let serialized =
+                        //     cost_return_on_error_no_add!(&cost, referenced_element.serialize());
+                        // let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
 
                         cost_return_on_error!(
                             &mut cost,
                             element.insert_reference_into_batch_operations(
                                 key,
-                                val_hash,
+                                referenced_element_value_hash,
                                 &mut batch_operations
                             )
                         );
