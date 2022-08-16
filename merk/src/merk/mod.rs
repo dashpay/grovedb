@@ -1,7 +1,5 @@
 pub mod chunks;
-
-// TODO
-// pub mod restore;
+pub mod restore;
 use std::{
     cell::Cell,
     cmp::Ordering,
@@ -220,8 +218,18 @@ where
 
     /// Gets a hash of a node by a given key, `None` is returned in case
     /// when node not found by the key.
-    pub fn get_hash(&self, key: &[u8]) -> CostContext<Result<Option<[u8; 32]>>> {
+    pub fn get_hash(&self, key: &[u8]) -> CostContext<Result<Option<Hash>>> {
         self.get_node_fn(key, |node| node.hash())
+    }
+
+    /// Gets the value hash of a node by a given key, `None` is returned in case
+    /// when node not found by the key.
+    pub fn get_value_hash(&self, key: &[u8]) -> CostContext<Result<Option<Hash>>> {
+        self.get_node_fn(key, |node| {
+            node.value_hash()
+                .clone()
+                .wrap_with_cost(OperationCost::default())
+        })
     }
 
     /// See if a node's field exists
@@ -602,9 +610,9 @@ where
         res
     }
 
-    // pub(crate) fn set_root_key(&mut self, key: &[u8]) -> Result<()> {
-    //     Ok(self.storage.put_root(ROOT_KEY_KEY, key)?)
-    // }
+    pub(crate) fn set_root_key(&mut self, key: &[u8]) -> Result<()> {
+        Ok(self.storage.put_root(ROOT_KEY_KEY, key).unwrap()?)
+    }
 
     pub(crate) fn load_root(&mut self) -> CostContext<Result<()>> {
         self.storage
@@ -622,6 +630,15 @@ where
                     Ok(()).wrap_with_cost(Default::default())
                 }
             })
+    }
+}
+
+fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<Tree>> {
+    let bytes = db.get(key).unwrap()?; // TODO: get_pinned ?
+    if let Some(bytes) = bytes {
+        Ok(Some(Tree::decode(key.to_vec(), &bytes)))
+    } else {
+        Ok(None)
     }
 }
 
@@ -1033,7 +1050,7 @@ mod test {
                     iter.key().unwrap().unwrap().to_vec(),
                     iter.value().unwrap().unwrap().to_vec(),
                 ));
-                iter.next();
+                iter.next().unwrap();
             }
         }
         let tmp_dir = TempDir::new().expect("cannot open tempdir");

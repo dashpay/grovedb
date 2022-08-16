@@ -14,8 +14,8 @@ costs = { version = "0.0.0", path = "../costs" }
 
 
 [dependencies.rocksdb]
-git = "https://github.com/fominok/rust-rocksdb"
-branch = "allow-checkpoints-db-common"
+git = "https://github.com/yiyuanliu/rust-rocksdb"
+branch = "transaction"
 optional = true
 
 [features]

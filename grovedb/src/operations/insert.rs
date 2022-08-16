@@ -33,7 +33,7 @@ impl GroveDb {
                 );
                 cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
             }
-            Element::Reference(ref reference_path, _) => {
+            Element::Reference(ref reference_path, ..) => {
                 if path_iter.len() == 0 {
                     return Err(Error::InvalidPath(
                         "only subtrees are allowed as root tree's leafs",
@@ -45,9 +45,26 @@ impl GroveDb {
                     &mut cost,
                     self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
                 );
-                let referenced_element = cost_return_on_error!(
+
+                let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
+                let referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
+                let referenced_element_value_hash_opt = merk_optional_tx!(
                     &mut cost,
-                    self.follow_reference(reference_path.to_owned(), transaction)
+                    self.db,
+                    referenced_path_iter,
+                    transaction,
+                    subtree,
+                    {
+                        Element::get_value_hash(&subtree, referenced_key)
+                            .unwrap_add_cost(&mut cost)
+                            .unwrap()
+                    }
+                );
+                let referenced_element_value_hash = cost_return_on_error!(
+                    &mut cost,
+                    referenced_element_value_hash_opt
+                        .ok_or(Error::MissingReference("cannot find referenced value"))
+                        .wrap_with_cost(OperationCost::default())
                 );
 
                 merk_optional_tx!(
@@ -57,11 +74,13 @@ impl GroveDb {
                     transaction,
                     mut subtree,
                     {
-                        let serialized =
-                            cost_return_on_error_no_add!(&cost, referenced_element.serialize());
                         cost_return_on_error!(
                             &mut cost,
-                            element.insert_reference(&mut subtree, key, serialized)
+                            element.insert_reference(
+                                &mut subtree,
+                                key,
+                                referenced_element_value_hash
+                            )
                         );
                     }
                 );
