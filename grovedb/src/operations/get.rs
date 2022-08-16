@@ -28,7 +28,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         match cost_return_on_error!(&mut cost, self.get_raw(path, key, transaction)) {
-            Element::Reference(reference_path, _) => self
+            Element::Reference(reference_path, ..) => self
                 .follow_reference(reference_path, transaction)
                 .add_cost(cost),
             other => Ok(other).wrap_with_cost(cost),
@@ -60,7 +60,7 @@ impl GroveDb {
             }
             visited.insert(path);
             match current_element {
-                Element::Reference(reference_path, _) => path = reference_path,
+                Element::Reference(reference_path, ..) => path = reference_path,
                 other => return Ok(other).wrap_with_cost(cost),
             }
             hops_left -= 1;
@@ -142,7 +142,7 @@ impl GroveDb {
         let results_wrapped = elements
             .into_iter()
             .map(|result_item| match result_item {
-                QueryResultElement::ElementResultItem(Element::Reference(reference_path, _)) => {
+                QueryResultElement::ElementResultItem(Element::Reference(reference_path, ..)) => {
                     let maybe_item = self
                         .follow_reference(reference_path, transaction)
                         .unwrap_add_cost(&mut cost)?;
@@ -212,7 +212,7 @@ where {
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(element) => {
                     match element {
-                        Element::Reference(reference_path, _) => {
+                        Element::Reference(reference_path, ..) => {
                             // While `map` on iterator is lazy, we should accumulate costs even if
                             // `collect` will end in `Err`, so we'll use
                             // external costs accumulator instead of

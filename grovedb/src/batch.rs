@@ -316,7 +316,7 @@ where
                 }
                 Op::Insert { element } => match element {
                     Element::Item(..) => Ok(Cow::Borrowed(element)).wrap_with_cost(cost),
-                    Element::Reference(path, _) => {
+                    Element::Reference(path,_, _) => {
                         self.follow_reference(path, ops_by_qualified_paths, recursions_allowed - 1)
                     }
                     Element::Tree(..) => {
@@ -362,7 +362,7 @@ where
 
             match element {
                 Element::Item(..) => Ok(Cow::Owned(element)).wrap_with_cost(cost),
-                Element::Reference(path, _) => self.follow_reference(
+                Element::Reference(path,_,  _) => self.follow_reference(
                     path.as_slice(),
                     ops_by_qualified_paths,
                     recursions_allowed - 1,
@@ -416,7 +416,7 @@ where
         for (key, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } => match &element {
-                    Element::Reference(path_reference, _) => {
+                    Element::Reference(path_reference,_, _) => {
                         if path_reference.len() == 0 {
                             return Err(Error::InvalidBatchOperation(
                                 "attempting to insert an empty reference",

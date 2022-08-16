@@ -472,6 +472,7 @@ fn test_element_with_flags() {
             b"elem4".to_vec(),
             Element::Reference(
                 vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"elem2".to_vec()],
+                None,
                 Some([9].to_vec())
             )
         )

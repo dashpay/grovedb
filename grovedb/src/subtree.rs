@@ -24,8 +24,11 @@ use crate::{query_result_type::{
     QueryResultType::QueryElementResultType,
 }, util::{merk_optional_tx, storage_context_optional_tx}, Error, Merk, PathQuery, SizedQuery, TransactionArg, Hash};
 
-/// Optional single byte meta-data to be stored per element
+/// Optional meta-data to be stored per element
 pub type ElementFlags = Option<Vec<u8>>;
+
+/// Optional single byte to represent the maximum number of reference hop to base element
+pub type MaxReferenceHop = Option<u8>;
 
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
@@ -35,7 +38,7 @@ pub enum Element {
     /// An ordinary value
     Item(Vec<u8>, ElementFlags),
     /// A reference to an object by its path
-    Reference(Vec<Vec<u8>>, ElementFlags),
+    Reference(Vec<Vec<u8>>, MaxReferenceHop, ElementFlags),
     /// A subtree, contains a root hash of the underlying Merk.
     /// Hash is stored to make Merk become different when its subtrees have
     /// changed, otherwise changes won't be reflected in parent trees.
@@ -89,11 +92,11 @@ impl Element {
     }
 
     pub fn new_reference(reference_path: Vec<Vec<u8>>) -> Self {
-        Element::Reference(reference_path, None)
+        Element::Reference(reference_path, None, None)
     }
 
     pub fn new_reference_with_flags(reference_path: Vec<Vec<u8>>, flags: ElementFlags) -> Self {
-        Element::Reference(reference_path, flags)
+        Element::Reference(reference_path, None, flags)
     }
 
     pub fn new_tree(tree_hash: [u8; 32]) -> Self {
@@ -107,7 +110,7 @@ impl Element {
     /// Grab the optional flag stored in an element
     pub fn get_flags(&self) -> &ElementFlags {
         match self {
-            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, flags) => {
+            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
                 flags
             }
         }
@@ -123,7 +126,7 @@ impl Element {
                     item.len()
                 }
             }
-            Element::Reference(path_reference, element_flag) => {
+            Element::Reference(path_reference,_,  element_flag) => {
                 let path_length = path_reference
                     .iter()
                     .map(|inner| inner.len())
@@ -162,7 +165,7 @@ impl Element {
                 };
                 Self::required_item_space(item_len, flag_len)
             }
-            Element::Reference(path_reference, element_flag) => {
+            Element::Reference(path_reference, _, element_flag) => {
                 let flag_len = if let Some(flag) = element_flag {
                     flag.len() + 1
                 } else {
@@ -177,6 +180,7 @@ impl Element {
                     })
                     .sum::<usize>()
                     + path_reference.len().required_space()
+                    + 1 // +1 for max_hop_count
                     + flag_len
                     + flag_len.required_space()
                     + 1 // + 1 for enum
@@ -1091,11 +1095,11 @@ mod tests {
             vec![5],
         ]);
         let serialized = reference.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 10);
+        assert_eq!(serialized.len(), 11);
         assert_eq!(serialized.len(), reference.serialized_byte_size());
         // The item is variable length 2 bytes, so it's enum 1 then 1 byte for length,
         // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
-        assert_eq!(hex::encode(serialized), "0103010002abcd010500");
+        assert_eq!(hex::encode(serialized), "0103010002abcd01050000");
 
         let reference = Element::new_reference_with_flags(
             vec![
@@ -1106,9 +1110,9 @@ mod tests {
             Some(vec![1, 2, 3]),
         );
         let serialized = reference.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 14);
+        assert_eq!(serialized.len(), 15);
         assert_eq!(serialized.len(), reference.serialized_byte_size());
-        assert_eq!(hex::encode(serialized), "0103010002abcd01050103010203");
+        assert_eq!(hex::encode(serialized), "0103010002abcd0105000103010203");
     }
 
     #[test]
