@@ -12,7 +12,7 @@ impl Visualize for Element {
                 drawer.write(b"item: ")?;
                 drawer = value.visualize(drawer)?;
             }
-            Element::Reference(_ref, _) => {
+            Element::Reference(_ref, ..) => {
                 drawer.write(b"ref")?;
                 // drawer.write(b"ref: [path: ")?;
                 // let mut path_iter = path.iter();

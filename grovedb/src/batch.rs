@@ -2,16 +2,14 @@
 
 use core::fmt;
 use std::{
-    borrow::Cow,
     cmp::Ordering,
     collections::{btree_map::Entry, BTreeMap, HashMap, HashSet},
-    hash::Hash,
 };
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use merk::Merk;
+use merk::{tree::value_hash, Hash, Merk};
 use nohash_hasher::IntMap;
 use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
@@ -294,16 +292,29 @@ where
     F: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
-    fn follow_reference<'a>(
+    /// A reference assumes the value hash of the base item it points to.
+    /// In a reference chain base_item -> ref_1 -> ref_2 e.t.c.
+    /// all references in that chain (ref_1, ref_2) assume the value hash of the
+    /// base_item. The goal of this function is to figure out what the
+    /// value_hash of a reference chain is. If we want to insert ref_3 to the
+    /// chain above and nothing else changes, we can get the value_hash from
+    /// ref_2. But when dealing with batches, you can have an operation to
+    /// insert ref_3 and another operation to change something in the
+    /// reference chain in the same batch.
+    /// All these has to be taken into account.
+    fn follow_reference_get_value_hash<'a>(
         &'a mut self,
         qualified_path: &[Vec<u8>],
         ops_by_qualified_paths: &'a HashMap<Vec<Vec<u8>>, Op>,
         recursions_allowed: u8,
-    ) -> CostResult<Cow<Element>, Error> {
+    ) -> CostResult<Hash, Error> {
         let mut cost = OperationCost::default();
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
         }
+
+        // If the element being referenced changes in the same batch
+        // we need to set the value_hash based on the new change and not the old state.
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
             // the path is being modified, inserted or deleted in the batch of operations
             match op {
@@ -314,10 +325,16 @@ where
                     .wrap_with_cost(cost);
                 }
                 Op::Insert { element } => match element {
-                    Element::Item(..) => Ok(Cow::Borrowed(element)).wrap_with_cost(cost),
-                    Element::Reference(path, _) => {
-                        self.follow_reference(path, ops_by_qualified_paths, recursions_allowed - 1)
+                    Element::Item(..) => {
+                        let serialized = cost_return_on_error_no_add!(&cost, element.serialize());
+                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                        Ok(val_hash).wrap_with_cost(cost)
                     }
+                    Element::Reference(path, ..) => self.follow_reference_get_value_hash(
+                        path,
+                        ops_by_qualified_paths,
+                        recursions_allowed - 1,
+                    ),
                     Element::Tree(..) => {
                         return Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
@@ -341,36 +358,66 @@ where
                 .unwrap_or_else(|| (self.get_merk_fn)(reference_path));
             let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
 
-            let referenced_element = cost_return_on_error!(
-                &mut cost,
-                merk.get(key.as_ref())
-                    .map_err(|e| Error::CorruptedData(e.to_string()))
-            );
+            // Here the element being referenced doesn't change in the same batch
+            // and the max hop count is 1, meaning it should point directly to the base
+            // element at this point we can extract the value hash from the
+            // reference element directly
+            if recursions_allowed == 1 {
+                let referenced_element_value_hash_opt = cost_return_on_error!(
+                    &mut cost,
+                    merk.get_value_hash(key.as_ref())
+                        .map_err(|e| Error::CorruptedData(e.to_string()))
+                );
 
-            let referenced_element = cost_return_on_error_no_add!(
-                &cost,
-                referenced_element.ok_or(Error::MissingReference("reference in batch is missing"))
-            );
+                let referenced_element_value_hash = cost_return_on_error!(
+                    &mut cost,
+                    referenced_element_value_hash_opt
+                        .ok_or(Error::MissingReference("reference in batch is missing"))
+                        .wrap_with_cost(OperationCost::default())
+                );
 
-            let element = cost_return_on_error_no_add!(
-                &cost,
-                Element::deserialize(referenced_element.as_slice()).map_err(|_| {
-                    Error::CorruptedData(String::from("unable to deserialize element"))
-                })
-            );
+                return Ok(referenced_element_value_hash).wrap_with_cost(cost);
+            } else {
+                // Here the element being referenced doesn't change in the same batch
+                // but the hop count is greater than 1, we can't just take the value hash from
+                // the referenced element as an element further down in the chain might still
+                // change in the batch.
+                let referenced_element = cost_return_on_error!(
+                    &mut cost,
+                    merk.get(key.as_ref())
+                        .map_err(|e| Error::CorruptedData(e.to_string()))
+                );
 
-            match element {
-                Element::Item(..) => Ok(Cow::Owned(element)).wrap_with_cost(cost),
-                Element::Reference(path, _) => self.follow_reference(
-                    path.as_slice(),
-                    ops_by_qualified_paths,
-                    recursions_allowed - 1,
-                ),
-                Element::Tree(..) => {
-                    return Err(Error::InvalidBatchOperation(
-                        "references can not point to trees being updated",
-                    ))
-                    .wrap_with_cost(cost);
+                let referenced_element = cost_return_on_error_no_add!(
+                    &cost,
+                    referenced_element
+                        .ok_or(Error::MissingReference("reference in batch is missing"))
+                );
+
+                let element = cost_return_on_error_no_add!(
+                    &cost,
+                    Element::deserialize(referenced_element.as_slice()).map_err(|_| {
+                        Error::CorruptedData(String::from("unable to deserialize element"))
+                    })
+                );
+
+                match element {
+                    Element::Item(..) => {
+                        let serialized = cost_return_on_error_no_add!(&cost, element.serialize());
+                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                        Ok(val_hash).wrap_with_cost(cost)
+                    }
+                    Element::Reference(path, ..) => self.follow_reference_get_value_hash(
+                        path.as_slice(),
+                        ops_by_qualified_paths,
+                        recursions_allowed - 1,
+                    ),
+                    Element::Tree(..) => {
+                        return Err(Error::InvalidBatchOperation(
+                            "references can not point to trees being updated",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
                 }
             }
         }
@@ -415,29 +462,28 @@ where
         for (key, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } => match &element {
-                    Element::Reference(path_reference, _) => {
+                    Element::Reference(path_reference, element_max_reference_hop, _) => {
                         if path_reference.len() == 0 {
                             return Err(Error::InvalidBatchOperation(
                                 "attempting to insert an empty reference",
                             ))
                             .wrap_with_cost(cost);
                         }
-                        let referenced_element = cost_return_on_error!(
+
+                        let referenced_element_value_hash = cost_return_on_error!(
                             &mut cost,
-                            self.follow_reference(
+                            self.follow_reference_get_value_hash(
                                 path_reference,
                                 ops_by_qualified_paths,
-                                MAX_REFERENCE_HOPS as u8
+                                element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8)
                             )
                         );
-                        let serialized =
-                            cost_return_on_error_no_add!(&cost, referenced_element.serialize());
 
                         cost_return_on_error!(
                             &mut cost,
                             element.insert_reference_into_batch_operations(
                                 key,
-                                serialized,
+                                referenced_element_value_hash,
                                 &mut batch_operations
                             )
                         );
@@ -928,9 +974,15 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    use merk::proofs::Query;
 
     use super::*;
-    use crate::tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF};
+    use crate::{
+        tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
+        PathQuery, SizedQuery,
+    };
 
     #[test]
     fn test_batch_validation_ok() {
@@ -1758,5 +1810,81 @@ mod tests {
             .expect("cannot apply batch");
 
         assert_ne!(db.root_hash(None).unwrap().unwrap(), root_hash);
+    }
+
+    #[test]
+    fn test_references() {
+        // insert reference that points to non-existent item
+        let db = make_grovedb();
+        let batch = vec![GroveDbOp::insert(
+            vec![TEST_LEAF.to_vec()],
+            b"key1".to_vec(),
+            Element::new_reference(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
+        )];
+        assert!(matches!(
+            db.apply_batch(batch, None, None).unwrap(),
+            Err(Error::MissingReference("reference in batch is missing"))
+        ));
+
+        // insert reference with item it points to in the same batch
+        let db = make_grovedb();
+        let elem = Element::new_item(b"ayy".to_vec());
+        let batch = vec![
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"key1".to_vec(),
+                Element::new_reference(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"invalid_path".to_vec(),
+                elem.clone(),
+            ),
+        ];
+        assert!(matches!(db.apply_batch(batch, None, None).unwrap(), Ok(_)));
+        assert_eq!(db.get([TEST_LEAF], b"key1", None).unwrap().unwrap(), elem);
+
+        // should successfully prove reference as the value hash is valid
+        let mut reference_key_query = Query::new();
+        reference_key_query.insert_key(b"key1".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], reference_key_query);
+        let proof = db
+            .prove_query(&path_query)
+            .unwrap()
+            .expect("should generate proof");
+        let verification_result = GroveDb::verify_query(&proof, &path_query);
+        assert!(matches!(verification_result, Ok(_)));
+
+        // Hit reference limit when you specify max reference hop, lower than actual hop
+        // count
+        let db = make_grovedb();
+        let elem = Element::new_item(b"ayy".to_vec());
+        let batch = vec![
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"key2".to_vec(),
+                Element::new_reference_with_hops(
+                    vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+                    Some(1),
+                ),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"key1".to_vec(),
+                Element::new_reference_with_hops(
+                    vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()],
+                    Some(1),
+                ),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"invalid_path".to_vec(),
+                elem.clone(),
+            ),
+        ];
+        assert!(matches!(
+            db.apply_batch(batch, None, None).unwrap(),
+            Err(Error::ReferenceLimit)
+        ));
     }
 }
