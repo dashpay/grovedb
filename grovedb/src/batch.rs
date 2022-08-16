@@ -416,10 +416,6 @@ where
                             )
                         );
 
-                        // let serialized =
-                        //     cost_return_on_error_no_add!(&cost, referenced_element.serialize());
-                        // let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
-
                         cost_return_on_error!(
                             &mut cost,
                             element.insert_reference_into_batch_operations(
