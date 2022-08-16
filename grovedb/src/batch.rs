@@ -317,9 +317,11 @@ where
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
                     }
-                    Element::Reference(path, ..) => {
-                        self.follow_reference_get_value_hash(path, ops_by_qualified_paths, recursions_allowed - 1)
-                    }
+                    Element::Reference(path, ..) => self.follow_reference_get_value_hash(
+                        path,
+                        ops_by_qualified_paths,
+                        recursions_allowed - 1,
+                    ),
                     Element::Tree(..) => {
                         return Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
@@ -343,20 +345,60 @@ where
                 .unwrap_or_else(|| (self.get_merk_fn)(reference_path));
             let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
 
-            let referenced_element_value_hash_opt = cost_return_on_error!(
-                &mut cost,
-                merk.get_value_hash(key.as_ref())
-                    .map_err(|e| Error::CorruptedData(e.to_string()))
-            );
+            if recursions_allowed == 1 {
+                let referenced_element_value_hash_opt = cost_return_on_error!(
+                    &mut cost,
+                    merk.get_value_hash(key.as_ref())
+                        .map_err(|e| Error::CorruptedData(e.to_string()))
+                );
 
-            let referenced_element_value_hash = cost_return_on_error!(
-                &mut cost,
-                referenced_element_value_hash_opt
-                    .ok_or(Error::MissingReference("reference in batch is missing"))
-                    .wrap_with_cost(OperationCost::default())
-            );
+                let referenced_element_value_hash = cost_return_on_error!(
+                    &mut cost,
+                    referenced_element_value_hash_opt
+                        .ok_or(Error::MissingReference("reference in batch is missing"))
+                        .wrap_with_cost(OperationCost::default())
+                );
 
-            return Ok(referenced_element_value_hash).wrap_with_cost(cost);
+                return Ok(referenced_element_value_hash).wrap_with_cost(cost);
+            } else {
+                let referenced_element = cost_return_on_error!(
+                    &mut cost,
+                    merk.get(key.as_ref())
+                        .map_err(|e| Error::CorruptedData(e.to_string()))
+                );
+
+                let referenced_element = cost_return_on_error_no_add!(
+                    &cost,
+                    referenced_element
+                        .ok_or(Error::MissingReference("reference in batch is missing"))
+                );
+
+                let element = cost_return_on_error_no_add!(
+                    &cost,
+                    Element::deserialize(referenced_element.as_slice()).map_err(|_| {
+                        Error::CorruptedData(String::from("unable to deserialize element"))
+                    })
+                );
+
+                match element {
+                    Element::Item(..) => {
+                        let serialized = cost_return_on_error_no_add!(&cost, element.serialize());
+                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                        Ok(val_hash).wrap_with_cost(cost)
+                    }
+                    Element::Reference(path, ..) => self.follow_reference_get_value_hash(
+                        path.as_slice(),
+                        ops_by_qualified_paths,
+                        recursions_allowed - 1,
+                    ),
+                    Element::Tree(..) => {
+                        return Err(Error::InvalidBatchOperation(
+                            "references can not point to trees being updated",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                }
+            }
         }
     }
 }
