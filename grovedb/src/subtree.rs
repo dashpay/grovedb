@@ -104,6 +104,21 @@ impl Element {
         Element::Reference(reference_path, None, flags)
     }
 
+    pub fn new_reference_with_hops(
+        reference_path: Vec<Vec<u8>>,
+        max_reference_hop: MaxReferenceHop,
+    ) -> Self {
+        Element::Reference(reference_path, max_reference_hop, None)
+    }
+
+    pub fn new_reference_with_max_hops_and_flags(
+        reference_path: Vec<Vec<u8>>,
+        max_reference_hop: MaxReferenceHop,
+        flags: ElementFlags,
+    ) -> Self {
+        Element::Reference(reference_path, max_reference_hop, flags)
+    }
+
     pub fn new_tree(tree_hash: [u8; 32]) -> Self {
         Element::Tree(tree_hash, None)
     }

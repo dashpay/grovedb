@@ -422,6 +422,7 @@ where
                             ))
                             .wrap_with_cost(cost);
                         }
+
                         let referenced_element = cost_return_on_error!(
                             &mut cost,
                             self.follow_reference(
@@ -432,6 +433,7 @@ where
                                     .expect("should have a value as MAX_REFERENCE_HOP has a value")
                             )
                         );
+
                         let serialized =
                             cost_return_on_error_no_add!(&cost, referenced_element.serialize());
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
