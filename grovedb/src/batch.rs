@@ -292,6 +292,15 @@ where
     F: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
+    /// A reference assumes the value hash of the base item it points to.
+    /// In a reference chain base_item -> ref_1 -> ref_2 e.t.c.
+    /// all references in that chain (ref_1, ref_2) assume the value hash of the
+    /// base_item The goal of this function is to figure out what the
+    /// value_hash of a reference chain is If we want to insert ref_3 to the
+    /// chain above and nothing else changes, we can get the value_hash from
+    /// ref_2. But when dealing with batches, you can have an operation to
+    /// insert ref_3 and another operation to change something in the
+    /// reference chain in the same batch.
     fn follow_reference_get_value_hash<'a>(
         &'a mut self,
         qualified_path: &[Vec<u8>],
@@ -302,6 +311,9 @@ where
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
         }
+
+        // If the element being referenced changes in the same batch
+        // we need to set the value_hash based on the new change and not the old state.
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
             // the path is being modified, inserted or deleted in the batch of operations
             match op {
@@ -345,6 +357,10 @@ where
                 .unwrap_or_else(|| (self.get_merk_fn)(reference_path));
             let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
 
+            // Here the element being referenced doesn't change in the same batch
+            // and the max hop count is 1, meaning it should point directly to the base
+            // element at this point we can extract the value hash from the
+            // reference element directly
             if recursions_allowed == 1 {
                 let referenced_element_value_hash_opt = cost_return_on_error!(
                     &mut cost,
@@ -361,6 +377,10 @@ where
 
                 return Ok(referenced_element_value_hash).wrap_with_cost(cost);
             } else {
+                // Here the element being referenced doesn't change in the same batch
+                // but the hop count is greater than 1, we can't just take the value hash from
+                // the referenced element as an element further down in the chain might still
+                // change in the batch.
                 let referenced_element = cost_return_on_error!(
                     &mut cost,
                     merk.get(key.as_ref())
