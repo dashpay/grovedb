@@ -1814,13 +1814,36 @@ mod tests {
         let verification_result = GroveDb::verify_query(&proof, &path_query);
         assert!(matches!(verification_result, Ok(_)));
 
-        // when we change the base element type, since we don't have
-        // bi-directional references, everything goes to shit
-        // how does things change in batches if we did have bidirectional
-        // references before replacement, we need to know everything
-        // pointing to the changing slot then update their value hashes
-        // respectively things pointing to this slot might be further
-        // down, in terms of level what if the value hash was part of
-        // the grovedb operation?
+        // Hit reference limit when you specify max reference hop, lower than actual hop
+        // count
+        let db = make_grovedb();
+        let elem = Element::new_item(b"ayy".to_vec());
+        let batch = vec![
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"key2".to_vec(),
+                Element::new_reference_with_hops(
+                    vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+                    Some(1),
+                ),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"key1".to_vec(),
+                Element::new_reference_with_hops(
+                    vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()],
+                    Some(1),
+                ),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"invalid_path".to_vec(),
+                elem.clone(),
+            ),
+        ];
+        assert!(matches!(
+            db.apply_batch(batch, None, None).unwrap(),
+            Err(Error::ReferenceLimit)
+        ));
     }
 }
