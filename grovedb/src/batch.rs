@@ -295,12 +295,13 @@ where
     /// A reference assumes the value hash of the base item it points to.
     /// In a reference chain base_item -> ref_1 -> ref_2 e.t.c.
     /// all references in that chain (ref_1, ref_2) assume the value hash of the
-    /// base_item The goal of this function is to figure out what the
-    /// value_hash of a reference chain is If we want to insert ref_3 to the
+    /// base_item. The goal of this function is to figure out what the
+    /// value_hash of a reference chain is. If we want to insert ref_3 to the
     /// chain above and nothing else changes, we can get the value_hash from
     /// ref_2. But when dealing with batches, you can have an operation to
     /// insert ref_3 and another operation to change something in the
     /// reference chain in the same batch.
+    /// All these has to be taken into account.
     fn follow_reference_get_value_hash<'a>(
         &'a mut self,
         qualified_path: &[Vec<u8>],
