@@ -57,7 +57,7 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
             let js_buffer = JsBuffer::external(cx, item);
             js_buffer.upcast()
         }
-        Element::Reference(reference, _) => nested_vecs_to_js(reference, cx)?,
+        Element::Reference(reference, ..) => nested_vecs_to_js(reference, cx)?,
         Element::Tree(tree, _) => {
             let js_buffer = JsBuffer::external(cx, tree);
             js_buffer.upcast()

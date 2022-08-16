@@ -5,7 +5,7 @@ use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};
-use crate::tree::hash::value_hash;
+use crate::Hash;
 
 /// Type alias to add more sense to function signatures.
 type DeletedKeys = LinkedList<Vec<u8>>;
@@ -14,7 +14,7 @@ type DeletedKeys = LinkedList<Vec<u8>>;
 #[derive(PartialEq, Clone, Eq)]
 pub enum Op {
     Put(Vec<u8>),
-    PutReference(Vec<u8>, Vec<u8>),
+    PutReference(Vec<u8>, Hash),
     Delete,
 }
 
@@ -124,7 +124,7 @@ where
             PutReference(_, referenced_value) => Tree::new_with_value_hash(
                 mid_key.as_ref().to_vec(),
                 mid_value.to_vec(),
-                value_hash(referenced_value).unwrap_add_cost(&mut cost),
+                referenced_value.to_owned(),
             )
             .unwrap_add_cost(&mut cost),
             Delete => unreachable!("cannot get here, should return at the top"),
@@ -159,10 +159,7 @@ where
                 // TODO: take vec from batch so we don't need to clone
                 Put(value) => self.put_value(value.to_vec()).unwrap_add_cost(&mut cost),
                 PutReference(value, referenced_value) => self
-                    .put_value_and_value_hash(
-                        value.to_vec(),
-                        value_hash(referenced_value).unwrap_add_cost(&mut cost),
-                    )
+                    .put_value_and_value_hash(value.to_vec(), referenced_value.to_owned())
                     .unwrap_add_cost(&mut cost),
                 Delete => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply

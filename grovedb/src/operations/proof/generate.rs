@@ -340,7 +340,7 @@ impl GroveDb {
                 Op::Push(node) | Op::PushInverted(node) => match node {
                     Node::KV(_, value) => {
                         let elem = Element::deserialize(value);
-                        if let Ok(Element::Reference(reference_path, _)) = elem {
+                        if let Ok(Element::Reference(reference_path, ..)) = elem {
                             let referenced_elem = cost_return_on_error!(
                                 &mut cost,
                                 self.follow_reference(reference_path, None)
