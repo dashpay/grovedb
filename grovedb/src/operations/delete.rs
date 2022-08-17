@@ -413,7 +413,7 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         max_element_size: u32,
-    ) -> CostResult<(), Error>
+    ) -> OperationCost
         where
             P: IntoIterator<Item = &'p [u8]>,
             <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
@@ -425,6 +425,6 @@ impl GroveDb {
             key.len() as u32,
             max_element_size,
         );
-        Ok(()).wrap_with_cost(cost)
+        cost
     }
 }
