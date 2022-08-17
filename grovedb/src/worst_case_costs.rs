@@ -109,7 +109,7 @@ impl GroveDb {
         // Look into if there is a legitimate reason for doing this. Hence worst
         // case, we have an additional modified node during the insertion.
 
-        let max_number_of_modified_nodes = max_number_of_walks + 2 + 1;
+        let max_number_of_modified_nodes = max_number_of_walks + 1;
 
         // commit stage
         // for every modified node, recursively call commit on all modified children
@@ -313,10 +313,10 @@ mod test {
         // We also write during modification
         // all the trees we walk get modified so they have to be re-written
 
-        let mut cost = OperationCost::default();
-        GroveDb::add_worst_case_insert_merk_node(&mut cost, 60, 11, 8);
+        let mut worst_case_cost = OperationCost::default();
+        GroveDb::add_worst_case_insert_merk_node(&mut worst_case_cost, 60, 11, 8);
+        dbg!(&worst_case_cost);
 
-        dbg!(cost);
         // Open a merk and insert 10 elements.
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
@@ -324,7 +324,7 @@ mod test {
         let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
-        let batch = make_batch_seq(1..10);
+        let batch = make_batch_seq(1..11);
         for b in batch {
             merk.apply::<_, Vec<_>>(&[b.clone()], &[]).unwrap().unwrap()
         }
@@ -340,6 +340,7 @@ mod test {
         // }
 
         // // drop merk, so nothing is stored in memory
+        dbg!("dropping merk");
         drop(merk);
         // //
         // // // Reopen merk: this time, only root node is loaded to memory
@@ -347,9 +348,11 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
 
-        let batch = make_batch_seq(10..11);
-        let m = merk.apply::<_, Vec<_>>(batch.as_slice(), &[]);
-        dbg!(m);
+        let batch = make_batch_seq(11..12);
+        let actual_cost = merk.apply::<_, Vec<_>>(batch.as_slice(), &[]);
+        dbg!(&actual_cost);
+
+        assert_eq!(actual_cost.cost, worst_case_cost);
     }
 
     #[test]

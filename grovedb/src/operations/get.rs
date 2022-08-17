@@ -314,24 +314,23 @@ where {
         )
     }
 
-    // Does tree element exist without following references
-    // pub fn worst_case_for_has_raw<'p, P>(&self, path: P, key: &'p [u8],
-    // max_element_size: u32) -> CostResult<bool, Error> where
-    //     P: IntoIterator<Item = &'p [u8]>,
-    //     <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator +
-    // Clone, {
-    //     let mut cost = OperationCost::default();
-    //
-    //     // First we get the merk tree
-    //     Self::add_worst_case_get_merk::<_, RocksDbStorage>(
-    //         &mut cost,
-    //         path,
-    //         max_element_size,
-    //     ); // TODO: use GroveDb's storage type parameter when it will be finally
-    // abstract        // over it
-    //     Self::add_worst_case_merk_has_element(&mut cost, key, max_element_size);
-    //
-    //     // In the worst case, there will not be an error, but the item will not
-    // be found     Ok(false).wrap_with_cost(cost)
-    // }
+    pub fn worst_case_for_has_raw<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        max_element_size: u32,
+    ) -> CostResult<(), Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+        GroveDb::add_worst_case_has_raw_cost::<_, RocksDbStorage>(
+            &mut cost,
+            path,
+            key.len() as u32,
+            max_element_size,
+        );
+        Ok(()).wrap_with_cost(cost)
+    }
 }
