@@ -951,11 +951,11 @@ impl GroveDb {
         &self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
-    ) -> OperationCost {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         if ops.is_empty() {
-            return cost;
+            return Ok(()).wrap_with_cost(cost);
         }
 
         let batch_structure = cost_return_on_error!(
@@ -967,7 +967,7 @@ impl GroveDb {
             self.apply_batch_structure(batch_structure, batch_apply_options)
         );
 
-        cost
+        Ok(()).wrap_with_cost(cost)
     }
 }
 
