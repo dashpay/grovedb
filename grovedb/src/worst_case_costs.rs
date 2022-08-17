@@ -133,8 +133,7 @@ impl GroveDb {
         // the prefix is created during get storage context for merk open
         let prefix_size: u32 = 32;
         let prefixed_key_size = prefix_size + max_key_size;
-        let value_size = (2 * Self::worst_case_encoded_link_size(max_key_size))
-            + Self::worst_case_encoded_kv_node_size(max_element_size);
+        let value_size = Self::worst_case_encoded_tree_size(max_key_size, max_element_size);
 
         for _ in 0..max_number_of_modified_nodes {
             cost.seek_count += 1;
@@ -147,7 +146,7 @@ impl GroveDb {
 
         // Write the root key
         cost.seek_count += 1;
-        cost.storage_written_bytes += (b"root".len() as u32 + max_key_size);
+        cost.storage_written_bytes += (prefixed_key_size + b"root".len() as u32);
     }
 
     /// Add worst case for getting a merk tree
