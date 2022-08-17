@@ -407,4 +407,24 @@ impl GroveDb {
         }
         Ok(result).wrap_with_cost(cost)
     }
+
+    pub fn worst_case_deletion_cost<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        max_element_size: u32,
+    ) -> CostResult<(), Error>
+        where
+            P: IntoIterator<Item = &'p [u8]>,
+            <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+        GroveDb::add_worst_case_delete_cost(
+            &mut cost,
+            // path,
+            key.len() as u32,
+            max_element_size,
+        );
+        Ok(()).wrap_with_cost(cost)
+    }
 }
