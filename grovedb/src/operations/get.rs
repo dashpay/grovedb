@@ -317,7 +317,7 @@ where {
         path: P,
         key_len: u32,
         max_element_size: u32,
-    ) -> CostContext<()>
+    ) -> OperationCost
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
@@ -329,6 +329,6 @@ where {
             key_len,
             max_element_size,
         );
-        ().wrap_with_cost(cost)
+        cost
     }
 }
