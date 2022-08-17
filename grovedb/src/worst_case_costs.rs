@@ -5,16 +5,23 @@ use super::GroveDb;
 use crate::Element;
 
 impl GroveDb {
+    fn worst_case_encoded_tree_size(key_size: u32, max_element_size: u32) -> u32 {
+        // two option values for the left and right link
+        // the actual left and right link encoding size
+        // the encoded kv node size
+        2 + (2 * Self::worst_case_encoded_link_size(key_size))
+            + Self::worst_case_encoded_kv_node_size(max_element_size)
+    }
+
     // Worst case costs for operations within a single merk
     fn worst_case_encoded_link_size(key_size: u32) -> u32 {
         // Links are optional values that represent the right or left node for a given
-        // tree 1 byte to represent the option state
         // 1 byte to represent key_length
         // key_length to represent the actual key
         // 32 bytes for the hash of the node
         // 1 byte for the left child height
         // 1 byte for the right child height
-        1 + 1 + key_size + 32 + 1 + 1
+        1 + key_size + 32 + 1 + 1
     }
 
     fn worst_case_encoded_kv_node_size(max_element_size: u32) -> u32 {
@@ -37,9 +44,7 @@ impl GroveDb {
 
         // To write a node to disk, the left link, right link and kv nodes are encoded.
         // worst case, the node has both the left and right link present.
-        let loaded_storage_bytes = (2 * Self::worst_case_encoded_link_size(key_size))
-            + Self::worst_case_encoded_kv_node_size(max_element_size);
-        cost.storage_loaded_bytes += loaded_storage_bytes;
+        cost.storage_loaded_bytes += Self::worst_case_encoded_tree_size(key_size, max_element_size);
     }
 
     pub(crate) fn add_merk_worst_case_insert_reference(
@@ -88,6 +93,11 @@ impl GroveDb {
         // this requires computing the value_hash and kv_hash
         cost.hash_node_calls += 2;
 
+        dbg!(&cost);
+        dbg!(&cost.storage_loaded_bytes - 3 * Self::worst_case_encoded_link_size(max_key_size));
+        // dbg!(Self::worst_case_encoded_link_size(max_key_size));
+        // dbg!(Self::worst_case_encoded_kv_node_size(max_element_size));
+
         // on insertion, we need to balance the tree
         // worst case for insertion, one rotation at some subtree point A
         // where a rotation can be single or double.
@@ -109,7 +119,12 @@ impl GroveDb {
         // Look into if there is a legitimate reason for doing this. Hence worst
         // case, we have an additional modified node during the insertion.
 
-        let max_number_of_modified_nodes = max_number_of_walks + 1;
+        // Adding 2 new nodes, 1 for the root node and another for the newly inserted
+        // node remember walks started after the root node (this node might have
+        // changed so we need to re-commit) TODO: ignoring rotations for now,
+        // handle later
+        let max_number_of_modified_nodes = max_number_of_walks + 2;
+        dbg!(max_number_of_modified_nodes);
 
         // commit stage
         // for every modified node, recursively call commit on all modified children
@@ -126,6 +141,9 @@ impl GroveDb {
             cost.hash_node_calls += 1;
             cost.storage_written_bytes += (prefixed_key_size + value_size)
         }
+
+        // sub one hash node call because we don't hash the root
+        cost.hash_node_calls -= 1;
 
         // Write the root key
         cost.seek_count += 1;
