@@ -202,11 +202,8 @@ impl GroveDbOp {
         match self {
             Self::RunOp { path, .. } => path,
             Self::WorstCaseOp {
-                path: _,
-                key: _,
-                op: _,
                 unique_path,
-                unique_key: _,
+                ..
             } => unique_path,
         }
     }
@@ -214,13 +211,10 @@ impl GroveDbOp {
     pub fn get_op(&self) -> &Op {
         match self {
             Self::RunOp {
-                path: _,
-                key: _,
                 op,
+                ..
             } => op,
             Self::WorstCaseOp {
-                path: _,
-                key: _,
                 op,
                 ..
             } => op,
@@ -230,16 +224,12 @@ impl GroveDbOp {
     pub fn get_key(&self) -> &Vec<u8> {
         match self {
             Self::RunOp {
-                path: _,
                 key,
-                op: _,
+                ..
             } => key,
             Self::WorstCaseOp {
-                path: _,
-                key: _,
-                op: _,
-                unique_path: _,
                 unique_key,
+                ..
             } => unique_key,
         }
     }
