@@ -106,9 +106,14 @@ pub enum GroveDbOp {
 
 impl PartialEq for GroveDbOp {
     fn eq(&self, other: &Self) -> bool {
-        self.get_path() == other.get_path()
-            && self.get_key() == other.get_key()
-            && self.get_op() == other.get_op()
+        match (self, other) {
+            (GroveDbOp::RunOp {..}, GroveDbOp::RunOp{..}) | (GroveDbOp::WorstCaseOp {..}, GroveDbOp::WorstCaseOp {..}) => {
+                self.get_path() == other.get_path()
+                    && self.get_key() == other.get_key()
+                    && self.get_op() == other.get_op()
+            },
+            _ => false
+        }
     }
 }
 
