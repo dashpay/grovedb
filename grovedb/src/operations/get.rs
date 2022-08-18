@@ -316,7 +316,6 @@ where {
     }
 
     pub fn worst_case_for_has_raw<'p, P>(
-        &self,
         path: P,
         key_len: u32,
         max_element_size: u32,
