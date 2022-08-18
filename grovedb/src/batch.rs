@@ -1235,91 +1235,69 @@ mod tests {
     fn grove_db_ops_for_contract_insert() -> Vec<GroveDbOp> {
         let mut grove_db_ops = vec![];
 
-        grove_db_ops.push(GroveDbOp {
-            path: vec![],
-            key: b"contract".to_vec(),
-            op: Op::Insert {
-                element: Element::empty_tree(),
-            },
-        });
-        grove_db_ops.push(GroveDbOp {
-            path: vec![b"contract".to_vec()],
-            key: (&[0u8]).to_vec(),
-            op: Op::Insert {
-                element: Element::new_item(b"serialized_contract".to_vec()),
-            },
-        });
-        grove_db_ops.push(GroveDbOp {
-            path: vec![b"contract".to_vec()],
-            key: (&[1u8]).to_vec(),
-            op: Op::Insert {
-                element: Element::empty_tree(),
-            },
-        });
-        grove_db_ops.push(GroveDbOp {
-            path: vec![b"contract".to_vec(), (&[1u8]).to_vec()],
-            key: b"domain".to_vec(),
-            op: Op::Insert {
-                element: Element::empty_tree(),
-            },
-        });
-        grove_db_ops.push(GroveDbOp {
-            path: vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
-            key: (&[0u8]).to_vec(),
-            op: Op::Insert {
-                element: Element::empty_tree(),
-            },
-        });
-        grove_db_ops.push(GroveDbOp {
-            path: vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
-            key: b"normalized_domain_label".to_vec(),
-            op: Op::Insert {
-                element: Element::empty_tree(),
-            },
-        });
-        grove_db_ops.push(GroveDbOp {
-            path: vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
-            key: b"unique_records".to_vec(),
-            op: Op::Insert {
-                element: Element::empty_tree(),
-            },
-        });
-        grove_db_ops.push(GroveDbOp {
-            path: vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
-            key: b"alias_records".to_vec(),
-            op: Op::Insert {
-                element: Element::empty_tree(),
-            },
-        });
-        grove_db_ops.push(GroveDbOp {
-            path: vec![b"contract".to_vec(), (&[1u8]).to_vec()],
-            key: b"preorder".to_vec(),
-            op: Op::Insert {
-                element: Element::empty_tree(),
-            },
-        });
-        grove_db_ops.push(GroveDbOp {
-            path: vec![
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![],
+            b"contract".to_vec(),
+            Element::empty_tree(),
+        ));
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![b"contract".to_vec()],
+            (&[0u8]).to_vec(),
+            Element::new_item(b"serialized_contract".to_vec()),
+        ));
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![b"contract".to_vec()],
+            (&[1u8]).to_vec(),
+            Element::empty_tree(),
+        ));
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![b"contract".to_vec(), (&[1u8]).to_vec()],
+            b"domain".to_vec(),
+            Element::empty_tree(),
+        ));
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
+            (&[0u8]).to_vec(),
+            Element::empty_tree(),
+        ));
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
+            b"normalized_domain_label".to_vec(),
+                Element::empty_tree(),
+        ));
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
+            b"unique_records".to_vec(),
+                Element::empty_tree(),
+        ));
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![b"contract".to_vec(), (&[1u8]).to_vec(), b"domain".to_vec()],
+            b"alias_records".to_vec(),
+                Element::empty_tree(),
+        ));
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![b"contract".to_vec(), (&[1u8]).to_vec()],
+            b"preorder".to_vec(),
+                Element::empty_tree(),
+        ));
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![
                 b"contract".to_vec(),
                 (&[1u8]).to_vec(),
                 b"preorder".to_vec(),
             ],
-            key: (&[0u8]).to_vec(),
-            op: Op::Insert {
-                element: Element::empty_tree(),
-            },
-        });
-        grove_db_ops.push(GroveDbOp {
-            path: vec![
+            (&[0u8]).to_vec(),
+                Element::empty_tree(),
+        ));
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![
                 b"contract".to_vec(),
                 (&[1u8]).to_vec(),
                 b"preorder".to_vec(),
             ],
-            key: b"salted_domain".to_vec(),
-            op: Op::Insert {
-                element: Element::empty_tree(),
-            },
-        });
+            b"salted_domain".to_vec(),
+                Element::empty_tree(),
+        ));
 
         grove_db_ops
     }
@@ -1327,48 +1305,42 @@ mod tests {
     fn grove_db_ops_for_contract_document_insert() -> Vec<GroveDbOp> {
         let mut grove_db_ops = vec![];
 
-        grove_db_ops.push(GroveDbOp {
-            path: vec![
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![
                 b"contract".to_vec(),
                 (&[1u8]).to_vec(),
                 b"domain".to_vec(),
                 (&[0u8]).to_vec(),
             ],
-            key: b"serialized_domain_id".to_vec(),
-            op: Op::Insert {
-                element: Element::new_item(b"serialized_domain".to_vec()),
-            },
-        });
+            b"serialized_domain_id".to_vec(),
+                Element::new_item(b"serialized_domain".to_vec()),
+        ));
 
-        grove_db_ops.push(GroveDbOp {
-            path: vec![
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![
                 b"contract".to_vec(),
                 (&[1u8]).to_vec(),
                 b"domain".to_vec(),
                 b"normalized_domain_label".to_vec(),
             ],
-            key: b"dash".to_vec(),
-            op: Op::Insert {
-                element: Element::empty_tree(),
-            },
-        });
+            b"dash".to_vec(),
+                Element::empty_tree(),
+        ));
 
-        grove_db_ops.push(GroveDbOp {
-            path: vec![
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![
                 b"contract".to_vec(),
                 (&[1u8]).to_vec(),
                 b"domain".to_vec(),
                 b"normalized_domain_label".to_vec(),
                 b"dash".to_vec(),
             ],
-            key: b"normalized_label".to_vec(),
-            op: Op::Insert {
-                element: Element::empty_tree(),
-            },
-        });
+            b"normalized_label".to_vec(),
+                Element::empty_tree(),
+        ));
 
-        grove_db_ops.push(GroveDbOp {
-            path: vec![
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![
                 b"contract".to_vec(),
                 (&[1u8]).to_vec(),
                 b"domain".to_vec(),
@@ -1376,14 +1348,12 @@ mod tests {
                 b"dash".to_vec(),
                 b"normalized_label".to_vec(),
             ],
-            key: b"sam".to_vec(),
-            op: Op::Insert {
-                element: Element::empty_tree(),
-            },
-        });
+            b"sam".to_vec(),
+                Element::empty_tree(),
+        ));
 
-        grove_db_ops.push(GroveDbOp {
-            path: vec![
+        grove_db_ops.push(GroveDbOp::insert_run_op(
+            vec![
                 b"contract".to_vec(),
                 (&[1u8]).to_vec(),
                 b"domain".to_vec(),
@@ -1392,17 +1362,15 @@ mod tests {
                 b"normalized_label".to_vec(),
                 b"sam".to_vec(),
             ],
-            key: b"sam_id".to_vec(),
-            op: Op::Insert {
-                element: Element::new_reference(vec![
+            b"sam_id".to_vec(),
+                Element::new_reference(vec![
                     b"contract".to_vec(),
                     (&[1u8]).to_vec(),
                     b"domain".to_vec(),
                     (&[0u8]).to_vec(),
                     b"serialized_domain_id".to_vec(),
                 ]),
-            },
-        });
+        ));
 
         grove_db_ops
     }
