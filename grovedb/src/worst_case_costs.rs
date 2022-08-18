@@ -81,19 +81,20 @@ impl GroveDb {
         // - Lastly we commit
         //      - Write all modified nodes to the backing store.
 
-        // For worst case conditions, the merk tree must have just been opened. This way each
-        // walk will need us to get to the backing store.
+        // For worst case conditions, the merk tree must have just been opened. This way
+        // each walk will need us to get to the backing store.
 
-        // Root is already loaded on merk open, so initial walk to insertion point only loads
-        // nodes after root from backing store.
+        // Root is already loaded on merk open, so initial walk to insertion point only
+        // loads nodes after root from backing store.
         // Here we calculate the number of walks we would have to perform.
 
-        // We reduce by 1 because we are given the max element number, you can't add after max
-        // so worst case has to be 1 element away from max
+        // We reduce by 1 because we are given the max element number, you can't add
+        // after max so worst case has to be 1 element away from max
         let worst_case_element_number = max_element_number - 1;
         // With this we can calculate the maximum tree height root inclusive
         let max_tree_height = (1.44 * (worst_case_element_number as f32).log2()).floor() as u32;
-        // max_number_of_walks is basically max_tree_height - 1 (because we exclude the root)
+        // max_number_of_walks is basically max_tree_height - 1 (because we exclude the
+        // root)
         let max_number_of_walks = max_tree_height - 1;
 
         // for each walk, we have to seek and load from storage (equivalent to a get)
@@ -106,16 +107,18 @@ impl GroveDb {
         cost.hash_node_calls += 2;
 
         // dbg!(&cost);
-        // dbg!(&cost.storage_loaded_bytes - 4 * Self::worst_case_encoded_link_size(max_key_size));
-        // dbg!(Self::worst_case_encoded_link_size(max_key_size));
-        // dbg!(Self::worst_case_encoded_kv_node_size(max_element_size));
+        // dbg!(&cost.storage_loaded_bytes - 4 *
+        // Self::worst_case_encoded_link_size(max_key_size)); dbg!(Self::
+        // worst_case_encoded_link_size(max_key_size)); dbg!(Self::
+        // worst_case_encoded_kv_node_size(max_element_size));
 
         // After insertion, we need to balance the tree
-        // ordinarily balancing a tree has no extra cost, as it just moves around already
-        // modified nodes, but there are times when we try to rotate into an already occupied slot.
-        // In such cases, we need to fetch what is currently in that slot (from the backing store)
-        // remove it, rotate and then reattach to rotated node.
-        // Merk marks every attached node as modified.
+        // ordinarily balancing a tree has no extra cost, as it just moves around
+        // already modified nodes, but there are times when we try to rotate
+        // into an already occupied slot. In such cases, we need to fetch what
+        // is currently in that slot (from the backing store) remove it, rotate
+        // and then reattach to rotated node. Merk marks every attached node as
+        // modified.
 
         // TODO: This might be 2 look into this.
         // Add 1 get cost for the node in rotation spot
@@ -135,6 +138,11 @@ impl GroveDb {
         // the key has to prefixed with a 32 byte hash
         // and the value is the encoded tree node
         let prefixed_key_size = 32 + max_key_size;
+        // Note: encoded tree calculation assumes that each node has 2 children, this is
+        // not always the case and as such is the source of worst case from
+        // actual cost deviation. we can do better than assuming all nodes have
+        // 2 links as there are some bounds on avl tree e.g. there must be a
+        // leaf. for simplicity sake, keeping as this.
         let value_size = Self::worst_case_encoded_tree_size(max_key_size, max_element_size);
 
         for _ in 0..modified_node_count {
@@ -143,8 +151,9 @@ impl GroveDb {
             cost.storage_written_bytes += (prefixed_key_size + value_size)
         }
 
-        // Reduce the hash node calls count by 1 because the root node is not rehashed on commit
-        // when you call merk.root_hash() the hash is computed in real time.
+        // Reduce the hash node call count by 1 because the root node is not rehashed on
+        // commit when you call merk.root_hash() the hash is computed in real
+        // time.
         cost.hash_node_calls -= 1;
 
         // Write the root key
@@ -245,8 +254,7 @@ impl GroveDb {
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
-        let value_size = (2 * Self::worst_case_encoded_link_size(key_size))
-            + Self::worst_case_encoded_kv_node_size(max_element_size);
+        let value_size = Self::worst_case_encoded_tree_size(key_size, max_element_size);
         cost.seek_count += 1;
         cost.storage_loaded_bytes += value_size;
         *cost += S::get_storage_context_cost(path);
@@ -313,42 +321,77 @@ mod test {
 
     #[test]
     fn test_insert_merk_node_worst_case() {
-        // Want to test this
-        // Need to create the worst case scenario
-        // We should already have a certain number of elements (max_element_number - 1)
-        // need an accurate representation of the key size (in bytes)
-        // also the max element size (in bytes)
-        // if we control those variables, we should get the same value with actual cost.
+        // Setup
+        //      5
+        //    /   \
+        //   4    7
+        //      /   \
+        //     6    8
 
-        // we need to insert on the branch that has the maximum number of walks
-        // need to get an accurate representation of the max element size
-        //  believe this should be 60 bytes
-        // max element number will be used quite differently, might have been using it
-        // wrong in fact we need to use 1 - max element number as our current
-        // size
+        // Test the worst case cost for inserting 9
 
-        // why is written storage bytes wrong??
-        // when do we write??
-        // We write the new inserted node
-        // We also write during modification
-        // all the trees we walk get modified so they have to be re-written
+        // Final tree
+        //      7
+        //    /   \
+        //   5      8
+        //  / \      \
+        // 4   6      9
+
+        // Testing approach:
+        // The scenario defined above is not the worst possible case.
+        // but because we know cost is deterministic and we know the cost of each
+        // operation we should be use theory to apply precise reductions to the
+        // worst case and if we are right then the reduced worst case should be
+        // equal to the actual cost
+
+        // Each key and each value are 1 byte each
+        // max_number_of_elements is 6
+        const MAX_KEY_SIZE: u32 = 1;
+        const MAX_ELEMENT_SIZE: u32 = 1;
+        const MAX_ELEMENT_NUMEBR: u32 = 6;
 
         let mut worst_case_cost = OperationCost::default();
-        GroveDb::add_worst_case_insert_merk_node(&mut worst_case_cost, 1, 6, 1);
-        dbg!(&worst_case_cost);
+        GroveDb::add_worst_case_insert_merk_node(
+            &mut worst_case_cost,
+            MAX_ELEMENT_SIZE,
+            MAX_ELEMENT_NUMEBR,
+            MAX_KEY_SIZE,
+        );
 
-        // Open a merk and insert 10 elements.
+        // Let's apply worst case reductions
+        // seek_count and hash_node_calls should be accurate
+        // deviation comes from storage_loaded_bytes and storage_written_bytes
+        // this is because our get and write cost assumes all nodes have 2 children
+        // which is not always the case.
+
+        // storage_loaded_bytes
+        // we load 7 and 8 during insertion
+        // we also load 6 during rotation (as 5 has to to a left rotation on 7 but 6
+        // occupies that slot). load = [7, 8, 6]
+        // of these only 7 has two children, 8 and 6 have none
+        // this means we are 4 links encoding higher
+        worst_case_cost.storage_loaded_bytes -= 4 * GroveDb::worst_case_encoded_link_size(MAX_KEY_SIZE);
+
+        // storage_written_bytes
+        // we write [5, 6, 7, 8, 9] + root_key
+        // all the walked nodes, root_key, the root node and the newly inserted node
+        // root_key is accurate
+        // 5 and 7 have 2 links so accurate also
+        // 8 has just 1 link (we assume 2 so cost of 1)
+        // 6 and 9 have 0 links (we assume 2 so cost of 2 each = 4)
+        // Total overhead = 5
+        worst_case_cost.storage_written_bytes -= 5 * GroveDb::worst_case_encoded_link_size(MAX_KEY_SIZE);
+
+
+        // Now actual cost
+        // Open a merk and insert setup elements
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
-        // let batch = make_batch_seq(1..11);
-        // for b in batch {
-        //     merk.apply::<_, Vec<_>>(&[b.clone()], &[]).unwrap().unwrap()
-        // }
-        // let m = merk.apply::<_, Vec<_>>(batch.as_slice(), &[]);
+
         let a = vec![
             b"5".to_vec(),
             b"4".to_vec(),
@@ -357,25 +400,19 @@ mod test {
             b"8".to_vec(),
         ];
         for m in a {
-            // println!();
-            // println!("inserting {}", std::str::from_utf8(&m).unwrap());
             merk.apply::<_, Vec<_>>(&[(m, Op::Put(b"a".to_vec()))], &[])
                 .unwrap()
                 .unwrap();
         }
 
-        // // drop merk, so nothing is stored in memory
-        dbg!("dropping merk");
+        // drop merk, so nothing is stored in memory
         drop(merk);
-        // //
-        // // // Reopen merk: this time, only root node is loaded to memory
+        // Reopen merk: this time, only root node is loaded to memory
         let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
 
-        // let batch = make_batch_seq(11..12);
         let actual_cost = merk.apply::<_, Vec<_>>(&[(b"9".to_vec(), Op::Put(b"a".to_vec()))], &[]);
-        dbg!(&actual_cost);
 
         assert_eq!(actual_cost.cost, worst_case_cost);
     }
