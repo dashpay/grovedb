@@ -67,10 +67,7 @@ impl Ord for Op {
 #[derive(Clone)]
 pub enum KeyInfo {
     KnownKey(Vec<u8>),
-    MaxKeySize{
-        unique_id : Vec<u8>,
-        max_size: u8,
-    },
+    MaxKeySize { unique_id: Vec<u8>, max_size: u8 },
 }
 
 /// Batch operation
@@ -91,8 +88,7 @@ pub enum GroveDbOp {
         key: KeyInfo,
         /// Operation to perform on the key
         op: Op,
-    }
-
+    },
 }
 
 impl PartialEq for GroveDbOp {
@@ -132,16 +128,32 @@ impl fmt::Debug for GroveDbOp {
 }
 
 impl GroveDbOp {
-    pub fn insert(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
-        Self {
+    pub fn insert_run_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
+        Self::RunOp {
             path,
             key,
             op: Op::Insert { element },
         }
     }
 
-    pub fn delete(path: Vec<Vec<u8>>, key: Vec<u8>) -> Self {
-        Self {
+    pub fn insert_worst_case_op(path: Vec<KeyInfo>, key: KeyInfo, element: Element) -> Self {
+        Self::WorstCaseOp {
+            path,
+            key,
+            op: Op::Insert { element },
+        }
+    }
+
+    pub fn delete_run_op(path: Vec<Vec<u8>>, key: Vec<u8>) -> Self {
+        Self::RunOp {
+            path,
+            key,
+            op: Op::Delete,
+        }
+    }
+
+    pub fn delete_worst_case_op(path: Vec<KeyInfo>, key: KeyInfo) -> Self {
+        Self::WorstCaseOp {
             path,
             key,
             op: Op::Delete,
@@ -1009,28 +1021,28 @@ mod tests {
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
         let ops = vec![
-            GroveDbOp::insert(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 element.clone(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec(), b"key2".to_vec()],
                 b"key3".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
                 b"key2".to_vec(),
                 element2.clone(),
@@ -1080,28 +1092,28 @@ mod tests {
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
         let ops = vec![
-            GroveDbOp::insert(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec(), b"key2".to_vec()],
                 b"key3".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 element.clone(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
                 b"key2".to_vec(),
                 element2.clone(),
@@ -1416,13 +1428,13 @@ mod tests {
         let db = make_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
-            GroveDbOp::insert(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 element.clone(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
                 Element::empty_tree(),
@@ -1437,23 +1449,23 @@ mod tests {
         let db = make_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
                 b"key2".to_vec(),
                 element.clone(),
             ),
-            GroveDbOp::insert(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 element.clone(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
                 Element::empty_tree(),
@@ -1480,17 +1492,17 @@ mod tests {
             .expect("cannot insert a subtree");
 
         let ops = vec![
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 element.clone(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec(), b"key2".to_vec()],
                 b"key3".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::delete(vec![b"key1".to_vec()], b"key2".to_vec()),
+            GroveDbOp::delete_run_op(vec![b"key1".to_vec()], b"key2".to_vec()),
         ];
         assert!(db.apply_batch(ops, None, None).unwrap().is_err());
     }
@@ -1500,23 +1512,23 @@ mod tests {
         let db = make_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
-            GroveDbOp::insert(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 element.clone(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec(), b"key2".to_vec()],
                 b"key3".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::delete(vec![b"key1".to_vec()], b"key2".to_vec()),
+            GroveDbOp::delete_run_op(vec![b"key1".to_vec()], b"key2".to_vec()),
         ];
         db.apply_batch(ops, None, None)
             .unwrap()
@@ -1539,7 +1551,7 @@ mod tests {
             .expect("cannot insert value");
 
         // Insertion into scalar is invalid
-        let ops = vec![GroveDbOp::insert(
+        let ops = vec![GroveDbOp::insert_run_op(
             vec![TEST_LEAF.to_vec(), b"invalid".to_vec()],
             b"key1".to_vec(),
             element.clone(),
@@ -1547,7 +1559,7 @@ mod tests {
         assert!(db.apply_batch(ops, None, None).unwrap().is_err());
 
         // Insertion into a tree is correct
-        let ops = vec![GroveDbOp::insert(
+        let ops = vec![GroveDbOp::insert_run_op(
             vec![TEST_LEAF.to_vec(), b"valid".to_vec()],
             b"key1".to_vec(),
             element.clone(),
@@ -1577,8 +1589,8 @@ mod tests {
 
         // TEST_LEAF can not be overwritten
         let ops = vec![
-            GroveDbOp::insert(vec![], TEST_LEAF.to_vec(), element2.clone()),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(vec![], TEST_LEAF.to_vec(), element2.clone()),
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec(), b"key_subtree".to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
@@ -1597,8 +1609,8 @@ mod tests {
 
         // TEST_LEAF will be deleted so you can not insert underneath it
         let ops = vec![
-            GroveDbOp::delete(vec![], TEST_LEAF.to_vec()),
-            GroveDbOp::insert(
+            GroveDbOp::delete_run_op(vec![], TEST_LEAF.to_vec()),
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
@@ -1610,8 +1622,8 @@ mod tests {
         // We are testing with the batch apply option
         // validate_tree_insertion_does_not_override set to true
         let ops = vec![
-            GroveDbOp::delete(vec![], TEST_LEAF.to_vec()),
-            GroveDbOp::insert(
+            GroveDbOp::delete_run_op(vec![], TEST_LEAF.to_vec()),
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
@@ -1633,12 +1645,12 @@ mod tests {
     fn test_batch_validation_root_leaf_removal() {
         let db = make_grovedb();
         let ops = vec![
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![],
                 TEST_LEAF.to_vec(),
                 Element::new_item(b"ayy".to_vec()),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::empty_tree(),
@@ -1667,7 +1679,7 @@ mod tests {
         db.insert([TEST_LEAF, b"key1"], b"key2", element.clone(), None)
             .unwrap()
             .expect("cannot insert an item");
-        let ops = vec![GroveDbOp::insert(
+        let ops = vec![GroveDbOp::insert_run_op(
             vec![TEST_LEAF.to_vec()],
             b"key1".to_vec(),
             Element::new_item(b"ayy2".to_vec()),
@@ -1706,23 +1718,23 @@ mod tests {
         let element2 = Element::new_item(b"ayy2".to_vec());
 
         let ops = vec![
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 element.clone(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec(), b"key2".to_vec()],
                 b"key3".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert(vec![TEST_LEAF.to_vec()], b"key".to_vec(), element2.clone()),
-            GroveDbOp::delete(vec![ANOTHER_TEST_LEAF.to_vec()], b"key1".to_vec()),
+            GroveDbOp::insert_run_op(vec![TEST_LEAF.to_vec()], b"key".to_vec(), element2.clone()),
+            GroveDbOp::delete_run_op(vec![ANOTHER_TEST_LEAF.to_vec()], b"key1".to_vec()),
         ];
         db.apply_batch(ops, None, None)
             .unwrap()
@@ -1780,7 +1792,7 @@ mod tests {
         }
 
         let element = Element::new_item(b"ayy".to_vec());
-        let batch = vec![GroveDbOp::insert(
+        let batch = vec![GroveDbOp::insert_run_op(
             acc_path.clone(),
             b"key".to_vec(),
             element.clone(),
@@ -1789,7 +1801,7 @@ mod tests {
             .unwrap()
             .expect("cannot apply batch");
 
-        let batch = vec![GroveDbOp::insert(
+        let batch = vec![GroveDbOp::insert_run_op(
             acc_path,
             b"key".to_vec(),
             element.clone(),
@@ -1819,7 +1831,7 @@ mod tests {
         let root_hash = db.root_hash(None).unwrap().unwrap();
 
         let element = Element::new_item(b"ayy".to_vec());
-        let batch = vec![GroveDbOp::insert(
+        let batch = vec![GroveDbOp::insert_run_op(
             acc_path.clone(),
             b"key".to_vec(),
             element.clone(),
@@ -1835,7 +1847,7 @@ mod tests {
     fn test_references() {
         // insert reference that points to non-existent item
         let db = make_grovedb();
-        let batch = vec![GroveDbOp::insert(
+        let batch = vec![GroveDbOp::insert_run_op(
             vec![TEST_LEAF.to_vec()],
             b"key1".to_vec(),
             Element::new_reference(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
@@ -1849,12 +1861,12 @@ mod tests {
         let db = make_grovedb();
         let elem = Element::new_item(b"ayy".to_vec());
         let batch = vec![
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::new_reference(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec()],
                 b"invalid_path".to_vec(),
                 elem.clone(),
@@ -1879,7 +1891,7 @@ mod tests {
         let db = make_grovedb();
         let elem = Element::new_item(b"ayy".to_vec());
         let batch = vec![
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key2".to_vec(),
                 Element::new_reference_with_hops(
@@ -1887,7 +1899,7 @@ mod tests {
                     Some(1),
                 ),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::new_reference_with_hops(
@@ -1895,7 +1907,7 @@ mod tests {
                     Some(1),
                 ),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec()],
                 b"invalid_path".to_vec(),
                 elem.clone(),
