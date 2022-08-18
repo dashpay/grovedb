@@ -414,9 +414,9 @@ impl GroveDb {
         key: &'p [u8],
         max_element_size: u32,
     ) -> OperationCost
-        where
-            P: IntoIterator<Item = &'p [u8]>,
-            <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
         let mut cost = OperationCost::default();
         GroveDb::add_worst_case_delete_cost(

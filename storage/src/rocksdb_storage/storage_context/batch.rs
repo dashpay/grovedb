@@ -84,6 +84,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
 
         self.cost_acc.seek_count += 1;
         self.cost_acc.storage_written_bytes += prefixed_key.len() as u32 + value.len() as u32;
+        // dbg!(prefixed_key.len());
 
         self.batch.put(prefixed_key, value);
     }

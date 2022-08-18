@@ -541,6 +541,8 @@ where
         for (key, maybe_value) in to_batch {
             if let Some(value) = maybe_value {
                 batch.put(&key, &value);
+                // dbg!(&key);
+                // dbg!(&value.len());
             } else {
                 batch.delete(&key);
             }

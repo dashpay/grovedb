@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 
-use costs::{cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt, OperationCost};
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
+    OperationCost,
+};
 use storage::{rocksdb_storage::RocksDbStorage, StorageContext};
 
 use crate::{
@@ -313,7 +316,6 @@ where {
     }
 
     pub fn worst_case_for_has_raw<'p, P>(
-        &self,
         path: P,
         key_len: u32,
         max_element_size: u32,
