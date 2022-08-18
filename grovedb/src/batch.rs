@@ -64,15 +64,35 @@ impl Ord for Op {
     }
 }
 
+#[derive(Clone)]
+pub enum KeyInfo {
+    KnownKey(Vec<u8>),
+    MaxKeySize{
+        unique_id : Vec<u8>,
+        max_size: u8,
+    },
+}
+
 /// Batch operation
 #[derive(Clone)]
-pub struct GroveDbOp {
-    /// Path to a subtree - subject to an operation
-    pub path: Vec<Vec<u8>>,
-    /// Key of an element in the subtree
-    pub key: Vec<u8>,
-    /// Operation to perform on the key
-    pub op: Op,
+pub enum GroveDbOp {
+    RunOp {
+        /// Path to a subtree - subject to an operation
+        path: Vec<Vec<u8>>,
+        /// Key of an element in the subtree
+        key: Vec<u8>,
+        /// Operation to perform on the key
+        op: Op,
+    },
+    WorstCaseOp {
+        /// Path to a subtree - subject to an operation
+        path: Vec<KeyInfo>,
+        /// Key of an element in the subtree
+        key: KeyInfo,
+        /// Operation to perform on the key
+        op: Op,
+    }
+
 }
 
 impl PartialEq for GroveDbOp {
