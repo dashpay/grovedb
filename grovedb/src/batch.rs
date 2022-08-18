@@ -70,6 +70,15 @@ pub enum KeyInfo {
     MaxKeySize { unique_id: Vec<u8>, max_size: u8 },
 }
 
+impl KeyInfo {
+    fn get_key(&self) -> Vec<u8> {
+        match self{
+            Self::KnownKey(key) => key.clone(),
+            Self::MaxKeySize { unique_id, .. } => unique_id.clone(),
+        }
+    }
+}
+
 /// Batch operation
 #[derive(Clone)]
 pub enum GroveDbOp {
@@ -88,12 +97,16 @@ pub enum GroveDbOp {
         key: KeyInfo,
         /// Operation to perform on the key
         op: Op,
+        /// Holds the unique path based on key info in path
+        unique_path: Vec<Vec<u8>>,
+        /// Holds the unique key based on key info
+        unique_key: Vec<u8>,
     },
 }
 
 impl PartialEq for GroveDbOp {
     fn eq(&self, other: &Self) -> bool {
-        self.path == other.path && self.key == other.key && self.op == other.op
+        self.get_path() == other.get_path() && self.get_key() == other.get_key() && self.get_op() == other.get_op()
     }
 }
 
@@ -101,15 +114,15 @@ impl fmt::Debug for GroveDbOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut path_out = Vec::new();
         let mut path_drawer = Drawer::new(&mut path_out);
-        for p in &self.path {
+        for p in self.get_path() {
             path_drawer = p.visualize(path_drawer).unwrap();
             path_drawer.write(b" ").unwrap();
         }
         let mut key_out = Vec::new();
         let key_drawer = Drawer::new(&mut key_out);
-        self.key.visualize(key_drawer).unwrap();
+        self.get_key().visualize(key_drawer).unwrap();
 
-        let op_dbg = match &self.op {
+        let op_dbg = match &self.get_op() {
             Op::Insert { element } => match element {
                 Element::Item(..) => "Insert Item",
                 Element::Reference(..) => "Insert Ref",
@@ -128,6 +141,14 @@ impl fmt::Debug for GroveDbOp {
 }
 
 impl GroveDbOp {
+    fn get_unique_path_from_key_info_vec(path: &Vec<KeyInfo>) -> Vec<Vec<u8>> {
+        let mut unique_path = vec![];
+        for p in path {
+            unique_path.push(p.get_key());
+        }
+        return  unique_path
+    }
+
     pub fn insert_run_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
         Self::RunOp {
             path,
@@ -137,10 +158,15 @@ impl GroveDbOp {
     }
 
     pub fn insert_worst_case_op(path: Vec<KeyInfo>, key: KeyInfo, element: Element) -> Self {
+        let unique_path = Self::get_unique_path_from_key_info_vec(&path);
+        let unique_key = key.get_key();
+
         Self::WorstCaseOp {
             path,
             key,
             op: Op::Insert { element },
+            unique_path,
+            unique_key,
         }
     }
 
@@ -153,10 +179,55 @@ impl GroveDbOp {
     }
 
     pub fn delete_worst_case_op(path: Vec<KeyInfo>, key: KeyInfo) -> Self {
+        let unique_path = Self::get_unique_path_from_key_info_vec(&path);
+        let unique_key = key.get_key();
+
         Self::WorstCaseOp {
             path,
             key,
             op: Op::Delete,
+            unique_path,
+            unique_key,
+        }
+    }
+
+    pub fn get_path(&self) -> &Vec<Vec<u8>> {
+        match self {
+            Self::RunOp { path, .. } => path,
+            Self::WorstCaseOp { path: _, key: _, op: _, unique_path, unique_key: _ } => unique_path,
+        }
+    }
+
+    pub fn get_op(&self) -> &Op {
+        match self{
+            Self::RunOp {
+                path: _,
+                key: _,
+                op,
+            } => op,
+            Self::WorstCaseOp {
+                path: _,
+                key: _,
+                op,
+                ..
+            } => op,
+        }
+    }
+
+    pub fn get_key(&self) -> &Vec<u8> {
+        match self{
+            Self::RunOp {
+                path: _,
+                key,
+                op: _,
+            } => key,
+            Self::WorstCaseOp {
+                path: _,
+                key: _,
+                op: _,
+                unique_path: _,
+                unique_key
+            } => unique_key,
         }
     }
 
@@ -191,23 +262,23 @@ impl GroveDbOp {
                 .1
                 .iter()
                 .filter_map(|current_op| {
-                    if current_op.path == op.path && current_op.key == op.key {
-                        Some(op.op.clone())
+                    if current_op.get_path() == op.get_path() && current_op.get_key() == op.get_key() {
+                        Some(op.get_op().clone())
                     } else {
                         None
                     }
                 })
                 .collect::<Vec<Op>>();
             if doubled_ops.len() > 0 {
-                doubled_ops.push(op.op.clone());
-                same_path_key_ops.push((op.path.clone(), op.key.clone(), doubled_ops));
+                doubled_ops.push(op.get_op().clone());
+                same_path_key_ops.push((op.get_path().clone(), op.get_key().clone(), doubled_ops));
             }
         }
 
         let inserts = ops
             .iter()
             .filter_map(|current_op| {
-                if let Op::Insert { .. } = current_op.op {
+                if let Op::Insert { .. } = current_op.get_op() {
                     Some(current_op.clone())
                 } else {
                     None
@@ -218,7 +289,7 @@ impl GroveDbOp {
         let deletes = ops
             .iter()
             .filter_map(|current_op| {
-                if let Op::Delete = current_op.op {
+                if let Op::Delete = current_op.get_op() {
                     Some(current_op.clone())
                 } else {
                     None
@@ -230,15 +301,15 @@ impl GroveDbOp {
 
         // No inserts under a deleted path
         for deleted_op in deletes.iter() {
-            let mut deleted_qualified_path = deleted_op.path.clone();
-            deleted_qualified_path.push(deleted_op.key.clone());
+            let mut deleted_qualified_path = deleted_op.get_path().clone();
+            deleted_qualified_path.push(deleted_op.get_key().clone());
             let inserts_with_deleted_ops_above = inserts
                 .iter()
                 .filter_map(|inserted_op| {
-                    if deleted_op.path.len() < inserted_op.path.len()
+                    if deleted_op.get_path().len() < inserted_op.get_path().len()
                         && deleted_qualified_path
                             .iter()
-                            .zip(inserted_op.path.iter())
+                            .zip(inserted_op.get_path().iter())
                             .all(|(a, b)| a == b)
                     {
                         Some(inserted_op.clone())
@@ -458,8 +529,8 @@ where
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let mut inserted_path = op.path.clone();
-        inserted_path.push(op.key.clone());
+        let mut inserted_path = op.get_path().clone();
+        inserted_path.push(op.get_key().clone());
         if !self.merks.contains_key(&inserted_path) {
             let merk = cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path));
             self.merks.insert(inserted_path, merk);
@@ -567,8 +638,8 @@ where
 
 impl TreeCache for TreeCacheKnownPaths {
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
-        let mut inserted_path = op.path.clone();
-        inserted_path.push(op.key.clone());
+        let mut inserted_path = op.get_path().clone();
+        inserted_path.push(op.get_key().clone());
         self.paths.insert(inserted_path);
         let worst_case_cost = OperationCost::default();
 
@@ -663,11 +734,11 @@ where
         let mut ops_by_qualified_paths: HashMap<Vec<Vec<u8>>, Op> = HashMap::new();
 
         for op in ops.into_iter() {
-            let mut path = op.path.clone();
-            path.push(op.key.clone());
-            ops_by_qualified_paths.insert(path, op.op.clone());
+            let mut path = op.get_path().clone();
+            path.push(op.get_key().clone());
+            ops_by_qualified_paths.insert(path, op.get_op().clone());
             let op_cost = OperationCost::default();
-            let op_result = match &op.op {
+            let op_result = match &op.get_op() {
                 Op::Insert { element } => {
                     if let Element::Tree(..) = element {
                         cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op));
@@ -683,21 +754,21 @@ where
                 return Err(op_result.err().unwrap()).wrap_with_cost(op_cost);
             }
 
-            let level = op.path.len();
+            let level = op.get_path().len();
             if let Some(ops_on_level) = ops_by_level_paths.get_mut(&level) {
-                if let Some(ops_on_path) = ops_on_level.get_mut(op.path.as_slice()) {
-                    ops_on_path.insert(op.key, op.op);
+                if let Some(ops_on_path) = ops_on_level.get_mut(op.get_path().as_slice()) {
+                    ops_on_path.insert(op.get_key().to_vec(), op.get_op().to_owned());
                 } else {
                     let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
-                    ops_on_path.insert(op.key, op.op);
-                    ops_on_level.insert(op.path.clone(), ops_on_path);
+                    ops_on_path.insert(op.get_key().to_vec(), op.get_op().to_owned());
+                    ops_on_level.insert(op.get_path().clone(), ops_on_path);
                 }
             } else {
                 let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
-                ops_on_path.insert(op.key, op.op);
+                ops_on_path.insert(op.get_key().to_vec(), op.get_op().to_owned());
                 let mut ops_on_level: BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>> =
                     BTreeMap::new();
-                ops_on_level.insert(op.path, ops_on_path);
+                ops_on_level.insert(op.get_path().to_vec(), ops_on_path);
                 ops_by_level_paths.insert(level, ops_on_level);
                 if current_last_level < level {
                     current_last_level = level;
@@ -878,19 +949,21 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         for op in ops.into_iter() {
-            match op.op {
+            match op.get_op() {
                 Op::Insert { element } => {
-                    let path_slices: Vec<&[u8]> = op.path.iter().map(|p| p.as_slice()).collect();
+                    let path_slices: Vec<&[u8]> =
+                        op.get_path().iter().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,
-                        self.insert(path_slices, op.key.as_slice(), element, transaction,)
+                        self.insert(path_slices, op.get_key().as_slice(), element.to_owned(), transaction,)
                     );
                 }
                 Op::Delete => {
-                    let path_slices: Vec<&[u8]> = op.path.iter().map(|p| p.as_slice()).collect();
+                    let path_slices: Vec<&[u8]> =
+                        op.get_path().iter().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,
-                        self.delete(path_slices, op.key.as_slice(), transaction,)
+                        self.delete(path_slices, op.get_key().as_slice(), transaction,)
                     );
                 }
                 _ => {}
