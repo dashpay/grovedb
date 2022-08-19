@@ -148,7 +148,7 @@ impl GroveDb {
         for _ in 0..modified_node_count {
             cost.seek_count += 1;
             cost.hash_node_calls += 1;
-            cost.storage_written_bytes += (prefixed_key_size + value_size)
+            cost.storage_written_bytes += prefixed_key_size + value_size
         }
 
         // Reduce the hash node call count by 1 because the root node is not rehashed on
@@ -158,7 +158,7 @@ impl GroveDb {
 
         // Write the root key
         cost.seek_count += 1;
-        cost.storage_written_bytes += (prefixed_key_size + b"root".len() as u32);
+        cost.storage_written_bytes += prefixed_key_size + b"root".len() as u32;
     }
 
     /// Add worst case for getting a merk tree

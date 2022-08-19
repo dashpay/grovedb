@@ -208,10 +208,10 @@ impl GroveDb {
                 );
                 let batch_deleted_keys = current_batch_operations
                     .iter()
-                    .filter_map(|op| match op.get_op() {
+                    .filter_map(|op| match op.op_ref() {
                         Op::Delete => {
-                            if op.get_path() == &subtree_merk_path_vec {
-                                Some(op.get_key().as_slice())
+                            if op.path_ref() == &subtree_merk_path_vec {
+                                Some(op.key_ref().as_slice())
                             } else {
                                 None
                             }
@@ -234,9 +234,9 @@ impl GroveDb {
 
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
-                is_empty &= !current_batch_operations.iter().any(|op| match op.get_op() {
+                is_empty &= !current_batch_operations.iter().any(|op| match op.op_ref() {
                     Op::Delete => false,
-                    _ => op.get_path() == &subtree_merk_path_vec,
+                    _ => op.path_ref() == &subtree_merk_path_vec,
                 });
 
                 let result = if only_delete_tree_if_empty && !is_empty {
