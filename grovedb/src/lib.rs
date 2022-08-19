@@ -11,6 +11,7 @@ mod tests;
 mod util;
 mod visualize;
 mod worst_case_costs;
+mod reference_path;
 
 use std::path::Path;
 

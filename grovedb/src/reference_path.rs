@@ -1,12 +1,18 @@
 /// Reference path variants
-pub enum ReferencePath {
+pub enum ReferencePathType {
     AbsolutePath(Vec<Vec<u8>>)
 }
 
+pub struct ReferencePath {
+    reference_path_type: ReferencePathType,
+    path: Vec<Vec<u8>>,
+}
+
 impl ReferencePath {
-    fn get_reference_path(&self, current_path: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
-       match self {
-           ReferencePath::AbsolutePath(path) => path
-       }
+    pub fn from_reference_path_type(reference_path_type: ReferencePathType, reference_path: Vec<Vec<u8>>) -> Self {
+        return ReferencePath {
+            reference_path_type,
+            path: vec![b"a".to_vec()],
+        }
     }
 }
