@@ -32,8 +32,7 @@ impl GroveDb {
 
         match cost_return_on_error!(&mut cost, self.get_raw(path_iter.clone(), key, transaction)) {
             Element::Reference(reference_path, ..) => {
-                let rtype = ReferencePathType::AbsolutePath(reference_path);
-                let path = path_from_reference_path_type(rtype, path_iter);
+                let path = path_from_reference_path_type(reference_path, path_iter);
                 self
                     .follow_reference(path, transaction)
                     .add_cost(cost)
@@ -48,6 +47,8 @@ impl GroveDb {
         transaction: TransactionArg,
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
+
+        let path_iter = path.iter().map(|x| x.as_slice());
 
         let mut hops_left = MAX_REFERENCE_HOPS;
         let mut current_element;
@@ -65,9 +66,9 @@ impl GroveDb {
             } else {
                 return Err(Error::CorruptedPath("empty path")).wrap_with_cost(cost);
             }
-            visited.insert(path);
+            visited.insert(path.clone());
             match current_element {
-                Element::Reference(reference_path, ..) => path = reference_path,
+                Element::Reference(reference_path, ..) => path = path_from_reference_path_type(reference_path, path_iter.clone()),
                 other => return Ok(other).wrap_with_cost(cost),
             }
             hops_left -= 1;

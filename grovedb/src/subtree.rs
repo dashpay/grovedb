@@ -27,6 +27,7 @@ use crate::{
     util::{merk_optional_tx, storage_context_optional_tx},
     Error, Hash, Merk, PathQuery, SizedQuery, TransactionArg,
 };
+use crate::reference_path::{path_from_reference_path_type, ReferencePathType};
 
 /// Optional meta-data to be stored per element
 pub type ElementFlags = Option<Vec<u8>>;
@@ -43,7 +44,7 @@ pub enum Element {
     /// An ordinary value
     Item(Vec<u8>, ElementFlags),
     /// A reference to an object by its path
-    Reference(Vec<Vec<u8>>, MaxReferenceHop, ElementFlags),
+    Reference(ReferencePathType, MaxReferenceHop, ElementFlags),
     /// A subtree, contains a root hash of the underlying Merk.
     /// Hash is stored to make Merk become different when its subtrees have
     /// changed, otherwise changes won't be reflected in parent trees.
@@ -96,23 +97,23 @@ impl Element {
         Element::Item(item_value, flags)
     }
 
-    pub fn new_reference(reference_path: Vec<Vec<u8>>) -> Self {
+    pub fn new_reference(reference_path: ReferencePathType) -> Self {
         Element::Reference(reference_path, None, None)
     }
 
-    pub fn new_reference_with_flags(reference_path: Vec<Vec<u8>>, flags: ElementFlags) -> Self {
+    pub fn new_reference_with_flags(reference_path: ReferencePathType, flags: ElementFlags) -> Self {
         Element::Reference(reference_path, None, flags)
     }
 
     pub fn new_reference_with_hops(
-        reference_path: Vec<Vec<u8>>,
+        reference_path: ReferencePathType,
         max_reference_hop: MaxReferenceHop,
     ) -> Self {
         Element::Reference(reference_path, max_reference_hop, None)
     }
 
     pub fn new_reference_with_max_hops_and_flags(
-        reference_path: Vec<Vec<u8>>,
+        reference_path: ReferencePathType,
         max_reference_hop: MaxReferenceHop,
         flags: ElementFlags,
     ) -> Self {
@@ -147,11 +148,13 @@ impl Element {
                 }
             }
             Element::Reference(path_reference, _, element_flag) => {
-                let path_length = path_reference
-                    .iter()
-                    .map(|inner| inner.len())
-                    .sum::<usize>()
-                    + 1;
+                // TODO: make accurate again
+                // let path_length = path_reference
+                //     .iter()
+                //     .map(|inner| inner.len())
+                //     .sum::<usize>()
+                //     + 1;
+                let path_length = 5;
 
                 if let Some(flag) = element_flag {
                     flag.len() + path_length
@@ -192,18 +195,20 @@ impl Element {
                     0
                 };
 
-                path_reference
-                    .iter()
-                    .map(|inner| {
-                        let inner_len = inner.len();
-                        inner_len + inner_len.required_space()
-                    })
-                    .sum::<usize>()
-                    + path_reference.len().required_space()
-                    + flag_len
-                    + flag_len.required_space()
-                    + 1
-                    + 1 // + 1 for enum and +1 for max reference hop
+                // TODO: Make accurate
+                5
+                // path_reference
+                //     .iter()
+                //     .map(|inner| {
+                //         let inner_len = inner.len();
+                //         inner_len + inner_len.required_space()
+                //     })
+                //     .sum::<usize>()
+                //     + path_reference.len().required_space()
+                //     + flag_len
+                //     + flag_len.required_space()
+                //     + 1
+                //     + 1 // + 1 for enum and +1 for max reference hop
             }
             Element::Tree(_, element_flag) => {
                 let flag_len = if let Some(flag) = element_flag {

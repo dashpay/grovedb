@@ -1,4 +1,7 @@
+use serde::{Deserialize, Serialize};
+
 /// Reference path variants
+#[derive(Hash, Eq, PartialEq, Serialize, Deserialize, Clone)]
 pub enum ReferencePathType {
     AbsolutePath(Vec<Vec<u8>>)
 }
