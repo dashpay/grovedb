@@ -333,4 +333,44 @@ where {
         );
         cost
     }
+
+    pub fn worst_case_for_get_raw<'p, P>(
+        path: P,
+        key_len: u32,
+        max_element_size: u32,
+    ) -> OperationCost
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+        GroveDb::add_worst_case_get_raw_cost::<_, RocksDbStorage>(
+            &mut cost,
+            path,
+            key_len,
+            max_element_size,
+        );
+        cost
+    }
+
+    pub fn worst_case_for_get<'p, P>(
+        path: P,
+        key_len: u32,
+        max_element_size: u32,
+        max_references_sizes: Vec<u32>,
+    ) -> OperationCost
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+        GroveDb::add_worst_case_get_cost::<_, RocksDbStorage>(
+            &mut cost,
+            path,
+            key_len,
+            max_element_size,
+            max_references_sizes,
+        );
+        cost
+    }
 }

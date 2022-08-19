@@ -64,7 +64,7 @@ impl Ord for Op {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum KeyInfo {
     KnownKey(Vec<u8>),
     MaxKeySize { unique_id: Vec<u8>, max_size: u8 },
@@ -80,7 +80,7 @@ impl KeyInfo {
 }
 
 /// Batch operation
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum GroveDbOp {
     RunOp {
         /// Path to a subtree - subject to an operation
@@ -102,19 +102,6 @@ pub enum GroveDbOp {
         /// Holds the unique key based on key info
         unique_key: Vec<u8>,
     },
-}
-
-impl PartialEq for GroveDbOp {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (GroveDbOp::RunOp {..}, GroveDbOp::RunOp{..}) | (GroveDbOp::WorstCaseOp {..}, GroveDbOp::WorstCaseOp {..}) => {
-                self.get_path() == other.get_path()
-                    && self.get_key() == other.get_key()
-                    && self.get_op() == other.get_op()
-            },
-            _ => false
-        }
-    }
 }
 
 impl fmt::Debug for GroveDbOp {
@@ -201,13 +188,7 @@ impl GroveDbOp {
     pub fn get_path(&self) -> &Vec<Vec<u8>> {
         match self {
             Self::RunOp { path, .. } => path,
-            Self::WorstCaseOp {
-                path: _,
-                key: _,
-                op: _,
-                unique_path,
-                unique_key: _,
-            } => unique_path,
+            Self::WorstCaseOp { unique_path, .. } => unique_path,
         }
     }
 

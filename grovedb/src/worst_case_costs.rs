@@ -259,6 +259,40 @@ impl GroveDb {
         cost.storage_loaded_bytes += value_size;
         *cost += S::get_storage_context_cost(path);
     }
+
+    pub fn add_worst_case_get_raw_cost<'db, 'p, P, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: P,
+        key_size: u32,
+        max_element_size: u32,
+    ) where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        // todo: verify, we need to run a test to see if has raw has any better
+        // performance than get raw
+        let value_size = Self::worst_case_encoded_tree_size(key_size, max_element_size);
+        cost.seek_count += 1;
+        cost.storage_loaded_bytes += value_size;
+        *cost += S::get_storage_context_cost(path);
+    }
+
+    pub fn add_worst_case_get_cost<'db, 'p, P, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: P,
+        key_size: u32,
+        max_element_size: u32,
+        max_references_sizes: Vec<u32>,
+    ) where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        // todo: verify
+        let value_size: u32 = Self::worst_case_encoded_tree_size(key_size, max_element_size);
+        cost.seek_count += 1 + max_references_sizes.len() as u16;
+        cost.storage_loaded_bytes += value_size + max_references_sizes.iter().sum::<u32>();
+        *cost += S::get_storage_context_cost(path);
+    }
 }
 
 pub(crate) enum MerkWorstCaseInput {
