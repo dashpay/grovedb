@@ -3,7 +3,11 @@ pub enum ReferencePathType {
     AbsolutePath(Vec<Vec<u8>>)
 }
 
-pub fn path_from_reference_path_type(reference_path_type: ReferencePathType) -> Vec<Vec<u8>> {
+pub fn path_from_reference_path_type<'p, P>(reference_path_type: ReferencePathType, current_path: P) -> Vec<Vec<u8>>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+{
    return match reference_path_type {
        ReferencePathType::AbsolutePath(path) => path
    }

@@ -28,10 +28,12 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
 
-        match cost_return_on_error!(&mut cost, self.get_raw(path, key, transaction)) {
+        let path_iter = path.into_iter();
+
+        match cost_return_on_error!(&mut cost, self.get_raw(path_iter.clone(), key, transaction)) {
             Element::Reference(reference_path, ..) => {
                 let rtype = ReferencePathType::AbsolutePath(reference_path);
-                let path = path_from_reference_path_type(rtype);
+                let path = path_from_reference_path_type(rtype, path_iter);
                 self
                     .follow_reference(path, transaction)
                     .add_cost(cost)
