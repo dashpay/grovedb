@@ -8,6 +8,7 @@ use crate::{
     util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, TransactionArg,
 };
+use crate::batch::KeyInfo;
 
 impl GroveDb {
     pub fn delete_up_tree_while_empty<'p, P>(
@@ -259,6 +260,39 @@ impl GroveDb {
                 )))
                 .wrap_with_cost(cost)
             }
+        }
+    }
+
+    pub fn worst_case_delete_operation_for_delete_internal<'p, P>(
+        &self,
+        path: &Vec<KeyInfo>,
+        key: &KeyInfo,
+        validate: bool,
+        max_element_size: u32,
+    ) -> CostResult<Option<GroveDbOp>, Error>
+        where
+            P: IntoIterator<Item = &'p [u8]>,
+            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+
+        let path_iter = path.into_iter();
+        if path_iter.len() == 0 {
+            // Attempt to delete a root tree leaf
+            Err(Error::InvalidPath(
+                "root tree leaves currently cannot be deleted",
+            ))
+                .wrap_with_cost(cost)
+        } else {
+            if validate {
+                GroveDb::add_worst_case_get_merk(&mut cost, path);
+            }
+            GroveDb::add_worst_case_get_raw_cost(&mut cost, path, key, max_element_size);
+            Ok(Some(GroveDbOp::delete_worst_case_op(
+                path_iter.map(|x| x.to_vec()).collect(),
+                key.to_vec(),
+            )))
+                .wrap_with_cost(cost)
         }
     }
 

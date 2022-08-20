@@ -13,6 +13,7 @@ use super::{
     PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
 };
 use crate::{AbstractBatchOperation, Storage, StorageBatch};
+use crate::worst_case_costs::WorstKeyLength;
 
 const BLAKE_BLOCK_LEN: usize = 64;
 
@@ -75,12 +76,17 @@ impl RocksDbStorage {
         for s in segments_iter {
             segments_count += 1;
             res.extend_from_slice(s);
-            lengthes.extend(s.len().to_ne_bytes());
+            lengthes.push(s.len() as u8); //if the key len is under 255 bytes
         }
 
         res.extend(segments_count.to_ne_bytes());
         res.extend(lengthes);
         res
+    }
+
+    fn worst_case_body_size<L: WorstKeyLength>(path: &Vec<L>) -> usize
+    {
+        path.len() + path.iter().map(|a| a.len() as usize).sum::<usize>()
     }
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
@@ -272,13 +278,11 @@ impl<'db> Storage<'db> for RocksDbStorage {
         result.wrap_with_cost(cost)
     }
 
-    fn get_storage_context_cost<'a, P>(path: P) -> OperationCost
-    where
-        P: IntoIterator<Item = &'a [u8]>,
+    fn get_storage_context_cost<L: WorstKeyLength>(path: &Vec<L>) -> OperationCost
     {
-        let body = Self::build_prefix_body(path);
+        let body = Self::worst_case_body_size(path);
         // the block size of blake3 is 64
-        let blocks_num = (body.len() / BLAKE_BLOCK_LEN + 1) as u16;
+        let blocks_num = (body / BLAKE_BLOCK_LEN + 1) as u16;
         OperationCost::with_hash_node_calls(blocks_num)
     }
 

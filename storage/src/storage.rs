@@ -6,6 +6,7 @@ use std::{
 
 use costs::{CostContext, CostResult, CostsExt, OperationCost};
 use visualize::visualize_to_vec;
+use crate::worst_case_costs::WorstKeyLength;
 
 /// Top-level storage abstraction.
 /// Should be able to hold storage connection and to start transaction when
@@ -88,9 +89,7 @@ pub trait Storage<'db> {
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Self::Error>;
 
     /// Return worst case cost for storage context creation.
-    fn get_storage_context_cost<'a, P>(path: P) -> OperationCost
-    where
-        P: IntoIterator<Item = &'a [u8]>;
+    fn get_storage_context_cost<L: WorstKeyLength>(path: &Vec<L>) -> OperationCost;
 }
 
 /// Storage context.

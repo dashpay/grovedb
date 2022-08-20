@@ -1,27 +1,30 @@
 use costs::OperationCost;
+use merk::HASH_LENGTH;
 use storage::Storage;
+use storage::worst_case_costs::WorstKeyLength;
+use crate::batch::KeyInfo;
 
 use super::GroveDb;
 use crate::Element;
 
 impl GroveDb {
-    fn worst_case_encoded_tree_size(key_size: u32, max_element_size: u32) -> u32 {
+    fn worst_case_encoded_tree_size(key: &KeyInfo, max_element_size: u32) -> u32 {
         // two option values for the left and right link
         // the actual left and right link encoding size
         // the encoded kv node size
-        2 + (2 * Self::worst_case_encoded_link_size(key_size))
+        2 + (2 * Self::worst_case_encoded_link_size(key))
             + Self::worst_case_encoded_kv_node_size(max_element_size)
     }
 
     // Worst case costs for operations within a single merk
-    fn worst_case_encoded_link_size(key_size: u32) -> u32 {
+    fn worst_case_encoded_link_size(key: &KeyInfo) -> u32 {
         // Links are optional values that represent the right or left node for a given
         // 1 byte to represent key_length
         // key_length to represent the actual key
         // 32 bytes for the hash of the node
         // 1 byte for the left child height
         // 1 byte for the right child height
-        1 + key_size + 32 + 1 + 1
+        1 + key.len() as u32 + 32 + 1 + 1
     }
 
     fn worst_case_encoded_kv_node_size(max_element_size: u32) -> u32 {
@@ -35,7 +38,7 @@ impl GroveDb {
     /// Add worst case for getting a merk node
     pub(crate) fn add_worst_case_get_merk_node(
         cost: &mut OperationCost,
-        key_size: u32,
+        key: &KeyInfo,
         max_element_size: u32,
     ) {
         // Worst case scenario, the element is not already in memory.
@@ -44,14 +47,14 @@ impl GroveDb {
 
         // To write a node to disk, the left link, right link and kv nodes are encoded.
         // worst case, the node has both the left and right link present.
-        cost.storage_loaded_bytes += Self::worst_case_encoded_tree_size(key_size, max_element_size);
+        cost.storage_loaded_bytes += Self::worst_case_encoded_tree_size(key, max_element_size);
     }
 
     pub(crate) fn add_merk_worst_case_insert_reference(
         cost: &mut OperationCost,
         max_element_size: u32,
         max_element_number: u32,
-        max_key_size: u32,
+        key: &KeyInfo,
     ) {
         // same as insert node but one less hash node call as that is done on the
         // grovedb layer
@@ -59,7 +62,7 @@ impl GroveDb {
             cost,
             max_element_size,
             max_element_number,
-            max_key_size,
+            key,
         );
         cost.hash_node_calls -= 1;
     }
@@ -68,7 +71,7 @@ impl GroveDb {
         cost: &mut OperationCost,
         max_element_size: u32,
         max_element_number: u32,
-        max_key_size: u32,
+        key: &KeyInfo,
     ) {
         // Insertion Process
         // - Walk from the root to insertion point (marking every node in path as
@@ -99,7 +102,7 @@ impl GroveDb {
 
         // for each walk, we have to seek and load from storage (equivalent to a get)
         for _ in 0..max_number_of_walks {
-            GroveDb::add_worst_case_get_merk_node(cost, max_key_size, max_element_size)
+            GroveDb::add_worst_case_get_merk_node(cost, key, max_element_size)
         }
 
         // after getting to the point of insertion, we need to build the node
@@ -123,7 +126,7 @@ impl GroveDb {
         // TODO: This might be 2 look into this.
         // Add 1 get cost for the node in rotation spot
         let mut modified_node_count = max_number_of_walks + 1;
-        GroveDb::add_worst_case_get_merk_node(cost, max_key_size, max_element_size);
+        GroveDb::add_worst_case_get_merk_node(cost, key, max_element_size);
 
         // During the commit phase
         // We update the backing store state
@@ -137,13 +140,13 @@ impl GroveDb {
         // When writing a key value pair to the backing store
         // the key has to prefixed with a 32 byte hash
         // and the value is the encoded tree node
-        let prefixed_key_size = 32 + max_key_size;
+        let prefixed_key_size = 32 + key.len();
         // Note: encoded tree calculation assumes that each node has 2 children, this is
         // not always the case and as such is the source of worst case from
         // actual cost deviation. we can do better than assuming all nodes have
         // 2 links as there are some bounds on avl tree e.g. there must be a
         // leaf. for simplicity sake, keeping as this.
-        let value_size = Self::worst_case_encoded_tree_size(max_key_size, max_element_size);
+        let value_size = Self::worst_case_encoded_tree_size(key, max_element_size);
 
         for _ in 0..modified_node_count {
             cost.seek_count += 1;
@@ -164,21 +167,22 @@ impl GroveDb {
     /// Add worst case for getting a merk tree
     pub fn add_worst_case_get_merk<'db, 'p, P, S: Storage<'db>>(
         cost: &mut OperationCost,
-        path: P,
-        max_element_size: u32,
-    ) where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
-        cost.seek_count += 2; // 1 for seek in meta for root key, 1 for loading that root key
-        cost.storage_loaded_bytes += max_element_size;
-        *cost += S::get_storage_context_cost(path);
+        path: &Vec<KeyInfo>,
+    ) {
+        match path.last() {
+            None => {}
+            Some(key) => {
+                cost.seek_count += 2; // 1 for seek in meta for root key, 1 for loading that root key
+                cost.storage_loaded_bytes += Self::worst_case_encoded_tree_size(key, HASH_LENGTH as u32);
+                *cost += S::get_worst_case_storage_context_cost(path);
+            }
+        }
     }
 
     /// Add worst case for getting a merk tree
     pub fn add_worst_case_merk_has_element(
         cost: &mut OperationCost,
-        key: &[u8],
+        key: KeyInfo,
         max_element_size: u32,
     ) {
         cost.seek_count += 1;
@@ -201,15 +205,15 @@ impl GroveDb {
     /// Add worst case for insertion into merk
     pub(crate) fn add_worst_case_merk_insert(
         cost: &mut OperationCost,
-        key: &[u8],
+        key: &KeyInfo,
         value: &Element,
         input: MerkWorstCaseInput,
     ) {
-        // TODO is is safe to unwrap?
-        let bytes_len = key.len() + value.serialize().expect("element is serializeable").len();
+        // TODO determine serialize size without actually serializing
+        let bytes_len = key.len() as u32 + value.serialize().expect("element is serializable").len() as u32;
 
         cost.storage_written_bytes += bytes_len as u32;
-        // .. and hash computation for the inserted element iteslf
+        // .. and hash computation for the inserted element itself
         cost.hash_node_calls += ((bytes_len - 64 + 1) / 64) as u16;
 
         Self::add_worst_case_merk_propagate(cost, input);
@@ -245,50 +249,39 @@ impl GroveDb {
         // does nothing for now
     }
 
-    pub fn add_worst_case_has_raw_cost<'db, 'p, P, S: Storage<'db>>(
+    pub fn add_worst_case_has_raw_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
-        path: P,
-        key_size: u32,
+        path: &Vec<KeyInfo>,
+        key: &KeyInfo,
         max_element_size: u32,
-    ) where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
-        let value_size = Self::worst_case_encoded_tree_size(key_size, max_element_size);
+    ) {
+        let value_size = Self::worst_case_encoded_tree_size(key, max_element_size);
         cost.seek_count += 1;
         cost.storage_loaded_bytes += value_size;
         *cost += S::get_storage_context_cost(path);
     }
 
-    pub fn add_worst_case_get_raw_cost<'db, 'p, P, S: Storage<'db>>(
+    pub fn add_worst_case_get_raw_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
-        path: P,
-        key_size: u32,
+        path: &Vec<KeyInfo>,
+        key: &KeyInfo,
         max_element_size: u32,
-    ) where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    ) {
         // todo: verify, we need to run a test to see if has raw has any better
         // performance than get raw
-        let value_size = Self::worst_case_encoded_tree_size(key_size, max_element_size);
-        cost.seek_count += 1;
-        cost.storage_loaded_bytes += value_size;
-        *cost += S::get_storage_context_cost(path);
+        Self::add_worst_case_get_merk(cost, path);
+        Self::add_worst_case_get_merk_node(cost, key, max_element_size);
     }
 
-    pub fn add_worst_case_get_cost<'db, 'p, P, S: Storage<'db>>(
+    pub fn add_worst_case_get_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
-        path: P,
-        key_size: u32,
+        path: &Vec<KeyInfo>,
+        key: &KeyInfo,
         max_element_size: u32,
         max_references_sizes: Vec<u32>,
-    ) where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    ) {
         // todo: verify
-        let value_size: u32 = Self::worst_case_encoded_tree_size(key_size, max_element_size);
+        let value_size: u32 = Self::worst_case_encoded_tree_size(key, max_element_size);
         cost.seek_count += 1 + max_references_sizes.len() as u16;
         cost.storage_loaded_bytes += value_size + max_references_sizes.iter().sum::<u32>();
         *cost += S::get_storage_context_cost(path);
@@ -309,11 +302,14 @@ mod test {
     use merk::{test_utils::make_batch_seq, BatchEntry, Merk, Op};
     use storage::{rocksdb_storage::RocksDbStorage, Storage};
     use tempfile::TempDir;
+    use storage::worst_case_costs::WorstKeyLength;
 
     use crate::{
         tests::{make_deep_tree, make_grovedb, TEST_LEAF},
         Element, GroveDb,
     };
+    use crate::batch::KeyInfo;
+    use crate::batch::KeyInfo::{KnownKey, MaxKeySize};
 
     #[test]
     fn test_get_merk_node_worst_case() {
@@ -348,8 +344,8 @@ mod test {
         // this scenario. make_batch_seq creates values that are 60 bytes in size
         // (this will be the max_element_size)
         let mut cost = OperationCost::default();
-        let key = &8_u64.to_be_bytes();
-        GroveDb::add_worst_case_get_merk_node(&mut cost, key.len() as u32, 60);
+        let key = KnownKey(8_u64.to_be_bytes().to_vec());
+        GroveDb::add_worst_case_get_merk_node(&mut cost, &key, 60);
         assert_eq!(cost, node_result.cost);
     }
 
@@ -380,16 +376,16 @@ mod test {
 
         // Each key and each value are 1 byte each
         // max_number_of_elements is 6
-        const MAX_KEY_SIZE: u32 = 1;
+        let key_info = MaxKeySize{ unique_id: vec![0], max_size: 1 };
         const MAX_ELEMENT_SIZE: u32 = 1;
-        const MAX_ELEMENT_NUMEBR: u32 = 6;
+        const MAX_ELEMENT_NUMBER: u32 = 6;
 
         let mut worst_case_cost = OperationCost::default();
         GroveDb::add_worst_case_insert_merk_node(
             &mut worst_case_cost,
             MAX_ELEMENT_SIZE,
-            MAX_ELEMENT_NUMEBR,
-            MAX_KEY_SIZE,
+            MAX_ELEMENT_NUMBER,
+            &key_info,
         );
 
         // Let's apply worst case reductions
@@ -405,7 +401,7 @@ mod test {
         // of these only 7 has two children, 8 and 6 have none
         // this means we are 4 links encoding higher
         worst_case_cost.storage_loaded_bytes -=
-            4 * GroveDb::worst_case_encoded_link_size(MAX_KEY_SIZE);
+            4 * GroveDb::worst_case_encoded_link_size(&key_info);
 
         // storage_written_bytes
         // we write [5, 6, 7, 8, 9] + root_key
@@ -416,7 +412,7 @@ mod test {
         // 6 and 9 have 0 links (we assume 2 so cost of 2 each = 4)
         // Total overhead = 5
         worst_case_cost.storage_written_bytes -=
-            5 * GroveDb::worst_case_encoded_link_size(MAX_KEY_SIZE);
+            5 * GroveDb::worst_case_encoded_link_size(&key_info);
 
         // Now actual cost
         // Open a merk and insert setup elements
@@ -470,11 +466,13 @@ mod test {
         db.insert([TEST_LEAF], &[2], elem.clone(), None);
         db.insert([TEST_LEAF], &[3], elem.clone(), None);
 
+        let path = vec![KnownKey(TEST_LEAF.to_vec())];
+        let key = KnownKey(vec![1]);
         let mut worst_case_has_raw_cost = OperationCost::default();
-        GroveDb::add_worst_case_has_raw_cost::<_, RocksDbStorage>(
+        GroveDb::add_worst_case_has_raw_cost::<RocksDbStorage>(
             &mut worst_case_has_raw_cost,
-            [TEST_LEAF],
-            1,
+            &path,
+            &key,
             elem.serialized_byte_size() as u32,
         );
 

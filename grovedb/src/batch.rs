@@ -12,6 +12,7 @@ use costs::{
 use merk::{tree::value_hash, Hash, Merk};
 use nohash_hasher::IntMap;
 use storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch, StorageContext};
+use storage::worst_case_costs::WorstKeyLength;
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
 use crate::{
@@ -27,7 +28,7 @@ pub enum Op {
 }
 
 impl Op {
-    fn worst_case_cost(&self, key: Vec<u8>, input: MerkWorstCaseInput) -> OperationCost {
+    fn worst_case_cost(&self, key: &KeyInfo, input: MerkWorstCaseInput) -> OperationCost {
         match self {
             Op::ReplaceTreeHash { .. } => OperationCost {
                 seek_count: 1,
@@ -36,7 +37,7 @@ impl Op {
             },
             Op::Insert { element } => {
                 let mut cost = OperationCost::default();
-                GroveDb::add_worst_case_merk_insert(&mut cost, &key, &element, input);
+                GroveDb::add_worst_case_merk_insert(&mut cost, key, &element, input);
                 cost
             }
             Op::Delete => {
@@ -70,11 +71,27 @@ pub enum KeyInfo {
     MaxKeySize { unique_id: Vec<u8>, max_size: u8 },
 }
 
+impl WorstKeyLength for KeyInfo {
+    fn len(&self) -> u8 {
+        match self {
+            Self::KnownKey(key) => key.len() as u8,
+            Self::MaxKeySize { max_size, .. } => *max_size,
+        }
+    }
+}
+
 impl KeyInfo {
     fn get_key(&self) -> Vec<u8> {
         match self {
             Self::KnownKey(key) => key.clone(),
             Self::MaxKeySize { unique_id, .. } => unique_id.clone(),
+        }
+    }
+
+    fn get_key_ref(&self) -> &[u8] {
+        match self {
+            Self::KnownKey(key) => key.as_slice(),
+            Self::MaxKeySize { unique_id, .. } => unique_id.as_slice(),
         }
     }
 }
