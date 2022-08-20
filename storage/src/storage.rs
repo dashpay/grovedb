@@ -6,6 +6,7 @@ use std::{
 
 use costs::{CostContext, CostResult, CostsExt, OperationCost};
 use visualize::visualize_to_vec;
+
 use crate::worst_case_costs::WorstKeyLength;
 
 /// Top-level storage abstraction.

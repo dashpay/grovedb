@@ -12,8 +12,7 @@ use super::{
     PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext,
     PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
 };
-use crate::{AbstractBatchOperation, Storage, StorageBatch};
-use crate::worst_case_costs::WorstKeyLength;
+use crate::{worst_case_costs::WorstKeyLength, AbstractBatchOperation, Storage, StorageBatch};
 
 const BLAKE_BLOCK_LEN: usize = 64;
 
@@ -76,7 +75,7 @@ impl RocksDbStorage {
         for s in segments_iter {
             segments_count += 1;
             res.extend_from_slice(s);
-            lengthes.push(s.len() as u8); //if the key len is under 255 bytes
+            lengthes.push(s.len() as u8); // if the key len is under 255 bytes
         }
 
         res.extend(segments_count.to_ne_bytes());
@@ -84,8 +83,7 @@ impl RocksDbStorage {
         res
     }
 
-    fn worst_case_body_size<L: WorstKeyLength>(path: &Vec<L>) -> usize
-    {
+    fn worst_case_body_size<L: WorstKeyLength>(path: &Vec<L>) -> usize {
         path.len() + path.iter().map(|a| a.len() as usize).sum::<usize>()
     }
 
@@ -278,8 +276,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         result.wrap_with_cost(cost)
     }
 
-    fn get_storage_context_cost<L: WorstKeyLength>(path: &Vec<L>) -> OperationCost
-    {
+    fn get_storage_context_cost<L: WorstKeyLength>(path: &Vec<L>) -> OperationCost {
         let body = Self::worst_case_body_size(path);
         // the block size of blake3 is 64
         let blocks_num = (body / BLAKE_BLOCK_LEN + 1) as u16;

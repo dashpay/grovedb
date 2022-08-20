@@ -4,11 +4,10 @@ use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use storage::StorageContext;
 
 use crate::{
-    batch::{GroveDbOp, Op},
+    batch::{GroveDbOp, KeyInfo, Op},
     util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, TransactionArg,
 };
-use crate::batch::KeyInfo;
 
 impl GroveDb {
     pub fn delete_up_tree_while_empty<'p, P>(
@@ -270,9 +269,9 @@ impl GroveDb {
         validate: bool,
         max_element_size: u32,
     ) -> CostResult<Option<GroveDbOp>, Error>
-        where
-            P: IntoIterator<Item = &'p [u8]>,
-            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let mut cost = OperationCost::default();
 
@@ -282,7 +281,7 @@ impl GroveDb {
             Err(Error::InvalidPath(
                 "root tree leaves currently cannot be deleted",
             ))
-                .wrap_with_cost(cost)
+            .wrap_with_cost(cost)
         } else {
             if validate {
                 GroveDb::add_worst_case_get_merk(&mut cost, path);
@@ -292,7 +291,7 @@ impl GroveDb {
                 path_iter.map(|x| x.to_vec()).collect(),
                 key.to_vec(),
             )))
-                .wrap_with_cost(cost)
+            .wrap_with_cost(cost)
         }
     }
 

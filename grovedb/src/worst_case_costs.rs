@@ -1,11 +1,9 @@
 use costs::OperationCost;
 use merk::HASH_LENGTH;
-use storage::Storage;
-use storage::worst_case_costs::WorstKeyLength;
-use crate::batch::KeyInfo;
+use storage::{worst_case_costs::WorstKeyLength, Storage};
 
 use super::GroveDb;
-use crate::Element;
+use crate::{batch::KeyInfo, Element};
 
 impl GroveDb {
     fn worst_case_encoded_tree_size(key: &KeyInfo, max_element_size: u32) -> u32 {
@@ -58,12 +56,7 @@ impl GroveDb {
     ) {
         // same as insert node but one less hash node call as that is done on the
         // grovedb layer
-        Self::add_worst_case_insert_merk_node(
-            cost,
-            max_element_size,
-            max_element_number,
-            key,
-        );
+        Self::add_worst_case_insert_merk_node(cost, max_element_size, max_element_number, key);
         cost.hash_node_calls -= 1;
     }
 
@@ -172,8 +165,9 @@ impl GroveDb {
         match path.last() {
             None => {}
             Some(key) => {
-                cost.seek_count += 2; // 1 for seek in meta for root key, 1 for loading that root key
-                cost.storage_loaded_bytes += Self::worst_case_encoded_tree_size(key, HASH_LENGTH as u32);
+                cost.seek_count += 2; // seek in meta for root key + loading that root key
+                cost.storage_loaded_bytes +=
+                    Self::worst_case_encoded_tree_size(key, HASH_LENGTH as u32);
                 *cost += S::get_worst_case_storage_context_cost(path);
             }
         }
@@ -210,7 +204,8 @@ impl GroveDb {
         input: MerkWorstCaseInput,
     ) {
         // TODO determine serialize size without actually serializing
-        let bytes_len = key.len() as u32 + value.serialize().expect("element is serializable").len() as u32;
+        let bytes_len =
+            key.len() as u32 + value.serialize().expect("element is serializable").len() as u32;
 
         cost.storage_written_bytes += bytes_len as u32;
         // .. and hash computation for the inserted element itself
@@ -300,16 +295,17 @@ mod test {
     use costs::{CostContext, OperationCost};
     use integer_encoding::VarInt;
     use merk::{test_utils::make_batch_seq, BatchEntry, Merk, Op};
-    use storage::{rocksdb_storage::RocksDbStorage, Storage};
+    use storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
     use tempfile::TempDir;
-    use storage::worst_case_costs::WorstKeyLength;
 
     use crate::{
+        batch::{
+            KeyInfo,
+            KeyInfo::{KnownKey, MaxKeySize},
+        },
         tests::{make_deep_tree, make_grovedb, TEST_LEAF},
         Element, GroveDb,
     };
-    use crate::batch::KeyInfo;
-    use crate::batch::KeyInfo::{KnownKey, MaxKeySize};
 
     #[test]
     fn test_get_merk_node_worst_case() {
@@ -376,7 +372,10 @@ mod test {
 
         // Each key and each value are 1 byte each
         // max_number_of_elements is 6
-        let key_info = MaxKeySize{ unique_id: vec![0], max_size: 1 };
+        let key_info = MaxKeySize {
+            unique_id: vec![0],
+            max_size: 1,
+        };
         const MAX_ELEMENT_SIZE: u32 = 1;
         const MAX_ELEMENT_NUMBER: u32 = 6;
 
