@@ -3,9 +3,11 @@ use serde::{Deserialize, Serialize};
 
 /// Reference path variants
 #[derive(Hash, Eq, PartialEq, Serialize, Deserialize, Clone)]
+// TODO: Make this entire file more intiutive
 pub enum ReferencePathType {
     AbsolutePath(Vec<Vec<u8>>),
     UpstreamRootHeight(u8, Vec<Vec<u8>>),
+    UpstreamFromElementHeight(u8, Vec<Vec<u8>>),
 }
 
 pub fn path_from_reference_path_type<'p, P>(
@@ -31,6 +33,18 @@ where
             let mut needed_path = current_path_iter
                 .take(height_from_root as usize + 1)
                 .collect::<Vec<_>>();
+            needed_path.append(&mut path_iter);
+            needed_path.iter().map(|x| x.to_vec()).collect::<Vec<_>>()
+        },
+        ReferencePathType::UpstreamFromElementHeight(height_from_element, path) => {
+            let mut path_iter = path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
+            let current_path_iter = current_path.into_iter();
+            let current_path_len = current_path_iter.len();
+            // taking len - height_from_element from
+            if usize::from(height_from_element + 1) > current_path_len {
+                panic!("current path not enough");
+            }
+            let mut needed_path = current_path_iter.take(current_path_len - height_from_element as usize - 1).collect::<Vec<_>>();
             needed_path.append(&mut path_iter);
             needed_path.iter().map(|x| x.to_vec()).collect::<Vec<_>>()
         }
@@ -62,6 +76,17 @@ mod tests {
     #[test]
     fn test_upstream_root_height_reference() {
         let ref1 = ReferencePathType::UpstreamRootHeight(1, vec![b"c".to_vec(), b"d".to_vec()]);
+        let final_path =
+            path_from_reference_path_type(ref1, vec![b"a".as_ref(), b"b".as_ref(), b"m".as_ref()]);
+        assert_eq!(
+            final_path,
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec(), b"d".to_vec()]
+        );
+    }
+
+    #[test]
+    fn test_upstream_from_element_height_reference() {
+        let ref1 = ReferencePathType::UpstreamFromElementHeight(0, vec![b"c".to_vec(), b"d".to_vec()]);
         let final_path =
             path_from_reference_path_type(ref1, vec![b"a".as_ref(), b"b".as_ref(), b"m".as_ref()]);
         assert_eq!(
