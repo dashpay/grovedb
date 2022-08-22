@@ -151,7 +151,7 @@ impl GroveDb {
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(Element::Reference(reference_path, ..)) => {
                     match reference_path {
-                        ReferencePathType::AbsolutePath(absolute_path) => {
+                        ReferencePathType::AbsolutePathReference(absolute_path) => {
                             // While `map` on iterator is lazy, we should accumulate costs even if
                             // `collect` will end in `Err`, so we'll use
                             // external costs accumulator instead of
@@ -233,7 +233,7 @@ where {
                     match element {
                         Element::Reference(reference_path, ..) => {
                             match reference_path {
-                                ReferencePathType::AbsolutePath(absolute_path) => {
+                                ReferencePathType::AbsolutePathReference(absolute_path) => {
                                     // While `map` on iterator is lazy, we should accumulate costs
                                     // even if `collect` will
                                     // end in `Err`, so we'll use

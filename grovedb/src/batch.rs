@@ -1306,7 +1306,7 @@ mod tests {
             ],
             key: b"sam_id".to_vec(),
             op: Op::Insert {
-                element: Element::new_reference(ReferencePathType::AbsolutePath(vec![
+                element: Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                     b"contract".to_vec(),
                     (&[1u8]).to_vec(),
                     b"domain".to_vec(),
@@ -1835,7 +1835,7 @@ mod tests {
         let batch = vec![GroveDbOp::insert(
             vec![TEST_LEAF.to_vec()],
             b"key1".to_vec(),
-            Element::new_reference(ReferencePathType::AbsolutePath(vec![
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                 TEST_LEAF.to_vec(),
                 b"invalid_path".to_vec(),
             ])),
@@ -1852,7 +1852,7 @@ mod tests {
             GroveDbOp::insert(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
-                Element::new_reference(ReferencePathType::AbsolutePath(vec![
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                     TEST_LEAF.to_vec(),
                     b"invalid_path".to_vec(),
                 ])),
@@ -1886,7 +1886,7 @@ mod tests {
                 vec![TEST_LEAF.to_vec()],
                 b"key2".to_vec(),
                 Element::new_reference_with_hops(
-                    ReferencePathType::AbsolutePath(vec![TEST_LEAF.to_vec(), b"key1".to_vec()]),
+                    ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"key1".to_vec()]),
                     Some(1),
                 ),
             ),
@@ -1894,7 +1894,7 @@ mod tests {
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::new_reference_with_hops(
-                    ReferencePathType::AbsolutePath(vec![
+                    ReferencePathType::AbsolutePathReference(vec![
                         TEST_LEAF.to_vec(),
                         b"invalid_path".to_vec(),
                     ]),

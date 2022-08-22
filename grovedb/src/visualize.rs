@@ -151,7 +151,7 @@ mod tests {
     fn test_visualize_reference() {
         let p1 = b"ayy".to_vec();
         let p2 = b"lmao".to_vec();
-        let e = Element::new_reference(ReferencePathType::AbsolutePath(vec![
+        let e = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
             p1.clone(),
             p2.clone(),
         ]));

@@ -1120,7 +1120,7 @@ mod tests {
         assert_eq!(serialized.len(), item.serialized_byte_size());
         assert_eq!(hex::encode(serialized), "0003abcdef010101");
 
-        let reference = Element::new_reference(ReferencePathType::AbsolutePath(vec![
+        let reference = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
             vec![0],
             hex::decode("abcd").expect("expected to decode"),
             vec![5],
@@ -1133,7 +1133,7 @@ mod tests {
         assert_eq!(hex::encode(serialized), "0103010002abcd01050000");
 
         let reference = Element::new_reference_with_flags(
-            ReferencePathType::AbsolutePath(vec![
+            ReferencePathType::AbsolutePathReference(vec![
                 vec![0],
                 hex::decode("abcd").expect("expected to decode"),
                 vec![5],
