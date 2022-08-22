@@ -35,8 +35,12 @@ impl GroveDb {
                 cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
             }
             Element::Reference(ref reference_path, ..) => {
+                // TODO: This needs the full path with the key inclusive, probably not the most efficient
+                let mut full_path = path_iter.clone().collect::<Vec<_>>();
+                full_path.push(key);
                 let reference_path =
-                    path_from_reference_path_type(reference_path.clone(), path_iter.clone());
+                    path_from_reference_path_type(reference_path.clone(), full_path.into_iter());
+
                 if path_iter.len() == 0 {
                     return Err(Error::InvalidPath(
                         "only subtrees are allowed as root tree's leafs",

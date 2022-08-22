@@ -1886,7 +1886,10 @@ mod tests {
                 vec![TEST_LEAF.to_vec()],
                 b"key2".to_vec(),
                 Element::new_reference_with_hops(
-                    ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"key1".to_vec()]),
+                    ReferencePathType::AbsolutePathReference(vec![
+                        TEST_LEAF.to_vec(),
+                        b"key1".to_vec(),
+                    ]),
                     Some(1),
                 ),
             ),
