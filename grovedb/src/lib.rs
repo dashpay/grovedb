@@ -4,6 +4,7 @@ pub mod batch;
 mod operations;
 mod query;
 pub mod query_result_type;
+mod reference_path;
 mod replication;
 mod subtree;
 #[cfg(test)]
@@ -11,7 +12,6 @@ mod tests;
 mod util;
 mod visualize;
 mod worst_case_costs;
-mod reference_path;
 
 use std::path::Path;
 

@@ -24,10 +24,10 @@ use crate::{
         KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType,
         QueryResultType::QueryElementResultType,
     },
+    reference_path::{path_from_reference_path_type, ReferencePathType},
     util::{merk_optional_tx, storage_context_optional_tx},
     Error, Hash, Merk, PathQuery, SizedQuery, TransactionArg,
 };
-use crate::reference_path::{path_from_reference_path_type, ReferencePathType};
 
 /// Optional meta-data to be stored per element
 pub type ElementFlags = Option<Vec<u8>>;
@@ -101,7 +101,10 @@ impl Element {
         Element::Reference(reference_path, None, None)
     }
 
-    pub fn new_reference_with_flags(reference_path: ReferencePathType, flags: ElementFlags) -> Self {
+    pub fn new_reference_with_flags(
+        reference_path: ReferencePathType,
+        flags: ElementFlags,
+    ) -> Self {
         Element::Reference(reference_path, None, flags)
     }
 

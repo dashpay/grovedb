@@ -14,8 +14,10 @@ use nohash_hasher::IntMap;
 use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
-use crate::{operations::get::MAX_REFERENCE_HOPS, Element, Error, GroveDb, TransactionArg};
-use crate::reference_path::path_from_reference_path_type;
+use crate::{
+    operations::get::MAX_REFERENCE_HOPS, reference_path::path_from_reference_path_type, Element,
+    Error, GroveDb, TransactionArg,
+};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -339,7 +341,7 @@ where
                             ops_by_qualified_paths,
                             recursions_allowed - 1,
                         )
-                    },
+                    }
                     Element::Tree(..) => {
                         return Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
@@ -420,7 +422,7 @@ where
                             ops_by_qualified_paths,
                             recursions_allowed - 1,
                         )
-                    },
+                    }
                     Element::Tree(..) => {
                         return Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
@@ -473,7 +475,8 @@ where
                 Op::Insert { element } => match &element {
                     Element::Reference(path_reference, element_max_reference_hop, _) => {
                         let path_iter = path.iter().map(|x| x.as_slice());
-                        let path_reference = path_from_reference_path_type(path_reference.clone(),path_iter);
+                        let path_reference =
+                            path_from_reference_path_type(path_reference.clone(), path_iter);
 
                         if path_reference.len() == 0 {
                             return Err(Error::InvalidBatchOperation(
