@@ -360,6 +360,7 @@ impl Element {
             ..
         } = args;
 
+        // TODO: cleanup
         // check if element if of type reference, check the exact reference type
         let elem = match &element {
             Element::Reference(reference_path_type, ..) => {

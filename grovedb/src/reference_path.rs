@@ -85,7 +85,7 @@ where
 #[cfg(test)]
 mod tests {
     use merk::proofs::Query;
-    use crate::{reference_path::{path_from_reference_path_type, ReferencePathType}, tests::{make_deep_tree, make_grovedb, TEST_LEAF}, Element, PathQuery};
+    use crate::{reference_path::{path_from_reference_path_type, ReferencePathType}, tests::{make_deep_tree, make_grovedb, TEST_LEAF}, Element, PathQuery, GroveDb};
 
     #[test]
     fn test_upstream_root_height_reference() {
@@ -167,11 +167,18 @@ mod tests {
             .unwrap()
             .expect("should insert successfully");
 
+
+        // TODO: Add proper assertions
         // Query all the elements in Test Leaf
         let mut query = Query::new();
         query.insert_all();
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree4".to_vec()], query);
         let result = db.query(&path_query, None).unwrap().expect("should query items");
+        dbg!(result);
+
+        let proof = db.prove_query(&path_query).unwrap().expect("should generate proof");
+        let (hash,result) = GroveDb::verify_query(&proof, &path_query).expect("should verify proof");
+        assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
         dbg!(result);
     }
 }
