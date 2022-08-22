@@ -998,6 +998,7 @@ mod tests {
         tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
         PathQuery, SizedQuery,
     };
+    use crate::reference_path::ReferencePathType;
 
     #[test]
     fn test_batch_validation_ok() {
@@ -1305,13 +1306,13 @@ mod tests {
             ],
             key: b"sam_id".to_vec(),
             op: Op::Insert {
-                element: Element::new_reference(vec![
+                element: Element::new_reference(ReferencePathType::AbsolutePath(vec![
                     b"contract".to_vec(),
                     (&[1u8]).to_vec(),
                     b"domain".to_vec(),
                     (&[0u8]).to_vec(),
                     b"serialized_domain_id".to_vec(),
-                ]),
+                ])),
             },
         });
 
@@ -1834,7 +1835,7 @@ mod tests {
         let batch = vec![GroveDbOp::insert(
             vec![TEST_LEAF.to_vec()],
             b"key1".to_vec(),
-            Element::new_reference(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
+            Element::new_reference(ReferencePathType::AbsolutePath(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()])),
         )];
         assert!(matches!(
             db.apply_batch(batch, None, None).unwrap(),
@@ -1848,7 +1849,7 @@ mod tests {
             GroveDbOp::insert(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
-                Element::new_reference(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
+                Element::new_reference(ReferencePathType::AbsolutePath(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()])),
             ),
             GroveDbOp::insert(
                 vec![TEST_LEAF.to_vec()],
@@ -1879,7 +1880,7 @@ mod tests {
                 vec![TEST_LEAF.to_vec()],
                 b"key2".to_vec(),
                 Element::new_reference_with_hops(
-                    vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+                    ReferencePathType::AbsolutePath(vec![TEST_LEAF.to_vec(), b"key1".to_vec()]),
                     Some(1),
                 ),
             ),
@@ -1887,7 +1888,7 @@ mod tests {
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::new_reference_with_hops(
-                    vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()],
+                    ReferencePathType::AbsolutePath(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
                     Some(1),
                 ),
             ),

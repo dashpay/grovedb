@@ -9,10 +9,10 @@ use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageCo
 
 use crate::{
     operations::proof::util::{write_to_vec, ProofType, EMPTY_TREE_HASH},
+    reference_path::path_from_reference_path_type,
     subtree::raw_decode,
     Element, Error, GroveDb, PathQuery, Query,
 };
-use crate::reference_path::path_from_reference_path_type;
 
 impl GroveDb {
     pub fn prove_query_many(&self, query: Vec<&PathQuery>) -> CostResult<Vec<u8>, Error> {
@@ -345,9 +345,11 @@ impl GroveDb {
     ) -> CostResult<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let mut cost = OperationCost::default();
+
+        let path_iter = path.into_iter().collect::<Vec<_>>();
 
         for op in proof_result.proof.iter_mut() {
             match op {
@@ -355,10 +357,10 @@ impl GroveDb {
                     Node::KV(key, value) => {
                         let elem = Element::deserialize(value);
                         if let Ok(Element::Reference(reference_path, ..)) = elem {
-
-                            let mut current_path = path.into_iter().collect::<Vec<_>>();
+                            let mut current_path = path_iter.clone();
                             current_path.push(key.as_slice());
-                            let absolute_path = path_from_reference_path_type(reference_path, current_path);
+                            let absolute_path =
+                                path_from_reference_path_type(reference_path, current_path);
 
                             let referenced_elem = cost_return_on_error!(
                                 &mut cost,
