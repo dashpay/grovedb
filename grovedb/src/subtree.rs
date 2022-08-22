@@ -359,16 +359,33 @@ impl Element {
             offset,
             ..
         } = args;
+
+        // check if element if of type reference, check the exact reference type
+        let elem = match &element {
+            Element::Reference(reference_path_type, ..) => {
+                match reference_path_type {
+                    ReferencePathType::AbsolutePathReference(..) => element,
+                    _ => {
+                        let mut current_path = path.clone().to_vec();
+                        current_path.push(key.ok_or(Error::CorruptedPath("basic path must have a key"))?);
+                        let absolute_path = path_from_reference_path_type(reference_path_type.clone(), current_path.into_iter());
+                        Element::Reference(ReferencePathType::AbsolutePathReference(absolute_path), None, None)
+                    }
+                }
+            }
+            _ => element
+        };
+
         if offset.unwrap_or(0) == 0 {
             match result_type {
                 QueryResultType::QueryElementResultType => {
-                    results.push(QueryResultElement::ElementResultItem(element));
+                    results.push(QueryResultElement::ElementResultItem(elem));
                 }
                 QueryResultType::QueryKeyElementPairResultType => {
                     let key = key.ok_or(Error::CorruptedPath("basic push must have a key"))?;
                     results.push(QueryResultElement::KeyElementPairResultItem((
                         Vec::from(key),
-                        element,
+                        elem,
                     )));
                 }
                 QueryResultType::QueryPathKeyElementTrioResultType => {
@@ -377,7 +394,7 @@ impl Element {
                     results.push(QueryResultElement::PathKeyElementTrioResultItem((
                         path,
                         Vec::from(key),
-                        element,
+                        elem,
                     )));
                 }
             }

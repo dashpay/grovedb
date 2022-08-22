@@ -1,4 +1,3 @@
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 /// Reference path variants
