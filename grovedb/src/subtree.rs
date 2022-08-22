@@ -346,6 +346,8 @@ impl Element {
         })
     }
 
+    // TODO: Make sure reference elements have absolute paths, if they don't then
+    // compute it
     fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
         let PathQueryPushArgs {
             path,

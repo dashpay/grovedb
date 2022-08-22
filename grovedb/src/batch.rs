@@ -995,10 +995,10 @@ mod tests {
 
     use super::*;
     use crate::{
+        reference_path::ReferencePathType,
         tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
         PathQuery, SizedQuery,
     };
-    use crate::reference_path::ReferencePathType;
 
     #[test]
     fn test_batch_validation_ok() {
@@ -1835,7 +1835,10 @@ mod tests {
         let batch = vec![GroveDbOp::insert(
             vec![TEST_LEAF.to_vec()],
             b"key1".to_vec(),
-            Element::new_reference(ReferencePathType::AbsolutePath(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()])),
+            Element::new_reference(ReferencePathType::AbsolutePath(vec![
+                TEST_LEAF.to_vec(),
+                b"invalid_path".to_vec(),
+            ])),
         )];
         assert!(matches!(
             db.apply_batch(batch, None, None).unwrap(),
@@ -1849,7 +1852,10 @@ mod tests {
             GroveDbOp::insert(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
-                Element::new_reference(ReferencePathType::AbsolutePath(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()])),
+                Element::new_reference(ReferencePathType::AbsolutePath(vec![
+                    TEST_LEAF.to_vec(),
+                    b"invalid_path".to_vec(),
+                ])),
             ),
             GroveDbOp::insert(
                 vec![TEST_LEAF.to_vec()],
@@ -1888,7 +1894,10 @@ mod tests {
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::new_reference_with_hops(
-                    ReferencePathType::AbsolutePath(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
+                    ReferencePathType::AbsolutePath(vec![
+                        TEST_LEAF.to_vec(),
+                        b"invalid_path".to_vec(),
+                    ]),
                     Some(1),
                 ),
             ),
