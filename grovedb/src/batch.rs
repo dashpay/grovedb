@@ -980,13 +980,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
+        tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
         PathQuery, SizedQuery,
     };
 
     #[test]
     fn test_batch_validation_ok() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
         let ops = vec![
@@ -1051,7 +1051,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_ok_on_transaction() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let tx = db.start_transaction();
 
         db.insert(vec![], b"keyb", Element::empty_tree(), Some(&tx))
@@ -1125,6 +1125,42 @@ mod tests {
                 .unwrap()
                 .expect("cannot get element"),
             element2
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_insert_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let ops = vec![GroveDbOp::insert(
+            vec![],
+            b"key1".to_vec(),
+            Element::empty_tree(),
+        )];
+        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        // Explanation for 176
+        // 2 bytes for left and right height
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 for the flags
+        // 1 for the enum type
+        // 32 for empty tree
+        // 32 for node hash
+        // 32 for value hash
+        // 32 for the root key prefix
+        // 4 bytes for the key to put in root
+        // 1 byte for the root "r"
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 2, // 1 to get tree, 1 to insert
+                storage_written_bytes: 173,
+                storage_loaded_bytes: 0,
+                storage_freed_bytes: 0,
+                hash_byte_calls: 2,
+                hash_node_calls: 3
+            }
         );
     }
 
@@ -1308,7 +1344,7 @@ mod tests {
     #[ignore]
     #[test]
     fn test_batch_produces_same_result() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let tx = db.start_transaction();
 
         let ops = grove_db_ops_for_contract_insert();
@@ -1318,7 +1354,7 @@ mod tests {
 
         db.root_hash(None).unwrap().expect("cannot get root hash");
 
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let tx = db.start_transaction();
 
         let ops = grove_db_ops_for_contract_insert();
@@ -1348,7 +1384,7 @@ mod tests {
     #[ignore]
     #[test]
     fn test_batch_contract_with_document_produces_same_result() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let tx = db.start_transaction();
 
         let ops = grove_db_ops_for_contract_insert();
@@ -1358,7 +1394,7 @@ mod tests {
 
         db.root_hash(None).unwrap().expect("cannot get root hash");
 
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let tx = db.start_transaction();
 
         let ops = grove_db_ops_for_contract_insert();
@@ -1394,7 +1430,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_broken_chain() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
             GroveDbOp::insert(vec![], b"key1".to_vec(), Element::empty_tree()),
@@ -1415,7 +1451,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_broken_chain_aborts_whole_batch() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
             GroveDbOp::insert(
@@ -1450,7 +1486,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_deletion_brokes_chain() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
 
         db.insert([], b"key1", Element::empty_tree(), None)
@@ -1478,7 +1514,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_insertion_under_deleted_tree() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
             GroveDbOp::insert(vec![], b"key1".to_vec(), Element::empty_tree()),
@@ -1509,7 +1545,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_insert_into_existing_tree() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
 
         db.insert([TEST_LEAF], b"invalid", element.clone(), None)
@@ -1546,7 +1582,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_nested_subtree_overwrite() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
         db.insert([TEST_LEAF], b"key_subtree", Element::empty_tree(), None)
@@ -1612,7 +1648,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_root_leaf_removal() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let ops = vec![
             GroveDbOp::insert(
                 vec![],
@@ -1639,7 +1675,7 @@ mod tests {
 
     #[test]
     fn test_merk_data_is_deleted() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
 
         db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
@@ -1671,7 +1707,7 @@ mod tests {
 
     #[test]
     fn test_multi_tree_insertion_deletion_with_propagation_no_tx() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         db.insert([], b"key1", Element::empty_tree(), None)
             .unwrap()
             .expect("cannot insert root leaf");
@@ -1738,7 +1774,7 @@ mod tests {
 
     #[test]
     fn test_nested_batch_insertion_corrupts_state() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let full_path = vec![
             b"leaf1".to_vec(),
             b"sub1".to_vec(),
@@ -1782,7 +1818,7 @@ mod tests {
 
     #[test]
     fn test_apply_sorted_pre_validated_batch_propagation() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let full_path = vec![b"leaf1".to_vec(), b"sub1".to_vec()];
         let mut acc_path: Vec<Vec<u8>> = vec![];
         for p in full_path.into_iter() {
@@ -1815,7 +1851,7 @@ mod tests {
     #[test]
     fn test_references() {
         // insert reference that points to non-existent item
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let batch = vec![GroveDbOp::insert(
             vec![TEST_LEAF.to_vec()],
             b"key1".to_vec(),
@@ -1827,7 +1863,7 @@ mod tests {
         ));
 
         // insert reference with item it points to in the same batch
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let elem = Element::new_item(b"ayy".to_vec());
         let batch = vec![
             GroveDbOp::insert(
@@ -1857,7 +1893,7 @@ mod tests {
 
         // Hit reference limit when you specify max reference hop, lower than actual hop
         // count
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let elem = Element::new_item(b"ayy".to_vec());
         let batch = vec![
             GroveDbOp::insert(

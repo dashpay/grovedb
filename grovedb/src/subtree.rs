@@ -1050,7 +1050,7 @@ mod tests {
         subtree::QueryResultType::{
             QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType,
         },
-        tests::{make_grovedb, TEST_LEAF},
+        tests::{make_test_grovedb, TEST_LEAF},
     };
 
     #[test]
@@ -1137,7 +1137,7 @@ mod tests {
 
     #[test]
     fn test_get_query() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
@@ -1225,7 +1225,7 @@ mod tests {
 
     #[test]
     fn test_get_query_with_path() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
@@ -1282,7 +1282,7 @@ mod tests {
 
     #[test]
     fn test_get_range_query() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
@@ -1378,7 +1378,7 @@ mod tests {
 
     #[test]
     fn test_get_range_inclusive_query() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
@@ -1476,7 +1476,7 @@ mod tests {
 
     #[test]
     fn test_get_limit_query() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
