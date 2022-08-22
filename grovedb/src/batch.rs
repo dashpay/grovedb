@@ -25,6 +25,7 @@ use crate::{
     worst_case_costs::MerkWorstCaseInput, Element, Error, GroveDb, TransactionArg,
     MAX_ELEMENTS_NUMBER, MAX_ELEMENT_SIZE,
 };
+use crate::batch::GroveDbOpMode::WorstCaseOp;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -317,6 +318,12 @@ impl fmt::Debug for GroveDbOp {
 }
 
 impl GroveDbOp {
+    pub fn to_worst_case_clone(&self) -> Self {
+        let mut clone = self.clone();
+        clone.mode = WorstCaseOp;
+        clone
+    }
+
     pub fn insert_run_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
         let path = KeyInfoPath(path.into_iter().map(|k| KnownKey(k)).collect());
         Self {
@@ -774,8 +781,8 @@ impl TreeCache for TreeCacheKnownPaths {
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
         self.paths.insert(inserted_path);
-        let worst_case_cost = OperationCost::default();
-
+        let mut worst_case_cost = OperationCost::default();
+        GroveDb::add_worst_case_get_merk::<RocksDbStorage>(&mut worst_case_cost, &op.path);
         Ok(()).wrap_with_cost(worst_case_cost)
     }
 
@@ -922,7 +929,6 @@ pub struct BatchApplyOptions {
 impl GroveDb {
     /// Method to propagate updated subtree root hashes up to GroveDB root
     fn apply_batch_structure<C: TreeCache>(
-        &self,
         batch_structure: BatchStructure<C>,
         batch_apply_options: Option<BatchApplyOptions>,
     ) -> CostResult<(), Error> {
@@ -1066,7 +1072,7 @@ impl GroveDb {
                 }
             )
         );
-        self.apply_batch_structure(batch_structure, batch_apply_options)
+        Self::apply_batch_structure(batch_structure, batch_apply_options)
             .add_cost(cost)
     }
 
@@ -1185,7 +1191,6 @@ impl GroveDb {
     }
 
     pub fn worst_case_operations_for_batch(
-        &self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
     ) -> CostResult<(), Error> {
@@ -1201,7 +1206,7 @@ impl GroveDb {
         );
         cost_return_on_error!(
             &mut cost,
-            self.apply_batch_structure(batch_structure, batch_apply_options)
+            Self::apply_batch_structure(batch_structure, batch_apply_options)
         );
 
         Ok(()).wrap_with_cost(cost)
@@ -1362,6 +1367,79 @@ mod tests {
                 .expect("cannot get element"),
             element2
         );
+    }
+
+    #[test]
+    fn test_batch_root_one_op_is_one_seek() {
+        let db = make_grovedb();
+        let tx = db.start_transaction();
+
+        let ops = vec![
+            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+        ];
+        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        assert_eq!(cost.seek_count, 1);
+    }
+
+    #[test]
+    fn test_batch_root_one_op_worst_case_costs() {
+        let db = make_grovedb();
+        let tx = db.start_transaction();
+
+        let ops = vec![
+            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+        ];
+        let worst_case_ops = ops.iter().map(|op| op.to_worst_case_clone()).collect();
+        let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(worst_case_ops, None);
+        assert!(worst_case_cost_result.value.is_ok());
+        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        assert_eq!(worst_case_cost_result.cost, cost);
+    }
+
+    #[test]
+    fn test_batch_worst_case_costs() {
+        let db = make_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"keyb", Element::empty_tree(), Some(&tx))
+            .unwrap()
+            .expect("successful root tree leaf insert");
+
+        let element = Element::new_item(b"ayy".to_vec());
+        let element2 = Element::new_item(b"ayy2".to_vec());
+        let ops = vec![
+            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_run_op(
+                vec![b"key1".to_vec()],
+                b"key2".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![b"key1".to_vec(), b"key2".to_vec()],
+                b"key3".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
+                b"key4".to_vec(),
+                element.clone(),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![TEST_LEAF.to_vec()],
+                b"key1".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+                b"key2".to_vec(),
+                element2.clone(),
+            ),
+        ];
+        let worst_case_ops = ops.iter().map(|op| op.to_worst_case_clone()).collect();
+        let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(worst_case_ops, None);
+        assert!(worst_case_cost_result.value.is_ok());
+        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        assert_eq!(worst_case_cost_result.cost, cost);
     }
 
     fn grove_db_ops_for_contract_insert() -> Vec<GroveDbOp> {

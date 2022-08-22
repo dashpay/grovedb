@@ -165,15 +165,15 @@ impl GroveDb {
         cost: &mut OperationCost,
         path: &KeyInfoPath,
     ) {
+        cost.seek_count += 2; // seek in meta for root key + loading that root key
         match path.last() {
             None => {}
             Some(key) => {
-                cost.seek_count += 2; // seek in meta for root key + loading that root key
                 cost.storage_loaded_bytes +=
                     Self::worst_case_encoded_tree_size(key, HASH_LENGTH as u32);
-                *cost += S::get_storage_context_cost(path.as_vec());
             }
         }
+        *cost += S::get_storage_context_cost(path.as_vec());
     }
 
     /// Add worst case for getting a merk tree
@@ -212,7 +212,7 @@ impl GroveDb {
 
         cost.storage_written_bytes += bytes_len as u32;
         // .. and hash computation for the inserted element itself
-        cost.hash_node_calls += ((bytes_len - 64 + 1) / 64) as u16;
+        cost.hash_node_calls += ((bytes_len + 1) / 64) as u16;
 
         Self::add_worst_case_merk_propagate(cost, input);
     }
