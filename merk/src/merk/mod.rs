@@ -13,7 +13,7 @@ use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
     proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
-    tree::{Commit, Fetch, Hash, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
+    tree::{Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
 };
 
 pub const ROOT_KEY_KEY: &[u8] = b"root";
@@ -218,13 +218,13 @@ where
 
     /// Gets a hash of a node by a given key, `None` is returned in case
     /// when node not found by the key.
-    pub fn get_hash(&self, key: &[u8]) -> CostContext<Result<Option<Hash>>> {
+    pub fn get_hash(&self, key: &[u8]) -> CostContext<Result<Option<CryptoHash>>> {
         self.get_node_fn(key, |node| node.hash())
     }
 
     /// Gets the value hash of a node by a given key, `None` is returned in case
     /// when node not found by the key.
-    pub fn get_value_hash(&self, key: &[u8]) -> CostContext<Result<Option<Hash>>> {
+    pub fn get_value_hash(&self, key: &[u8]) -> CostContext<Result<Option<CryptoHash>>> {
         self.get_node_fn(key, |node| {
             node.value_hash()
                 .clone()
@@ -304,7 +304,7 @@ where
     /// Returns the root hash of the tree (a digest for the entire store which
     /// proofs can be checked against). If the tree is empty, returns the null
     /// hash (zero-filled).
-    pub fn root_hash(&self) -> CostContext<Hash> {
+    pub fn root_hash(&self) -> CostContext<CryptoHash> {
         self.use_tree(|tree| {
             tree.map_or(NULL_HASH.wrap_with_cost(Default::default()), |tree| {
                 tree.hash()

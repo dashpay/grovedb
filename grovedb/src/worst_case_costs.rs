@@ -3,7 +3,10 @@ use merk::HASH_LENGTH;
 use storage::{worst_case_costs::WorstKeyLength, Storage};
 
 use super::GroveDb;
-use crate::{batch::KeyInfo, Element};
+use crate::{
+    batch::{KeyInfo, KeyInfoPath},
+    Element,
+};
 
 impl GroveDb {
     fn worst_case_encoded_tree_size(key: &KeyInfo, max_element_size: u32) -> u32 {
@@ -133,7 +136,7 @@ impl GroveDb {
         // When writing a key value pair to the backing store
         // the key has to prefixed with a 32 byte hash
         // and the value is the encoded tree node
-        let prefixed_key_size = 32 + key.len();
+        let prefixed_key_size = 32 + key.len() as u32;
         // Note: encoded tree calculation assumes that each node has 2 children, this is
         // not always the case and as such is the source of worst case from
         // actual cost deviation. we can do better than assuming all nodes have
@@ -158,9 +161,9 @@ impl GroveDb {
     }
 
     /// Add worst case for getting a merk tree
-    pub fn add_worst_case_get_merk<'db, 'p, P, S: Storage<'db>>(
+    pub fn add_worst_case_get_merk<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
-        path: &Vec<KeyInfo>,
+        path: &KeyInfoPath,
     ) {
         match path.last() {
             None => {}
@@ -168,7 +171,7 @@ impl GroveDb {
                 cost.seek_count += 2; // seek in meta for root key + loading that root key
                 cost.storage_loaded_bytes +=
                     Self::worst_case_encoded_tree_size(key, HASH_LENGTH as u32);
-                *cost += S::get_worst_case_storage_context_cost(path);
+                *cost += S::get_storage_context_cost(path.as_vec());
             }
         }
     }
@@ -176,7 +179,7 @@ impl GroveDb {
     /// Add worst case for getting a merk tree
     pub fn add_worst_case_merk_has_element(
         cost: &mut OperationCost,
-        key: KeyInfo,
+        key: &KeyInfo,
         max_element_size: u32,
     ) {
         cost.seek_count += 1;
@@ -246,31 +249,31 @@ impl GroveDb {
 
     pub fn add_worst_case_has_raw_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
-        path: &Vec<KeyInfo>,
+        path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
     ) {
         let value_size = Self::worst_case_encoded_tree_size(key, max_element_size);
         cost.seek_count += 1;
         cost.storage_loaded_bytes += value_size;
-        *cost += S::get_storage_context_cost(path);
+        *cost += S::get_storage_context_cost(path.as_vec());
     }
 
     pub fn add_worst_case_get_raw_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
-        path: &Vec<KeyInfo>,
+        path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
     ) {
         // todo: verify, we need to run a test to see if has raw has any better
         // performance than get raw
-        Self::add_worst_case_get_merk(cost, path);
+        Self::add_worst_case_get_merk::<S>(cost, path);
         Self::add_worst_case_get_merk_node(cost, key, max_element_size);
     }
 
     pub fn add_worst_case_get_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
-        path: &Vec<KeyInfo>,
+        path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
         max_references_sizes: Vec<u32>,
@@ -279,7 +282,7 @@ impl GroveDb {
         let value_size: u32 = Self::worst_case_encoded_tree_size(key, max_element_size);
         cost.seek_count += 1 + max_references_sizes.len() as u16;
         cost.storage_loaded_bytes += value_size + max_references_sizes.iter().sum::<u32>();
-        *cost += S::get_storage_context_cost(path);
+        *cost += S::get_storage_context_cost(path.as_vec());
     }
 }
 
@@ -292,18 +295,17 @@ pub(crate) enum MerkWorstCaseInput {
 mod test {
     use std::iter::empty;
 
-    use costs::{CostContext, OperationCost};
-    use integer_encoding::VarInt;
-    use merk::{test_utils::make_batch_seq, BatchEntry, Merk, Op};
-    use storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
+    use costs::OperationCost;
+    use merk::{test_utils::make_batch_seq, Merk, Op};
+    use storage::{rocksdb_storage::RocksDbStorage, Storage};
     use tempfile::TempDir;
 
     use crate::{
         batch::{
-            KeyInfo,
             KeyInfo::{KnownKey, MaxKeySize},
+            KeyInfoPath,
         },
-        tests::{make_deep_tree, make_grovedb, TEST_LEAF},
+        tests::TEST_LEAF,
         Element, GroveDb,
     };
 
@@ -465,7 +467,7 @@ mod test {
         db.insert([TEST_LEAF], &[2], elem.clone(), None);
         db.insert([TEST_LEAF], &[3], elem.clone(), None);
 
-        let path = vec![KnownKey(TEST_LEAF.to_vec())];
+        let path = KeyInfoPath::from_vec(vec![KnownKey(TEST_LEAF.to_vec())]);
         let key = KnownKey(vec![1]);
         let mut worst_case_has_raw_cost = OperationCost::default();
         GroveDb::add_worst_case_has_raw_cost::<RocksDbStorage>(

@@ -1,4 +1,4 @@
-use merk::{proofs::Query, Hash};
+use merk::{proofs::Query, CryptoHash};
 
 use crate::{
     operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
@@ -244,7 +244,7 @@ impl ProofVerifier {
         proof_reader: &mut ProofReader,
         expected_proof_type: ProofType,
         subquery_key: Option<Vec<u8>>,
-    ) -> Result<(Hash, Option<Proof>), Error> {
+    ) -> Result<(CryptoHash, Option<Proof>), Error> {
         let (proof_type, subkey_proof) = proof_reader.read_proof()?;
 
         if proof_type != expected_proof_type {
@@ -384,7 +384,7 @@ impl ProofVerifier {
         proof: &[u8],
         query: &Query,
         left_to_right: bool,
-    ) -> Result<(Hash, Option<Proof>), Error> {
+    ) -> Result<(CryptoHash, Option<Proof>), Error> {
         let is_sized_proof = proof_type == ProofType::SizedMerk;
         let mut limit = None;
         let mut offset = None;

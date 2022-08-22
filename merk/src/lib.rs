@@ -19,7 +19,7 @@ pub mod tree;
 #[allow(deprecated)]
 pub use proofs::query::verify_query;
 pub use proofs::query::{execute_proof, verify};
-pub use tree::{BatchEntry, Hash, MerkBatch, Op, PanicSource, HASH_LENGTH};
+pub use tree::{BatchEntry, CryptoHash, MerkBatch, Op, PanicSource, HASH_LENGTH};
 
 // #[cfg(feature = "full")]
 // // pub use crate::merk::{chunks, restore, Merk};

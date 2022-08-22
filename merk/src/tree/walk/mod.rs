@@ -7,7 +7,7 @@ pub use fetch::Fetch;
 pub use ref_walker::RefWalker;
 
 use super::{Link, Tree};
-use crate::{owner::Owner, Hash};
+use crate::{owner::Owner, CryptoHash};
 
 /// Allows traversal of a `Tree`, fetching from the given source when traversing
 /// to a pruned node, detaching children as they are traversed.
@@ -156,7 +156,7 @@ where
     pub fn put_value_and_value_hash(
         mut self,
         value: Vec<u8>,
-        value_hash: Hash,
+        value_hash: CryptoHash,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.tree.own(|t| {

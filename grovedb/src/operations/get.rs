@@ -1,12 +1,12 @@
 use std::collections::HashSet;
 
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
-    OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use storage::{rocksdb_storage::RocksDbStorage, StorageContext};
 
 use crate::{
+    batch::{KeyInfo, KeyInfoPath},
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
@@ -316,58 +316,46 @@ where {
     }
 
     pub fn worst_case_for_has_raw<'p, P>(
-        path: P,
-        key_len: u32,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
         max_element_size: u32,
-    ) -> OperationCost
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    ) -> OperationCost {
         let mut cost = OperationCost::default();
-        GroveDb::add_worst_case_has_raw_cost::<_, RocksDbStorage>(
+        GroveDb::add_worst_case_has_raw_cost::<RocksDbStorage>(
             &mut cost,
             path,
-            key_len,
+            key,
             max_element_size,
         );
         cost
     }
 
-    pub fn worst_case_for_get_raw<'p, P>(
-        path: P,
-        key_len: u32,
+    pub fn worst_case_for_get_raw(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
         max_element_size: u32,
-    ) -> OperationCost
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    ) -> OperationCost {
         let mut cost = OperationCost::default();
-        GroveDb::add_worst_case_get_raw_cost::<_, RocksDbStorage>(
+        GroveDb::add_worst_case_get_raw_cost::<RocksDbStorage>(
             &mut cost,
             path,
-            key_len,
+            key,
             max_element_size,
         );
         cost
     }
 
-    pub fn worst_case_for_get<'p, P>(
-        path: P,
-        key_len: u32,
+    pub fn worst_case_for_get(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
         max_element_size: u32,
         max_references_sizes: Vec<u32>,
-    ) -> OperationCost
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    ) -> OperationCost {
         let mut cost = OperationCost::default();
-        GroveDb::add_worst_case_get_cost::<_, RocksDbStorage>(
+        GroveDb::add_worst_case_get_cost::<RocksDbStorage>(
             &mut cost,
             path,
-            key_len,
+            key,
             max_element_size,
             max_references_sizes,
         );

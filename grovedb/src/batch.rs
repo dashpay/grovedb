@@ -4,12 +4,15 @@ use core::fmt;
 use std::{
     cmp::Ordering,
     collections::{btree_map::Entry, BTreeMap, HashMap, HashSet},
+    hash::{Hash, Hasher},
+    slice::Iter,
+    vec::IntoIter,
 };
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use merk::{tree::value_hash, Hash, Merk};
+use merk::{tree::value_hash, CryptoHash, Merk};
 use nohash_hasher::IntMap;
 use storage::{
     rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch,
@@ -18,8 +21,9 @@ use storage::{
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
 use crate::{
-    operations::get::MAX_REFERENCE_HOPS, worst_case_costs::MerkWorstCaseInput, Element, Error,
-    GroveDb, TransactionArg, MAX_ELEMENTS_NUMBER, MAX_ELEMENT_SIZE,
+    batch::KeyInfo::KnownKey, operations::get::MAX_REFERENCE_HOPS,
+    worst_case_costs::MerkWorstCaseInput, Element, Error, GroveDb, TransactionArg,
+    MAX_ELEMENTS_NUMBER, MAX_ELEMENT_SIZE,
 };
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -67,10 +71,50 @@ impl Ord for Op {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum KeyInfo {
     KnownKey(Vec<u8>),
     MaxKeySize { unique_id: Vec<u8>, max_size: u8 },
+}
+
+impl PartialOrd<Self> for KeyInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match self.get_key_ref().partial_cmp(other.get_key_ref()) {
+            None => None,
+            Some(ord) => match ord {
+                Ordering::Less => Some(Ordering::Less),
+                Ordering::Equal => {
+                    let other_len = other.len();
+                    match self.len().partial_cmp(&other_len) {
+                        None => Some(Ordering::Equal),
+                        Some(ord) => Some(ord),
+                    }
+                }
+                Ordering::Greater => Some(Ordering::Less),
+            },
+        }
+    }
+}
+
+impl Ord for KeyInfo {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.get_key_ref().cmp(other.get_key_ref())
+    }
+}
+
+impl Hash for KeyInfo {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            KnownKey(k) => k.hash(state),
+            KeyInfo::MaxKeySize {
+                unique_id,
+                max_size,
+            } => {
+                unique_id.hash(state);
+                max_size.hash(state);
+            }
+        }
+    }
 }
 
 impl WorstKeyLength for KeyInfo {
@@ -83,7 +127,21 @@ impl WorstKeyLength for KeyInfo {
 }
 
 impl KeyInfo {
-    fn get_key(&self) -> Vec<u8> {
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::KnownKey(key) => key.as_slice(),
+            Self::MaxKeySize { unique_id, .. } => unique_id.as_slice(),
+        }
+    }
+
+    fn get_key(self) -> Vec<u8> {
+        match self {
+            Self::KnownKey(key) => key,
+            Self::MaxKeySize { unique_id, .. } => unique_id,
+        }
+    }
+
+    fn get_key_clone(&self) -> Vec<u8> {
         match self {
             Self::KnownKey(key) => key.clone(),
             Self::MaxKeySize { unique_id, .. } => unique_id.clone(),
@@ -98,44 +156,149 @@ impl KeyInfo {
     }
 }
 
+impl Visualize for KeyInfo {
+    fn visualize<W: std::io::Write>(&self, mut drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
+        match self {
+            KnownKey(k) => {
+                drawer.write(b"key: ")?;
+                drawer = k.visualize(drawer)?;
+            }
+            KeyInfo::MaxKeySize {
+                unique_id,
+                max_size,
+            } => {
+                drawer.write(b"max_size_key: ")?;
+                drawer = unique_id.visualize(drawer)?;
+                drawer.write(format!(", max_size: {max_size}").as_bytes())?;
+            }
+        }
+        Ok(drawer)
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct KnownKeysPath(Vec<Vec<u8>>);
+
+impl Hash for KnownKeysPath {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state)
+    }
+}
+
+impl PartialEq<KeyInfoPath> for KnownKeysPath {
+    fn eq(&self, other: &KeyInfoPath) -> bool {
+        self.0 == other.to_path_refs()
+    }
+}
+
+impl PartialEq<Vec<Vec<u8>>> for KnownKeysPath {
+    fn eq(&self, other: &Vec<Vec<u8>>) -> bool {
+        self.0 == other.as_slice()
+    }
+}
+
+#[derive(PartialOrd, Ord, PartialEq, Eq, Clone, Debug)]
+pub struct KeyInfoPath(Vec<KeyInfo>);
+
+impl Hash for KeyInfoPath {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state)
+    }
+}
+
+impl Visualize for KeyInfoPath {
+    fn visualize<W: std::io::Write>(&self, mut drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
+        drawer.write(b"path: ")?;
+        let mut path_out = Vec::new();
+        let mut path_drawer = Drawer::new(&mut path_out);
+        for k in &self.0 {
+            path_drawer = k.visualize(path_drawer).unwrap();
+            path_drawer.write(b" ").unwrap();
+        }
+        Ok(drawer)
+    }
+}
+
+impl KeyInfoPath {
+    pub fn from_vec(vec: Vec<KeyInfo>) -> Self {
+        KeyInfoPath(vec)
+    }
+
+    pub fn to_path_consume(self) -> Vec<Vec<u8>> {
+        self.0.into_iter().map(|k| k.get_key()).collect()
+    }
+
+    pub fn to_path(&self) -> Vec<Vec<u8>> {
+        self.0.iter().map(|k| k.get_key_clone()).collect()
+    }
+
+    pub fn to_path_refs(&self) -> Vec<&[u8]> {
+        self.0.iter().map(|k| k.get_key_ref()).collect()
+    }
+
+    pub fn split_last(&self) -> Option<(&KeyInfo, &[KeyInfo])> {
+        self.0.split_last()
+    }
+
+    pub fn last(&self) -> Option<&KeyInfo> {
+        self.0.last()
+    }
+
+    pub fn as_vec(&self) -> &Vec<KeyInfo> {
+        &self.0
+    }
+
+    pub fn len(&self) -> u32 {
+        self.0.len() as u32
+    }
+
+    pub fn push(&mut self, k: KeyInfo) {
+        self.0.push(k);
+    }
+
+    pub fn iter(&self) -> Iter<'_, KeyInfo> {
+        self.0.iter()
+    }
+
+    pub fn into_iter(self) -> IntoIter<KeyInfo> {
+        self.0.into_iter()
+    }
+}
+
 /// Batch operation
 #[derive(Clone, PartialEq)]
-pub enum GroveDbOp {
-    RunOp {
-        /// Path to a subtree - subject to an operation
-        path: Vec<Vec<u8>>,
-        /// Key of an element in the subtree
-        key: Vec<u8>,
-        /// Operation to perform on the key
-        op: Op,
-    },
-    WorstCaseOp {
-        /// Path to a subtree - subject to an operation
-        path: Vec<KeyInfo>,
-        /// Key of an element in the subtree
-        key: KeyInfo,
-        /// Operation to perform on the key
-        op: Op,
-        /// Holds the unique path based on key info in path
-        unique_path: Vec<Vec<u8>>,
-        /// Holds the unique key based on key info
-        unique_key: Vec<u8>,
-    },
+pub enum GroveDbOpMode {
+    RunOp,
+    WorstCaseOp,
+}
+
+/// Batch operation
+#[derive(Clone, PartialEq)]
+pub struct GroveDbOp {
+    /// Path to a subtree - subject to an operation
+    pub path: KeyInfoPath,
+    /// Key of an element in the subtree
+    pub key: KeyInfo,
+    /// Operation to perform on the key
+    pub op: Op,
+    /// Mode of operation, run or worst case
+    pub mode: GroveDbOpMode,
+    // /// Holds the path based on key info in path
+    // resolved_path: Vec<Vec<u8>>,
+    // /// Holds the key based on key info
+    // resolved_key: Vec<u8>,
 }
 
 impl fmt::Debug for GroveDbOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut path_out = Vec::new();
         let mut path_drawer = Drawer::new(&mut path_out);
-        for p in self.path_ref() {
-            path_drawer = p.visualize(path_drawer).unwrap();
-            path_drawer.write(b" ").unwrap();
-        }
+        self.path.visualize(path_drawer).unwrap();
         let mut key_out = Vec::new();
         let key_drawer = Drawer::new(&mut key_out);
-        self.key_ref().visualize(key_drawer).unwrap();
+        self.key.visualize(key_drawer).unwrap();
 
-        let op_dbg = match &self.op_ref() {
+        let op_dbg = match &self.op {
             Op::Insert { element } => match element {
                 Element::Item(..) => "Insert Item",
                 Element::Reference(..) => "Insert Ref",
@@ -154,133 +317,41 @@ impl fmt::Debug for GroveDbOp {
 }
 
 impl GroveDbOp {
-    fn get_unique_path_from_key_info_vec(path: &Vec<KeyInfo>) -> Vec<Vec<u8>> {
-        let mut unique_path = vec![];
-        for p in path {
-            unique_path.push(p.get_key());
-        }
-        return unique_path;
-    }
-
     pub fn insert_run_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
-        Self::RunOp {
+        let path = KeyInfoPath(path.into_iter().map(|k| KnownKey(k)).collect());
+        Self {
             path,
-            key,
+            key: KnownKey(key),
             op: Op::Insert { element },
+            mode: GroveDbOpMode::RunOp,
         }
     }
 
-    pub fn insert_worst_case_op(path: Vec<KeyInfo>, key: KeyInfo, element: Element) -> Self {
-        let unique_path = Self::get_unique_path_from_key_info_vec(&path);
-        let unique_key = key.get_key();
-
-        Self::WorstCaseOp {
+    pub fn insert_worst_case_op(path: KeyInfoPath, key: KeyInfo, element: Element) -> Self {
+        Self {
             path,
             key,
             op: Op::Insert { element },
-            unique_path,
-            unique_key,
+            mode: GroveDbOpMode::WorstCaseOp,
         }
     }
 
     pub fn delete_run_op(path: Vec<Vec<u8>>, key: Vec<u8>) -> Self {
-        Self::RunOp {
+        let path = KeyInfoPath(path.into_iter().map(|k| KnownKey(k)).collect());
+        Self {
+            path,
+            key: KnownKey(key),
+            op: Op::Delete,
+            mode: GroveDbOpMode::RunOp,
+        }
+    }
+
+    pub fn delete_worst_case_op(path: KeyInfoPath, key: KeyInfo) -> Self {
+        Self {
             path,
             key,
             op: Op::Delete,
-        }
-    }
-
-    pub fn delete_worst_case_op(path: Vec<KeyInfo>, key: KeyInfo) -> Self {
-        let unique_path = Self::get_unique_path_from_key_info_vec(&path);
-        let unique_key = key.get_key();
-
-        Self::WorstCaseOp {
-            path,
-            key,
-            op: Op::Delete,
-            unique_path,
-            unique_key,
-        }
-    }
-
-    pub fn path(self) -> Vec<Vec<u8>> {
-        match self {
-            Self::RunOp { path, .. } => path,
-            Self::WorstCaseOp { unique_path, .. } => unique_path,
-        }
-    }
-
-    pub fn op(self) -> Op {
-        match self {
-            Self::RunOp {
-                path: _,
-                key: _,
-                op,
-            } => op,
-            Self::WorstCaseOp {
-                path: _,
-                key: _,
-                op,
-                ..
-            } => op,
-        }
-    }
-
-    pub fn key(self) -> Vec<u8> {
-        match self {
-            Self::RunOp {
-                path: _,
-                key,
-                op: _,
-            } => key,
-            Self::WorstCaseOp {
-                path: _,
-                key: _,
-                op: _,
-                unique_path: _,
-                unique_key,
-            } => unique_key,
-        }
-    }
-
-    pub fn path_ref(&self) -> &Vec<Vec<u8>> {
-        match self {
-            Self::RunOp { path, .. } => path,
-            Self::WorstCaseOp { unique_path, .. } => unique_path,
-        }
-    }
-
-    pub fn op_ref(&self) -> &Op {
-        match self {
-            Self::RunOp {
-                path: _,
-                key: _,
-                op,
-            } => op,
-            Self::WorstCaseOp {
-                path: _,
-                key: _,
-                op,
-                ..
-            } => op,
-        }
-    }
-
-    pub fn key_ref(&self) -> &Vec<u8> {
-        match self {
-            Self::RunOp {
-                path: _,
-                key,
-                op: _,
-            } => key,
-            Self::WorstCaseOp {
-                path: _,
-                key: _,
-                op: _,
-                unique_path: _,
-                unique_key,
-            } => unique_key,
+            mode: GroveDbOpMode::WorstCaseOp,
         }
     }
 
@@ -315,25 +386,23 @@ impl GroveDbOp {
                 .1
                 .iter()
                 .filter_map(|current_op| {
-                    if current_op.path_ref() == op.path_ref()
-                        && current_op.key_ref() == op.key_ref()
-                    {
-                        Some(op.op_ref().clone())
+                    if current_op.path == op.path && current_op.key == op.key {
+                        Some(op.op.clone())
                     } else {
                         None
                     }
                 })
                 .collect::<Vec<Op>>();
             if doubled_ops.len() > 0 {
-                doubled_ops.push(op.op_ref().clone());
-                same_path_key_ops.push((op.path_ref().clone(), op.key_ref().clone(), doubled_ops));
+                doubled_ops.push(op.op.clone());
+                same_path_key_ops.push((op.path.clone(), op.key.clone(), doubled_ops));
             }
         }
 
         let inserts = ops
             .iter()
             .filter_map(|current_op| {
-                if let Op::Insert { .. } = current_op.op_ref() {
+                if let Op::Insert { .. } = current_op.op {
                     Some(current_op.clone())
                 } else {
                     None
@@ -344,7 +413,7 @@ impl GroveDbOp {
         let deletes = ops
             .iter()
             .filter_map(|current_op| {
-                if let Op::Delete = current_op.op_ref() {
+                if let Op::Delete = current_op.op {
                     Some(current_op.clone())
                 } else {
                     None
@@ -356,15 +425,15 @@ impl GroveDbOp {
 
         // No inserts under a deleted path
         for deleted_op in deletes.iter() {
-            let mut deleted_qualified_path = deleted_op.path_ref().clone();
-            deleted_qualified_path.push(deleted_op.key_ref().clone());
+            let mut deleted_qualified_path = deleted_op.path.clone();
+            deleted_qualified_path.push(deleted_op.key.clone());
             let inserts_with_deleted_ops_above = inserts
                 .iter()
                 .filter_map(|inserted_op| {
-                    if deleted_op.path_ref().len() < inserted_op.path_ref().len()
+                    if deleted_op.path.len() < inserted_op.path.len()
                         && deleted_qualified_path
                             .iter()
-                            .zip(inserted_op.path_ref().iter())
+                            .zip(inserted_op.path.iter())
                             .all(|(a, b)| a == b)
                     {
                         Some(inserted_op.clone())
@@ -390,7 +459,7 @@ impl GroveDbOp {
 #[derive(Debug)]
 pub struct GroveDbOpConsistencyResults {
     repeated_ops: Vec<(GroveDbOp, u16)>, // the u16 is count
-    same_path_key_ops: Vec<(Vec<Vec<u8>>, Vec<u8>, Vec<Op>)>,
+    same_path_key_ops: Vec<(KeyInfoPath, KeyInfo, Vec<Op>)>,
     insert_ops_below_deleted_ops: Vec<(GroveDbOp, Vec<GroveDbOp>)>, /* the deleted op first,
                                                                      * then inserts under */
 }
@@ -412,7 +481,7 @@ struct TreeCacheMerkByPath<S, F> {
 /// Cache for subtree paths for worst case scenario costs.
 #[derive(Default)]
 struct TreeCacheKnownPaths {
-    paths: HashSet<Vec<Vec<u8>>>,
+    paths: HashSet<KeyInfoPath>,
 }
 
 impl<S, F> fmt::Debug for TreeCacheMerkByPath<S, F> {
@@ -432,8 +501,8 @@ trait TreeCache {
 
     fn execute_ops_on_path(
         &mut self,
-        path: &[Vec<u8>],
-        ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
+        path: &KeyInfoPath,
+        ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
         ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
     ) -> CostResult<[u8; 32], Error>;
@@ -459,7 +528,7 @@ where
         qualified_path: &[Vec<u8>],
         ops_by_qualified_paths: &'a HashMap<Vec<Vec<u8>>, Op>,
         recursions_allowed: u8,
-    ) -> CostResult<Hash, Error> {
+    ) -> CostResult<CryptoHash, Error> {
         let mut cost = OperationCost::default();
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
@@ -584,8 +653,8 @@ where
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let mut inserted_path = op.path_ref().clone();
-        inserted_path.push(op.key_ref().clone());
+        let mut inserted_path = op.path.to_path();
+        inserted_path.push(op.key.get_key_clone());
         if !self.merks.contains_key(&inserted_path) {
             let merk = cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path));
             self.merks.insert(inserted_path, merk);
@@ -596,12 +665,15 @@ where
 
     fn execute_ops_on_path(
         &mut self,
-        path: &[Vec<u8>],
-        ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
+        path: &KeyInfoPath,
+        ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
         ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
+        // todo: fix this
+        let p = path.to_path();
+        let path = &p;
 
         let merk_wrapped = self
             .merks
@@ -611,7 +683,7 @@ where
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
 
         let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
-        for (key, op) in ops_at_path_by_key.into_iter() {
+        for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } => match &element {
                     Element::Reference(path_reference, element_max_reference_hop, _) => {
@@ -634,7 +706,7 @@ where
                         cost_return_on_error!(
                             &mut cost,
                             element.insert_reference_into_batch_operations(
-                                key,
+                                key_info.get_key(),
                                 referenced_element_value_hash,
                                 &mut batch_operations
                             )
@@ -646,7 +718,7 @@ where
                                 &mut cost,
                                 element.insert_if_not_exists_into_batch_operations(
                                     &mut merk,
-                                    key,
+                                    key_info.get_key(),
                                     &mut batch_operations
                                 )
                             );
@@ -659,7 +731,10 @@ where
                         } else {
                             cost_return_on_error!(
                                 &mut cost,
-                                element.insert_into_batch_operations(key, &mut batch_operations)
+                                element.insert_into_batch_operations(
+                                    key_info.get_key(),
+                                    &mut batch_operations
+                                )
                             );
                         }
                     }
@@ -667,7 +742,10 @@ where
                 Op::Delete => {
                     cost_return_on_error!(
                         &mut cost,
-                        Element::delete_into_batch_operations(key, &mut batch_operations)
+                        Element::delete_into_batch_operations(
+                            key_info.get_key(),
+                            &mut batch_operations
+                        )
                     );
                 }
                 Op::ReplaceTreeHash { hash } => {
@@ -675,7 +753,7 @@ where
                         &mut cost,
                         GroveDb::update_tree_item_preserve_flag_into_batch_operations(
                             &merk,
-                            key,
+                            key_info.get_key(),
                             hash,
                             &mut batch_operations
                         )
@@ -693,8 +771,8 @@ where
 
 impl TreeCache for TreeCacheKnownPaths {
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
-        let mut inserted_path = op.path_ref().clone();
-        inserted_path.push(op.key_ref().clone());
+        let mut inserted_path = op.path.clone();
+        inserted_path.push(op.key.clone());
         self.paths.insert(inserted_path);
         let worst_case_cost = OperationCost::default();
 
@@ -703,8 +781,8 @@ impl TreeCache for TreeCacheKnownPaths {
 
     fn execute_ops_on_path(
         &mut self,
-        path: &[Vec<u8>],
-        ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
+        path: &KeyInfoPath,
+        ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
         _ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         _batch_apply_options: &BatchApplyOptions,
     ) -> CostResult<[u8; 32], Error> {
@@ -712,29 +790,24 @@ impl TreeCache for TreeCacheKnownPaths {
 
         if !self.paths.remove(path) {
             // Then we have to get the tree
-            let path_slices = path.iter().map(|k| k.as_slice()).collect::<Vec<&[u8]>>();
-            GroveDb::add_worst_case_get_merk::<_, RocksDbStorage>(
-                &mut cost,
-                path_slices,
-                MAX_ELEMENT_SIZE,
-            );
+            GroveDb::add_worst_case_get_merk::<RocksDbStorage>(&mut cost, path);
         }
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost += op.worst_case_cost(
-                key,
+                &key,
                 MerkWorstCaseInput::MaxElementsNumber(MAX_ELEMENTS_NUMBER),
             );
         }
         GroveDb::add_worst_case_merk_propagate(
             &mut cost,
-            MerkWorstCaseInput::NumberOfLevels(path.len() as u32),
+            MerkWorstCaseInput::NumberOfLevels(path.len()),
         );
         Ok([0u8; 32]).wrap_with_cost(cost)
     }
 }
 
 ///                          LEVEL           PATH                   KEY      OP
-type OpsByLevelPath = IntMap<usize, BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>>>;
+type OpsByLevelPath = IntMap<u32, BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>>>;
 
 struct BatchStructure<C> {
     /// Operations by level path
@@ -744,7 +817,7 @@ struct BatchStructure<C> {
     /// Merk trees
     merk_tree_cache: C,
     /// Last level
-    last_level: usize,
+    last_level: u32,
 }
 
 impl<S: fmt::Debug> fmt::Debug for BatchStructure<S> {
@@ -757,9 +830,9 @@ impl<S: fmt::Debug> fmt::Debug for BatchStructure<S> {
                 let mut fmt_key_map = BTreeMap::default();
 
                 for (key, op) in key_map.iter() {
-                    fmt_key_map.insert(DebugBytes(key.clone()), op);
+                    fmt_key_map.insert(DebugBytes(key.get_key_clone()), op);
                 }
-                fmt_path_map.insert(DebugByteVectors(path.clone()), fmt_key_map);
+                fmt_path_map.insert(DebugByteVectors(path.to_path()), fmt_key_map);
             }
             fmt_int_map.insert(*level, fmt_path_map);
         }
@@ -783,17 +856,17 @@ where
         let mut cost = OperationCost::default();
 
         let mut ops_by_level_paths: OpsByLevelPath = IntMap::default();
-        let mut current_last_level: usize = 0;
+        let mut current_last_level: u32 = 0;
 
         // qualified paths meaning path + key
         let mut ops_by_qualified_paths: HashMap<Vec<Vec<u8>>, Op> = HashMap::new();
 
         for op in ops.into_iter() {
-            let mut path = op.path_ref().clone();
-            path.push(op.key_ref().clone());
-            ops_by_qualified_paths.insert(path, op.op_ref().clone());
+            let mut path = op.path.clone();
+            path.push(op.key.clone());
+            ops_by_qualified_paths.insert(path.to_path_consume(), op.op.clone());
             let op_cost = OperationCost::default();
-            let op_result = match &op.op_ref() {
+            let op_result = match &op.op {
                 Op::Insert { element } => {
                     if let Element::Tree(..) = element {
                         cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op));
@@ -809,21 +882,21 @@ where
                 return Err(op_result.err().unwrap()).wrap_with_cost(op_cost);
             }
 
-            let level = op.path_ref().len();
+            let level = op.path.len();
             if let Some(ops_on_level) = ops_by_level_paths.get_mut(&level) {
-                if let Some(ops_on_path) = ops_on_level.get_mut(op.path_ref().as_slice()) {
-                    ops_on_path.insert(op.key_ref().to_vec(), op.op_ref().to_owned());
+                if let Some(ops_on_path) = ops_on_level.get_mut(&op.path) {
+                    ops_on_path.insert(op.key, op.op);
                 } else {
-                    let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
-                    ops_on_path.insert(op.key_ref().to_vec(), op.op_ref().to_owned());
-                    ops_on_level.insert(op.path_ref().clone(), ops_on_path);
+                    let mut ops_on_path: BTreeMap<KeyInfo, Op> = BTreeMap::new();
+                    ops_on_path.insert(op.key, op.op);
+                    ops_on_level.insert(op.path.clone(), ops_on_path);
                 }
             } else {
-                let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
-                ops_on_path.insert(op.key_ref().to_vec(), op.op_ref().to_owned());
-                let mut ops_on_level: BTreeMap<Vec<Vec<u8>>, BTreeMap<Vec<u8>, Op>> =
+                let mut ops_on_path: BTreeMap<KeyInfo, Op> = BTreeMap::new();
+                ops_on_path.insert(op.key, op.op);
+                let mut ops_on_level: BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>> =
                     BTreeMap::new();
-                ops_on_level.insert(op.path_ref().to_vec(), ops_on_path);
+                ops_on_level.insert(op.path, ops_on_path);
                 ops_by_level_paths.insert(level, ops_on_level);
                 if current_last_level < level {
                     current_last_level = level;
@@ -868,7 +941,7 @@ impl GroveDb {
         while let Some(ops_at_level) = ops_by_level_paths.remove(&current_level) {
             for (path, ops_at_path) in ops_at_level.into_iter() {
                 if current_level == 0 {
-                    let mut root_tree_ops: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
+                    let mut root_tree_ops: BTreeMap<KeyInfo, Op> = BTreeMap::new();
                     for (key, op) in ops_at_path.into_iter() {
                         match op {
                             Op::Insert { .. } => {
@@ -913,7 +986,10 @@ impl GroveDb {
                             if let Some(ops_at_level_above) =
                                 ops_by_level_paths.get_mut(&(current_level - 1))
                             {
-                                if let Some(ops_on_path) = ops_at_level_above.get_mut(parent_path) {
+                                // todo: fix this hack
+                                let parent_path = KeyInfoPath(parent_path.to_vec());
+                                if let Some(ops_on_path) = ops_at_level_above.get_mut(&parent_path)
+                                {
                                     match ops_on_path.entry(key.clone()) {
                                         Entry::Vacant(vacant_entry) => {
                                             vacant_entry
@@ -945,22 +1021,20 @@ impl GroveDb {
                                         }
                                     }
                                 } else {
-                                    let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
+                                    let mut ops_on_path: BTreeMap<KeyInfo, Op> = BTreeMap::new();
                                     ops_on_path.insert(
                                         key.clone(),
                                         Op::ReplaceTreeHash { hash: root_hash },
                                     );
-                                    ops_at_level_above.insert(parent_path.to_vec(), ops_on_path);
+                                    ops_at_level_above.insert(parent_path, ops_on_path);
                                 }
                             } else {
-                                let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
+                                let mut ops_on_path: BTreeMap<KeyInfo, Op> = BTreeMap::new();
                                 ops_on_path
                                     .insert(key.clone(), Op::ReplaceTreeHash { hash: root_hash });
-                                let mut ops_on_level: BTreeMap<
-                                    Vec<Vec<u8>>,
-                                    BTreeMap<Vec<u8>, Op>,
-                                > = BTreeMap::new();
-                                ops_on_level.insert(parent_path.to_vec(), ops_on_path);
+                                let mut ops_on_level: BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>> =
+                                    BTreeMap::new();
+                                ops_on_level.insert(KeyInfoPath(parent_path.to_vec()), ops_on_path);
                                 ops_by_level_paths.insert(current_level - 1, ops_on_level);
                             }
                         }
@@ -1004,26 +1078,24 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         for op in ops.into_iter() {
-            match op.op_ref() {
+            match op.op {
                 Op::Insert { element } => {
-                    let path_slices: Vec<&[u8]> =
-                        op.path_ref().iter().map(|p| p.as_slice()).collect();
+                    let path_slices: Vec<&[u8]> = op.path.iter().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,
                         self.insert(
                             path_slices,
-                            op.key_ref().as_slice(),
+                            op.key.as_slice(),
                             element.to_owned(),
                             transaction,
                         )
                     );
                 }
                 Op::Delete => {
-                    let path_slices: Vec<&[u8]> =
-                        op.path_ref().iter().map(|p| p.as_slice()).collect();
+                    let path_slices: Vec<&[u8]> = op.path.iter().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,
-                        self.delete(path_slices, op.key_ref().as_slice(), transaction,)
+                        self.delete(path_slices, op.key.as_slice(), transaction,)
                     );
                 }
                 _ => {}

@@ -5,7 +5,7 @@ use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};
-use crate::Hash;
+use crate::CryptoHash;
 
 /// Type alias to add more sense to function signatures.
 type DeletedKeys = LinkedList<Vec<u8>>;
@@ -14,7 +14,7 @@ type DeletedKeys = LinkedList<Vec<u8>>;
 #[derive(PartialEq, Clone, Eq)]
 pub enum Op {
     Put(Vec<u8>),
-    PutReference(Vec<u8>, Hash),
+    PutReference(Vec<u8>, CryptoHash),
     Delete,
 }
 

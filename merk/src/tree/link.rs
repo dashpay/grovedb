@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 
 use ed::{Decode, Encode, Result, Terminated};
 
-use super::{hash::Hash, Tree};
+use super::{hash::CryptoHash, Tree};
 
 // TODO: optimize memory footprint
 
@@ -14,7 +14,7 @@ pub enum Link {
     /// retaining a reference to it (its key). The child node can always be
     /// fetched from the backing store by this key when necessary.
     Reference {
-        hash: Hash,
+        hash: CryptoHash,
         child_heights: (u8, u8),
         key: Vec<u8>,
     },
@@ -33,7 +33,7 @@ pub enum Link {
     // commit, but which has an up-to-date hash. The child's `Tree` instance is
     // stored in the link.
     Uncommitted {
-        hash: Hash,
+        hash: CryptoHash,
         child_heights: (u8, u8),
         tree: Tree,
     },
@@ -41,7 +41,7 @@ pub enum Link {
     /// Represents a tree node which has not been modified, has an up-to-date
     /// hash, and which is being retained in memory.
     Loaded {
-        hash: Hash,
+        hash: CryptoHash,
         child_heights: (u8, u8),
         tree: Tree,
     },
@@ -118,7 +118,7 @@ impl Link {
     /// of variant `Link::Modified` since we have not yet recomputed the tree's
     /// hash.
     #[inline]
-    pub const fn hash(&self) -> &Hash {
+    pub const fn hash(&self) -> &CryptoHash {
         match self {
             Link::Modified { .. } => panic!("Cannot get hash from modified link"),
             Link::Reference { hash, .. } => hash,
