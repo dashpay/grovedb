@@ -5,6 +5,7 @@ use merk::Merk;
 use storage::Storage;
 
 use crate::{
+    reference_path::path_from_reference_path_type,
     util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, TransactionArg,
 };
@@ -34,6 +35,14 @@ impl GroveDb {
                 cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
             }
             Element::Reference(ref reference_path, ..) => {
+                let mut current_path = path_iter.clone().collect::<Vec<_>>();
+                current_path.push(key);
+                let reference_path = cost_return_on_error!(
+                    &mut cost,
+                    path_from_reference_path_type(reference_path.clone(), current_path.into_iter())
+                        .wrap_with_cost(OperationCost::default())
+                );
+
                 if path_iter.len() == 0 {
                     return Err(Error::InvalidPath(
                         "only subtrees are allowed as root tree's leafs",

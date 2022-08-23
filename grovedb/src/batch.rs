@@ -14,7 +14,10 @@ use nohash_hasher::IntMap;
 use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
-use crate::{operations::get::MAX_REFERENCE_HOPS, Element, Error, GroveDb, TransactionArg};
+use crate::{
+    operations::get::MAX_REFERENCE_HOPS, reference_path::path_from_reference_path_type, Element,
+    Error, GroveDb, TransactionArg,
+};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -330,11 +333,18 @@ where
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
                     }
-                    Element::Reference(path, ..) => self.follow_reference_get_value_hash(
-                        path,
-                        ops_by_qualified_paths,
-                        recursions_allowed - 1,
-                    ),
+                    Element::Reference(path, ..) => {
+                        let qualified_path_iter = qualified_path.iter().map(|x| x.as_slice());
+                        let path = cost_return_on_error_no_add!(
+                            &cost,
+                            path_from_reference_path_type(path.clone(), qualified_path_iter)
+                        );
+                        self.follow_reference_get_value_hash(
+                            path.as_slice(),
+                            ops_by_qualified_paths,
+                            recursions_allowed - 1,
+                        )
+                    }
                     Element::Tree(..) => {
                         return Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
@@ -407,11 +417,18 @@ where
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
                     }
-                    Element::Reference(path, ..) => self.follow_reference_get_value_hash(
-                        path.as_slice(),
-                        ops_by_qualified_paths,
-                        recursions_allowed - 1,
-                    ),
+                    Element::Reference(path, ..) => {
+                        let qualified_path_iter = qualified_path.iter().map(|x| x.as_slice());
+                        let path = cost_return_on_error_no_add!(
+                            &cost,
+                            path_from_reference_path_type(path.clone(), qualified_path_iter)
+                        );
+                        self.follow_reference_get_value_hash(
+                            path.as_slice(),
+                            ops_by_qualified_paths,
+                            recursions_allowed - 1,
+                        )
+                    }
                     Element::Tree(..) => {
                         return Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
@@ -463,6 +480,13 @@ where
             match op {
                 Op::Insert { element } => match &element {
                     Element::Reference(path_reference, element_max_reference_hop, _) => {
+                        let path_iter = path.iter().map(|x| x.as_slice());
+                        let path_reference = cost_return_on_error!(
+                            &mut cost,
+                            path_from_reference_path_type(path_reference.clone(), path_iter)
+                                .wrap_with_cost(OperationCost::default())
+                        );
+
                         if path_reference.len() == 0 {
                             return Err(Error::InvalidBatchOperation(
                                 "attempting to insert an empty reference",
@@ -473,7 +497,7 @@ where
                         let referenced_element_value_hash = cost_return_on_error!(
                             &mut cost,
                             self.follow_reference_get_value_hash(
-                                path_reference,
+                                path_reference.as_slice(),
                                 ops_by_qualified_paths,
                                 element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8)
                             )
@@ -980,6 +1004,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        reference_path::ReferencePathType,
         tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
         PathQuery, SizedQuery,
     };
@@ -1326,13 +1351,13 @@ mod tests {
             ],
             key: b"sam_id".to_vec(),
             op: Op::Insert {
-                element: Element::new_reference(vec![
+                element: Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                     b"contract".to_vec(),
                     (&[1u8]).to_vec(),
                     b"domain".to_vec(),
                     (&[0u8]).to_vec(),
                     b"serialized_domain_id".to_vec(),
-                ]),
+                ])),
             },
         });
 
@@ -1855,7 +1880,10 @@ mod tests {
         let batch = vec![GroveDbOp::insert(
             vec![TEST_LEAF.to_vec()],
             b"key1".to_vec(),
-            Element::new_reference(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"invalid_path".to_vec(),
+            ])),
         )];
         assert!(matches!(
             db.apply_batch(batch, None, None).unwrap(),
@@ -1869,7 +1897,10 @@ mod tests {
             GroveDbOp::insert(
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
-                Element::new_reference(vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()]),
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"invalid_path".to_vec(),
+                ])),
             ),
             GroveDbOp::insert(
                 vec![TEST_LEAF.to_vec()],
@@ -1900,7 +1931,10 @@ mod tests {
                 vec![TEST_LEAF.to_vec()],
                 b"key2".to_vec(),
                 Element::new_reference_with_hops(
-                    vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+                    ReferencePathType::AbsolutePathReference(vec![
+                        TEST_LEAF.to_vec(),
+                        b"key1".to_vec(),
+                    ]),
                     Some(1),
                 ),
             ),
@@ -1908,7 +1942,10 @@ mod tests {
                 vec![TEST_LEAF.to_vec()],
                 b"key1".to_vec(),
                 Element::new_reference_with_hops(
-                    vec![TEST_LEAF.to_vec(), b"invalid_path".to_vec()],
+                    ReferencePathType::AbsolutePathReference(vec![
+                        TEST_LEAF.to_vec(),
+                        b"invalid_path".to_vec(),
+                    ]),
                     Some(1),
                 ),
             ),

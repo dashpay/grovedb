@@ -113,6 +113,7 @@ mod tests {
     use visualize::to_hex;
 
     use super::*;
+    use crate::reference_path::ReferencePathType;
 
     #[test]
     fn test_element_item_str() {
@@ -150,7 +151,10 @@ mod tests {
     fn test_visualize_reference() {
         let p1 = b"ayy".to_vec();
         let p2 = b"lmao".to_vec();
-        let e = Element::new_reference(vec![p1.clone(), p2.clone()]);
+        let e = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+            p1.clone(),
+            p2.clone(),
+        ]));
         let mut result = Vec::new();
         let drawer = Drawer::new(&mut result);
         e.visualize(drawer).expect("visualize IO error");
