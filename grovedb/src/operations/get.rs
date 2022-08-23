@@ -32,7 +32,11 @@ impl GroveDb {
 
         match cost_return_on_error!(&mut cost, self.get_raw(path_iter.clone(), key, transaction)) {
             Element::Reference(reference_path, ..) => {
-                let path = path_from_reference_path_type(reference_path, path_iter);
+                let path = cost_return_on_error!(
+                    &mut cost,
+                    path_from_reference_path_type(reference_path, path_iter)
+                        .wrap_with_cost(OperationCost::default())
+                );
                 self.follow_reference(path, transaction).add_cost(cost)
             }
             other => Ok(other).wrap_with_cost(cost),
@@ -66,7 +70,11 @@ impl GroveDb {
             match current_element {
                 Element::Reference(reference_path, ..) => {
                     let path_iter = path.iter().map(|x| x.as_slice());
-                    path = path_from_reference_path_type(reference_path, path_iter.clone())
+                    path = cost_return_on_error!(
+                        &mut cost,
+                        path_from_reference_path_type(reference_path, path_iter.clone())
+                            .wrap_with_cost(OperationCost::default())
+                    )
                 }
                 other => return Ok(other).wrap_with_cost(cost),
             }

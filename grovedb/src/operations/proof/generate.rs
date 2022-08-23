@@ -359,8 +359,11 @@ impl GroveDb {
                         if let Ok(Element::Reference(reference_path, ..)) = elem {
                             let mut current_path = path_iter.clone();
                             current_path.push(key.as_slice());
-                            let absolute_path =
-                                path_from_reference_path_type(reference_path, current_path);
+                            let absolute_path = cost_return_on_error!(
+                                &mut cost,
+                                path_from_reference_path_type(reference_path, current_path)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
 
                             let referenced_elem = cost_return_on_error!(
                                 &mut cost,

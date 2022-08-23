@@ -363,18 +363,24 @@ impl Element {
         // TODO: cleanup
         // check if element if of type reference, check the exact reference type
         let elem = match &element {
-            Element::Reference(reference_path_type, ..) => {
-                match reference_path_type {
-                    ReferencePathType::AbsolutePathReference(..) => element,
-                    _ => {
-                        let mut current_path = path.clone().to_vec();
-                        current_path.push(key.ok_or(Error::CorruptedPath("basic path must have a key"))?);
-                        let absolute_path = path_from_reference_path_type(reference_path_type.clone(), current_path.into_iter());
-                        Element::Reference(ReferencePathType::AbsolutePathReference(absolute_path), None, None)
-                    }
+            Element::Reference(reference_path_type, ..) => match reference_path_type {
+                ReferencePathType::AbsolutePathReference(..) => element,
+                _ => {
+                    let mut current_path = path.clone().to_vec();
+                    current_path
+                        .push(key.ok_or(Error::CorruptedPath("basic path must have a key"))?);
+                    let absolute_path = path_from_reference_path_type(
+                        reference_path_type.clone(),
+                        current_path.into_iter(),
+                    )?;
+                    Element::Reference(
+                        ReferencePathType::AbsolutePathReference(absolute_path),
+                        None,
+                        None,
+                    )
                 }
-            }
-            _ => element
+            },
+            _ => element,
         };
 
         if offset.unwrap_or(0) == 0 {

@@ -335,7 +335,10 @@ where
                     }
                     Element::Reference(path, ..) => {
                         let qualified_path_iter = qualified_path.iter().map(|x| x.as_slice());
-                        let path = path_from_reference_path_type(path.clone(), qualified_path_iter);
+                        let path = cost_return_on_error_no_add!(
+                            &cost,
+                            path_from_reference_path_type(path.clone(), qualified_path_iter)
+                        );
                         self.follow_reference_get_value_hash(
                             path.as_slice(),
                             ops_by_qualified_paths,
@@ -416,7 +419,10 @@ where
                     }
                     Element::Reference(path, ..) => {
                         let qualified_path_iter = qualified_path.iter().map(|x| x.as_slice());
-                        let path = path_from_reference_path_type(path.clone(), qualified_path_iter);
+                        let path = cost_return_on_error_no_add!(
+                            &cost,
+                            path_from_reference_path_type(path.clone(), qualified_path_iter)
+                        );
                         self.follow_reference_get_value_hash(
                             path.as_slice(),
                             ops_by_qualified_paths,
@@ -475,8 +481,11 @@ where
                 Op::Insert { element } => match &element {
                     Element::Reference(path_reference, element_max_reference_hop, _) => {
                         let path_iter = path.iter().map(|x| x.as_slice());
-                        let path_reference =
-                            path_from_reference_path_type(path_reference.clone(), path_iter);
+                        let path_reference = cost_return_on_error!(
+                            &mut cost,
+                            path_from_reference_path_type(path_reference.clone(), path_iter)
+                                .wrap_with_cost(OperationCost::default())
+                        );
 
                         if path_reference.len() == 0 {
                             return Err(Error::InvalidBatchOperation(
@@ -996,7 +1005,7 @@ mod tests {
     use super::*;
     use crate::{
         reference_path::ReferencePathType,
-        tests::{make_empty_grovedb, make_test_grovedb, make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
+        tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
         PathQuery, SizedQuery,
     };
 
