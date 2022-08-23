@@ -357,7 +357,8 @@ impl Element {
                     let mut current_path = path.clone().to_vec();
                     current_path
                         .push(key.ok_or(Error::CorruptedPath("basic path must have a key"))?);
-                    // use this path to compute the absolute path of the item the reference is pointing to
+                    // use this path to compute the absolute path of the item the reference is
+                    // pointing to
                     let absolute_path = path_from_reference_path_type(
                         reference_path_type.clone(),
                         current_path.into_iter(),

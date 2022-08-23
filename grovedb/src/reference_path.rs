@@ -124,12 +124,12 @@ impl ReferencePathType {
             | ReferencePathType::UpstreamFromElementHeightReference(_, path) => {
                 1 + 1
                     + path
-                    .iter()
-                    .map(|inner| {
-                        let inner_len = inner.len();
-                        inner_len + inner_len.required_space()
-                    })
-                    .sum::<usize>()
+                        .iter()
+                        .map(|inner| {
+                            let inner_len = inner.len();
+                            inner_len + inner_len.required_space()
+                        })
+                        .sum::<usize>()
             }
             ReferencePathType::CousinReference(path) => {
                 1 + path.len() + path.len().required_space()
