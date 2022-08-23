@@ -83,11 +83,14 @@ where
                     "reference stored path cannot satisfy reference constraints",
                 ));
             }
-            let current_key = current_path_as_vec_ref.pop().expect("confirmed has key").to_vec();
+            let current_key = current_path_as_vec_ref
+                .pop()
+                .expect("confirmed has key")
+                .to_vec();
             current_path_as_vec_ref.pop(); // remove the cousin key
 
             let mut current_path_as_vec = current_path_as_vec_ref
-            .into_iter()
+                .into_iter()
                 .map(|x| x.to_vec())
                 .collect::<Vec<Vec<u8>>>();
 
