@@ -19,7 +19,8 @@ use costs::{
 };
 use ed::{Decode, Encode, Terminated};
 pub use hash::{
-    kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, HASH_LENGTH, HASH_LENGTH_U32, HASH_BLOCK_SIZE, NULL_HASH,
+    kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, HASH_BLOCK_SIZE, HASH_LENGTH,
+    HASH_LENGTH_U32, NULL_HASH,
 };
 use kv::KV;
 pub use link::Link;

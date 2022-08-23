@@ -102,7 +102,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             *node.slot_mut(false) = proof_node.right.as_ref().map(Child::as_link);
 
             let bytes = node.encode();
-            batch.put(key, &bytes);
+            batch.put(key, &bytes, None);
         });
 
         self.merk.storage.commit_batch(batch).unwrap()?;
@@ -201,7 +201,10 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         };
 
         let parent_bytes = parent.encode();
-        self.merk.storage.put(parent_key, &parent_bytes).unwrap()?;
+        self.merk
+            .storage
+            .put(parent_key, &parent_bytes, None)
+            .unwrap()?;
 
         if !is_left_child {
             let parent_keys = self.parent_keys.as_mut().unwrap();
@@ -235,7 +238,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             *cloned_node.link_mut(false).unwrap().child_heights_mut() = right_child_heights;
 
             let bytes = cloned_node.encode();
-            batch.put(node.tree().key(), &bytes);
+            batch.put(node.tree().key(), &bytes, None);
 
             Ok((left_height, right_height))
         }

@@ -108,7 +108,12 @@ pub trait StorageContext<'db> {
     type RawIterator: RawIterator;
 
     /// Put `value` into data storage with `key`
-    fn put<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> CostContext<Result<(), Self::Error>>;
+    fn put<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        value: &[u8],
+        replaced_value_bytes_count: Option<u16>,
+    ) -> CostContext<Result<(), Self::Error>>;
 
     /// Put `value` into auxiliary data storage with `key`
     fn put_aux<K: AsRef<[u8]>>(&self, key: K, value: &[u8])
@@ -167,7 +172,12 @@ pub trait StorageContext<'db> {
 /// Database batch (not to be confused with multi-tree operations batch).
 pub trait Batch {
     /// Appends to the database batch a put operation for a data record.
-    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]);
+    fn put<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        replaced_value_bytes_count: Option<u16>,
+    );
 
     /// Appends to the database batch a put operation for aux storage.
     fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]);
@@ -263,13 +273,22 @@ impl StorageBatch {
     }
 
     /// Add deferred `put` operation
-    pub fn put(&self, key: Vec<u8>, value: Vec<u8>) -> CostContext<()> {
-        self.operations
-            .borrow_mut()
-            .data
-            .insert(key.clone(), AbstractBatchOperation::Put { key, value });
+    pub fn put(
+        &self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        replaced_value_bytes_count: Option<u16>,
+    ) -> CostContext<()> {
+        self.operations.borrow_mut().data.insert(
+            key.clone(),
+            AbstractBatchOperation::Put {
+                key,
+                value,
+                replaced_value_bytes_count,
+            },
+        );
 
-        ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
+        ().wrap_with_cost(OperationCost::default())
     }
 
     /// Add deferred `put` operation for aux storage
@@ -279,7 +298,7 @@ impl StorageBatch {
             .aux
             .insert(key.clone(), AbstractBatchOperation::PutAux { key, value });
 
-        ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
+        ().wrap_with_cost(OperationCost::default())
     }
 
     /// Add deferred `put` operation for subtree roots storage
@@ -289,7 +308,7 @@ impl StorageBatch {
             .roots
             .insert(key.clone(), AbstractBatchOperation::PutRoot { key, value });
 
-        ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
+        ().wrap_with_cost(OperationCost::default())
     }
 
     /// Add deferred `put` operation for metadata storage
@@ -299,7 +318,7 @@ impl StorageBatch {
             .meta
             .insert(key.clone(), AbstractBatchOperation::PutMeta { key, value });
 
-        ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
+        ().wrap_with_cost(OperationCost::default())
     }
 
     /// Add deferred `delete` operation
@@ -307,7 +326,7 @@ impl StorageBatch {
         let operations = &mut self.operations.borrow_mut().data;
         if operations.get(&key).is_none() {
             operations.insert(key.clone(), AbstractBatchOperation::Delete { key });
-            ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
+            ().wrap_with_cost(OperationCost::default())
         } else {
             ().wrap_with_cost(OperationCost::default())
         }
@@ -318,7 +337,7 @@ impl StorageBatch {
         let operations = &mut self.operations.borrow_mut().aux;
         if operations.get(&key).is_none() {
             operations.insert(key.clone(), AbstractBatchOperation::DeleteAux { key });
-            ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
+            ().wrap_with_cost(OperationCost::default())
         } else {
             ().wrap_with_cost(OperationCost::default())
         }
@@ -329,7 +348,7 @@ impl StorageBatch {
         let operations = &mut self.operations.borrow_mut().roots;
         if operations.get(&key).is_none() {
             operations.insert(key.clone(), AbstractBatchOperation::DeleteRoot { key });
-            ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
+            ().wrap_with_cost(OperationCost::default())
         } else {
             ().wrap_with_cost(OperationCost::default())
         }
@@ -340,7 +359,7 @@ impl StorageBatch {
         let operations = &mut self.operations.borrow_mut().meta;
         if operations.get(&key).is_none() {
             operations.insert(key.clone(), AbstractBatchOperation::DeleteMeta { key });
-            ().wrap_with_cost(OperationCost::with_hash_byte_calls(1))
+            ().wrap_with_cost(OperationCost::default())
         } else {
             ().wrap_with_cost(OperationCost::default())
         }
@@ -352,7 +371,11 @@ impl StorageBatch {
 
         for op in other.into_iter() {
             match op {
-                AbstractBatchOperation::Put { key, value } => self.put(key, value),
+                AbstractBatchOperation::Put {
+                    key,
+                    value,
+                    replaced_value_bytes_count,
+                } => self.put(key, value, replaced_value_bytes_count),
                 AbstractBatchOperation::PutAux { key, value } => self.put_aux(key, value),
                 AbstractBatchOperation::PutRoot { key, value } => self.put_root(key, value),
                 AbstractBatchOperation::PutMeta { key, value } => self.put_meta(key, value),
@@ -415,7 +438,11 @@ impl Default for StorageBatch {
 #[derive(strum::AsRefStr)]
 pub enum AbstractBatchOperation {
     /// Deferred put operation
-    Put { key: Vec<u8>, value: Vec<u8> },
+    Put {
+        key: Vec<u8>,
+        value: Vec<u8>,
+        replaced_value_bytes_count: Option<u16>,
+    },
     /// Deferred put operation for aux storage
     PutAux { key: Vec<u8>, value: Vec<u8> },
     /// Deferred put operation for roots storage
@@ -440,7 +467,7 @@ impl std::fmt::Debug for AbstractBatchOperation {
         let mut value_buf = Vec::new();
 
         match self {
-            AbstractBatchOperation::Put { key, value }
+            AbstractBatchOperation::Put { key, value, .. }
             | AbstractBatchOperation::PutAux { key, value }
             | AbstractBatchOperation::PutMeta { key, value }
             | AbstractBatchOperation::PutRoot { key, value } => {

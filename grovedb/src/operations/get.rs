@@ -8,6 +8,7 @@ use storage::{rocksdb_storage::RocksDbStorage, StorageContext};
 use crate::{
     batch::{KeyInfo, KeyInfoPath},
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
+    reference_path::{path_from_reference_path_type, ReferencePathType},
     util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
@@ -28,10 +29,17 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
 
-        match cost_return_on_error!(&mut cost, self.get_raw(path, key, transaction)) {
-            Element::Reference(reference_path, ..) => self
-                .follow_reference(reference_path, transaction)
-                .add_cost(cost),
+        let path_iter = path.into_iter();
+
+        match cost_return_on_error!(&mut cost, self.get_raw(path_iter.clone(), key, transaction)) {
+            Element::Reference(reference_path, ..) => {
+                let path = cost_return_on_error!(
+                    &mut cost,
+                    path_from_reference_path_type(reference_path, path_iter)
+                        .wrap_with_cost(OperationCost::default())
+                );
+                self.follow_reference(path, transaction).add_cost(cost)
+            }
             other => Ok(other).wrap_with_cost(cost),
         }
     }
@@ -59,9 +67,16 @@ impl GroveDb {
             } else {
                 return Err(Error::CorruptedPath("empty path")).wrap_with_cost(cost);
             }
-            visited.insert(path);
+            visited.insert(path.clone());
             match current_element {
-                Element::Reference(reference_path, ..) => path = reference_path,
+                Element::Reference(reference_path, ..) => {
+                    let path_iter = path.iter().map(|x| x.as_slice());
+                    path = cost_return_on_error!(
+                        &mut cost,
+                        path_from_reference_path_type(reference_path, path_iter.clone())
+                            .wrap_with_cost(OperationCost::default())
+                    )
+                }
                 other => return Ok(other).wrap_with_cost(cost),
             }
             hops_left -= 1;
@@ -144,13 +159,25 @@ impl GroveDb {
             .into_iter()
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(Element::Reference(reference_path, ..)) => {
-                    let maybe_item = self
-                        .follow_reference(reference_path, transaction)
-                        .unwrap_add_cost(&mut cost)?;
-                    if let Element::Item(item, _) = maybe_item {
-                        Ok(item)
-                    } else {
-                        Err(Error::InvalidQuery("the reference must result in an item"))
+                    match reference_path {
+                        ReferencePathType::AbsolutePathReference(absolute_path) => {
+                            // While `map` on iterator is lazy, we should accumulate costs even if
+                            // `collect` will end in `Err`, so we'll use
+                            // external costs accumulator instead of
+                            // returning costs from `map` call.
+                            let maybe_item = self
+                                .follow_reference(absolute_path, transaction)
+                                .unwrap_add_cost(&mut cost)?;
+
+                            if let Element::Item(item, _) = maybe_item {
+                                Ok(item)
+                            } else {
+                                Err(Error::InvalidQuery("the reference must result in an item"))
+                            }
+                        }
+                        _ => Err(Error::CorruptedCodeExecution(
+                            "reference after query must have absolute paths",
+                        )),
                     }
                 }
                 _ => Err(Error::InvalidQuery(
@@ -214,18 +241,28 @@ where {
                 QueryResultElement::ElementResultItem(element) => {
                     match element {
                         Element::Reference(reference_path, ..) => {
-                            // While `map` on iterator is lazy, we should accumulate costs even if
-                            // `collect` will end in `Err`, so we'll use
-                            // external costs accumulator instead of
-                            // returning costs from `map` call.
-                            let maybe_item = self
-                                .follow_reference(reference_path, transaction)
-                                .unwrap_add_cost(&mut cost)?;
+                            match reference_path {
+                                ReferencePathType::AbsolutePathReference(absolute_path) => {
+                                    // While `map` on iterator is lazy, we should accumulate costs
+                                    // even if `collect` will
+                                    // end in `Err`, so we'll use
+                                    // external costs accumulator instead of
+                                    // returning costs from `map` call.
+                                    let maybe_item = self
+                                        .follow_reference(absolute_path, transaction)
+                                        .unwrap_add_cost(&mut cost)?;
 
-                            if let Element::Item(item, _) = maybe_item {
-                                Ok(item)
-                            } else {
-                                Err(Error::InvalidQuery("the reference must result in an item"))
+                                    if let Element::Item(item, _) = maybe_item {
+                                        Ok(item)
+                                    } else {
+                                        Err(Error::InvalidQuery(
+                                            "the reference must result in an item",
+                                        ))
+                                    }
+                                }
+                                _ => Err(Error::CorruptedCodeExecution(
+                                    "reference after query must have absolute paths",
+                                )),
                             }
                         }
                         Element::Item(item, _) => Ok(item),

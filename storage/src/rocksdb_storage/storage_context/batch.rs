@@ -79,7 +79,12 @@ pub struct PrefixedMultiContextBatchPart {
 
 /// Implementation of a batch ouside a transaction
 impl<'db> Batch for PrefixedRocksDbBatch<'db> {
-    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
+    fn put<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        replaced_value_bytes_count: Option<u16>,
+    ) {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
@@ -138,9 +143,18 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
 /// Implementation of a rocksdb batch ouside a transaction for multi-context
 /// batch.
 impl Batch for PrefixedMultiContextBatchPart {
-    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
+    fn put<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        replaced_value_bytes_count: Option<u16>,
+    ) {
         self.batch
-            .put(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
+            .put(
+                make_prefixed_key(self.prefix.clone(), key),
+                value.to_vec(),
+                replaced_value_bytes_count,
+            )
             .unwrap_add_cost(&mut self.acc_cost);
     }
 

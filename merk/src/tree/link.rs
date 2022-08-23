@@ -29,9 +29,9 @@ pub enum Link {
         tree: Tree
     },
 
-    // Represents a tree node which has been modified since the `Tree`'s last
-    // commit, but which has an up-to-date hash. The child's `Tree` instance is
-    // stored in the link.
+    /// Represents a tree node which has been modified since the `Tree`'s last
+    /// commit, but which has an up-to-date hash. The child's `Tree` instance is
+    /// stored in the link.
     Uncommitted {
         hash: CryptoHash,
         child_heights: (u8, u8),

@@ -211,7 +211,7 @@ impl GroveDb {
 
         cost.storage_written_bytes += bytes_len as u32;
         // .. and hash computation for the inserted element itself
-        //todo: verify this
+        // todo: verify this
         cost.hash_node_calls += ((bytes_len + 1) / HASH_BLOCK_SIZE) as u16;
 
         Self::add_worst_case_merk_propagate(cost, input);

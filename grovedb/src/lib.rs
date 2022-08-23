@@ -4,6 +4,7 @@ pub mod batch;
 mod operations;
 mod query;
 pub mod query_result_type;
+pub mod reference_path;
 mod replication;
 mod subtree;
 #[cfg(test)]
