@@ -29,30 +29,37 @@ impl ReferencePathType {
         match self {
             ReferencePathType::AbsolutePathReference(path) => {
                 1 + path.iter().map(|inner| inner.len()).sum::<usize>()
-            },
-            ReferencePathType::UpstreamRootHeightReference(_, path) | ReferencePathType::UpstreamFromElementHeightReference(_, path)=> {
-                1 + 1 + path.iter().map(|inner| inner.len()).sum::<usize>()
-            },
-            ReferencePathType::CousinReference(path) => {
-                1 + path.len()
             }
+            ReferencePathType::UpstreamRootHeightReference(_, path)
+            | ReferencePathType::UpstreamFromElementHeightReference(_, path) => {
+                1 + 1 + path.iter().map(|inner| inner.len()).sum::<usize>()
+            }
+            ReferencePathType::CousinReference(path) => 1 + path.len(),
         }
     }
 
     pub fn serialized_size(&self) -> usize {
         match self {
             ReferencePathType::AbsolutePathReference(path) => {
-                1 + path.iter().map(|inner| {
-                    let inner_len = inner.len();
-                    inner_len + inner_len.required_space()
-                }).sum::<usize>()
-            },
-            ReferencePathType::UpstreamRootHeightReference(_, path) | ReferencePathType::UpstreamFromElementHeightReference(_, path)=> {
-                1 + 1 + path.iter().map(|inner| {
-                    let inner_len = inner.len();
-                    inner_len + inner_len.required_space()
-                }).sum::<usize>()
-            },
+                1 + path
+                    .iter()
+                    .map(|inner| {
+                        let inner_len = inner.len();
+                        inner_len + inner_len.required_space()
+                    })
+                    .sum::<usize>()
+            }
+            ReferencePathType::UpstreamRootHeightReference(_, path)
+            | ReferencePathType::UpstreamFromElementHeightReference(_, path) => {
+                1 + 1
+                    + path
+                        .iter()
+                        .map(|inner| {
+                            let inner_len = inner.len();
+                            inner_len + inner_len.required_space()
+                        })
+                        .sum::<usize>()
+            }
             ReferencePathType::CousinReference(path) => {
                 1 + path.len() + path.len().required_space()
             }
