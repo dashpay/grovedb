@@ -10,12 +10,13 @@ pub struct OperationCost {
     pub seek_count: u16,
     /// How many bytes were written on hard drive.
     pub storage_written_bytes: u32,
+    /// How many bytes were updated on hard drive, mostly from proof hash
+    /// updates.
+    pub storage_updated_bytes: u32,
     /// How many bytes were loaded from hard drive.
     pub storage_loaded_bytes: u32,
     /// How many bytes were removed on hard drive.
     pub storage_freed_bytes: u32,
-    /// How many times hash was called for bytes (paths, keys, values).
-    pub hash_byte_calls: u32,
     /// How many times node hashing was done (for merkelized tree).
     pub hash_node_calls: u16,
 }
@@ -58,21 +59,23 @@ impl OperationCost {
     }
 
     /// Helper function to build default `OperationCost` with different
-    /// `hash_byte_calls`.
-    pub fn with_hash_byte_calls(hash_byte_calls: u32) -> Self {
-        OperationCost {
-            hash_byte_calls,
-            ..Default::default()
-        }
-    }
-
-    /// Helper function to build default `OperationCost` with different
     /// `hash_node_calls`.
     pub fn with_hash_node_calls(hash_node_calls: u16) -> Self {
         OperationCost {
             hash_node_calls,
             ..Default::default()
         }
+    }
+
+    /// worse_or_eq_than means worse for things that would cost resources
+    /// storage_freed_bytes is worse when it is lower instead
+    pub fn worse_or_eq_than(&self, other: &Self) -> bool {
+        self.seek_count >= other.seek_count
+            && self.storage_updated_bytes >= other.storage_updated_bytes
+            && self.storage_freed_bytes <= other.storage_freed_bytes
+            && self.storage_written_bytes >= other.storage_written_bytes
+            && self.storage_loaded_bytes >= other.storage_loaded_bytes
+            && self.hash_node_calls >= other.hash_node_calls
     }
 }
 
@@ -83,9 +86,9 @@ impl Add for OperationCost {
         OperationCost {
             seek_count: self.seek_count + rhs.seek_count,
             storage_written_bytes: self.storage_written_bytes + rhs.storage_written_bytes,
+            storage_updated_bytes: self.storage_updated_bytes + rhs.storage_updated_bytes,
             storage_loaded_bytes: self.storage_loaded_bytes + rhs.storage_loaded_bytes,
             storage_freed_bytes: self.storage_freed_bytes + rhs.storage_freed_bytes,
-            hash_byte_calls: self.hash_byte_calls + rhs.hash_byte_calls,
             hash_node_calls: self.hash_node_calls + rhs.hash_node_calls,
         }
     }
@@ -95,9 +98,9 @@ impl AddAssign for OperationCost {
     fn add_assign(&mut self, rhs: Self) {
         self.seek_count += rhs.seek_count;
         self.storage_written_bytes += rhs.storage_written_bytes;
+        self.storage_updated_bytes += rhs.storage_updated_bytes;
         self.storage_loaded_bytes += rhs.storage_loaded_bytes;
         self.storage_freed_bytes += rhs.storage_freed_bytes;
-        self.hash_byte_calls += rhs.hash_byte_calls;
         self.hash_node_calls += rhs.hash_node_calls;
     }
 }

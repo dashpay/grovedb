@@ -4,14 +4,14 @@ use costs::{
 };
 
 use super::{Node, Op};
-use crate::tree::{kv_digest_to_kv_hash, kv_hash, node_hash, Hash, NULL_HASH};
+use crate::tree::{kv_digest_to_kv_hash, kv_hash, node_hash, CryptoHash, NULL_HASH};
 
 /// Contains a tree's child node and its hash. The hash can always be assumed to
 /// be up-to-date.
 #[derive(Debug)]
 pub struct Child {
     pub tree: Box<Tree>,
-    pub hash: Hash,
+    pub hash: CryptoHash,
 }
 
 /// A binary tree data structure used to represent a select subset of a tree
@@ -45,8 +45,8 @@ impl PartialEq for Tree {
 
 impl Tree {
     /// Gets or computes the hash for this tree node.
-    pub fn hash(&self) -> CostContext<Hash> {
-        fn compute_hash(tree: &Tree, kv_hash: Hash) -> CostContext<Hash> {
+    pub fn hash(&self) -> CostContext<CryptoHash> {
+        fn compute_hash(tree: &Tree, kv_hash: CryptoHash) -> CostContext<CryptoHash> {
             node_hash(&kv_hash, &tree.child_hash(true), &tree.child_hash(false))
         }
 
@@ -138,7 +138,7 @@ impl Tree {
     /// given side, if any. If there is no child, returns the null hash
     /// (zero-filled).
     #[inline]
-    const fn child_hash(&self, left: bool) -> Hash {
+    const fn child_hash(&self, left: bool) -> CryptoHash {
         match self.child(left) {
             Some(c) => c.hash,
             _ => NULL_HASH,

@@ -2,6 +2,7 @@
 use std::path::Path;
 
 use costs::{cost_return_on_error_no_add, CostContext, CostResult, CostsExt, OperationCost};
+use integer_encoding::VarInt;
 use lazy_static::lazy_static;
 use rocksdb::{
     checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, Error, OptimisticTransactionDB,
@@ -12,9 +13,13 @@ use super::{
     PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext,
     PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
 };
-use crate::{AbstractBatchOperation, Storage, StorageBatch};
+use crate::{worst_case_costs::WorstKeyLength, AbstractBatchOperation, Storage, StorageBatch};
 
 const BLAKE_BLOCK_LEN: usize = 64;
+
+fn blake_block_count(len: usize) -> usize {
+    (BLAKE_BLOCK_LEN + len - 1) / BLAKE_BLOCK_LEN
+}
 
 /// Name of column family used to store auxiliary data
 pub(crate) const AUX_CF_NAME: &str = "aux";
@@ -75,12 +80,16 @@ impl RocksDbStorage {
         for s in segments_iter {
             segments_count += 1;
             res.extend_from_slice(s);
-            lengthes.extend(s.len().to_ne_bytes());
+            lengthes.push(s.len() as u8); // if the key len is under 255 bytes
         }
 
         res.extend(segments_count.to_ne_bytes());
         res.extend(lengthes);
         res
+    }
+
+    fn worst_case_body_size<L: WorstKeyLength>(path: &Vec<L>) -> usize {
+        path.len() + path.iter().map(|a| a.len() as usize).sum::<usize>()
     }
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
@@ -90,7 +99,7 @@ impl RocksDbStorage {
         P: IntoIterator<Item = &'a [u8]>,
     {
         let body = Self::build_prefix_body(path);
-        let blocks_count = (body.len() + BLAKE_BLOCK_LEN - 1) / BLAKE_BLOCK_LEN;
+        let blocks_count = blake_block_count(body.len());
 
         blake3::hash(&body)
             .as_bytes()
@@ -185,23 +194,33 @@ impl<'db> Storage<'db> for RocksDbStorage {
         let mut pending_storage_written_bytes: u32 = 0;
         let mut pending_storage_freed_bytes: u32 = 0;
 
+        fn key_value_size(key: &Vec<u8>, value: &Vec<u8>) -> u32 {
+            let key_len = key.len();
+            let value_len = value.len();
+            (key_len + value_len + key_len.required_space() + value_len.required_space()) as u32
+        }
+
         for op in batch.into_iter() {
             match op {
-                AbstractBatchOperation::Put { key, value } => {
+                AbstractBatchOperation::Put {
+                    key,
+                    value,
+                    replaced_value_bytes_count,
+                } => {
                     db_batch.put(&key, &value);
-                    pending_storage_written_bytes += key.len() as u32 + value.len() as u32;
+                    pending_storage_written_bytes += key_value_size(&key, &value);
                 }
                 AbstractBatchOperation::PutAux { key, value } => {
                     db_batch.put_cf(cf_aux(&self.db), &key, &value);
-                    pending_storage_written_bytes += key.len() as u32 + value.len() as u32;
+                    pending_storage_written_bytes += key_value_size(&key, &value);
                 }
                 AbstractBatchOperation::PutRoot { key, value } => {
                     db_batch.put_cf(cf_roots(&self.db), &key, &value);
-                    pending_storage_written_bytes += key.len() as u32 + value.len() as u32;
+                    pending_storage_written_bytes += key_value_size(&key, &value);
                 }
                 AbstractBatchOperation::PutMeta { key, value } => {
                     db_batch.put_cf(cf_meta(&self.db), &key, &value);
-                    pending_storage_written_bytes += key.len() as u32 + value.len() as u32;
+                    pending_storage_written_bytes += key_value_size(&key, &value);
                 }
                 AbstractBatchOperation::Delete { key } => {
                     db_batch.delete(&key);
@@ -272,13 +291,10 @@ impl<'db> Storage<'db> for RocksDbStorage {
         result.wrap_with_cost(cost)
     }
 
-    fn get_storage_context_cost<'a, P>(path: P) -> OperationCost
-    where
-        P: IntoIterator<Item = &'a [u8]>,
-    {
-        let body = Self::build_prefix_body(path);
+    fn get_storage_context_cost<L: WorstKeyLength>(path: &Vec<L>) -> OperationCost {
+        let body_size = Self::worst_case_body_size(path);
         // the block size of blake3 is 64
-        let blocks_num = (body.len() / BLAKE_BLOCK_LEN + 1) as u16;
+        let blocks_num = blake_block_count(body_size) as u16;
         OperationCost::with_hash_node_calls(blocks_num)
     }
 

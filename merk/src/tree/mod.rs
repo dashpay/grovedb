@@ -19,7 +19,8 @@ use costs::{
 };
 use ed::{Decode, Encode, Terminated};
 pub use hash::{
-    kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, Hash, HASH_LENGTH, NULL_HASH,
+    kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, HASH_BLOCK_SIZE, HASH_LENGTH,
+    HASH_LENGTH_U32, NULL_HASH,
 };
 use kv::KV;
 pub use link::Link;
@@ -70,7 +71,7 @@ impl Tree {
     pub fn new_with_value_hash(
         key: Vec<u8>,
         value: Vec<u8>,
-        value_hash: Hash,
+        value_hash: CryptoHash,
     ) -> CostContext<Self> {
         KV::new_with_value_hash(key, value, value_hash).map(|kv| Self {
             inner: Box::new(TreeInner {
@@ -86,7 +87,7 @@ impl Tree {
     pub fn from_fields(
         key: Vec<u8>,
         value: Vec<u8>,
-        kv_hash: Hash,
+        kv_hash: CryptoHash,
         left: Option<Link>,
         right: Option<Link>,
     ) -> CostContext<Self> {
@@ -124,13 +125,13 @@ impl Tree {
 
     /// Returns the hash of the root node's key/value pair.
     #[inline]
-    pub const fn kv_hash(&self) -> &Hash {
+    pub const fn kv_hash(&self) -> &CryptoHash {
         self.inner.kv.hash()
     }
 
     /// Returns the hash of the node's valu
     #[inline]
-    pub const fn value_hash(&self) -> &Hash {
+    pub const fn value_hash(&self) -> &CryptoHash {
         self.inner.kv.value_hash()
     }
 
@@ -182,7 +183,7 @@ impl Tree {
     /// Returns the hash of the root node's child on the given side, if any. If
     /// there is no child, returns the null hash (zero-filled).
     #[inline]
-    pub const fn child_hash(&self, left: bool) -> &Hash {
+    pub const fn child_hash(&self, left: bool) -> &CryptoHash {
         match self.link(left) {
             Some(link) => link.hash(),
             _ => &NULL_HASH,
@@ -191,7 +192,7 @@ impl Tree {
 
     /// Computes and returns the hash of the root node.
     #[inline]
-    pub fn hash(&self) -> CostContext<Hash> {
+    pub fn hash(&self) -> CostContext<CryptoHash> {
         // TODO: should we compute node hash as we already have a node hash?
         node_hash(
             self.inner.kv.hash(),
@@ -375,7 +376,7 @@ impl Tree {
     pub fn put_value_and_value_hash(
         mut self,
         value: Vec<u8>,
-        value_hash: Hash,
+        value_hash: CryptoHash,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.inner.kv = self

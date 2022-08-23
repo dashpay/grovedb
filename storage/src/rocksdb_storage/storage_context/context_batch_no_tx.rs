@@ -54,9 +54,18 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
     type Error = Error;
     type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Db>>;
 
-    fn put<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> CostContext<Result<(), Self::Error>> {
+    fn put<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        value: &[u8],
+        replaced_value_bytes_count: Option<u16>,
+    ) -> CostContext<Result<(), Self::Error>> {
         self.batch
-            .put(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
+            .put(
+                make_prefixed_key(self.prefix.clone(), key),
+                value.to_vec(),
+                replaced_value_bytes_count,
+            )
             .map(Ok)
     }
 

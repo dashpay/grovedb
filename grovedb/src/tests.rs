@@ -5,7 +5,10 @@ use rand::Rng;
 use tempfile::TempDir;
 
 use super::*;
-use crate::query_result_type::QueryResultType::QueryKeyElementPairResultType;
+use crate::{
+    query_result_type::QueryResultType::QueryKeyElementPairResultType,
+    reference_path::ReferencePathType,
+};
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
 pub const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
@@ -37,8 +40,18 @@ impl Visualize for TempGroveDb {
     }
 }
 
+/// A helper method to create an empty GroveDB
+pub fn make_empty_grovedb() -> TempGroveDb {
+    let tmp_dir = TempDir::new().unwrap();
+    let mut db = GroveDb::open(tmp_dir.path()).unwrap();
+    TempGroveDb {
+        _tmp_dir: tmp_dir,
+        db,
+    }
+}
+
 /// A helper method to create GroveDB with one leaf for a root tree
-pub fn make_grovedb() -> TempGroveDb {
+pub fn make_test_grovedb() -> TempGroveDb {
     let tmp_dir = TempDir::new().unwrap();
     let mut db = GroveDb::open(tmp_dir.path()).unwrap();
     add_test_leaves(&mut db);
@@ -93,7 +106,7 @@ pub fn make_deep_tree() -> TempGroveDb {
     //                  k11,v11
 
     // Insert elements into grovedb instance
-    let temp_db = make_grovedb();
+    let temp_db = make_test_grovedb();
 
     // add an extra root leaf
     temp_db
@@ -348,7 +361,7 @@ fn test_init() {
 
 #[test]
 fn test_insert_value_to_merk() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let element = Element::new_item(b"ayy".to_vec());
     db.insert([TEST_LEAF], b"key", element.clone(), None)
         .unwrap()
@@ -363,7 +376,7 @@ fn test_insert_value_to_merk() {
 
 #[test]
 fn test_insert_value_to_subtree() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let element = Element::new_item(b"ayy".to_vec());
 
     // Insert a subtree first
@@ -384,7 +397,7 @@ fn test_insert_value_to_subtree() {
 
 #[test]
 fn test_element_with_flags() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
 
     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
         .unwrap()
@@ -417,7 +430,11 @@ fn test_element_with_flags() {
         [TEST_LEAF, b"key1", b"elem3"],
         b"elem4",
         Element::new_reference_with_flags(
-            vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"elem2".to_vec()],
+            ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"key1".to_vec(),
+                b"elem2".to_vec(),
+            ]),
             Some([9].to_vec()),
         ),
         None,
@@ -471,7 +488,11 @@ fn test_element_with_flags() {
         (
             b"elem4".to_vec(),
             Element::Reference(
-                vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"elem2".to_vec()],
+                ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"key1".to_vec(),
+                    b"elem2".to_vec()
+                ]),
                 None,
                 Some([9].to_vec())
             )
@@ -512,7 +533,7 @@ fn test_element_with_flags() {
 
 #[test]
 fn test_changes_propagated() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let old_hash = db.root_hash(None).unwrap().unwrap();
     let element = Element::new_item(b"ayy".to_vec());
 
@@ -544,7 +565,7 @@ fn test_changes_propagated() {
 // TODO: Add solid test cases to this
 #[test]
 fn test_references() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     db.insert([TEST_LEAF], b"merk_1", Element::empty_tree(), None)
         .unwrap()
         .expect("successful subtree insert");
@@ -574,11 +595,11 @@ fn test_references() {
     db.insert(
         [TEST_LEAF, b"merk_2"],
         b"key1",
-        Element::new_reference(vec![
+        Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
             TEST_LEAF.to_vec(),
             b"merk_1".to_vec(),
             b"key1".to_vec(),
-        ]),
+        ])),
         None,
     )
     .unwrap()
@@ -586,11 +607,11 @@ fn test_references() {
     db.insert(
         [TEST_LEAF, b"merk_2"],
         b"key2",
-        Element::new_reference(vec![
+        Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
             TEST_LEAF.to_vec(),
             b"merk_1".to_vec(),
             b"key2".to_vec(),
-        ]),
+        ])),
         None,
     )
     .unwrap()
@@ -601,7 +622,7 @@ fn test_references() {
 
 #[test]
 fn test_follow_references() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let element = Element::new_item(b"ayy".to_vec());
 
     // Insert an item to refer to
@@ -616,7 +637,11 @@ fn test_follow_references() {
     db.insert(
         [TEST_LEAF],
         b"reference_key",
-        Element::new_reference(vec![TEST_LEAF.to_vec(), b"key2".to_vec(), b"key3".to_vec()]),
+        Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"key2".to_vec(),
+            b"key3".to_vec(),
+        ])),
         None,
     )
     .unwrap()
@@ -632,13 +657,16 @@ fn test_follow_references() {
 
 #[test]
 fn test_reference_must_point_to_item() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
 
     let result = db
         .insert(
             [TEST_LEAF],
             b"reference_key_1",
-            Element::new_reference(vec![TEST_LEAF.to_vec(), b"reference_key_2".to_vec()]),
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"reference_key_2".to_vec(),
+            ])),
             None,
         )
         .unwrap();
@@ -649,7 +677,7 @@ fn test_reference_must_point_to_item() {
 #[test]
 fn test_too_many_indirections() {
     use crate::operations::get::MAX_REFERENCE_HOPS;
-    let db = make_grovedb();
+    let db = make_test_grovedb();
 
     let keygen = |idx| format!("key{}", idx).bytes().collect::<Vec<u8>>();
 
@@ -666,7 +694,10 @@ fn test_too_many_indirections() {
         db.insert(
             [TEST_LEAF],
             &keygen(i),
-            Element::new_reference(vec![TEST_LEAF.to_vec(), keygen(i - 1)]),
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                keygen(i - 1),
+            ])),
             None,
         )
         .unwrap()
@@ -677,7 +708,10 @@ fn test_too_many_indirections() {
     db.insert(
         [TEST_LEAF],
         &keygen(MAX_REFERENCE_HOPS + 1),
-        Element::new_reference(vec![TEST_LEAF.to_vec(), keygen(MAX_REFERENCE_HOPS)]),
+        Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            keygen(MAX_REFERENCE_HOPS),
+        ])),
         None,
     )
     .unwrap();
@@ -739,7 +773,7 @@ fn test_tree_structure_is_persistent() {
 
 #[test]
 fn test_root_tree_leaves_are_noted() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     db.check_subtree_exists_path_not_found([TEST_LEAF], None)
         .unwrap()
         .expect("should exist");
@@ -750,7 +784,7 @@ fn test_root_tree_leaves_are_noted() {
 
 #[test]
 fn test_proof_for_invalid_path_root_key() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
 
     let query = Query::new();
     let path_query = PathQuery::new_unsized(vec![b"invalid_path_key".to_vec()], query);
@@ -834,7 +868,7 @@ fn test_proof_for_invalid_path() {
 
 #[test]
 fn test_proof_for_non_existent_data() {
-    let temp_db = make_grovedb();
+    let temp_db = make_test_grovedb();
 
     let mut query = Query::new();
     query.insert_key(b"key1".to_vec());
@@ -868,7 +902,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
     //             k4,v4
 
     // Insert elements into grovedb instance
-    let temp_db = make_grovedb();
+    let temp_db = make_test_grovedb();
     // Insert level 1 nodes
     temp_db
         .insert([TEST_LEAF], b"innertree", Element::empty_tree(), None)
@@ -933,11 +967,11 @@ fn test_path_query_proofs_without_subquery_with_reference() {
         .insert(
             [ANOTHER_TEST_LEAF, b"innertree2"],
             b"key4",
-            Element::new_reference(vec![
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                 TEST_LEAF.to_vec(),
                 b"innertree".to_vec(),
                 b"key1".to_vec(),
-            ]),
+            ])),
             None,
         )
         .unwrap()
@@ -955,11 +989,11 @@ fn test_path_query_proofs_without_subquery_with_reference() {
         .insert(
             [ANOTHER_TEST_LEAF, b"innertree2"],
             b"key5",
-            Element::new_reference(vec![
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                 ANOTHER_TEST_LEAF.to_vec(),
                 b"innertree3".to_vec(),
                 b"key4".to_vec(),
-            ]),
+            ])),
             None,
         )
         .unwrap()
@@ -1004,7 +1038,7 @@ fn test_path_query_proofs_without_subquery() {
     //             k4,v4
 
     // Insert elements into grovedb instance
-    let temp_db = make_grovedb();
+    let temp_db = make_test_grovedb();
     // Insert level 1 nodes
     temp_db
         .insert([TEST_LEAF], b"innertree", Element::empty_tree(), None)
@@ -1571,7 +1605,7 @@ fn test_path_query_proofs_with_direction() {
 
 #[test]
 fn test_checkpoint() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let element1 = Element::new_item(b"ayy".to_vec());
 
     db.insert([], b"key1", Element::empty_tree(), None)
@@ -1669,7 +1703,7 @@ fn test_checkpoint() {
 
 #[test]
 fn test_insert_if_not_exists() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
 
     // Insert twice at the same path
     assert!(db
@@ -1695,7 +1729,7 @@ fn test_insert_if_not_exists() {
 
 #[test]
 fn test_is_empty_tree() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
 
     // Create an empty tree with no elements
     db.insert([TEST_LEAF], b"innertree", Element::empty_tree(), None)
@@ -1726,7 +1760,7 @@ fn test_is_empty_tree() {
 fn transaction_insert_item_with_transaction_should_use_transaction() {
     let item_key = b"key3";
 
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let transaction = db.start_transaction();
 
     // Check that there's no such key in the DB
@@ -1765,7 +1799,7 @@ fn transaction_insert_item_with_transaction_should_use_transaction() {
 fn transaction_insert_tree_with_transaction_should_use_transaction() {
     let subtree_key = b"subtree_key";
 
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let transaction = db.start_transaction();
 
     // Check that there's no such key in the DB
@@ -1803,7 +1837,7 @@ fn transaction_insert_tree_with_transaction_should_use_transaction() {
 fn transaction_should_be_aborted_when_rollback_is_called() {
     let item_key = b"key3";
 
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let transaction = db.start_transaction();
 
     let element1 = Element::new_item(b"ayy".to_vec());
@@ -1822,7 +1856,7 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
 
 #[test]
 fn transaction_should_be_aborted() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let transaction = db.start_transaction();
 
     let item_key = b"key3";
@@ -1841,7 +1875,7 @@ fn transaction_should_be_aborted() {
 
 #[test]
 fn test_subtree_pairs_iterator() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let element = Element::new_item(b"ayy".to_vec());
     let element2 = Element::new_item(b"lmao".to_vec());
 
@@ -1924,7 +1958,7 @@ fn test_subtree_pairs_iterator() {
 
 #[test]
 fn test_element_deletion() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let element = Element::new_item(b"ayy".to_vec());
     db.insert([TEST_LEAF], b"key", element, None)
         .unwrap()
@@ -1941,7 +1975,7 @@ fn test_element_deletion() {
 #[test]
 fn test_find_subtrees() {
     let element = Element::new_item(b"ayy".to_vec());
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     // Insert some nested subtrees
     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
         .unwrap()
@@ -1973,7 +2007,7 @@ fn test_find_subtrees() {
 
 #[test]
 fn test_get_subtree() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let element = Element::new_item(b"ayy".to_vec());
 
     // Returns error is subtree is not valid
@@ -2070,7 +2104,7 @@ fn test_get_subtree() {
 #[test]
 fn test_subtree_deletion() {
     let element = Element::new_item(b"ayy".to_vec());
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     // Insert some nested subtrees
     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
         .unwrap()
@@ -2106,7 +2140,7 @@ fn test_subtree_deletion() {
 #[test]
 fn test_subtree_deletion_if_empty() {
     let element = Element::new_item(b"value".to_vec());
-    let db = make_grovedb();
+    let db = make_test_grovedb();
 
     let transaction = db.start_transaction();
 
@@ -2209,7 +2243,7 @@ fn test_subtree_deletion_if_empty() {
 #[test]
 fn test_subtree_deletion_if_empty_without_transaction() {
     let element = Element::new_item(b"value".to_vec());
-    let db = make_grovedb();
+    let db = make_test_grovedb();
 
     // Insert some nested subtrees
     db.insert([TEST_LEAF], b"level1-A", Element::empty_tree(), None)
@@ -2287,7 +2321,7 @@ fn test_subtree_deletion_if_empty_without_transaction() {
 
 #[test]
 fn test_get_full_query() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
 
     // Insert a couple of subtrees first
     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
@@ -2360,7 +2394,7 @@ fn test_get_full_query() {
 #[test]
 fn test_aux_uses_separate_cf() {
     let element = Element::new_item(b"ayy".to_vec());
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     // Insert some nested subtrees
     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
         .unwrap()
@@ -2428,7 +2462,7 @@ fn test_aux_with_transaction() {
     let element = Element::new_item(b"ayy".to_vec());
     let aux_value = b"ayylmao".to_vec();
     let key = b"key".to_vec();
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let transaction = db.start_transaction();
 
     // Insert a regular data with aux data in the same transaction
@@ -2596,11 +2630,11 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
             db.insert(
                 [TEST_LEAF, b"1", i_vec.clone().as_slice(), b"\0"],
                 &random_key,
-                Element::new_reference(vec![
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                     TEST_LEAF.to_vec(),
                     b"\0".to_vec(),
                     random_key.to_vec(),
-                ]),
+                ])),
                 None,
             )
             .unwrap()
@@ -2659,7 +2693,11 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &TempGroveDb) {
         db.insert(
             [TEST_LEAF, b"1", i_vec.clone().as_slice()],
             b"\0",
-            Element::new_reference(vec![TEST_LEAF.to_vec(), b"\0".to_vec(), i_vec.clone()]),
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"\0".to_vec(),
+                i_vec.clone(),
+            ])),
             None,
         )
         .unwrap()
@@ -2708,7 +2746,7 @@ fn deserialize_and_extract_item_bytes(raw_bytes: &[u8]) -> Result<Vec<u8>, Error
 
 #[test]
 fn test_get_range_query_with_non_unique_subquery() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_non_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -2748,7 +2786,7 @@ fn test_get_range_query_with_non_unique_subquery() {
 
 #[test]
 fn test_get_range_query_with_unique_subquery() {
-    let mut db = make_grovedb();
+    let mut db = make_test_grovedb();
     populate_tree_for_unique_range_subquery(&mut db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -2783,7 +2821,7 @@ fn test_get_range_query_with_unique_subquery() {
 
 #[test]
 fn test_get_range_query_with_unique_subquery_on_references() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_by_reference_for_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec(), b"1".to_vec()];
@@ -2818,7 +2856,7 @@ fn test_get_range_query_with_unique_subquery_on_references() {
 
 #[test]
 fn test_get_range_query_with_unique_subquery_with_non_unique_null_values() {
-    let mut db = make_grovedb();
+    let mut db = make_test_grovedb();
     populate_tree_for_unique_range_subquery_with_non_unique_null_values(&mut db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -2862,7 +2900,7 @@ fn test_get_range_query_with_unique_subquery_with_non_unique_null_values() {
 
 #[test]
 fn test_get_range_query_with_unique_subquery_ignore_non_unique_null_values() {
-    let mut db = make_grovedb();
+    let mut db = make_test_grovedb();
     populate_tree_for_unique_range_subquery_with_non_unique_null_values(&mut db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -2905,7 +2943,7 @@ fn test_get_range_query_with_unique_subquery_ignore_non_unique_null_values() {
 
 #[test]
 fn test_get_range_inclusive_query_with_non_unique_subquery() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_non_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -2945,7 +2983,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
 
 #[test]
 fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_by_reference_for_non_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec(), b"1".to_vec()];
@@ -2988,7 +3026,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
 
 #[test]
 fn test_get_range_inclusive_query_with_unique_subquery() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -3023,7 +3061,7 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
 
 #[test]
 fn test_get_range_from_query_with_non_unique_subquery() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_non_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -3063,7 +3101,7 @@ fn test_get_range_from_query_with_non_unique_subquery() {
 
 #[test]
 fn test_get_range_from_query_with_unique_subquery() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -3098,7 +3136,7 @@ fn test_get_range_from_query_with_unique_subquery() {
 
 #[test]
 fn test_get_range_to_query_with_non_unique_subquery() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_non_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -3138,7 +3176,7 @@ fn test_get_range_to_query_with_non_unique_subquery() {
 
 #[test]
 fn test_get_range_to_query_with_unique_subquery() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -3173,7 +3211,7 @@ fn test_get_range_to_query_with_unique_subquery() {
 
 #[test]
 fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_non_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -3213,7 +3251,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
 
 #[test]
 fn test_get_range_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bounds() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_non_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -3253,7 +3291,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bou
 
 #[test]
 fn test_get_range_to_inclusive_query_with_unique_subquery() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -3288,7 +3326,7 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
 
 #[test]
 fn test_get_range_after_query_with_non_unique_subquery() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_non_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -3328,7 +3366,7 @@ fn test_get_range_after_query_with_non_unique_subquery() {
 
 #[test]
 fn test_get_range_after_to_query_with_non_unique_subquery() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_non_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -3368,7 +3406,7 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
 
 #[test]
 fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_non_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -3410,7 +3448,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
 
 #[test]
 fn test_get_range_after_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bounds() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_non_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -3452,7 +3490,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery_and_key_out_
 
 #[test]
 fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_non_unique_double_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -3498,7 +3536,7 @@ fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
 
 #[test]
 fn test_get_range_query_with_limit_and_offset() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_non_unique_range_subquery(&db);
 
     let path = vec![TEST_LEAF.to_vec()];
@@ -3715,7 +3753,7 @@ fn test_get_range_query_with_limit_and_offset() {
     assert_eq!(result_set.len(), 250);
 
     // Test on unique subtree build
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     populate_tree_for_unique_range_subquery(&db);
 
     let mut query = Query::new_with_direction(true);
@@ -3747,7 +3785,7 @@ fn test_get_range_query_with_limit_and_offset() {
 
 #[test]
 fn test_root_hash() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     // Check hashes are different if tree is edited
     let old_root_hash = db.root_hash(None).unwrap();
     db.insert(
@@ -3786,7 +3824,7 @@ fn test_root_hash() {
 fn test_subtree_deletion_with_transaction() {
     let element = Element::new_item(b"ayy".to_vec());
 
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let transaction = db.start_transaction();
 
     // Insert some nested subtrees
@@ -3843,13 +3881,13 @@ fn test_subtree_deletion_with_transaction() {
 
 #[test]
 fn test_get_non_existing_root_leaf() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     assert!(matches!(db.get([], b"ayy", None).unwrap(), Err(_)));
 }
 
 #[test]
 fn test_check_subtree_exists_function() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     db.insert(
         [TEST_LEAF],
         b"key_scalar",
@@ -3890,7 +3928,7 @@ fn test_check_subtree_exists_function() {
 
 #[test]
 fn test_tree_value_exists_method_no_tx() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     // Test keys in non-root tree
     db.insert(
         [TEST_LEAF],
@@ -3915,7 +3953,7 @@ fn test_tree_value_exists_method_no_tx() {
 
 #[test]
 fn test_tree_value_exists_method_tx() {
-    let db = make_grovedb();
+    let db = make_test_grovedb();
     let tx = db.start_transaction();
     // Test keys in non-root tree
     db.insert(

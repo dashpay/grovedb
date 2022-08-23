@@ -15,18 +15,18 @@ use crate::{
         Node, Op,
     },
     tree::{Link, RefWalker, Tree},
-    Hash,
+    CryptoHash,
 };
 
 /// A `Restorer` handles decoding, verifying, and storing chunk proofs to
 /// replicate an entire Merk tree. It expects the chunks to be processed in
 /// order, retrying the last chunk if verification fails.
 pub struct Restorer<S> {
-    leaf_hashes: Option<Peekable<std::vec::IntoIter<Hash>>>,
+    leaf_hashes: Option<Peekable<std::vec::IntoIter<CryptoHash>>>,
     parent_keys: Option<Peekable<std::vec::IntoIter<Vec<u8>>>>,
     trunk_height: Option<usize>,
     merk: Merk<S>,
-    expected_root_hash: Hash,
+    expected_root_hash: CryptoHash,
 }
 
 impl<'db, S: StorageContext<'db>> Restorer<S> {
@@ -35,7 +35,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// `expected_root_hash`, then each subsequent chunk will be compared
     /// against the hashes stored in the trunk, so that the restore process will
     /// never allow malicious peers to send more than a single invalid chunk.
-    pub fn new(merk: Merk<S>, expected_root_hash: Hash) -> Self {
+    pub fn new(merk: Merk<S>, expected_root_hash: CryptoHash) -> Self {
         Self {
             expected_root_hash,
             trunk_height: None,
@@ -102,7 +102,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             *node.slot_mut(false) = proof_node.right.as_ref().map(Child::as_link);
 
             let bytes = node.encode();
-            batch.put(key, &bytes);
+            batch.put(key, &bytes, None);
         });
 
         self.merk.storage.commit_batch(batch).unwrap()?;
@@ -130,7 +130,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             let leaf_hashes = trunk
                 .layer(trunk_height)
                 .map(|node| node.hash().unwrap())
-                .collect::<Vec<Hash>>()
+                .collect::<Vec<CryptoHash>>()
                 .into_iter()
                 .peekable();
             self.leaf_hashes = Some(leaf_hashes);
@@ -201,7 +201,10 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         };
 
         let parent_bytes = parent.encode();
-        self.merk.storage.put(parent_key, &parent_bytes).unwrap()?;
+        self.merk
+            .storage
+            .put(parent_key, &parent_bytes, None)
+            .unwrap()?;
 
         if !is_left_child {
             let parent_keys = self.parent_keys.as_mut().unwrap();
@@ -235,7 +238,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             *cloned_node.link_mut(false).unwrap().child_heights_mut() = right_child_heights;
 
             let bytes = cloned_node.encode();
-            batch.put(node.tree().key(), &bytes);
+            batch.put(node.tree().key(), &bytes, None);
 
             Ok((left_height, right_height))
         }
@@ -268,7 +271,7 @@ impl<'db, S: StorageContext<'db>> Merk<S> {
     /// Creates a new `Restorer`, which can be used to verify chunk proofs to
     /// replicate an entire Merk tree. A new Merk instance will be initialized
     /// by creating a RocksDB at `path`.
-    pub fn restore(merk: Merk<S>, expected_root_hash: Hash) -> Restorer<S> {
+    pub fn restore(merk: Merk<S>, expected_root_hash: CryptoHash) -> Restorer<S> {
         Restorer::new(merk, expected_root_hash)
     }
 }

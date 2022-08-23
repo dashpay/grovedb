@@ -6,7 +6,7 @@ use storage::RawIterator;
 #[cfg(feature = "full")]
 use {
     super::tree::{execute, Tree as ProofTree},
-    crate::tree::Hash,
+    crate::tree::CryptoHash,
     crate::tree::Tree,
 };
 
@@ -209,7 +209,7 @@ pub(crate) fn get_next_chunk(
 #[allow(dead_code)] // TODO: remove when proofs will be enabled
 pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op>>>(
     ops: I,
-    expected_hash: Hash,
+    expected_hash: CryptoHash,
 ) -> CostContext<Result<ProofTree>> {
     execute(ops, false, |node| match node {
         Node::KV(..) => Ok(()),

@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use costs::{CostContext, CostsExt, OperationCost};
 use ed::{Decode, Encode, Result, Terminated};
 
-use super::hash::{Hash, HASH_LENGTH, NULL_HASH};
+use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
 use crate::tree::{hash::value_hash, kv_digest_to_kv_hash};
 
 // TODO: maybe use something similar to Vec but without capacity field,
@@ -16,8 +16,8 @@ use crate::tree::{hash::value_hash, kv_digest_to_kv_hash};
 pub struct KV {
     pub(super) key: Vec<u8>,
     pub(super) value: Vec<u8>,
-    pub(super) hash: Hash,
-    pub(super) value_hash: Hash,
+    pub(super) hash: CryptoHash,
+    pub(super) value_hash: CryptoHash,
 }
 
 impl KV {
@@ -42,7 +42,7 @@ impl KV {
     pub fn new_with_value_hash(
         key: Vec<u8>,
         value: Vec<u8>,
-        value_hash: Hash,
+        value_hash: CryptoHash,
     ) -> CostContext<Self> {
         // TODO: length checks?
         kv_digest_to_kv_hash(key.as_slice(), &value_hash).map(|hash| Self {
@@ -56,7 +56,12 @@ impl KV {
     /// Creates a new `KV` with the given key, value, and hash. The hash is not
     /// checked to be correct for the given key/value.
     #[inline]
-    pub fn from_fields(key: Vec<u8>, value: Vec<u8>, hash: Hash, value_hash: Hash) -> Self {
+    pub fn from_fields(
+        key: Vec<u8>,
+        value: Vec<u8>,
+        hash: CryptoHash,
+        value_hash: CryptoHash,
+    ) -> Self {
         Self {
             key,
             value,
@@ -83,7 +88,7 @@ impl KV {
     pub fn put_value_and_value_hash_then_update(
         mut self,
         value: Vec<u8>,
-        value_hash: Hash,
+        value_hash: CryptoHash,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.value = value;
@@ -106,13 +111,13 @@ impl KV {
 
     /// Returns the value hash
     #[inline]
-    pub const fn value_hash(&self) -> &Hash {
+    pub const fn value_hash(&self) -> &CryptoHash {
         &self.value_hash
     }
 
     /// Returns the hash.
     #[inline]
-    pub const fn hash(&self) -> &Hash {
+    pub const fn hash(&self) -> &CryptoHash {
         &self.hash
     }
 

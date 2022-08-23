@@ -17,7 +17,7 @@ use storage::RawIterator;
 use {super::Op, std::collections::LinkedList};
 
 use super::{tree::execute, Decoder, Node};
-use crate::tree::{Fetch, Hash as MerkHash, Link, RefWalker};
+use crate::tree::{CryptoHash as MerkHash, Fetch, Link, RefWalker};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct SubqueryBranch {

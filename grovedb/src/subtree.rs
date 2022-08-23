@@ -24,6 +24,7 @@ use crate::{
         KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType,
         QueryResultType::QueryElementResultType,
     },
+    reference_path::{path_from_reference_path_type, ReferencePathType},
     util::{merk_optional_tx, storage_context_optional_tx},
     Error, Hash, Merk, PathQuery, SizedQuery, TransactionArg,
 };
@@ -43,7 +44,7 @@ pub enum Element {
     /// An ordinary value
     Item(Vec<u8>, ElementFlags),
     /// A reference to an object by its path
-    Reference(Vec<Vec<u8>>, MaxReferenceHop, ElementFlags),
+    Reference(ReferencePathType, MaxReferenceHop, ElementFlags),
     /// A subtree, contains a root hash of the underlying Merk.
     /// Hash is stored to make Merk become different when its subtrees have
     /// changed, otherwise changes won't be reflected in parent trees.
@@ -96,23 +97,26 @@ impl Element {
         Element::Item(item_value, flags)
     }
 
-    pub fn new_reference(reference_path: Vec<Vec<u8>>) -> Self {
+    pub fn new_reference(reference_path: ReferencePathType) -> Self {
         Element::Reference(reference_path, None, None)
     }
 
-    pub fn new_reference_with_flags(reference_path: Vec<Vec<u8>>, flags: ElementFlags) -> Self {
+    pub fn new_reference_with_flags(
+        reference_path: ReferencePathType,
+        flags: ElementFlags,
+    ) -> Self {
         Element::Reference(reference_path, None, flags)
     }
 
     pub fn new_reference_with_hops(
-        reference_path: Vec<Vec<u8>>,
+        reference_path: ReferencePathType,
         max_reference_hop: MaxReferenceHop,
     ) -> Self {
         Element::Reference(reference_path, max_reference_hop, None)
     }
 
     pub fn new_reference_with_max_hops_and_flags(
-        reference_path: Vec<Vec<u8>>,
+        reference_path: ReferencePathType,
         max_reference_hop: MaxReferenceHop,
         flags: ElementFlags,
     ) -> Self {
@@ -147,11 +151,7 @@ impl Element {
                 }
             }
             Element::Reference(path_reference, _, element_flag) => {
-                let path_length = path_reference
-                    .iter()
-                    .map(|inner| inner.len())
-                    .sum::<usize>()
-                    + 1;
+                let path_length = path_reference.encoding_length();
 
                 if let Some(flag) = element_flag {
                     flag.len() + path_length
@@ -192,14 +192,8 @@ impl Element {
                     0
                 };
 
-                path_reference
-                    .iter()
-                    .map(|inner| {
-                        let inner_len = inner.len();
-                        inner_len + inner_len.required_space()
-                    })
-                    .sum::<usize>()
-                    + path_reference.len().required_space()
+                path_reference.serialized_size()
+                    + path_reference.encoding_length().required_space()
                     + flag_len
                     + flag_len.required_space()
                     + 1
@@ -211,9 +205,28 @@ impl Element {
                 } else {
                     0
                 };
-                32 + flag_len + flag_len.required_space() + 1 // + 1 for enum
+                HASH_LENGTH + flag_len + flag_len.required_space() + 1 // + 1 for enum
             }
         }
+    }
+
+    pub fn root_info_byte_size(&self, key_len: usize) -> usize {
+        match self {
+            Element::Tree(..) => {
+                // 32 for the root key prefix
+                // 1 byte for the root "r"
+                // 1 byte for the key length
+                // 1 byte for the value length
+                HASH_LENGTH + key_len + 3
+            }
+            _ => 0,
+        }
+    }
+
+    /// Get the size that the element will occupy on disk with meta and root
+    /// storage
+    pub fn total_byte_size(&self, key_len: usize) -> usize {
+        self.node_byte_size(key_len) + self.root_info_byte_size(key_len)
     }
 
     /// Get the size that the element will occupy on disk
@@ -226,13 +239,14 @@ impl Element {
     /// Get the size that the element will occupy on disk
     pub fn calculate_node_byte_size(serialized_value_size: usize, key_len: usize) -> usize {
         let node_value_size = serialized_value_size + serialized_value_size.required_space();
-        let node_key_size = key_len + key_len.required_space();
+        // Hash length is for the key prefix
+        let node_key_size = HASH_LENGTH + key_len + (key_len + HASH_LENGTH).required_space();
         // Each node stores the key and value, the value hash and the key_value hash
         let node_size = node_value_size + node_key_size + HASH_LENGTH + HASH_LENGTH;
         // The node will be a child of another node which stores it's key and hash
-        let parent_additions = node_key_size + HASH_LENGTH;
+        // That will be added during propagation
         let child_sizes = 2_usize;
-        node_size + parent_additions + child_sizes
+        node_size + child_sizes
     }
 
     /// Delete an element from Merk under a key
@@ -349,16 +363,47 @@ impl Element {
             offset,
             ..
         } = args;
+
+        // Convert any non absolute reference type to an absolute one
+        // we do this here because references are aggregated first then followed later
+        // to follow non absolute references, we need the path they are stored at
+        // this information is lost during the aggregation phase.
+        let elem = match &element {
+            Element::Reference(reference_path_type, ..) => match reference_path_type {
+                ReferencePathType::AbsolutePathReference(..) => element,
+                _ => {
+                    // Element is a reference and is not absolute.
+                    // build the stored path for this reference
+                    let mut current_path = path.clone().to_vec();
+                    current_path
+                        .push(key.ok_or(Error::CorruptedPath("basic path must have a key"))?);
+                    // use this path to compute the absolute path of the item the reference is
+                    // pointing to
+                    let absolute_path = path_from_reference_path_type(
+                        reference_path_type.clone(),
+                        current_path.into_iter(),
+                    )?;
+                    // return an absolute reference that contains this info
+                    Element::Reference(
+                        ReferencePathType::AbsolutePathReference(absolute_path),
+                        None,
+                        None,
+                    )
+                }
+            },
+            _ => element,
+        };
+
         if offset.unwrap_or(0) == 0 {
             match result_type {
                 QueryResultType::QueryElementResultType => {
-                    results.push(QueryResultElement::ElementResultItem(element));
+                    results.push(QueryResultElement::ElementResultItem(elem));
                 }
                 QueryResultType::QueryKeyElementPairResultType => {
                     let key = key.ok_or(Error::CorruptedPath("basic push must have a key"))?;
                     results.push(QueryResultElement::KeyElementPairResultItem((
                         Vec::from(key),
-                        element,
+                        elem,
                     )));
                 }
                 QueryResultType::QueryPathKeyElementTrioResultType => {
@@ -367,7 +412,7 @@ impl Element {
                     results.push(QueryResultElement::PathKeyElementTrioResultItem((
                         path,
                         Vec::from(key),
-                        element,
+                        elem,
                     )));
                 }
             }
@@ -1050,7 +1095,7 @@ mod tests {
         subtree::QueryResultType::{
             QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType,
         },
-        tests::{make_grovedb, TEST_LEAF},
+        tests::{make_test_grovedb, TEST_LEAF},
     };
 
     #[test]
@@ -1109,35 +1154,35 @@ mod tests {
         assert_eq!(serialized.len(), item.serialized_byte_size());
         assert_eq!(hex::encode(serialized), "0003abcdef010101");
 
-        let reference = Element::new_reference(vec![
+        let reference = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
             vec![0],
             hex::decode("abcd").expect("expected to decode"),
             vec![5],
-        ]);
+        ]));
         let serialized = reference.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 11);
+        assert_eq!(serialized.len(), 12);
         assert_eq!(serialized.len(), reference.serialized_byte_size());
         // The item is variable length 2 bytes, so it's enum 1 then 1 byte for length,
         // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
-        assert_eq!(hex::encode(serialized), "0103010002abcd01050000");
+        assert_eq!(hex::encode(serialized), "010003010002abcd01050000");
 
         let reference = Element::new_reference_with_flags(
-            vec![
+            ReferencePathType::AbsolutePathReference(vec![
                 vec![0],
                 hex::decode("abcd").expect("expected to decode"),
                 vec![5],
-            ],
+            ]),
             Some(vec![1, 2, 3]),
         );
         let serialized = reference.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 15);
+        assert_eq!(serialized.len(), 16);
         assert_eq!(serialized.len(), reference.serialized_byte_size());
-        assert_eq!(hex::encode(serialized), "0103010002abcd0105000103010203");
+        assert_eq!(hex::encode(serialized), "010003010002abcd0105000103010203");
     }
 
     #[test]
     fn test_get_query() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
@@ -1225,7 +1270,7 @@ mod tests {
 
     #[test]
     fn test_get_query_with_path() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
@@ -1282,7 +1327,7 @@ mod tests {
 
     #[test]
     fn test_get_range_query() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
@@ -1378,7 +1423,7 @@ mod tests {
 
     #[test]
     fn test_get_range_inclusive_query() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
@@ -1476,7 +1521,7 @@ mod tests {
 
     #[test]
     fn test_get_limit_query() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();

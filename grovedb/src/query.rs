@@ -221,7 +221,7 @@ mod tests {
 
     use crate::{
         tests::{make_deep_tree, TEST_LEAF},
-        Element, Error, GroveDb, PathQuery, SizedQuery,
+        Element, Error, GroveDb, PathQuery,
     };
     #[test]
     fn test_has_subpaths() {

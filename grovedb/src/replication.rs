@@ -389,7 +389,7 @@ mod test {
     use super::*;
     use crate::{
         batch::GroveDbOp,
-        tests::{make_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF},
+        tests::{make_test_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF},
     };
 
     fn replicate(original_db: &GroveDb) -> TempDir {
@@ -507,7 +507,7 @@ mod test {
 
     #[test]
     fn replicate_wrong_root_hash() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let mut bad_hash = db.root_hash(None).unwrap().unwrap();
         bad_hash[0] = bad_hash[0].wrapping_add(1);
 
@@ -521,7 +521,7 @@ mod test {
 
     #[test]
     fn replicate_provide_wrong_tree() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         db.insert(
             [TEST_LEAF],
             b"key1",
@@ -564,7 +564,7 @@ mod test {
 
     #[test]
     fn replicate_nested_grovedb() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         db.insert(
             [TEST_LEAF],
             b"key1",
@@ -610,7 +610,7 @@ mod test {
         const SUBTREES_FOR_EACH: usize = 3;
         const SCALARS_FOR_EACH: usize = 600;
 
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let mut to_compare = Vec::new();
 
         let mut rng = rand::thread_rng();
@@ -674,7 +674,7 @@ mod test {
     #[test]
     fn replicate_from_checkpoint() {
         // Create a simple GroveDb first
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         db.insert(
             [TEST_LEAF],
             b"key1",

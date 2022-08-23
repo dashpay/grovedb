@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
-use storage::StorageContext;
+use storage::{Storage, StorageContext};
 
 use crate::{
-    batch::{GroveDbOp, Op},
+    batch::{GroveDbOp, KeyInfo, KeyInfoPath, Op},
     util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, TransactionArg,
 };
@@ -208,10 +208,12 @@ impl GroveDb {
                 );
                 let batch_deleted_keys = current_batch_operations
                     .iter()
-                    .filter_map(|op| match op.get_op() {
+                    .filter_map(|op| match op.op {
                         Op::Delete => {
-                            if op.get_path() == &subtree_merk_path_vec {
-                                Some(op.get_key().as_slice())
+                            // todo: to_path clones (best to figure out how to compare without
+                            // cloning)
+                            if op.path.to_path() == subtree_merk_path_vec {
+                                Some(op.key.as_slice())
                             } else {
                                 None
                             }
@@ -234,9 +236,10 @@ impl GroveDb {
 
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
-                is_empty &= !current_batch_operations.iter().any(|op| match op.get_op() {
+                is_empty &= !current_batch_operations.iter().any(|op| match op.op {
                     Op::Delete => false,
-                    _ => op.get_path() == &subtree_merk_path_vec,
+                    // todo: fix for to_path (it clones)
+                    _ => op.path.to_path() == subtree_merk_path_vec,
                 });
 
                 let result = if only_delete_tree_if_empty && !is_empty {
@@ -259,6 +262,38 @@ impl GroveDb {
                 )))
                 .wrap_with_cost(cost)
             }
+        }
+    }
+
+    pub fn worst_case_delete_operation_for_delete_internal<'p, 'db, S: Storage<'db>, P>(
+        &self,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        validate: bool,
+        max_element_size: u32,
+    ) -> CostResult<Option<GroveDbOp>, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+
+        if path.len() == 0 {
+            // Attempt to delete a root tree leaf
+            Err(Error::InvalidPath(
+                "root tree leaves currently cannot be deleted",
+            ))
+            .wrap_with_cost(cost)
+        } else {
+            if validate {
+                GroveDb::add_worst_case_get_merk::<S>(&mut cost, path);
+            }
+            GroveDb::add_worst_case_get_raw_cost::<S>(&mut cost, path, key, max_element_size);
+            Ok(Some(GroveDbOp::delete_worst_case_op(
+                path.clone(),
+                key.clone(),
+            )))
+            .wrap_with_cost(cost)
         }
     }
 
