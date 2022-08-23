@@ -24,49 +24,6 @@ pub enum ReferencePathType {
     CousinReference(Vec<u8>),
 }
 
-impl ReferencePathType {
-    pub fn encoding_length(&self) -> usize {
-        match self {
-            ReferencePathType::AbsolutePathReference(path) => {
-                1 + path.iter().map(|inner| inner.len()).sum::<usize>()
-            }
-            ReferencePathType::UpstreamRootHeightReference(_, path)
-            | ReferencePathType::UpstreamFromElementHeightReference(_, path) => {
-                1 + 1 + path.iter().map(|inner| inner.len()).sum::<usize>()
-            }
-            ReferencePathType::CousinReference(path) => 1 + path.len(),
-        }
-    }
-
-    pub fn serialized_size(&self) -> usize {
-        match self {
-            ReferencePathType::AbsolutePathReference(path) => {
-                1 + path
-                    .iter()
-                    .map(|inner| {
-                        let inner_len = inner.len();
-                        inner_len + inner_len.required_space()
-                    })
-                    .sum::<usize>()
-            }
-            ReferencePathType::UpstreamRootHeightReference(_, path)
-            | ReferencePathType::UpstreamFromElementHeightReference(_, path) => {
-                1 + 1
-                    + path
-                        .iter()
-                        .map(|inner| {
-                            let inner_len = inner.len();
-                            inner_len + inner_len.required_space()
-                        })
-                        .sum::<usize>()
-            }
-            ReferencePathType::CousinReference(path) => {
-                1 + path.len() + path.len().required_space()
-            }
-        }
-    }
-}
-
 /// Given the reference path type and the current path, this computes the
 /// absolute path of the item the reference is pointing to.
 pub fn path_from_reference_path_type<'p, P>(
@@ -136,6 +93,49 @@ where
                 .collect::<Vec<_>>())
         }
     };
+}
+
+impl ReferencePathType {
+    pub fn encoding_length(&self) -> usize {
+        match self {
+            ReferencePathType::AbsolutePathReference(path) => {
+                1 + path.iter().map(|inner| inner.len()).sum::<usize>()
+            }
+            ReferencePathType::UpstreamRootHeightReference(_, path)
+            | ReferencePathType::UpstreamFromElementHeightReference(_, path) => {
+                1 + 1 + path.iter().map(|inner| inner.len()).sum::<usize>()
+            }
+            ReferencePathType::CousinReference(path) => 1 + path.len(),
+        }
+    }
+
+    pub fn serialized_size(&self) -> usize {
+        match self {
+            ReferencePathType::AbsolutePathReference(path) => {
+                1 + path
+                    .iter()
+                    .map(|inner| {
+                        let inner_len = inner.len();
+                        inner_len + inner_len.required_space()
+                    })
+                    .sum::<usize>()
+            }
+            ReferencePathType::UpstreamRootHeightReference(_, path)
+            | ReferencePathType::UpstreamFromElementHeightReference(_, path) => {
+                1 + 1
+                    + path
+                    .iter()
+                    .map(|inner| {
+                        let inner_len = inner.len();
+                        inner_len + inner_len.required_space()
+                    })
+                    .sum::<usize>()
+            }
+            ReferencePathType::CousinReference(path) => {
+                1 + path.len() + path.len().required_space()
+            }
+        }
+    }
 }
 
 #[cfg(test)]
