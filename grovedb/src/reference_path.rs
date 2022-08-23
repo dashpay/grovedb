@@ -77,20 +77,26 @@ where
 
         // Pop child, swap parent, reattach child
         ReferencePathType::CousinReference(cousin_key) => {
-            let mut current_path_as_vec = current_path.into_iter().collect::<Vec<_>>();
-            if current_path_as_vec.len() < 2 {
+            let mut current_path_as_vec_ref = current_path.into_iter().collect::<Vec<&[u8]>>();
+            if current_path_as_vec_ref.len() < 2 {
                 return Err(Error::InvalidInput(
                     "reference stored path cannot satisfy reference constraints",
                 ));
             }
-            let current_key = current_path_as_vec.pop().expect("confirmed has key");
-            current_path_as_vec.pop(); // remove the cousin key
-            current_path_as_vec.push(&cousin_key);
-            current_path_as_vec.push(current_key);
-            Ok(current_path_as_vec
-                .iter()
+            let current_key = current_path_as_vec_ref
+                .pop()
+                .expect("confirmed has key")
+                .to_vec();
+            current_path_as_vec_ref.pop(); // remove the cousin key
+
+            let mut current_path_as_vec = current_path_as_vec_ref
+                .into_iter()
                 .map(|x| x.to_vec())
-                .collect::<Vec<_>>())
+                .collect::<Vec<Vec<u8>>>();
+
+            current_path_as_vec.push(cousin_key);
+            current_path_as_vec.push(current_key);
+            Ok(current_path_as_vec)
         }
     };
 }
