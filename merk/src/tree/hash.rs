@@ -3,6 +3,8 @@ use integer_encoding::*;
 
 /// The length of a `Hash` (in bytes).
 pub const HASH_LENGTH: usize = 32;
+pub const HASH_LENGTH_U32: u32 = 32;
+pub const HASH_BLOCK_SIZE: usize = 64;
 
 /// A zero-filled `Hash`.
 pub const NULL_HASH: CryptoHash = [0; HASH_LENGTH];
@@ -88,7 +90,7 @@ pub fn node_hash(
     let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
     hash.wrap_with_cost(OperationCost {
-        hash_node_calls: 1,
+        hash_node_calls: 2, // as this would be over Blake 3's block size of 64
         ..Default::default()
     })
 }

@@ -211,9 +211,25 @@ impl Element {
                 } else {
                     0
                 };
-                32 + flag_len + flag_len.required_space() + 1 // + 1 for enum
+                HASH_LENGTH + flag_len + flag_len.required_space() + 1 // + 1 for enum
             }
         }
+    }
+
+    pub fn root_info_byte_size(&self, key_len: usize) -> usize {
+        match self {
+            Element::Tree(_, _) => {
+                // 32 for the root key prefix
+                // 1 byte for the root "r"
+                HASH_LENGTH + 1 + key_len
+            }
+            _ => { 0 }
+        }
+    }
+
+    /// Get the size that the element will occupy on disk with meta and root storage
+    pub fn total_byte_size(&self, key_len: usize) -> usize {
+        self.node_byte_size(key_len) + self.root_info_byte_size(key_len)
     }
 
     /// Get the size that the element will occupy on disk
@@ -226,13 +242,14 @@ impl Element {
     /// Get the size that the element will occupy on disk
     pub fn calculate_node_byte_size(serialized_value_size: usize, key_len: usize) -> usize {
         let node_value_size = serialized_value_size + serialized_value_size.required_space();
-        let node_key_size = key_len + key_len.required_space();
+        //Hash length is for the key prefix
+        let node_key_size = HASH_LENGTH + key_len + (key_len + HASH_LENGTH).required_space();
         // Each node stores the key and value, the value hash and the key_value hash
         let node_size = node_value_size + node_key_size + HASH_LENGTH + HASH_LENGTH;
         // The node will be a child of another node which stores it's key and hash
-        let parent_additions = node_key_size + HASH_LENGTH;
+        // That will be added during propagation
         let child_sizes = 2_usize;
-        node_size + parent_additions + child_sizes
+        node_size + child_sizes
     }
 
     /// Delete an element from Merk under a key
@@ -1050,7 +1067,7 @@ mod tests {
         subtree::QueryResultType::{
             QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType,
         },
-        tests::{make_grovedb, TEST_LEAF},
+        tests::{make_test_grovedb, TEST_LEAF},
     };
 
     #[test]
@@ -1137,7 +1154,7 @@ mod tests {
 
     #[test]
     fn test_get_query() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
@@ -1225,7 +1242,7 @@ mod tests {
 
     #[test]
     fn test_get_query_with_path() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
@@ -1282,7 +1299,7 @@ mod tests {
 
     #[test]
     fn test_get_range_query() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
@@ -1378,7 +1395,7 @@ mod tests {
 
     #[test]
     fn test_get_range_inclusive_query() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
@@ -1476,7 +1493,7 @@ mod tests {
 
     #[test]
     fn test_get_limit_query() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();

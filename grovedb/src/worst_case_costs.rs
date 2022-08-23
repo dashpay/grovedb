@@ -1,5 +1,5 @@
 use costs::OperationCost;
-use merk::HASH_LENGTH;
+use merk::{HASH_BLOCK_SIZE, HASH_LENGTH, HASH_LENGTH_U32};
 use storage::{worst_case_costs::WorstKeyLength, Storage};
 
 use super::GroveDb;
@@ -157,7 +157,7 @@ impl GroveDb {
 
         // Write the root key
         cost.seek_count += 1;
-        cost.storage_written_bytes += prefixed_key_size + b"root".len() as u32;
+        cost.storage_written_bytes += prefixed_key_size + b"r".len() as u32;
     }
 
     /// Add worst case for getting a merk tree
@@ -193,8 +193,9 @@ impl GroveDb {
 
     const fn node_hash_update_count() -> u16 {
         // It's a hash of node hash, left and right
-        let bytes = merk::HASH_LENGTH * 3;
-        let blocks = (bytes - 64 + 1) / 64;
+        let bytes = HASH_LENGTH * 3;
+        // todo: verify this
+        let blocks = (bytes + 1) / HASH_BLOCK_SIZE;
 
         blocks as u16
     }
@@ -206,13 +207,12 @@ impl GroveDb {
         value: &Element,
         input: MerkWorstCaseInput,
     ) {
-        // TODO determine serialize size without actually serializing
-        let bytes_len =
-            key.len() as u32 + value.serialize().expect("element is serializable").len() as u32;
+        let bytes_len = value.total_byte_size(key.len() as usize);
 
         cost.storage_written_bytes += bytes_len as u32;
         // .. and hash computation for the inserted element itself
-        cost.hash_node_calls += ((bytes_len + 1) / 64) as u16;
+        //todo: verify this
+        cost.hash_node_calls += ((bytes_len + 1) / HASH_BLOCK_SIZE) as u16;
 
         Self::add_worst_case_merk_propagate(cost, input);
     }
@@ -233,8 +233,7 @@ impl GroveDb {
         // root, thus two more updates.
         nodes_updated += 2;
 
-        // TODO: use separate field for hash propagation rather than written bytes
-        cost.storage_written_bytes += nodes_updated * 32;
+        cost.storage_updated_bytes += nodes_updated * HASH_LENGTH_U32;
         // Same number of hash recomputations for propagation
         cost.hash_node_calls += (nodes_updated as u16) * Self::node_hash_update_count();
     }

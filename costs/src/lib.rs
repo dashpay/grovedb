@@ -10,6 +10,8 @@ pub struct OperationCost {
     pub seek_count: u16,
     /// How many bytes were written on hard drive.
     pub storage_written_bytes: u32,
+    /// How many bytes were updated on hard drive, mostly from proof hash updates.
+    pub storage_updated_bytes: u32,
     /// How many bytes were loaded from hard drive.
     pub storage_loaded_bytes: u32,
     /// How many bytes were removed on hard drive.
@@ -83,6 +85,7 @@ impl Add for OperationCost {
         OperationCost {
             seek_count: self.seek_count + rhs.seek_count,
             storage_written_bytes: self.storage_written_bytes + rhs.storage_written_bytes,
+            storage_updated_bytes: self.storage_updated_bytes + rhs.storage_updated_bytes,
             storage_loaded_bytes: self.storage_loaded_bytes + rhs.storage_loaded_bytes,
             storage_freed_bytes: self.storage_freed_bytes + rhs.storage_freed_bytes,
             hash_byte_calls: self.hash_byte_calls + rhs.hash_byte_calls,
@@ -95,6 +98,7 @@ impl AddAssign for OperationCost {
     fn add_assign(&mut self, rhs: Self) {
         self.seek_count += rhs.seek_count;
         self.storage_written_bytes += rhs.storage_written_bytes;
+        self.storage_updated_bytes += rhs.storage_updated_bytes;
         self.storage_loaded_bytes += rhs.storage_loaded_bytes;
         self.storage_freed_bytes += rhs.storage_freed_bytes;
         self.hash_byte_calls += rhs.hash_byte_calls;

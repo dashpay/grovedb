@@ -94,7 +94,7 @@ impl RocksDbStorage {
         P: IntoIterator<Item = &'a [u8]>,
     {
         let body = Self::build_prefix_body(path);
-        let blocks_count = (body.len() + BLAKE_BLOCK_LEN - 1) / BLAKE_BLOCK_LEN;
+        let blocks_count = (body.len() + 1) / BLAKE_BLOCK_LEN;
 
         blake3::hash(&body)
             .as_bytes()
