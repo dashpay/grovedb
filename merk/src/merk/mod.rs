@@ -16,7 +16,7 @@ use crate::{
     tree::{Commit, Fetch, Hash, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
 };
 
-pub const ROOT_KEY_KEY: &[u8] = b"root";
+pub const ROOT_KEY_KEY: &[u8] = b"r";
 
 type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
 
