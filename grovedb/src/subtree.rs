@@ -332,8 +332,6 @@ impl Element {
         })
     }
 
-    // TODO: Make sure reference elements have absolute paths, if they don't then
-    // compute it
     fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
         let PathQueryPushArgs {
             path,
@@ -346,19 +344,25 @@ impl Element {
             ..
         } = args;
 
-        // TODO: cleanup
-        // check if element if of type reference, check the exact reference type
+        // Convert any non absolute reference type to an absolute one
+        // we do this here because references are aggregated first then followed later
+        // to follow non absolute references, we need the path they are stored at
+        // this information is lost during the aggregation phase.
         let elem = match &element {
             Element::Reference(reference_path_type, ..) => match reference_path_type {
                 ReferencePathType::AbsolutePathReference(..) => element,
                 _ => {
+                    // Element is a reference and is not absolute.
+                    // build the stored path for this reference
                     let mut current_path = path.clone().to_vec();
                     current_path
                         .push(key.ok_or(Error::CorruptedPath("basic path must have a key"))?);
+                    // use this path to compute the absolute path of the item the reference is pointing to
                     let absolute_path = path_from_reference_path_type(
                         reference_path_type.clone(),
                         current_path.into_iter(),
                     )?;
+                    // return an absolute reference that contains this info
                     Element::Reference(
                         ReferencePathType::AbsolutePathReference(absolute_path),
                         None,
