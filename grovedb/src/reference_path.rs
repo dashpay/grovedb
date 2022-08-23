@@ -1,3 +1,4 @@
+use integer_encoding::VarInt;
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
@@ -21,6 +22,42 @@ pub enum ReferencePathType {
     /// retaining the key value. e.g. current path = [a, b, m, d] you can use
     /// the cousin reference to swap m with c to get [a, b, c, d]
     CousinReference(Vec<u8>),
+}
+
+impl ReferencePathType {
+    pub fn encoding_length(&self) -> usize {
+        match self {
+            ReferencePathType::AbsolutePathReference(path) => {
+                1 + path.iter().map(|inner| inner.len()).sum::<usize>()
+            },
+            ReferencePathType::UpstreamRootHeightReference(_, path) | ReferencePathType::UpstreamFromElementHeightReference(_, path)=> {
+                1 + 1 + path.iter().map(|inner| inner.len()).sum::<usize>()
+            },
+            ReferencePathType::CousinReference(path) => {
+                1 + path.len()
+            }
+        }
+    }
+
+    pub fn serialized_size(&self) -> usize {
+        match self {
+            ReferencePathType::AbsolutePathReference(path) => {
+                1 + path.iter().map(|inner| {
+                    let inner_len = inner.len();
+                    inner_len + inner_len.required_space()
+                }).sum::<usize>()
+            },
+            ReferencePathType::UpstreamRootHeightReference(_, path) | ReferencePathType::UpstreamFromElementHeightReference(_, path)=> {
+                1 + 1 + path.iter().map(|inner| {
+                    let inner_len = inner.len();
+                    inner_len + inner_len.required_space()
+                }).sum::<usize>()
+            },
+            ReferencePathType::CousinReference(path) => {
+                1 + path.len() + path.len().required_space()
+            }
+        }
+    }
 }
 
 /// Given the reference path type and the current path, this computes the

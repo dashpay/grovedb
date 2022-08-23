@@ -151,13 +151,7 @@ impl Element {
                 }
             }
             Element::Reference(path_reference, _, element_flag) => {
-                // TODO: make accurate again
-                // let path_length = path_reference
-                //     .iter()
-                //     .map(|inner| inner.len())
-                //     .sum::<usize>()
-                //     + 1;
-                let path_length = 5;
+                let path_length = path_reference.encoding_length();
 
                 if let Some(flag) = element_flag {
                     flag.len() + path_length
@@ -198,20 +192,12 @@ impl Element {
                     0
                 };
 
-                // TODO: Make accurate
-                5
-                // path_reference
-                //     .iter()
-                //     .map(|inner| {
-                //         let inner_len = inner.len();
-                //         inner_len + inner_len.required_space()
-                //     })
-                //     .sum::<usize>()
-                //     + path_reference.len().required_space()
-                //     + flag_len
-                //     + flag_len.required_space()
-                //     + 1
-                //     + 1 // + 1 for enum and +1 for max reference hop
+                path_reference.serialized_size()
+                    + path_reference.encoding_length().required_space()
+                    + flag_len
+                    + flag_len.required_space()
+                    + 1
+                    + 1 // + 1 for enum and +1 for max reference hop
             }
             Element::Tree(_, element_flag) => {
                 let flag_len = if let Some(flag) = element_flag {
@@ -1107,8 +1093,7 @@ mod tests {
         );
     }
 
-    // TODO: Add test again
-    // #[test]
+    #[test]
     fn test_serialization() {
         let empty_tree = Element::empty_tree();
         let serialized = empty_tree.serialize().expect("expected to serialize");
@@ -1150,11 +1135,11 @@ mod tests {
             vec![5],
         ]));
         let serialized = reference.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 11);
+        assert_eq!(serialized.len(), 12);
         assert_eq!(serialized.len(), reference.serialized_byte_size());
         // The item is variable length 2 bytes, so it's enum 1 then 1 byte for length,
         // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
-        assert_eq!(hex::encode(serialized), "0103010002abcd01050000");
+        assert_eq!(hex::encode(serialized), "010003010002abcd01050000");
 
         let reference = Element::new_reference_with_flags(
             ReferencePathType::AbsolutePathReference(vec![
@@ -1165,9 +1150,9 @@ mod tests {
             Some(vec![1, 2, 3]),
         );
         let serialized = reference.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 15);
+        assert_eq!(serialized.len(), 16);
         assert_eq!(serialized.len(), reference.serialized_byte_size());
-        assert_eq!(hex::encode(serialized), "0103010002abcd0105000103010203");
+        assert_eq!(hex::encode(serialized), "010003010002abcd0105000103010203");
     }
 
     #[test]
