@@ -411,8 +411,7 @@ mod test {
         // 8 has just 1 link (we assume 2 so cost of 1)
         // 6 and 9 have 0 links (we assume 2 so cost of 2 each = 4)
         // Total overhead = 5
-        worst_case_cost.storage_added_bytes -=
-            5 * GroveDb::worst_case_encoded_link_size(&key_info);
+        worst_case_cost.storage_added_bytes -= 5 * GroveDb::worst_case_encoded_link_size(&key_info);
 
         // Now actual cost
         // Open a merk and insert setup elements

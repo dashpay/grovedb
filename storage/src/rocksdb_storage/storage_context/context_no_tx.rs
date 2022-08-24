@@ -1,8 +1,14 @@
-use costs::{cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost, StorageCost};
-use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error, WriteBatchWithTransaction};
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost,
+    OperationCost, StorageCost,
+};
+use error::Error;
+use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, WriteBatchWithTransaction};
 
 use super::{make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator};
 use crate::{
+    error,
+    error::Error::{CostError, RocksDBError},
     rocksdb_storage::storage::{Db, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
     StorageContext,
 };
@@ -53,15 +59,26 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
         &self,
         key: K,
         value: &[u8],
-        value_cost_info: Option<StorageCost>,
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
+        let mut cost = OperationCost {
+            seek_count: 1,
+            ..Default::default()
+        };
+        match cost.add_key_value_storage_costs(
+            key.as_ref().len() as u32,
+            value.len() as u32,
+            cost_info,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(CostError(e)).wrap_with_cost(cost);
+            }
+        };
         self.storage
             .put(make_prefixed_key(self.prefix.clone(), &key), value)
-            .wrap_with_cost(OperationCost {
-                seek_count: 1,
-                storage_added_bytes: key.as_ref().len() as u32 + value.len() as u32,
-                ..Default::default()
-            })
+            .map_err(RocksDBError)
+            .wrap_with_cost(cost)
     }
 
     fn put_aux<K: AsRef<[u8]>>(
@@ -75,6 +92,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
                 make_prefixed_key(self.prefix.clone(), &key),
                 value,
             )
+            .map_err(RocksDBError)
             .wrap_with_cost(OperationCost {
                 seek_count: 1,
                 storage_added_bytes: key.as_ref().len() as u32 + value.len() as u32,
@@ -93,6 +111,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
                 make_prefixed_key(self.prefix.clone(), &key),
                 value,
             )
+            .map_err(RocksDBError)
             .wrap_with_cost(OperationCost {
                 seek_count: 1,
                 storage_added_bytes: key.as_ref().len() as u32 + value.len() as u32,
@@ -111,6 +130,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
                 make_prefixed_key(self.prefix.clone(), &key),
                 value,
             )
+            .map_err(RocksDBError)
             .wrap_with_cost(OperationCost {
                 seek_count: 1,
                 storage_added_bytes: key.as_ref().len() as u32 + value.len() as u32,
@@ -130,6 +150,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
 
         self.storage
             .delete(make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_with_cost(cost)
     }
 
@@ -145,6 +166,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
 
         self.storage
             .delete_cf(self.cf_aux(), make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_with_cost(cost)
     }
 
@@ -160,6 +182,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
 
         self.storage
             .delete_cf(self.cf_roots(), make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_with_cost(cost)
     }
 
@@ -175,12 +198,14 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
 
         self.storage
             .delete_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_with_cost(cost)
     }
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
         self.storage
             .get(make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
                 storage_loaded_bytes: value
@@ -197,6 +222,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
     fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
         self.storage
             .get_cf(self.cf_aux(), make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
                 storage_loaded_bytes: value
@@ -216,6 +242,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
     ) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
         self.storage
             .get_cf(self.cf_roots(), make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
                 storage_loaded_bytes: value
@@ -235,6 +262,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
     ) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
         self.storage
             .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
                 storage_loaded_bytes: value
@@ -269,7 +297,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
         cost_return_on_error!(&mut cost, batch.finalize_deletion_costs(&self.storage));
 
         // On unsuccessul batch commit only deletion finalization cost will be returned.
-        cost_return_on_error_no_add!(&cost, self.storage.write(batch.batch));
+        cost_return_on_error_no_add!(&cost, self.storage.write(batch.batch).map_err(RocksDBError));
 
         Ok(()).wrap_with_cost(cost).add_cost(batch.cost_acc)
     }

@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-use costs::{CostContext, CostResult, CostsExt, OperationCost, StorageCost};
+use costs::{CostContext, CostResult, CostsExt, KeyValueStorageCost, OperationCost, StorageCost};
 use visualize::visualize_to_vec;
 
 use crate::worst_case_costs::WorstKeyLength;
@@ -112,7 +112,7 @@ pub trait StorageContext<'db> {
         &self,
         key: K,
         value: &[u8],
-        value_cost_info: Option<StorageCost>,
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>>;
 
     /// Put `value` into auxiliary data storage with `key`
@@ -172,12 +172,7 @@ pub trait StorageContext<'db> {
 /// Database batch (not to be confused with multi-tree operations batch).
 pub trait Batch {
     /// Appends to the database batch a put operation for a data record.
-    fn put<K: AsRef<[u8]>>(
-        &mut self,
-        key: K,
-        value: &[u8],
-        value_cost_info: Option<StorageCost>,
-    );
+    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8], cost_info: Option<KeyValueStorageCost>);
 
     /// Appends to the database batch a put operation for aux storage.
     fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]);
@@ -277,14 +272,14 @@ impl StorageBatch {
         &self,
         key: Vec<u8>,
         value: Vec<u8>,
-        value_cost_info: Option<StorageCost>,
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<()> {
         self.operations.borrow_mut().data.insert(
             key.clone(),
             AbstractBatchOperation::Put {
                 key,
                 value,
-                value_cost_info,
+                cost_info,
             },
         );
 
@@ -374,8 +369,8 @@ impl StorageBatch {
                 AbstractBatchOperation::Put {
                     key,
                     value,
-                    value_cost_info,
-                } => self.put(key, value, value_cost_info),
+                    cost_info,
+                } => self.put(key, value, cost_info),
                 AbstractBatchOperation::PutAux { key, value } => self.put_aux(key, value),
                 AbstractBatchOperation::PutRoot { key, value } => self.put_root(key, value),
                 AbstractBatchOperation::PutMeta { key, value } => self.put_meta(key, value),
@@ -441,7 +436,7 @@ pub enum AbstractBatchOperation {
     Put {
         key: Vec<u8>,
         value: Vec<u8>,
-        value_cost_info: Option<StorageCost>,
+        cost_info: Option<KeyValueStorageCost>,
     },
     /// Deferred put operation for aux storage
     PutAux { key: Vec<u8>, value: Vec<u8> },

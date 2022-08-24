@@ -1,9 +1,15 @@
 //! Prefixed storage batch implementation for RocksDB backend.
-use costs::{cost_return_on_error_no_add, CostContext, CostsExt, OperationCost, StorageCost};
+use costs::{
+    cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost, OperationCost,
+};
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
 use super::make_prefixed_key;
-use crate::{rocksdb_storage::storage::Db, Batch, StorageBatch};
+use crate::{
+    error::{Error, Error::RocksDBError},
+    rocksdb_storage::storage::Db,
+    Batch, StorageBatch,
+};
 
 /// Wrapper to RocksDB batch.
 /// All calls go to RocksDB batch, but wrapper handles prefixes and column
@@ -33,12 +39,12 @@ impl<'db> PrefixedRocksDbBatch<'db> {
     pub(crate) fn finalize_deletion_costs(
         &mut self,
         db: &'db Db,
-    ) -> CostContext<Result<(), rocksdb::Error>> {
+    ) -> CostContext<Result<(), Error>> {
         // Comutation of deletion cost has it's own... cost.
         let mut cost = OperationCost::default();
 
         for key in self.delete_keys_for_costs.iter() {
-            let value = cost_return_on_error_no_add!(&cost, db.get(key));
+            let value = cost_return_on_error_no_add!(&cost, db.get(key).map_err(RocksDBError));
             cost.seek_count += 1;
             if let Some(v) = value {
                 cost.storage_loaded_bytes += v.len() as u32;
@@ -47,7 +53,10 @@ impl<'db> PrefixedRocksDbBatch<'db> {
         }
 
         for key in self.delete_keys_for_costs_aux.iter() {
-            let value = cost_return_on_error_no_add!(&cost, db.get_cf(self.cf_aux, key));
+            let value = cost_return_on_error_no_add!(
+                &cost,
+                db.get_cf(self.cf_aux, key).map_err(RocksDBError)
+            );
             cost.seek_count += 1;
             if let Some(v) = value {
                 cost.storage_loaded_bytes += v.len() as u32;
@@ -56,7 +65,10 @@ impl<'db> PrefixedRocksDbBatch<'db> {
         }
 
         for key in self.delete_keys_for_costs_roots.iter() {
-            let value = cost_return_on_error_no_add!(&cost, db.get_cf(self.cf_roots, key));
+            let value = cost_return_on_error_no_add!(
+                &cost,
+                db.get_cf(self.cf_roots, key).map_err(RocksDBError)
+            );
             cost.seek_count += 1;
             if let Some(v) = value {
                 cost.storage_loaded_bytes += v.len() as u32;
@@ -83,7 +95,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         &mut self,
         key: K,
         value: &[u8],
-        value_cost_info: Option<StorageCost>,
+        cost_info: Option<KeyValueStorageCost>,
     ) {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
@@ -147,13 +159,13 @@ impl Batch for PrefixedMultiContextBatchPart {
         &mut self,
         key: K,
         value: &[u8],
-        value_cost_info: Option<StorageCost>,
+        cost_info: Option<KeyValueStorageCost>,
     ) {
         self.batch
             .put(
                 make_prefixed_key(self.prefix.clone(), key),
                 value.to_vec(),
-                value_cost_info,
+                cost_info,
             )
             .unwrap_add_cost(&mut self.acc_cost);
     }

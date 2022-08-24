@@ -2,6 +2,7 @@
 
 //! Storage abstraction for GroveDB.
 
+pub mod error;
 #[cfg(feature = "rocksdb_storage")]
 pub mod rocksdb_storage;
 mod storage;

@@ -1,7 +1,14 @@
 #![deny(missing_docs)]
 //! Interface crate to unify how operations' costs are passed and retrieved.
 
+/// Cost Errors
+pub mod error;
+
 use std::ops::{Add, AddAssign};
+
+use integer_encoding::VarInt;
+
+use crate::error::Error;
 
 /// Piece of data representing affected computer resources (approximately).
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -21,14 +28,34 @@ pub struct OperationCost {
     pub hash_node_calls: u16,
 }
 
+/// Storage only Operation Costs separated by key and value
+pub struct KeyValueStorageCost {
+    /// Key storage costs
+    pub key_storage_cost: StorageCost,
+    /// Value storage costs
+    pub value_storage_cost: StorageCost,
+}
+
 /// Storage only Operation Costs
 pub struct StorageCost {
     /// How many bytes are said to be added on hard drive.
-    pub added_bytes: u16,
+    pub added_bytes: u32,
     /// How many bytes are said to be replaced on hard drive.
-    pub replaced_bytes: u16,
+    pub replaced_bytes: u32,
     /// How many bytes are said to be removed on hard drive.
-    pub removed_bytes: u16,
+    pub removed_bytes: u32,
+}
+
+impl StorageCost {
+    /// Verify that the len of the item matches the given storage cost
+    pub fn verify(&self, len: u32) -> Result<(), Error> {
+        let size = self.added_bytes + self.replaced_bytes;
+
+        match size + size.required_space() as u32 == len {
+            true => Ok(()),
+            false => Err(Error::StorageCostMismatch),
+        }
+    }
 }
 
 impl OperationCost {
@@ -86,6 +113,42 @@ impl OperationCost {
             && self.storage_added_bytes >= other.storage_added_bytes
             && self.storage_loaded_bytes >= other.storage_loaded_bytes
             && self.hash_node_calls >= other.hash_node_calls
+    }
+
+    /// add storage costs for key and value storages
+    pub fn add_key_value_storage_costs(
+        &mut self,
+        key_len: u32,
+        value_len: u32,
+        storage_cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), Error> {
+        let (key_storage_cost, value_storage_costs) = match storage_cost_info {
+            None => (None, None),
+            Some(s) => {
+                s.key_storage_cost.verify(key_len)?;
+                s.value_storage_cost.verify(value_len)?;
+                (Some(s.key_storage_cost), Some(s.value_storage_cost))
+            }
+        };
+
+        self.add_storage_costs(key_len, key_storage_cost);
+        self.add_storage_costs(value_len, value_storage_costs);
+        Ok(())
+    }
+
+    /// add_storage_costs adds storage costs for a key or a value
+    fn add_storage_costs(&mut self, len: u32, storage_cost_info: Option<StorageCost>) {
+        match storage_cost_info {
+            // There is no storage cost info, just use value len
+            None => {
+                self.storage_added_bytes += len + len.required_space() as u32;
+            }
+            Some(storage_cost) => {
+                self.storage_added_bytes = storage_cost.added_bytes;
+                self.storage_removed_bytes = storage_cost.removed_bytes;
+                self.storage_replaced_bytes = storage_cost.replaced_bytes;
+            }
+        }
     }
 }
 

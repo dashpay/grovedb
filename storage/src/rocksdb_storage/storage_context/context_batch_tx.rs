@@ -1,9 +1,12 @@
 //! Storage context implementation with a transaction.
-use costs::{CostContext, CostsExt, OperationCost, StorageCost};
-use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error};
+use costs::{CostContext, CostsExt, KeyValueStorageCost, OperationCost, StorageCost};
+use error::Error;
+use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
 
 use super::{batch::PrefixedMultiContextBatchPart, make_prefixed_key, PrefixedRocksDbRawIterator};
 use crate::{
+    error,
+    error::Error::RocksDBError,
     rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
     StorageBatch, StorageContext,
 };
@@ -66,13 +69,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         &self,
         key: K,
         value: &[u8],
-        value_cost_info: Option<StorageCost>,
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
         self.batch
             .put(
                 make_prefixed_key(self.prefix.clone(), key),
                 value.to_vec(),
-                value_cost_info,
+                cost_info,
             )
             .map(Ok)
     }
@@ -134,6 +137,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
         self.transaction
             .get(make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
                 storage_loaded_bytes: value
@@ -150,6 +154,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
     fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
         self.transaction
             .get_cf(self.cf_aux(), make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
                 storage_loaded_bytes: value
@@ -169,6 +174,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
     ) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
         self.transaction
             .get_cf(self.cf_roots(), make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
                 storage_loaded_bytes: value
@@ -188,6 +194,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
     ) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
         self.transaction
             .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
                 storage_loaded_bytes: value
