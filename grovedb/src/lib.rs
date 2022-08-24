@@ -71,7 +71,7 @@ pub enum Error {
     MissingParameter(&'static str),
     // Irrecoverable errors
     #[error("storage error: {0}")]
-    StorageError(#[from] rocksdb_storage::Error),
+    StorageError(#[from] storage::error::Error),
     #[error("data corruption error: {0}")]
     CorruptedData(String),
 

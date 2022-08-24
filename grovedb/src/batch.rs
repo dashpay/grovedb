@@ -15,8 +15,8 @@ use costs::{
 use merk::{tree::value_hash, CryptoHash, Merk};
 use nohash_hasher::IntMap;
 use storage::{
-    rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch,
-    StorageContext,
+    error::Error::RocksDBError, rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength,
+    Storage, StorageBatch, StorageContext,
 };
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
