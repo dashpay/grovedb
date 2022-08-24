@@ -2412,13 +2412,13 @@ fn test_aux_uses_separate_cf() {
     .unwrap()
     .expect("successful value insert");
 
-    db.put_aux(b"key1", b"a", None)
+    db.put_aux(b"key1", b"a", None, None)
         .unwrap()
         .expect("cannot put aux");
-    db.put_aux(b"key2", b"b", None)
+    db.put_aux(b"key2", b"b", None, None)
         .unwrap()
         .expect("cannot put aux");
-    db.put_aux(b"key3", b"c", None)
+    db.put_aux(b"key3", b"c", None, None)
         .unwrap()
         .expect("cannot put aux");
     db.delete_aux(b"key3", None)
@@ -2469,7 +2469,7 @@ fn test_aux_with_transaction() {
     db.insert([TEST_LEAF], &key, element, Some(&transaction))
         .unwrap()
         .expect("unable to insert");
-    db.put_aux(&key, &aux_value, Some(&transaction))
+    db.put_aux(&key, &aux_value, None, Some(&transaction))
         .unwrap()
         .expect("unable to insert aux value");
     assert_eq!(

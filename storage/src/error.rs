@@ -8,5 +8,6 @@ pub enum Error {
     CostError(costs::error::Error),
     /// Rocks DB error
     #[error("rocksDB error")]
-    RocksDBError(rocksdb::Error),
+    #[cfg(feature = "rocksdb_storage")]
+    RocksDBError(#[from] rocksdb::Error),
 }

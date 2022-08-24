@@ -1,4 +1,6 @@
-use costs::{cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
+use costs::{
+    cost_return_on_error_no_add, CostResult, CostsExt, KeyValueStorageCost, OperationCost,
+};
 use storage::StorageContext;
 
 use crate::{util::meta_storage_context_optional_tx, Error, GroveDb, TransactionArg};
@@ -8,6 +10,7 @@ impl GroveDb {
         &self,
         key: K,
         value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
         transaction: TransactionArg,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -17,7 +20,7 @@ impl GroveDb {
                 &cost,
                 aux_storage
                     .unwrap_add_cost(&mut cost)
-                    .put_aux(key.as_ref(), value)
+                    .put_aux(key.as_ref(), value, cost_info)
                     .unwrap_add_cost(&mut cost)
                     .map_err(|e| e.into())
             );

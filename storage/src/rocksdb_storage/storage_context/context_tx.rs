@@ -9,7 +9,7 @@ use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, WriteBatchWithTransacti
 use super::{make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator};
 use crate::{
     error,
-    error::Error::RocksDBError,
+    error::Error::{CostError, RocksDBError},
     rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
     StorageContext,
 };
@@ -67,21 +67,46 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
+        let mut cost = OperationCost {
+            seek_count: 1,
+            ..Default::default()
+        };
+        match cost.add_key_value_storage_costs(
+            key.as_ref().len() as u32,
+            value.len() as u32,
+            cost_info,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(CostError(e)).wrap_with_cost(cost);
+            }
+        };
         self.transaction
             .put(make_prefixed_key(self.prefix.clone(), &key), value)
             .map_err(RocksDBError)
-            .wrap_with_cost(OperationCost {
-                storage_added_bytes: key.as_ref().len() as u32 + value.len() as u32,
-                seek_count: 1,
-                ..Default::default()
-            })
+            .wrap_with_cost(cost)
     }
 
     fn put_aux<K: AsRef<[u8]>>(
         &self,
         key: K,
         value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
+        let mut cost = OperationCost {
+            seek_count: 1,
+            ..Default::default()
+        };
+        match cost.add_key_value_storage_costs(
+            key.as_ref().len() as u32,
+            value.len() as u32,
+            cost_info,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(CostError(e)).wrap_with_cost(cost);
+            }
+        };
         self.transaction
             .put_cf(
                 self.cf_aux(),
@@ -89,18 +114,29 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
                 value,
             )
             .map_err(RocksDBError)
-            .wrap_with_cost(OperationCost {
-                storage_added_bytes: key.as_ref().len() as u32 + value.len() as u32,
-                seek_count: 1,
-                ..Default::default()
-            })
+            .wrap_with_cost(cost)
     }
 
     fn put_root<K: AsRef<[u8]>>(
         &self,
         key: K,
         value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
+        let mut cost = OperationCost {
+            seek_count: 1,
+            ..Default::default()
+        };
+        match cost.add_key_value_storage_costs(
+            key.as_ref().len() as u32,
+            value.len() as u32,
+            cost_info,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(CostError(e)).wrap_with_cost(cost);
+            }
+        };
         self.transaction
             .put_cf(
                 self.cf_roots(),
@@ -108,18 +144,29 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
                 value,
             )
             .map_err(RocksDBError)
-            .wrap_with_cost(OperationCost {
-                storage_added_bytes: key.as_ref().len() as u32 + value.len() as u32,
-                seek_count: 1,
-                ..Default::default()
-            })
+            .wrap_with_cost(cost)
     }
 
     fn put_meta<K: AsRef<[u8]>>(
         &self,
         key: K,
         value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
+        let mut cost = OperationCost {
+            seek_count: 1,
+            ..Default::default()
+        };
+        match cost.add_key_value_storage_costs(
+            key.as_ref().len() as u32,
+            value.len() as u32,
+            cost_info,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(CostError(e)).wrap_with_cost(cost);
+            }
+        };
         self.transaction
             .put_cf(
                 self.cf_meta(),
@@ -127,11 +174,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
                 value,
             )
             .map_err(RocksDBError)
-            .wrap_with_cost(OperationCost {
-                storage_added_bytes: key.as_ref().len() as u32 + value.len() as u32,
-                seek_count: 1,
-                ..Default::default()
-            })
+            .wrap_with_cost(cost)
     }
 
     fn delete<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>> {

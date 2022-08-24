@@ -84,9 +84,14 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         &self,
         key: K,
         value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
         self.batch
-            .put_aux(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
+            .put_aux(
+                make_prefixed_key(self.prefix.clone(), key),
+                value.to_vec(),
+                cost_info,
+            )
             .map(Ok)
     }
 
@@ -94,9 +99,14 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         &self,
         key: K,
         value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
         self.batch
-            .put_root(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
+            .put_root(
+                make_prefixed_key(self.prefix.clone(), key),
+                value.to_vec(),
+                cost_info,
+            )
             .map(Ok)
     }
 
@@ -104,9 +114,14 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         &self,
         key: K,
         value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
         self.batch
-            .put_meta(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
+            .put_meta(
+                make_prefixed_key(self.prefix.clone(), key),
+                value.to_vec(),
+                cost_info,
+            )
             .map(Ok)
     }
 
