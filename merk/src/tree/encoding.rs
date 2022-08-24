@@ -229,4 +229,10 @@ mod tests {
             panic!("Expected Link::Reference");
         }
     }
+
+    #[test]
+    fn decode_invalid_bytes_as_tree() {
+        let bytes = vec![2,3,4,5];
+        let tree = Tree::decode(vec![0], bytes.as_slice());
+    }
 }
