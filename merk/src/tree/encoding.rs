@@ -57,20 +57,20 @@ impl Tree {
     }
 
     #[inline]
-    pub fn decode_into(&mut self, key: Vec<u8>, input: &[u8]) {
-        // operation is infallible so it's ok to unwrap
-        let mut tree_inner: TreeInner = Decode::decode(input).unwrap();
+    pub fn decode_into(&mut self, key: Vec<u8>, input: &[u8]) -> ed::Result<()> {
+        let mut tree_inner: TreeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;
         self.inner = Box::new(tree_inner);
+        Ok(())
     }
 
     #[inline]
-    pub fn decode(key: Vec<u8>, input: &[u8]) -> Self {
+    pub fn decode(key: Vec<u8>, input: &[u8]) -> ed::Result<Self> {
         // operation is infallible so it's ok to unwrap
         // TODO: how said that its infallible?
-        let mut tree_inner: TreeInner = Decode::decode(input).unwrap();
+        let mut tree_inner: TreeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;
-        Tree::new_with_tree_inner(tree_inner)
+        Ok(Tree::new_with_tree_inner(tree_inner))
     }
 }
 
@@ -201,7 +201,7 @@ mod tests {
             208, 25, 73, 98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199, 149,
             144, 21, 1,
         ];
-        let tree = Tree::decode(vec![0], bytes.as_slice());
+        let tree = Tree::decode(vec![0], bytes.as_slice()).expect("should decode correctly");
         assert_eq!(tree.key(), &[0]);
         assert_eq!(tree.value(), &[1]);
     }
@@ -215,7 +215,7 @@ mod tests {
             55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158, 131, 208, 25, 73, 98,
             245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199, 149, 144, 21, 1,
         ];
-        let tree = Tree::decode(vec![0], bytes.as_slice());
+        let tree = Tree::decode(vec![0], bytes.as_slice()).expect("should decode correctly");
         assert_eq!(tree.key(), &[0]);
         assert_eq!(tree.value(), &[1]);
         if let Some(Link::Reference {
@@ -230,5 +230,12 @@ mod tests {
         } else {
             panic!("Expected Link::Reference");
         }
+    }
+
+    #[test]
+    fn decode_invalid_bytes_as_tree() {
+        let bytes = vec![2,3,4,5];
+        let tree = Tree::decode(vec![0], bytes.as_slice());
+        assert!(matches!(tree, Err(_)));
     }
 }

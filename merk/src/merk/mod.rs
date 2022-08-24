@@ -651,7 +651,7 @@ where
 fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<Tree>> {
     let bytes = db.get(key).unwrap()?; // TODO: get_pinned ?
     if let Some(bytes) = bytes {
-        Ok(Some(Tree::decode(key.to_vec(), &bytes)))
+        Ok(Some(Tree::decode(key.to_vec(), &bytes)?))
     } else {
         Ok(None)
     }
