@@ -51,7 +51,7 @@ impl Terminated for Box<TreeInner> {}
 #[derive(Clone)]
 pub struct Tree {
     inner: Box<TreeInner>,
-    decode_size: usize,
+    pub(crate) decode_size: usize,
 }
 
 impl Tree {

@@ -718,20 +718,35 @@ impl MerkCommitter {
 
 impl Commit for MerkCommitter {
     fn write(&mut self, tree: &Tree) -> Result<()> {
-        let mut buf = Vec::with_capacity(tree.encoding_length());
+        let current_tree_size = tree.encoding_length();
+        let mut buf = Vec::with_capacity(current_tree_size);
         tree.encode_into(&mut buf);
 
         let key_storage_cost = StorageCost {
             ..Default::default()
         };
-        let value_storage_cost = StorageCost {
+        let mut value_storage_cost = StorageCost {
             ..Default::default()
         };
+
+        if tree.decode_size == 0 {
+            // new node, storage has to be created for entire tree
+            value_storage_cost.added_bytes += current_tree_size as u32
+        } else if current_tree_size > tree.decode_size {
+            // updating an existing tree, but would need more storage
+            value_storage_cost.replaced_bytes += tree.decode_size as u32;
+            value_storage_cost.added_bytes += (tree.decode_size - current_tree_size) as u32;
+        } else {
+            // decode_size < tree_size, updating an existing tree but freed storage
+            value_storage_cost.replaced_bytes += current_tree_size as u32;
+            value_storage_cost.removed_bytes += (current_tree_size - tree.decode_size) as u32;
+        }
 
         let key_value_storage_cost = KeyValueStorageCost {
             key_storage_cost,
             value_storage_cost,
         };
+
         self.batch
             .push((tree.key().to_vec(), Some(buf), Some(key_value_storage_cost)));
         Ok(())
