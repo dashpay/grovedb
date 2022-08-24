@@ -399,10 +399,6 @@ where
             .take()
             .map(|tree| Walker::new(tree, self.source()));
 
-        if maybe_walker.is_some() {
-            // dbg!(&maybe_walker.as_ref().unwrap().tree());
-        }
-
         Walker::apply_to(maybe_walker, batch, self.source()).flat_map_ok(
             |(maybe_tree, deleted_keys)| {
                 self.tree.set(maybe_tree);
