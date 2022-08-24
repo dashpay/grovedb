@@ -2,10 +2,11 @@
 use std::path::Path;
 
 use costs::{cost_return_on_error_no_add, CostContext, CostResult, CostsExt, OperationCost};
+use error::Error;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
 use rocksdb::{
-    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, Error, OptimisticTransactionDB,
+    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
     Transaction, WriteBatchWithTransaction,
 };
 
@@ -13,7 +14,10 @@ use super::{
     PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext,
     PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
 };
-use crate::{worst_case_costs::WorstKeyLength, AbstractBatchOperation, Storage, StorageBatch};
+use crate::{
+    error, error::Error::RocksDBError, worst_case_costs::WorstKeyLength, AbstractBatchOperation,
+    Storage, StorageBatch,
+};
 
 const BLAKE_BLOCK_LEN: usize = 64;
 
@@ -63,7 +67,8 @@ impl RocksDbStorage {
                 ColumnFamilyDescriptor::new(ROOTS_CF_NAME, DEFAULT_OPTS.clone()),
                 ColumnFamilyDescriptor::new(META_CF_NAME, DEFAULT_OPTS.clone()),
             ],
-        )?;
+        )
+        .map_err(RocksDBError)?;
 
         Ok(RocksDbStorage { db })
     }
@@ -125,15 +130,18 @@ impl<'db> Storage<'db> for RocksDbStorage {
         transaction: Self::Transaction,
     ) -> CostContext<Result<(), Self::Error>> {
         // All transaction costs were provided on method calls
-        transaction.commit().wrap_with_cost(Default::default())
+        transaction
+            .commit()
+            .map_err(RocksDBError)
+            .wrap_with_cost(Default::default())
     }
 
     fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Self::Error> {
-        transaction.rollback()
+        transaction.rollback().map_err(RocksDBError)
     }
 
     fn flush(&self) -> Result<(), Self::Error> {
-        self.db.flush()
+        self.db.flush().map_err(RocksDBError)
     }
 
     fn get_storage_context<'p, P>(&'db self, path: P) -> CostContext<Self::StorageContext>
@@ -205,7 +213,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                 AbstractBatchOperation::Put {
                     key,
                     value,
-                    value_cost_info,
+                    cost_info,
                 } => {
                     db_batch.put(&key, &value);
                     pending_storage_written_bytes += key_value_size(&key, &value);
@@ -227,9 +235,12 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
                     // TODO: fix not atomic freed size computation
                     cost.seek_count += 1;
-                    let value_len = cost_return_on_error_no_add!(&cost, self.db.get(&key))
-                        .map(|x| x.len() as u32)
-                        .unwrap_or(0);
+                    let value_len = cost_return_on_error_no_add!(
+                        &cost,
+                        self.db.get(&key).map_err(RocksDBError)
+                    )
+                    .map(|x| x.len() as u32)
+                    .unwrap_or(0);
                     cost.storage_loaded_bytes += value_len;
 
                     pending_storage_freed_bytes += key.len() as u32 + value_len;
@@ -239,10 +250,12 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
                     // TODO: fix not atomic freed size computation
                     cost.seek_count += 1;
-                    let value_len =
-                        cost_return_on_error_no_add!(&cost, self.db.get_cf(cf_aux(&self.db), &key))
-                            .map(|x| x.len() as u32)
-                            .unwrap_or(0);
+                    let value_len = cost_return_on_error_no_add!(
+                        &cost,
+                        self.db.get_cf(cf_aux(&self.db), &key).map_err(RocksDBError)
+                    )
+                    .map(|x| x.len() as u32)
+                    .unwrap_or(0);
                     cost.storage_loaded_bytes += value_len;
 
                     pending_storage_freed_bytes += key.len() as u32 + value_len;
@@ -254,7 +267,9 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     cost.seek_count += 1;
                     let value_len = cost_return_on_error_no_add!(
                         &cost,
-                        self.db.get_cf(cf_roots(&self.db), &key)
+                        self.db
+                            .get_cf(cf_roots(&self.db), &key)
+                            .map_err(RocksDBError)
                     )
                     .map(|x| x.len() as u32)
                     .unwrap_or(0);
@@ -269,7 +284,9 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     cost.seek_count += 1;
                     let value_len = cost_return_on_error_no_add!(
                         &cost,
-                        self.db.get_cf(cf_meta(&self.db), &key)
+                        self.db
+                            .get_cf(cf_meta(&self.db), &key)
+                            .map_err(RocksDBError)
                     )
                     .map(|x| x.len() as u32)
                     .unwrap_or(0);
@@ -288,7 +305,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         cost.storage_added_bytes += pending_storage_written_bytes;
         cost.storage_removed_bytes += pending_storage_freed_bytes;
 
-        result.wrap_with_cost(cost)
+        result.map_err(RocksDBError).wrap_with_cost(cost)
     }
 
     fn get_storage_context_cost<L: WorstKeyLength>(path: &Vec<L>) -> OperationCost {
@@ -299,7 +316,9 @@ impl<'db> Storage<'db> for RocksDbStorage {
     }
 
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Self::Error> {
-        Checkpoint::new(&self.db).and_then(|x| x.create_checkpoint(path))
+        Checkpoint::new(&self.db)
+            .and_then(|x| x.create_checkpoint(path))
+            .map_err(RocksDBError)
     }
 }
 
