@@ -9,7 +9,8 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost,
+    OperationCost,
 };
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
 
@@ -156,7 +157,8 @@ impl<S> fmt::Debug for Merk<S> {
     }
 }
 
-pub type UseTreeMutResult = CostContext<Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>>;
+pub type UseTreeMutResult =
+    CostContext<Result<Vec<(Vec<u8>, Option<Vec<u8>>, Option<KeyValueStorageCost>)>>>;
 
 impl<'db, S> Merk<S>
 where
@@ -539,14 +541,14 @@ where
 
         // TODO: move this to MerkCommitter impl?
         for key in deleted_keys {
-            to_batch.push((key, None));
+            to_batch.push((key, None, None));
         }
         to_batch.sort_by(|a, b| a.0.cmp(&b.0));
-        for (key, maybe_value) in to_batch {
+        for (key, maybe_value, maybe_cost) in to_batch {
             if let Some(value) = maybe_value {
                 cost_return_on_error_no_add!(
                     &cost,
-                    batch.put(&key, &value, None).map_err(|e| e.into())
+                    batch.put(&key, &value, maybe_cost).map_err(|e| e.into())
                 ); // todo: fix the None asap
             } else {
                 batch.delete(&key);
@@ -698,7 +700,8 @@ where
 }
 
 struct MerkCommitter {
-    batch: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+    // TODO: The storage cost here shouldn't be an option, fix asap
+    batch: Vec<(Vec<u8>, Option<Vec<u8>>, Option<KeyValueStorageCost>)>,
     height: u8,
     levels: u8,
 }
@@ -719,7 +722,7 @@ impl Commit for MerkCommitter {
         // dbg!(&tree);
         tree.encode_into(&mut buf);
         // dbg!(buf.len());
-        self.batch.push((tree.key().to_vec(), Some(buf)));
+        self.batch.push((tree.key().to_vec(), Some(buf), None));
         Ok(())
     }
 
