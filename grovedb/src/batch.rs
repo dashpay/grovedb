@@ -40,7 +40,7 @@ impl Op {
         match self {
             Op::ReplaceTreeHash { .. } => OperationCost {
                 seek_count: 1,
-                storage_written_bytes: 32,
+                storage_added_bytes: 32,
                 ..Default::default()
             },
             Op::Insert { element } => {
@@ -1428,10 +1428,10 @@ mod tests {
             cost,
             OperationCost {
                 seek_count: 2, // 1 to get tree, 1 to insert
-                storage_written_bytes: 177,
-                storage_updated_bytes: 0,
+                storage_added_bytes: 177,
+                storage_replaced_bytes: 0,
                 storage_loaded_bytes: 0,
-                storage_freed_bytes: 0,
+                storage_removed_bytes: 0,
                 hash_node_calls: 6,
             }
         );
@@ -1462,10 +1462,10 @@ mod tests {
             worst_case_cost_result.cost,
             OperationCost {
                 seek_count: 4, // todo: why is this 4
-                storage_written_bytes: 177,
-                storage_updated_bytes: 640, // log(max_elements) * 32 = 640 // todo: verify
+                storage_added_bytes: 177,
+                storage_replaced_bytes: 640, // log(max_elements) * 32 = 640 // todo: verify
                 storage_loaded_bytes: 0,
-                storage_freed_bytes: 0,
+                storage_removed_bytes: 0,
                 hash_node_calls: 22, // todo: verify why
             }
         );

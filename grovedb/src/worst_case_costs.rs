@@ -147,7 +147,7 @@ impl GroveDb {
         for _ in 0..modified_node_count {
             cost.seek_count += 1;
             cost.hash_node_calls += 1;
-            cost.storage_written_bytes += prefixed_key_size + value_size
+            cost.storage_added_bytes += prefixed_key_size + value_size
         }
 
         // Reduce the hash node call count by 1 because the root node is not rehashed on
@@ -157,7 +157,7 @@ impl GroveDb {
 
         // Write the root key
         cost.seek_count += 1;
-        cost.storage_written_bytes += prefixed_key_size + b"r".len() as u32;
+        cost.storage_added_bytes += prefixed_key_size + b"r".len() as u32;
     }
 
     /// Add worst case for getting a merk tree
@@ -209,7 +209,7 @@ impl GroveDb {
     ) {
         let bytes_len = value.total_byte_size(key.len() as usize);
 
-        cost.storage_written_bytes += bytes_len as u32;
+        cost.storage_added_bytes += bytes_len as u32;
         // .. and hash computation for the inserted element itself
         // todo: verify this
         cost.hash_node_calls += ((bytes_len + 1) / HASH_BLOCK_SIZE) as u16;
@@ -233,7 +233,7 @@ impl GroveDb {
         // root, thus two more updates.
         nodes_updated += 2;
 
-        cost.storage_updated_bytes += nodes_updated * HASH_LENGTH_U32;
+        cost.storage_replaced_bytes += nodes_updated * HASH_LENGTH_U32;
         // Same number of hash recomputations for propagation
         cost.hash_node_calls += (nodes_updated as u16) * Self::node_hash_update_count();
     }
@@ -411,7 +411,7 @@ mod test {
         // 8 has just 1 link (we assume 2 so cost of 1)
         // 6 and 9 have 0 links (we assume 2 so cost of 2 each = 4)
         // Total overhead = 5
-        worst_case_cost.storage_written_bytes -=
+        worst_case_cost.storage_added_bytes -=
             5 * GroveDb::worst_case_encoded_link_size(&key_info);
 
         // Now actual cost

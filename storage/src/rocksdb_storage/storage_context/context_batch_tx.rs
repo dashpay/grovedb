@@ -1,5 +1,5 @@
 //! Storage context implementation with a transaction.
-use costs::{CostContext, CostsExt, OperationCost};
+use costs::{CostContext, CostsExt, OperationCost, StorageCost};
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error};
 
 use super::{batch::PrefixedMultiContextBatchPart, make_prefixed_key, PrefixedRocksDbRawIterator};
@@ -66,13 +66,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         &self,
         key: K,
         value: &[u8],
-        replaced_value_bytes_count: Option<u16>,
+        value_cost_info: Option<StorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
         self.batch
             .put(
                 make_prefixed_key(self.prefix.clone(), key),
                 value.to_vec(),
-                replaced_value_bytes_count,
+                value_cost_info,
             )
             .map(Ok)
     }

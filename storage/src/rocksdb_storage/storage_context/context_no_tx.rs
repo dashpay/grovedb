@@ -1,6 +1,4 @@
-use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
-};
+use costs::{cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost, StorageCost};
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error, WriteBatchWithTransaction};
 
 use super::{make_prefixed_key, PrefixedRocksDbBatch, PrefixedRocksDbRawIterator};
@@ -55,13 +53,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
         &self,
         key: K,
         value: &[u8],
-        replaced_value_bytes_count: Option<u16>,
+        value_cost_info: Option<StorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
         self.storage
             .put(make_prefixed_key(self.prefix.clone(), &key), value)
             .wrap_with_cost(OperationCost {
                 seek_count: 1,
-                storage_written_bytes: key.as_ref().len() as u32 + value.len() as u32,
+                storage_added_bytes: key.as_ref().len() as u32 + value.len() as u32,
                 ..Default::default()
             })
     }
@@ -79,7 +77,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             )
             .wrap_with_cost(OperationCost {
                 seek_count: 1,
-                storage_written_bytes: key.as_ref().len() as u32 + value.len() as u32,
+                storage_added_bytes: key.as_ref().len() as u32 + value.len() as u32,
                 ..Default::default()
             })
     }
@@ -97,7 +95,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             )
             .wrap_with_cost(OperationCost {
                 seek_count: 1,
-                storage_written_bytes: key.as_ref().len() as u32 + value.len() as u32,
+                storage_added_bytes: key.as_ref().len() as u32 + value.len() as u32,
                 ..Default::default()
             })
     }
@@ -115,7 +113,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             )
             .wrap_with_cost(OperationCost {
                 seek_count: 1,
-                storage_written_bytes: key.as_ref().len() as u32 + value.len() as u32,
+                storage_added_bytes: key.as_ref().len() as u32 + value.len() as u32,
                 ..Default::default()
             })
     }
@@ -127,7 +125,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .map(|x| x.len() as u32)
             .unwrap_or(0);
 
-        cost.storage_freed_bytes += deleted_len;
+        cost.storage_removed_bytes += deleted_len;
         cost.seek_count += 1;
 
         self.storage
@@ -142,7 +140,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .map(|x| x.len() as u32)
             .unwrap_or(0);
 
-        cost.storage_freed_bytes += deleted_len;
+        cost.storage_removed_bytes += deleted_len;
         cost.seek_count += 1;
 
         self.storage
@@ -157,7 +155,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .map(|x| x.len() as u32)
             .unwrap_or(0);
 
-        cost.storage_freed_bytes += deleted_len;
+        cost.storage_removed_bytes += deleted_len;
         cost.seek_count += 1;
 
         self.storage
@@ -172,7 +170,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .map(|x| x.len() as u32)
             .unwrap_or(0);
 
-        cost.storage_freed_bytes += deleted_len;
+        cost.storage_removed_bytes += deleted_len;
         cost.seek_count += 1;
 
         self.storage

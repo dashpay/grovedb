@@ -205,7 +205,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                 AbstractBatchOperation::Put {
                     key,
                     value,
-                    replaced_value_bytes_count,
+                    value_cost_info,
                 } => {
                     db_batch.put(&key, &value);
                     pending_storage_written_bytes += key_value_size(&key, &value);
@@ -285,8 +285,8 @@ impl<'db> Storage<'db> for RocksDbStorage {
             Some(transaction) => transaction.rebuild_from_writebatch(&db_batch),
         };
 
-        cost.storage_written_bytes += pending_storage_written_bytes;
-        cost.storage_freed_bytes += pending_storage_freed_bytes;
+        cost.storage_added_bytes += pending_storage_written_bytes;
+        cost.storage_removed_bytes += pending_storage_freed_bytes;
 
         result.wrap_with_cost(cost)
     }

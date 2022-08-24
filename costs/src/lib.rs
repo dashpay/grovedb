@@ -8,17 +8,27 @@ use std::ops::{Add, AddAssign};
 pub struct OperationCost {
     /// How many storage seeks were done.
     pub seek_count: u16,
-    /// How many bytes were written on hard drive.
-    pub storage_written_bytes: u32,
+    /// How many bytes were written to be added on hard drive.
+    pub storage_added_bytes: u32,
     /// How many bytes were updated on hard drive, mostly from proof hash
     /// updates.
-    pub storage_updated_bytes: u32,
+    pub storage_replaced_bytes: u32,
+    /// How many bytes were removed on hard drive.
+    pub storage_removed_bytes: u32,
     /// How many bytes were loaded from hard drive.
     pub storage_loaded_bytes: u32,
-    /// How many bytes were removed on hard drive.
-    pub storage_freed_bytes: u32,
     /// How many times node hashing was done (for merkelized tree).
     pub hash_node_calls: u16,
+}
+
+/// Storage only Operation Costs
+pub struct StorageCost {
+    /// How many bytes are said to be added on hard drive.
+    pub added_bytes: u16,
+    /// How many bytes are said to be replaced on hard drive.
+    pub replaced_bytes: u16,
+    /// How many bytes are said to be removed on hard drive.
+    pub removed_bytes: u16,
 }
 
 impl OperationCost {
@@ -35,7 +45,7 @@ impl OperationCost {
     /// `storage_written_bytes`.
     pub fn with_storage_written_bytes(storage_written_bytes: u32) -> Self {
         OperationCost {
-            storage_written_bytes,
+            storage_added_bytes: storage_written_bytes,
             ..Default::default()
         }
     }
@@ -53,7 +63,7 @@ impl OperationCost {
     /// `storage_freed_bytes`.
     pub fn with_storage_freed_bytes(storage_freed_bytes: u32) -> Self {
         OperationCost {
-            storage_freed_bytes,
+            storage_removed_bytes: storage_freed_bytes,
             ..Default::default()
         }
     }
@@ -71,9 +81,9 @@ impl OperationCost {
     /// storage_freed_bytes is worse when it is lower instead
     pub fn worse_or_eq_than(&self, other: &Self) -> bool {
         self.seek_count >= other.seek_count
-            && self.storage_updated_bytes >= other.storage_updated_bytes
-            && self.storage_freed_bytes <= other.storage_freed_bytes
-            && self.storage_written_bytes >= other.storage_written_bytes
+            && self.storage_replaced_bytes >= other.storage_replaced_bytes
+            && self.storage_removed_bytes <= other.storage_removed_bytes
+            && self.storage_added_bytes >= other.storage_added_bytes
             && self.storage_loaded_bytes >= other.storage_loaded_bytes
             && self.hash_node_calls >= other.hash_node_calls
     }
@@ -85,10 +95,10 @@ impl Add for OperationCost {
     fn add(self, rhs: Self) -> Self::Output {
         OperationCost {
             seek_count: self.seek_count + rhs.seek_count,
-            storage_written_bytes: self.storage_written_bytes + rhs.storage_written_bytes,
-            storage_updated_bytes: self.storage_updated_bytes + rhs.storage_updated_bytes,
+            storage_added_bytes: self.storage_added_bytes + rhs.storage_added_bytes,
+            storage_replaced_bytes: self.storage_replaced_bytes + rhs.storage_replaced_bytes,
             storage_loaded_bytes: self.storage_loaded_bytes + rhs.storage_loaded_bytes,
-            storage_freed_bytes: self.storage_freed_bytes + rhs.storage_freed_bytes,
+            storage_removed_bytes: self.storage_removed_bytes + rhs.storage_removed_bytes,
             hash_node_calls: self.hash_node_calls + rhs.hash_node_calls,
         }
     }
@@ -97,10 +107,10 @@ impl Add for OperationCost {
 impl AddAssign for OperationCost {
     fn add_assign(&mut self, rhs: Self) {
         self.seek_count += rhs.seek_count;
-        self.storage_written_bytes += rhs.storage_written_bytes;
-        self.storage_updated_bytes += rhs.storage_updated_bytes;
+        self.storage_added_bytes += rhs.storage_added_bytes;
+        self.storage_replaced_bytes += rhs.storage_replaced_bytes;
         self.storage_loaded_bytes += rhs.storage_loaded_bytes;
-        self.storage_freed_bytes += rhs.storage_freed_bytes;
+        self.storage_removed_bytes += rhs.storage_removed_bytes;
         self.hash_node_calls += rhs.hash_node_calls;
     }
 }

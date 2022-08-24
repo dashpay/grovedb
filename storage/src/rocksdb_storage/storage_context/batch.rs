@@ -1,5 +1,5 @@
 //! Prefixed storage batch implementation for RocksDB backend.
-use costs::{cost_return_on_error_no_add, CostContext, CostsExt, OperationCost};
+use costs::{cost_return_on_error_no_add, CostContext, CostsExt, OperationCost, StorageCost};
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
 use super::make_prefixed_key;
@@ -42,7 +42,7 @@ impl<'db> PrefixedRocksDbBatch<'db> {
             cost.seek_count += 1;
             if let Some(v) = value {
                 cost.storage_loaded_bytes += v.len() as u32;
-                self.cost_acc.storage_freed_bytes += v.len() as u32;
+                self.cost_acc.storage_removed_bytes += v.len() as u32;
             }
         }
 
@@ -51,7 +51,7 @@ impl<'db> PrefixedRocksDbBatch<'db> {
             cost.seek_count += 1;
             if let Some(v) = value {
                 cost.storage_loaded_bytes += v.len() as u32;
-                self.cost_acc.storage_freed_bytes += v.len() as u32;
+                self.cost_acc.storage_removed_bytes += v.len() as u32;
             }
         }
 
@@ -60,7 +60,7 @@ impl<'db> PrefixedRocksDbBatch<'db> {
             cost.seek_count += 1;
             if let Some(v) = value {
                 cost.storage_loaded_bytes += v.len() as u32;
-                self.cost_acc.storage_freed_bytes += v.len() as u32;
+                self.cost_acc.storage_removed_bytes += v.len() as u32;
             }
         }
 
@@ -83,12 +83,12 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         &mut self,
         key: K,
         value: &[u8],
-        replaced_value_bytes_count: Option<u16>,
+        value_cost_info: Option<StorageCost>,
     ) {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
-        self.cost_acc.storage_written_bytes += prefixed_key.len() as u32 + value.len() as u32;
+        self.cost_acc.storage_added_bytes += prefixed_key.len() as u32 + value.len() as u32;
         // dbg!(prefixed_key.len());
 
         self.batch.put(prefixed_key, value);
@@ -98,7 +98,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
-        self.cost_acc.storage_written_bytes += prefixed_key.len() as u32 + value.len() as u32;
+        self.cost_acc.storage_added_bytes += prefixed_key.len() as u32 + value.len() as u32;
 
         self.batch.put_cf(self.cf_aux, prefixed_key, value);
     }
@@ -107,7 +107,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
-        self.cost_acc.storage_written_bytes += prefixed_key.len() as u32 + value.len() as u32;
+        self.cost_acc.storage_added_bytes += prefixed_key.len() as u32 + value.len() as u32;
 
         self.batch.put_cf(self.cf_roots, prefixed_key, value);
     }
@@ -147,13 +147,13 @@ impl Batch for PrefixedMultiContextBatchPart {
         &mut self,
         key: K,
         value: &[u8],
-        replaced_value_bytes_count: Option<u16>,
+        value_cost_info: Option<StorageCost>,
     ) {
         self.batch
             .put(
                 make_prefixed_key(self.prefix.clone(), key),
                 value.to_vec(),
-                replaced_value_bytes_count,
+                value_cost_info,
             )
             .unwrap_add_cost(&mut self.acc_cost);
     }
