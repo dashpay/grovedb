@@ -51,23 +51,8 @@ impl Terminated for Box<TreeInner> {}
 #[derive(Clone)]
 pub struct Tree {
     inner: Box<TreeInner>,
+    decode_size: usize,
 }
-
-// impl Encode for Tree {
-//     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
-//         Encode::encode_into(&self.inner, dest)
-//     }
-//
-//     fn encoding_length(&self) -> ed::Result<usize> {
-//         Encode::encoding_length(&self.inner)
-//     }
-// }
-//
-// impl Decode for Tree {
-//     fn decode<R: Read>(input: R) -> ed::Result<Self> {
-//         Decode::decode(input)
-//     }
-// }
 
 impl Tree {
     /// Creates a new `Tree` with the given key and value, and no children.
@@ -80,6 +65,7 @@ impl Tree {
                 left: None,
                 right: None,
             }),
+            decode_size: 0,
         })
     }
 
@@ -87,6 +73,7 @@ impl Tree {
     pub fn new_with_tree_inner(inner_tree: TreeInner) -> Self {
         Self {
             inner: Box::new(inner_tree),
+            decode_size: 0,
         }
     }
 
@@ -105,6 +92,7 @@ impl Tree {
                 left: None,
                 right: None,
             }),
+            decode_size: 0,
         })
     }
 
@@ -123,6 +111,7 @@ impl Tree {
                 left,
                 right,
             }),
+            decode_size: 0,
         })
     }
 
