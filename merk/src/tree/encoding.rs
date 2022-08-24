@@ -66,8 +66,6 @@ impl Tree {
 
     #[inline]
     pub fn decode(key: Vec<u8>, input: &[u8]) -> ed::Result<Self> {
-        // operation is infallible so it's ok to unwrap
-        // TODO: how said that its infallible?
         let mut tree_inner: TreeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;
         Ok(Tree::new_with_tree_inner(tree_inner))
