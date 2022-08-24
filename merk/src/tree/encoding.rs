@@ -4,6 +4,7 @@ use costs::{
 };
 use ed::{Decode, Encode};
 use storage::StorageContext;
+use crate::tree::TreeInner;
 
 use super::Tree;
 
@@ -40,35 +41,36 @@ impl Tree {
     #[inline]
     pub fn encode(&self) -> Vec<u8> {
         // operation is infallible so it's ok to unwrap
-        Encode::encode(self).unwrap()
+        Encode::encode(&self.inner).unwrap()
     }
 
     #[inline]
     pub fn encode_into(&self, dest: &mut Vec<u8>) {
         // operation is infallible so it's ok to unwrap
-        Encode::encode_into(self, dest).unwrap()
+        Encode::encode_into(&self.inner, dest).unwrap()
     }
 
     #[inline]
     pub fn encoding_length(&self) -> usize {
         // operation is infallible so it's ok to unwrap
-        Encode::encoding_length(self).unwrap()
+        Encode::encoding_length(&self.inner).unwrap()
     }
 
     #[inline]
     pub fn decode_into(&mut self, key: Vec<u8>, input: &[u8]) {
         // operation is infallible so it's ok to unwrap
-        Decode::decode_into(self, input).unwrap();
-        self.inner.kv.key = key;
+        let mut tree_inner: TreeInner = Decode::decode(input).unwrap();
+        tree_inner.kv.key = key;
+        self.inner = Box::new(tree_inner);
     }
 
     #[inline]
     pub fn decode(key: Vec<u8>, input: &[u8]) -> Self {
         // operation is infallible so it's ok to unwrap
         // TODO: how said that its infallible?
-        let mut tree: Self = Decode::decode(input).unwrap();
-        tree.inner.kv.key = key;
-        tree
+        let mut tree_inner: TreeInner = Decode::decode(input).unwrap();
+        tree_inner.kv.key = key;
+        Tree::new_with_tree_inner(tree_inner)
     }
 }
 

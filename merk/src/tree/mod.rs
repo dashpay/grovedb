@@ -11,6 +11,7 @@ mod ops;
 mod walk;
 
 use std::cmp::max;
+use std::io::{Read, Write};
 
 use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
@@ -45,10 +46,26 @@ impl Terminated for Box<TreeInner> {}
 /// Trees' inner fields are stored on the heap so that nodes can recursively
 /// link to each other, and so we can detach nodes from their parents, then
 /// reattach without allocating or freeing heap memory.
-#[derive(Clone, Encode, Decode)]
+#[derive(Clone)]
 pub struct Tree {
     inner: Box<TreeInner>,
 }
+
+// impl Encode for Tree {
+//     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
+//         Encode::encode_into(&self.inner, dest)
+//     }
+//
+//     fn encoding_length(&self) -> ed::Result<usize> {
+//         Encode::encoding_length(&self.inner)
+//     }
+// }
+//
+// impl Decode for Tree {
+//     fn decode<R: Read>(input: R) -> ed::Result<Self> {
+//         Decode::decode(input)
+//     }
+// }
 
 impl Tree {
     /// Creates a new `Tree` with the given key and value, and no children.
@@ -62,6 +79,13 @@ impl Tree {
                 right: None,
             }),
         })
+    }
+
+    /// Creates a new `Tree` given an inner tree
+    pub fn new_with_tree_inner(inner_tree: TreeInner) -> Self {
+        Self {
+            inner: Box::new(inner_tree)
+        }
     }
 
     /// Creates a new `Tree` with the given key, value and value hash, and no
