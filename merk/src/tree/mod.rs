@@ -70,10 +70,10 @@ impl Tree {
     }
 
     /// Creates a new `Tree` given an inner tree
-    pub fn new_with_tree_inner(inner_tree: TreeInner) -> Self {
+    pub fn new_with_tree_inner(inner_tree: TreeInner, decode_size: usize) -> Self {
         Self {
             inner: Box::new(inner_tree),
-            decode_size: 0,
+            decode_size,
         }
     }
 
