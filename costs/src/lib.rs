@@ -58,6 +58,16 @@ impl StorageCost {
     }
 }
 
+impl Default for StorageCost {
+    fn default() -> Self {
+        Self {
+            added_bytes: 0,
+            replaced_bytes: 0,
+            removed_bytes: 0,
+        }
+    }
+}
+
 impl OperationCost {
     /// Helper function to build default `OperationCost` with different
     /// `seek_count`.

@@ -10,7 +10,7 @@ use std::{
 use anyhow::{anyhow, Result};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost,
-    OperationCost,
+    OperationCost, StorageCost,
 };
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
 
@@ -719,10 +719,21 @@ impl MerkCommitter {
 impl Commit for MerkCommitter {
     fn write(&mut self, tree: &Tree) -> Result<()> {
         let mut buf = Vec::with_capacity(tree.encoding_length());
-        // dbg!(&tree);
         tree.encode_into(&mut buf);
-        // dbg!(buf.len());
-        self.batch.push((tree.key().to_vec(), Some(buf), None));
+
+        let key_storage_cost = StorageCost {
+            ..Default::default()
+        };
+        let value_storage_cost = StorageCost {
+            ..Default::default()
+        };
+
+        let key_value_storage_cost = KeyValueStorageCost {
+            key_storage_cost,
+            value_storage_cost,
+        };
+        self.batch
+            .push((tree.key().to_vec(), Some(buf), Some(key_value_storage_cost)));
         Ok(())
     }
 
