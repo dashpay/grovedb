@@ -735,11 +735,11 @@ impl Commit for MerkCommitter {
         } else if current_tree_size > tree.decode_size {
             // updating an existing tree, but would need more storage
             value_storage_cost.replaced_bytes += tree.decode_size as u32;
-            value_storage_cost.added_bytes += (tree.decode_size - current_tree_size) as u32;
+            value_storage_cost.added_bytes += (current_tree_size - tree.decode_size) as u32;
         } else {
-            // decode_size < tree_size, updating an existing tree but freed storage
+            // decode_size > tree_size, updating an existing tree but freed storage
             value_storage_cost.replaced_bytes += current_tree_size as u32;
-            value_storage_cost.removed_bytes += (current_tree_size - tree.decode_size) as u32;
+            value_storage_cost.removed_bytes += (tree.decode_size - current_tree_size) as u32;
         }
 
         let key_value_storage_cost = KeyValueStorageCost {
