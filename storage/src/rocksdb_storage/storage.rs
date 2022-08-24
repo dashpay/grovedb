@@ -1,5 +1,5 @@
 //! Impementation for a storage abstraction over RocksDB.
-use std::path::Path;
+use std::{ops::AddAssign, path::Path};
 
 use costs::{cost_return_on_error_no_add, CostContext, CostResult, CostsExt, OperationCost};
 use error::Error;
@@ -15,8 +15,10 @@ use super::{
     PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
 };
 use crate::{
-    error, error::Error::RocksDBError, worst_case_costs::WorstKeyLength, AbstractBatchOperation,
-    Storage, StorageBatch,
+    error,
+    error::Error::{CostError, RocksDBError},
+    worst_case_costs::WorstKeyLength,
+    AbstractBatchOperation, Storage, StorageBatch,
 };
 
 const BLAKE_BLOCK_LEN: usize = 64;
@@ -197,10 +199,9 @@ impl<'db> Storage<'db> for RocksDbStorage {
         let mut db_batch = WriteBatchWithTransaction::<true>::default();
 
         let mut cost = OperationCost::default();
-        // Until batch is commited these costs are pending (should not be added in case
+        // Until batch is committed these costs are pending (should not be added in case
         // of early termination).
-        let mut pending_storage_written_bytes: u32 = 0;
-        let mut pending_storage_freed_bytes: u32 = 0;
+        let mut pending_costs = OperationCost::default();
 
         fn key_value_size(key: &Vec<u8>, value: &Vec<u8>) -> u32 {
             let key_len = key.len();
@@ -216,19 +217,67 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put(&key, &value);
-                    pending_storage_written_bytes += key_value_size(&key, &value);
+                    cost_return_on_error_no_add!(
+                        &cost,
+                        pending_costs
+                            .add_key_value_storage_costs(
+                                key.len() as u32,
+                                value.len() as u32,
+                                cost_info
+                            )
+                            .map_err(CostError)
+                    );
                 }
-                AbstractBatchOperation::PutAux { key, value } => {
+                AbstractBatchOperation::PutAux {
+                    key,
+                    value,
+                    cost_info,
+                } => {
                     db_batch.put_cf(cf_aux(&self.db), &key, &value);
-                    pending_storage_written_bytes += key_value_size(&key, &value);
+                    cost_return_on_error_no_add!(
+                        &cost,
+                        pending_costs
+                            .add_key_value_storage_costs(
+                                key.len() as u32,
+                                value.len() as u32,
+                                cost_info
+                            )
+                            .map_err(CostError)
+                    );
                 }
-                AbstractBatchOperation::PutRoot { key, value } => {
+                AbstractBatchOperation::PutRoot {
+                    key,
+                    value,
+                    cost_info,
+                } => {
                     db_batch.put_cf(cf_roots(&self.db), &key, &value);
-                    pending_storage_written_bytes += key_value_size(&key, &value);
+                    cost_return_on_error_no_add!(
+                        &cost,
+                        pending_costs
+                            .add_key_value_storage_costs(
+                                key.len() as u32,
+                                value.len() as u32,
+                                cost_info
+                            )
+                            .map_err(CostError)
+                    );
                 }
-                AbstractBatchOperation::PutMeta { key, value } => {
+                AbstractBatchOperation::PutMeta {
+                    key,
+                    value,
+                    cost_info,
+                } => {
                     db_batch.put_cf(cf_meta(&self.db), &key, &value);
-                    pending_storage_written_bytes += key_value_size(&key, &value);
+                    cost_return_on_error_no_add!(
+                        &cost,
+                        pending_costs
+                            .add_key_value_storage_costs(
+                                key.len() as u32,
+                                value.len() as u32,
+                                cost_info
+                            )
+                            .map_err(CostError)
+                    );
                 }
                 AbstractBatchOperation::Delete { key } => {
                     db_batch.delete(&key);
@@ -243,7 +292,11 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     .unwrap_or(0);
                     cost.storage_loaded_bytes += value_len;
 
-                    pending_storage_freed_bytes += key.len() as u32 + value_len;
+                    let key_len = key.len() as u32;
+                    pending_costs.storage_removed_bytes += key_len
+                        + value_len
+                        + key_len.required_space() as u32
+                        + value_len.required_space() as u32;
                 }
                 AbstractBatchOperation::DeleteAux { key } => {
                     db_batch.delete_cf(cf_aux(&self.db), &key);
@@ -258,7 +311,11 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     .unwrap_or(0);
                     cost.storage_loaded_bytes += value_len;
 
-                    pending_storage_freed_bytes += key.len() as u32 + value_len;
+                    let key_len = key.len() as u32;
+                    pending_costs.storage_removed_bytes += key_len
+                        + value_len
+                        + key_len.required_space() as u32
+                        + value_len.required_space() as u32;
                 }
                 AbstractBatchOperation::DeleteRoot { key } => {
                     db_batch.delete_cf(cf_roots(&self.db), &key);
@@ -275,7 +332,11 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     .unwrap_or(0);
                     cost.storage_loaded_bytes += value_len as u32;
 
-                    pending_storage_freed_bytes += key.len() as u32 + value_len;
+                    let key_len = key.len() as u32;
+                    pending_costs.storage_removed_bytes += key_len
+                        + value_len
+                        + key_len.required_space() as u32
+                        + value_len.required_space() as u32;
                 }
                 AbstractBatchOperation::DeleteMeta { key } => {
                     db_batch.delete_cf(cf_meta(&self.db), &key);
@@ -292,7 +353,11 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     .unwrap_or(0);
                     cost.storage_loaded_bytes += value_len;
 
-                    pending_storage_freed_bytes += key.len() as u32 + value_len;
+                    let key_len = key.len() as u32;
+                    pending_costs.storage_removed_bytes += key_len
+                        + value_len
+                        + key_len.required_space() as u32
+                        + value_len.required_space() as u32;
                 }
             }
         }
@@ -302,8 +367,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
             Some(transaction) => transaction.rebuild_from_writebatch(&db_batch),
         };
 
-        cost.storage_added_bytes += pending_storage_written_bytes;
-        cost.storage_removed_bytes += pending_storage_freed_bytes;
+        cost.add_assign(pending_costs);
 
         result.map_err(RocksDBError).wrap_with_cost(cost)
     }

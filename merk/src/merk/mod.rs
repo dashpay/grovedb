@@ -8,8 +8,10 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
-use storage::{self, Batch, RawIterator, StorageContext};
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+};
+use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
 
 use crate::{
     proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
@@ -519,7 +521,9 @@ where
                 let mut committer = MerkCommitter::new(tree.height(), 100);
                 cost_return_on_error!(&mut inner_cost, tree.commit(&mut committer));
                 // update pointer to root node
-                batch.put_root(ROOT_KEY_KEY, tree.key());
+                batch
+                    .put_root(ROOT_KEY_KEY, tree.key(), None)
+                    .map_err(CostError); // todo: is this new?
 
                 Ok(committer.batch)
             } else {
@@ -540,9 +544,10 @@ where
         to_batch.sort_by(|a, b| a.0.cmp(&b.0));
         for (key, maybe_value) in to_batch {
             if let Some(value) = maybe_value {
-                batch.put(&key, &value, None); // todo: fix this asap
-                                               // dbg!(&key);
-                                               // dbg!(&value.len());
+                cost_return_on_error_no_add!(
+                    &cost,
+                    batch.put(&key, &value, None).map_err(|e| e.into())
+                ); // todo: fix the None asap
             } else {
                 batch.delete(&key);
             }
@@ -550,8 +555,14 @@ where
 
         for (key, value) in aux {
             match value {
-                Op::Put(value) => batch.put_aux(key, value),
-                Op::PutReference(value, _) => batch.put_aux(key, value),
+                Op::Put(value) => cost_return_on_error_no_add!(
+                    &cost,
+                    batch.put_aux(key, value, None).map_err(|e| e.into())
+                ), // todo: fix this asap
+                Op::PutReference(value, _) => cost_return_on_error_no_add!(
+                    &cost,
+                    batch.put_aux(key, value, None).map_err(|e| e.into())
+                ), // todo: fix this asap
                 Op::Delete => batch.delete_aux(key),
             };
         }
@@ -613,7 +624,7 @@ where
     }
 
     pub(crate) fn set_root_key(&mut self, key: &[u8]) -> Result<()> {
-        Ok(self.storage.put_root(ROOT_KEY_KEY, key).unwrap()?)
+        Ok(self.storage.put_root(ROOT_KEY_KEY, key, None).unwrap()?) // todo: maybe change None?
     }
 
     pub(crate) fn load_root(&mut self) -> CostContext<Result<()>> {

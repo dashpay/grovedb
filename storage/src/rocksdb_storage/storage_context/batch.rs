@@ -89,39 +89,64 @@ pub struct PrefixedMultiContextBatchPart {
     pub(crate) acc_cost: OperationCost,
 }
 
-/// Implementation of a batch ouside a transaction
+/// Implementation of a batch outside a transaction
 impl<'db> Batch for PrefixedRocksDbBatch<'db> {
     fn put<K: AsRef<[u8]>>(
         &mut self,
         key: K,
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
-    ) {
+    ) -> Result<(), costs::error::Error> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
-        self.cost_acc.storage_added_bytes += prefixed_key.len() as u32 + value.len() as u32;
+        self.cost_acc.add_key_value_storage_costs(
+            prefixed_key.len() as u32,
+            value.len() as u32,
+            cost_info,
+        )?;
         // dbg!(prefixed_key.len());
 
         self.batch.put(prefixed_key, value);
+        Ok(())
     }
 
-    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
+    fn put_aux<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), costs::error::Error> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
-        self.cost_acc.storage_added_bytes += prefixed_key.len() as u32 + value.len() as u32;
+        self.cost_acc.add_key_value_storage_costs(
+            prefixed_key.len() as u32,
+            value.len() as u32,
+            cost_info,
+        )?;
 
         self.batch.put_cf(self.cf_aux, prefixed_key, value);
+        Ok(())
     }
 
-    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
+    fn put_root<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), costs::error::Error> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
-        self.cost_acc.storage_added_bytes += prefixed_key.len() as u32 + value.len() as u32;
+        self.cost_acc.add_key_value_storage_costs(
+            prefixed_key.len() as u32,
+            value.len() as u32,
+            cost_info,
+        )?;
 
         self.batch.put_cf(self.cf_roots, prefixed_key, value);
+        Ok(())
     }
 
     fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
@@ -152,7 +177,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
     }
 }
 
-/// Implementation of a rocksdb batch ouside a transaction for multi-context
+/// Implementation of a rocksdb batch outside a transaction for multi-context
 /// batch.
 impl Batch for PrefixedMultiContextBatchPart {
     fn put<K: AsRef<[u8]>>(
@@ -160,7 +185,7 @@ impl Batch for PrefixedMultiContextBatchPart {
         key: K,
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
-    ) {
+    ) -> Result<(), costs::error::Error> {
         self.batch
             .put(
                 make_prefixed_key(self.prefix.clone(), key),
@@ -168,18 +193,39 @@ impl Batch for PrefixedMultiContextBatchPart {
                 cost_info,
             )
             .unwrap_add_cost(&mut self.acc_cost);
+        Ok(())
     }
 
-    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
+    fn put_aux<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), costs::error::Error> {
         self.batch
-            .put_aux(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
+            .put_aux(
+                make_prefixed_key(self.prefix.clone(), key),
+                value.to_vec(),
+                cost_info,
+            )
             .unwrap_add_cost(&mut self.acc_cost);
+        Ok(())
     }
 
-    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
+    fn put_root<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), costs::error::Error> {
         self.batch
-            .put_root(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
+            .put_root(
+                make_prefixed_key(self.prefix.clone(), key),
+                value.to_vec(),
+                cost_info,
+            )
             .unwrap_add_cost(&mut self.acc_cost);
+        Ok(())
     }
 
     fn delete<K: AsRef<[u8]>>(&mut self, key: K) {

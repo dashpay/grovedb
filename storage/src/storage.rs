@@ -116,14 +116,19 @@ pub trait StorageContext<'db> {
     ) -> CostContext<Result<(), Self::Error>>;
 
     /// Put `value` into auxiliary data storage with `key`
-    fn put_aux<K: AsRef<[u8]>>(&self, key: K, value: &[u8])
-        -> CostContext<Result<(), Self::Error>>;
+    fn put_aux<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>>;
 
     /// Put `value` into trees roots storage with `key`
     fn put_root<K: AsRef<[u8]>>(
         &self,
         key: K,
         value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>>;
 
     /// Put `value` into GroveDB metadata storage with `key`
@@ -131,6 +136,7 @@ pub trait StorageContext<'db> {
         &self,
         key: K,
         value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>>;
 
     /// Delete entry with `key` from data storage
@@ -172,14 +178,29 @@ pub trait StorageContext<'db> {
 /// Database batch (not to be confused with multi-tree operations batch).
 pub trait Batch {
     /// Appends to the database batch a put operation for a data record.
-    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8], cost_info: Option<KeyValueStorageCost>);
+    fn put<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), costs::error::Error>;
 
     /// Appends to the database batch a put operation for aux storage.
-    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]);
+    fn put_aux<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), costs::error::Error>;
 
     /// Appends to the database batch a put operation for subtrees roots
     /// storage.
-    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]);
+    fn put_root<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), costs::error::Error>;
 
     /// Appends to the database batch a delete operation for a data record.
     fn delete<K: AsRef<[u8]>>(&mut self, key: K);
@@ -287,31 +308,58 @@ impl StorageBatch {
     }
 
     /// Add deferred `put` operation for aux storage
-    pub fn put_aux(&self, key: Vec<u8>, value: Vec<u8>) -> CostContext<()> {
-        self.operations
-            .borrow_mut()
-            .aux
-            .insert(key.clone(), AbstractBatchOperation::PutAux { key, value });
+    pub fn put_aux(
+        &self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<()> {
+        self.operations.borrow_mut().aux.insert(
+            key.clone(),
+            AbstractBatchOperation::PutAux {
+                key,
+                value,
+                cost_info,
+            },
+        );
 
         ().wrap_with_cost(OperationCost::default())
     }
 
     /// Add deferred `put` operation for subtree roots storage
-    pub fn put_root(&self, key: Vec<u8>, value: Vec<u8>) -> CostContext<()> {
-        self.operations
-            .borrow_mut()
-            .roots
-            .insert(key.clone(), AbstractBatchOperation::PutRoot { key, value });
+    pub fn put_root(
+        &self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<()> {
+        self.operations.borrow_mut().roots.insert(
+            key.clone(),
+            AbstractBatchOperation::PutRoot {
+                key,
+                value,
+                cost_info,
+            },
+        );
 
         ().wrap_with_cost(OperationCost::default())
     }
 
     /// Add deferred `put` operation for metadata storage
-    pub fn put_meta(&self, key: Vec<u8>, value: Vec<u8>) -> CostContext<()> {
-        self.operations
-            .borrow_mut()
-            .meta
-            .insert(key.clone(), AbstractBatchOperation::PutMeta { key, value });
+    pub fn put_meta(
+        &self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<()> {
+        self.operations.borrow_mut().meta.insert(
+            key.clone(),
+            AbstractBatchOperation::PutMeta {
+                key,
+                value,
+                cost_info,
+            },
+        );
 
         ().wrap_with_cost(OperationCost::default())
     }
@@ -371,9 +419,21 @@ impl StorageBatch {
                     value,
                     cost_info,
                 } => self.put(key, value, cost_info),
-                AbstractBatchOperation::PutAux { key, value } => self.put_aux(key, value),
-                AbstractBatchOperation::PutRoot { key, value } => self.put_root(key, value),
-                AbstractBatchOperation::PutMeta { key, value } => self.put_meta(key, value),
+                AbstractBatchOperation::PutAux {
+                    key,
+                    value,
+                    cost_info,
+                } => self.put_aux(key, value, cost_info),
+                AbstractBatchOperation::PutRoot {
+                    key,
+                    value,
+                    cost_info,
+                } => self.put_root(key, value, cost_info),
+                AbstractBatchOperation::PutMeta {
+                    key,
+                    value,
+                    cost_info,
+                } => self.put_meta(key, value, cost_info),
                 AbstractBatchOperation::Delete { key } => self.delete(key),
                 AbstractBatchOperation::DeleteAux { key } => self.delete_aux(key),
                 AbstractBatchOperation::DeleteRoot { key } => self.delete_root(key),
@@ -439,11 +499,23 @@ pub enum AbstractBatchOperation {
         cost_info: Option<KeyValueStorageCost>,
     },
     /// Deferred put operation for aux storage
-    PutAux { key: Vec<u8>, value: Vec<u8> },
+    PutAux {
+        key: Vec<u8>,
+        value: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    },
     /// Deferred put operation for roots storage
-    PutRoot { key: Vec<u8>, value: Vec<u8> },
+    PutRoot {
+        key: Vec<u8>,
+        value: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    },
     /// Deferred put operation for metadata storage
-    PutMeta { key: Vec<u8>, value: Vec<u8> },
+    PutMeta {
+        key: Vec<u8>,
+        value: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    },
     /// Deferred delete operation
     Delete { key: Vec<u8> },
     /// Deferred delete operation for aux storage
@@ -463,9 +535,9 @@ impl std::fmt::Debug for AbstractBatchOperation {
 
         match self {
             AbstractBatchOperation::Put { key, value, .. }
-            | AbstractBatchOperation::PutAux { key, value }
-            | AbstractBatchOperation::PutMeta { key, value }
-            | AbstractBatchOperation::PutRoot { key, value } => {
+            | AbstractBatchOperation::PutAux { key, value, .. }
+            | AbstractBatchOperation::PutMeta { key, value, .. }
+            | AbstractBatchOperation::PutRoot { key, value, .. } => {
                 key_buf.clear();
                 value_buf.clear();
                 visualize_to_vec(&mut key_buf, key.as_slice());
@@ -496,6 +568,7 @@ mod tests {
         let op1 = AbstractBatchOperation::PutMeta {
             key: b"key1".to_vec(),
             value: b"value1".to_vec(),
+            cost_info: None,
         };
         let op2 = AbstractBatchOperation::DeleteRoot {
             key: b"key1".to_vec(),
