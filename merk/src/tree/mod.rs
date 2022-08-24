@@ -10,8 +10,10 @@ mod link;
 mod ops;
 mod walk;
 
-use std::cmp::max;
-use std::io::{Read, Write};
+use std::{
+    cmp::max,
+    io::{Read, Write},
+};
 
 use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
@@ -33,7 +35,7 @@ pub use walk::{Fetch, RefWalker, Walker};
 
 /// The fields of the `Tree` type, stored on the heap.
 #[derive(Clone, Encode, Decode)]
-struct TreeInner {
+pub struct TreeInner {
     left: Option<Link>,
     right: Option<Link>,
     kv: KV,
@@ -84,7 +86,7 @@ impl Tree {
     /// Creates a new `Tree` given an inner tree
     pub fn new_with_tree_inner(inner_tree: TreeInner) -> Self {
         Self {
-            inner: Box::new(inner_tree)
+            inner: Box::new(inner_tree),
         }
     }
 

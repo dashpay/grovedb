@@ -4,13 +4,13 @@ use costs::{
 };
 use ed::{Decode, Encode};
 use storage::StorageContext;
-use crate::tree::TreeInner;
 
 use super::Tree;
+use crate::tree::TreeInner;
 
 impl Tree {
-    pub fn decode_raw(bytes: &[u8]) -> Result<Self, Error> {
-        Decode::decode(bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
+    pub fn decode_raw(bytes: &[u8], key: Vec<u8>) -> Result<Self, Error> {
+        Tree::decode(key, bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
     }
 
     pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> CostContext<Result<Option<Self>, Error>>
@@ -24,7 +24,9 @@ impl Tree {
 
         let tree_opt = cost_return_on_error_no_add!(
             &cost,
-            tree_bytes.map(|x| Tree::decode_raw(&x)).transpose()
+            tree_bytes
+                .map(|x| Tree::decode_raw(&x, key.as_ref().to_vec()))
+                .transpose()
         );
 
         Ok(if let Some(mut tree) = tree_opt {
@@ -232,7 +234,7 @@ mod tests {
 
     #[test]
     fn decode_invalid_bytes_as_tree() {
-        let bytes = vec![2,3,4,5];
+        let bytes = vec![2, 3, 4, 5];
         let tree = Tree::decode(vec![0], bytes.as_slice());
         assert!(matches!(tree, Err(_)));
     }
