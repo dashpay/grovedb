@@ -732,24 +732,22 @@ impl Commit for MerkCommitter {
             ..Default::default()
         };
 
-        // TODO: WIP
-        // match tree.old_size.cmp(&current_tree_size) {
-        //     Ordering::Greater
-        // }
         // Update the value storage cost
-        if tree.old_size == 0 {
-            // new node, storage has to be created for entire tree
-            value_storage_cost.added_bytes += (current_tree_size) as u32
-        } else if current_tree_size > tree.old_size {
-            // updating an existing tree with a larger value
-            // we replace all the bytes from the old tree
-            // and add the difference to new storage
-            value_storage_cost.replaced_bytes += tree.old_size as u32;
-            value_storage_cost.added_bytes += (current_tree_size - tree.old_size) as u32;
-        } else {
-            // decode_size > tree_size, updating an existing tree with a smaller value
-            value_storage_cost.replaced_bytes += current_tree_size as u32;
-            value_storage_cost.removed_bytes += (tree.old_size - current_tree_size) as u32;
+        match tree.old_size.cmp(&current_tree_size) {
+            Ordering::Equal => {
+                value_storage_cost.replaced_bytes += tree.old_size as u32;
+            }
+            Ordering::Greater => {
+                // old size is greater than current size, storage will be freed
+                value_storage_cost.replaced_bytes += current_tree_size as u32;
+                value_storage_cost.removed_bytes += (tree.old_size - current_tree_size) as u32;
+            }
+            Ordering::Less => {
+                // current size is greater then old size, storage will be created
+                // this also handles the case where the tree.old_size = 0
+                value_storage_cost.replaced_bytes += tree.old_size as u32;
+                value_storage_cost.added_bytes += (current_tree_size - tree.old_size) as u32;
+            }
         }
 
         let key_value_storage_cost = KeyValueStorageCost {
