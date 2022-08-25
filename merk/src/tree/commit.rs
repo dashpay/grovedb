@@ -7,7 +7,7 @@ use super::Tree;
 pub trait Commit {
     /// Called once per updated node when a finalized tree is to be written to a
     /// backing store or cache.
-    fn write(&mut self, tree: &Tree) -> Result<()>;
+    fn write(&mut self, tree: &mut Tree) -> Result<()>;
 
     /// Called once per node after writing a node and its children. The returned
     /// tuple specifies whether or not to prune the left and right child nodes,
@@ -22,7 +22,7 @@ pub trait Commit {
 /// any nodes from the Tree. Useful when only keeping a tree in memory.
 pub struct NoopCommit {}
 impl Commit for NoopCommit {
-    fn write(&mut self, _tree: &Tree) -> Result<()> {
+    fn write(&mut self, _tree: &mut Tree) -> Result<()> {
         Ok(())
     }
 

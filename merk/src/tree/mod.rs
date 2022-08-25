@@ -52,7 +52,7 @@ impl Terminated for Box<TreeInner> {}
 #[derive(Clone)]
 pub struct Tree {
     inner: Box<TreeInner>,
-    pub(crate) decode_size: usize,
+    pub(crate) old_size: usize,
 }
 
 impl Tree {
@@ -66,7 +66,7 @@ impl Tree {
                 left: None,
                 right: None,
             }),
-            decode_size: 0,
+            old_size: 0,
         })
     }
 
@@ -75,7 +75,7 @@ impl Tree {
         Self {
             inner: Box::new(inner_tree),
             // TODO: figure out why adding the required space for this doesn't affect the tests
-            decode_size,
+            old_size: decode_size + decode_size.required_space(),
         }
     }
 
@@ -94,7 +94,7 @@ impl Tree {
                 left: None,
                 right: None,
             }),
-            decode_size: 0,
+            old_size: 0,
         })
     }
 
@@ -113,7 +113,7 @@ impl Tree {
                 left,
                 right,
             }),
-            decode_size: 0,
+            old_size: 0,
         })
     }
 

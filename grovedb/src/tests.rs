@@ -396,38 +396,6 @@ fn test_insert_value_to_subtree() {
 }
 
 #[test]
-fn test_update_value_in_subtree() {
-    let tmp_dir = TempDir::new().unwrap();
-    let mut db = GroveDb::open(tmp_dir.path()).unwrap();
-    add_test_leaves(&mut db);
-
-    let element = Element::new_item(b"ayy".to_vec());
-    let element2 = Element::new_item(b"byy".to_vec());
-
-    // Insert a subtree first
-    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
-        .unwrap()
-        .expect("successful subtree insert");
-    // Insert an element into subtree
-    db.insert([TEST_LEAF, b"key1"], b"key2", element.clone(), None)
-        .unwrap()
-        .expect("successful value insert");
-
-    // Reopen db
-    drop(db);
-    let mut db = GroveDb::open(tmp_dir.path()).unwrap();
-    db.insert([TEST_LEAF, b"key1"], b"key2", element2.clone(), None)
-        .unwrap()
-        .expect("successful value insert");
-    assert_eq!(
-        db.get([TEST_LEAF, b"key1"], b"key2", None)
-            .unwrap()
-            .expect("successful get"),
-        element2
-    );
-}
-
-#[test]
 fn test_element_with_flags() {
     let db = make_test_grovedb();
 

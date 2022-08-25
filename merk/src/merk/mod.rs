@@ -718,7 +718,7 @@ impl MerkCommitter {
 }
 
 impl Commit for MerkCommitter {
-    fn write(&mut self, tree: &Tree) -> Result<()> {
+    fn write(&mut self, tree: &mut Tree) -> Result<()> {
         let mut current_tree_size = tree.encoding_length();
         let mut buf = Vec::with_capacity(current_tree_size);
         tree.encode_into(&mut buf);
@@ -733,23 +733,30 @@ impl Commit for MerkCommitter {
             ..Default::default()
         };
 
-        if tree.decode_size == 0 {
+        // dbg!(std::str::from_utf8(tree.key()));
+        // dbg!(tree.decode_size);
+        // dbg!(current_tree_size);
+
+        if tree.old_size == 0 {
             // new node, storage has to be created for entire tree
             value_storage_cost.added_bytes += (current_tree_size) as u32
-        } else if current_tree_size > tree.decode_size {
+        } else if current_tree_size > tree.old_size {
             // updating an existing tree with a large value
-            value_storage_cost.replaced_bytes += tree.decode_size as u32;
-            value_storage_cost.added_bytes += (current_tree_size - tree.decode_size) as u32;
+            value_storage_cost.replaced_bytes += tree.old_size as u32;
+            value_storage_cost.added_bytes += (current_tree_size - tree.old_size) as u32;
         } else {
             // decode_size > tree_size, updating an existing tree but freed storage
             value_storage_cost.replaced_bytes += current_tree_size as u32;
-            value_storage_cost.removed_bytes += (tree.decode_size - current_tree_size) as u32;
+            value_storage_cost.removed_bytes += (tree.old_size - current_tree_size) as u32;
         }
 
         let key_value_storage_cost = KeyValueStorageCost {
             key_storage_cost,
             value_storage_cost,
         };
+
+        // Update old tree size after generating storage cost
+        tree.old_size = current_tree_size;
 
         self.batch
             .push((tree.key().to_vec(), Some(buf), Some(key_value_storage_cost)));
@@ -1126,5 +1133,57 @@ mod test {
         collect(&mut merk.storage.raw_iter(), &mut reopen_nodes);
 
         assert_eq!(reopen_nodes, original_nodes);
+    }
+
+    #[test]
+    fn update_node() {
+        let tmp_dir = TempDir::new().expect("cannot open tempdir");
+        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+            .expect("cannot open rocksdb storage");
+        let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
+            .unwrap()
+            .expect("cannot open merk");
+
+        dbg!("initial inserts: 2");
+        merk.apply::<_, Vec<_>>(&[(b"9".to_vec(), Op::Put(b"a".to_vec()))], &[])
+            .unwrap()
+            .expect("should insert successfully");
+        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"a".to_vec()))], &[])
+            .unwrap()
+            .expect("should insert successfully");
+
+        let result = merk
+            .get(b"10".as_slice())
+            .unwrap()
+            .expect("should get successfully");
+        assert_eq!(result, Some(b"a".to_vec()));
+
+        dbg!("initial in memory update: 1");
+        // Update the node
+        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"b".to_vec()))], &[])
+            .unwrap()
+            .expect("should insert successfully");
+        let result = merk
+            .get(b"10".as_slice())
+            .unwrap()
+            .expect("should get successfully");
+        assert_eq!(result, Some(b"b".to_vec()));
+
+        drop(merk);
+
+        let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
+            .unwrap()
+            .expect("cannot open merk");
+
+        dbg!("update after dropping merk");
+        // Update the node after dropping merk
+        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"c".to_vec()))], &[])
+            .unwrap()
+            .expect("should insert successfully");
+        let result = merk
+            .get(b"10".as_slice())
+            .unwrap()
+            .expect("should get successfully");
+        assert_eq!(result, Some(b"c".to_vec()));
     }
 }
