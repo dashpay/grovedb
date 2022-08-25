@@ -743,7 +743,7 @@ impl Commit for MerkCommitter {
                 value_storage_cost.removed_bytes += (tree.old_size - current_tree_size) as u32;
             }
             Ordering::Less => {
-                // current size is greater then old size, storage will be created
+                // current size is greater than old size, storage will be created
                 // this also handles the case where the tree.old_size = 0
                 value_storage_cost.replaced_bytes += tree.old_size as u32;
                 value_storage_cost.added_bytes += (current_tree_size - tree.old_size) as u32;
