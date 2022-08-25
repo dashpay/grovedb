@@ -315,10 +315,14 @@ where
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
         }
-        dbg!("following reference to qp {}", qualified_path.iter()
-                                .map(|a| hex::encode(a))
-                                .collect::<Vec<String>>()
-                                .join("/"));
+        dbg!(
+            "following reference to qp {}",
+            qualified_path
+                .iter()
+                .map(|a| hex::encode(a))
+                .collect::<Vec<String>>()
+                .join("/")
+        );
         // If the element being referenced changes in the same batch
         // we need to set the value_hash based on the new change and not the old state.
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
@@ -504,6 +508,7 @@ where
             match op {
                 Op::Insert { element } => match &element {
                     Element::Reference(path_reference, element_max_reference_hop, _) => {
+                        dbg!(path_reference);
                         let path_iter = path.iter().map(|x| x.as_slice());
                         let path_reference = cost_return_on_error!(
                             &mut cost,

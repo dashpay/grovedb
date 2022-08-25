@@ -1,5 +1,8 @@
+use std::fmt;
+
 use integer_encoding::VarInt;
 use serde::{Deserialize, Serialize};
+use visualize::visualize_to_vec;
 
 use crate::Error;
 
@@ -25,6 +28,15 @@ pub enum ReferencePathType {
     /// This swaps the key with a new value, you use this to point to an element
     /// in the same tree.
     SiblingReference(Vec<u8>),
+}
+
+impl fmt::Debug for ReferencePathType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut v = Vec::new();
+        visualize_to_vec(&mut v, self);
+
+        f.write_str(&String::from_utf8_lossy(&v))
+    }
 }
 
 /// Given the reference path type and the current path, this computes the
