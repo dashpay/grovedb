@@ -22,6 +22,9 @@ pub enum ReferencePathType {
     /// retaining the key value. e.g. current path = [a, b, m, d] you can use
     /// the cousin reference to swap m with c to get [a, b, c, d]
     CousinReference(Vec<u8>),
+    /// This swaps the key with a new value, you use this to point to an element
+    /// in the same tree.
+    SiblingReference(Vec<u8>),
 }
 
 /// Given the reference path type and the current path, this computes the
@@ -98,6 +101,23 @@ where
             current_path_as_vec.push(current_key);
             Ok(current_path_as_vec)
         }
+
+        // Pop child, attach new child
+        ReferencePathType::SiblingReference(sibling_key) => {
+            let mut current_path_as_vec_ref = current_path.into_iter().collect::<Vec<&[u8]>>();
+            if current_path_as_vec_ref.len() < 1 {
+                return Err(Error::InvalidInput(
+                    "reference stored path cannot satisfy reference constraints",
+                ));
+            }
+            current_path_as_vec_ref.pop(); // remove the current child
+            let mut current_path_as_vec = current_path_as_vec_ref
+                .into_iter()
+                .map(|x| x.to_vec())
+                .collect::<Vec<Vec<u8>>>();
+            current_path_as_vec.push(sibling_key);
+            Ok(current_path_as_vec)
+        }
     };
 }
 
@@ -111,7 +131,7 @@ impl ReferencePathType {
             | ReferencePathType::UpstreamFromElementHeightReference(_, path) => {
                 1 + 1 + path.iter().map(|inner| inner.len()).sum::<usize>()
             }
-            ReferencePathType::CousinReference(path) => 1 + path.len(),
+            ReferencePathType::CousinReference(path) | ReferencePathType::SiblingReference(path) => 1 + path.len(),
         }
     }
 
@@ -137,7 +157,7 @@ impl ReferencePathType {
                         })
                         .sum::<usize>()
             }
-            ReferencePathType::CousinReference(path) => {
+            ReferencePathType::CousinReference(path) | ReferencePathType::SiblingReference(path) => {
                 1 + path.len() + path.len().required_space()
             }
         }
@@ -191,6 +211,17 @@ mod tests {
         assert_eq!(
             final_path,
             vec![b"a".to_vec(), b"c".to_vec(), b"m".to_vec()]
+        );
+    }
+
+    #[test]
+    fn test_sibling_reference() {
+        let stored_path = vec![b"a".as_ref(), b"b".as_ref(), b"m".as_ref()];
+        let ref1 = ReferencePathType::SiblingReference(b"c".to_vec());
+        let final_path = path_from_reference_path_type(ref1, stored_path).unwrap();
+        assert_eq!(
+            final_path,
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
         );
     }
 
