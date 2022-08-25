@@ -509,12 +509,14 @@ where
                 Op::Insert { element } => match &element {
                     Element::Reference(path_reference, element_max_reference_hop, _) => {
                         dbg!(path_reference);
+                        dbg!(path.iter().map(|a|hex::encode(a)).collect::<Vec<String>>().join("/"));
                         let path_iter = path.iter().map(|x| x.as_slice());
                         let path_reference = cost_return_on_error!(
                             &mut cost,
                             path_from_reference_path_type(path_reference.clone(), path_iter)
                                 .wrap_with_cost(OperationCost::default())
                         );
+                        dbg!(path_reference.iter().map(|a|hex::encode(a)).collect::<Vec<String>>().join("/"));
 
                         if path_reference.len() == 0 {
                             return Err(Error::InvalidBatchOperation(
