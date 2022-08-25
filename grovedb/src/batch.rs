@@ -389,7 +389,7 @@ where
                                 .collect::<Vec<String>>()
                                 .join("/");
                             Error::MissingReference(format!(
-                                "reference {}/{} in batch is missing",
+                                "direct reference to path:`{}` key:`{}` in batch is missing",
                                 reference_string,
                                 hex::encode(key)
                             ))
@@ -418,7 +418,7 @@ where
                             .collect::<Vec<String>>()
                             .join("/");
                         Error::MissingReference(format!(
-                            "reference {}/{} in batch is missing",
+                            "reference to path:`{}` key:`{}` in batch is missing",
                             reference_string,
                             hex::encode(key)
                         ))
