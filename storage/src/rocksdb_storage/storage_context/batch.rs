@@ -2,6 +2,7 @@
 use costs::{
     cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost, OperationCost,
 };
+use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
 use super::make_prefixed_key;
@@ -97,15 +98,24 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
+        // We prefix the key, we need to update the key value storage cost
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
+
+        let updated_cost_info = cost_info.map(|mut key_value_storage_cost| {
+            if key_value_storage_cost.new_node {
+                // key is new, storage needs to be created for it
+                key_value_storage_cost.key_storage_cost.added_bytes +=
+                    (prefixed_key.len() + prefixed_key.len().required_space()) as u32;
+            }
+            key_value_storage_cost
+        });
 
         self.cost_acc.seek_count += 1;
         self.cost_acc.add_key_value_storage_costs(
             prefixed_key.len() as u32,
             value.len() as u32,
-            cost_info,
+            updated_cost_info,
         )?;
-        // dbg!(prefixed_key.len());
 
         self.batch.put(prefixed_key, value);
         Ok(())

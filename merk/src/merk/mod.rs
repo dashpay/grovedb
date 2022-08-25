@@ -753,7 +753,7 @@ impl Commit for MerkCommitter {
         let key_value_storage_cost = KeyValueStorageCost {
             key_storage_cost,
             value_storage_cost,
-            new_node: tree.old_size == 0
+            new_node: tree.old_size == 0,
         };
 
         // Update old tree size after generating storage cost
