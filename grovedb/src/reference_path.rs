@@ -131,7 +131,8 @@ impl ReferencePathType {
             | ReferencePathType::UpstreamFromElementHeightReference(_, path) => {
                 1 + 1 + path.iter().map(|inner| inner.len()).sum::<usize>()
             }
-            ReferencePathType::CousinReference(path) | ReferencePathType::SiblingReference(path) => 1 + path.len(),
+            ReferencePathType::CousinReference(path)
+            | ReferencePathType::SiblingReference(path) => 1 + path.len(),
         }
     }
 
@@ -157,7 +158,8 @@ impl ReferencePathType {
                         })
                         .sum::<usize>()
             }
-            ReferencePathType::CousinReference(path) | ReferencePathType::SiblingReference(path) => {
+            ReferencePathType::CousinReference(path)
+            | ReferencePathType::SiblingReference(path) => {
                 1 + path.len() + path.len().required_space()
             }
         }

@@ -72,7 +72,18 @@ impl GroveDb {
                 let referenced_element_value_hash = cost_return_on_error!(
                     &mut cost,
                     referenced_element_value_hash_opt
-                        .ok_or(Error::MissingReference("cannot find referenced value"))
+                        .ok_or({
+                            let reference_string = reference_path
+                                .iter()
+                                .map(|a| hex::encode(a))
+                                .collect::<Vec<String>>()
+                                .join("/");
+                            Error::MissingReference(format!(
+                                "reference {}/{} can not be found",
+                                reference_string,
+                                hex::encode(key)
+                            ))
+                        })
                         .wrap_with_cost(OperationCost::default())
                 );
 

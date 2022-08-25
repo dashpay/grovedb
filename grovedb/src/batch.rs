@@ -382,7 +382,18 @@ where
                 let referenced_element_value_hash = cost_return_on_error!(
                     &mut cost,
                     referenced_element_value_hash_opt
-                        .ok_or(Error::MissingReference("reference in batch is missing"))
+                        .ok_or({
+                            let reference_string = reference_path
+                                .iter()
+                                .map(|a| hex::encode(a))
+                                .collect::<Vec<String>>()
+                                .join("/");
+                            Error::MissingReference(format!(
+                                "reference {}/{} in batch is missing",
+                                reference_string,
+                                hex::encode(key)
+                            ))
+                        })
                         .wrap_with_cost(OperationCost::default())
                 );
 
@@ -400,8 +411,18 @@ where
 
                 let referenced_element = cost_return_on_error_no_add!(
                     &cost,
-                    referenced_element
-                        .ok_or(Error::MissingReference("reference in batch is missing"))
+                    referenced_element.ok_or({
+                        let reference_string = reference_path
+                            .iter()
+                            .map(|a| hex::encode(a))
+                            .collect::<Vec<String>>()
+                            .join("/");
+                        Error::MissingReference(format!(
+                            "reference {}/{} in batch is missing",
+                            reference_string,
+                            hex::encode(key)
+                        ))
+                    })
                 );
 
                 let element = cost_return_on_error_no_add!(
@@ -1887,7 +1908,7 @@ mod tests {
         )];
         assert!(matches!(
             db.apply_batch(batch, None, None).unwrap(),
-            Err(Error::MissingReference("reference in batch is missing"))
+            Err(Error::MissingReference(String { .. }))
         ));
 
         // insert reference with item it points to in the same batch
