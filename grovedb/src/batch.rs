@@ -315,7 +315,10 @@ where
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
         }
-
+        dbg!("following reference to qp {}", qualified_path.iter()
+                                .map(|a| hex::encode(a))
+                                .collect::<Vec<String>>()
+                                .join("/"));
         // If the element being referenced changes in the same batch
         // we need to set the value_hash based on the new change and not the old state.
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
