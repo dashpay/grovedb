@@ -74,6 +74,7 @@ impl Tree {
     pub fn new_with_tree_inner(inner_tree: TreeInner, decode_size: usize) -> Self {
         Self {
             inner: Box::new(inner_tree),
+            // TODO: figure out why adding the required space for this doesn't affect the tests
             decode_size,
         }
     }
