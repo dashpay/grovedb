@@ -137,7 +137,7 @@ impl OperationCost {
         let (key_storage_cost, value_storage_costs) = match storage_cost_info {
             None => (None, None),
             Some(s) => {
-                s.key_storage_cost.verify(key_len)?;
+                // s.key_storage_cost.verify(key_len)?;
                 s.value_storage_cost.verify(value_len)?;
                 (Some(s.key_storage_cost), Some(s.value_storage_cost))
             }
