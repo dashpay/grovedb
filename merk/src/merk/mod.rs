@@ -732,6 +732,10 @@ impl Commit for MerkCommitter {
             ..Default::default()
         };
 
+        // TODO: WIP
+        // match tree.old_size.cmp(&current_tree_size) {
+        //     Ordering::Greater
+        // }
         // Update the value storage cost
         if tree.old_size == 0 {
             // new node, storage has to be created for entire tree

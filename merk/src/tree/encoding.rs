@@ -29,13 +29,7 @@ impl Tree {
                 .transpose()
         );
 
-        Ok(if let Some(mut tree) = tree_opt {
-            tree.set_key(key.as_ref().to_vec());
-            Some(tree)
-        } else {
-            None
-        })
-        .wrap_with_cost(cost)
+        Ok(tree_opt).wrap_with_cost(cost)
     }
 }
 
