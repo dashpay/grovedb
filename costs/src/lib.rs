@@ -34,7 +34,7 @@ pub struct KeyValueStorageCost {
     pub key_storage_cost: StorageCost,
     /// Value storage costs
     pub value_storage_cost: StorageCost,
-    /// New Node
+    /// Is this a new node
     pub new_node: bool,
 }
 

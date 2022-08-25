@@ -701,7 +701,6 @@ where
 }
 
 struct MerkCommitter {
-    // TODO: The storage cost here shouldn't be an option, fix asap
     batch: Vec<(Vec<u8>, Option<Vec<u8>>, Option<KeyValueStorageCost>)>,
     height: u8,
     levels: u8,
@@ -733,19 +732,18 @@ impl Commit for MerkCommitter {
             ..Default::default()
         };
 
-        // dbg!(std::str::from_utf8(tree.key()));
-        // dbg!(tree.decode_size);
-        // dbg!(current_tree_size);
-
+        // Update the value storage cost
         if tree.old_size == 0 {
             // new node, storage has to be created for entire tree
             value_storage_cost.added_bytes += (current_tree_size) as u32
         } else if current_tree_size > tree.old_size {
-            // updating an existing tree with a large value
+            // updating an existing tree with a larger value
+            // we replace all the bytes from the old tree
+            // and add the difference to new storage
             value_storage_cost.replaced_bytes += tree.old_size as u32;
             value_storage_cost.added_bytes += (current_tree_size - tree.old_size) as u32;
         } else {
-            // decode_size > tree_size, updating an existing tree but freed storage
+            // decode_size > tree_size, updating an existing tree with a smaller value
             value_storage_cost.replaced_bytes += current_tree_size as u32;
             value_storage_cost.removed_bytes += (tree.old_size - current_tree_size) as u32;
         }
@@ -756,7 +754,7 @@ impl Commit for MerkCommitter {
             new_node: tree.old_size == 0,
         };
 
-        // Update old tree size after generating storage cost
+        // Update old tree size after generating value storage cost
         tree.old_size = current_tree_size;
 
         self.batch
@@ -1145,7 +1143,6 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
 
-        dbg!("initial inserts: 2");
         merk.apply::<_, Vec<_>>(&[(b"9".to_vec(), Op::Put(b"a".to_vec()))], &[])
             .unwrap()
             .expect("should insert successfully");
@@ -1159,7 +1156,6 @@ mod test {
             .expect("should get successfully");
         assert_eq!(result, Some(b"a".to_vec()));
 
-        dbg!("initial in memory update: 1");
         // Update the node
         merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"b".to_vec()))], &[])
             .unwrap()
@@ -1176,7 +1172,6 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
 
-        dbg!("update after dropping merk");
         // Update the node after dropping merk
         merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"c".to_vec()))], &[])
             .unwrap()

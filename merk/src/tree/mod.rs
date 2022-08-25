@@ -10,10 +10,7 @@ mod link;
 mod ops;
 mod walk;
 
-use std::{
-    cmp::max,
-    io::{Read, Write},
-};
+use std::cmp::max;
 
 use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
