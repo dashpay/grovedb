@@ -50,8 +50,10 @@ impl StorageCost {
     /// Verify that the len of the item matches the given storage cost
     pub fn verify(&self, len: u32) -> Result<(), Error> {
         let size = self.added_bytes + self.replaced_bytes;
+        dbg!(size);
+        dbg!(len + len.required_space() as u32);
 
-        match size + size.required_space() as u32 == len {
+        match size == len + len.required_space() as u32 {
             true => Ok(()),
             false => Err(Error::StorageCostMismatch),
         }

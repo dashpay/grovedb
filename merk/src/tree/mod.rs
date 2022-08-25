@@ -25,6 +25,7 @@ pub use hash::{
     kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, HASH_BLOCK_SIZE, HASH_LENGTH,
     HASH_LENGTH_U32, NULL_HASH,
 };
+use integer_encoding::VarInt;
 use kv::KV;
 pub use link::Link;
 pub use ops::{BatchEntry, MerkBatch, Op, PanicSource};

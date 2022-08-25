@@ -12,6 +12,7 @@ use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost,
     OperationCost, StorageCost,
 };
+use integer_encoding::VarInt;
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
 
 use crate::{
@@ -718,9 +719,12 @@ impl MerkCommitter {
 
 impl Commit for MerkCommitter {
     fn write(&mut self, tree: &Tree) -> Result<()> {
-        let current_tree_size = tree.encoding_length();
+        let mut current_tree_size = tree.encoding_length();
         let mut buf = Vec::with_capacity(current_tree_size);
         tree.encode_into(&mut buf);
+
+        // add the required space to the current tree size
+        current_tree_size += current_tree_size.required_space();
 
         let key_storage_cost = StorageCost {
             ..Default::default()
@@ -731,9 +735,9 @@ impl Commit for MerkCommitter {
 
         if tree.decode_size == 0 {
             // new node, storage has to be created for entire tree
-            value_storage_cost.added_bytes += current_tree_size as u32
+            value_storage_cost.added_bytes += (current_tree_size) as u32
         } else if current_tree_size > tree.decode_size {
-            // updating an existing tree, but would need more storage
+            // updating an existing tree with a large value
             value_storage_cost.replaced_bytes += tree.decode_size as u32;
             value_storage_cost.added_bytes += (current_tree_size - tree.decode_size) as u32;
         } else {
