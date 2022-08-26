@@ -7,11 +7,12 @@ use storage::StorageContext;
 
 use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
-    reference_path::{path_from_reference_path_type, ReferencePathType},
+    reference_path::{
+        path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
+    },
     util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
-use crate::reference_path::path_from_reference_qualified_path_type;
 
 /// Limit of possible indirections
 pub const MAX_REFERENCE_HOPS: usize = 10;

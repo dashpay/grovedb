@@ -279,7 +279,6 @@ impl Element {
 
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
-    ///
     pub fn get_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
         path: &[&[u8]],
@@ -287,10 +286,7 @@ impl Element {
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
-        let element = cost_return_on_error!(
-            &mut cost,
-            Self::get(merk, key.as_ref())
-        );
+        let element = cost_return_on_error!(&mut cost, Self::get(merk, key.as_ref()));
 
         let absolute_element = cost_return_on_error_no_add!(
             &cost,
@@ -355,7 +351,11 @@ impl Element {
         })
     }
 
-    fn convert_if_reference_to_absolute_reference(self, path: &[&[u8]], key: Option<&[u8]>) -> Result<Element, Error> {
+    fn convert_if_reference_to_absolute_reference(
+        self,
+        path: &[&[u8]],
+        key: Option<&[u8]>,
+    ) -> Result<Element, Error> {
         // Convert any non absolute reference type to an absolute one
         // we do this here because references are aggregated first then followed later
         // to follow non absolute references, we need the path they are stored at
@@ -498,7 +498,11 @@ impl Element {
                                         results.push(QueryResultElement::ElementResultItem(
                                             cost_return_on_error!(
                                                 &mut cost,
-                                                Element::get_with_absolute_refs(&subtree, &path, subquery_key.as_slice())
+                                                Element::get_with_absolute_refs(
+                                                    &subtree,
+                                                    &path,
+                                                    subquery_key.as_slice()
+                                                )
                                             ),
                                         ));
                                     }
@@ -517,7 +521,11 @@ impl Element {
                                                 subquery_key.clone(),
                                                 cost_return_on_error!(
                                                     &mut cost,
-                                                    Element::get_with_absolute_refs(&subtree, &path, subquery_key.as_slice())
+                                                    Element::get_with_absolute_refs(
+                                                        &subtree,
+                                                        &path,
+                                                        subquery_key.as_slice()
+                                                    )
                                                 ),
                                             ),
                                         ));
@@ -539,7 +547,11 @@ impl Element {
                                                 subquery_key.clone(),
                                                 cost_return_on_error!(
                                                     &mut cost,
-                                                    Element::get_with_absolute_refs(&subtree, &path, subquery_key.as_slice())
+                                                    Element::get_with_absolute_refs(
+                                                        &subtree,
+                                                        &path,
+                                                        subquery_key.as_slice()
+                                                    )
                                                 ),
                                             )),
                                         );

@@ -15,10 +15,10 @@ use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
 use crate::{
-    operations::get::MAX_REFERENCE_HOPS, reference_path::path_from_reference_path_type, Element,
-    Error, GroveDb, TransactionArg,
+    operations::get::MAX_REFERENCE_HOPS,
+    reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
+    Element, Error, GroveDb, TransactionArg,
 };
-use crate::reference_path::path_from_reference_qualified_path_type;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -502,8 +502,12 @@ where
                         let path_iter = path.iter().map(|x| x.as_slice());
                         let path_reference = cost_return_on_error!(
                             &mut cost,
-                            path_from_reference_path_type(path_reference.clone(), path_iter, Some(key.as_slice()))
-                                .wrap_with_cost(OperationCost::default())
+                            path_from_reference_path_type(
+                                path_reference.clone(),
+                                path_iter,
+                                Some(key.as_slice())
+                            )
+                            .wrap_with_cost(OperationCost::default())
                         );
                         if path_reference.len() == 0 {
                             return Err(Error::InvalidBatchOperation(

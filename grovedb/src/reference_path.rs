@@ -39,8 +39,8 @@ impl fmt::Debug for ReferencePathType {
     }
 }
 
-/// Given the reference path type and the current qualified path (path+key), this computes the
-/// absolute path of the item the reference is pointing to.
+/// Given the reference path type and the current qualified path (path+key),
+/// this computes the absolute path of the item the reference is pointing to.
 pub fn path_from_reference_qualified_path_type(
     reference_path_type: ReferencePathType,
     current_qualified_path: &[Vec<u8>],
@@ -51,16 +51,15 @@ pub fn path_from_reference_qualified_path_type(
                 "qualified path should always have an element",
             ));
         }
-        Some((key,path)) => {
+        Some((key, path)) => {
             let path_iter = path.iter().map(|k| k.as_slice());
             path_from_reference_path_type(reference_path_type, path_iter, Some(key.as_slice()))
         }
     }
-
 }
 
-/// Given the reference path type, the current path and the terminal key, this computes the
-/// absolute path of the item the reference is pointing to.
+/// Given the reference path type, the current path and the terminal key, this
+/// computes the absolute path of the item the reference is pointing to.
 pub fn path_from_reference_path_type<'p, P>(
     reference_path_type: ReferencePathType,
     current_path: P,
@@ -123,12 +122,8 @@ where
                 ));
             }
             let current_key = match current_key {
-                None => {
-                    Err(Error::InvalidInput(
-                        "cousin reference must supply a key",
-                    ))
-                }
-                Some(k) => { Ok(k.to_vec())}
+                None => Err(Error::InvalidInput("cousin reference must supply a key")),
+                Some(k) => Ok(k.to_vec()),
             }?;
 
             current_path_as_vec.pop();
@@ -198,7 +193,11 @@ impl ReferencePathType {
 mod tests {
     use merk::proofs::Query;
 
-    use crate::{reference_path::{path_from_reference_path_type, ReferencePathType}, tests::{make_deep_tree, TEST_LEAF}, Element, GroveDb, PathQuery, Error};
+    use crate::{
+        reference_path::{path_from_reference_path_type, ReferencePathType},
+        tests::{make_deep_tree, TEST_LEAF},
+        Element, Error, GroveDb, PathQuery,
+    };
 
     #[test]
     fn test_upstream_root_height_reference() {

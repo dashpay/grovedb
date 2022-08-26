@@ -360,8 +360,12 @@ impl GroveDb {
                             let mut current_path = path_iter.clone();
                             let absolute_path = cost_return_on_error!(
                                 &mut cost,
-                                path_from_reference_path_type(reference_path, current_path, Some(key.as_slice()))
-                                    .wrap_with_cost(OperationCost::default())
+                                path_from_reference_path_type(
+                                    reference_path,
+                                    current_path,
+                                    Some(key.as_slice())
+                                )
+                                .wrap_with_cost(OperationCost::default())
                             );
 
                             let referenced_elem = cost_return_on_error!(
