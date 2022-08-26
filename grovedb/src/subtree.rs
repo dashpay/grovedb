@@ -501,7 +501,7 @@ impl Element {
                                                 &mut cost,
                                                 Element::get_with_absolute_refs(
                                                     &subtree,
-                                                    &path,
+                                                    path_vec.as_slice(),
                                                     subquery_key.as_slice()
                                                 )
                                             ),
@@ -524,7 +524,7 @@ impl Element {
                                                     &mut cost,
                                                     Element::get_with_absolute_refs(
                                                         &subtree,
-                                                        &path,
+                                                        path_vec.as_slice(),
                                                         subquery_key.as_slice()
                                                     )
                                                 ),
@@ -550,7 +550,7 @@ impl Element {
                                                     &mut cost,
                                                     Element::get_with_absolute_refs(
                                                         &subtree,
-                                                        &path,
+                                                        path_vec.as_slice(),
                                                         subquery_key.as_slice()
                                                     )
                                                 ),
