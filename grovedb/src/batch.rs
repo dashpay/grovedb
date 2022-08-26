@@ -18,6 +18,7 @@ use crate::{
     operations::get::MAX_REFERENCE_HOPS, reference_path::path_from_reference_path_type, Element,
     Error, GroveDb, TransactionArg,
 };
+use crate::reference_path::path_from_reference_qualified_path_type;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -341,10 +342,9 @@ where
                         Ok(val_hash).wrap_with_cost(cost)
                     }
                     Element::Reference(path, ..) => {
-                        let qualified_path_iter = qualified_path.iter().map(|x| x.as_slice());
                         let path = cost_return_on_error_no_add!(
                             &cost,
-                            path_from_reference_path_type(path.clone(), qualified_path_iter)
+                            path_from_reference_qualified_path_type(path.clone(), qualified_path)
                         );
                         self.follow_reference_get_value_hash(
                             path.as_slice(),
@@ -446,10 +446,9 @@ where
                         Ok(val_hash).wrap_with_cost(cost)
                     }
                     Element::Reference(path, ..) => {
-                        let qualified_path_iter = qualified_path.iter().map(|x| x.as_slice());
                         let path = cost_return_on_error_no_add!(
                             &cost,
-                            path_from_reference_path_type(path.clone(), qualified_path_iter)
+                            path_from_reference_qualified_path_type(path.clone(), qualified_path)
                         );
                         self.follow_reference_get_value_hash(
                             path.as_slice(),
@@ -508,15 +507,10 @@ where
             match op {
                 Op::Insert { element } => match &element {
                     Element::Reference(path_reference, element_max_reference_hop, _) => {
-                        dbg!(path_reference);
-                        dbg!(path.iter().map(|a|hex::encode(a)).collect::<Vec<String>>().join("/"));
-                        // path is the location of the reference when we are going to apply the
-                        // path_reference_type to produce the reference
-                        let mut path_slices : Vec<&[u8]> = path.iter().map(|x| x.as_slice()).collect();
-                        path_slices.push(key.as_slice());
+                        let path_iter = path.iter().map(|x| x.as_slice());
                         let path_reference = cost_return_on_error!(
                             &mut cost,
-                            path_from_reference_path_type(path_reference.clone(), path_slices)
+                            path_from_reference_path_type(path_reference.clone(), path_iter, Some(key.as_slice()))
                                 .wrap_with_cost(OperationCost::default())
                         );
                         dbg!(path_reference.iter().map(|a|hex::encode(a)).collect::<Vec<String>>().join("/"));
@@ -762,7 +756,6 @@ impl GroveDb {
         // We will update up the tree
         while let Some(ops_at_level) = ops_by_level_paths.remove(&current_level) {
             for (path, ops_at_path) in ops_at_level.into_iter() {
-                dbg!("path", path.iter().map(|a| hex::encode(a)).collect::<Vec<String>>().join("/"));
                 if current_level == 0 {
                     let mut root_tree_ops: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
                     for (key, op) in ops_at_path.into_iter() {

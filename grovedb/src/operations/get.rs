@@ -11,6 +11,7 @@ use crate::{
     util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
+use crate::reference_path::path_from_reference_qualified_path_type;
 
 /// Limit of possible indirections
 pub const MAX_REFERENCE_HOPS: usize = 10;
@@ -34,7 +35,7 @@ impl GroveDb {
             Element::Reference(reference_path, ..) => {
                 let path = cost_return_on_error!(
                     &mut cost,
-                    path_from_reference_path_type(reference_path, path_iter)
+                    path_from_reference_path_type(reference_path, path_iter, Some(key))
                         .wrap_with_cost(OperationCost::default())
                 );
                 self.follow_reference(path, transaction).add_cost(cost)
@@ -69,10 +70,9 @@ impl GroveDb {
             visited.insert(path.clone());
             match current_element {
                 Element::Reference(reference_path, ..) => {
-                    let path_iter = path.iter().map(|x| x.as_slice());
                     path = cost_return_on_error!(
                         &mut cost,
-                        path_from_reference_path_type(reference_path, path_iter.clone())
+                        path_from_reference_qualified_path_type(reference_path, &path)
                             .wrap_with_cost(OperationCost::default())
                     )
                 }
