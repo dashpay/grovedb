@@ -372,6 +372,7 @@ impl Element {
                         current_path,
                         key,
                     )?;
+                    dbg!("converted to absolute", absolute_path.iter().map(|a| hex::encode(a)).collect::<Vec<String>>().join("/"));
                     // return an absolute reference that contains this info
                     Element::Reference(
                         ReferencePathType::AbsolutePathReference(absolute_path),
