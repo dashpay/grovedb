@@ -64,11 +64,15 @@ impl GroveDb {
                 current_element = cost_return_on_error!(
                     &mut cost,
                     self.get_raw(path_slice.iter().map(|x| x.as_slice()), key, transaction)
-                    .map_err(|e| match e {
-                        Error::PathKeyNotFound(p) => { Error::CorruptedReferencePathKeyNotFound(p)}
-                        Error::PathNotFound(p) => { Error::CorruptedReferencePathNotFound(p)}
-                        _ => e
-                    })
+                        .map_err(|e| match e {
+                            Error::PathKeyNotFound(p) => {
+                                Error::CorruptedReferencePathKeyNotFound(p)
+                            }
+                            Error::PathNotFound(p) => {
+                                Error::CorruptedReferencePathNotFound(p)
+                            }
+                            _ => e,
+                        })
                 )
             } else {
                 return Err(Error::CorruptedPath("empty path")).wrap_with_cost(cost);
