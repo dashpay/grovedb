@@ -510,10 +510,13 @@ where
                     Element::Reference(path_reference, element_max_reference_hop, _) => {
                         dbg!(path_reference);
                         dbg!(path.iter().map(|a|hex::encode(a)).collect::<Vec<String>>().join("/"));
-                        let path_iter = path.iter().map(|x| x.as_slice());
+                        // path is the location of the reference when we are going to apply the
+                        // path_reference_type to produce the reference
+                        let mut path_slices : Vec<&[u8]> = path.iter().map(|x| x.as_slice()).collect();
+                        path_slices.push(key.as_slice());
                         let path_reference = cost_return_on_error!(
                             &mut cost,
-                            path_from_reference_path_type(path_reference.clone(), path_iter)
+                            path_from_reference_path_type(path_reference.clone(), path_slices)
                                 .wrap_with_cost(OperationCost::default())
                         );
                         dbg!(path_reference.iter().map(|a|hex::encode(a)).collect::<Vec<String>>().join("/"));
