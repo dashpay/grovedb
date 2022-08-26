@@ -277,6 +277,25 @@ impl Element {
         Ok(element).wrap_with_cost(cost)
     }
 
+    /// Get an element from Merk under a key; path should be resolved and proper
+    /// Merk should be loaded by this moment
+    pub fn get_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        merk: &Merk<S>,
+        path: &[&[u8]],
+        key: K,
+    ) -> CostResult<Element, Error> {
+        let mut cost = OperationCost::default();
+
+        let element = cost_return_on_error!(&mut cost, Self::get(merk, key.as_ref()));
+
+        let absolute_element = cost_return_on_error_no_add!(
+            &cost,
+            element.convert_if_reference_to_absolute_reference(path, Some(key.as_ref()))
+        );
+
+        Ok(absolute_element).wrap_with_cost(cost)
+    }
+
     /// Get an element's value hash from Merk under a key
     pub fn get_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
@@ -332,6 +351,39 @@ impl Element {
         })
     }
 
+    fn convert_if_reference_to_absolute_reference(
+        self,
+        path: &[&[u8]],
+        key: Option<&[u8]>,
+    ) -> Result<Element, Error> {
+        // Convert any non absolute reference type to an absolute one
+        // we do this here because references are aggregated first then followed later
+        // to follow non absolute references, we need the path they are stored at
+        // this information is lost during the aggregation phase.
+        Ok(match &self {
+            Element::Reference(reference_path_type, ..) => match reference_path_type {
+                ReferencePathType::AbsolutePathReference(..) => self,
+                _ => {
+                    // Element is a reference and is not absolute.
+                    // build the stored path for this reference
+                    let mut current_path = path.clone().to_vec();
+                    let absolute_path = path_from_reference_path_type(
+                        reference_path_type.clone(),
+                        current_path,
+                        key,
+                    )?;
+                    // return an absolute reference that contains this info
+                    Element::Reference(
+                        ReferencePathType::AbsolutePathReference(absolute_path),
+                        None,
+                        None,
+                    )
+                }
+            },
+            _ => self,
+        })
+    }
+
     fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
         let PathQueryPushArgs {
             path,
@@ -344,46 +396,18 @@ impl Element {
             ..
         } = args;
 
-        // Convert any non absolute reference type to an absolute one
-        // we do this here because references are aggregated first then followed later
-        // to follow non absolute references, we need the path they are stored at
-        // this information is lost during the aggregation phase.
-        let elem = match &element {
-            Element::Reference(reference_path_type, ..) => match reference_path_type {
-                ReferencePathType::AbsolutePathReference(..) => element,
-                _ => {
-                    // Element is a reference and is not absolute.
-                    // build the stored path for this reference
-                    let mut current_path = path.clone().to_vec();
-                    current_path
-                        .push(key.ok_or(Error::CorruptedPath("basic path must have a key"))?);
-                    // use this path to compute the absolute path of the item the reference is
-                    // pointing to
-                    let absolute_path = path_from_reference_path_type(
-                        reference_path_type.clone(),
-                        current_path.into_iter(),
-                    )?;
-                    // return an absolute reference that contains this info
-                    Element::Reference(
-                        ReferencePathType::AbsolutePathReference(absolute_path),
-                        None,
-                        None,
-                    )
-                }
-            },
-            _ => element,
-        };
+        let element = element.convert_if_reference_to_absolute_reference(path, key)?;
 
         if offset.unwrap_or(0) == 0 {
             match result_type {
                 QueryResultType::QueryElementResultType => {
-                    results.push(QueryResultElement::ElementResultItem(elem));
+                    results.push(QueryResultElement::ElementResultItem(element));
                 }
                 QueryResultType::QueryKeyElementPairResultType => {
                     let key = key.ok_or(Error::CorruptedPath("basic push must have a key"))?;
                     results.push(QueryResultElement::KeyElementPairResultItem((
                         Vec::from(key),
-                        elem,
+                        element,
                     )));
                 }
                 QueryResultType::QueryPathKeyElementTrioResultType => {
@@ -392,7 +416,7 @@ impl Element {
                     results.push(QueryResultElement::PathKeyElementTrioResultItem((
                         path,
                         Vec::from(key),
-                        elem,
+                        element,
                     )));
                 }
             }
@@ -474,7 +498,11 @@ impl Element {
                                         results.push(QueryResultElement::ElementResultItem(
                                             cost_return_on_error!(
                                                 &mut cost,
-                                                Element::get(&subtree, subquery_key.as_slice())
+                                                Element::get_with_absolute_refs(
+                                                    &subtree,
+                                                    path_vec.as_slice(),
+                                                    subquery_key.as_slice()
+                                                )
                                             ),
                                         ));
                                     }
@@ -493,7 +521,11 @@ impl Element {
                                                 subquery_key.clone(),
                                                 cost_return_on_error!(
                                                     &mut cost,
-                                                    Element::get(&subtree, subquery_key.as_slice())
+                                                    Element::get_with_absolute_refs(
+                                                        &subtree,
+                                                        path_vec.as_slice(),
+                                                        subquery_key.as_slice()
+                                                    )
                                                 ),
                                             ),
                                         ));
@@ -515,7 +547,11 @@ impl Element {
                                                 subquery_key.clone(),
                                                 cost_return_on_error!(
                                                     &mut cost,
-                                                    Element::get(&subtree, subquery_key.as_slice())
+                                                    Element::get_with_absolute_refs(
+                                                        &subtree,
+                                                        path_vec.as_slice(),
+                                                        subquery_key.as_slice()
+                                                    )
                                                 ),
                                             )),
                                         );

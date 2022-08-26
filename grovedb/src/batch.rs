@@ -15,8 +15,9 @@ use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
 use crate::{
-    operations::get::MAX_REFERENCE_HOPS, reference_path::path_from_reference_path_type, Element,
-    Error, GroveDb, TransactionArg,
+    operations::get::MAX_REFERENCE_HOPS,
+    reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
+    Element, Error, GroveDb, TransactionArg,
 };
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -315,7 +316,6 @@ where
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
         }
-
         // If the element being referenced changes in the same batch
         // we need to set the value_hash based on the new change and not the old state.
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
@@ -334,10 +334,9 @@ where
                         Ok(val_hash).wrap_with_cost(cost)
                     }
                     Element::Reference(path, ..) => {
-                        let qualified_path_iter = qualified_path.iter().map(|x| x.as_slice());
                         let path = cost_return_on_error_no_add!(
                             &cost,
-                            path_from_reference_path_type(path.clone(), qualified_path_iter)
+                            path_from_reference_qualified_path_type(path.clone(), qualified_path)
                         );
                         self.follow_reference_get_value_hash(
                             path.as_slice(),
@@ -382,7 +381,18 @@ where
                 let referenced_element_value_hash = cost_return_on_error!(
                     &mut cost,
                     referenced_element_value_hash_opt
-                        .ok_or(Error::MissingReference("reference in batch is missing"))
+                        .ok_or({
+                            let reference_string = reference_path
+                                .iter()
+                                .map(|a| hex::encode(a))
+                                .collect::<Vec<String>>()
+                                .join("/");
+                            Error::MissingReference(format!(
+                                "direct reference to path:`{}` key:`{}` in batch is missing",
+                                reference_string,
+                                hex::encode(key)
+                            ))
+                        })
                         .wrap_with_cost(OperationCost::default())
                 );
 
@@ -400,8 +410,18 @@ where
 
                 let referenced_element = cost_return_on_error_no_add!(
                     &cost,
-                    referenced_element
-                        .ok_or(Error::MissingReference("reference in batch is missing"))
+                    referenced_element.ok_or({
+                        let reference_string = reference_path
+                            .iter()
+                            .map(|a| hex::encode(a))
+                            .collect::<Vec<String>>()
+                            .join("/");
+                        Error::MissingReference(format!(
+                            "reference to path:`{}` key:`{}` in batch is missing",
+                            reference_string,
+                            hex::encode(key)
+                        ))
+                    })
                 );
 
                 let element = cost_return_on_error_no_add!(
@@ -418,10 +438,9 @@ where
                         Ok(val_hash).wrap_with_cost(cost)
                     }
                     Element::Reference(path, ..) => {
-                        let qualified_path_iter = qualified_path.iter().map(|x| x.as_slice());
                         let path = cost_return_on_error_no_add!(
                             &cost,
-                            path_from_reference_path_type(path.clone(), qualified_path_iter)
+                            path_from_reference_qualified_path_type(path.clone(), qualified_path)
                         );
                         self.follow_reference_get_value_hash(
                             path.as_slice(),
@@ -483,10 +502,13 @@ where
                         let path_iter = path.iter().map(|x| x.as_slice());
                         let path_reference = cost_return_on_error!(
                             &mut cost,
-                            path_from_reference_path_type(path_reference.clone(), path_iter)
-                                .wrap_with_cost(OperationCost::default())
+                            path_from_reference_path_type(
+                                path_reference.clone(),
+                                path_iter,
+                                Some(key.as_slice())
+                            )
+                            .wrap_with_cost(OperationCost::default())
                         );
-
                         if path_reference.len() == 0 {
                             return Err(Error::InvalidBatchOperation(
                                 "attempting to insert an empty reference",
@@ -1887,7 +1909,7 @@ mod tests {
         )];
         assert!(matches!(
             db.apply_batch(batch, None, None).unwrap(),
-            Err(Error::MissingReference("reference in batch is missing"))
+            Err(Error::MissingReference(String { .. }))
         ));
 
         // insert reference with item it points to in the same batch

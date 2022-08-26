@@ -7,7 +7,9 @@ use storage::StorageContext;
 
 use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
-    reference_path::{path_from_reference_path_type, ReferencePathType},
+    reference_path::{
+        path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
+    },
     util::{merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
@@ -34,7 +36,7 @@ impl GroveDb {
             Element::Reference(reference_path, ..) => {
                 let path = cost_return_on_error!(
                     &mut cost,
-                    path_from_reference_path_type(reference_path, path_iter)
+                    path_from_reference_path_type(reference_path, path_iter, Some(key))
                         .wrap_with_cost(OperationCost::default())
                 );
                 self.follow_reference(path, transaction).add_cost(cost)
@@ -62,6 +64,15 @@ impl GroveDb {
                 current_element = cost_return_on_error!(
                     &mut cost,
                     self.get_raw(path_slice.iter().map(|x| x.as_slice()), key, transaction)
+                        .map_err(|e| match e {
+                            Error::PathKeyNotFound(p) => {
+                                Error::CorruptedReferencePathKeyNotFound(p)
+                            }
+                            Error::PathNotFound(p) => {
+                                Error::CorruptedReferencePathNotFound(p)
+                            }
+                            _ => e,
+                        })
                 )
             } else {
                 return Err(Error::CorruptedPath("empty path")).wrap_with_cost(cost);
@@ -69,10 +80,9 @@ impl GroveDb {
             visited.insert(path.clone());
             match current_element {
                 Element::Reference(reference_path, ..) => {
-                    let path_iter = path.iter().map(|x| x.as_slice());
                     path = cost_return_on_error!(
                         &mut cost,
-                        path_from_reference_path_type(reference_path, path_iter.clone())
+                        path_from_reference_qualified_path_type(reference_path, &path)
                             .wrap_with_cost(OperationCost::default())
                     )
                 }

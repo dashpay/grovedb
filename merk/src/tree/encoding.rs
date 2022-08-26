@@ -56,7 +56,7 @@ impl Tree {
     }
 
     #[inline]
-    pub fn decode_into(&mut self, key: Vec<u8>, input: &[u8]) -> ed::Result<()>{
+    pub fn decode_into(&mut self, key: Vec<u8>, input: &[u8]) -> ed::Result<()> {
         Decode::decode_into(self, input)?;
         self.inner.kv.key = key;
         Ok(())
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn decode_invalid_bytes_as_tree() {
-        let bytes = vec![2,3,4,5];
+        let bytes = vec![2, 3, 4, 5];
         let tree = Tree::decode(vec![0], bytes.as_slice());
         assert!(matches!(tree, Err(_)));
     }
