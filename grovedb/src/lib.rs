@@ -54,6 +54,14 @@ pub enum Error {
     // The path not found could represent a valid query, just where the path isn't there
     #[error("path not found: {0}")]
     PathNotFound(&'static str),
+
+    // The path's item by key referenced was not found
+    #[error("corrupted referenced path key not found: {0}")]
+    CorruptedReferencePathKeyNotFound(String),
+    // The path referenced was not found
+    #[error("corrupted referenced path not found: {0}")]
+    CorruptedReferencePathNotFound(&'static str),
+
     // The invalid path represents a logical error from the client library
     #[error("invalid path: {0}")]
     InvalidPath(&'static str),
