@@ -316,14 +316,6 @@ where
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
         }
-        dbg!(
-            "following reference to qp {}",
-            qualified_path
-                .iter()
-                .map(|a| hex::encode(a))
-                .collect::<Vec<String>>()
-                .join("/")
-        );
         // If the element being referenced changes in the same batch
         // we need to set the value_hash based on the new change and not the old state.
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
@@ -513,8 +505,6 @@ where
                             path_from_reference_path_type(path_reference.clone(), path_iter, Some(key.as_slice()))
                                 .wrap_with_cost(OperationCost::default())
                         );
-                        dbg!(path_reference.iter().map(|a|hex::encode(a)).collect::<Vec<String>>().join("/"));
-
                         if path_reference.len() == 0 {
                             return Err(Error::InvalidBatchOperation(
                                 "attempting to insert an empty reference",
