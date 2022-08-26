@@ -762,6 +762,7 @@ impl GroveDb {
         // We will update up the tree
         while let Some(ops_at_level) = ops_by_level_paths.remove(&current_level) {
             for (path, ops_at_path) in ops_at_level.into_iter() {
+                dbg!("path", path.iter().map(|a| hex::encode(a)).collect::<Vec<String>>().join("/"));
                 if current_level == 0 {
                     let mut root_tree_ops: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
                     for (key, op) in ops_at_path.into_iter() {
