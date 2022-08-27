@@ -225,7 +225,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             }
 
             let mut cloned_node =
-                Tree::decode(node.tree().key().to_vec(), node.tree().encode().as_slice());
+                Tree::decode(node.tree().key().to_vec(), node.tree().encode().as_slice())?;
 
             let left_child = node.walk(true).unwrap()?.unwrap();
             let left_child_heights = recurse(left_child, remaining_depth - 1, batch)?;

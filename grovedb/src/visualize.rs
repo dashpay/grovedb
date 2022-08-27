@@ -3,7 +3,10 @@ use std::io::{Result, Write};
 use storage::StorageContext;
 use visualize::{Drawer, Visualize};
 
-use crate::{subtree::Element, util::storage_context_optional_tx, GroveDb, TransactionArg};
+use crate::{
+    reference_path::ReferencePathType, subtree::Element, util::storage_context_optional_tx,
+    GroveDb, TransactionArg,
+};
 
 impl Visualize for Element {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
@@ -28,6 +31,56 @@ impl Visualize for Element {
             Element::Tree(hash, _) => {
                 drawer.write(b"tree: ")?;
                 drawer = hash.visualize(drawer)?;
+            }
+        }
+        Ok(drawer)
+    }
+}
+
+impl Visualize for ReferencePathType {
+    fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
+        match self {
+            ReferencePathType::AbsolutePathReference(path) => {
+                drawer.write(b"absolute path reference: ")?;
+                drawer.write(
+                    path.iter()
+                        .map(|a| hex::encode(a))
+                        .collect::<Vec<String>>()
+                        .join("/")
+                        .as_bytes(),
+                )?;
+            }
+            ReferencePathType::UpstreamRootHeightReference(height, end_path) => {
+                drawer.write(b"upstream root height reference: ")?;
+                drawer.write(format!("[height: {height}").as_bytes())?;
+                drawer.write(
+                    end_path
+                        .iter()
+                        .map(|a| hex::encode(a))
+                        .collect::<Vec<String>>()
+                        .join("/")
+                        .as_bytes(),
+                )?;
+            }
+            ReferencePathType::UpstreamFromElementHeightReference(up, end_path) => {
+                drawer.write(b"upstream from element reference: ")?;
+                drawer.write(format!("[up: {up}").as_bytes())?;
+                drawer.write(
+                    end_path
+                        .iter()
+                        .map(|a| hex::encode(a))
+                        .collect::<Vec<String>>()
+                        .join("/")
+                        .as_bytes(),
+                )?;
+            }
+            ReferencePathType::CousinReference(key) => {
+                drawer.write(b"cousin reference: ")?;
+                drawer = key.visualize(drawer)?;
+            }
+            ReferencePathType::SiblingReference(key) => {
+                drawer.write(b"sibling reference: ")?;
+                drawer = key.visualize(drawer)?;
             }
         }
         Ok(drawer)
