@@ -504,7 +504,7 @@ impl fmt::Debug for TreeCacheKnownPaths {
     }
 }
 
-trait TreeCache {
+trait TreeCache<G> {
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error>;
 
     fn execute_ops_on_path(
@@ -513,6 +513,7 @@ trait TreeCache {
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
         ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
+        flags_update: &G,
     ) -> CostResult<[u8; 32], Error>;
 }
 
@@ -685,7 +686,7 @@ where
     }
 }
 
-impl<'db, S, F> TreeCache for TreeCacheMerkByPath<S, F>
+impl<'db, S, F, G> TreeCache<G> for TreeCacheMerkByPath<S, F>
 where
     F: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
@@ -709,6 +710,7 @@ where
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
         ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
+        flags_update: &G,
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
         // todo: fix this
@@ -725,10 +727,11 @@ where
         let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
-                Op::Insert { element } => match &element {
-                    Element::Reference(path_reference, element_max_reference_hop, _) => {
-                        let path_iter = path.iter().map(|x| x.as_slice());
-                        let path_reference = cost_return_on_error!(
+                Op::Insert { element } => {
+                    match &element {
+                        Element::Reference(path_reference, element_max_reference_hop, _) => {
+                            let path_iter = path.iter().map(|x| x.as_slice());
+                            let path_reference = cost_return_on_error!(
                             &mut cost,
                             path_from_reference_path_type(
                                 path_reference.clone(),
@@ -737,14 +740,14 @@ where
                             )
                             .wrap_with_cost(OperationCost::default())
                         );
-                        if path_reference.len() == 0 {
-                            return Err(Error::InvalidBatchOperation(
-                                "attempting to insert an empty reference",
-                            ))
-                            .wrap_with_cost(cost);
-                        }
+                            if path_reference.len() == 0 {
+                                return Err(Error::InvalidBatchOperation(
+                                    "attempting to insert an empty reference",
+                                ))
+                                    .wrap_with_cost(cost);
+                            }
 
-                        let referenced_element_value_hash = cost_return_on_error!(
+                            let referenced_element_value_hash = cost_return_on_error!(
                             &mut cost,
                             self.follow_reference_get_value_hash(
                                 path_reference.as_slice(),
@@ -753,7 +756,7 @@ where
                             )
                         );
 
-                        cost_return_on_error!(
+                            cost_return_on_error!(
                             &mut cost,
                             element.insert_reference_into_batch_operations(
                                 key_info.get_key_clone(),
@@ -761,10 +764,10 @@ where
                                 &mut batch_operations
                             )
                         );
-                    }
-                    Element::Item(..) | Element::Tree(..) => {
-                        if batch_apply_options.validate_insertion_does_not_override {
-                            let inserted = cost_return_on_error!(
+                        }
+                        Element::Item(..) | Element::Tree(..) => {
+                            if batch_apply_options.validate_insertion_does_not_override {
+                                let inserted = cost_return_on_error!(
                                 &mut cost,
                                 element.insert_if_not_exists_into_batch_operations(
                                     &mut merk,
@@ -772,20 +775,21 @@ where
                                     &mut batch_operations
                                 )
                             );
-                            if !inserted {
-                                return Err(Error::InvalidBatchOperation(
-                                    "attempting to overwrite a tree",
-                                ))
-                                .wrap_with_cost(cost);
-                            }
-                        } else {
-                            cost_return_on_error!(
+                                if !inserted {
+                                    return Err(Error::InvalidBatchOperation(
+                                        "attempting to overwrite a tree",
+                                    ))
+                                        .wrap_with_cost(cost);
+                                }
+                            } else {
+                                cost_return_on_error!(
                                 &mut cost,
                                 element.insert_into_batch_operations(
                                     key_info.get_key(),
                                     &mut batch_operations
                                 )
                             );
+                            }
                         }
                     }
                 },
@@ -819,7 +823,7 @@ where
     }
 }
 
-impl TreeCache for TreeCacheKnownPaths {
+impl<G> TreeCache<G> for TreeCacheKnownPaths {
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
@@ -835,6 +839,7 @@ impl TreeCache for TreeCacheKnownPaths {
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
         _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
         _batch_apply_options: &BatchApplyOptions,
+        _flags_update: &G,
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
 
@@ -899,8 +904,8 @@ impl<F, S: fmt::Debug> fmt::Debug for BatchStructure<S, F> {
 
 impl<C, F> BatchStructure<C, F>
 where
-    C: TreeCache,
-    F: FnMut(OperationCost, Element, Option<ElementFlags>) -> Element,
+    C: TreeCache<F>,
+    F: FnMut(OperationCost, Element, ElementFlags) -> Element,
 {
     fn from_ops(
         ops: Vec<GroveDbOp>,
@@ -976,10 +981,13 @@ pub struct BatchApplyOptions {
 
 impl GroveDb {
     /// Method to propagate updated subtree root hashes up to GroveDB root
-    fn apply_batch_structure<C: TreeCache, F>(
+    fn apply_batch_structure<C: TreeCache<F>, F>(
         batch_structure: BatchStructure<C, F>,
         batch_apply_options: Option<BatchApplyOptions>,
-    ) -> CostResult<(), Error> {
+    ) -> CostResult<(), Error>
+        where
+            F: FnMut(OperationCost, Element, ElementFlags) -> Element,
+    {
         let mut cost = OperationCost::default();
         let BatchStructure {
             mut ops_by_level_paths,
@@ -1021,6 +1029,7 @@ impl GroveDb {
                             root_tree_ops,
                             &ops_by_qualified_paths,
                             &batch_apply_options,
+                            &flags_update,
                         )
                     );
                 } else {
@@ -1031,6 +1040,7 @@ impl GroveDb {
                             ops_at_path,
                             &ops_by_qualified_paths,
                             &batch_apply_options,
+                            &flags_update,
                         )
                     );
 
@@ -1111,7 +1121,7 @@ impl GroveDb {
         update_element_flags_function: impl FnMut(
             OperationCost,
             Element,
-            Option<ElementFlags>,
+            ElementFlags,
         ) -> Element,
         get_merk_fn: impl FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     ) -> CostResult<(), Error> {
@@ -1186,7 +1196,7 @@ impl GroveDb {
         update_element_flags_function: impl FnMut(
             OperationCost,
             Element,
-            Option<ElementFlags>,
+            ElementFlags,
         ) -> Element,
         transaction: TransactionArg,
     ) -> CostResult<(), Error> {
@@ -1279,7 +1289,7 @@ impl GroveDb {
         update_element_flags_function: impl FnMut(
             OperationCost,
             Element,
-            Option<ElementFlags>,
+            ElementFlags,
         ) -> Element,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -1308,6 +1318,7 @@ impl GroveDb {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use costs::OperationStorageTransitionType;
 
     use merk::proofs::Query;
 
@@ -1495,6 +1506,50 @@ mod tests {
         // Hash node calls
         // 2 for the node hash
         // 1 for the value hash
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 2, // 1 to get tree, 1 to insert
+                storage_added_bytes: 177,
+                storage_replaced_bytes: 0,
+                storage_loaded_bytes: 0,
+                storage_removed_bytes: 0,
+                hash_node_calls: 6,
+            }
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_update_bigger_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+        db.insert(vec![], b"tree", Element::empty_tree(), None).unwrap().expect("expected to insert tree");
+
+        db.insert(vec![b"tree".as_slice()], b"key1", Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0])), None).unwrap().expect("expected to insert item");
+
+        // We are adding 2 bytes
+        let ops = vec![GroveDbOp::insert_run_op(
+            vec![b"tree".to_vec()],
+            b"key1".to_vec(),
+            Element::new_item_with_flags(b"value100".to_vec(), Some(vec![1])),
+        )];
+
+        let cost = db.apply_batch_with_element_flags_update(ops, None, |cost, mut element, flags| {
+            match cost.transition_type() {
+                OperationStorageTransitionType::OperationUpdateBiggerSize => {
+                    let flags = element.get_flags_mut();
+                    flags.as_mut().map(|f| f.extend(vec![1,2]));
+                    element
+                }
+                OperationStorageTransitionType::OperationUpdateSmallerSize => {
+                    let flags = element.get_flags_mut();
+                    flags.replace(vec![1]);
+                    element
+                }
+                _ => { element }
+            }
+        }, Some(&tx)).cost;
+
         assert_eq!(
             cost,
             OperationCost {

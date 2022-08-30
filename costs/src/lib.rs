@@ -9,6 +9,7 @@ use std::ops::{Add, AddAssign};
 use integer_encoding::VarInt;
 
 use crate::error::Error;
+use crate::OperationStorageTransitionType::{OperationDelete, OperationInsertNew, OperationNone, OperationReplace, OperationUpdateBiggerSize, OperationUpdateSameSize, OperationUpdateSmallerSize};
 
 /// Piece of data representing affected computer resources (approximately).
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -26,6 +27,26 @@ pub struct OperationCost {
     pub storage_loaded_bytes: u32,
     /// How many times node hashing was done (for merkelized tree).
     pub hash_node_calls: u16,
+}
+
+/// Based off of storage changes what type of transition has occurred?
+pub enum OperationStorageTransitionType {
+    /// An element that didn't exist before was inserted
+    OperationInsertNew,
+    /// An element that existed was updated and was made bigger
+    OperationUpdateBiggerSize,
+    /// An element that existed was updated and was made smaller
+    OperationUpdateSmallerSize,
+    /// An element that existed was updated, but stayed the same size
+    OperationUpdateSameSize,
+    /// An element was replaced, this can happen if an insertion operation was marked as a replacement
+    /// An example would be if User A added something, an User B replaced it.
+    /// User A should get their value in credits back, User B should pay as if an insert
+    OperationReplace,
+    /// An element was deleted
+    OperationDelete,
+    /// Nothing happened
+    OperationNone,
 }
 
 /// Storage only Operation Costs separated by key and value
@@ -113,6 +134,31 @@ impl OperationCost {
             && self.storage_added_bytes >= other.storage_added_bytes
             && self.storage_loaded_bytes >= other.storage_loaded_bytes
             && self.hash_node_calls >= other.hash_node_calls
+    }
+
+    /// the type of transition that the costs represent
+    pub fn transition_type(&self) -> OperationStorageTransitionType {
+        if self.storage_added_bytes > 0 {
+            if self.storage_removed_bytes > 0 {
+                OperationReplace
+            } else {
+                if self.storage_replaced_bytes > 0 {
+                    OperationUpdateBiggerSize
+                } else {
+                    OperationInsertNew
+                }
+            }
+        } else if self.storage_removed_bytes > 0 {
+            if self.storage_replaced_bytes > 0 {
+                OperationUpdateSmallerSize
+            } else {
+                OperationDelete
+            }
+        } else if self.storage_replaced_bytes > 0 {
+            OperationUpdateSameSize
+        } else {
+            OperationNone
+        }
     }
 
     /// add storage costs for key and value storages

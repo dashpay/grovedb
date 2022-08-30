@@ -140,6 +140,15 @@ impl Element {
         }
     }
 
+    /// Grab the optional flag stored in an element as mutable
+    pub fn get_flags_mut(&mut self) -> &mut ElementFlags {
+        match self {
+            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
+                flags
+            }
+        }
+    }
+
     /// Get the size of an element in bytes
     pub fn byte_size(&self) -> usize {
         match self {
