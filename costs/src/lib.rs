@@ -219,9 +219,9 @@ impl OperationCost {
                 self.storage_added_bytes += len + len.required_space() as u32;
             }
             Some(storage_cost) => {
-                self.storage_added_bytes = storage_cost.added_bytes;
-                self.storage_removed_bytes = storage_cost.removed_bytes;
-                self.storage_replaced_bytes = storage_cost.replaced_bytes;
+                self.storage_added_bytes += storage_cost.added_bytes;
+                self.storage_removed_bytes += storage_cost.removed_bytes;
+                self.storage_replaced_bytes += storage_cost.replaced_bytes;
             }
         }
     }
