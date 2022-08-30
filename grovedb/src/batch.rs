@@ -1625,6 +1625,22 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_costs_match_non_batch() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let non_batch_cost = db.insert(vec![], b"key1", Element::empty_tree(), Some(&tx)).cost;
+        tx.rollback().expect("expected to rollback");
+        let ops = vec![GroveDbOp::insert_run_op(
+            vec![],
+            b"key1".to_vec(),
+            Element::empty_tree(),
+        )];
+        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        assert_eq!(non_batch_cost, cost);
+    }
+
+    #[test]
     fn test_batch_worst_case_costs() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
