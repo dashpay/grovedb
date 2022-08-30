@@ -34,6 +34,8 @@ pub struct KeyValueStorageCost {
     pub key_storage_cost: StorageCost,
     /// Value storage costs
     pub value_storage_cost: StorageCost,
+    /// Is this a new node
+    pub new_node: bool,
 }
 
 /// Storage only Operation Costs
@@ -51,9 +53,29 @@ impl StorageCost {
     pub fn verify(&self, len: u32) -> Result<(), Error> {
         let size = self.added_bytes + self.replaced_bytes;
 
-        match size + size.required_space() as u32 == len {
+        match size == len + len.required_space() as u32 {
             true => Ok(()),
             false => Err(Error::StorageCostMismatch),
+        }
+    }
+
+    /// Verifies the len of a key item only if the node is new
+    /// doesn't need to verify for the update case since the key never changes
+    pub fn verify_key_storage_cost(&self, len: u32, new_node: bool) -> Result<(), Error> {
+        if new_node {
+            self.verify(len)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Default for StorageCost {
+    fn default() -> Self {
+        Self {
+            added_bytes: 0,
+            replaced_bytes: 0,
+            removed_bytes: 0,
         }
     }
 }
@@ -125,7 +147,8 @@ impl OperationCost {
         let (key_storage_cost, value_storage_costs) = match storage_cost_info {
             None => (None, None),
             Some(s) => {
-                s.key_storage_cost.verify(key_len)?;
+                s.key_storage_cost
+                    .verify_key_storage_cost(key_len, s.new_node)?;
                 s.value_storage_cost.verify(value_len)?;
                 (Some(s.key_storage_cost), Some(s.value_storage_cost))
             }

@@ -9,8 +9,10 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost,
+    OperationCost, StorageCost,
 };
+use integer_encoding::VarInt;
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
 
 use crate::{
@@ -156,7 +158,8 @@ impl<S> fmt::Debug for Merk<S> {
     }
 }
 
-pub type UseTreeMutResult = CostContext<Result<Vec<(Vec<u8>, Option<Vec<u8>>)>>>;
+pub type UseTreeMutResult =
+    CostContext<Result<Vec<(Vec<u8>, Option<Vec<u8>>, Option<KeyValueStorageCost>)>>>;
 
 impl<'db, S> Merk<S>
 where
@@ -539,15 +542,15 @@ where
 
         // TODO: move this to MerkCommitter impl?
         for key in deleted_keys {
-            to_batch.push((key, None));
+            to_batch.push((key, None, None));
         }
         to_batch.sort_by(|a, b| a.0.cmp(&b.0));
-        for (key, maybe_value) in to_batch {
+        for (key, maybe_value, maybe_cost) in to_batch {
             if let Some(value) = maybe_value {
                 cost_return_on_error_no_add!(
                     &cost,
-                    batch.put(&key, &value, None).map_err(|e| e.into())
-                ); // todo: fix the None asap
+                    batch.put(&key, &value, maybe_cost).map_err(|e| e.into())
+                );
             } else {
                 batch.delete(&key);
             }
@@ -698,7 +701,7 @@ where
 }
 
 struct MerkCommitter {
-    batch: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+    batch: Vec<(Vec<u8>, Option<Vec<u8>>, Option<KeyValueStorageCost>)>,
     height: u8,
     levels: u8,
 }
@@ -714,12 +717,50 @@ impl MerkCommitter {
 }
 
 impl Commit for MerkCommitter {
-    fn write(&mut self, tree: &Tree) -> Result<()> {
-        let mut buf = Vec::with_capacity(tree.encoding_length());
-        // dbg!(&tree);
+    fn write(&mut self, tree: &mut Tree) -> Result<()> {
+        let mut current_tree_size = tree.encoding_length();
+        let mut buf = Vec::with_capacity(current_tree_size);
         tree.encode_into(&mut buf);
-        // dbg!(buf.len());
-        self.batch.push((tree.key().to_vec(), Some(buf)));
+
+        // add the required space to the current tree size
+        current_tree_size += current_tree_size.required_space();
+
+        let key_storage_cost = StorageCost {
+            ..Default::default()
+        };
+        let mut value_storage_cost = StorageCost {
+            ..Default::default()
+        };
+
+        // Update the value storage cost
+        match tree.old_size.cmp(&current_tree_size) {
+            Ordering::Equal => {
+                value_storage_cost.replaced_bytes += tree.old_size as u32;
+            }
+            Ordering::Greater => {
+                // old size is greater than current size, storage will be freed
+                value_storage_cost.replaced_bytes += current_tree_size as u32;
+                value_storage_cost.removed_bytes += (tree.old_size - current_tree_size) as u32;
+            }
+            Ordering::Less => {
+                // current size is greater than old size, storage will be created
+                // this also handles the case where the tree.old_size = 0
+                value_storage_cost.replaced_bytes += tree.old_size as u32;
+                value_storage_cost.added_bytes += (current_tree_size - tree.old_size) as u32;
+            }
+        }
+
+        let key_value_storage_cost = KeyValueStorageCost {
+            key_storage_cost,
+            value_storage_cost,
+            new_node: tree.old_size == 0,
+        };
+
+        // Update old tree size after generating value storage cost
+        tree.old_size = current_tree_size;
+
+        self.batch
+            .push((tree.key().to_vec(), Some(buf), Some(key_value_storage_cost)));
         Ok(())
     }
 
@@ -1093,5 +1134,54 @@ mod test {
         collect(&mut merk.storage.raw_iter(), &mut reopen_nodes);
 
         assert_eq!(reopen_nodes, original_nodes);
+    }
+
+    #[test]
+    fn update_node() {
+        let tmp_dir = TempDir::new().expect("cannot open tempdir");
+        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
+            .expect("cannot open rocksdb storage");
+        let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
+            .unwrap()
+            .expect("cannot open merk");
+
+        merk.apply::<_, Vec<_>>(&[(b"9".to_vec(), Op::Put(b"a".to_vec()))], &[])
+            .unwrap()
+            .expect("should insert successfully");
+        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"a".to_vec()))], &[])
+            .unwrap()
+            .expect("should insert successfully");
+
+        let result = merk
+            .get(b"10".as_slice())
+            .unwrap()
+            .expect("should get successfully");
+        assert_eq!(result, Some(b"a".to_vec()));
+
+        // Update the node
+        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"b".to_vec()))], &[])
+            .unwrap()
+            .expect("should insert successfully");
+        let result = merk
+            .get(b"10".as_slice())
+            .unwrap()
+            .expect("should get successfully");
+        assert_eq!(result, Some(b"b".to_vec()));
+
+        drop(merk);
+
+        let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
+            .unwrap()
+            .expect("cannot open merk");
+
+        // Update the node after dropping merk
+        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"c".to_vec()))], &[])
+            .unwrap()
+            .expect("should insert successfully");
+        let result = merk
+            .get(b"10".as_slice())
+            .unwrap()
+            .expect("should get successfully");
+        assert_eq!(result, Some(b"c".to_vec()));
     }
 }

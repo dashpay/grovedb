@@ -1076,7 +1076,7 @@ pub struct ElementsIterator<I: RawIterator> {
 }
 
 pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
-    let tree = Tree::decode_raw(bytes).map_err(|e| Error::CorruptedData(e.to_string()))?;
+    let tree = Tree::decode_raw(bytes, vec![]).map_err(|e| Error::CorruptedData(e.to_string()))?;
     let element: Element = Element::deserialize(tree.value())?;
     Ok(element)
 }
