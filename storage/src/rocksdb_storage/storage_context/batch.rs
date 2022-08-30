@@ -196,11 +196,24 @@ impl Batch for PrefixedMultiContextBatchPart {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
+
+        let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
+
+        // Update the key_storage_cost based on the prefixed key
+        let updated_cost_info = cost_info.map(|mut key_value_storage_cost| {
+            if key_value_storage_cost.new_node {
+                // key is new, storage needs to be created for it
+                key_value_storage_cost.key_storage_cost.added_bytes +=
+                    (prefixed_key.len() + prefixed_key.len().required_space()) as u32;
+            }
+            key_value_storage_cost
+        });
+
         self.batch
             .put(
-                make_prefixed_key(self.prefix.clone(), key),
+                prefixed_key,
                 value.to_vec(),
-                cost_info,
+                updated_cost_info,
             )
             .unwrap_add_cost(&mut self.acc_cost);
         Ok(())
