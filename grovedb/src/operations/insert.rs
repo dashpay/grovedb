@@ -246,3 +246,51 @@ impl GroveDb {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use costs::OperationCost;
+    use crate::Element;
+    use crate::tests::make_empty_grovedb;
+
+    #[test]
+    fn test_one_insert_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let cost = db.insert(vec![], b"key1", Element::empty_tree(), Some(&tx)).cost;
+        // Explanation for 176 storage_written_bytes
+        // 2 bytes for left and right height
+        // 1 byte for the key length size
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // Value
+        //   1 for the value length size
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type
+        //   32 for empty tree
+        // 32 for node hash
+        // 32 for value hash
+
+        // 1 byte for the root key length size
+        // 1 byte for the root value length size
+        // 32 for the root key prefix
+        // 4 bytes for the key to put in root
+        // 1 byte for the root "r"
+
+        // Hash node calls
+        // 2 for the node hash
+        // 1 for the value hash
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 2, // 1 to get tree, 1 to insert
+                storage_added_bytes: 177,
+                storage_replaced_bytes: 0,
+                storage_loaded_bytes: 0,
+                storage_removed_bytes: 0,
+                hash_node_calls: 6,
+            }
+        );
+    }
+}
