@@ -52,8 +52,6 @@ impl StorageCost {
     /// Verify that the len of the item matches the given storage cost
     pub fn verify(&self, len: u32) -> Result<(), Error> {
         let size = self.added_bytes + self.replaced_bytes;
-        dbg!(size);
-        dbg!(len + len.required_space() as u32);
 
         match size == len + len.required_space() as u32 {
             true => Ok(()),
@@ -64,7 +62,6 @@ impl StorageCost {
     /// Verifies the len of a key item only if the node is new
     /// doesn't need to verify for the update case since the key never changes
     pub fn verify_key_storage_cost(&self, len: u32, new_node: bool) -> Result<(), Error> {
-        dbg!(new_node);
         if new_node {
             self.verify(len)
         } else {
