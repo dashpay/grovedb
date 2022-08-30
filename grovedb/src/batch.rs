@@ -15,7 +15,7 @@ use costs::{
 use merk::{tree::value_hash, CryptoHash, Merk};
 use nohash_hasher::IntMap;
 use storage::{
-    error::Error::RocksDBError, rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength,
+    rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength,
     Storage, StorageBatch, StorageContext,
 };
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
@@ -25,7 +25,7 @@ use crate::{
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     worst_case_costs::MerkWorstCaseInput,
-    Element, ElementFlags, Error, GroveDb, TransactionArg, MAX_ELEMENTS_NUMBER, MAX_ELEMENT_SIZE,
+    Element, ElementFlags, Error, GroveDb, TransactionArg, MAX_ELEMENTS_NUMBER,
 };
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -294,7 +294,7 @@ pub struct GroveDbOp {
 impl fmt::Debug for GroveDbOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut path_out = Vec::new();
-        let mut path_drawer = Drawer::new(&mut path_out);
+        let path_drawer = Drawer::new(&mut path_out);
         self.path.visualize(path_drawer).unwrap();
         let mut key_out = Vec::new();
         let key_drawer = Drawer::new(&mut key_out);
@@ -1317,7 +1317,6 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use costs::OperationStorageTransitionType;
 
     use merk::proofs::Query;
@@ -1326,7 +1325,7 @@ mod tests {
     use crate::{
         reference_path::ReferencePathType,
         tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
-        PathQuery, SizedQuery,
+        PathQuery,
     };
 
     #[test]
@@ -1635,35 +1634,8 @@ mod tests {
             .unwrap()
             .expect("successful root tree leaf insert");
 
-        let element = Element::new_item(b"ayy".to_vec());
-        let element2 = Element::new_item(b"ayy2".to_vec());
         let ops = vec![
             GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
-            // GroveDbOp::insert_run_op(
-            //     vec![b"key1".to_vec()],
-            //     b"key2".to_vec(),
-            //     Element::empty_tree(),
-            // ),
-            // GroveDbOp::insert_run_op(
-            //     vec![b"key1".to_vec(), b"key2".to_vec()],
-            //     b"key3".to_vec(),
-            //     Element::empty_tree(),
-            // ),
-            // GroveDbOp::insert_run_op(
-            //     vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
-            //     b"key4".to_vec(),
-            //     element.clone(),
-            // ),
-            // GroveDbOp::insert_run_op(
-            //     vec![TEST_LEAF.to_vec()],
-            //     b"key1".to_vec(),
-            //     Element::empty_tree(),
-            // ),
-            // GroveDbOp::insert_run_op(
-            //     vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
-            //     b"key2".to_vec(),
-            //     element2.clone(),
-            // ),
         ];
         let worst_case_ops = ops.iter().map(|op| op.to_worst_case_clone()).collect();
         let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(

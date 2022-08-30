@@ -171,7 +171,9 @@ pub(crate) fn get_next_chunk(
         }
 
         let encoded_node = iter.value().unwrap_add_cost(&mut cost).unwrap();
-        Tree::decode_into(&mut node, vec![], encoded_node);
+        cost_return_on_error_no_add!(
+        &cost,
+        Tree::decode_into(&mut node, vec![], encoded_node).map_err(|e| e.into()));
 
         let kv = Node::KV(key.to_vec(), node.value().to_vec());
         chunk.push(Op::Push(kv));

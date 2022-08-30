@@ -395,7 +395,7 @@ impl Element {
                 _ => {
                     // Element is a reference and is not absolute.
                     // build the stored path for this reference
-                    let mut current_path = path.clone().to_vec();
+                    let current_path = path.clone().to_vec();
                     let absolute_path = path_from_reference_path_type(
                         reference_path_type.clone(),
                         current_path,

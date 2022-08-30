@@ -239,9 +239,9 @@ impl GroveDb {
     }
 
     pub fn add_worst_case_delete_cost(
-        cost: &mut OperationCost,
-        max_element_size: u32,
-        max_key_size: u32,
+        _cost: &mut OperationCost,
+        _max_element_size: u32,
+        _max_key_size: u32,
     ) {
         // does nothing for now
     }
@@ -326,7 +326,7 @@ mod test {
         drop(merk);
 
         // Reopen merk: this time, only root node is loaded to memory
-        let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
+        let merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
 
@@ -450,7 +450,7 @@ mod test {
     #[test]
     fn test_has_raw_worst_case() {
         let tmp_dir = TempDir::new().unwrap();
-        let mut db = GroveDb::open(tmp_dir.path()).unwrap();
+        let db = GroveDb::open(tmp_dir.path()).unwrap();
 
         // insert empty tree to start
         db.insert([], TEST_LEAF, Element::empty_tree(), None)
@@ -461,9 +461,9 @@ mod test {
         // after tree rotation, 2 will be at the top hence would have both left and
         // right links this will serve as our worst case candidate.
         let elem = Element::new_item(b"value".to_vec());
-        db.insert([TEST_LEAF], &[1], elem.clone(), None);
-        db.insert([TEST_LEAF], &[2], elem.clone(), None);
-        db.insert([TEST_LEAF], &[3], elem.clone(), None);
+        db.insert([TEST_LEAF], &[1], elem.clone(), None).unwrap().expect("expected insert");
+        db.insert([TEST_LEAF], &[2], elem.clone(), None).unwrap().expect("expected insert");
+        db.insert([TEST_LEAF], &[3], elem.clone(), None).unwrap().expect("expected insert");
 
         let path = KeyInfoPath::from_vec(vec![KnownKey(TEST_LEAF.to_vec())]);
         let key = KnownKey(vec![1]);

@@ -1,7 +1,7 @@
 //! Storage context implementation with a transaction.
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost,
-    OperationCost, StorageCost,
+    OperationCost,
 };
 use error::Error;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, WriteBatchWithTransaction};

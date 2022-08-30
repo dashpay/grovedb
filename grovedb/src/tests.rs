@@ -43,7 +43,7 @@ impl Visualize for TempGroveDb {
 /// A helper method to create an empty GroveDB
 pub fn make_empty_grovedb() -> TempGroveDb {
     let tmp_dir = TempDir::new().unwrap();
-    let mut db = GroveDb::open(tmp_dir.path()).unwrap();
+    let db = GroveDb::open(tmp_dir.path()).unwrap();
     TempGroveDb {
         _tmp_dir: tmp_dir,
         db,
@@ -714,7 +714,7 @@ fn test_too_many_indirections() {
         ])),
         None,
     )
-    .unwrap();
+    .unwrap().expect("expected insert");
 
     let result = db
         .get([TEST_LEAF], &keygen(MAX_REFERENCE_HOPS + 1), None)

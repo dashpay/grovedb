@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-use costs::{CostContext, CostResult, CostsExt, KeyValueStorageCost, OperationCost, StorageCost};
+use costs::{CostContext, CostResult, CostsExt, KeyValueStorageCost, OperationCost};
 use visualize::visualize_to_vec;
 
 use crate::worst_case_costs::WorstKeyLength;

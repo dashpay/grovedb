@@ -7,11 +7,8 @@ use std::{
     fmt,
 };
 
-use anyhow::{anyhow, Result};
-use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost,
-    OperationCost, StorageCost,
-};
+use anyhow::{anyhow, Error, Result};
+use costs::{cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt, KeyValueStorageCost, OperationCost, StorageCost};
 use integer_encoding::VarInt;
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
 
@@ -507,7 +504,7 @@ where
         &mut self,
         deleted_keys: LinkedList<Vec<u8>>,
         aux: &MerkBatch<K>,
-    ) -> CostContext<Result<()>>
+    ) -> CostResult<(), Error>
     where
         K: AsRef<[u8]>,
     {
@@ -524,9 +521,9 @@ where
                 let mut committer = MerkCommitter::new(tree.height(), 100);
                 cost_return_on_error!(&mut inner_cost, tree.commit(&mut committer));
                 // update pointer to root node
-                batch
+                cost_return_on_error_no_add!(&inner_cost, batch
                     .put_root(ROOT_KEY_KEY, tree.key(), None)
-                    .map_err(CostError); // todo: is this new?
+                    .map_err(CostError).map_err(|e| e.into()));
 
                 Ok(committer.batch)
             } else {

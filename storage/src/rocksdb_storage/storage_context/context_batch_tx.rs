@@ -1,5 +1,5 @@
 //! Storage context implementation with a transaction.
-use costs::{CostContext, CostsExt, KeyValueStorageCost, OperationCost, StorageCost};
+use costs::{CostContext, CostsExt, KeyValueStorageCost, OperationCost};
 use error::Error;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
 

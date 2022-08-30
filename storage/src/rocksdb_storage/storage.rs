@@ -203,12 +203,6 @@ impl<'db> Storage<'db> for RocksDbStorage {
         // of early termination).
         let mut pending_costs = OperationCost::default();
 
-        fn key_value_size(key: &Vec<u8>, value: &Vec<u8>) -> u32 {
-            let key_len = key.len();
-            let value_len = value.len();
-            (key_len + value_len + key_len.required_space() + value_len.required_space()) as u32
-        }
-
         for op in batch.into_iter() {
             match op {
                 AbstractBatchOperation::Put {
