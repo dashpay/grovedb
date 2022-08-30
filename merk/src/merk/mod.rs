@@ -550,7 +550,7 @@ where
                 cost_return_on_error_no_add!(
                     &cost,
                     batch.put(&key, &value, maybe_cost).map_err(|e| e.into())
-                ); // todo: fix the None asap
+                );
             } else {
                 batch.delete(&key);
             }
