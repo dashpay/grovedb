@@ -6,10 +6,11 @@ use ed::{Decode, Encode};
 use storage::StorageContext;
 
 use super::Tree;
+use crate::tree::TreeInner;
 
 impl Tree {
-    pub fn decode_raw(bytes: &[u8]) -> Result<Self, Error> {
-        Decode::decode(bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
+    pub fn decode_raw(bytes: &[u8], key: Vec<u8>) -> Result<Self, Error> {
+        Tree::decode(key, bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
     }
 
     pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> CostContext<Result<Option<Self>, Error>>
@@ -23,16 +24,12 @@ impl Tree {
 
         let tree_opt = cost_return_on_error_no_add!(
             &cost,
-            tree_bytes.map(|x| Tree::decode_raw(&x)).transpose()
+            tree_bytes
+                .map(|x| Tree::decode_raw(&x, key.as_ref().to_vec()))
+                .transpose()
         );
 
-        Ok(if let Some(mut tree) = tree_opt {
-            tree.set_key(key.as_ref().to_vec());
-            Some(tree)
-        } else {
-            None
-        })
-        .wrap_with_cost(cost)
+        Ok(tree_opt).wrap_with_cost(cost)
     }
 }
 
@@ -40,33 +37,35 @@ impl Tree {
     #[inline]
     pub fn encode(&self) -> Vec<u8> {
         // operation is infallible so it's ok to unwrap
-        Encode::encode(self).unwrap()
+        Encode::encode(&self.inner).unwrap()
     }
 
     #[inline]
     pub fn encode_into(&self, dest: &mut Vec<u8>) {
         // operation is infallible so it's ok to unwrap
-        Encode::encode_into(self, dest).unwrap()
+        Encode::encode_into(&self.inner, dest).unwrap()
     }
 
     #[inline]
     pub fn encoding_length(&self) -> usize {
         // operation is infallible so it's ok to unwrap
-        Encode::encoding_length(self).unwrap()
+        Encode::encoding_length(&self.inner).unwrap()
     }
 
     #[inline]
     pub fn decode_into(&mut self, key: Vec<u8>, input: &[u8]) -> ed::Result<()> {
-        Decode::decode_into(self, input)?;
-        self.inner.kv.key = key;
+        let mut tree_inner: TreeInner = Decode::decode(input)?;
+        tree_inner.kv.key = key;
+        self.inner = Box::new(tree_inner);
         Ok(())
     }
 
     #[inline]
     pub fn decode(key: Vec<u8>, input: &[u8]) -> ed::Result<Self> {
-        let mut tree: Tree = Decode::decode(input)?;
-        tree.inner.kv.key = key;
-        Ok(tree)
+        let decode_size = input.len();
+        let mut tree_inner: TreeInner = Decode::decode(input)?;
+        tree_inner.kv.key = key;
+        Ok(Tree::new_with_tree_inner(tree_inner, decode_size))
     }
 }
 

@@ -22,6 +22,7 @@ pub use hash::{
     kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, HASH_BLOCK_SIZE, HASH_LENGTH,
     HASH_LENGTH_U32, NULL_HASH,
 };
+use integer_encoding::VarInt;
 use kv::KV;
 pub use link::Link;
 pub use ops::{BatchEntry, MerkBatch, Op, PanicSource};
@@ -32,7 +33,7 @@ pub use walk::{Fetch, RefWalker, Walker};
 
 /// The fields of the `Tree` type, stored on the heap.
 #[derive(Clone, Encode, Decode)]
-struct TreeInner {
+pub struct TreeInner {
     left: Option<Link>,
     right: Option<Link>,
     kv: KV,
@@ -45,9 +46,10 @@ impl Terminated for Box<TreeInner> {}
 /// Trees' inner fields are stored on the heap so that nodes can recursively
 /// link to each other, and so we can detach nodes from their parents, then
 /// reattach without allocating or freeing heap memory.
-#[derive(Clone, Encode, Decode)]
+#[derive(Clone)]
 pub struct Tree {
     inner: Box<TreeInner>,
+    pub(crate) old_size: usize,
 }
 
 impl Tree {
@@ -61,7 +63,17 @@ impl Tree {
                 left: None,
                 right: None,
             }),
+            old_size: 0,
         })
+    }
+
+    /// Creates a new `Tree` given an inner tree
+    pub fn new_with_tree_inner(inner_tree: TreeInner, decode_size: usize) -> Self {
+        Self {
+            inner: Box::new(inner_tree),
+            // TODO: figure out why adding the required space for this doesn't affect the tests
+            old_size: decode_size + decode_size.required_space(),
+        }
     }
 
     /// Creates a new `Tree` with the given key, value and value hash, and no
@@ -79,6 +91,7 @@ impl Tree {
                 left: None,
                 right: None,
             }),
+            old_size: 0,
         })
     }
 
@@ -97,6 +110,7 @@ impl Tree {
                 left,
                 right,
             }),
+            old_size: 0,
         })
     }
 
