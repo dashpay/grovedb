@@ -714,7 +714,8 @@ fn test_too_many_indirections() {
         ])),
         None,
     )
-    .unwrap().expect("expected insert");
+    .unwrap()
+    .expect("expected insert");
 
     let result = db
         .get([TEST_LEAF], &keygen(MAX_REFERENCE_HOPS + 1), None)

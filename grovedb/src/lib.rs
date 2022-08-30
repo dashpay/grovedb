@@ -29,7 +29,7 @@ pub use subtree::{Element, ElementFlags};
 
 use crate::{error::Error, util::merk_optional_tx};
 
-//todo: remove this
+// todo: remove this
 const MAX_ELEMENTS_NUMBER: u32 = 42069;
 type Hash = [u8; 32];
 

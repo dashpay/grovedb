@@ -461,9 +461,15 @@ mod test {
         // after tree rotation, 2 will be at the top hence would have both left and
         // right links this will serve as our worst case candidate.
         let elem = Element::new_item(b"value".to_vec());
-        db.insert([TEST_LEAF], &[1], elem.clone(), None).unwrap().expect("expected insert");
-        db.insert([TEST_LEAF], &[2], elem.clone(), None).unwrap().expect("expected insert");
-        db.insert([TEST_LEAF], &[3], elem.clone(), None).unwrap().expect("expected insert");
+        db.insert([TEST_LEAF], &[1], elem.clone(), None)
+            .unwrap()
+            .expect("expected insert");
+        db.insert([TEST_LEAF], &[2], elem.clone(), None)
+            .unwrap()
+            .expect("expected insert");
+        db.insert([TEST_LEAF], &[3], elem.clone(), None)
+            .unwrap()
+            .expect("expected insert");
 
         let path = KeyInfoPath::from_vec(vec![KnownKey(TEST_LEAF.to_vec())]);
         let key = KnownKey(vec![1]);

@@ -8,8 +8,13 @@ use std::ops::{Add, AddAssign};
 
 use integer_encoding::VarInt;
 
-use crate::error::Error;
-use crate::OperationStorageTransitionType::{OperationDelete, OperationInsertNew, OperationNone, OperationReplace, OperationUpdateBiggerSize, OperationUpdateSameSize, OperationUpdateSmallerSize};
+use crate::{
+    error::Error,
+    OperationStorageTransitionType::{
+        OperationDelete, OperationInsertNew, OperationNone, OperationReplace,
+        OperationUpdateBiggerSize, OperationUpdateSameSize, OperationUpdateSmallerSize,
+    },
+};
 
 /// Piece of data representing affected computer resources (approximately).
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -39,9 +44,10 @@ pub enum OperationStorageTransitionType {
     OperationUpdateSmallerSize,
     /// An element that existed was updated, but stayed the same size
     OperationUpdateSameSize,
-    /// An element was replaced, this can happen if an insertion operation was marked as a replacement
-    /// An example would be if User A added something, an User B replaced it.
-    /// User A should get their value in credits back, User B should pay as if an insert
+    /// An element was replaced, this can happen if an insertion operation was
+    /// marked as a replacement An example would be if User A added
+    /// something, an User B replaced it. User A should get their value in
+    /// credits back, User B should pay as if an insert
     OperationReplace,
     /// An element was deleted
     OperationDelete,
