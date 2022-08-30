@@ -196,7 +196,6 @@ impl Batch for PrefixedMultiContextBatchPart {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
-
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         // Update the key_storage_cost based on the prefixed key
@@ -210,11 +209,7 @@ impl Batch for PrefixedMultiContextBatchPart {
         });
 
         self.batch
-            .put(
-                prefixed_key,
-                value.to_vec(),
-                updated_cost_info,
-            )
+            .put(prefixed_key, value.to_vec(), updated_cost_info)
             .unwrap_add_cost(&mut self.acc_cost);
         Ok(())
     }
