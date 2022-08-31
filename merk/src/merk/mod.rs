@@ -409,10 +409,10 @@ where
         }
 
         Walker::apply_to(maybe_walker, batch, self.source()).flat_map_ok(
-            |(maybe_tree, deleted_keys)| {
+            |(maybe_tree, updated_keys, deleted_keys)| {
                 self.tree.set(maybe_tree);
                 // commit changes to db
-                self.commit(deleted_keys, aux)
+                self.commit(updated_keys, deleted_keys, aux)
             },
         )
     }
@@ -505,6 +505,7 @@ where
 
     pub fn commit<K>(
         &mut self,
+        updated_keys: BTreeSet<Vec<u8>>,
         deleted_keys: LinkedList<Vec<u8>>,
         aux: &MerkBatch<K>,
     ) -> CostContext<Result<()>>
