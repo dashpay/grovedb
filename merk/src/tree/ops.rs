@@ -580,6 +580,30 @@ mod test {
     }
 
     #[test]
+    fn insert_updated_multiple() {
+        let batch = vec![(vec![0], Op::Put(vec![1])), (vec![1], Op::Put(vec![2])), (vec![2], Op::Put(vec![3]))];
+        let (maybe_tree, updated_keys, deleted_keys) =
+            Walker::<PanicSource>::apply_to(None, &batch, PanicSource {})
+                .unwrap()
+                .expect("apply_to failed");
+        assert!(updated_keys.is_empty());
+        assert!(deleted_keys.is_empty());
+
+        let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
+        let batch = vec![(vec![0], Op::Put(vec![5])), (vec![1], Op::Put(vec![8])), (vec![2], Op::Delete)];
+        let (maybe_tree, updated_keys, deleted_keys) =
+            Walker::<PanicSource>::apply_to(maybe_walker, &batch, PanicSource {})
+                .unwrap()
+                .expect("apply_to failed");
+        let tree = maybe_tree.expect("expected tree");
+        assert_eq!(tree.key(), &[1]);
+        assert_eq!(tree.value(), &[8]);
+        assert_eq!(updated_keys.len(), 2);
+        assert_eq!(updated_keys, BTreeSet::from([vec![0], vec![1]]));
+        assert_eq!(deleted_keys.len(), 1);
+    }
+
+    #[test]
     fn insert_root_single() {
         let tree = Tree::new(vec![5], vec![123]).unwrap();
         let batch = vec![(vec![6], Op::Put(vec![123]))];
