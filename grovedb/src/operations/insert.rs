@@ -250,15 +250,17 @@ impl GroveDb {
 #[cfg(test)]
 mod tests {
     use costs::OperationCost;
-    use crate::Element;
-    use crate::tests::make_empty_grovedb;
+
+    use crate::{tests::make_empty_grovedb, Element};
 
     #[test]
     fn test_one_insert_cost() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let cost = db.insert(vec![], b"key1", Element::empty_tree(), Some(&tx)).cost;
+        let cost = db
+            .insert(vec![], b"key1", Element::empty_tree(), Some(&tx))
+            .cost;
         // Explanation for 176 storage_written_bytes
         // 2 bytes for left and right height
         // 1 byte for the key length size
@@ -289,7 +291,7 @@ mod tests {
                 storage_replaced_bytes: 0,
                 storage_loaded_bytes: 0,
                 storage_removed_bytes: 0,
-                hash_node_calls: 4, //todo: verify this
+                hash_node_calls: 4, // todo: verify this
             }
         );
     }
