@@ -921,6 +921,14 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
+        let consistency_result = GroveDbOp::verify_consistency_of_operations(&ops);
+        if !consistency_result.is_empty() {
+            return Err(Error::InvalidBatchOperation(
+                "batch operations fail consistency checks",
+            ))
+            .wrap_with_cost(cost);
+        }
+
         // `StorageBatch` allows us to collect operations on different subtrees before
         // execution
         let storage_batch = StorageBatch::new();
@@ -1094,6 +1102,23 @@ mod tests {
                 .expect("cannot get element"),
             element2
         );
+    }
+
+    #[test]
+    fn test_batch_operation_consistency_checker() {
+        let db = make_test_grovedb();
+
+        // No two operations should be the same
+        let ops = vec![
+            GroveDbOp::insert(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
+        ];
+        assert!(matches!(
+            db.apply_batch(ops, None, None).unwrap(),
+            Err(Error::InvalidBatchOperation(
+                "batch operations fail consistency checks"
+            ))
+        ));
     }
 
     #[test]
