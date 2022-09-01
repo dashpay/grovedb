@@ -738,15 +738,43 @@ fn test_insert_tree_reference() {
         .expect("should fetch element");
     assert_eq!(tree_ref, expected_tree_ref);
 
-    // Insert tree reference as part of batch
-
-    // first insert a tree reference pointing to a tree outside the batch
+    // Insert a tree reference pointing to a tree outside the batch
     let ops = vec![GroveDbOp::insert(
         vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
         b"k5".to_vec(),
         tree_ref.clone(),
     )];
     assert!(db.apply_batch(ops, None, None).unwrap().is_ok());
+    let expected_tree_ref = db
+        .get_raw([TEST_LEAF, b"innertree"], b"k5", None)
+        .unwrap()
+        .expect("should fetch element");
+    assert_eq!(tree_ref, expected_tree_ref);
+
+    // insert tree reference pointing to a tree created in the same batch
+    let tree_ref = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+        ANOTHER_TEST_LEAF.to_vec(),
+        b"innertree5".to_vec(),
+    ]));
+    let ops = vec![
+        GroveDbOp::insert(
+            vec![ANOTHER_TEST_LEAF.to_vec()],
+            b"innertree5".to_vec(),
+            Element::new_item(vec![1]),
+        ),
+        GroveDbOp::insert(
+            vec![ANOTHER_TEST_LEAF.to_vec()],
+            b"innertree5".to_vec(),
+            Element::empty_tree(),
+        ),
+        GroveDbOp::insert(
+            vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
+            b"k6".to_vec(),
+            tree_ref,
+        ),
+    ];
+    dbg!(db.apply_batch(ops, None, None).unwrap());
+    // assert!(db.apply_batch(ops, None, None).unwrap().is_ok());
 }
 
 #[test]
