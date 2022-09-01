@@ -1119,6 +1119,30 @@ mod tests {
                 "batch operations fail consistency checks"
             ))
         ));
+
+        // Can't perform 2 or more operations on the same node
+        let ops = vec![
+            GroveDbOp::insert(vec![b"a".to_vec()], b"b".to_vec(), Element::new_item(vec![1])),
+            GroveDbOp::insert(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
+        ];
+        assert!(matches!(
+            db.apply_batch(ops, None, None).unwrap(),
+            Err(Error::InvalidBatchOperation(
+                "batch operations fail consistency checks"
+            ))
+        ));
+
+        // Can't insert under a deleted path
+        let ops = vec![
+            GroveDbOp::insert(vec![TEST_LEAF.to_vec()], b"b".to_vec(), Element::new_item(vec![1])),
+            GroveDbOp::delete(vec![], TEST_LEAF.to_vec()),
+        ];
+        assert!(matches!(
+            db.apply_batch(ops, None, None).unwrap(),
+            Err(Error::InvalidBatchOperation(
+                "batch operations fail consistency checks"
+            ))
+        ));
     }
 
     #[test]
