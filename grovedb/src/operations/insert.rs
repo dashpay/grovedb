@@ -35,16 +35,6 @@ impl GroveDb {
                 cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
             }
             Element::Reference(ref reference_path, ..) => {
-                let reference_path = cost_return_on_error!(
-                    &mut cost,
-                    path_from_reference_path_type(
-                        reference_path.clone(),
-                        path_iter.clone(),
-                        Some(key)
-                    )
-                    .wrap_with_cost(OperationCost::default())
-                );
-
                 if path_iter.len() == 0 {
                     return Err(Error::InvalidPath(
                         "only subtrees are allowed as root tree's leafs",
@@ -57,7 +47,26 @@ impl GroveDb {
                     self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
                 );
 
-                let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
+                let reference_path = cost_return_on_error!(
+                    &mut cost,
+                    path_from_reference_path_type(
+                        reference_path.clone(),
+                        path_iter.clone(),
+                        Some(key)
+                    )
+                    .wrap_with_cost(OperationCost::default())
+                );
+
+                if reference_path.len() == 0 {
+                    return Err(Error::InvalidPath(
+                        "attempting to insert an empty reference",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+
+                let (referenced_key, referenced_path) = reference_path
+                    .split_last()
+                    .expect("confirmed path is not empty above");
                 let referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
                 let referenced_element_value_hash_opt = merk_optional_tx!(
                     &mut cost,

@@ -1,5 +1,3 @@
-extern crate core;
-
 pub mod batch;
 mod operations;
 mod query;

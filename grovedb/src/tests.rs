@@ -6,7 +6,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::{
-    query_result_type::QueryResultType::QueryKeyElementPairResultType,
+    batch::GroveDbOp, query_result_type::QueryResultType::QueryKeyElementPairResultType,
     reference_path::ReferencePathType,
 };
 
@@ -721,6 +721,33 @@ fn test_too_many_indirections() {
         .unwrap();
 
     assert!(matches!(result, Err(Error::ReferenceLimit)));
+}
+
+#[test]
+fn test_insert_tree_reference() {
+    let db = make_deep_tree();
+    let tree_ref = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+        ANOTHER_TEST_LEAF.to_vec(),
+    ]));
+    db.insert([TEST_LEAF, b"innertree"], b"k4", tree_ref.clone(), None)
+        .unwrap()
+        .expect("should insert successfully");
+    let expected_tree_ref = db
+        .get_raw([TEST_LEAF, b"innertree"], b"k4", None)
+        .unwrap()
+        .expect("should fetch element");
+    assert_eq!(tree_ref, expected_tree_ref);
+
+    // Insert tree reference as part of batch
+
+    // first insert a tree reference pointing to a tree outside the batch
+    let ops = vec![GroveDbOp::insert(
+        vec![TEST_LEAF.to_vec(), b"innertree".to_vec()],
+        b"k5".to_vec(),
+        tree_ref.clone(),
+    )];
+    dbg!(db.apply_batch(ops, None, None).unwrap());
+    // assert!(db.apply_batch(ops, None, None).unwrap().is_ok());
 }
 
 #[test]
