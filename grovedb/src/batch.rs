@@ -369,7 +369,7 @@ where
 
             // Here the element being referenced doesn't change in the same batch
             // and the max hop count is 1, meaning it should point directly to the base
-            // element at this point we can extract the value hash from the
+            // element. At this point, we can extract the value hash from the
             // reference element directly
             if recursions_allowed == 1 {
                 let referenced_element_value_hash_opt = cost_return_on_error!(
@@ -432,7 +432,7 @@ where
                 );
 
                 match element {
-                    Element::Item(..) => {
+                    Element::Item(..) | Element::Tree(..) => {
                         let serialized = cost_return_on_error_no_add!(&cost, element.serialize());
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
@@ -447,12 +447,6 @@ where
                             ops_by_qualified_paths,
                             recursions_allowed - 1,
                         )
-                    }
-                    Element::Tree(..) => {
-                        return Err(Error::InvalidBatchOperation(
-                            "references can not point to trees being updated",
-                        ))
-                        .wrap_with_cost(cost);
                     }
                 }
             }

@@ -746,8 +746,7 @@ fn test_insert_tree_reference() {
         b"k5".to_vec(),
         tree_ref.clone(),
     )];
-    dbg!(db.apply_batch(ops, None, None).unwrap());
-    // assert!(db.apply_batch(ops, None, None).unwrap().is_ok());
+    assert!(db.apply_batch(ops, None, None).unwrap().is_ok());
 }
 
 #[test]
