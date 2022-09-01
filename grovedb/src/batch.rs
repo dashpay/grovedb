@@ -727,6 +727,7 @@ where
 #[derive(Debug, Default)]
 pub struct BatchApplyOptions {
     pub validate_insertion_does_not_override: bool,
+    pub disable_operation_consistency_check: bool,
 }
 
 impl GroveDb {
@@ -921,6 +922,24 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
+        // Determines whether to check batch operation consistency
+        // return false if the disable option is set to true, returns true for any other
+        // case
+        let check_batch_operation_consistency = batch_apply_options
+            .as_ref()
+            .map(|batch_options| !batch_options.disable_operation_consistency_check)
+            .unwrap_or(true);
+
+        if check_batch_operation_consistency {
+            let consistency_result = GroveDbOp::verify_consistency_of_operations(&ops);
+            if !consistency_result.is_empty() {
+                return Err(Error::InvalidBatchOperation(
+                    "batch operations fail consistency checks",
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
+
         // `StorageBatch` allows us to collect operations on different subtrees before
         // execution
         let storage_batch = StorageBatch::new();
@@ -1094,6 +1113,81 @@ mod tests {
                 .expect("cannot get element"),
             element2
         );
+    }
+
+    #[test]
+    fn test_batch_operation_consistency_checker() {
+        let db = make_test_grovedb();
+
+        // No two operations should be the same
+        let ops = vec![
+            GroveDbOp::insert(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
+        ];
+        assert!(matches!(
+            db.apply_batch(ops, None, None).unwrap(),
+            Err(Error::InvalidBatchOperation(
+                "batch operations fail consistency checks"
+            ))
+        ));
+
+        // Can't perform 2 or more operations on the same node
+        let ops = vec![
+            GroveDbOp::insert(
+                vec![b"a".to_vec()],
+                b"b".to_vec(),
+                Element::new_item(vec![1]),
+            ),
+            GroveDbOp::insert(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
+        ];
+        assert!(matches!(
+            db.apply_batch(ops, None, None).unwrap(),
+            Err(Error::InvalidBatchOperation(
+                "batch operations fail consistency checks"
+            ))
+        ));
+
+        // Can't insert under a deleted path
+        let ops = vec![
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"b".to_vec(),
+                Element::new_item(vec![1]),
+            ),
+            GroveDbOp::delete(vec![], TEST_LEAF.to_vec()),
+        ];
+        assert!(matches!(
+            db.apply_batch(ops, None, None).unwrap(),
+            Err(Error::InvalidBatchOperation(
+                "batch operations fail consistency checks"
+            ))
+        ));
+
+        // Should allow invalid operations pass when disable option is set to true
+        let ops = vec![
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"b".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"b".to_vec(),
+                Element::empty_tree(),
+            ),
+        ];
+        assert!(matches!(
+            db.apply_batch(
+                ops,
+                Some(BatchApplyOptions {
+                    validate_insertion_does_not_override: false,
+                    disable_operation_consistency_check: true,
+                }),
+                None
+            )
+            .unwrap(),
+            Ok(_)
+        ));
     }
 
     #[test]
@@ -1652,7 +1746,8 @@ mod tests {
             .apply_batch(
                 ops,
                 Some(BatchApplyOptions {
-                    validate_insertion_does_not_override: true
+                    validate_insertion_does_not_override: true,
+                    disable_operation_consistency_check: false,
                 }),
                 None
             )
@@ -1685,6 +1780,7 @@ mod tests {
             .apply_batch(
                 ops,
                 Some(BatchApplyOptions {
+                    disable_operation_consistency_check: false,
                     validate_insertion_does_not_override: true
                 }),
                 None
@@ -1712,7 +1808,8 @@ mod tests {
             .apply_batch(
                 ops,
                 Some(BatchApplyOptions {
-                    validate_insertion_does_not_override: true
+                    validate_insertion_does_not_override: true,
+                    disable_operation_consistency_check: false,
                 }),
                 None
             )
