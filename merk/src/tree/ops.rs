@@ -4,9 +4,7 @@ use std::{
 };
 
 use anyhow::Result;
-use costs::{
-    cost_return_on_error, CostContext, CostsExt, KeyValueStorageCost, OperationCost, StorageCost,
-};
+use costs::{cost_return_on_error, CostContext, CostsExt, KeyValueStorageCost, OperationCost};
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};

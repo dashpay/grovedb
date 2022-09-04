@@ -11,7 +11,11 @@ pub trait Commit {
     fn write(
         &mut self,
         tree: &mut Tree,
-        update_tree_value_based_on_costs: &mut impl FnMut(&StorageCost, &mut Vec<u8>) -> Result<bool>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<bool>,
     ) -> Result<()>;
 
     /// Called once per node after writing a node and its children. The returned
@@ -30,7 +34,11 @@ impl Commit for NoopCommit {
     fn write(
         &mut self,
         _tree: &mut Tree,
-        _update_tree_value_based_on_costs: &mut impl FnMut(&StorageCost, &mut Vec<u8>) -> Result<bool>,
+        _update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<bool>,
     ) -> Result<()> {
         Ok(())
     }

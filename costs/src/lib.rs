@@ -86,6 +86,26 @@ impl KeyValueStorageCost {
     }
 }
 
+impl Add for KeyValueStorageCost {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            key_storage_cost: self.key_storage_cost + rhs.key_storage_cost,
+            value_storage_cost: self.value_storage_cost + rhs.value_storage_cost,
+            new_node: self.new_node & rhs.new_node,
+        }
+    }
+}
+
+impl AddAssign for KeyValueStorageCost {
+    fn add_assign(&mut self, rhs: Self) {
+        self.key_storage_cost += rhs.key_storage_cost;
+        self.value_storage_cost += rhs.value_storage_cost;
+        self.new_node &= rhs.new_node;
+    }
+}
+
 /// Storage only Operation Costs
 #[derive(PartialEq, Clone, Eq)]
 pub struct StorageCost {
@@ -95,6 +115,26 @@ pub struct StorageCost {
     pub replaced_bytes: u32,
     /// How many bytes are said to be removed on hard drive.
     pub removed_bytes: u32,
+}
+
+impl Add for StorageCost {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            added_bytes: self.added_bytes + rhs.added_bytes,
+            replaced_bytes: self.replaced_bytes + rhs.replaced_bytes,
+            removed_bytes: self.removed_bytes + rhs.removed_bytes,
+        }
+    }
+}
+
+impl AddAssign for StorageCost {
+    fn add_assign(&mut self, rhs: Self) {
+        self.added_bytes += rhs.added_bytes;
+        self.replaced_bytes += rhs.replaced_bytes;
+        self.removed_bytes += rhs.removed_bytes;
+    }
 }
 
 impl StorageCost {

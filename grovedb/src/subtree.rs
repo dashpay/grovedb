@@ -7,7 +7,7 @@ use core::fmt;
 use bincode::Options;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
-    KeyValueStorageCost, OperationCost,
+    OperationCost,
 };
 use integer_encoding::VarInt;
 use merk::{
@@ -133,6 +133,15 @@ impl Element {
 
     /// Grab the optional flag stored in an element
     pub fn get_flags(&self) -> &Option<ElementFlags> {
+        match self {
+            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
+                flags
+            }
+        }
+    }
+
+    /// Grab the optional flag stored in an element
+    pub fn get_flags_owned(self) -> Option<ElementFlags> {
         match self {
             Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
                 flags

@@ -14,7 +14,6 @@ use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     KeyValueStorageCost, OperationCost, StorageCost,
 };
-use integer_encoding::VarInt;
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
 
 use crate::{
@@ -352,7 +351,11 @@ where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
     {
-        self.apply_with_costs_just_in_time_value_update(batch, aux, &mut |_s, _v| Ok(false))
+        self.apply_with_costs_just_in_time_value_update(
+            batch,
+            aux,
+            &mut |_costs, _old_value, _value| Ok(false),
+        )
     }
 
     /// Applies a batch of operations (puts and deletes) to the tree with the
@@ -380,7 +383,11 @@ where
         &mut self,
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
-        update_tree_value_based_on_costs: &mut impl FnMut(&StorageCost, &mut Vec<u8>) -> Result<bool>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<bool>,
     ) -> CostContext<Result<()>>
     where
         KB: AsRef<[u8]>,
@@ -419,7 +426,7 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[], &mut |s, v| Ok(false)).unwrap().expect("");
+    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[], &mut |s, o, v| Ok(false)).unwrap().expect("");
     ///
     /// use merk::Op;
     ///
@@ -427,17 +434,18 @@ where
     ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key [1,2,3]
     ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
-    /// unsafe { store.apply_unchecked::<_, Vec<_>>(batch, &[], &mut |s, v| Ok(false)).unwrap().expect("");
+    /// unsafe { store.apply_unchecked::<_, Vec<_>, _>(batch, &[], &mut |s, o, v| Ok(false)).unwrap().expect("");
     /// ```
-    pub unsafe fn apply_unchecked<KB, KA>(
+    pub unsafe fn apply_unchecked<KB, KA, U>(
         &mut self,
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
-        update_tree_value_based_on_costs: &mut impl FnMut(&StorageCost, &mut Vec<u8>) -> Result<bool>,
+        update_tree_value_based_on_costs: &mut U,
     ) -> CostContext<Result<()>>
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
+        U: FnMut(&StorageCost, &Vec<u8>, &mut Vec<u8>) -> Result<bool>,
     {
         let maybe_walker = self
             .tree
@@ -554,7 +562,11 @@ where
         updated_keys: BTreeSet<Vec<u8>>,
         deleted_keys: LinkedList<Vec<u8>>,
         aux: &AuxMerkBatch<K>,
-        update_tree_value_based_on_costs: &mut impl FnMut(&StorageCost, &mut Vec<u8>) -> Result<bool>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<bool>,
     ) -> CostResult<(), Error>
     where
         K: AsRef<[u8]>,
@@ -788,32 +800,44 @@ impl Commit for MerkCommitter {
     fn write(
         &mut self,
         tree: &mut Tree,
-        update_tree_value_based_on_costs: &mut impl FnMut(&StorageCost, &mut Vec<u8>) -> Result<bool>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<bool>,
     ) -> Result<()> {
         let (mut current_tree_size, mut storage_costs) = tree.size_and_storage_cost();
-        let i = 0;
-        // At this point the tree value can be updated based on client requirements
-        // For example to store the costs
-        loop {
-            let changed = update_tree_value_based_on_costs(
-                &storage_costs.value_storage_cost,
-                tree.value_mut_ref(),
-            )?;
-            // Update old tree size after generating value storage cost
-            tree.old_size = current_tree_size;
-            if !changed {
-                break;
-            } else {
-                let after_update_tree_size = tree.encoding_length() as u32;
-                if after_update_tree_size == current_tree_size {
+        let mut i = 0;
+
+        if let Some(old_value) = tree.old_value.clone() {
+            // At this point the tree value can be updated based on client requirements
+            // For example to store the costs
+            loop {
+                let changed = update_tree_value_based_on_costs(
+                    &storage_costs.value_storage_cost,
+                    &old_value,
+                    tree.value_mut_ref(),
+                )?;
+                if !changed {
                     break;
+                } else {
+                    let after_update_tree_size = tree.encoding_length() as u32;
+                    if after_update_tree_size == current_tree_size {
+                        break;
+                    }
+                    let new_size_and_storage_costs = tree.size_and_storage_cost();
+                    current_tree_size = new_size_and_storage_costs.0;
+                    storage_costs = new_size_and_storage_costs.1;
                 }
-                (current_tree_size, storage_costs) = tree.size_and_storage_cost();
-            }
-            if i > MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES {
-                return Err(anyhow!("updated value based on costs too many times"));
+                if i > MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES {
+                    return Err(anyhow!("updated value based on costs too many times"));
+                }
+                i += 1;
             }
         }
+
+        // Update old tree size after generating value storage cost
+        tree.old_size = current_tree_size;
 
         let mut buf = Vec::with_capacity(current_tree_size as usize);
         tree.encode_into(&mut buf);

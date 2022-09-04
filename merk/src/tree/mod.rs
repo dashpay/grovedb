@@ -51,6 +51,7 @@ impl Terminated for Box<TreeInner> {}
 pub struct Tree {
     inner: Box<TreeInner>,
     pub(crate) old_size: u32,
+    pub(crate) old_value: Option<Vec<u8>>,
 }
 
 impl Tree {
@@ -65,6 +66,7 @@ impl Tree {
                 right: None,
             }),
             old_size: 0,
+            old_value: None,
         })
     }
 
@@ -74,6 +76,7 @@ impl Tree {
             inner: Box::new(inner_tree),
             // TODO: figure out why adding the required space for this doesn't affect the tests
             old_size: (decode_size + decode_size.required_space()) as u32,
+            old_value: None,
         }
     }
 
@@ -98,13 +101,13 @@ impl Tree {
             Ordering::Greater => {
                 // old size is greater than current size, storage will be freed
                 value_storage_cost.replaced_bytes += current_tree_size;
-                value_storage_cost.removed_bytes += (self.old_size - current_tree_size);
+                value_storage_cost.removed_bytes += self.old_size - current_tree_size;
             }
             Ordering::Less => {
                 // current size is greater than old size, storage will be created
                 // this also handles the case where the tree.old_size = 0
                 value_storage_cost.replaced_bytes += self.old_size;
-                value_storage_cost.added_bytes += (current_tree_size - self.old_size);
+                value_storage_cost.added_bytes += current_tree_size - self.old_size;
             }
         }
 
@@ -133,6 +136,7 @@ impl Tree {
                 right: None,
             }),
             old_size: 0,
+            old_value: None,
         })
     }
 
@@ -152,6 +156,7 @@ impl Tree {
                 right,
             }),
             old_size: 0,
+            old_value: None,
         })
     }
 
@@ -466,7 +471,11 @@ impl Tree {
     pub fn commit<C: Commit>(
         &mut self,
         c: &mut C,
-        update_tree_value_based_on_costs: &mut impl FnMut(&StorageCost, &mut Vec<u8>) -> Result<bool>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<bool>,
     ) -> CostContext<Result<()>> {
         // TODO: make this method less ugly
         // TODO: call write in-order for better performance in writing batch to db?
