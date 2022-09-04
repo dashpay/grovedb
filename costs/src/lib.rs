@@ -56,6 +56,7 @@ pub enum OperationStorageTransitionType {
 }
 
 /// Storage only Operation Costs separated by key and value
+#[derive(PartialEq, Clone, Eq)]
 pub struct KeyValueStorageCost {
     /// Key storage costs
     pub key_storage_cost: StorageCost,
@@ -65,7 +66,28 @@ pub struct KeyValueStorageCost {
     pub new_node: bool,
 }
 
+impl KeyValueStorageCost {
+    /// Convenience method for getting the cost of updating the key of the root
+    /// of each merk
+    pub fn for_updated_root_cost(tree_key_len: u32) -> Self {
+        KeyValueStorageCost {
+            key_storage_cost: StorageCost {
+                added_bytes: 0,
+                replaced_bytes: 34, // prefix + 1 for 'r' + 1 required space
+                removed_bytes: 0,
+            },
+            value_storage_cost: StorageCost {
+                added_bytes: 0,
+                replaced_bytes: tree_key_len + tree_key_len.required_space() as u32,
+                removed_bytes: 0,
+            },
+            new_node: false,
+        }
+    }
+}
+
 /// Storage only Operation Costs
+#[derive(PartialEq, Clone, Eq)]
 pub struct StorageCost {
     /// How many bytes are said to be added on hard drive.
     pub added_bytes: u32,
@@ -93,6 +115,31 @@ impl StorageCost {
             self.verify(len)
         } else {
             Ok(())
+        }
+    }
+
+    /// the type of transition that the costs represent
+    pub fn transition_type(&self) -> OperationStorageTransitionType {
+        if self.added_bytes > 0 {
+            if self.removed_bytes > 0 {
+                OperationReplace
+            } else {
+                if self.replaced_bytes > 0 {
+                    OperationUpdateBiggerSize
+                } else {
+                    OperationInsertNew
+                }
+            }
+        } else if self.removed_bytes > 0 {
+            if self.replaced_bytes > 0 {
+                OperationUpdateSmallerSize
+            } else {
+                OperationDelete
+            }
+        } else if self.replaced_bytes > 0 {
+            OperationUpdateSameSize
+        } else {
+            OperationNone
         }
     }
 }
@@ -162,31 +209,6 @@ impl OperationCost {
             && self.storage_added_bytes >= other.storage_added_bytes
             && self.storage_loaded_bytes >= other.storage_loaded_bytes
             && self.hash_node_calls >= other.hash_node_calls
-    }
-
-    /// the type of transition that the costs represent
-    pub fn transition_type(&self) -> OperationStorageTransitionType {
-        if self.storage_added_bytes > 0 {
-            if self.storage_removed_bytes > 0 {
-                OperationReplace
-            } else {
-                if self.storage_replaced_bytes > 0 {
-                    OperationUpdateBiggerSize
-                } else {
-                    OperationInsertNew
-                }
-            }
-        } else if self.storage_removed_bytes > 0 {
-            if self.storage_replaced_bytes > 0 {
-                OperationUpdateSmallerSize
-            } else {
-                OperationDelete
-            }
-        } else if self.storage_replaced_bytes > 0 {
-            OperationUpdateSameSize
-        } else {
-            OperationNone
-        }
     }
 
     /// add storage costs for key and value storages
@@ -335,6 +357,11 @@ impl<T, E> CostResult<T, E> {
             value: result,
             cost,
         }
+    }
+
+    /// Gets the cost as a result
+    pub fn cost_as_result(self) -> Result<OperationCost, E> {
+        self.value.map(|_| self.cost)
     }
 }
 

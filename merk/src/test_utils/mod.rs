@@ -39,7 +39,7 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
         .expect("apply failed")
         .0
         .expect("expected tree");
-    tree.commit(&mut NoopCommit {})
+    tree.commit(&mut NoopCommit {}, &mut |_, _| Ok(false))
         .unwrap()
         .expect("commit failed");
     tree
@@ -58,7 +58,7 @@ pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) ->
         .expect("apply failed")
         .0
         .map(|mut tree| {
-            tree.commit(&mut NoopCommit {})
+            tree.commit(&mut NoopCommit {}, &mut |_, _| Ok(false))
                 .unwrap()
                 .expect("commit failed");
             println!("{:?}", &tree);

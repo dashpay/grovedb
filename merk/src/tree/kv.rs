@@ -77,7 +77,7 @@ impl KV {
         let mut cost = OperationCost::default();
         // TODO: length check?
         self.value = value;
-        self.value_hash = value_hash(self.value()).unwrap_add_cost(&mut cost);
+        self.value_hash = value_hash(self.value_as_slice()).unwrap_add_cost(&mut cost);
         self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
     }
@@ -105,7 +105,7 @@ impl KV {
 
     /// Returns the value as a slice.
     #[inline]
-    pub fn value(&self) -> &[u8] {
+    pub fn value_as_slice(&self) -> &[u8] {
         self.value.as_slice()
     }
 
@@ -182,7 +182,7 @@ mod test {
         let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6]).unwrap();
 
         assert_eq!(kv.key(), &[1, 2, 3]);
-        assert_eq!(kv.value(), &[4, 5, 6]);
+        assert_eq!(kv.value_as_slice(), &[4, 5, 6]);
         assert_ne!(kv.hash(), &super::super::hash::NULL_HASH);
     }
 
@@ -194,7 +194,7 @@ mod test {
             .unwrap();
 
         assert_eq!(kv.key(), &[1, 2, 3]);
-        assert_eq!(kv.value(), &[7, 8, 9]);
+        assert_eq!(kv.value_as_slice(), &[7, 8, 9]);
         assert_ne!(kv.hash(), &super::super::hash::NULL_HASH);
     }
 }

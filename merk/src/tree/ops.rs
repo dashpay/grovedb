@@ -4,7 +4,9 @@ use std::{
 };
 
 use anyhow::Result;
-use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
+use costs::{
+    cost_return_on_error, CostContext, CostsExt, KeyValueStorageCost, OperationCost, StorageCost,
+};
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};
@@ -42,8 +44,15 @@ impl fmt::Debug for Op {
 /// A single `(key, operation)` pair.
 pub type BatchEntry<K> = (K, Op);
 
+/// A single `(key, operation, cost)` triple.
+pub type AuxBatchEntry<K> = (K, Op, Option<KeyValueStorageCost>);
+
 /// A mapping of keys and operations. Keys should be sorted and unique.
 pub type MerkBatch<K> = [BatchEntry<K>];
+
+/// A mapping of keys and operations with potential costs. Keys should be sorted
+/// and unique.
+pub type AuxMerkBatch<K> = [AuxBatchEntry<K>];
 
 /// A source of data which panics when called. Useful when creating a store
 /// which always keeps the state in memory.
@@ -118,19 +127,17 @@ where
                 };
                 return Ok(maybe_tree.map(|tree| tree.into())).wrap_with_cost(cost);
             }
-            Put(value) => value,
-            PutReference(value, _) => value,
+            Put(value) => value.to_vec(),
+            PutReference(value, _) => value.to_vec(),
         };
 
         // TODO: take from batch so we don't have to clone
 
         let mid_tree = match mid_op {
-            Put(_) => {
-                Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec()).unwrap_add_cost(&mut cost)
-            }
+            Put(..) => Tree::new(mid_key.as_ref().to_vec(), mid_value).unwrap_add_cost(&mut cost),
             PutReference(_, referenced_value) => Tree::new_with_value_hash(
                 mid_key.as_ref().to_vec(),
-                mid_value.to_vec(),
+                mid_value,
                 referenced_value.to_owned(),
             )
             .unwrap_add_cost(&mut cost),
@@ -426,7 +433,7 @@ mod test {
             .expect("apply errored");
         let walker = maybe_walker.expect("should be Some");
         assert_eq!(walker.tree().key(), b"foo");
-        assert_eq!(walker.tree().value(), b"bar2");
+        assert_eq!(walker.tree().value_as_slice(), b"bar2");
         assert!(walker.tree().link(true).is_none());
         assert!(walker.tree().link(false).is_none());
         assert!(updated_keys.is_empty());
@@ -454,7 +461,7 @@ mod test {
             .expect("apply errored");
         let walker = maybe_walker.expect("should be Some");
         assert_eq!(walker.tree().key(), b"foo");
-        assert_eq!(walker.tree().value(), b"bar");
+        assert_eq!(walker.tree().value_as_slice(), b"bar");
         assert!(walker.tree().link(true).is_none());
         assert!(walker.tree().link(false).is_none());
         assert!(updated_keys.is_empty());
@@ -550,7 +557,7 @@ mod test {
                 .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");
         assert_eq!(tree.key(), &[0]);
-        assert_eq!(tree.value(), &[1]);
+        assert_eq!(tree.value_as_slice(), &[1]);
         assert_tree_invariants(&tree);
         assert!(updated_keys.is_empty());
         assert!(deleted_keys.is_empty());
@@ -574,14 +581,18 @@ mod test {
                 .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");
         assert_eq!(tree.key(), &[0]);
-        assert_eq!(tree.value(), &[2]);
+        assert_eq!(tree.value_as_slice(), &[2]);
         assert_eq!(updated_keys.len(), 1);
         assert!(deleted_keys.is_empty());
     }
 
     #[test]
     fn insert_updated_multiple() {
-        let batch = vec![(vec![0], Op::Put(vec![1])), (vec![1], Op::Put(vec![2])), (vec![2], Op::Put(vec![3]))];
+        let batch = vec![
+            (vec![0], Op::Put(vec![1])),
+            (vec![1], Op::Put(vec![2])),
+            (vec![2], Op::Put(vec![3])),
+        ];
         let (maybe_tree, updated_keys, deleted_keys) =
             Walker::<PanicSource>::apply_to(None, &batch, PanicSource {})
                 .unwrap()
@@ -590,14 +601,18 @@ mod test {
         assert!(deleted_keys.is_empty());
 
         let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
-        let batch = vec![(vec![0], Op::Put(vec![5])), (vec![1], Op::Put(vec![8])), (vec![2], Op::Delete)];
+        let batch = vec![
+            (vec![0], Op::Put(vec![5])),
+            (vec![1], Op::Put(vec![8])),
+            (vec![2], Op::Delete),
+        ];
         let (maybe_tree, updated_keys, deleted_keys) =
             Walker::<PanicSource>::apply_to(maybe_walker, &batch, PanicSource {})
                 .unwrap()
                 .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");
         assert_eq!(tree.key(), &[1]);
-        assert_eq!(tree.value(), &[8]);
+        assert_eq!(tree.value_as_slice(), &[8]);
         assert_eq!(updated_keys.len(), 2);
         assert_eq!(updated_keys, BTreeSet::from([vec![0], vec![1]]));
         assert_eq!(deleted_keys.len(), 1);

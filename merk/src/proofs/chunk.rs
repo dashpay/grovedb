@@ -176,7 +176,7 @@ pub(crate) fn get_next_chunk(
             Tree::decode_into(&mut node, vec![], encoded_node).map_err(|e| e.into())
         );
 
-        let kv = Node::KV(key.to_vec(), node.value().to_vec());
+        let kv = Node::KV(key.to_vec(), node.value_as_slice().to_vec());
         chunk.push(Op::Push(kv));
 
         if node.link(true).is_some() {
@@ -380,7 +380,9 @@ mod tests {
     #[test]
     fn one_node_tree_trunk_roundtrip() {
         let mut tree = BaseTree::new(vec![0], vec![]).unwrap();
-        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
+        tree.commit(&mut NoopCommit {}, |_, _| false)
+            .unwrap()
+            .unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
@@ -401,7 +403,9 @@ mod tests {
         let mut tree = BaseTree::new(vec![0], vec![])
             .unwrap()
             .attach(false, Some(BaseTree::new(vec![1], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
+        tree.commit(&mut NoopCommit {}, |_, _| false)
+            .unwrap()
+            .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
@@ -421,7 +425,9 @@ mod tests {
         let mut tree = BaseTree::new(vec![1], vec![])
             .unwrap()
             .attach(true, Some(BaseTree::new(vec![0], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
+        tree.commit(&mut NoopCommit {}, |_, _| false)
+            .unwrap()
+            .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
@@ -442,7 +448,9 @@ mod tests {
             .unwrap()
             .attach(true, Some(BaseTree::new(vec![0], vec![]).unwrap()))
             .attach(false, Some(BaseTree::new(vec![2], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
+        tree.commit(&mut NoopCommit {}, |_, _| false)
+            .unwrap()
+            .unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();

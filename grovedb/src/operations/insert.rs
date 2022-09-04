@@ -295,4 +295,42 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn test_one_update_bigger_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"tree", Element::empty_tree(), Some(&tx))
+            .cost;
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            b"key1",
+            Element::new_item(b"test".to_vec()),
+            Some(&tx),
+        )
+        .cost;
+
+        let cost = db
+            .insert(
+                vec![b"tree".as_slice()],
+                b"key1",
+                Element::new_item(b"test1".to_vec()),
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 12, // todo: verify this
+                storage_added_bytes: 1,
+                storage_replaced_bytes: 253,
+                storage_loaded_bytes: 363,
+                storage_removed_bytes: 0,
+                hash_node_calls: 6, // todo: verify this
+            }
+        );
+    }
 }

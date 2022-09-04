@@ -222,7 +222,7 @@ mod test {
                 true,
                 Some(Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap()),
             );
-        tree.commit(&mut NoopCommit {})
+        tree.commit(&mut NoopCommit {}, |_, _| false)
             .unwrap()
             .expect("commit failed");
 

@@ -7,7 +7,7 @@ use core::fmt;
 use bincode::Options;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
-    OperationCost,
+    KeyValueStorageCost, OperationCost,
 };
 use integer_encoding::VarInt;
 use merk::{
@@ -1086,7 +1086,7 @@ pub struct ElementsIterator<I: RawIterator> {
 
 pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
     let tree = Tree::decode_raw(bytes, vec![]).map_err(|e| Error::CorruptedData(e.to_string()))?;
-    let element: Element = Element::deserialize(tree.value())?;
+    let element: Element = Element::deserialize(tree.value_as_slice())?;
     Ok(element)
 }
 

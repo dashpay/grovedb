@@ -10,12 +10,13 @@ mod link;
 mod ops;
 mod walk;
 
-use std::cmp::max;
+use std::cmp::{max, Ordering};
 
 use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost,
+    OperationCost, StorageCost,
 };
 use ed::{Decode, Encode, Terminated};
 pub use hash::{
@@ -25,7 +26,7 @@ pub use hash::{
 use integer_encoding::VarInt;
 use kv::KV;
 pub use link::Link;
-pub use ops::{BatchEntry, MerkBatch, Op, PanicSource};
+pub use ops::{AuxMerkBatch, BatchEntry, MerkBatch, Op, PanicSource};
 pub use walk::{Fetch, RefWalker, Walker};
 
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
@@ -49,7 +50,7 @@ impl Terminated for Box<TreeInner> {}
 #[derive(Clone)]
 pub struct Tree {
     inner: Box<TreeInner>,
-    pub(crate) old_size: usize,
+    pub(crate) old_size: u32,
 }
 
 impl Tree {
@@ -72,8 +73,48 @@ impl Tree {
         Self {
             inner: Box::new(inner_tree),
             // TODO: figure out why adding the required space for this doesn't affect the tests
-            old_size: decode_size + decode_size.required_space(),
+            old_size: (decode_size + decode_size.required_space()) as u32,
         }
+    }
+
+    pub fn size_and_storage_cost(&self) -> (u32, KeyValueStorageCost) {
+        let mut current_tree_size = self.encoding_length() as u32;
+
+        // add the required space to the current tree size
+        current_tree_size += current_tree_size.required_space() as u32;
+
+        let key_storage_cost = StorageCost {
+            ..Default::default()
+        };
+        let mut value_storage_cost = StorageCost {
+            ..Default::default()
+        };
+
+        // Update the value storage cost
+        match self.old_size.cmp(&current_tree_size) {
+            Ordering::Equal => {
+                value_storage_cost.replaced_bytes += self.old_size;
+            }
+            Ordering::Greater => {
+                // old size is greater than current size, storage will be freed
+                value_storage_cost.replaced_bytes += current_tree_size;
+                value_storage_cost.removed_bytes += (self.old_size - current_tree_size);
+            }
+            Ordering::Less => {
+                // current size is greater than old size, storage will be created
+                // this also handles the case where the tree.old_size = 0
+                value_storage_cost.replaced_bytes += self.old_size;
+                value_storage_cost.added_bytes += (current_tree_size - self.old_size);
+            }
+        }
+
+        let key_value_storage_cost = KeyValueStorageCost {
+            key_storage_cost,
+            value_storage_cost,
+            new_node: self.old_size == 0,
+        };
+
+        (current_tree_size, key_value_storage_cost)
     }
 
     /// Creates a new `Tree` with the given key, value and value hash, and no
@@ -131,10 +172,22 @@ impl Tree {
         self.inner.kv.take_key()
     }
 
+    /// Returns the root node's value as a ref.
+    #[inline]
+    pub fn value_ref(&self) -> &Vec<u8> {
+        self.inner.kv.value.as_ref()
+    }
+
+    /// Returns the root node's value as a ref.
+    #[inline]
+    pub fn value_mut_ref(&mut self) -> &mut Vec<u8> {
+        &mut self.inner.kv.value
+    }
+
     /// Returns the root node's value as a slice.
     #[inline]
-    pub fn value(&self) -> &[u8] {
-        self.inner.kv.value()
+    pub fn value_as_slice(&self) -> &[u8] {
+        self.inner.kv.value_as_slice()
     }
 
     /// Returns the hash of the root node's key/value pair.
@@ -410,7 +463,11 @@ impl Tree {
     /// replacing them with `Link::Loaded` variants, writes out all changes to
     /// the given `Commit` object's `write` method, and calls the its `prune`
     /// method to test whether or not to keep or prune nodes from memory.
-    pub fn commit<C: Commit>(&mut self, c: &mut C) -> CostContext<Result<()>> {
+    pub fn commit<C: Commit>(
+        &mut self,
+        c: &mut C,
+        update_tree_value_based_on_costs: &mut impl FnMut(&StorageCost, &mut Vec<u8>) -> Result<bool>,
+    ) -> CostContext<Result<()>> {
         // TODO: make this method less ugly
         // TODO: call write in-order for better performance in writing batch to db?
 
@@ -426,7 +483,7 @@ impl Tree {
             }) = self.inner.left.take()
             {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
-                cost_return_on_error!(&mut cost, tree.commit(c));
+                cost_return_on_error!(&mut cost, tree.commit(c, update_tree_value_based_on_costs));
                 self.inner.left = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
                     tree,
@@ -446,7 +503,7 @@ impl Tree {
             }) = self.inner.right.take()
             {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
-                cost_return_on_error!(&mut cost, tree.commit(c));
+                cost_return_on_error!(&mut cost, tree.commit(c, update_tree_value_based_on_costs));
                 self.inner.right = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
                     tree,
@@ -457,7 +514,7 @@ impl Tree {
             }
         }
 
-        cost_return_on_error_no_add!(&cost, c.write(self));
+        cost_return_on_error_no_add!(&cost, c.write(self, update_tree_value_based_on_costs));
 
         // println!("done committing {}", std::str::from_utf8(self.key()).unwrap());
 
@@ -515,7 +572,7 @@ mod test {
     fn build_tree() {
         let tree = Tree::new(vec![1], vec![101]).unwrap();
         assert_eq!(tree.key(), &[1]);
-        assert_eq!(tree.value(), &[101]);
+        assert_eq!(tree.value_as_slice(), &[101]);
         assert!(tree.child(true).is_none());
         assert!(tree.child(false).is_none());
 
@@ -583,7 +640,7 @@ mod test {
         assert!(tree.link(false).is_none());
         assert!(tree.child(false).is_none());
 
-        tree.commit(&mut NoopCommit {})
+        tree.commit(&mut NoopCommit {}, |_, _| false)
             .unwrap()
             .expect("commit failed");
         assert!(tree.link(true).expect("expected link").is_stored());
@@ -603,7 +660,7 @@ mod test {
         let mut tree = Tree::new(vec![0], vec![1])
             .unwrap()
             .attach(true, Some(Tree::new(vec![2], vec![3]).unwrap()));
-        tree.commit(&mut NoopCommit {})
+        tree.commit(&mut NoopCommit {}, |_, _| false)
             .unwrap()
             .expect("commit failed");
         assert_eq!(
@@ -666,7 +723,7 @@ mod test {
         let mut tree = Tree::new(vec![0], vec![1])
             .unwrap()
             .attach(false, Some(Tree::new(vec![2], vec![3]).unwrap()));
-        tree.commit(&mut NoopCommit {})
+        tree.commit(&mut NoopCommit {}, |_, _| false)
             .unwrap()
             .expect("commit failed");
 
