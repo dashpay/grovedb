@@ -514,7 +514,7 @@ trait TreeCache<G> {
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
         ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
-        flags_update: &G,
+        flags_update: &mut G,
     ) -> CostResult<[u8; 32], Error>;
 }
 
@@ -712,7 +712,7 @@ where
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
         ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
-        flags_update: &G,
+        flags_update: &mut G,
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
         // todo: fix this
@@ -826,10 +826,15 @@ where
                 &[],
                 &mut |storage_costs, mut value| {
                     let mut element = Element::deserialize(value.as_slice())?;
-                    let flags = element.get_flags_mut();
-                    (flags_update)(storage_costs, flags);
-                    value.clone_from(&element.serialize()?);
-                    Ok(true)
+                    let maybe_flags = element.get_flags_mut();
+                    match maybe_flags {
+                        None => Ok(false),
+                        Some(flags) => {
+                            (flags_update)(storage_costs, flags);
+                            value.clone_from(&element.serialize()?);
+                            Ok(true)
+                        }
+                    }
                 },
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
@@ -854,7 +859,7 @@ impl<G> TreeCache<G> for TreeCacheKnownPaths {
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
         _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
         _batch_apply_options: &BatchApplyOptions,
-        _flags_update: &G,
+        _flags_update: &mut G,
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
 
@@ -1008,7 +1013,7 @@ impl GroveDb {
             mut ops_by_level_paths,
             ops_by_qualified_paths,
             mut merk_tree_cache,
-            flags_update,
+            mut flags_update,
             last_level,
         } = batch_structure;
         let mut current_level = last_level;
@@ -1044,7 +1049,7 @@ impl GroveDb {
                             root_tree_ops,
                             &ops_by_qualified_paths,
                             &batch_apply_options,
-                            &flags_update,
+                            &mut flags_update,
                         )
                     );
                 } else {
@@ -1055,7 +1060,7 @@ impl GroveDb {
                             ops_at_path,
                             &ops_by_qualified_paths,
                             &batch_apply_options,
-                            &flags_update,
+                            &mut flags_update,
                         )
                     );
 
@@ -1591,10 +1596,10 @@ mod tests {
                 None,
                 |cost, flags| match cost.transition_type() {
                     OperationStorageTransitionType::OperationUpdateBiggerSize => {
-                        flags.map(|mut f| f.extend(vec![1, 2]));
+                        flags.extend(vec![1, 2]);
                     }
                     OperationStorageTransitionType::OperationUpdateSmallerSize => {
-                        flags.replace(vec![1]);
+                        flags.extend(vec![1, 2]);
                     }
                     _ => (),
                 },

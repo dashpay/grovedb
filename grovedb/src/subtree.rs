@@ -30,7 +30,7 @@ use crate::{
 };
 
 /// Optional meta-data to be stored per element
-pub type ElementFlags = Option<Vec<u8>>;
+pub type ElementFlags = Vec<u8>;
 
 /// Optional single byte to represent the maximum number of reference hop to
 /// base element
@@ -42,13 +42,13 @@ pub type MaxReferenceHop = Option<u8>;
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Element {
     /// An ordinary value
-    Item(Vec<u8>, ElementFlags),
+    Item(Vec<u8>, Option<ElementFlags>),
     /// A reference to an object by its path
-    Reference(ReferencePathType, MaxReferenceHop, ElementFlags),
+    Reference(ReferencePathType, MaxReferenceHop, Option<ElementFlags>),
     /// A subtree, contains a root hash of the underlying Merk.
     /// Hash is stored to make Merk become different when its subtrees have
     /// changed, otherwise changes won't be reflected in parent trees.
-    Tree([u8; 32], ElementFlags),
+    Tree([u8; 32], Option<ElementFlags>),
 }
 
 impl fmt::Debug for Element {
@@ -85,7 +85,7 @@ impl Element {
         Element::new_tree(Default::default())
     }
 
-    pub fn empty_tree_with_flags(flags: ElementFlags) -> Self {
+    pub fn empty_tree_with_flags(flags: Option<ElementFlags>) -> Self {
         Element::new_tree_with_flags(Default::default(), flags)
     }
 
@@ -93,7 +93,7 @@ impl Element {
         Element::Item(item_value, None)
     }
 
-    pub fn new_item_with_flags(item_value: Vec<u8>, flags: ElementFlags) -> Self {
+    pub fn new_item_with_flags(item_value: Vec<u8>, flags: Option<ElementFlags>) -> Self {
         Element::Item(item_value, flags)
     }
 
@@ -103,7 +103,7 @@ impl Element {
 
     pub fn new_reference_with_flags(
         reference_path: ReferencePathType,
-        flags: ElementFlags,
+        flags: Option<ElementFlags>,
     ) -> Self {
         Element::Reference(reference_path, None, flags)
     }
@@ -118,7 +118,7 @@ impl Element {
     pub fn new_reference_with_max_hops_and_flags(
         reference_path: ReferencePathType,
         max_reference_hop: MaxReferenceHop,
-        flags: ElementFlags,
+        flags: Option<ElementFlags>,
     ) -> Self {
         Element::Reference(reference_path, max_reference_hop, flags)
     }
@@ -127,12 +127,12 @@ impl Element {
         Element::Tree(tree_hash, None)
     }
 
-    pub fn new_tree_with_flags(tree_hash: [u8; 32], flags: ElementFlags) -> Self {
+    pub fn new_tree_with_flags(tree_hash: [u8; 32], flags: Option<ElementFlags>) -> Self {
         Element::Tree(tree_hash, flags)
     }
 
     /// Grab the optional flag stored in an element
-    pub fn get_flags(&self) -> &ElementFlags {
+    pub fn get_flags(&self) -> &Option<ElementFlags> {
         match self {
             Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
                 flags
@@ -141,7 +141,7 @@ impl Element {
     }
 
     /// Grab the optional flag stored in an element as mutable
-    pub fn get_flags_mut(&mut self) -> &mut ElementFlags {
+    pub fn get_flags_mut(&mut self) -> &mut Option<ElementFlags> {
         match self {
             Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
                 flags
