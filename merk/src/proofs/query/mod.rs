@@ -1373,7 +1373,7 @@ mod test {
             .unwrap()
             .attach(true, Some(Tree::new(vec![3], vec![3]).unwrap()))
             .attach(false, Some(Tree::new(vec![7], vec![7]).unwrap()));
-        tree.commit(&mut NoopCommit {}, |_, _| false)
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
             .unwrap()
             .expect("commit failed");
         tree
@@ -1387,7 +1387,7 @@ mod test {
             .attach(true, Some(two_tree))
             .attach(false, Some(four_tree));
         three_tree
-            .commit(&mut NoopCommit {}, ())
+            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
             .unwrap()
             .expect("commit failed");
 
@@ -1396,7 +1396,7 @@ mod test {
             .unwrap()
             .attach(true, Some(seven_tree));
         eight_tree
-            .commit(&mut NoopCommit {}, ())
+            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
             .unwrap()
             .expect("commit failed");
 
@@ -1405,7 +1405,7 @@ mod test {
             .attach(true, Some(three_tree))
             .attach(false, Some(eight_tree));
         root_tree
-            .commit(&mut NoopCommit {}, ())
+            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
             .unwrap()
             .expect("commit failed");
 
@@ -2052,7 +2052,7 @@ mod test {
                         ),
                 ),
             );
-        tree.commit(&mut NoopCommit {}, |_, _| false)
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
             .unwrap()
             .unwrap();
 
@@ -5637,7 +5637,7 @@ mod test {
     #[test]
     fn verify_ops() {
         let mut tree = Tree::new(vec![5], vec![5]).unwrap();
-        tree.commit(&mut NoopCommit {}, |_, _| false)
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
             .unwrap()
             .expect("commit failed");
 
@@ -5663,7 +5663,7 @@ mod test {
     #[should_panic(expected = "verify failed")]
     fn verify_ops_mismatched_hash() {
         let mut tree = Tree::new(vec![5], vec![5]).unwrap();
-        tree.commit(&mut NoopCommit {}, |_, _| false)
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
             .unwrap()
             .expect("commit failed");
 

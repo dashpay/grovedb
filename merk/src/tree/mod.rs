@@ -655,7 +655,7 @@ mod test {
         assert!(tree.link(false).is_none());
         assert!(tree.child(false).is_none());
 
-        tree.commit(&mut NoopCommit {}, |_, _| false)
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
             .unwrap()
             .expect("commit failed");
         assert!(tree.link(true).expect("expected link").is_stored());
@@ -675,7 +675,7 @@ mod test {
         let mut tree = Tree::new(vec![0], vec![1])
             .unwrap()
             .attach(true, Some(Tree::new(vec![2], vec![3]).unwrap()));
-        tree.commit(&mut NoopCommit {}, |_, _| false)
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
             .unwrap()
             .expect("commit failed");
         assert_eq!(
@@ -738,7 +738,7 @@ mod test {
         let mut tree = Tree::new(vec![0], vec![1])
             .unwrap()
             .attach(false, Some(Tree::new(vec![2], vec![3]).unwrap()));
-        tree.commit(&mut NoopCommit {}, |_, _| false)
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
             .unwrap()
             .expect("commit failed");
 

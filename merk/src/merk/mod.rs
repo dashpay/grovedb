@@ -381,7 +381,7 @@ where
     ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
     ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
-    /// 
+    ///
     /// store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
     ///     batch,
     ///     &[],
@@ -1046,7 +1046,7 @@ mod test {
     #[test]
     fn aux_data() {
         let mut merk = TempMerk::new();
-        merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))])
+        merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), None)])
             .unwrap()
             .expect("apply failed");
         let val = merk.get_aux(&[1, 2, 3]).unwrap().unwrap();
@@ -1059,7 +1059,7 @@ mod test {
 
         merk.apply::<_, Vec<_>>(
             &[(vec![0], Op::Put(vec![1]))],
-            &[(vec![2], Op::Put(vec![3]))],
+            &[(vec![2], Op::Put(vec![3]), None)],
         )
         .unwrap()
         .expect("apply failed");

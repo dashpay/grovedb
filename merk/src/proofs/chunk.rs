@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn one_node_tree_trunk_roundtrip() {
         let mut tree = BaseTree::new(vec![0], vec![]).unwrap();
-        tree.commit(&mut NoopCommit {}, |_, _| false)
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
             .unwrap()
             .unwrap();
 
@@ -403,7 +403,7 @@ mod tests {
         let mut tree = BaseTree::new(vec![0], vec![])
             .unwrap()
             .attach(false, Some(BaseTree::new(vec![1], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}, |_, _| false)
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
             .unwrap()
             .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -425,7 +425,7 @@ mod tests {
         let mut tree = BaseTree::new(vec![1], vec![])
             .unwrap()
             .attach(true, Some(BaseTree::new(vec![0], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}, |_, _| false)
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
             .unwrap()
             .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -448,7 +448,7 @@ mod tests {
             .unwrap()
             .attach(true, Some(BaseTree::new(vec![0], vec![]).unwrap()))
             .attach(false, Some(BaseTree::new(vec![2], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}, |_, _| false)
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
             .unwrap()
             .unwrap();
 
