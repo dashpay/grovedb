@@ -1,4 +1,5 @@
 use anyhow::Result;
+use costs::storage_cost::StorageCost;
 
 use super::Tree;
 
@@ -7,7 +8,15 @@ use super::Tree;
 pub trait Commit {
     /// Called once per updated node when a finalized tree is to be written to a
     /// backing store or cache.
-    fn write(&mut self, tree: &mut Tree) -> Result<()>;
+    fn write(
+        &mut self,
+        tree: &mut Tree,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<bool>,
+    ) -> Result<()>;
 
     /// Called once per node after writing a node and its children. The returned
     /// tuple specifies whether or not to prune the left and right child nodes,
@@ -22,7 +31,15 @@ pub trait Commit {
 /// any nodes from the Tree. Useful when only keeping a tree in memory.
 pub struct NoopCommit {}
 impl Commit for NoopCommit {
-    fn write(&mut self, _tree: &mut Tree) -> Result<()> {
+    fn write(
+        &mut self,
+        _tree: &mut Tree,
+        _update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<bool>,
+    ) -> Result<()> {
         Ok(())
     }
 

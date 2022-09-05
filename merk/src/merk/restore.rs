@@ -93,7 +93,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         tree.visit_refs(&mut |proof_node| {
             let (key, value) = match &proof_node.node {
                 Node::KV(key, value) => (key, value),
-                _ => return,
+                _ => return Ok(()),
             };
 
             // TODO: encode tree node without cloning key/value
@@ -102,8 +102,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             *node.slot_mut(false) = proof_node.right.as_ref().map(Child::as_link);
 
             let bytes = node.encode();
-            batch.put(key, &bytes, None);
-        });
+            batch.put(key, &bytes, None).map_err(|e| e.into())
+        })?;
 
         self.merk.storage.commit_batch(batch).unwrap()?;
         Ok(())
@@ -238,7 +238,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             *cloned_node.link_mut(false).unwrap().child_heights_mut() = right_child_heights;
 
             let bytes = cloned_node.encode();
-            batch.put(node.tree().key(), &bytes, None);
+            batch.put(node.tree().key(), &bytes, None)?;
 
             Ok((left_height, right_height))
         }

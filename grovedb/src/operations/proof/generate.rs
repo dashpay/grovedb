@@ -357,7 +357,7 @@ impl GroveDb {
                     Node::KV(key, value) => {
                         let elem = Element::deserialize(value);
                         if let Ok(Element::Reference(reference_path, ..)) = elem {
-                            let mut current_path = path_iter.clone();
+                            let current_path = path_iter.clone();
                             let absolute_path = cost_return_on_error!(
                                 &mut cost,
                                 path_from_reference_path_type(

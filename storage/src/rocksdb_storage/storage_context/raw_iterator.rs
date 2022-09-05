@@ -1,4 +1,4 @@
-//! Prefixed storage raw iterator implementation for RocksDB backend.
+//! Prefixed storage_cost raw iterator implementation for RocksDB backend.
 use costs::{CostContext, CostsExt, OperationCost};
 use rocksdb::DBRawIteratorWithThreadMode;
 
@@ -8,7 +8,7 @@ use crate::{
     RawIterator,
 };
 
-/// Raw iterator over prefixed storage.
+/// Raw iterator over prefixed storage_cost.
 pub struct PrefixedRocksDbRawIterator<I> {
     pub(super) prefix: Vec<u8>,
     pub(super) raw_iterator: I,

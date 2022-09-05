@@ -1,4 +1,4 @@
-//! GroveDB storage layer worst case costs traits.
+//! GroveDB storage_cost layer worst case costs traits.
 
 /// Worst Key Length should be implemented for items being used
 /// for get_storage_context_cost path items

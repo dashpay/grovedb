@@ -196,7 +196,7 @@ mod tests {
     use crate::{
         reference_path::{path_from_reference_path_type, ReferencePathType},
         tests::{make_deep_tree, TEST_LEAF},
-        Element, Error, GroveDb, PathQuery,
+        Element, GroveDb, PathQuery,
     };
 
     #[test]

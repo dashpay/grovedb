@@ -1,7 +1,10 @@
 //! Storage context implementation with a transaction.
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost,
-    OperationCost, StorageCost,
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::{
+        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
+    },
+    CostContext, CostsExt, OperationCost,
 };
 use error::Error;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, WriteBatchWithTransaction};
@@ -184,7 +187,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .map(|x| x.len() as u32)
             .unwrap_or(0);
 
-        cost.storage_removed_bytes += deleted_len;
+        cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
         cost.seek_count += 1;
 
         self.transaction
@@ -200,7 +203,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .map(|x| x.len() as u32)
             .unwrap_or(0);
 
-        cost.storage_removed_bytes += deleted_len;
+        cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
         cost.seek_count += 1;
 
         self.transaction
@@ -216,7 +219,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .map(|x| x.len() as u32)
             .unwrap_or(0);
 
-        cost.storage_removed_bytes += deleted_len;
+        cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
         cost.seek_count += 1;
 
         self.transaction
@@ -232,7 +235,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .map(|x| x.len() as u32)
             .unwrap_or(0);
 
-        cost.storage_removed_bytes += deleted_len;
+        cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
         cost.seek_count += 1;
 
         self.transaction

@@ -4,6 +4,6 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Storage Cost Value mismatch
-    #[error("storage cost mismatch")]
+    #[error("storage_cost cost mismatch")]
     StorageCostMismatch,
 }

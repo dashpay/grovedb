@@ -232,7 +232,7 @@ mod tests {
         let tmp_dir = TempDir::new().expect("cannot create tempdir");
         let original_chunks = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-                .expect("cannot open rocksdb storage");
+                .expect("cannot open rocksdb storage_cost");
 
             let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
                 .unwrap()
@@ -248,7 +248,7 @@ mod tests {
                 .into_iter()
         };
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
+            .expect("cannot open rocksdb storage_cost");
         let merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .unwrap();

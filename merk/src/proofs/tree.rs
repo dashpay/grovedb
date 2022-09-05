@@ -83,16 +83,17 @@ impl Tree {
 
     /// Does an in-order traversal over references to all the nodes in the tree,
     /// calling `visit_node` for each.
-    pub fn visit_refs<F: FnMut(&Self)>(&self, visit_node: &mut F) {
+    pub fn visit_refs<F: FnMut(&Self) -> Result<()>>(&self, visit_node: &mut F) -> Result<()> {
         if let Some(child) = &self.left {
-            child.tree.visit_refs(visit_node);
+            child.tree.visit_refs(visit_node)?;
         }
 
-        visit_node(self);
+        visit_node(self)?;
 
         if let Some(child) = &self.right {
-            child.tree.visit_refs(visit_node);
+            child.tree.visit_refs(visit_node)?;
         }
+        Ok(())
     }
 
     /// Returns an immutable reference to the child on the given side, if any.

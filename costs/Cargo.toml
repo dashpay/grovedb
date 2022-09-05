@@ -7,4 +7,5 @@ publish = false
 
 [dependencies]
 thiserror = "1.0.30"
+intmap = "2.0.0"
 integer-encoding = "3.0.3"

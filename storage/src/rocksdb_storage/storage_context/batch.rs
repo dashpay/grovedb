@@ -1,6 +1,10 @@
-//! Prefixed storage batch implementation for RocksDB backend.
+//! Prefixed storage_cost batch implementation for RocksDB backend.
 use costs::{
-    cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost, OperationCost,
+    cost_return_on_error_no_add,
+    storage_cost::{
+        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
+    },
+    CostContext, CostsExt, OperationCost,
 };
 use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
@@ -49,7 +53,8 @@ impl<'db> PrefixedRocksDbBatch<'db> {
             cost.seek_count += 1;
             if let Some(v) = value {
                 cost.storage_loaded_bytes += v.len() as u32;
-                self.cost_acc.storage_removed_bytes += v.len() as u32;
+                // todo: improve deletion costs
+                self.cost_acc.storage_cost.removed_bytes += BasicStorageRemoval(v.len() as u32);
             }
         }
 
@@ -61,7 +66,8 @@ impl<'db> PrefixedRocksDbBatch<'db> {
             cost.seek_count += 1;
             if let Some(v) = value {
                 cost.storage_loaded_bytes += v.len() as u32;
-                self.cost_acc.storage_removed_bytes += v.len() as u32;
+                // todo: improve deletion costs
+                self.cost_acc.storage_cost.removed_bytes += BasicStorageRemoval(v.len() as u32);
             }
         }
 
@@ -73,7 +79,8 @@ impl<'db> PrefixedRocksDbBatch<'db> {
             cost.seek_count += 1;
             if let Some(v) = value {
                 cost.storage_loaded_bytes += v.len() as u32;
-                self.cost_acc.storage_removed_bytes += v.len() as u32;
+                // todo: improve deletion costs
+                self.cost_acc.storage_cost.removed_bytes += BasicStorageRemoval(v.len() as u32);
             }
         }
 
@@ -81,8 +88,8 @@ impl<'db> PrefixedRocksDbBatch<'db> {
     }
 }
 
-/// Batch with no backing storage (it's not a RocksDB batch, but our own way to
-/// represent a set of operations) that eventually will be merged into
+/// Batch with no backing storage_cost (it's not a RocksDB batch, but our own
+/// way to represent a set of operations) that eventually will be merged into
 /// multi-context batch.
 pub struct PrefixedMultiContextBatchPart {
     pub(crate) prefix: Vec<u8>,
@@ -103,7 +110,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         // Update the key_storage_cost based on the prefixed key
         let updated_cost_info = cost_info.map(|mut key_value_storage_cost| {
             if key_value_storage_cost.new_node {
-                // key is new, storage needs to be created for it
+                // key is new, storage_cost needs to be created for it
                 key_value_storage_cost.key_storage_cost.added_bytes +=
                     (prefixed_key.len() + prefixed_key.len().required_space()) as u32;
             }
@@ -201,7 +208,7 @@ impl Batch for PrefixedMultiContextBatchPart {
         // Update the key_storage_cost based on the prefixed key
         let updated_cost_info = cost_info.map(|mut key_value_storage_cost| {
             if key_value_storage_cost.new_node {
-                // key is new, storage needs to be created for it
+                // key is new, storage_cost needs to be created for it
                 key_value_storage_cost.key_storage_cost.added_bytes +=
                     (prefixed_key.len() + prefixed_key.len().required_space()) as u32;
             }

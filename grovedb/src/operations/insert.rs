@@ -249,16 +249,21 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use costs::OperationCost;
-    use crate::Element;
-    use crate::tests::make_empty_grovedb;
+    use costs::{
+        storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
+        OperationCost,
+    };
+
+    use crate::{tests::make_empty_grovedb, Element};
 
     #[test]
     fn test_one_insert_cost() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let cost = db.insert(vec![], b"key1", Element::empty_tree(), Some(&tx)).cost;
+        let cost = db
+            .insert(vec![], b"key1", Element::empty_tree(), Some(&tx))
+            .cost;
         // Explanation for 176 storage_written_bytes
         // 2 bytes for left and right height
         // 1 byte for the key length size
@@ -285,11 +290,53 @@ mod tests {
             cost,
             OperationCost {
                 seek_count: 4, // 1 to get tree, 1 to insert, 1 for root, 1 for insert into root
-                storage_added_bytes: 177,
-                storage_replaced_bytes: 0,
+                storage_cost: StorageCost {
+                    added_bytes: 177,
+                    replaced_bytes: 0,
+                    removed_bytes: NoStorageRemoval
+                },
                 storage_loaded_bytes: 0,
-                storage_removed_bytes: 0,
-                hash_node_calls: 4, //todo: verify this
+                hash_node_calls: 4, // todo: verify this
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_update_bigger_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"tree", Element::empty_tree(), Some(&tx))
+            .cost;
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            b"key1",
+            Element::new_item(b"test".to_vec()),
+            Some(&tx),
+        )
+        .cost;
+
+        let cost = db
+            .insert(
+                vec![b"tree".as_slice()],
+                b"key1",
+                Element::new_item(b"test1".to_vec()),
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 12, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 1,
+                    replaced_bytes: 253,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 363,
+                hash_node_calls: 6, // todo: verify this
             }
         );
     }

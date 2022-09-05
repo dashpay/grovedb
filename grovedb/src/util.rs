@@ -1,4 +1,4 @@
-/// Macro to execute same piece of code on different storage contexts
+/// Macro to execute same piece of code on different storage_cost contexts
 /// (transactional or not) using path argument.
 macro_rules! storage_context_optional_tx {
     ($db:expr, $path:expr, $transaction:ident, $storage:ident, { $($body:tt)* }) => {
@@ -17,8 +17,8 @@ macro_rules! storage_context_optional_tx {
     };
 }
 
-/// Macro to execute same piece of code on different storage contexts with empty
-/// prefix.
+/// Macro to execute same piece of code on different storage_cost contexts with
+/// empty prefix.
 macro_rules! meta_storage_context_optional_tx {
     ($db:expr, $transaction:ident, $storage:ident, { $($body:tt)* }) => {
         {
@@ -36,7 +36,8 @@ macro_rules! meta_storage_context_optional_tx {
     };
 }
 
-/// Macro to execute same piece of code on Merk with varying storage contexts.
+/// Macro to execute same piece of code on Merk with varying storage_cost
+/// contexts.
 macro_rules! merk_optional_tx {
     (
         &mut $cost:ident,

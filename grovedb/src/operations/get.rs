@@ -144,7 +144,7 @@ impl GroveDb {
     {
         let path_iter = path.into_iter();
 
-        // Merk's items should be written into data storage and checked accordingly
+        // Merk's items should be written into data storage_cost and checked accordingly
         storage_context_optional_tx!(self.db, path_iter, transaction, storage, {
             storage.flat_map(|s| s.get(key).map_err(|e| e.into()).map_ok(|x| x.is_some()))
         })

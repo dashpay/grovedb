@@ -10,13 +10,14 @@ use std::{
 };
 
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, storage_cost::StorageCost, CostResult,
+    CostsExt, OperationCost,
 };
 use merk::{tree::value_hash, CryptoHash, Merk};
 use nohash_hasher::IntMap;
 use storage::{
-    error::Error::RocksDBError, rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength,
-    Storage, StorageBatch, StorageContext,
+    rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch,
+    StorageContext,
 };
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
@@ -25,7 +26,7 @@ use crate::{
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     worst_case_costs::MerkWorstCaseInput,
-    Element, Error, GroveDb, TransactionArg, MAX_ELEMENTS_NUMBER, MAX_ELEMENT_SIZE,
+    Element, ElementFlags, Error, GroveDb, TransactionArg, MAX_ELEMENTS_NUMBER,
 };
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -40,7 +41,10 @@ impl Op {
         match self {
             Op::ReplaceTreeHash { .. } => OperationCost {
                 seek_count: 1,
-                storage_added_bytes: 32,
+                storage_cost: StorageCost {
+                    added_bytes: 32,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             Op::Insert { element } => {
@@ -294,7 +298,7 @@ pub struct GroveDbOp {
 impl fmt::Debug for GroveDbOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut path_out = Vec::new();
-        let mut path_drawer = Drawer::new(&mut path_out);
+        let path_drawer = Drawer::new(&mut path_out);
         self.path.visualize(path_drawer).unwrap();
         let mut key_out = Vec::new();
         let key_drawer = Drawer::new(&mut key_out);
@@ -504,7 +508,7 @@ impl fmt::Debug for TreeCacheKnownPaths {
     }
 }
 
-trait TreeCache {
+trait TreeCache<G> {
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error>;
 
     fn execute_ops_on_path(
@@ -513,6 +517,7 @@ trait TreeCache {
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
         ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
+        flags_update: &mut G,
     ) -> CostResult<[u8; 32], Error>;
 }
 
@@ -685,8 +690,9 @@ where
     }
 }
 
-impl<'db, S, F> TreeCache for TreeCacheMerkByPath<S, F>
+impl<'db, S, F, G> TreeCache<G> for TreeCacheMerkByPath<S, F>
 where
+    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> bool,
     F: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
@@ -709,6 +715,7 @@ where
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
         ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
+        flags_update: &mut G,
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
         // todo: fix this
@@ -726,7 +733,11 @@ where
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } => match &element {
-                    Element::Reference(path_reference, element_max_reference_hop, _) => {
+                    Element::Reference(
+                        path_reference,
+                        element_max_reference_hop,
+                        element_flags,
+                    ) => {
                         let path_iter = path.iter().map(|x| x.as_slice());
                         let path_reference = cost_return_on_error!(
                             &mut cost,
@@ -762,7 +773,7 @@ where
                             )
                         );
                     }
-                    Element::Item(..) | Element::Tree(..) => {
+                    Element::Item(_, element_flags) | Element::Tree(_, element_flags) => {
                         if batch_apply_options.validate_insertion_does_not_override {
                             let inserted = cost_return_on_error!(
                                 &mut cost,
@@ -811,15 +822,37 @@ where
                 }
             }
         }
+
         cost_return_on_error!(&mut cost, unsafe {
-            merk.apply_unchecked::<_, Vec<u8>>(&batch_operations, &[])
-                .map_err(|e| Error::CorruptedData(e.to_string()))
+            merk.apply_unchecked::<_, Vec<u8>, _>(
+                &batch_operations,
+                &[],
+                &mut |storage_costs, old_value, new_value| {
+                    // todo: change the flags without deserialization
+                    let mut old_element = Element::deserialize(old_value.as_slice())?;
+                    let maybe_old_flags = old_element.get_flags_owned();
+
+                    let mut new_element = Element::deserialize(new_value.as_slice())?;
+                    let maybe_new_flags = new_element.get_flags_mut();
+                    match maybe_new_flags {
+                        None => Ok(false),
+                        Some(new_flags) => {
+                            let changed = (flags_update)(storage_costs, maybe_old_flags, new_flags);
+                            if changed {
+                                new_value.clone_from(&new_element.serialize()?);
+                            }
+                            Ok(changed)
+                        }
+                    }
+                },
+            )
+            .map_err(|e| Error::CorruptedData(e.to_string()))
         });
         merk.root_hash().add_cost(cost).map(Ok)
     }
 }
 
-impl TreeCache for TreeCacheKnownPaths {
+impl<G> TreeCache<G> for TreeCacheKnownPaths {
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
@@ -835,6 +868,7 @@ impl TreeCache for TreeCacheKnownPaths {
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
         _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
         _batch_apply_options: &BatchApplyOptions,
+        _flags_update: &mut G,
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
 
@@ -859,18 +893,20 @@ impl TreeCache for TreeCacheKnownPaths {
 ///                          LEVEL           PATH                   KEY      OP
 type OpsByLevelPath = IntMap<u32, BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>>>;
 
-struct BatchStructure<C> {
+struct BatchStructure<C, F> {
     /// Operations by level path
     ops_by_level_paths: OpsByLevelPath,
     /// This is for references
     ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, Op>,
     /// Merk trees
     merk_tree_cache: C,
+    /// Flags modification function
+    flags_update: F,
     /// Last level
     last_level: u32,
 }
 
-impl<S: fmt::Debug> fmt::Debug for BatchStructure<S> {
+impl<F, S: fmt::Debug> fmt::Debug for BatchStructure<S, F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut fmt_int_map = IntMap::default();
         for (level, path_map) in self.ops_by_level_paths.iter() {
@@ -895,14 +931,16 @@ impl<S: fmt::Debug> fmt::Debug for BatchStructure<S> {
     }
 }
 
-impl<C> BatchStructure<C>
+impl<C, F> BatchStructure<C, F>
 where
-    C: TreeCache,
+    C: TreeCache<F>,
+    F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> bool,
 {
     fn from_ops(
         ops: Vec<GroveDbOp>,
+        update_element_flags_function: F,
         mut merk_tree_cache: C,
-    ) -> CostResult<BatchStructure<C>, Error> {
+    ) -> CostResult<BatchStructure<C, F>, Error> {
         let mut cost = OperationCost::default();
 
         let mut ops_by_level_paths: OpsByLevelPath = IntMap::default();
@@ -958,6 +996,7 @@ where
             ops_by_level_paths,
             ops_by_qualified_paths,
             merk_tree_cache,
+            flags_update: update_element_flags_function,
             last_level: current_last_level,
         })
         .wrap_with_cost(cost)
@@ -971,15 +1010,19 @@ pub struct BatchApplyOptions {
 
 impl GroveDb {
     /// Method to propagate updated subtree root hashes up to GroveDB root
-    fn apply_batch_structure<C: TreeCache>(
-        batch_structure: BatchStructure<C>,
+    fn apply_batch_structure<C: TreeCache<F>, F>(
+        batch_structure: BatchStructure<C, F>,
         batch_apply_options: Option<BatchApplyOptions>,
-    ) -> CostResult<(), Error> {
+    ) -> CostResult<(), Error>
+    where
+        F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> bool,
+    {
         let mut cost = OperationCost::default();
         let BatchStructure {
             mut ops_by_level_paths,
             ops_by_qualified_paths,
             mut merk_tree_cache,
+            mut flags_update,
             last_level,
         } = batch_structure;
         let mut current_level = last_level;
@@ -1015,6 +1058,7 @@ impl GroveDb {
                             root_tree_ops,
                             &ops_by_qualified_paths,
                             &batch_apply_options,
+                            &mut flags_update,
                         )
                     );
                 } else {
@@ -1025,6 +1069,7 @@ impl GroveDb {
                             ops_at_path,
                             &ops_by_qualified_paths,
                             &batch_apply_options,
+                            &mut flags_update,
                         )
                     );
 
@@ -1102,6 +1147,11 @@ impl GroveDb {
         &self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
+        update_element_flags_function: impl FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> bool,
         get_merk_fn: impl FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -1109,6 +1159,7 @@ impl GroveDb {
             &mut cost,
             BatchStructure::from_ops(
                 ops,
+                update_element_flags_function,
                 TreeCacheMerkByPath {
                     merks: Default::default(),
                     get_merk_fn,
@@ -1152,11 +1203,30 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    /// Applies batch of operations on GroveDB
     pub fn apply_batch(
         &self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
+        transaction: TransactionArg,
+    ) -> CostResult<(), Error> {
+        self.apply_batch_with_element_flags_update(
+            ops,
+            batch_apply_options,
+            |cost, old_flags, new_flags| false,
+            transaction,
+        )
+    }
+
+    /// Applies batch of operations on GroveDB
+    pub fn apply_batch_with_element_flags_update(
+        &self,
+        ops: Vec<GroveDbOp>,
+        batch_apply_options: Option<BatchApplyOptions>,
+        update_element_flags_function: impl FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> bool,
         transaction: TransactionArg,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -1173,27 +1243,32 @@ impl GroveDb {
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
         //    one subtree and moved to another then add propagation operation to the
         //    operations tree and drop Merk handle;
-        // 3. Take Merk from temp subtrees or open a new one with batched storage
+        // 3. Take Merk from temp subtrees or open a new one with batched storage_cost
         //    context;
         // 4. Apply operation to the Merk;
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
-        // 7. Apply storage batch
+        // 7. Apply storage_cost batch
         if let Some(tx) = transaction {
             cost_return_on_error!(
                 &mut cost,
-                self.apply_body(ops, batch_apply_options, |path| {
-                    let storage = self
-                        .db
-                        .get_batch_transactional_storage_context(
-                            path.iter().map(|x| x.as_slice()),
-                            &storage_batch,
-                            tx,
-                        )
-                        .unwrap_add_cost(&mut cost);
-                    Merk::open(storage)
-                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                })
+                self.apply_body(
+                    ops,
+                    batch_apply_options,
+                    update_element_flags_function,
+                    |path| {
+                        let storage = self
+                            .db
+                            .get_batch_transactional_storage_context(
+                                path.iter().map(|x| x.as_slice()),
+                                &storage_batch,
+                                tx,
+                            )
+                            .unwrap_add_cost(&mut cost);
+                        Merk::open(storage)
+                            .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                    }
+                )
             );
 
             // TODO: compute batch costs
@@ -1207,17 +1282,22 @@ impl GroveDb {
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.apply_body(ops, batch_apply_options, |path| {
-                    let storage = self
-                        .db
-                        .get_batch_storage_context(
-                            path.iter().map(|x| x.as_slice()),
-                            &storage_batch,
-                        )
-                        .unwrap_add_cost(&mut cost);
-                    Merk::open(storage)
-                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                })
+                self.apply_body(
+                    ops,
+                    batch_apply_options,
+                    update_element_flags_function,
+                    |path| {
+                        let storage = self
+                            .db
+                            .get_batch_storage_context(
+                                path.iter().map(|x| x.as_slice()),
+                                &storage_batch,
+                            )
+                            .unwrap_add_cost(&mut cost);
+                        Merk::open(storage)
+                            .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                    }
+                )
             );
 
             // TODO: compute batch costs
@@ -1235,6 +1315,11 @@ impl GroveDb {
     pub fn worst_case_operations_for_batch(
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
+        update_element_flags_function: impl FnMut(
+            &StorageCost,
+            Option<ElementFlags>,
+            &mut ElementFlags,
+        ) -> bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -1244,7 +1329,11 @@ impl GroveDb {
 
         let batch_structure = cost_return_on_error!(
             &mut cost,
-            BatchStructure::from_ops(ops, TreeCacheKnownPaths::default())
+            BatchStructure::from_ops(
+                ops,
+                update_element_flags_function,
+                TreeCacheKnownPaths::default()
+            )
         );
         cost_return_on_error!(
             &mut cost,
@@ -1257,15 +1346,18 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
+    use costs::storage_cost::{
+        removal::StorageRemovedBytes::NoStorageRemoval, transition::OperationStorageTransitionType,
+        StorageCost,
+    };
+    use integer_encoding::VarInt;
     use merk::proofs::Query;
 
     use super::*;
     use crate::{
         reference_path::ReferencePathType,
         tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
-        PathQuery, SizedQuery,
+        PathQuery,
     };
 
     #[test]
@@ -1449,11 +1541,129 @@ mod tests {
             cost,
             OperationCost {
                 seek_count: 2, // 1 to get tree, 1 to insert
-                storage_added_bytes: 177,
-                storage_replaced_bytes: 0,
+                storage_cost: StorageCost {
+                    added_bytes: 177,
+                    replaced_bytes: 0,
+                    removed_bytes: NoStorageRemoval,
+                },
                 storage_loaded_bytes: 0,
-                storage_removed_bytes: 0,
                 hash_node_calls: 6,
+            }
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_update_bigger_cost_no_flags() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+        db.insert(vec![], b"tree", Element::empty_tree(), None)
+            .unwrap()
+            .expect("expected to insert tree");
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            b"key1",
+            Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0])),
+            None,
+        )
+        .unwrap()
+        .expect("expected to insert item");
+
+        // We are adding 2 bytes
+        let ops = vec![GroveDbOp::insert_run_op(
+            vec![b"tree".to_vec()],
+            b"key1".to_vec(),
+            Element::new_item_with_flags(b"value100".to_vec(), Some(vec![1])),
+        )];
+
+        let cost = db
+            .apply_batch_with_element_flags_update(
+                ops,
+                None,
+                |cost, old_flags, new_flags| false,
+                Some(&tx),
+            )
+            .cost;
+
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 4, // 1 to get tree, 1 to insert
+                storage_cost: StorageCost {
+                    added_bytes: 2,
+                    replaced_bytes: 257,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 185,
+                hash_node_calls: 6,
+            }
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_update_bigger_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+        db.insert(vec![], b"tree", Element::empty_tree(), None)
+            .unwrap()
+            .expect("expected to insert tree");
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            b"key1",
+            Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0, 0])),
+            None,
+        )
+        .unwrap()
+        .expect("expected to insert item");
+
+        // We are adding 2 bytes
+        let ops = vec![GroveDbOp::insert_run_op(
+            vec![b"tree".to_vec()],
+            b"key1".to_vec(),
+            Element::new_item_with_flags(b"value100".to_vec(), Some(vec![0, 1])),
+        )];
+
+        let cost = db
+            .apply_batch_with_element_flags_update(
+                ops,
+                None,
+                |cost, old_flags, new_flags| match cost.transition_type() {
+                    OperationStorageTransitionType::OperationUpdateBiggerSize => {
+                        if new_flags[0] == 0 {
+                            new_flags[0] = 1;
+                            let new_flags_epoch = new_flags[1];
+                            new_flags[1] = old_flags.unwrap()[1];
+                            new_flags.push(new_flags_epoch);
+                            new_flags.extend(cost.added_bytes.encode_var_vec());
+                            assert_eq!(new_flags, &vec![1u8, 0, 1, 2]);
+                            true
+                        } else {
+                            assert_eq!(new_flags[0], 1);
+                            false
+                        }
+                    }
+                    OperationStorageTransitionType::OperationUpdateSmallerSize => {
+                        new_flags.extend(vec![1, 2]);
+                        true
+                    }
+                    _ => false,
+                },
+                Some(&tx),
+            )
+            .cost;
+
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 4, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 4,
+                    replaced_bytes: 258,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 186, // todo: verify this
+                hash_node_calls: 6,        // todo: verify this
             }
         );
     }
@@ -1469,7 +1679,11 @@ mod tests {
             Element::empty_tree(),
         )];
         let worst_case_ops = ops.iter().map(|op| op.to_worst_case_clone()).collect();
-        let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(worst_case_ops, None);
+        let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(
+            worst_case_ops,
+            None,
+            |cost, old_flags, new_flags| false,
+        );
         assert!(worst_case_cost_result.value.is_ok());
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(
@@ -1483,10 +1697,12 @@ mod tests {
             worst_case_cost_result.cost,
             OperationCost {
                 seek_count: 4, // todo: why is this 4
-                storage_added_bytes: 177,
-                storage_replaced_bytes: 640, // log(max_elements) * 32 = 640 // todo: verify
+                storage_cost: StorageCost {
+                    added_bytes: 177,
+                    replaced_bytes: 640, // log(max_elements) * 32 = 640 // todo: verify
+                    removed_bytes: NoStorageRemoval,
+                },
                 storage_loaded_bytes: 0,
-                storage_removed_bytes: 0,
                 hash_node_calls: 22, // todo: verify why
             }
         );
@@ -1507,10 +1723,32 @@ mod tests {
             Element::empty_tree(),
         )];
         let worst_case_ops = ops.iter().map(|op| op.to_worst_case_clone()).collect();
-        let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(worst_case_ops, None);
+        let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(
+            worst_case_ops,
+            None,
+            |cost, old_flags, new_flags| false,
+        );
         assert!(worst_case_cost_result.value.is_ok());
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert_eq!(worst_case_cost_result.cost, cost);
+    }
+
+    #[test]
+    fn test_batch_costs_match_non_batch() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let non_batch_cost = db
+            .insert(vec![], b"key1", Element::empty_tree(), Some(&tx))
+            .cost;
+        tx.rollback().expect("expected to rollback");
+        let ops = vec![GroveDbOp::insert_run_op(
+            vec![],
+            b"key1".to_vec(),
+            Element::empty_tree(),
+        )];
+        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        assert_eq!(non_batch_cost, cost);
     }
 
     #[test]
@@ -1522,38 +1760,17 @@ mod tests {
             .unwrap()
             .expect("successful root tree leaf insert");
 
-        let element = Element::new_item(b"ayy".to_vec());
-        let element2 = Element::new_item(b"ayy2".to_vec());
-        let ops = vec![
-            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
-            // GroveDbOp::insert_run_op(
-            //     vec![b"key1".to_vec()],
-            //     b"key2".to_vec(),
-            //     Element::empty_tree(),
-            // ),
-            // GroveDbOp::insert_run_op(
-            //     vec![b"key1".to_vec(), b"key2".to_vec()],
-            //     b"key3".to_vec(),
-            //     Element::empty_tree(),
-            // ),
-            // GroveDbOp::insert_run_op(
-            //     vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()],
-            //     b"key4".to_vec(),
-            //     element.clone(),
-            // ),
-            // GroveDbOp::insert_run_op(
-            //     vec![TEST_LEAF.to_vec()],
-            //     b"key1".to_vec(),
-            //     Element::empty_tree(),
-            // ),
-            // GroveDbOp::insert_run_op(
-            //     vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
-            //     b"key2".to_vec(),
-            //     element2.clone(),
-            // ),
-        ];
+        let ops = vec![GroveDbOp::insert_run_op(
+            vec![],
+            b"key1".to_vec(),
+            Element::empty_tree(),
+        )];
         let worst_case_ops = ops.iter().map(|op| op.to_worst_case_clone()).collect();
-        let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(worst_case_ops, None);
+        let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(
+            worst_case_ops,
+            None,
+            |cost, old_flags, new_flags| false,
+        );
         assert!(worst_case_cost_result.value.is_ok());
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert_eq!(worst_case_cost_result.cost, cost);

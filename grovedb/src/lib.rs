@@ -29,8 +29,7 @@ pub use subtree::{Element, ElementFlags};
 
 use crate::{error::Error, util::merk_optional_tx};
 
-// TODO: should be configurable, grovedb configuration layer maybe?
-const MAX_ELEMENT_SIZE: u32 = 16384;
+// todo: remove this
 const MAX_ELEMENTS_NUMBER: u32 = 42069;
 type Hash = [u8; 32];
 
@@ -214,7 +213,7 @@ impl GroveDb {
     }
 
     /// Starts database transaction. Please note that you have to start
-    /// underlying storage transaction manually.
+    /// underlying storage_cost transaction manually.
     ///
     /// ## Examples:
     /// ```

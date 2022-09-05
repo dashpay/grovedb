@@ -1,4 +1,4 @@
-//! Implementation of prefixed storage context.
+//! Implementation of prefixed storage_cost context.
 mod batch;
 mod context_batch_no_tx;
 mod context_batch_tx;

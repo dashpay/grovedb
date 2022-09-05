@@ -1,4 +1,6 @@
-use costs::{CostContext, CostsExt, KeyValueStorageCost, OperationCost};
+use costs::{
+    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostsExt, OperationCost,
+};
 use error::Error;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
 
@@ -19,7 +21,7 @@ pub struct PrefixedRocksDbBatchStorageContext<'db> {
 }
 
 impl<'db> PrefixedRocksDbBatchStorageContext<'db> {
-    /// Create a new prefixed storage context instance
+    /// Create a new prefixed storage_cost context instance
     pub fn new(storage: &'db Db, prefix: Vec<u8>, batch: &'db StorageBatch) -> Self {
         PrefixedRocksDbBatchStorageContext {
             storage,

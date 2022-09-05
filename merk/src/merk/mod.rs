@@ -1,5 +1,7 @@
 pub mod chunks;
+pub(crate) mod defaults;
 pub mod restore;
+
 use std::{
     cell::Cell,
     cmp::Ordering,
@@ -7,20 +9,22 @@ use std::{
     fmt,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost,
-    OperationCost, StorageCost,
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::{key_value_cost::KeyValueStorageCost, StorageCost},
+    CostContext, CostResult, CostsExt, OperationCost,
 };
-use integer_encoding::VarInt;
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
 
 use crate::{
+    merk::defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
     proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
-    tree::{Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
+    tree::{
+        AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree, Walker,
+        NULL_HASH,
+    },
 };
-
-pub const ROOT_KEY_KEY: &[u8] = b"r";
 
 type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
 
@@ -217,7 +221,9 @@ where
     /// should be a fast operation and has almost no tree overhead.
     pub fn get(&self, key: &[u8]) -> CostContext<Result<Option<Vec<u8>>>> {
         self.get_node_fn(key, |node| {
-            node.value().to_vec().wrap_with_cost(Default::default())
+            node.value_as_slice()
+                .to_vec()
+                .wrap_with_cost(Default::default())
         })
     }
 
@@ -327,7 +333,7 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[]).unwrap();
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[]).unwrap().expect("");
     ///
     /// use merk::Op;
     ///
@@ -335,12 +341,62 @@ where
     ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
     ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
-    /// store.apply::<_, Vec<_>>(batch, &[]).unwrap();
+    /// store.apply::<_, Vec<_>>(batch, &[]).unwrap().expect("");
     /// ```
     pub fn apply<KB, KA>(
         &mut self,
         batch: &MerkBatch<KB>,
-        aux: &MerkBatch<KA>,
+        aux: &AuxMerkBatch<KA>,
+    ) -> CostContext<Result<()>>
+    where
+        KB: AsRef<[u8]>,
+        KA: AsRef<[u8]>,
+    {
+        self.apply_with_costs_just_in_time_value_update(
+            batch,
+            aux,
+            &mut |_costs, _old_value, _value| Ok(false),
+        )
+    }
+
+    /// Applies a batch of operations (puts and deletes) to the tree with the
+    /// ability to update values based on costs.
+    ///
+    /// This will fail if the keys in `batch` are not sorted and unique. This
+    /// check creates some overhead, so if you are sure your batch is sorted and
+    /// unique you can use the unsafe `apply_unchecked` for a small performance
+    /// gain.
+    ///
+    /// # Example
+    /// ```
+    /// # let mut store = merk::test_utils::TempMerk::new();
+    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
+    ///     &[(vec![4,5,6], Op::Put(vec![0]))],
+    ///     &[], &mut |s, v| Ok(false)
+    /// ).unwrap().expect("");
+    ///
+    /// use merk::Op;
+    ///
+    /// let batch = &[
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
+    ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
+    /// ];
+    ///
+    /// store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
+    ///     batch,
+    ///     &[],
+    ///     &mut |s, v| Ok(false)
+    /// ).unwrap().expect("");
+    /// ```
+    pub fn apply_with_costs_just_in_time_value_update<KB, KA>(
+        &mut self,
+        batch: &MerkBatch<KB>,
+        aux: &AuxMerkBatch<KA>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<bool>,
     ) -> CostContext<Result<()>>
     where
         KB: AsRef<[u8]>,
@@ -365,7 +421,7 @@ where
             maybe_prev_key = Some(key);
         }
 
-        unsafe { self.apply_unchecked(batch, aux) }
+        unsafe { self.apply_unchecked(batch, aux, update_tree_value_based_on_costs) }
     }
 
     /// Applies a batch of operations (puts and deletes) to the tree.
@@ -379,7 +435,11 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[]).unwrap();
+    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
+    ///     &[(vec![4,5,6], Op::Put(vec![0]))],
+    ///     &[],
+    ///     &mut |s, o, v| Ok(false)
+    /// ).unwrap().expect("");
     ///
     /// use merk::Op;
     ///
@@ -387,16 +447,22 @@ where
     ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key [1,2,3]
     ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
-    /// unsafe { store.apply_unchecked::<_, Vec<_>>(batch, &[]).unwrap() };
+    /// unsafe { store.apply_unchecked::<_, Vec<_>, _>(
+    ///     batch,
+    ///     &[],
+    ///     &mut |s, o, v| Ok(false)
+    /// ).unwrap().expect("");
     /// ```
-    pub unsafe fn apply_unchecked<KB, KA>(
+    pub unsafe fn apply_unchecked<KB, KA, U>(
         &mut self,
         batch: &MerkBatch<KB>,
-        aux: &MerkBatch<KA>,
+        aux: &AuxMerkBatch<KA>,
+        update_tree_value_based_on_costs: &mut U,
     ) -> CostContext<Result<()>>
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
+        U: FnMut(&StorageCost, &Vec<u8>, &mut Vec<u8>) -> Result<bool>,
     {
         let maybe_walker = self
             .tree
@@ -409,10 +475,15 @@ where
         }
 
         Walker::apply_to(maybe_walker, batch, self.source()).flat_map_ok(
-            |(maybe_tree, deleted_keys)| {
+            |(maybe_tree, updated_keys, deleted_keys)| {
                 self.tree.set(maybe_tree);
                 // commit changes to db
-                self.commit(deleted_keys, aux)
+                self.commit(
+                    updated_keys,
+                    deleted_keys,
+                    aux,
+                    update_tree_value_based_on_costs,
+                )
             },
         )
     }
@@ -505,9 +576,15 @@ where
 
     pub fn commit<K>(
         &mut self,
+        updated_keys: BTreeSet<Vec<u8>>,
         deleted_keys: LinkedList<Vec<u8>>,
-        aux: &MerkBatch<K>,
-    ) -> CostContext<Result<()>>
+        aux: &AuxMerkBatch<K>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<bool>,
+    ) -> CostResult<(), Error>
     where
         K: AsRef<[u8]>,
     {
@@ -522,11 +599,27 @@ where
             if let Some(tree) = maybe_tree {
                 // TODO: configurable committer
                 let mut committer = MerkCommitter::new(tree.height(), 100);
-                cost_return_on_error!(&mut inner_cost, tree.commit(&mut committer));
+                cost_return_on_error!(
+                    &mut inner_cost,
+                    tree.commit(&mut committer, update_tree_value_based_on_costs)
+                );
+
+                let tree_key = tree.key();
+                let costs = if updated_keys.contains(tree_key) {
+                    Some(KeyValueStorageCost::for_updated_root_cost(
+                        tree_key.len() as u32
+                    ))
+                } else {
+                    None
+                };
                 // update pointer to root node
-                batch
-                    .put_root(ROOT_KEY_KEY, tree.key(), None)
-                    .map_err(CostError); // todo: is this new?
+                cost_return_on_error_no_add!(
+                    &inner_cost,
+                    batch
+                        .put_root(ROOT_KEY_KEY, tree_key, costs)
+                        .map_err(CostError)
+                        .map_err(|e| e.into())
+                );
 
                 Ok(committer.batch)
             } else {
@@ -556,16 +649,20 @@ where
             }
         }
 
-        for (key, value) in aux {
+        for (key, value, storage_cost) in aux {
             match value {
                 Op::Put(value) => cost_return_on_error_no_add!(
                     &cost,
-                    batch.put_aux(key, value, None).map_err(|e| e.into())
-                ), // todo: fix this asap
+                    batch
+                        .put_aux(key, value, storage_cost.clone())
+                        .map_err(|e| e.into())
+                ),
                 Op::PutReference(value, _) => cost_return_on_error_no_add!(
                     &cost,
-                    batch.put_aux(key, value, None).map_err(|e| e.into())
-                ), // todo: fix this asap
+                    batch
+                        .put_aux(key, value, storage_cost.clone())
+                        .map_err(|e| e.into())
+                ),
                 Op::Delete => batch.delete_aux(key),
             };
         }
@@ -670,12 +767,12 @@ fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<T
 //         };
 //         Self {
 //             tree: Cell::new(tree_clone),
-//             storage: self.storage.clone(),
+//             storage_cost: self.storage_cost.clone(),
 //         }
 //     }
 // }
 
-// // TODO: get rid of Fetch/source and use GroveDB storage abstraction
+// // TODO: get rid of Fetch/source and use GroveDB storage_cost abstraction
 #[derive(Debug)]
 pub struct MerkSource<'s, S> {
     storage: &'s S,
@@ -717,50 +814,54 @@ impl MerkCommitter {
 }
 
 impl Commit for MerkCommitter {
-    fn write(&mut self, tree: &mut Tree) -> Result<()> {
-        let mut current_tree_size = tree.encoding_length();
-        let mut buf = Vec::with_capacity(current_tree_size);
-        tree.encode_into(&mut buf);
+    fn write(
+        &mut self,
+        tree: &mut Tree,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<bool>,
+    ) -> Result<()> {
+        let (mut current_tree_size, mut storage_costs) = tree.size_and_storage_cost();
+        let mut i = 0;
 
-        // add the required space to the current tree size
-        current_tree_size += current_tree_size.required_space();
-
-        let key_storage_cost = StorageCost {
-            ..Default::default()
-        };
-        let mut value_storage_cost = StorageCost {
-            ..Default::default()
-        };
-
-        // Update the value storage cost
-        match tree.old_size.cmp(&current_tree_size) {
-            Ordering::Equal => {
-                value_storage_cost.replaced_bytes += tree.old_size as u32;
-            }
-            Ordering::Greater => {
-                // old size is greater than current size, storage will be freed
-                value_storage_cost.replaced_bytes += current_tree_size as u32;
-                value_storage_cost.removed_bytes += (tree.old_size - current_tree_size) as u32;
-            }
-            Ordering::Less => {
-                // current size is greater than old size, storage will be created
-                // this also handles the case where the tree.old_size = 0
-                value_storage_cost.replaced_bytes += tree.old_size as u32;
-                value_storage_cost.added_bytes += (current_tree_size - tree.old_size) as u32;
+        if let Some(old_value) = tree.old_value.clone() {
+            // At this point the tree value can be updated based on client requirements
+            // For example to store the costs
+            loop {
+                let changed = update_tree_value_based_on_costs(
+                    &storage_costs.value_storage_cost,
+                    &old_value,
+                    tree.value_mut_ref(),
+                )?;
+                if !changed {
+                    break;
+                } else {
+                    let after_update_tree_size = tree.encoding_length() as u32;
+                    if after_update_tree_size == current_tree_size {
+                        break;
+                    }
+                    let new_size_and_storage_costs = tree.size_and_storage_cost();
+                    current_tree_size = new_size_and_storage_costs.0;
+                    storage_costs = new_size_and_storage_costs.1;
+                }
+                if i > MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES {
+                    return Err(anyhow!("updated value based on costs too many times"));
+                }
+                i += 1;
             }
         }
 
-        let key_value_storage_cost = KeyValueStorageCost {
-            key_storage_cost,
-            value_storage_cost,
-            new_node: tree.old_size == 0,
-        };
-
-        // Update old tree size after generating value storage cost
+        // Update old tree size after generating value storage_cost cost
         tree.old_size = current_tree_size;
+        tree.old_value = Some(tree.value_ref().clone());
+
+        let mut buf = Vec::with_capacity(current_tree_size as usize);
+        tree.encode_into(&mut buf);
 
         self.batch
-            .push((tree.key().to_vec(), Some(buf), Some(key_value_storage_cost)));
+            .push((tree.key().to_vec(), Some(buf), Some(storage_costs)));
         Ok(())
     }
 
@@ -798,7 +899,7 @@ mod test {
     fn test_reopen_root_hash() {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
+            .expect("cannot open rocksdb storage_cost");
         let test_prefix = [b"ayy"].into_iter().map(|x| x.as_slice());
         let mut merk = Merk::open(storage.get_storage_context(test_prefix.clone()).unwrap())
             .unwrap()
@@ -820,7 +921,7 @@ mod test {
     fn test_open_fee() {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
+            .expect("cannot open rocksdb storage_cost");
         let test_prefix = [b"ayy"].into_iter().map(|x| x.as_slice());
         let merk_fee_context =
             Merk::open(storage.get_storage_context(test_prefix.clone()).unwrap());
@@ -945,7 +1046,7 @@ mod test {
     #[test]
     fn aux_data() {
         let mut merk = TempMerk::new();
-        merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))])
+        merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), None)])
             .unwrap()
             .expect("apply failed");
         let val = merk.get_aux(&[1, 2, 3]).unwrap().unwrap();
@@ -958,7 +1059,7 @@ mod test {
 
         merk.apply::<_, Vec<_>>(
             &[(vec![0], Op::Put(vec![1]))],
-            &[(vec![2], Op::Put(vec![3]))],
+            &[(vec![2], Op::Put(vec![3]), None)],
         )
         .unwrap()
         .expect("apply failed");
@@ -1005,7 +1106,7 @@ mod test {
     fn reopen_check_root_hash() {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
+            .expect("cannot open rocksdb storage_cost");
         let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
@@ -1023,7 +1124,7 @@ mod test {
     fn test_get_node_cost() {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
+            .expect("cannot open rocksdb storage_cost");
         let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
@@ -1060,7 +1161,7 @@ mod test {
 
         let original_nodes = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-                .expect("cannot open rocksdb storage");
+                .expect("cannot open rocksdb storage_cost");
             let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
                 .unwrap()
                 .expect("cannot open merk");
@@ -1077,7 +1178,7 @@ mod test {
         };
 
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
+            .expect("cannot open rocksdb storage_cost");
         let merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
@@ -1111,7 +1212,7 @@ mod test {
 
         let original_nodes = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-                .expect("cannot open rocksdb storage");
+                .expect("cannot open rocksdb storage_cost");
             let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
                 .unwrap()
                 .expect("cannot open merk");
@@ -1125,7 +1226,7 @@ mod test {
             nodes
         };
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
+            .expect("cannot open rocksdb storage_cost");
         let merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
@@ -1140,7 +1241,7 @@ mod test {
     fn update_node() {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
+            .expect("cannot open rocksdb storage_cost");
         let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
