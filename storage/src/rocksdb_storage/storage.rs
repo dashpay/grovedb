@@ -1,7 +1,10 @@
-//! Impementation for a storage abstraction over RocksDB.
+//! Impementation for a storage_cost abstraction over RocksDB.
 use std::{ops::AddAssign, path::Path};
 
-use costs::{cost_return_on_error_no_add, CostContext, CostResult, CostsExt, OperationCost};
+use costs::{
+    cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval,
+    CostContext, CostResult, CostsExt, OperationCost,
+};
 use error::Error;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
@@ -59,7 +62,7 @@ pub struct RocksDbStorage {
 }
 
 impl RocksDbStorage {
-    /// Create RocksDb storage with default parameters using `path`.
+    /// Create RocksDb storage_cost with default parameters using `path`.
     pub fn default_rocksdb_with_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = Db::open_cf_descriptors(
             &DEFAULT_OPTS,
@@ -287,10 +290,13 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     cost.storage_loaded_bytes += value_len;
 
                     let key_len = key.len() as u32;
-                    pending_costs.storage_removed_bytes += key_len
-                        + value_len
-                        + key_len.required_space() as u32
-                        + value_len.required_space() as u32;
+                    // todo: improve deletion
+                    pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
+                        key_len
+                            + value_len
+                            + key_len.required_space() as u32
+                            + value_len.required_space() as u32,
+                    );
                 }
                 AbstractBatchOperation::DeleteAux { key } => {
                     db_batch.delete_cf(cf_aux(&self.db), &key);
@@ -306,10 +312,13 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     cost.storage_loaded_bytes += value_len;
 
                     let key_len = key.len() as u32;
-                    pending_costs.storage_removed_bytes += key_len
-                        + value_len
-                        + key_len.required_space() as u32
-                        + value_len.required_space() as u32;
+                    // todo: improve deletion
+                    pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
+                        key_len
+                            + value_len
+                            + key_len.required_space() as u32
+                            + value_len.required_space() as u32,
+                    );
                 }
                 AbstractBatchOperation::DeleteRoot { key } => {
                     db_batch.delete_cf(cf_roots(&self.db), &key);
@@ -327,10 +336,13 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     cost.storage_loaded_bytes += value_len as u32;
 
                     let key_len = key.len() as u32;
-                    pending_costs.storage_removed_bytes += key_len
-                        + value_len
-                        + key_len.required_space() as u32
-                        + value_len.required_space() as u32;
+                    // todo: improve deletion
+                    pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
+                        key_len
+                            + value_len
+                            + key_len.required_space() as u32
+                            + value_len.required_space() as u32,
+                    );
                 }
                 AbstractBatchOperation::DeleteMeta { key } => {
                     db_batch.delete_cf(cf_meta(&self.db), &key);
@@ -348,10 +360,13 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     cost.storage_loaded_bytes += value_len;
 
                     let key_len = key.len() as u32;
-                    pending_costs.storage_removed_bytes += key_len
-                        + value_len
-                        + key_len.required_space() as u32
-                        + value_len.required_space() as u32;
+                    // todo: improve deletion
+                    pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
+                        key_len
+                            + value_len
+                            + key_len.required_space() as u32
+                            + value_len.required_space() as u32,
+                    );
                 }
             }
         }

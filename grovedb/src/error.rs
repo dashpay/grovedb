@@ -43,7 +43,7 @@ pub enum Error {
     #[error("missing parameter: {0}")]
     MissingParameter(&'static str),
     // Irrecoverable errors
-    #[error("storage error: {0}")]
+    #[error("storage_cost error: {0}")]
     StorageError(#[from] storage::error::Error),
     #[error("data corruption error: {0}")]
     CorruptedData(String),

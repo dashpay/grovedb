@@ -6,7 +6,7 @@ use tempfile::TempDir;
 
 use super::*;
 
-/// RocksDb storage with self-cleanup
+/// RocksDb storage_cost with self-cleanup
 pub struct TempStorage {
     dir: Cell<TempDir>,
     storage: RocksDbStorage,
@@ -17,14 +17,14 @@ impl TempStorage {
     pub fn new() -> Self {
         let dir = TempDir::new().expect("cannot create tempir");
         let storage = RocksDbStorage::default_rocksdb_with_path(dir.path())
-            .expect("cannot open RocksDB storage");
+            .expect("cannot open RocksDB storage_cost");
         TempStorage {
             dir: Cell::new(dir),
             storage,
         }
     }
 
-    /// Simulate storage crash
+    /// Simulate storage_cost crash
     pub fn crash(&self) {
         drop(
             self.dir

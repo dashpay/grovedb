@@ -1,5 +1,6 @@
 use costs::{
-    cost_return_on_error_no_add, CostResult, CostsExt, KeyValueStorageCost, OperationCost,
+    cost_return_on_error_no_add, storage_cost::key_value_cost::KeyValueStorageCost, CostResult,
+    CostsExt, OperationCost,
 };
 use storage::StorageContext;
 

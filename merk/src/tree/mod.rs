@@ -15,8 +15,12 @@ use std::cmp::{max, Ordering};
 use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost,
-    OperationCost, StorageCost,
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::{
+        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
+        StorageCost,
+    },
+    CostContext, CostsExt, OperationCost,
 };
 use ed::{Decode, Encode, Terminated};
 pub use hash::{
@@ -93,18 +97,19 @@ impl Tree {
             ..Default::default()
         };
 
-        // Update the value storage cost
+        // Update the value storage_cost cost
         match self.old_size.cmp(&current_tree_size) {
             Ordering::Equal => {
                 value_storage_cost.replaced_bytes += self.old_size;
             }
             Ordering::Greater => {
-                // old size is greater than current size, storage will be freed
+                // old size is greater than current size, storage_cost will be freed
                 value_storage_cost.replaced_bytes += current_tree_size;
-                value_storage_cost.removed_bytes += self.old_size - current_tree_size;
+                value_storage_cost.removed_bytes +=
+                    BasicStorageRemoval(self.old_size - current_tree_size);
             }
             Ordering::Less => {
-                // current size is greater than old size, storage will be created
+                // current size is greater than old size, storage_cost will be created
                 // this also handles the case where the tree.old_size = 0
                 value_storage_cost.replaced_bytes += self.old_size;
                 value_storage_cost.added_bytes += current_tree_size - self.old_size;

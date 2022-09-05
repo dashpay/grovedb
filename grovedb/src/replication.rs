@@ -103,7 +103,7 @@ impl<'db> SubtreeChunkProducer<'db> {
     }
 }
 
-// TODO: make generic over storage context
+// TODO: make generic over storage_cost context
 type MerkRestorer<'db> = merk::Restorer<PrefixedRocksDbStorageContext<'db>>;
 
 type Path = Vec<Vec<u8>>;
@@ -129,7 +129,7 @@ pub enum RestorerResponse {
 pub struct RestorerError(String);
 
 impl<'db> Restorer<'db> {
-    /// Create a GroveDb restorer using a backing storage and root hash.
+    /// Create a GroveDb restorer using a backing storage_cost and root hash.
     pub fn new(storage: &'db RocksDbStorage, root_hash: Hash) -> Result<Self, RestorerError> {
         Ok(Restorer {
             current_merk_restorer: Some(MerkRestorer::new(

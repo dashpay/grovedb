@@ -10,8 +10,8 @@ use std::{
 };
 
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
-    StorageCost,
+    cost_return_on_error, cost_return_on_error_no_add, storage_cost::StorageCost, CostResult,
+    CostsExt, OperationCost,
 };
 use merk::{tree::value_hash, CryptoHash, Merk};
 use nohash_hasher::IntMap;
@@ -41,7 +41,10 @@ impl Op {
         match self {
             Op::ReplaceTreeHash { .. } => OperationCost {
                 seek_count: 1,
-                storage_added_bytes: 32,
+                storage_cost: StorageCost {
+                    added_bytes: 32,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             Op::Insert { element } => {
@@ -1230,12 +1233,12 @@ impl GroveDb {
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
         //    one subtree and moved to another then add propagation operation to the
         //    operations tree and drop Merk handle;
-        // 3. Take Merk from temp subtrees or open a new one with batched storage
+        // 3. Take Merk from temp subtrees or open a new one with batched storage_cost
         //    context;
         // 4. Apply operation to the Merk;
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
-        // 7. Apply storage batch
+        // 7. Apply storage_cost batch
         if let Some(tx) = transaction {
             cost_return_on_error!(
                 &mut cost,
@@ -1329,7 +1332,10 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use costs::OperationStorageTransitionType;
+    use costs::storage_cost::{
+        removal::StorageRemovedBytes::NoStorageRemoval, transition::OperationStorageTransitionType,
+        StorageCost,
+    };
     use integer_encoding::VarInt;
     use merk::proofs::Query;
 
@@ -1521,10 +1527,12 @@ mod tests {
             cost,
             OperationCost {
                 seek_count: 2, // 1 to get tree, 1 to insert
-                storage_added_bytes: 177,
-                storage_replaced_bytes: 0,
+                storage_cost: StorageCost {
+                    added_bytes: 177,
+                    replaced_bytes: 0,
+                    removed_bytes: NoStorageRemoval,
+                },
                 storage_loaded_bytes: 0,
-                storage_removed_bytes: 0,
                 hash_node_calls: 6,
             }
         );
@@ -1567,10 +1575,12 @@ mod tests {
             cost,
             OperationCost {
                 seek_count: 2, // 1 to get tree, 1 to insert
-                storage_added_bytes: 2,
-                storage_replaced_bytes: 257,
+                storage_cost: StorageCost {
+                    added_bytes: 2,
+                    replaced_bytes: 257,
+                    removed_bytes: NoStorageRemoval
+                },
                 storage_loaded_bytes: 0,
-                storage_removed_bytes: 185,
                 hash_node_calls: 6,
             }
         );
@@ -1612,13 +1622,13 @@ mod tests {
                             new_flags[1] = old_flags.unwrap()[1];
                             new_flags.push(new_flags_epoch);
                             new_flags.extend(cost.added_bytes.encode_var_vec());
-                            assert_eq!(new_flags, vec![1, 0, 1, 2]);
+                            assert_eq!(new_flags, &vec![1u8, 0, 1, 2]);
                         } else {
                             assert_eq!(new_flags[0], 1);
                         }
                     }
                     OperationStorageTransitionType::OperationUpdateSmallerSize => {
-                        flags.extend(vec![1, 2]);
+                        new_flags.extend(vec![1, 2]);
                     }
                     _ => (),
                 },
@@ -1630,10 +1640,12 @@ mod tests {
             cost,
             OperationCost {
                 seek_count: 2, // 1 to get tree, 1 to insert
-                storage_added_bytes: 4,
-                storage_replaced_bytes: 257,
+                storage_cost: StorageCost {
+                    added_bytes: 4,
+                    replaced_bytes: 257,
+                    removed_bytes: NoStorageRemoval
+                },
                 storage_loaded_bytes: 0,
-                storage_removed_bytes: 185,
                 hash_node_calls: 6,
             }
         );
@@ -1668,10 +1680,12 @@ mod tests {
             worst_case_cost_result.cost,
             OperationCost {
                 seek_count: 4, // todo: why is this 4
-                storage_added_bytes: 177,
-                storage_replaced_bytes: 640, // log(max_elements) * 32 = 640 // todo: verify
+                storage_cost: StorageCost {
+                    added_bytes: 177,
+                    replaced_bytes: 640, // log(max_elements) * 32 = 640 // todo: verify
+                    removed_bytes: NoStorageRemoval,
+                },
                 storage_loaded_bytes: 0,
-                storage_removed_bytes: 0,
                 hash_node_calls: 22, // todo: verify why
             }
         );

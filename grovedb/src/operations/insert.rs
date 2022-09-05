@@ -249,7 +249,10 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use costs::OperationCost;
+    use costs::{
+        storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
+        OperationCost,
+    };
 
     use crate::{tests::make_empty_grovedb, Element};
 
@@ -287,10 +290,12 @@ mod tests {
             cost,
             OperationCost {
                 seek_count: 4, // 1 to get tree, 1 to insert, 1 for root, 1 for insert into root
-                storage_added_bytes: 177,
-                storage_replaced_bytes: 0,
+                storage_cost: StorageCost {
+                    added_bytes: 177,
+                    replaced_bytes: 0,
+                    removed_bytes: NoStorageRemoval
+                },
                 storage_loaded_bytes: 0,
-                storage_removed_bytes: 0,
                 hash_node_calls: 4, // todo: verify this
             }
         );
@@ -325,10 +330,12 @@ mod tests {
             cost,
             OperationCost {
                 seek_count: 12, // todo: verify this
-                storage_added_bytes: 1,
-                storage_replaced_bytes: 253,
+                storage_cost: StorageCost {
+                    added_bytes: 1,
+                    replaced_bytes: 253,
+                    removed_bytes: NoStorageRemoval
+                },
                 storage_loaded_bytes: 363,
-                storage_removed_bytes: 0,
                 hash_node_calls: 6, // todo: verify this
             }
         );

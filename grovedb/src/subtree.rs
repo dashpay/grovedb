@@ -242,7 +242,7 @@ impl Element {
     }
 
     /// Get the size that the element will occupy on disk with meta and root
-    /// storage
+    /// storage_cost
     pub fn total_byte_size(&self, key_len: usize) -> usize {
         self.node_byte_size(key_len) + self.root_info_byte_size(key_len)
     }

@@ -213,7 +213,7 @@ impl GroveDb {
     }
 
     /// Starts database transaction. Please note that you have to start
-    /// underlying storage transaction manually.
+    /// underlying storage_cost transaction manually.
     ///
     /// ## Examples:
     /// ```

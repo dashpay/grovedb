@@ -4,13 +4,16 @@ use std::{
     path::Path,
 };
 
-use costs::{CostContext, CostResult, CostsExt, KeyValueStorageCost, OperationCost};
+use costs::{
+    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
+    OperationCost,
+};
 use visualize::visualize_to_vec;
 
 use crate::worst_case_costs::WorstKeyLength;
 
-/// Top-level storage abstraction.
-/// Should be able to hold storage connection and to start transaction when
+/// Top-level storage_cost abstraction.
+/// Should be able to hold storage_cost connection and to start transaction when
 /// needed. All query operations will be exposed using [StorageContext].
 pub trait Storage<'db> {
     /// Storage transaction type
@@ -53,12 +56,12 @@ pub trait Storage<'db> {
     /// Forces data to be written
     fn flush(&self) -> Result<(), Self::Error>;
 
-    /// Make storage context for a subtree with path
+    /// Make storage_cost context for a subtree with path
     fn get_storage_context<'p, P>(&'db self, path: P) -> CostContext<Self::StorageContext>
     where
         P: IntoIterator<Item = &'p [u8]>;
 
-    /// Make storage context for a subtree on transactional data
+    /// Make storage_cost context for a subtree on transactional data
     fn get_transactional_storage_context<'p, P>(
         &'db self,
         path: P,
@@ -67,7 +70,7 @@ pub trait Storage<'db> {
     where
         P: IntoIterator<Item = &'p [u8]>;
 
-    /// Make batch storage context for a subtree with path
+    /// Make batch storage_cost context for a subtree with path
     fn get_batch_storage_context<'p, P>(
         &'db self,
         path: P,
@@ -76,7 +79,7 @@ pub trait Storage<'db> {
     where
         P: IntoIterator<Item = &'p [u8]>;
 
-    /// Make batch storage context for a subtree on transactional data
+    /// Make batch storage_cost context for a subtree on transactional data
     fn get_batch_transactional_storage_context<'p, P>(
         &'db self,
         path: P,
@@ -89,7 +92,7 @@ pub trait Storage<'db> {
     /// Creates a database checkpoint in a specified path
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Self::Error>;
 
-    /// Return worst case cost for storage context creation.
+    /// Return worst case cost for storage_cost context creation.
     fn get_storage_context_cost<L: WorstKeyLength>(path: &Vec<L>) -> OperationCost;
 }
 
@@ -103,11 +106,11 @@ pub trait StorageContext<'db> {
     /// Storage batch type
     type Batch: Batch;
 
-    /// Storage raw iterator type (to iterate over storage without supplying a
-    /// key)
+    /// Storage raw iterator type (to iterate over storage_cost without
+    /// supplying a key)
     type RawIterator: RawIterator;
 
-    /// Put `value` into data storage with `key`
+    /// Put `value` into data storage_cost with `key`
     fn put<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -115,7 +118,7 @@ pub trait StorageContext<'db> {
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>>;
 
-    /// Put `value` into auxiliary data storage with `key`
+    /// Put `value` into auxiliary data storage_cost with `key`
     fn put_aux<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -123,7 +126,7 @@ pub trait StorageContext<'db> {
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>>;
 
-    /// Put `value` into trees roots storage with `key`
+    /// Put `value` into trees roots storage_cost with `key`
     fn put_root<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -131,7 +134,7 @@ pub trait StorageContext<'db> {
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>>;
 
-    /// Put `value` into GroveDB metadata storage with `key`
+    /// Put `value` into GroveDB metadata storage_cost with `key`
     fn put_meta<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -139,39 +142,39 @@ pub trait StorageContext<'db> {
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>>;
 
-    /// Delete entry with `key` from data storage
+    /// Delete entry with `key` from data storage_cost
     fn delete<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>>;
 
-    /// Delete entry with `key` from auxiliary data storage
+    /// Delete entry with `key` from auxiliary data storage_cost
     fn delete_aux<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>>;
 
-    /// Delete entry with `key` from trees roots storage
+    /// Delete entry with `key` from trees roots storage_cost
     fn delete_root<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>>;
 
-    /// Delete entry with `key` from GroveDB metadata storage
+    /// Delete entry with `key` from GroveDB metadata storage_cost
     fn delete_meta<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>>;
 
-    /// Get entry by `key` from data storage
+    /// Get entry by `key` from data storage_cost
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<Option<Vec<u8>>, Self::Error>>;
 
-    /// Get entry by `key` from auxiliary data storage
+    /// Get entry by `key` from auxiliary data storage_cost
     fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<Option<Vec<u8>>, Self::Error>>;
 
-    /// Get entry by `key` from trees roots storage
+    /// Get entry by `key` from trees roots storage_cost
     fn get_root<K: AsRef<[u8]>>(&self, key: K)
         -> CostContext<Result<Option<Vec<u8>>, Self::Error>>;
 
-    /// Get entry by `key` from GroveDB metadata storage
+    /// Get entry by `key` from GroveDB metadata storage_cost
     fn get_meta<K: AsRef<[u8]>>(&self, key: K)
         -> CostContext<Result<Option<Vec<u8>>, Self::Error>>;
 
     /// Initialize a new batch
     fn new_batch(&self) -> Self::Batch;
 
-    /// Commits changes from batch into storage
+    /// Commits changes from batch into storage_cost
     fn commit_batch(&self, batch: Self::Batch) -> CostContext<Result<(), Self::Error>>;
 
-    /// Get raw iterator over storage
+    /// Get raw iterator over storage_cost
     fn raw_iter(&self) -> Self::RawIterator;
 }
 
@@ -185,7 +188,7 @@ pub trait Batch {
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error>;
 
-    /// Appends to the database batch a put operation for aux storage.
+    /// Appends to the database batch a put operation for aux storage_cost.
     fn put_aux<K: AsRef<[u8]>>(
         &mut self,
         key: K,
@@ -194,7 +197,7 @@ pub trait Batch {
     ) -> Result<(), costs::error::Error>;
 
     /// Appends to the database batch a put operation for subtrees roots
-    /// storage.
+    /// storage_cost.
     fn put_root<K: AsRef<[u8]>>(
         &mut self,
         key: K,
@@ -205,15 +208,15 @@ pub trait Batch {
     /// Appends to the database batch a delete operation for a data record.
     fn delete<K: AsRef<[u8]>>(&mut self, key: K);
 
-    /// Appends to the database batch a delete operation for aux storage.
+    /// Appends to the database batch a delete operation for aux storage_cost.
     fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K);
 
     /// Appends to the database batch a delete operation for a record in subtree
-    /// roots storage.
+    /// roots storage_cost.
     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K);
 }
 
-/// Allows to iterate over database record inside of storage context.
+/// Allows to iterate over database record inside of storage_cost context.
 pub trait RawIterator {
     /// Move iterator to first valid record.
     fn seek_to_first(&mut self) -> CostContext<()>;
@@ -243,7 +246,7 @@ pub trait RawIterator {
     fn valid(&self) -> CostContext<bool>;
 }
 
-/// Structure to hold deferred database operations in "batched" storage
+/// Structure to hold deferred database operations in "batched" storage_cost
 /// contexts.
 #[derive(Debug)]
 pub struct StorageBatch {
@@ -307,7 +310,7 @@ impl StorageBatch {
         ().wrap_with_cost(OperationCost::default())
     }
 
-    /// Add deferred `put` operation for aux storage
+    /// Add deferred `put` operation for aux storage_cost
     pub fn put_aux(
         &self,
         key: Vec<u8>,
@@ -326,7 +329,7 @@ impl StorageBatch {
         ().wrap_with_cost(OperationCost::default())
     }
 
-    /// Add deferred `put` operation for subtree roots storage
+    /// Add deferred `put` operation for subtree roots storage_cost
     pub fn put_root(
         &self,
         key: Vec<u8>,
@@ -345,7 +348,7 @@ impl StorageBatch {
         ().wrap_with_cost(OperationCost::default())
     }
 
-    /// Add deferred `put` operation for metadata storage
+    /// Add deferred `put` operation for metadata storage_cost
     pub fn put_meta(
         &self,
         key: Vec<u8>,
@@ -375,7 +378,7 @@ impl StorageBatch {
         }
     }
 
-    /// Add deferred `delete` operation for aux storage
+    /// Add deferred `delete` operation for aux storage_cost
     pub fn delete_aux(&self, key: Vec<u8>) -> CostContext<()> {
         let operations = &mut self.operations.borrow_mut().aux;
         if operations.get(&key).is_none() {
@@ -386,7 +389,7 @@ impl StorageBatch {
         }
     }
 
-    /// Add deferred `delete` operation for subtree roots storage
+    /// Add deferred `delete` operation for subtree roots storage_cost
     pub fn delete_root(&self, key: Vec<u8>) -> CostContext<()> {
         let operations = &mut self.operations.borrow_mut().roots;
         if operations.get(&key).is_none() {
@@ -397,7 +400,7 @@ impl StorageBatch {
         }
     }
 
-    /// Add deferred `delete` operation for metadata storage
+    /// Add deferred `delete` operation for metadata storage_cost
     pub fn delete_meta(&self, key: Vec<u8>) -> CostContext<()> {
         let operations = &mut self.operations.borrow_mut().meta;
         if operations.get(&key).is_none() {
@@ -445,7 +448,7 @@ impl StorageBatch {
     }
 }
 
-/// Iterator over storage batch operations.
+/// Iterator over storage_cost batch operations.
 pub struct StorageBatchIter {
     data: IntoValues<Vec<u8>, AbstractBatchOperation>,
     aux: IntoValues<Vec<u8>, AbstractBatchOperation>,
@@ -487,8 +490,8 @@ impl Default for StorageBatch {
     }
 }
 
-/// Deferred storage operation not tied to any storage implementation, required
-/// for multi-tree batches.
+/// Deferred storage_cost operation not tied to any storage_cost implementation,
+/// required for multi-tree batches.
 #[allow(missing_docs)]
 #[derive(strum::AsRefStr)]
 pub enum AbstractBatchOperation {
@@ -498,19 +501,19 @@ pub enum AbstractBatchOperation {
         value: Vec<u8>,
         cost_info: Option<KeyValueStorageCost>,
     },
-    /// Deferred put operation for aux storage
+    /// Deferred put operation for aux storage_cost
     PutAux {
         key: Vec<u8>,
         value: Vec<u8>,
         cost_info: Option<KeyValueStorageCost>,
     },
-    /// Deferred put operation for roots storage
+    /// Deferred put operation for roots storage_cost
     PutRoot {
         key: Vec<u8>,
         value: Vec<u8>,
         cost_info: Option<KeyValueStorageCost>,
     },
-    /// Deferred put operation for metadata storage
+    /// Deferred put operation for metadata storage_cost
     PutMeta {
         key: Vec<u8>,
         value: Vec<u8>,
@@ -518,11 +521,11 @@ pub enum AbstractBatchOperation {
     },
     /// Deferred delete operation
     Delete { key: Vec<u8> },
-    /// Deferred delete operation for aux storage
+    /// Deferred delete operation for aux storage_cost
     DeleteAux { key: Vec<u8> },
-    /// Deferred delete operation for roots storage
+    /// Deferred delete operation for roots storage_cost
     DeleteRoot { key: Vec<u8> },
-    /// Deferred delete operation for metadata storage
+    /// Deferred delete operation for metadata storage_cost
     DeleteMeta { key: Vec<u8> },
 }
 

@@ -1,6 +1,9 @@
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, KeyValueStorageCost,
-    OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::{
+        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
+    },
+    CostContext, CostsExt, OperationCost,
 };
 use error::Error;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, WriteBatchWithTransaction};
@@ -21,7 +24,7 @@ pub struct PrefixedRocksDbStorageContext<'db> {
 }
 
 impl<'db> PrefixedRocksDbStorageContext<'db> {
-    /// Create a new prefixed storage context instance
+    /// Create a new prefixed storage_cost context instance
     pub fn new(storage: &'db Db, prefix: Vec<u8>) -> Self {
         PrefixedRocksDbStorageContext { storage, prefix }
     }
@@ -178,7 +181,8 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .map(|x| x.len() as u32)
             .unwrap_or(0);
 
-        cost.storage_removed_bytes += deleted_len;
+        // todo: improve deletion
+        cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
         cost.seek_count += 1;
 
         self.storage
@@ -194,7 +198,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .map(|x| x.len() as u32)
             .unwrap_or(0);
 
-        cost.storage_removed_bytes += deleted_len;
+        cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
         cost.seek_count += 1;
 
         self.storage
@@ -210,7 +214,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .map(|x| x.len() as u32)
             .unwrap_or(0);
 
-        cost.storage_removed_bytes += deleted_len;
+        cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
         cost.seek_count += 1;
 
         self.storage
@@ -226,7 +230,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .map(|x| x.len() as u32)
             .unwrap_or(0);
 
-        cost.storage_removed_bytes += deleted_len;
+        cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
         cost.seek_count += 1;
 
         self.storage

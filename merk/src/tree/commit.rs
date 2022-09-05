@@ -1,5 +1,5 @@
 use anyhow::Result;
-use costs::StorageCost;
+use costs::storage_cost::StorageCost;
 
 use super::Tree;
 

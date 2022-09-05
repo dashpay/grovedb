@@ -1,4 +1,4 @@
-//! GroveDB storage layer implemented over RocksDB backend.
+//! GroveDB storage_cost layer implemented over RocksDB backend.
 mod storage;
 mod storage_context;
 pub mod test_utils;
