@@ -370,7 +370,10 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[], &mut |s, v| Ok(false)).unwrap().expect("");
+    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
+    ///     &[(vec![4,5,6], Op::Put(vec![0]))],
+    ///     &[], &mut |s, v| Ok(false)
+    /// ).unwrap().expect("");
     ///
     /// use merk::Op;
     ///
@@ -378,7 +381,12 @@ where
     ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
     ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
-    /// store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(batch, &[], &mut |s, v| Ok(false)).unwrap().expect("");
+    /// 
+    /// store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
+    ///     batch,
+    ///     &[],
+    ///     &mut |s, v| Ok(false)
+    /// ).unwrap().expect("");
     /// ```
     pub fn apply_with_costs_just_in_time_value_update<KB, KA>(
         &mut self,
@@ -427,7 +435,11 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[], &mut |s, o, v| Ok(false)).unwrap().expect("");
+    /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
+    ///     &[(vec![4,5,6], Op::Put(vec![0]))],
+    ///     &[],
+    ///     &mut |s, o, v| Ok(false)
+    /// ).unwrap().expect("");
     ///
     /// use merk::Op;
     ///
@@ -435,7 +447,11 @@ where
     ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key [1,2,3]
     ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
-    /// unsafe { store.apply_unchecked::<_, Vec<_>, _>(batch, &[], &mut |s, o, v| Ok(false)).unwrap().expect("");
+    /// unsafe { store.apply_unchecked::<_, Vec<_>, _>(
+    ///     batch,
+    ///     &[],
+    ///     &mut |s, o, v| Ok(false)
+    /// ).unwrap().expect("");
     /// ```
     pub unsafe fn apply_unchecked<KB, KA, U>(
         &mut self,
@@ -839,6 +855,7 @@ impl Commit for MerkCommitter {
 
         // Update old tree size after generating value storage_cost cost
         tree.old_size = current_tree_size;
+        tree.old_value = Some(tree.value_ref().clone());
 
         let mut buf = Vec::with_capacity(current_tree_size as usize);
         tree.encode_into(&mut buf);

@@ -76,11 +76,12 @@ impl Tree {
 
     /// Creates a new `Tree` given an inner tree
     pub fn new_with_tree_inner(inner_tree: TreeInner, decode_size: usize) -> Self {
+        let old_value = inner_tree.kv.value.clone();
         Self {
             inner: Box::new(inner_tree),
             // TODO: figure out why adding the required space for this doesn't affect the tests
             old_size: (decode_size + decode_size.required_space()) as u32,
-            old_value: None,
+            old_value: Some(old_value),
         }
     }
 
