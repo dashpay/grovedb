@@ -1588,13 +1588,13 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 2, // 1 to get tree, 1 to insert
+                seek_count: 4, // 1 to get tree, 1 to insert
                 storage_cost: StorageCost {
                     added_bytes: 2,
                     replaced_bytes: 257,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 0,
+                storage_loaded_bytes: 185,
                 hash_node_calls: 6,
             }
         );
