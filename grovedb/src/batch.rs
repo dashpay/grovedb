@@ -856,8 +856,15 @@ where
                     }
                 },
                 &mut |value, removed_bytes| {
-                    let old_element = Element::deserialize(value.as_slice())?;
-                    Ok(BasicStorageRemoval(removed_bytes))
+                    let mut element = Element::deserialize(value.as_slice())?;
+                    let maybe_flags = element.get_flags_mut();
+                    match maybe_flags {
+                        None => Ok(BasicStorageRemoval(removed_bytes)),
+                        Some(flags) => {
+                            (split_removal_bytes)(flags, removed_bytes).map_err(|e| e.into())
+                        }
+                    }
+
                 },
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
