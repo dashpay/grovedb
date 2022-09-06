@@ -1,5 +1,5 @@
 use anyhow::Result;
-use costs::storage_cost::StorageCost;
+use costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
 
 use super::Tree;
 
@@ -16,6 +16,7 @@ pub trait Commit {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<bool>,
+        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> Result<()>;
 
     /// Called once per node after writing a node and its children. The returned
@@ -39,6 +40,7 @@ impl Commit for NoopCommit {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<bool>,
+        _section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> Result<()> {
         Ok(())
     }

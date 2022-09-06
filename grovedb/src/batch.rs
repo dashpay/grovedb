@@ -10,8 +10,15 @@ use std::{
 };
 
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, storage_cost::StorageCost, CostResult,
-    CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::{
+        removal::{
+            StorageRemovedBytes,
+            StorageRemovedBytes::{BasicStorageRemoval, NoStorageRemoval},
+        },
+        StorageCost,
+    },
+    CostResult, CostsExt, OperationCost,
 };
 use merk::{tree::value_hash, CryptoHash, Merk};
 use nohash_hasher::IntMap;
@@ -508,7 +515,7 @@ impl fmt::Debug for TreeCacheKnownPaths {
     }
 }
 
-trait TreeCache<G> {
+trait TreeCache<G, SR> {
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error>;
 
     fn execute_ops_on_path(
@@ -518,6 +525,7 @@ trait TreeCache<G> {
         ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
         flags_update: &mut G,
+        split_removal_bytes: &mut SR,
     ) -> CostResult<[u8; 32], Error>;
 }
 
@@ -690,9 +698,10 @@ where
     }
 }
 
-impl<'db, S, F, G> TreeCache<G> for TreeCacheMerkByPath<S, F>
+impl<'db, S, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F>
 where
     G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> bool,
+    SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
     F: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
@@ -716,6 +725,7 @@ where
         ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
         flags_update: &mut G,
+        split_removal_bytes: &mut SR,
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
         // todo: fix this
@@ -824,7 +834,7 @@ where
         }
 
         cost_return_on_error!(&mut cost, unsafe {
-            merk.apply_unchecked::<_, Vec<u8>, _>(
+            merk.apply_unchecked::<_, Vec<u8>, _, _>(
                 &batch_operations,
                 &[],
                 &mut |storage_costs, old_value, new_value| {
@@ -845,6 +855,10 @@ where
                         }
                     }
                 },
+                &mut |value, removed_bytes| {
+                    let old_element = Element::deserialize(value.as_slice())?;
+                    Ok(BasicStorageRemoval(removed_bytes))
+                },
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         });
@@ -852,7 +866,7 @@ where
     }
 }
 
-impl<G> TreeCache<G> for TreeCacheKnownPaths {
+impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
@@ -869,6 +883,7 @@ impl<G> TreeCache<G> for TreeCacheKnownPaths {
         _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
         _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
+        _split_removal_bytes: &mut SR,
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
 
@@ -893,7 +908,7 @@ impl<G> TreeCache<G> for TreeCacheKnownPaths {
 ///                          LEVEL           PATH                   KEY      OP
 type OpsByLevelPath = IntMap<u32, BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>>>;
 
-struct BatchStructure<C, F> {
+struct BatchStructure<C, F, SR> {
     /// Operations by level path
     ops_by_level_paths: OpsByLevelPath,
     /// This is for references
@@ -902,11 +917,13 @@ struct BatchStructure<C, F> {
     merk_tree_cache: C,
     /// Flags modification function
     flags_update: F,
+    ///
+    split_removal_bytes: SR,
     /// Last level
     last_level: u32,
 }
 
-impl<F, S: fmt::Debug> fmt::Debug for BatchStructure<S, F> {
+impl<F, SR, S: fmt::Debug> fmt::Debug for BatchStructure<S, F, SR> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut fmt_int_map = IntMap::default();
         for (level, path_map) in self.ops_by_level_paths.iter() {
@@ -931,16 +948,18 @@ impl<F, S: fmt::Debug> fmt::Debug for BatchStructure<S, F> {
     }
 }
 
-impl<C, F> BatchStructure<C, F>
+impl<C, F, SR> BatchStructure<C, F, SR>
 where
-    C: TreeCache<F>,
+    C: TreeCache<F, SR>,
     F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> bool,
+    SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
 {
     fn from_ops(
         ops: Vec<GroveDbOp>,
         update_element_flags_function: F,
+        split_remove_bytes_function: SR,
         mut merk_tree_cache: C,
-    ) -> CostResult<BatchStructure<C, F>, Error> {
+    ) -> CostResult<BatchStructure<C, F, SR>, Error> {
         let mut cost = OperationCost::default();
 
         let mut ops_by_level_paths: OpsByLevelPath = IntMap::default();
@@ -997,6 +1016,7 @@ where
             ops_by_qualified_paths,
             merk_tree_cache,
             flags_update: update_element_flags_function,
+            split_removal_bytes: split_remove_bytes_function,
             last_level: current_last_level,
         })
         .wrap_with_cost(cost)
@@ -1010,12 +1030,13 @@ pub struct BatchApplyOptions {
 
 impl GroveDb {
     /// Method to propagate updated subtree root hashes up to GroveDB root
-    fn apply_batch_structure<C: TreeCache<F>, F>(
-        batch_structure: BatchStructure<C, F>,
+    fn apply_batch_structure<C: TreeCache<F, SR>, F, SR>(
+        batch_structure: BatchStructure<C, F, SR>,
         batch_apply_options: Option<BatchApplyOptions>,
     ) -> CostResult<(), Error>
     where
         F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> bool,
+        SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
     {
         let mut cost = OperationCost::default();
         let BatchStructure {
@@ -1023,6 +1044,7 @@ impl GroveDb {
             ops_by_qualified_paths,
             mut merk_tree_cache,
             mut flags_update,
+            mut split_removal_bytes,
             last_level,
         } = batch_structure;
         let mut current_level = last_level;
@@ -1059,6 +1081,7 @@ impl GroveDb {
                             &ops_by_qualified_paths,
                             &batch_apply_options,
                             &mut flags_update,
+                            &mut split_removal_bytes,
                         )
                     );
                 } else {
@@ -1070,6 +1093,7 @@ impl GroveDb {
                             &ops_by_qualified_paths,
                             &batch_apply_options,
                             &mut flags_update,
+                            &mut split_removal_bytes,
                         )
                     );
 
@@ -1152,6 +1176,10 @@ impl GroveDb {
             Option<ElementFlags>,
             &mut ElementFlags,
         ) -> bool,
+        split_removed_bytes_function: impl FnMut(
+            &mut ElementFlags,
+            u32,
+        ) -> Result<StorageRemovedBytes, Error>,
         get_merk_fn: impl FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -1160,6 +1188,7 @@ impl GroveDb {
             BatchStructure::from_ops(
                 ops,
                 update_element_flags_function,
+                split_removed_bytes_function,
                 TreeCacheMerkByPath {
                     merks: Default::default(),
                     get_merk_fn,
@@ -1213,6 +1242,7 @@ impl GroveDb {
             ops,
             batch_apply_options,
             |cost, old_flags, new_flags| false,
+            |flags, removed_bytes| Ok(BasicStorageRemoval(removed_bytes)),
             transaction,
         )
     }
@@ -1227,6 +1257,10 @@ impl GroveDb {
             Option<ElementFlags>,
             &mut ElementFlags,
         ) -> bool,
+        split_removal_bytes_function: impl FnMut(
+            &mut ElementFlags,
+            u32,
+        ) -> Result<StorageRemovedBytes, Error>,
         transaction: TransactionArg,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -1256,6 +1290,7 @@ impl GroveDb {
                     ops,
                     batch_apply_options,
                     update_element_flags_function,
+                    split_removal_bytes_function,
                     |path| {
                         let storage = self
                             .db
@@ -1286,6 +1321,7 @@ impl GroveDb {
                     ops,
                     batch_apply_options,
                     update_element_flags_function,
+                    split_removal_bytes_function,
                     |path| {
                         let storage = self
                             .db
@@ -1320,6 +1356,10 @@ impl GroveDb {
             Option<ElementFlags>,
             &mut ElementFlags,
         ) -> bool,
+        split_removal_bytes_function: impl FnMut(
+            &mut ElementFlags,
+            u32,
+        ) -> Result<StorageRemovedBytes, Error>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -1332,6 +1372,7 @@ impl GroveDb {
             BatchStructure::from_ops(
                 ops,
                 update_element_flags_function,
+                split_removal_bytes_function,
                 TreeCacheKnownPaths::default()
             )
         );
@@ -1581,6 +1622,7 @@ mod tests {
                 ops,
                 None,
                 |cost, old_flags, new_flags| false,
+                |flags, removed_bytes| Ok(NoStorageRemoval),
                 Some(&tx),
             )
             .cost;
@@ -1649,6 +1691,7 @@ mod tests {
                     }
                     _ => false,
                 },
+                |flags, removed| Ok(BasicStorageRemoval(removed)),
                 Some(&tx),
             )
             .cost;
@@ -1683,6 +1726,7 @@ mod tests {
             worst_case_ops,
             None,
             |cost, old_flags, new_flags| false,
+            |flags, removed_bytes| Ok(NoStorageRemoval),
         );
         assert!(worst_case_cost_result.value.is_ok());
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
@@ -1727,6 +1771,7 @@ mod tests {
             worst_case_ops,
             None,
             |cost, old_flags, new_flags| false,
+            |flags, removed_bytes| Ok(NoStorageRemoval),
         );
         assert!(worst_case_cost_result.value.is_ok());
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
@@ -1770,6 +1815,7 @@ mod tests {
             worst_case_ops,
             None,
             |cost, old_flags, new_flags| false,
+            |flags, removed_bytes| Ok(NoStorageRemoval),
         );
         assert!(worst_case_cost_result.value.is_ok());
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;

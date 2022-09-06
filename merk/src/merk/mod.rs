@@ -12,7 +12,9 @@ use std::{
 use anyhow::{anyhow, Error, Result};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
-    storage_cost::{key_value_cost::KeyValueStorageCost, StorageCost},
+    storage_cost::{
+        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes, StorageCost,
+    },
     CostContext, CostResult, CostsExt, OperationCost,
 };
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
@@ -356,6 +358,9 @@ where
             batch,
             aux,
             &mut |_costs, _old_value, _value| Ok(false),
+            &mut |_a, bytes_to_remove| {
+                Ok(StorageRemovedBytes::BasicStorageRemoval(bytes_to_remove))
+            },
         )
     }
 
@@ -397,6 +402,7 @@ where
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<bool>,
+        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> CostContext<Result<()>>
     where
         KB: AsRef<[u8]>,
@@ -421,7 +427,14 @@ where
             maybe_prev_key = Some(key);
         }
 
-        unsafe { self.apply_unchecked(batch, aux, update_tree_value_based_on_costs) }
+        unsafe {
+            self.apply_unchecked(
+                batch,
+                aux,
+                update_tree_value_based_on_costs,
+                section_removal_bytes,
+            )
+        }
     }
 
     /// Applies a batch of operations (puts and deletes) to the tree.
@@ -453,16 +466,18 @@ where
     ///     &mut |s, o, v| Ok(false)
     /// ).unwrap().expect("");
     /// ```
-    pub unsafe fn apply_unchecked<KB, KA, U>(
+    pub unsafe fn apply_unchecked<KB, KA, U, R>(
         &mut self,
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         update_tree_value_based_on_costs: &mut U,
+        section_removal_bytes: &mut R,
     ) -> CostContext<Result<()>>
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
         U: FnMut(&StorageCost, &Vec<u8>, &mut Vec<u8>) -> Result<bool>,
+        R: FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     {
         let maybe_walker = self
             .tree
@@ -483,6 +498,7 @@ where
                     deleted_keys,
                     aux,
                     update_tree_value_based_on_costs,
+                    section_removal_bytes,
                 )
             },
         )
@@ -584,6 +600,7 @@ where
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<bool>,
+        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> CostResult<(), Error>
     where
         K: AsRef<[u8]>,
@@ -601,7 +618,11 @@ where
                 let mut committer = MerkCommitter::new(tree.height(), 100);
                 cost_return_on_error!(
                     &mut inner_cost,
-                    tree.commit(&mut committer, update_tree_value_based_on_costs)
+                    tree.commit(
+                        &mut committer,
+                        update_tree_value_based_on_costs,
+                        section_removal_bytes
+                    )
                 );
 
                 let tree_key = tree.key();
@@ -822,6 +843,7 @@ impl Commit for MerkCommitter {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<bool>,
+        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> Result<()> {
         let (mut current_tree_size, mut storage_costs) = tree.size_and_storage_cost();
         let mut i = 0;

@@ -17,7 +17,8 @@ pub use commit::{Commit, NoopCommit};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
-        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
+        key_value_cost::KeyValueStorageCost,
+        removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
     },
     CostContext, CostsExt, OperationCost,
@@ -482,6 +483,7 @@ impl Tree {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<bool>,
+        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> CostContext<Result<()>> {
         // TODO: make this method less ugly
         // TODO: call write in-order for better performance in writing batch to db?
@@ -498,7 +500,10 @@ impl Tree {
             }) = self.inner.left.take()
             {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
-                cost_return_on_error!(&mut cost, tree.commit(c, update_tree_value_based_on_costs));
+                cost_return_on_error!(
+                    &mut cost,
+                    tree.commit(c, update_tree_value_based_on_costs, section_removal_bytes)
+                );
                 self.inner.left = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
                     tree,
@@ -518,7 +523,10 @@ impl Tree {
             }) = self.inner.right.take()
             {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
-                cost_return_on_error!(&mut cost, tree.commit(c, update_tree_value_based_on_costs));
+                cost_return_on_error!(
+                    &mut cost,
+                    tree.commit(c, update_tree_value_based_on_costs, section_removal_bytes)
+                );
                 self.inner.right = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
                     tree,
@@ -529,7 +537,14 @@ impl Tree {
             }
         }
 
-        cost_return_on_error_no_add!(&cost, c.write(self, update_tree_value_based_on_costs));
+        cost_return_on_error_no_add!(
+            &cost,
+            c.write(
+                self,
+                update_tree_value_based_on_costs,
+                section_removal_bytes
+            )
+        );
 
         // println!("done committing {}", std::str::from_utf8(self.key()).unwrap());
 
