@@ -362,7 +362,7 @@ where {
         )
     }
 
-    pub fn worst_case_for_has_raw<'p, P>(
+    pub fn worst_case_for_has_raw(
         path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
