@@ -35,6 +35,7 @@ use crate::{
     worst_case_costs::MerkWorstCaseInput,
     Element, ElementFlags, Error, GroveDb, TransactionArg, MAX_ELEMENTS_NUMBER,
 };
+use crate::batch::KeyInfo::MaxKeySize;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -140,31 +141,31 @@ impl WorstKeyLength for KeyInfo {
 }
 
 impl KeyInfo {
-    pub(crate) fn as_slice(&self) -> &[u8] {
+    pub fn as_slice(&self) -> &[u8] {
         match self {
-            Self::KnownKey(key) => key.as_slice(),
-            Self::MaxKeySize { unique_id, .. } => unique_id.as_slice(),
+            KnownKey(key) => key.as_slice(),
+            MaxKeySize { unique_id, .. } => unique_id.as_slice(),
         }
     }
 
     fn get_key(self) -> Vec<u8> {
         match self {
-            Self::KnownKey(key) => key,
-            Self::MaxKeySize { unique_id, .. } => unique_id,
+            KnownKey(key) => key,
+            MaxKeySize { unique_id, .. } => unique_id,
         }
     }
 
     fn get_key_clone(&self) -> Vec<u8> {
         match self {
-            Self::KnownKey(key) => key.clone(),
-            Self::MaxKeySize { unique_id, .. } => unique_id.clone(),
+            KnownKey(key) => key.clone(),
+            MaxKeySize { unique_id, .. } => unique_id.clone(),
         }
     }
 
     fn get_key_ref(&self) -> &[u8] {
         match self {
-            Self::KnownKey(key) => key.as_slice(),
-            Self::MaxKeySize { unique_id, .. } => unique_id.as_slice(),
+            KnownKey(key) => key.as_slice(),
+            MaxKeySize { unique_id, .. } => unique_id.as_slice(),
         }
     }
 }
@@ -176,7 +177,7 @@ impl Visualize for KeyInfo {
                 drawer.write(b"key: ")?;
                 drawer = k.visualize(drawer)?;
             }
-            KeyInfo::MaxKeySize {
+            MaxKeySize {
                 unique_id,
                 max_size,
             } => {
