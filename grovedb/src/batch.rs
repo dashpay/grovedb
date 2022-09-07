@@ -237,6 +237,14 @@ impl KeyInfoPath {
         KeyInfoPath(vec)
     }
 
+    pub fn from_known_path<'p, P>(path: P) -> Self
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        KeyInfoPath(path.into_iter().map(|k| KnownKey(k.to_vec())).collect())
+    }
+
     pub fn to_path_consume(self) -> Vec<Vec<u8>> {
         self.0.into_iter().map(|k| k.get_key()).collect()
     }
@@ -864,7 +872,6 @@ where
                             (split_removal_bytes)(flags, removed_bytes).map_err(|e| e.into())
                         }
                     }
-
                 },
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
