@@ -27,7 +27,8 @@ pub use storage::{
 };
 pub use subtree::{Element, ElementFlags};
 
-pub use crate::{error::Error, util::merk_optional_tx};
+pub use crate::error::Error;
+use crate::util::merk_optional_tx;
 
 // todo: remove this
 const MAX_ELEMENTS_NUMBER: u32 = 42069;
