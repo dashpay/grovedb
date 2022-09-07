@@ -211,7 +211,7 @@ impl PartialEq<Vec<Vec<u8>>> for KnownKeysPath {
 }
 
 #[derive(PartialOrd, Ord, PartialEq, Eq, Clone, Debug)]
-pub struct KeyInfoPath(Vec<KeyInfo>);
+pub struct KeyInfoPath(pub Vec<KeyInfo>);
 
 impl Hash for KeyInfoPath {
     fn hash<H: Hasher>(&self, state: &mut H) {
