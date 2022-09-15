@@ -170,7 +170,7 @@ impl GroveDbOp {
                 .iter()
                 .filter_map(|current_op| {
                     if current_op.path == op.path && current_op.key == op.key {
-                        Some(op.op.clone())
+                        Some(current_op.op.clone())
                     } else {
                         None
                     }
