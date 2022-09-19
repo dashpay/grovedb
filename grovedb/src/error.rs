@@ -58,6 +58,9 @@ pub enum Error {
     #[error("just in time element flags client error: {0}")]
     JustInTimeElementFlagsClientError(&'static str),
 
+    #[error("split removal bytes client error: {0}")]
+    SplitRemovalBytesClientError(&'static str),
+
     #[error("client returned non client error: {0}")]
     ClientReturnedNonClientError(&'static str),
 
