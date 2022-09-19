@@ -1358,6 +1358,8 @@ pub fn verify_query(
 #[allow(deprecated)]
 #[cfg(test)]
 mod test {
+    use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+
     use super::{
         super::{encoding::encode_into, *},
         *,
@@ -1373,9 +1375,11 @@ mod test {
             .unwrap()
             .attach(true, Some(Tree::new(vec![3], vec![3]).unwrap()))
             .attach(false, Some(Tree::new(vec![7], vec![7]).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
-            .unwrap()
-            .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .expect("commit failed");
         tree
     }
 
@@ -1387,7 +1391,9 @@ mod test {
             .attach(true, Some(two_tree))
             .attach(false, Some(four_tree));
         three_tree
-            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
+            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+                Ok(NoStorageRemoval)
+            })
             .unwrap()
             .expect("commit failed");
 
@@ -1396,7 +1402,9 @@ mod test {
             .unwrap()
             .attach(true, Some(seven_tree));
         eight_tree
-            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
+            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+                Ok(NoStorageRemoval)
+            })
             .unwrap()
             .expect("commit failed");
 
@@ -1405,7 +1413,9 @@ mod test {
             .attach(true, Some(three_tree))
             .attach(false, Some(eight_tree));
         root_tree
-            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
+            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+                Ok(NoStorageRemoval)
+            })
             .unwrap()
             .expect("commit failed");
 
@@ -2052,9 +2062,11 @@ mod test {
                         ),
                 ),
             );
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
-            .unwrap()
-            .unwrap();
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -5637,9 +5649,11 @@ mod test {
     #[test]
     fn verify_ops() {
         let mut tree = Tree::new(vec![5], vec![5]).unwrap();
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
-            .unwrap()
-            .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .expect("commit failed");
 
         let root_hash = tree.hash().unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -5663,9 +5677,11 @@ mod test {
     #[should_panic(expected = "verify failed")]
     fn verify_ops_mismatched_hash() {
         let mut tree = Tree::new(vec![5], vec![5]).unwrap();
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
-            .unwrap()
-            .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .expect("commit failed");
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 

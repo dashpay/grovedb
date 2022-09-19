@@ -310,6 +310,7 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
 mod tests {
     use std::usize;
 
+    use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     use storage::StorageContext;
 
     use super::{super::tree::Tree, *};
@@ -380,9 +381,11 @@ mod tests {
     #[test]
     fn one_node_tree_trunk_roundtrip() {
         let mut tree = BaseTree::new(vec![0], vec![]).unwrap();
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
-            .unwrap()
-            .unwrap();
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
@@ -403,9 +406,11 @@ mod tests {
         let mut tree = BaseTree::new(vec![0], vec![])
             .unwrap()
             .attach(false, Some(BaseTree::new(vec![1], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
-            .unwrap()
-            .unwrap();
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
@@ -425,9 +430,11 @@ mod tests {
         let mut tree = BaseTree::new(vec![1], vec![])
             .unwrap()
             .attach(true, Some(BaseTree::new(vec![0], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
-            .unwrap()
-            .unwrap();
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
@@ -448,9 +455,11 @@ mod tests {
             .unwrap()
             .attach(true, Some(BaseTree::new(vec![0], vec![]).unwrap()))
             .attach(false, Some(BaseTree::new(vec![2], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
-            .unwrap()
-            .unwrap();
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();

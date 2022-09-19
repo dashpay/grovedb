@@ -54,6 +54,13 @@ pub enum Error {
     #[error("invalid batch operation error: {0}")]
     InvalidBatchOperation(&'static str),
 
+    // Client allowed errors
+    #[error("just in time element flags client error: {0}")]
+    JustInTimeElementFlagsClientError(&'static str),
+
+    #[error("client returned non client error: {0}")]
+    ClientReturnedNonClientError(&'static str),
+
     // Support errors
     #[error("not supported: {0}")]
     NotSupported(&'static str),

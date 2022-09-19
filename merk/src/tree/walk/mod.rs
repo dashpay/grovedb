@@ -178,7 +178,9 @@ where
 
 #[cfg(test)]
 mod test {
-    use costs::{CostContext, CostsExt};
+    use costs::{
+        storage_cost::removal::StorageRemovedBytes::NoStorageRemoval, CostContext, CostsExt,
+    };
 
     use super::{super::NoopCommit, *};
     use crate::tree::Tree;
@@ -222,9 +224,11 @@ mod test {
                 true,
                 Some(Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap()),
             );
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
-            .unwrap()
-            .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .expect("commit failed");
 
         let source = MockSource {};
         let walker = Walker::new(tree, source);

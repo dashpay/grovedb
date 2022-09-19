@@ -29,13 +29,15 @@ use storage::{
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
 use crate::{
-    batch::{GroveDbOpMode::WorstCaseOp, KeyInfo::KnownKey},
+    batch::{
+        GroveDbOpMode::WorstCaseOp,
+        KeyInfo::{KnownKey, MaxKeySize},
+    },
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     worst_case_costs::MerkWorstCaseInput,
     Element, ElementFlags, Error, GroveDb, TransactionArg, MAX_ELEMENTS_NUMBER,
 };
-use crate::batch::KeyInfo::MaxKeySize;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -709,7 +711,7 @@ where
 
 impl<'db, S, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F>
 where
-    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> bool,
+    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
     SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
     F: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
@@ -841,7 +843,6 @@ where
                 }
             }
         }
-
         cost_return_on_error!(&mut cost, unsafe {
             merk.apply_unchecked::<_, Vec<u8>, _, _>(
                 &batch_operations,
@@ -856,7 +857,11 @@ where
                     match maybe_new_flags {
                         None => Ok(false),
                         Some(new_flags) => {
-                            let changed = (flags_update)(storage_costs, maybe_old_flags, new_flags);
+                            let changed = (flags_update)(storage_costs, maybe_old_flags, new_flags)
+                                .map_err(|e| match e {
+                                    Error::JustInTimeElementFlagsClientError(_) => e,
+                                    _ => Error::ClientReturnedNonClientError("non client error"),
+                                })?;
                             if changed {
                                 new_value.clone_from(&new_element.serialize()?);
                             }
@@ -966,7 +971,7 @@ impl<F, SR, S: fmt::Debug> fmt::Debug for BatchStructure<S, F, SR> {
 impl<C, F, SR> BatchStructure<C, F, SR>
 where
     C: TreeCache<F, SR>,
-    F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> bool,
+    F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
     SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
 {
     fn from_ops(
@@ -1051,7 +1056,7 @@ impl GroveDb {
         batch_apply_options: Option<BatchApplyOptions>,
     ) -> CostResult<(), Error>
     where
-        F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> bool,
+        F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
         SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
     {
         let mut cost = OperationCost::default();
@@ -1191,7 +1196,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> bool,
+        ) -> Result<bool, Error>,
         split_removed_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32,
@@ -1257,7 +1262,7 @@ impl GroveDb {
         self.apply_batch_with_element_flags_update(
             ops,
             batch_apply_options,
-            |cost, old_flags, new_flags| false,
+            |cost, old_flags, new_flags| Ok(false),
             |flags, removed_bytes| Ok(BasicStorageRemoval(removed_bytes)),
             transaction,
         )
@@ -1272,7 +1277,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> bool,
+        ) -> Result<bool, Error>,
         split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32,
@@ -1389,7 +1394,7 @@ impl GroveDb {
             &StorageCost,
             Option<ElementFlags>,
             &mut ElementFlags,
-        ) -> bool,
+        ) -> Result<bool, Error>,
         split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
             u32,
@@ -1506,8 +1511,8 @@ mod tests {
 
         // No two operations should be the same
         let ops = vec![
-            GroveDbOp::insert(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_run_op(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_run_op(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
         ];
         assert!(matches!(
             db.apply_batch(ops, None, None).unwrap(),
@@ -1518,12 +1523,12 @@ mod tests {
 
         // Can't perform 2 or more operations on the same node
         let ops = vec![
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![b"a".to_vec()],
                 b"b".to_vec(),
                 Element::new_item(vec![1]),
             ),
-            GroveDbOp::insert(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_run_op(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
         ];
         assert!(matches!(
             db.apply_batch(ops, None, None).unwrap(),
@@ -1534,12 +1539,12 @@ mod tests {
 
         // Can't insert under a deleted path
         let ops = vec![
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec()],
                 b"b".to_vec(),
                 Element::new_item(vec![1]),
             ),
-            GroveDbOp::delete(vec![], TEST_LEAF.to_vec()),
+            GroveDbOp::delete_run_op(vec![], TEST_LEAF.to_vec()),
         ];
         assert!(matches!(
             db.apply_batch(ops, None, None).unwrap(),
@@ -1550,12 +1555,12 @@ mod tests {
 
         // Should allow invalid operations pass when disable option is set to true
         let ops = vec![
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec()],
                 b"b".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert(
+            GroveDbOp::insert_run_op(
                 vec![TEST_LEAF.to_vec()],
                 b"b".to_vec(),
                 Element::empty_tree(),
@@ -1730,7 +1735,7 @@ mod tests {
             .apply_batch_with_element_flags_update(
                 ops,
                 None,
-                |cost, old_flags, new_flags| false,
+                |cost, old_flags, new_flags| Ok(false),
                 |flags, removed_bytes| Ok(NoStorageRemoval),
                 Some(&tx),
             )
@@ -1788,17 +1793,17 @@ mod tests {
                             new_flags.push(new_flags_epoch);
                             new_flags.extend(cost.added_bytes.encode_var_vec());
                             assert_eq!(new_flags, &vec![1u8, 0, 1, 2]);
-                            true
+                            Ok(true)
                         } else {
                             assert_eq!(new_flags[0], 1);
-                            false
+                            Ok(false)
                         }
                     }
                     OperationStorageTransitionType::OperationUpdateSmallerSize => {
                         new_flags.extend(vec![1, 2]);
-                        true
+                        Ok(true)
                     }
-                    _ => false,
+                    _ => Ok(false),
                 },
                 |flags, removed| Ok(BasicStorageRemoval(removed)),
                 Some(&tx),
@@ -1834,7 +1839,7 @@ mod tests {
         let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(
             worst_case_ops,
             None,
-            |cost, old_flags, new_flags| false,
+            |cost, old_flags, new_flags| Ok(false),
             |flags, removed_bytes| Ok(NoStorageRemoval),
         );
         assert!(worst_case_cost_result.value.is_ok());
@@ -1879,7 +1884,7 @@ mod tests {
         let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(
             worst_case_ops,
             None,
-            |cost, old_flags, new_flags| false,
+            |cost, old_flags, new_flags| Ok(false),
             |flags, removed_bytes| Ok(NoStorageRemoval),
         );
         assert!(worst_case_cost_result.value.is_ok());
@@ -1923,7 +1928,7 @@ mod tests {
         let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(
             worst_case_ops,
             None,
-            |cost, old_flags, new_flags| false,
+            |cost, old_flags, new_flags| Ok(false),
             |flags, removed_bytes| Ok(NoStorageRemoval),
         );
         assert!(worst_case_cost_result.value.is_ok());

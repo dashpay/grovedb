@@ -596,6 +596,8 @@ pub const fn side_to_str(left: bool) -> &'static str {
 
 #[cfg(test)]
 mod test {
+    use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+
     use super::{commit::NoopCommit, hash::NULL_HASH, Tree};
 
     #[test]
@@ -670,9 +672,11 @@ mod test {
         assert!(tree.link(false).is_none());
         assert!(tree.child(false).is_none());
 
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
-            .unwrap()
-            .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .expect("commit failed");
         assert!(tree.link(true).expect("expected link").is_stored());
         assert!(tree.child(true).is_some());
 
@@ -690,9 +694,11 @@ mod test {
         let mut tree = Tree::new(vec![0], vec![1])
             .unwrap()
             .attach(true, Some(Tree::new(vec![2], vec![3]).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
-            .unwrap()
-            .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .expect("commit failed");
         assert_eq!(
             tree.child_hash(true),
             &[
@@ -753,9 +759,11 @@ mod test {
         let mut tree = Tree::new(vec![0], vec![1])
             .unwrap()
             .attach(false, Some(Tree::new(vec![2], vec![3]).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false))
-            .unwrap()
-            .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .expect("commit failed");
 
         assert!(tree.link(false).expect("expected link").is_stored());
     }
