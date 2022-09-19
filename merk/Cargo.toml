@@ -71,3 +71,12 @@ verify = ["ed",
 [dev-dependencies]
 tempfile = "3.3.0"
 storage = { path = "../storage", features = ["rocksdb_storage"] }
+criterion = "0.3"
+
+[[bench]]
+name = "merk"
+harness = false
+
+[[bench]]
+name = "ops"
+harness = false

@@ -532,6 +532,32 @@ fn test_element_with_flags() {
 }
 
 #[test]
+fn test_cannot_update_populated_tree_item() {
+    // This test shows that you cannot update a tree item
+    // in a way that disconnects it's root hash from that of
+    // the merk it points to.
+    let db = make_deep_tree();
+
+    let old_element = db
+        .get([TEST_LEAF], b"innertree", None)
+        .unwrap()
+        .expect("should fetch item");
+
+    let new_element = Element::empty_tree();
+    db.insert([TEST_LEAF], b"innertree", new_element.clone(), None)
+        .unwrap()
+        .expect("should insert successfully");
+
+    let current_element = db
+        .get([TEST_LEAF], b"innertree", None)
+        .unwrap()
+        .expect("should fetch item");
+
+    assert_eq!(current_element, old_element);
+    assert_ne!(current_element, new_element);
+}
+
+#[test]
 fn test_changes_propagated() {
     let db = make_test_grovedb();
     let old_hash = db.root_hash(None).unwrap().unwrap();
