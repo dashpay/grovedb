@@ -12,7 +12,7 @@ use crate::tree::{hash::value_hash, kv_digest_to_kv_hash};
 //       field and value field.
 
 /// Contains a key/value pair, and the hash of the key/value pair.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct KV {
     pub(super) key: Vec<u8>,
     pub(super) value: Vec<u8>,

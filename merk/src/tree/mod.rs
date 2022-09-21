@@ -38,7 +38,7 @@ pub use walk::{Fetch, RefWalker, Walker};
 // relevant methods
 
 /// The fields of the `Tree` type, stored on the heap.
-#[derive(Clone, Encode, Decode)]
+#[derive(Clone, Encode, Decode, Debug)]
 pub struct TreeInner {
     left: Option<Link>,
     right: Option<Link>,

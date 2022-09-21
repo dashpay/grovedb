@@ -8,7 +8,7 @@ use super::{hash::CryptoHash, Tree};
 
 /// Represents a reference to a child tree node. Links may or may not contain
 /// the child's `Tree` instance (storing its key if not).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Link {
     /// Represents a child tree node which has been pruned from memory, only
     /// retaining a reference to it (its key). The child node can always be
