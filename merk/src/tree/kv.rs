@@ -126,6 +126,11 @@ impl KV {
     pub fn take_key(self) -> Vec<u8> {
         self.key
     }
+
+    #[inline]
+    pub(crate) fn encoding_length_with_parent_to_child_reference(&self) -> usize {
+        self.encoding_length().unwrap() + HASH_LENGTH + self.value.len() + 2
+    }
 }
 
 impl Encode for KV {

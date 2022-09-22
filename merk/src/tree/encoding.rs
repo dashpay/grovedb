@@ -62,10 +62,9 @@ impl Tree {
 
     #[inline]
     pub fn decode(key: Vec<u8>, input: &[u8]) -> ed::Result<Self> {
-        let decode_size = input.len();
         let mut tree_inner: TreeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;
-        Ok(Tree::new_with_tree_inner(tree_inner, decode_size))
+        Ok(Tree::new_with_tree_inner(tree_inner))
     }
 }
 

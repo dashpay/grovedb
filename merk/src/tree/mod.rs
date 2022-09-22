@@ -76,7 +76,8 @@ impl Tree {
     }
 
     /// Creates a new `Tree` given an inner tree
-    pub fn new_with_tree_inner(inner_tree: TreeInner, decode_size: usize) -> Self {
+    pub fn new_with_tree_inner(inner_tree: TreeInner) -> Self {
+        let decode_size = inner_tree.kv.encoding_length_with_parent_to_child_reference();
         let old_value = inner_tree.kv.value.clone();
         Self {
             inner: Box::new(inner_tree),
