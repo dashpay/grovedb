@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use costs::{CostContext, CostsExt, OperationCost};
 use ed::{Decode, Encode, Result, Terminated};
 
-use super::hash::{kv_hash, Hash, HASH_LENGTH, NULL_HASH};
+use super::hash::{Hash, HASH_LENGTH, NULL_HASH};
 use crate::tree::{hash::value_hash, kv_digest_to_kv_hash};
 
 // TODO: maybe use something similar to Vec but without capacity field,
@@ -24,15 +24,16 @@ impl KV {
     /// Creates a new `KV` with the given key and value and computes its hash.
     #[inline]
     pub fn new(key: Vec<u8>, value: Vec<u8>) -> CostContext<Self> {
-        // TODO: length checks?
-        kv_hash(key.as_slice(), value.as_slice()).flat_map(|hash| {
-            value_hash(value.as_slice()).map(|value_hash| Self {
-                key,
-                value,
-                hash,
-                value_hash,
-            })
-        })
+        let mut cost = OperationCost::default();
+        let value_hash = value_hash(value.as_slice()).unwrap_add_cost(&mut cost);
+        let kv_hash = kv_digest_to_kv_hash(key.as_slice(), &value_hash).unwrap_add_cost(&mut cost);
+        Self {
+            key,
+            value,
+            hash: kv_hash,
+            value_hash,
+        }
+        .wrap_with_cost(cost)
     }
 
     /// Creates a new `KV` with the given key, value and value_hash and computes
@@ -72,7 +73,7 @@ impl KV {
         // TODO: length check?
         self.value = value;
         self.value_hash = value_hash(self.value()).unwrap_add_cost(&mut cost);
-        self.hash = kv_hash(self.key(), self.value()).unwrap_add_cost(&mut cost);
+        self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
     }
 

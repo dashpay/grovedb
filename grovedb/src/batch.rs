@@ -2,21 +2,23 @@
 
 use core::fmt;
 use std::{
-    borrow::Cow,
     cmp::Ordering,
     collections::{btree_map::Entry, BTreeMap, HashMap, HashSet},
-    hash::Hash,
 };
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use merk::Merk;
+use merk::{tree::value_hash, Hash, Merk};
 use nohash_hasher::IntMap;
 use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
-use crate::{operations::get::MAX_REFERENCE_HOPS, Element, Error, GroveDb, TransactionArg};
+use crate::{
+    operations::get::MAX_REFERENCE_HOPS,
+    reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
+    Element, Error, GroveDb, TransactionArg,
+};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -168,7 +170,7 @@ impl GroveDbOp {
                 .iter()
                 .filter_map(|current_op| {
                     if current_op.path == op.path && current_op.key == op.key {
-                        Some(op.op.clone())
+                        Some(current_op.op.clone())
                     } else {
                         None
                     }
@@ -294,16 +296,28 @@ where
     F: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
-    fn follow_reference<'a>(
+    /// A reference assumes the value hash of the base item it points to.
+    /// In a reference chain base_item -> ref_1 -> ref_2 e.t.c.
+    /// all references in that chain (ref_1, ref_2) assume the value hash of the
+    /// base_item. The goal of this function is to figure out what the
+    /// value_hash of a reference chain is. If we want to insert ref_3 to the
+    /// chain above and nothing else changes, we can get the value_hash from
+    /// ref_2. But when dealing with batches, you can have an operation to
+    /// insert ref_3 and another operation to change something in the
+    /// reference chain in the same batch.
+    /// All these has to be taken into account.
+    fn follow_reference_get_value_hash<'a>(
         &'a mut self,
         qualified_path: &[Vec<u8>],
         ops_by_qualified_paths: &'a HashMap<Vec<Vec<u8>>, Op>,
         recursions_allowed: u8,
-    ) -> CostResult<Cow<Element>, Error> {
+    ) -> CostResult<Hash, Error> {
         let mut cost = OperationCost::default();
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
         }
+        // If the element being referenced changes in the same batch
+        // we need to set the value_hash based on the new change and not the old state.
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
             // the path is being modified, inserted or deleted in the batch of operations
             match op {
@@ -314,9 +328,21 @@ where
                     .wrap_with_cost(cost);
                 }
                 Op::Insert { element } => match element {
-                    Element::Item(..) => Ok(Cow::Borrowed(element)).wrap_with_cost(cost),
-                    Element::Reference(path, _) => {
-                        self.follow_reference(path, ops_by_qualified_paths, recursions_allowed - 1)
+                    Element::Item(..) => {
+                        let serialized = cost_return_on_error_no_add!(&cost, element.serialize());
+                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                        Ok(val_hash).wrap_with_cost(cost)
+                    }
+                    Element::Reference(path, ..) => {
+                        let path = cost_return_on_error_no_add!(
+                            &cost,
+                            path_from_reference_qualified_path_type(path.clone(), qualified_path)
+                        );
+                        self.follow_reference_get_value_hash(
+                            path.as_slice(),
+                            ops_by_qualified_paths,
+                            recursions_allowed - 1,
+                        )
                     }
                     Element::Tree(..) => {
                         return Err(Error::InvalidBatchOperation(
@@ -341,36 +367,93 @@ where
                 .unwrap_or_else(|| (self.get_merk_fn)(reference_path));
             let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
 
-            let referenced_element = cost_return_on_error!(
-                &mut cost,
-                merk.get(key.as_ref())
-                    .map_err(|e| Error::CorruptedData(e.to_string()))
-            );
+            // Here the element being referenced doesn't change in the same batch
+            // and the max hop count is 1, meaning it should point directly to the base
+            // element at this point we can extract the value hash from the
+            // reference element directly
+            if recursions_allowed == 1 {
+                let referenced_element_value_hash_opt = cost_return_on_error!(
+                    &mut cost,
+                    merk.get_value_hash(key.as_ref())
+                        .map_err(|e| Error::CorruptedData(e.to_string()))
+                );
 
-            let referenced_element = cost_return_on_error_no_add!(
-                &cost,
-                referenced_element.ok_or(Error::MissingReference("reference in batch is missing"))
-            );
+                let referenced_element_value_hash = cost_return_on_error!(
+                    &mut cost,
+                    referenced_element_value_hash_opt
+                        .ok_or({
+                            let reference_string = reference_path
+                                .iter()
+                                .map(|a| hex::encode(a))
+                                .collect::<Vec<String>>()
+                                .join("/");
+                            Error::MissingReference(format!(
+                                "direct reference to path:`{}` key:`{}` in batch is missing",
+                                reference_string,
+                                hex::encode(key)
+                            ))
+                        })
+                        .wrap_with_cost(OperationCost::default())
+                );
 
-            let element = cost_return_on_error_no_add!(
-                &cost,
-                Element::deserialize(referenced_element.as_slice()).map_err(|_| {
-                    Error::CorruptedData(String::from("unable to deserialize element"))
-                })
-            );
+                return Ok(referenced_element_value_hash).wrap_with_cost(cost);
+            } else {
+                // Here the element being referenced doesn't change in the same batch
+                // but the hop count is greater than 1, we can't just take the value hash from
+                // the referenced element as an element further down in the chain might still
+                // change in the batch.
+                let referenced_element = cost_return_on_error!(
+                    &mut cost,
+                    merk.get(key.as_ref())
+                        .map_err(|e| Error::CorruptedData(e.to_string()))
+                );
 
-            match element {
-                Element::Item(..) => Ok(Cow::Owned(element)).wrap_with_cost(cost),
-                Element::Reference(path, _) => self.follow_reference(
-                    path.as_slice(),
-                    ops_by_qualified_paths,
-                    recursions_allowed - 1,
-                ),
-                Element::Tree(..) => {
-                    return Err(Error::InvalidBatchOperation(
-                        "references can not point to trees being updated",
-                    ))
-                    .wrap_with_cost(cost);
+                let referenced_element = cost_return_on_error_no_add!(
+                    &cost,
+                    referenced_element.ok_or({
+                        let reference_string = reference_path
+                            .iter()
+                            .map(|a| hex::encode(a))
+                            .collect::<Vec<String>>()
+                            .join("/");
+                        Error::MissingReference(format!(
+                            "reference to path:`{}` key:`{}` in batch is missing",
+                            reference_string,
+                            hex::encode(key)
+                        ))
+                    })
+                );
+
+                let element = cost_return_on_error_no_add!(
+                    &cost,
+                    Element::deserialize(referenced_element.as_slice()).map_err(|_| {
+                        Error::CorruptedData(String::from("unable to deserialize element"))
+                    })
+                );
+
+                match element {
+                    Element::Item(..) => {
+                        let serialized = cost_return_on_error_no_add!(&cost, element.serialize());
+                        let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
+                        Ok(val_hash).wrap_with_cost(cost)
+                    }
+                    Element::Reference(path, ..) => {
+                        let path = cost_return_on_error_no_add!(
+                            &cost,
+                            path_from_reference_qualified_path_type(path.clone(), qualified_path)
+                        );
+                        self.follow_reference_get_value_hash(
+                            path.as_slice(),
+                            ops_by_qualified_paths,
+                            recursions_allowed - 1,
+                        )
+                    }
+                    Element::Tree(..) => {
+                        return Err(Error::InvalidBatchOperation(
+                            "references can not point to trees being updated",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
                 }
             }
         }
@@ -415,29 +498,38 @@ where
         for (key, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } => match &element {
-                    Element::Reference(path_reference, _) => {
+                    Element::Reference(path_reference, element_max_reference_hop, _) => {
+                        let path_iter = path.iter().map(|x| x.as_slice());
+                        let path_reference = cost_return_on_error!(
+                            &mut cost,
+                            path_from_reference_path_type(
+                                path_reference.clone(),
+                                path_iter,
+                                Some(key.as_slice())
+                            )
+                            .wrap_with_cost(OperationCost::default())
+                        );
                         if path_reference.len() == 0 {
                             return Err(Error::InvalidBatchOperation(
                                 "attempting to insert an empty reference",
                             ))
                             .wrap_with_cost(cost);
                         }
-                        let referenced_element = cost_return_on_error!(
+
+                        let referenced_element_value_hash = cost_return_on_error!(
                             &mut cost,
-                            self.follow_reference(
-                                path_reference,
+                            self.follow_reference_get_value_hash(
+                                path_reference.as_slice(),
                                 ops_by_qualified_paths,
-                                MAX_REFERENCE_HOPS as u8
+                                element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8)
                             )
                         );
-                        let serialized =
-                            cost_return_on_error_no_add!(&cost, referenced_element.serialize());
 
                         cost_return_on_error!(
                             &mut cost,
                             element.insert_reference_into_batch_operations(
                                 key,
-                                serialized,
+                                referenced_element_value_hash,
                                 &mut batch_operations
                             )
                         );
@@ -635,6 +727,7 @@ where
 #[derive(Debug, Default)]
 pub struct BatchApplyOptions {
     pub validate_insertion_does_not_override: bool,
+    pub disable_operation_consistency_check: bool,
 }
 
 impl GroveDb {
@@ -829,6 +922,24 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
+        // Determines whether to check batch operation consistency
+        // return false if the disable option is set to true, returns true for any other
+        // case
+        let check_batch_operation_consistency = batch_apply_options
+            .as_ref()
+            .map(|batch_options| !batch_options.disable_operation_consistency_check)
+            .unwrap_or(true);
+
+        if check_batch_operation_consistency {
+            let consistency_result = GroveDbOp::verify_consistency_of_operations(&ops);
+            if !consistency_result.is_empty() {
+                return Err(Error::InvalidBatchOperation(
+                    "batch operations fail consistency checks",
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
+
         // `StorageBatch` allows us to collect operations on different subtrees before
         // execution
         let storage_batch = StorageBatch::new();
@@ -928,13 +1039,20 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    use merk::proofs::Query;
 
     use super::*;
-    use crate::tests::{make_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF};
+    use crate::{
+        reference_path::ReferencePathType,
+        tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
+        PathQuery, SizedQuery,
+    };
 
     #[test]
     fn test_batch_validation_ok() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
         let ops = vec![
@@ -998,8 +1116,83 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_operation_consistency_checker() {
+        let db = make_test_grovedb();
+
+        // No two operations should be the same
+        let ops = vec![
+            GroveDbOp::insert(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
+        ];
+        assert!(matches!(
+            db.apply_batch(ops, None, None).unwrap(),
+            Err(Error::InvalidBatchOperation(
+                "batch operations fail consistency checks"
+            ))
+        ));
+
+        // Can't perform 2 or more operations on the same node
+        let ops = vec![
+            GroveDbOp::insert(
+                vec![b"a".to_vec()],
+                b"b".to_vec(),
+                Element::new_item(vec![1]),
+            ),
+            GroveDbOp::insert(vec![b"a".to_vec()], b"b".to_vec(), Element::empty_tree()),
+        ];
+        assert!(matches!(
+            db.apply_batch(ops, None, None).unwrap(),
+            Err(Error::InvalidBatchOperation(
+                "batch operations fail consistency checks"
+            ))
+        ));
+
+        // Can't insert under a deleted path
+        let ops = vec![
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"b".to_vec(),
+                Element::new_item(vec![1]),
+            ),
+            GroveDbOp::delete(vec![], TEST_LEAF.to_vec()),
+        ];
+        assert!(matches!(
+            db.apply_batch(ops, None, None).unwrap(),
+            Err(Error::InvalidBatchOperation(
+                "batch operations fail consistency checks"
+            ))
+        ));
+
+        // Should allow invalid operations pass when disable option is set to true
+        let ops = vec![
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"b".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"b".to_vec(),
+                Element::empty_tree(),
+            ),
+        ];
+        assert!(matches!(
+            db.apply_batch(
+                ops,
+                Some(BatchApplyOptions {
+                    validate_insertion_does_not_override: false,
+                    disable_operation_consistency_check: true,
+                }),
+                None
+            )
+            .unwrap(),
+            Ok(_)
+        ));
+    }
+
+    #[test]
     fn test_batch_validation_ok_on_transaction() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let tx = db.start_transaction();
 
         db.insert(vec![], b"keyb", Element::empty_tree(), Some(&tx))
@@ -1073,6 +1266,42 @@ mod tests {
                 .unwrap()
                 .expect("cannot get element"),
             element2
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_insert_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let ops = vec![GroveDbOp::insert(
+            vec![],
+            b"key1".to_vec(),
+            Element::empty_tree(),
+        )];
+        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        // Explanation for 176
+        // 2 bytes for left and right height
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 for the flags
+        // 1 for the enum type
+        // 32 for empty tree
+        // 32 for node hash
+        // 32 for value hash
+        // 32 for the root key prefix
+        // 4 bytes for the key to put in root
+        // 1 byte for the root "r"
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 2, // 1 to get tree, 1 to insert
+                storage_written_bytes: 173,
+                storage_loaded_bytes: 0,
+                storage_freed_bytes: 0,
+                hash_byte_calls: 2,
+                hash_node_calls: 3
+            }
         );
     }
 
@@ -1238,13 +1467,13 @@ mod tests {
             ],
             key: b"sam_id".to_vec(),
             op: Op::Insert {
-                element: Element::new_reference(vec![
+                element: Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
                     b"contract".to_vec(),
                     (&[1u8]).to_vec(),
                     b"domain".to_vec(),
                     (&[0u8]).to_vec(),
                     b"serialized_domain_id".to_vec(),
-                ]),
+                ])),
             },
         });
 
@@ -1256,7 +1485,7 @@ mod tests {
     #[ignore]
     #[test]
     fn test_batch_produces_same_result() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let tx = db.start_transaction();
 
         let ops = grove_db_ops_for_contract_insert();
@@ -1266,7 +1495,7 @@ mod tests {
 
         db.root_hash(None).unwrap().expect("cannot get root hash");
 
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let tx = db.start_transaction();
 
         let ops = grove_db_ops_for_contract_insert();
@@ -1296,7 +1525,7 @@ mod tests {
     #[ignore]
     #[test]
     fn test_batch_contract_with_document_produces_same_result() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let tx = db.start_transaction();
 
         let ops = grove_db_ops_for_contract_insert();
@@ -1306,7 +1535,7 @@ mod tests {
 
         db.root_hash(None).unwrap().expect("cannot get root hash");
 
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let tx = db.start_transaction();
 
         let ops = grove_db_ops_for_contract_insert();
@@ -1342,7 +1571,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_broken_chain() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
             GroveDbOp::insert(vec![], b"key1".to_vec(), Element::empty_tree()),
@@ -1363,7 +1592,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_broken_chain_aborts_whole_batch() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
             GroveDbOp::insert(
@@ -1398,7 +1627,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_deletion_brokes_chain() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
 
         db.insert([], b"key1", Element::empty_tree(), None)
@@ -1426,7 +1655,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_insertion_under_deleted_tree() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let ops = vec![
             GroveDbOp::insert(vec![], b"key1".to_vec(), Element::empty_tree()),
@@ -1457,7 +1686,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_insert_into_existing_tree() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
 
         db.insert([TEST_LEAF], b"invalid", element.clone(), None)
@@ -1494,7 +1723,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_nested_subtree_overwrite() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
         db.insert([TEST_LEAF], b"key_subtree", Element::empty_tree(), None)
@@ -1517,7 +1746,8 @@ mod tests {
             .apply_batch(
                 ops,
                 Some(BatchApplyOptions {
-                    validate_insertion_does_not_override: true
+                    validate_insertion_does_not_override: true,
+                    disable_operation_consistency_check: false,
                 }),
                 None
             )
@@ -1550,6 +1780,7 @@ mod tests {
             .apply_batch(
                 ops,
                 Some(BatchApplyOptions {
+                    disable_operation_consistency_check: false,
                     validate_insertion_does_not_override: true
                 }),
                 None
@@ -1560,7 +1791,7 @@ mod tests {
 
     #[test]
     fn test_batch_validation_root_leaf_removal() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let ops = vec![
             GroveDbOp::insert(
                 vec![],
@@ -1577,7 +1808,8 @@ mod tests {
             .apply_batch(
                 ops,
                 Some(BatchApplyOptions {
-                    validate_insertion_does_not_override: true
+                    validate_insertion_does_not_override: true,
+                    disable_operation_consistency_check: false,
                 }),
                 None
             )
@@ -1587,7 +1819,7 @@ mod tests {
 
     #[test]
     fn test_merk_data_is_deleted() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
 
         db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
@@ -1619,7 +1851,7 @@ mod tests {
 
     #[test]
     fn test_multi_tree_insertion_deletion_with_propagation_no_tx() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         db.insert([], b"key1", Element::empty_tree(), None)
             .unwrap()
             .expect("cannot insert root leaf");
@@ -1686,7 +1918,7 @@ mod tests {
 
     #[test]
     fn test_nested_batch_insertion_corrupts_state() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let full_path = vec![
             b"leaf1".to_vec(),
             b"sub1".to_vec(),
@@ -1730,7 +1962,7 @@ mod tests {
 
     #[test]
     fn test_apply_sorted_pre_validated_batch_propagation() {
-        let db = make_grovedb();
+        let db = make_test_grovedb();
         let full_path = vec![b"leaf1".to_vec(), b"sub1".to_vec()];
         let mut acc_path: Vec<Vec<u8>> = vec![];
         for p in full_path.into_iter() {
@@ -1758,5 +1990,93 @@ mod tests {
             .expect("cannot apply batch");
 
         assert_ne!(db.root_hash(None).unwrap().unwrap(), root_hash);
+    }
+
+    #[test]
+    fn test_references() {
+        // insert reference that points to non-existent item
+        let db = make_test_grovedb();
+        let batch = vec![GroveDbOp::insert(
+            vec![TEST_LEAF.to_vec()],
+            b"key1".to_vec(),
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"invalid_path".to_vec(),
+            ])),
+        )];
+        assert!(matches!(
+            db.apply_batch(batch, None, None).unwrap(),
+            Err(Error::MissingReference(String { .. }))
+        ));
+
+        // insert reference with item it points to in the same batch
+        let db = make_test_grovedb();
+        let elem = Element::new_item(b"ayy".to_vec());
+        let batch = vec![
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"key1".to_vec(),
+                Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"invalid_path".to_vec(),
+                ])),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"invalid_path".to_vec(),
+                elem.clone(),
+            ),
+        ];
+        assert!(matches!(db.apply_batch(batch, None, None).unwrap(), Ok(_)));
+        assert_eq!(db.get([TEST_LEAF], b"key1", None).unwrap().unwrap(), elem);
+
+        // should successfully prove reference as the value hash is valid
+        let mut reference_key_query = Query::new();
+        reference_key_query.insert_key(b"key1".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], reference_key_query);
+        let proof = db
+            .prove_query(&path_query)
+            .unwrap()
+            .expect("should generate proof");
+        let verification_result = GroveDb::verify_query(&proof, &path_query);
+        assert!(matches!(verification_result, Ok(_)));
+
+        // Hit reference limit when you specify max reference hop, lower than actual hop
+        // count
+        let db = make_test_grovedb();
+        let elem = Element::new_item(b"ayy".to_vec());
+        let batch = vec![
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"key2".to_vec(),
+                Element::new_reference_with_hops(
+                    ReferencePathType::AbsolutePathReference(vec![
+                        TEST_LEAF.to_vec(),
+                        b"key1".to_vec(),
+                    ]),
+                    Some(1),
+                ),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"key1".to_vec(),
+                Element::new_reference_with_hops(
+                    ReferencePathType::AbsolutePathReference(vec![
+                        TEST_LEAF.to_vec(),
+                        b"invalid_path".to_vec(),
+                    ]),
+                    Some(1),
+                ),
+            ),
+            GroveDbOp::insert(
+                vec![TEST_LEAF.to_vec()],
+                b"invalid_path".to_vec(),
+                elem.clone(),
+            ),
+        ];
+        assert!(matches!(
+            db.apply_batch(batch, None, None).unwrap(),
+            Err(Error::ReferenceLimit)
+        ));
     }
 }

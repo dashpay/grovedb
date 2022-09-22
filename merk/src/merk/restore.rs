@@ -1,63 +1,48 @@
 //! Provides `Restorer`, which can create a replica of a Merk instance by
 //! receiving chunk proofs.
 
+use std::{iter::Peekable, u8};
+
+use anyhow::{anyhow, Error};
+use storage::{Batch, StorageContext};
+
 use super::Merk;
 use crate::{
     merk::MerkSource,
     proofs::{
         chunk::{verify_leaf, verify_trunk, MIN_TRUNK_HEIGHT},
         tree::{Child, Tree as ProofTree},
-        Decoder, Node,
+        Node, Op,
     },
     tree::{Link, RefWalker, Tree},
-    Hash, Result,
+    Hash,
 };
-use failure::bail;
-use rocksdb::WriteBatch;
-use std::iter::Peekable;
-use std::{path::Path, u8};
 
 /// A `Restorer` handles decoding, verifying, and storing chunk proofs to
 /// replicate an entire Merk tree. It expects the chunks to be processed in
 /// order, retrying the last chunk if verification fails.
-pub struct Restorer<'a> {
+pub struct Restorer<S> {
     leaf_hashes: Option<Peekable<std::vec::IntoIter<Hash>>>,
     parent_keys: Option<Peekable<std::vec::IntoIter<Vec<u8>>>>,
     trunk_height: Option<usize>,
-    merk: Merk<'a>,
+    merk: Merk<S>,
     expected_root_hash: Hash,
-    stated_length: usize,
 }
 
-impl<'a> Restorer<'a> {
+impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// Creates a new `Restorer`, which will initialize a new Merk at the given
     /// file path. The first chunk (the "trunk") will be compared against
     /// `expected_root_hash`, then each subsequent chunk will be compared
     /// against the hashes stored in the trunk, so that the restore process will
     /// never allow malicious peers to send more than a single invalid chunk.
-    ///
-    /// The `stated_length` should be the number of chunks stated by the peer,
-    /// which will be verified after processing a valid first chunk to make it
-    /// easier to download chunks from peers without needing to trust this
-    /// length.
-    pub fn new<P: AsRef<Path>>(
-        db_path: P,
-        prefix: &[u8],
-        expected_root_hash: Hash,
-        stated_length: usize,
-    ) -> Result<Self> {
-        if db_path.as_ref().exists() {
-            bail!("The given path already exists");
-        }
-
-        Ok(Self {
+    pub fn new(merk: Merk<S>, expected_root_hash: Hash) -> Self {
+        Self {
             expected_root_hash,
-            stated_length,
             trunk_height: None,
-            merk: Merk::open(db_path, prefix)?,
+            merk,
             leaf_hashes: None,
             parent_keys: None,
-        })
+        }
     }
 
     /// Verifies a chunk and writes it to the working RocksDB instance. Expects
@@ -66,9 +51,9 @@ impl<'a> Restorer<'a> {
     ///
     /// Once there are no remaining chunks to be processed, `finalize` should
     /// be called.
-    pub fn process_chunk(&mut self, chunk_bytes: &[u8]) -> Result<usize> {
-        let ops = Decoder::new(chunk_bytes);
-
+    ///
+    /// TODO: `anyhow::Error` is too vague
+    pub fn process_chunk(&mut self, ops: impl IntoIterator<Item = Op>) -> Result<usize, Error> {
         match self.leaf_hashes {
             None => self.process_trunk(ops),
             Some(_) => self.process_leaf(ops),
@@ -79,17 +64,16 @@ impl<'a> Restorer<'a> {
     /// Merk instance. This method will return an error if called before
     /// processing all chunks (e.g. `restorer.remaining_chunks()` is not equal
     /// to 0).
-    pub fn finalize(mut self) -> Result<Merk<'a>> {
-        if self.remaining_chunks().is_none() || self.remaining_chunks().unwrap() != 0 {
-            bail!("Called finalize before all chunks were processed");
+    pub fn finalize(mut self) -> Result<Merk<S>, Error> {
+        if self.remaining_chunks().unwrap_or(0) != 0 {
+            return Err(anyhow!("Called finalize before all chunks were processed"));
         }
 
         if self.trunk_height.unwrap() >= MIN_TRUNK_HEIGHT {
             self.rewrite_trunk_child_heights()?;
         }
 
-        self.merk.flush()?;
-        self.merk.load_root()?;
+        self.merk.load_root().unwrap()?;
 
         Ok(self.merk)
     }
@@ -103,8 +87,8 @@ impl<'a> Restorer<'a> {
 
     /// Writes the data contained in `tree` (extracted from a verified chunk
     /// proof) to the RocksDB.
-    fn write_chunk(&mut self, tree: ProofTree) -> Result<()> {
-        let mut batch = WriteBatch::default();
+    fn write_chunk(&mut self, tree: ProofTree) -> Result<(), Error> {
+        let mut batch = self.merk.storage.new_batch();
 
         tree.visit_refs(&mut |proof_node| {
             let (key, value) = match &proof_node.node {
@@ -113,31 +97,28 @@ impl<'a> Restorer<'a> {
             };
 
             // TODO: encode tree node without cloning key/value
-            let mut node = Tree::new(key.clone(), value.clone());
+            let mut node = Tree::new(key.clone(), value.clone()).unwrap();
             *node.slot_mut(true) = proof_node.left.as_ref().map(Child::as_link);
             *node.slot_mut(false) = proof_node.right.as_ref().map(Child::as_link);
 
             let bytes = node.encode();
-            batch.put(key, bytes);
+            batch.put(key, &bytes);
         });
 
-        self.merk.write(batch)
+        self.merk.storage.commit_batch(batch).unwrap()?;
+        Ok(())
     }
 
     /// Verifies the trunk then writes its data to the RocksDB.
-    ///
-    /// The trunk contains a height proof which lets us verify the total number
-    /// of expected chunks is the same as `stated_length` as passed into
-    /// `Restorer::new()`. We also verify the expected root hash at this step.
-    fn process_trunk(&mut self, ops: Decoder) -> Result<usize> {
-        let (trunk, height) = verify_trunk(ops)?;
+    fn process_trunk(&mut self, ops: impl IntoIterator<Item = Op>) -> Result<usize, Error> {
+        let (trunk, height) = verify_trunk(ops.into_iter().map(Ok)).unwrap()?;
 
-        if trunk.hash() != self.expected_root_hash {
-            bail!(
+        if trunk.hash().unwrap() != self.expected_root_hash {
+            return Err(anyhow!(
                 "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
                 self.expected_root_hash,
                 trunk.hash()
-            );
+            ));
         }
 
         let root_key = trunk.key().to_vec();
@@ -148,7 +129,7 @@ impl<'a> Restorer<'a> {
         let chunks_remaining = if trunk_height >= MIN_TRUNK_HEIGHT {
             let leaf_hashes = trunk
                 .layer(trunk_height)
-                .map(|node| node.hash())
+                .map(|node| node.hash().unwrap())
                 .collect::<Vec<Hash>>()
                 .into_iter()
                 .peekable();
@@ -175,27 +156,24 @@ impl<'a> Restorer<'a> {
             0
         };
 
-        // FIXME: this one shouldn't be an assert because it comes from a peer
-        assert_eq!(self.stated_length, chunks_remaining + 1);
-
         // note that these writes don't happen atomically, which is fine here
         // because if anything fails during the restore process we will just
         // scrap the whole restore and start over
         self.write_chunk(trunk)?;
-        self.merk.set_root_key(root_key)?;
+        self.merk.set_root_key(&root_key)?;
 
         Ok(chunks_remaining)
     }
 
     /// Verifies a leaf chunk then writes it to the RocksDB. This needs to be
     /// called in order, retrying the last chunk for any failed verifications.
-    fn process_leaf(&mut self, ops: Decoder) -> Result<usize> {
+    fn process_leaf(&mut self, ops: impl IntoIterator<Item = Op>) -> Result<usize, Error> {
         let leaf_hashes = self.leaf_hashes.as_mut().unwrap();
         let leaf_hash = leaf_hashes
             .peek()
             .expect("Received more chunks than expected");
 
-        let leaf = verify_leaf(ops, *leaf_hash)?;
+        let leaf = verify_leaf(ops.into_iter().map(Ok), *leaf_hash).unwrap()?;
         self.rewrite_parent_link(&leaf)?;
         self.write_chunk(leaf)?;
 
@@ -209,12 +187,10 @@ impl<'a> Restorer<'a> {
     /// children when it is first written. Now that we have verified this leaf,
     /// we can write the key into the parent node's entry. Note that this does
     /// not need to recalcuate hashes since it already had the child hash.
-    fn rewrite_parent_link(&mut self, leaf: &ProofTree) -> Result<()> {
+    fn rewrite_parent_link(&mut self, leaf: &ProofTree) -> Result<(), Error> {
         let parent_keys = self.parent_keys.as_mut().unwrap();
         let parent_key = parent_keys.peek().unwrap().clone();
-        let mut parent = self
-            .merk
-            .fetch_node(parent_key.as_slice())?
+        let mut parent = crate::merk::fetch_node(&self.merk.storage, parent_key.as_slice())?
             .expect("Could not find parent of leaf chunk");
 
         let is_left_child = self.remaining_chunks_unchecked() % 2 == 0;
@@ -225,7 +201,7 @@ impl<'a> Restorer<'a> {
         };
 
         let parent_bytes = parent.encode();
-        self.merk.db.put(parent_key, parent_bytes)?;
+        self.merk.storage.put(parent_key, &parent_bytes).unwrap()?;
 
         if !is_left_child {
             let parent_keys = self.parent_keys.as_mut().unwrap();
@@ -235,39 +211,38 @@ impl<'a> Restorer<'a> {
         Ok(())
     }
 
-    fn rewrite_trunk_child_heights(&mut self) -> Result<()> {
-        fn recurse(
-            mut node: RefWalker<MerkSource>,
+    fn rewrite_trunk_child_heights(&mut self) -> Result<(), Error> {
+        fn recurse<'s, 'db, S: StorageContext<'db>>(
+            mut node: RefWalker<MerkSource<'s, S>>,
             remaining_depth: usize,
-            batch: &mut WriteBatch,
-        ) -> Result<(u8, u8)> {
+            batch: &mut <S as StorageContext<'db>>::Batch,
+        ) -> Result<(u8, u8), Error> {
             if remaining_depth == 0 {
                 return Ok(node.tree().child_heights());
             }
 
             let mut cloned_node =
-                Tree::decode(node.tree().key().to_vec(), node.tree().encode().as_slice());
+                Tree::decode(node.tree().key().to_vec(), node.tree().encode().as_slice())?;
 
-            let left_child = node.walk(true)?.unwrap();
+            let left_child = node.walk(true).unwrap()?.unwrap();
             let left_child_heights = recurse(left_child, remaining_depth - 1, batch)?;
             let left_height = left_child_heights.0.max(left_child_heights.1) + 1;
             *cloned_node.link_mut(true).unwrap().child_heights_mut() = left_child_heights;
 
-            let right_child = node.walk(false)?.unwrap();
+            let right_child = node.walk(false).unwrap()?.unwrap();
             let right_child_heights = recurse(right_child, remaining_depth - 1, batch)?;
             let right_height = right_child_heights.0.max(right_child_heights.1) + 1;
             *cloned_node.link_mut(false).unwrap().child_heights_mut() = right_child_heights;
 
             let bytes = cloned_node.encode();
-            batch.put(node.tree().key(), bytes);
+            batch.put(node.tree().key(), &bytes);
 
             Ok((left_height, right_height))
         }
 
-        self.merk.flush()?;
-        self.merk.load_root()?;
+        self.merk.load_root().unwrap()?;
 
-        let mut batch = WriteBatch::default();
+        let mut batch = self.merk.storage.new_batch();
 
         let depth = self.trunk_height.unwrap();
         self.merk.use_tree_mut(|maybe_tree| {
@@ -276,7 +251,7 @@ impl<'a> Restorer<'a> {
             recurse(walker, depth, &mut batch)
         })?;
 
-        self.merk.write(batch)?;
+        self.merk.storage.commit_batch(batch).unwrap()?;
 
         Ok(())
     }
@@ -289,22 +264,12 @@ impl<'a> Restorer<'a> {
     }
 }
 
-impl Merk {
+impl<'db, S: StorageContext<'db>> Merk<S> {
     /// Creates a new `Restorer`, which can be used to verify chunk proofs to
     /// replicate an entire Merk tree. A new Merk instance will be initialized
     /// by creating a RocksDB at `path`.
-    ///
-    /// The restoration process will verify integrity by checking that the
-    /// incoming chunk proofs match `expected_root_hash`. The `stated_length`
-    /// should be the number of chunks as stated by peers, which will also be
-    /// verified during the restoration process.
-    pub fn restore<P: AsRef<Path>>(
-        path: P,
-        prefix: &[u8],
-        expected_root_hash: Hash,
-        stated_length: usize,
-    ) -> Result<Restorer> {
-        Restorer::new(path, prefix, expected_root_hash, stated_length)
+    pub fn restore(merk: Merk<S>, expected_root_hash: Hash) -> Restorer<S> {
+        Restorer::new(merk, expected_root_hash)
     }
 }
 
@@ -337,33 +302,37 @@ impl Child {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::test_utils::*;
-    use crate::tree::{Batch, Op};
-    use std::path::PathBuf;
+    use std::iter::empty;
 
-    fn restore_test(batches: &[&Batch], expected_nodes: usize) {
-        let mut original = TempMerk::new().unwrap();
+    use storage::{
+        rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
+        RawIterator, Storage,
+    };
+
+    use super::*;
+    use crate::{test_utils::*, tree::Op, MerkBatch};
+
+    fn restore_test(batches: &[&MerkBatch<Vec<u8>>], expected_nodes: usize) {
+        let mut original = TempMerk::new();
         for batch in batches {
-            original.apply(batch, &[]).unwrap();
+            original
+                .apply::<Vec<_>, Vec<_>>(batch, &[])
+                .unwrap()
+                .unwrap();
         }
-        original.flush().unwrap();
 
         let chunks = original.chunks().unwrap();
 
-        let path: PathBuf = std::thread::current().name().unwrap().into();
-        if path.exists() {
-            std::fs::remove_dir_all(&path).unwrap();
-        }
-
-        let mut restorer = Merk::restore(&path, original.root_hash(), chunks.len()).unwrap();
+        let storage = TempStorage::default();
+        let ctx = storage.get_storage_context(empty()).unwrap();
+        let merk = Merk::open(ctx).unwrap().unwrap();
+        let mut restorer = Merk::restore(merk, original.root_hash().unwrap());
 
         assert_eq!(restorer.remaining_chunks(), None);
 
         let mut expected_remaining = chunks.len();
         for chunk in chunks {
-            let chunk = chunk.unwrap();
-            let remaining = restorer.process_chunk(chunk.as_slice()).unwrap();
+            let remaining = restorer.process_chunk(chunk.unwrap()).unwrap();
 
             expected_remaining -= 1;
             assert_eq!(remaining, expected_remaining);
@@ -374,8 +343,6 @@ mod tests {
         let restored = restorer.finalize().unwrap();
         assert_eq!(restored.root_hash(), original.root_hash());
         assert_raw_db_entries_eq(&restored, &original, expected_nodes);
-
-        std::fs::remove_dir_all(&path).unwrap();
     }
 
     #[test]
@@ -409,24 +376,28 @@ mod tests {
         restore_test(&[&make_batch_seq(0..1)], 1);
     }
 
-    fn assert_raw_db_entries_eq(restored: &Merk, original: &Merk, length: usize) {
-        let mut original_entries = original.raw_iter();
-        let mut restored_entries = restored.raw_iter();
-        original_entries.seek_to_first();
-        restored_entries.seek_to_first();
+    fn assert_raw_db_entries_eq(
+        restored: &Merk<PrefixedRocksDbStorageContext>,
+        original: &Merk<PrefixedRocksDbStorageContext>,
+        length: usize,
+    ) {
+        let mut original_entries = original.storage.raw_iter();
+        let mut restored_entries = restored.storage.raw_iter();
+        original_entries.seek_to_first().unwrap();
+        restored_entries.seek_to_first().unwrap();
 
         let mut i = 0;
         loop {
             assert_eq!(restored_entries.valid(), original_entries.valid());
-            if !restored_entries.valid() {
+            if !restored_entries.valid().unwrap() {
                 break;
             }
 
             assert_eq!(restored_entries.key(), original_entries.key());
             assert_eq!(restored_entries.value(), original_entries.value());
 
-            restored_entries.next();
-            original_entries.next();
+            restored_entries.next().unwrap();
+            original_entries.next().unwrap();
 
             i += 1;
         }

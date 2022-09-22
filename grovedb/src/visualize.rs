@@ -3,7 +3,10 @@ use std::io::{Result, Write};
 use storage::StorageContext;
 use visualize::{Drawer, Visualize};
 
-use crate::{subtree::Element, util::storage_context_optional_tx, GroveDb, TransactionArg};
+use crate::{
+    reference_path::ReferencePathType, subtree::Element, util::storage_context_optional_tx,
+    GroveDb, TransactionArg,
+};
 
 impl Visualize for Element {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
@@ -12,7 +15,7 @@ impl Visualize for Element {
                 drawer.write(b"item: ")?;
                 drawer = value.visualize(drawer)?;
             }
-            Element::Reference(_ref, _) => {
+            Element::Reference(_ref, ..) => {
                 drawer.write(b"ref")?;
                 // drawer.write(b"ref: [path: ")?;
                 // let mut path_iter = path.iter();
@@ -28,6 +31,56 @@ impl Visualize for Element {
             Element::Tree(hash, _) => {
                 drawer.write(b"tree: ")?;
                 drawer = hash.visualize(drawer)?;
+            }
+        }
+        Ok(drawer)
+    }
+}
+
+impl Visualize for ReferencePathType {
+    fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
+        match self {
+            ReferencePathType::AbsolutePathReference(path) => {
+                drawer.write(b"absolute path reference: ")?;
+                drawer.write(
+                    path.iter()
+                        .map(|a| hex::encode(a))
+                        .collect::<Vec<String>>()
+                        .join("/")
+                        .as_bytes(),
+                )?;
+            }
+            ReferencePathType::UpstreamRootHeightReference(height, end_path) => {
+                drawer.write(b"upstream root height reference: ")?;
+                drawer.write(format!("[height: {height}").as_bytes())?;
+                drawer.write(
+                    end_path
+                        .iter()
+                        .map(|a| hex::encode(a))
+                        .collect::<Vec<String>>()
+                        .join("/")
+                        .as_bytes(),
+                )?;
+            }
+            ReferencePathType::UpstreamFromElementHeightReference(up, end_path) => {
+                drawer.write(b"upstream from element reference: ")?;
+                drawer.write(format!("[up: {up}").as_bytes())?;
+                drawer.write(
+                    end_path
+                        .iter()
+                        .map(|a| hex::encode(a))
+                        .collect::<Vec<String>>()
+                        .join("/")
+                        .as_bytes(),
+                )?;
+            }
+            ReferencePathType::CousinReference(key) => {
+                drawer.write(b"cousin reference: ")?;
+                drawer = key.visualize(drawer)?;
+            }
+            ReferencePathType::SiblingReference(key) => {
+                drawer.write(b"sibling reference: ")?;
+                drawer = key.visualize(drawer)?;
             }
         }
         Ok(drawer)
@@ -113,6 +166,7 @@ mod tests {
     use visualize::to_hex;
 
     use super::*;
+    use crate::reference_path::ReferencePathType;
 
     #[test]
     fn test_element_item_str() {
@@ -150,7 +204,10 @@ mod tests {
     fn test_visualize_reference() {
         let p1 = b"ayy".to_vec();
         let p2 = b"lmao".to_vec();
-        let e = Element::new_reference(vec![p1.clone(), p2.clone()]);
+        let e = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+            p1.clone(),
+            p2.clone(),
+        ]));
         let mut result = Vec::new();
         let drawer = Drawer::new(&mut result);
         e.visualize(drawer).expect("visualize IO error");

@@ -192,7 +192,7 @@ pub(crate) fn get_next_chunk(
             }
         }
 
-        iter.next();
+        iter.next().unwrap_add_cost(&mut cost);
     }
 
     if iter.valid().unwrap_add_cost(&mut cost) {
@@ -235,7 +235,6 @@ pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op>>>(
 /// height, and all of its inner nodes are not abridged. Returns the tree and
 /// the height given by the height proof.
 #[cfg(feature = "full")]
-#[allow(dead_code)] // TODO: remove when proofs will be enabled
 pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
     ops: I,
 ) -> CostContext<Result<(ProofTree, usize)>> {
@@ -467,7 +466,7 @@ mod tests {
 
         // whole tree as 1 leaf
         let mut iter = merk.storage.raw_iter();
-        iter.seek_to_first();
+        iter.seek_to_first().unwrap();
         let chunk = get_next_chunk(&mut iter, None).unwrap().unwrap();
         let ops = chunk.into_iter().map(Ok);
         let chunk = verify_leaf(ops, merk.root_hash().unwrap())
@@ -480,7 +479,7 @@ mod tests {
         drop(iter);
 
         let mut iter = merk.storage.raw_iter();
-        iter.seek_to_first();
+        iter.seek_to_first().unwrap();
 
         // left leaf
         let chunk = get_next_chunk(&mut iter, Some(root_key.as_slice()))
