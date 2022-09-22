@@ -231,6 +231,7 @@ impl Visualize for KeyInfoPath {
             path_drawer = k.visualize(path_drawer).unwrap();
             path_drawer.write(b" ").unwrap();
         }
+        drawer.write(path_out.as_slice()).unwrap();
         Ok(drawer)
     }
 }
