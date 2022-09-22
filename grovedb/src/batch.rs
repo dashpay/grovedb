@@ -1758,55 +1758,206 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_update_bigger_cost_no_flags_in_sub_tree() {
+    fn test_batch_add_other_element_in_sub_tree() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(vec![], b"tree", Element::empty_tree(), None)
-            .unwrap()
-            .expect("expected to insert tree");
+        // let's start by inserting a tree structure
+        let ops = vec![
+            GroveDbOp::insert_run_op(vec![], b"1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_run_op(
+                vec![b"1".to_vec()],
+                b"my_contract".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![b"1".to_vec(), b"my_contract".to_vec()],
+                b"0".to_vec(),
+                Element::new_item(b"this is the contract".to_vec()),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![b"1".to_vec(), b"my_contract".to_vec()],
+                b"1".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![b"1".to_vec(), b"my_contract".to_vec(), b"1".to_vec()],
+                b"person".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![
+                    b"1".to_vec(),
+                    b"my_contract".to_vec(),
+                    b"1".to_vec(),
+                    b"person".to_vec(),
+                ],
+                b"0".to_vec(),
+                Element::empty_tree(),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![
+                    b"1".to_vec(),
+                    b"my_contract".to_vec(),
+                    b"1".to_vec(),
+                    b"person".to_vec(),
+                ],
+                b"message".to_vec(),
+                Element::empty_tree(),
+            ),
+        ];
 
-        db.insert(vec![], b"tree", Element::empty_tree(), None)
-            .unwrap()
-            .expect("expected to insert tree");
-
-        db.insert(
-            vec![b"tree".as_slice()],
-            b"key1",
-            Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0])),
+        db.apply_batch_with_element_flags_update(
+            ops,
             None,
+            |cost, old_flags, new_flags| Ok(false),
+            |flags, removed_bytes| Ok(NoStorageRemoval),
+            Some(&tx),
         )
-            .unwrap()
-            .expect("expected to insert item");
+        .unwrap()
+        .expect("expected to do tree form insert");
 
-        // We are adding 2 bytes
-        let ops = vec![GroveDbOp::insert_run_op(
-            vec![b"tree".to_vec()],
-            b"key1".to_vec(),
-            Element::new_item_with_flags(b"value100".to_vec(), Some(vec![1])),
-        )];
+        let some_element_flags = Some(vec![0]);
 
-        let cost = db
-            .apply_batch_with_element_flags_update(
-                ops,
-                None,
-                |cost, old_flags, new_flags| Ok(false),
-                |flags, removed_bytes| Ok(NoStorageRemoval),
-                Some(&tx),
-            )
-            .cost;
+        // now let's add an item
+        let ops = vec![
+            GroveDbOp::insert_run_op(
+                vec![
+                    b"1".to_vec(),
+                    b"my_contract".to_vec(),
+                    b"1".to_vec(),
+                    b"person".to_vec(),
+                    b"0".to_vec(),
+                ],
+                b"sam".to_vec(),
+                Element::new_item_with_flags(
+                    b"Samuel Westrich".to_vec(),
+                    some_element_flags.clone(),
+                ),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![
+                    b"1".to_vec(),
+                    b"my_contract".to_vec(),
+                    b"1".to_vec(),
+                    b"person".to_vec(),
+                    b"message".to_vec(),
+                ],
+                b"my apples are safe".to_vec(),
+                Element::empty_tree_with_flags(some_element_flags.clone()),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![
+                    b"1".to_vec(),
+                    b"my_contract".to_vec(),
+                    b"1".to_vec(),
+                    b"person".to_vec(),
+                    b"message".to_vec(),
+                    b"my apples are safe".to_vec(),
+                ],
+                b"0".to_vec(),
+                Element::empty_tree_with_flags(some_element_flags.clone()),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![
+                    b"1".to_vec(),
+                    b"my_contract".to_vec(),
+                    b"1".to_vec(),
+                    b"person".to_vec(),
+                    b"message".to_vec(),
+                    b"my apples are safe".to_vec(),
+                    b"0".to_vec(),
+                ],
+                b"sam".to_vec(),
+                Element::new_reference_with_max_hops_and_flags(
+                    ReferencePathType::UpstreamRootHeightReference(
+                        4,
+                        vec![b"0".to_vec(), b"sam".to_vec()],
+                    ),
+                    Some(2),
+                    some_element_flags.clone(),
+                ),
+            ),
+        ];
 
-        assert_eq!(
-            cost,
-            OperationCost {
-                seek_count: 4, // 1 to get tree, 1 to insert
-                storage_cost: StorageCost {
-                    added_bytes: 2,
-                    replaced_bytes: 257,
-                    removed_bytes: NoStorageRemoval
-                },
-                storage_loaded_bytes: 185,
-                hash_node_calls: 6,
-            }
+        db.apply_batch_with_element_flags_update(
+            ops,
+            None,
+            |cost, old_flags, new_flags| Ok(false),
+            |flags, removed_bytes| Ok(NoStorageRemoval),
+            Some(&tx),
+        )
+        .unwrap()
+        .expect("expected to do first insert");
+
+        // now let's add an item
+        let ops = vec![
+            GroveDbOp::insert_run_op(
+                vec![
+                    b"1".to_vec(),
+                    b"my_contract".to_vec(),
+                    b"1".to_vec(),
+                    b"person".to_vec(),
+                    b"0".to_vec(),
+                ],
+                b"wisdom".to_vec(),
+                Element::new_item_with_flags(b"Wisdom Ogwu".to_vec(), some_element_flags.clone()),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![
+                    b"1".to_vec(),
+                    b"my_contract".to_vec(),
+                    b"1".to_vec(),
+                    b"person".to_vec(),
+                    b"message".to_vec(),
+                ],
+                b"canteloupe!".to_vec(),
+                Element::empty_tree_with_flags(some_element_flags.clone()),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![
+                    b"1".to_vec(),
+                    b"my_contract".to_vec(),
+                    b"1".to_vec(),
+                    b"person".to_vec(),
+                    b"message".to_vec(),
+                    b"canteloupe!".to_vec(),
+                ],
+                b"0".to_vec(),
+                Element::empty_tree_with_flags(some_element_flags.clone()),
+            ),
+            GroveDbOp::insert_run_op(
+                vec![
+                    b"1".to_vec(),
+                    b"my_contract".to_vec(),
+                    b"1".to_vec(),
+                    b"person".to_vec(),
+                    b"message".to_vec(),
+                    b"canteloupe!".to_vec(),
+                    b"0".to_vec(),
+                ],
+                b"wisdom".to_vec(),
+                Element::new_reference_with_max_hops_and_flags(
+                    ReferencePathType::UpstreamRootHeightReference(
+                        4,
+                        vec![b"0".to_vec(), b"wisdom".to_vec()],
+                    ),
+                    Some(2),
+                    some_element_flags.clone(),
+                ),
+            ),
+        ];
+
+        let batch_result = db.apply_batch_with_element_flags_update(
+            ops,
+            None,
+            |cost, old_flags, new_flags| {
+                // we should only either have nodes that are completely replaced (inner_trees)
+                // or added
+                assert!((cost.added_bytes > 0) ^ (cost.replaced_bytes > 0));
+                Ok(false)
+            },
+            |flags, removed_bytes| Ok(NoStorageRemoval),
+            Some(&tx),
         );
     }
 
