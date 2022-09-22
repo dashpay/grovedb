@@ -1757,6 +1757,59 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_root_one_update_bigger_cost_no_flags_in_sub_tree() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+        db.insert(vec![], b"tree", Element::empty_tree(), None)
+            .unwrap()
+            .expect("expected to insert tree");
+
+        db.insert(vec![], b"tree", Element::empty_tree(), None)
+            .unwrap()
+            .expect("expected to insert tree");
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            b"key1",
+            Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0])),
+            None,
+        )
+            .unwrap()
+            .expect("expected to insert item");
+
+        // We are adding 2 bytes
+        let ops = vec![GroveDbOp::insert_run_op(
+            vec![b"tree".to_vec()],
+            b"key1".to_vec(),
+            Element::new_item_with_flags(b"value100".to_vec(), Some(vec![1])),
+        )];
+
+        let cost = db
+            .apply_batch_with_element_flags_update(
+                ops,
+                None,
+                |cost, old_flags, new_flags| Ok(false),
+                |flags, removed_bytes| Ok(NoStorageRemoval),
+                Some(&tx),
+            )
+            .cost;
+
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 4, // 1 to get tree, 1 to insert
+                storage_cost: StorageCost {
+                    added_bytes: 2,
+                    replaced_bytes: 257,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 185,
+                hash_node_calls: 6,
+            }
+        );
+    }
+
+    #[test]
     fn test_batch_root_one_update_bigger_cost() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
@@ -1907,7 +1960,7 @@ mod tests {
             Element::empty_tree(),
         )];
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
-        assert_eq!(non_batch_cost, cost);
+        assert_eq!(non_batch_cost.storage_cost, cost.storage_cost);
     }
 
     #[test]
