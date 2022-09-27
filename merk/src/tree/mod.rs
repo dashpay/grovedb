@@ -37,8 +37,8 @@ use crate::tree::hash::value_hash;
 struct TreeInner {
     left: Option<Link>,
     right: Option<Link>,
-    kv: KV,
     feature_type: TreeFeatureType,
+    kv: KV,
 }
 
 impl Terminated for Box<TreeInner> {}

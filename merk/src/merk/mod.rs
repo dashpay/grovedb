@@ -708,6 +708,7 @@ where
             .flat_map_ok(|tree_root_key_opt| {
                 // In case of successful seek for root key check if it exists
                 if let Some(tree_root_key) = tree_root_key_opt {
+                    dbg!("The root key is ", tree_root_key.clone());
                     // Trying to build a tree out of it, costs will be accumulated because
                     // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
                     Tree::get(&self.storage, &tree_root_key).map_ok(|tree| {
