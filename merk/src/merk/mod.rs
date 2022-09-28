@@ -1,19 +1,25 @@
 pub mod chunks;
 pub mod restore;
 
-use std::{cell::Cell, cmp::Ordering, collections::{BTreeSet, LinkedList}, fmt, mem};
-use std::marker::Destruct;
-use ed::{Decode, Encode};
+use std::{
+    cell::Cell,
+    cmp::Ordering,
+    collections::{BTreeSet, LinkedList},
+    fmt,
+    marker::Destruct,
+    mem,
+};
 
 use anyhow::{anyhow, Result};
 use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
+use ed::{Decode, Encode};
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
+    merk::OptionOrMerkType::{NoneOfType, SomeMerk},
     proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
     tree::{Commit, Fetch, Hash, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
 };
-use crate::merk::OptionOrMerkType::{NoneOfType, SomeMerk};
 
 pub const ROOT_KEY_KEY: &[u8] = b"root";
 
@@ -144,36 +150,36 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Encode, Decode)]
 pub enum TreeFeatureType {
     BasicMerk,
-    SummedMerk(u64)
+    SummedMerk(u64),
 }
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum OptionOrMerkType<T> {
     NoneOfType(TreeFeatureType),
-    SomeMerk(T)
+    SomeMerk(T),
 }
 
 impl<T> OptionOrMerkType<T> {
     #[inline]
     pub fn to_option(self) -> Option<T> {
         match self {
-            NoneOfType(_) => { None }
-            SomeMerk(T) => { Some(T) }
+            NoneOfType(_) => None,
+            SomeMerk(T) => Some(T),
         }
     }
 
     #[inline]
     pub fn from_option(option: Option<T>, default_tree_feature_type: TreeFeatureType) -> Self {
         match option {
-            None => { NoneOfType(default_tree_feature_type) }
-            Some(T) => { SomeMerk(T) }
+            None => NoneOfType(default_tree_feature_type),
+            Some(T) => SomeMerk(T),
         }
     }
 
     #[inline]
     pub fn map<U, F>(self, f: F) -> OptionOrMerkType<U>
-        where
-            F: ~const FnOnce(T) -> U,
+    where
+        F: ~const FnOnce(T) -> U,
     {
         match self {
             SomeMerk(x) => SomeMerk(f(x)),
@@ -183,8 +189,8 @@ impl<T> OptionOrMerkType<T> {
 
     #[inline]
     pub fn map_to_option<U, F>(self, f: F) -> Option<U>
-        where
-            F: ~const FnOnce(T) -> U,
+    where
+        F: ~const FnOnce(T) -> U,
     {
         match self {
             SomeMerk(x) => Some(f(x)),
@@ -193,8 +199,7 @@ impl<T> OptionOrMerkType<T> {
     }
 
     #[inline]
-    pub fn expect(self, msg: &str) -> T
-    {
+    pub fn expect(self, msg: &str) -> T {
         match self {
             SomeMerk(val) => val,
             NoneOfType(_) => panic!("{}", msg),
@@ -207,8 +212,7 @@ impl<T> OptionOrMerkType<T> {
     }
 
     #[inline]
-    pub fn unwrap(self) -> T
-    {
+    pub fn unwrap(self) -> T {
         match self {
             SomeMerk(val) => val,
             NoneOfType(_) => panic!("panicked on unwrap"),
@@ -266,7 +270,7 @@ where
         let mut merk = Self {
             tree: Cell::new(None),
             storage,
-            tree_feature_type: TreeFeatureType::BasicMerk
+            tree_feature_type: TreeFeatureType::BasicMerk,
         };
 
         merk.load_root().map_ok(|_| merk)
@@ -485,11 +489,13 @@ where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
     {
-        let maybe_walker = OptionOrMerkType::from_option(self
-            .tree
-            .take()
-            .take()
-            .map(|tree| Walker::new(tree, self.source())), self.tree_feature_type);
+        let maybe_walker = OptionOrMerkType::from_option(
+            self.tree
+                .take()
+                .take()
+                .map(|tree| Walker::new(tree, self.source())),
+            self.tree_feature_type,
+        );
 
         Walker::apply_to(maybe_walker, batch, self.source()).flat_map_ok(
             |(maybe_tree, deleted_keys)| {
@@ -708,7 +714,6 @@ where
             .flat_map_ok(|tree_root_key_opt| {
                 // In case of successful seek for root key check if it exists
                 if let Some(tree_root_key) = tree_root_key_opt {
-                    dbg!("The root key is ", tree_root_key.clone());
                     // Trying to build a tree out of it, costs will be accumulated because
                     // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
                     Tree::get(&self.storage, &tree_root_key).map_ok(|tree| {

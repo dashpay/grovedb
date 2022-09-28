@@ -3,11 +3,16 @@ use std::{collections::LinkedList, fmt};
 use anyhow::Result;
 use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use Op::*;
-use crate::merk::{OptionOrMerkType, TreeFeatureType};
-use crate::merk::OptionOrMerkType::{NoneOfType, SomeMerk};
 
 use super::{Fetch, Link, Tree, Walker};
-use crate::tree::hash::value_hash;
+use crate::{
+    merk::{
+        OptionOrMerkType,
+        OptionOrMerkType::{NoneOfType, SomeMerk},
+        TreeFeatureType,
+    },
+    tree::hash::value_hash,
+};
 
 /// Type alias to add more sense to function signatures.
 type DeletedKeys = LinkedList<Vec<u8>>;
@@ -72,7 +77,8 @@ where
         } else {
             match maybe_tree {
                 NoneOfType(tree_feature_type) => {
-                    return Self::build(batch, source, tree_feature_type).map_ok(|tree| (tree, LinkedList::default()))
+                    return Self::build(batch, source, tree_feature_type)
+                        .map_ok(|tree| (tree, LinkedList::default()))
                 }
                 SomeMerk(tree) => cost_return_on_error!(&mut cost, tree.apply_sorted(batch)),
             }
@@ -85,7 +91,11 @@ where
     /// Builds a `Tree` from a batch of operations.
     ///
     /// Keys in batch must be sorted and unique.
-    fn build<K: AsRef<[u8]>>(batch: &MerkBatch<K>, source: S, tree_feature_type: TreeFeatureType) -> CostContext<Result<OptionOrMerkType<Tree>>> {
+    fn build<K: AsRef<[u8]>>(
+        batch: &MerkBatch<K>,
+        source: S,
+        tree_feature_type: TreeFeatureType,
+    ) -> CostContext<Result<OptionOrMerkType<Tree>>> {
         let mut cost = OperationCost::default();
 
         if batch.is_empty() {
@@ -99,17 +109,20 @@ where
                 let left_batch = &batch[..mid_index];
                 let right_batch = &batch[mid_index + 1..];
 
-                let maybe_tree =
-                    cost_return_on_error!(&mut cost, Self::build(left_batch, source.clone(), tree_feature_type))
-                        .map(|tree| Self::new(tree, source.clone()));
+                let maybe_tree = cost_return_on_error!(
+                    &mut cost,
+                    Self::build(left_batch, source.clone(), tree_feature_type)
+                )
+                .map(|tree| Self::new(tree, source.clone()));
                 let maybe_tree = match maybe_tree {
                     SomeMerk(tree) => {
                         cost_return_on_error!(&mut cost, tree.apply_sorted(right_batch)).0
                     }
-                    NoneOfType(tree_feature_type) => {
-                        cost_return_on_error!(&mut cost, Self::build(right_batch, source.clone(), tree_feature_type))
-                            .map(|tree| Self::new(tree, source.clone()))
-                    }
+                    NoneOfType(tree_feature_type) => cost_return_on_error!(
+                        &mut cost,
+                        Self::build(right_batch, source.clone(), tree_feature_type)
+                    )
+                    .map(|tree| Self::new(tree, source.clone())),
                 };
                 return Ok(maybe_tree.map(|tree| tree.into())).wrap_with_cost(cost);
             }
@@ -120,9 +133,12 @@ where
         // TODO: take from batch so we don't have to clone
 
         let mid_tree = match mid_op {
-            Put(_) => {
-                Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec(), tree_feature_type).unwrap_add_cost(&mut cost)
-            }
+            Put(_) => Tree::new(
+                mid_key.as_ref().to_vec(),
+                mid_value.to_vec(),
+                tree_feature_type,
+            )
+            .unwrap_add_cost(&mut cost),
             PutReference(_, referenced_value) => Tree::new_with_value_hash(
                 mid_key.as_ref().to_vec(),
                 mid_value.to_vec(),
@@ -290,7 +306,9 @@ where
         let tree = if left == (self.tree().link(left).unwrap().balance_factor() > 0) {
             cost_return_on_error!(
                 &mut cost,
-                self.walk_expect(left, |child| child.rotate(!left).map_ok(OptionOrMerkType::SomeMerk))
+                self.walk_expect(left, |child| child
+                    .rotate(!left)
+                    .map_ok(OptionOrMerkType::SomeMerk))
             )
         } else {
             self
@@ -384,10 +402,10 @@ where
 mod test {
     use super::*;
     use crate::{
+        merk::TreeFeatureType::BasicMerk,
         test_utils::{apply_memonly, assert_tree_invariants, del_entry, make_tree_seq, seq_key},
         tree::*,
     };
-    use crate::merk::TreeFeatureType::BasicMerk;
 
     #[test]
     fn simple_insert() {
@@ -516,7 +534,7 @@ mod test {
     #[test]
     fn apply_empty_none() {
         let (maybe_tree, deleted_keys) =
-            Walker::<PanicSource>::apply_to::<Vec<u8>>( NoneOfType(BasicMerk), &[], PanicSource {})
+            Walker::<PanicSource>::apply_to::<Vec<u8>>(NoneOfType(BasicMerk), &[], PanicSource {})
                 .unwrap()
                 .expect("apply_to failed");
         assert!(maybe_tree.is_none());

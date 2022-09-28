@@ -7,9 +7,14 @@ pub use fetch::Fetch;
 pub use ref_walker::RefWalker;
 
 use super::{Link, Tree};
-use crate::{owner::Owner, Hash};
-use crate::merk::OptionOrMerkType;
-use crate::merk::OptionOrMerkType::{NoneOfType, SomeMerk};
+use crate::{
+    merk::{
+        OptionOrMerkType,
+        OptionOrMerkType::{NoneOfType, SomeMerk},
+    },
+    owner::Owner,
+    Hash,
+};
 
 /// Allows traversal of a `Tree`, fetching from the given source when traversing
 /// to a pruned node, detaching children as they are traversed.
@@ -184,8 +189,7 @@ mod test {
     use costs::{CostContext, CostsExt};
 
     use super::{super::NoopCommit, *};
-    use crate::tree::Tree;
-    use crate::tree::TreeFeatureType::BasicMerk;
+    use crate::tree::{Tree, TreeFeatureType::BasicMerk};
 
     #[derive(Clone)]
     struct MockSource {}
@@ -209,10 +213,13 @@ mod test {
         let walker = Walker::new(tree, source);
 
         let walker = walker
-            .walk(true, |child| -> CostContext<Result<OptionOrMerkType<Tree>>> {
-                assert_eq!(child.expect("should have child").tree().key(), b"foo");
-                Ok(NoneOfType(BasicMerk)).wrap_with_cost(Default::default())
-            })
+            .walk(
+                true,
+                |child| -> CostContext<Result<OptionOrMerkType<Tree>>> {
+                    assert_eq!(child.expect("should have child").tree().key(), b"foo");
+                    Ok(NoneOfType(BasicMerk)).wrap_with_cost(Default::default())
+                },
+            )
             .unwrap()
             .expect("walk failed");
         assert!(walker.into_inner().child(true).is_none());
@@ -234,10 +241,13 @@ mod test {
         let walker = Walker::new(tree, source);
 
         let walker = walker
-            .walk(true, |child| -> CostContext<Result<OptionOrMerkType<Tree>>> {
-                assert_eq!(child.expect("should have child").tree().key(), b"foo");
-                Ok(NoneOfType(BasicMerk)).wrap_with_cost(Default::default())
-            })
+            .walk(
+                true,
+                |child| -> CostContext<Result<OptionOrMerkType<Tree>>> {
+                    assert_eq!(child.expect("should have child").tree().key(), b"foo");
+                    Ok(NoneOfType(BasicMerk)).wrap_with_cost(Default::default())
+                },
+            )
             .unwrap()
             .expect("walk failed");
         assert!(walker.into_inner().child(true).is_none());
@@ -253,7 +263,7 @@ mod test {
                 hash: Default::default(),
                 key: b"foo".to_vec(),
                 child_heights: (0, 0),
-                sum: None
+                sum: None,
             }),
             None,
             BasicMerk,
@@ -264,10 +274,13 @@ mod test {
         let walker = Walker::new(tree, source);
 
         let walker = walker
-            .walk_expect(true, |child| -> CostContext<Result<OptionOrMerkType<Tree>>> {
-                assert_eq!(child.tree().key(), b"foo");
-                Ok(NoneOfType(BasicMerk)).wrap_with_cost(Default::default())
-            })
+            .walk_expect(
+                true,
+                |child| -> CostContext<Result<OptionOrMerkType<Tree>>> {
+                    assert_eq!(child.tree().key(), b"foo");
+                    Ok(NoneOfType(BasicMerk)).wrap_with_cost(Default::default())
+                },
+            )
             .unwrap()
             .expect("walk failed");
         assert!(walker.into_inner().child(true).is_none());
@@ -281,10 +294,13 @@ mod test {
         let walker = Walker::new(tree, source);
 
         walker
-            .walk(true, |child| -> CostContext<Result<OptionOrMerkType<Tree>>> {
-                assert!(child.is_none());
-                Ok(NoneOfType(BasicMerk)).wrap_with_cost(Default::default())
-            })
+            .walk(
+                true,
+                |child| -> CostContext<Result<OptionOrMerkType<Tree>>> {
+                    assert!(child.is_none());
+                    Ok(NoneOfType(BasicMerk)).wrap_with_cost(Default::default())
+                },
+            )
             .unwrap()
             .expect("walk failed");
     }

@@ -8,7 +8,7 @@ use storage::{Batch, StorageContext};
 
 use super::Merk;
 use crate::{
-    merk::MerkSource,
+    merk::{MerkSource, OptionOrMerkType, TreeFeatureType::BasicMerk},
     proofs::{
         chunk::{verify_leaf, verify_trunk, MIN_TRUNK_HEIGHT},
         tree::{Child, Tree as ProofTree},
@@ -17,8 +17,6 @@ use crate::{
     tree::{Link, RefWalker, Tree},
     Hash,
 };
-use crate::merk::OptionOrMerkType;
-use crate::merk::TreeFeatureType::BasicMerk;
 
 /// A `Restorer` handles decoding, verifying, and storing chunk proofs to
 /// replicate an entire Merk tree. It expects the chunks to be processed in

@@ -9,10 +9,12 @@ use {
     crate::tree::Hash,
     crate::tree::Tree,
 };
-use crate::merk::TreeFeatureType::BasicMerk;
 
 use super::{Node, Op};
-use crate::tree::{Fetch, RefWalker};
+use crate::{
+    merk::TreeFeatureType::BasicMerk,
+    tree::{Fetch, RefWalker},
+};
 
 /// The minimum number of layers the trunk will be guaranteed to have before
 /// splitting into multiple chunks. If the tree's height is less than double
@@ -312,10 +314,10 @@ mod tests {
 
     use super::{super::tree::Tree, *};
     use crate::{
+        merk::OptionOrMerkType::SomeMerk,
         test_utils::*,
         tree::{NoopCommit, PanicSource, Tree as BaseTree},
     };
-    use crate::merk::OptionOrMerkType::SomeMerk;
 
     #[derive(Default)]
     struct NodeCounts {
@@ -397,9 +399,10 @@ mod tests {
         // 0
         //  \
         //   1
-        let mut tree = BaseTree::new(vec![0], vec![], BasicMerk)
-            .unwrap()
-            .attach(false, SomeMerk(BaseTree::new(vec![1], vec![], BasicMerk).unwrap()));
+        let mut tree = BaseTree::new(vec![0], vec![], BasicMerk).unwrap().attach(
+            false,
+            SomeMerk(BaseTree::new(vec![1], vec![], BasicMerk).unwrap()),
+        );
         tree.commit(&mut NoopCommit {}).unwrap().unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
@@ -417,9 +420,10 @@ mod tests {
         //   1
         //  /
         // 0
-        let mut tree = BaseTree::new(vec![1], vec![], BasicMerk)
-            .unwrap()
-            .attach(true, SomeMerk(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()));
+        let mut tree = BaseTree::new(vec![1], vec![], BasicMerk).unwrap().attach(
+            true,
+            SomeMerk(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()),
+        );
         tree.commit(&mut NoopCommit {}).unwrap().unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
@@ -439,8 +443,14 @@ mod tests {
         // 0   2
         let mut tree = BaseTree::new(vec![1], vec![], BasicMerk)
             .unwrap()
-            .attach(true, SomeMerk(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()))
-            .attach(false, SomeMerk(BaseTree::new(vec![2], vec![], BasicMerk).unwrap()));
+            .attach(
+                true,
+                SomeMerk(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()),
+            )
+            .attach(
+                false,
+                SomeMerk(BaseTree::new(vec![2], vec![], BasicMerk).unwrap()),
+            );
         tree.commit(&mut NoopCommit {}).unwrap().unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});

@@ -1360,18 +1360,23 @@ mod test {
         *,
     };
     use crate::{
+        merk::{OptionOrMerkType::SomeMerk, TreeFeatureType::BasicMerk},
         proofs::query::QueryItem::RangeAfter,
         test_utils::make_tree_seq,
         tree::{NoopCommit, PanicSource, RefWalker, Tree},
     };
-    use crate::merk::OptionOrMerkType::SomeMerk;
-    use crate::merk::TreeFeatureType::BasicMerk;
 
     fn make_3_node_tree() -> Tree {
         let mut tree = Tree::new(vec![5], vec![5], BasicMerk)
             .unwrap()
-            .attach(true, SomeMerk(Tree::new(vec![3], vec![3], BasicMerk).unwrap()))
-            .attach(false, SomeMerk(Tree::new(vec![7], vec![7], BasicMerk).unwrap()));
+            .attach(
+                true,
+                SomeMerk(Tree::new(vec![3], vec![3], BasicMerk).unwrap()),
+            )
+            .attach(
+                false,
+                SomeMerk(Tree::new(vec![7], vec![7], BasicMerk).unwrap()),
+            );
         tree.commit(&mut NoopCommit {})
             .unwrap()
             .expect("commit failed");
@@ -2016,14 +2021,16 @@ mod test {
                 SomeMerk(
                     Tree::new(vec![2], vec![2], BasicMerk)
                         .unwrap()
-                        .attach(true, SomeMerk(Tree::new(vec![1], vec![1], BasicMerk).unwrap()))
+                        .attach(
+                            true,
+                            SomeMerk(Tree::new(vec![1], vec![1], BasicMerk).unwrap()),
+                        )
                         .attach(
                             false,
-                            SomeMerk(
-                                Tree::new(vec![4], vec![4], BasicMerk)
-                                    .unwrap()
-                                    .attach(true, SomeMerk(Tree::new(vec![3], vec![3], BasicMerk).unwrap())),
-                            ),
+                            SomeMerk(Tree::new(vec![4], vec![4], BasicMerk).unwrap().attach(
+                                true,
+                                SomeMerk(Tree::new(vec![3], vec![3], BasicMerk).unwrap()),
+                            )),
                         ),
                 ),
             )
@@ -2037,17 +2044,22 @@ mod test {
                             SomeMerk(
                                 Tree::new(vec![7], vec![7], BasicMerk)
                                     .unwrap()
-                                    .attach(true, SomeMerk(Tree::new(vec![6], vec![6], BasicMerk).unwrap()))
-                                    .attach(false, SomeMerk(Tree::new(vec![8], vec![8], BasicMerk).unwrap())),
+                                    .attach(
+                                        true,
+                                        SomeMerk(Tree::new(vec![6], vec![6], BasicMerk).unwrap()),
+                                    )
+                                    .attach(
+                                        false,
+                                        SomeMerk(Tree::new(vec![8], vec![8], BasicMerk).unwrap()),
+                                    ),
                             ),
                         )
                         .attach(
                             false,
-                            SomeMerk(
-                                Tree::new(vec![11], vec![11], BasicMerk)
-                                    .unwrap()
-                                    .attach(true, SomeMerk(Tree::new(vec![10], vec![10], BasicMerk).unwrap())),
-                            ),
+                            SomeMerk(Tree::new(vec![11], vec![11], BasicMerk).unwrap().attach(
+                                true,
+                                SomeMerk(Tree::new(vec![10], vec![10], BasicMerk).unwrap()),
+                            )),
                         ),
                 ),
             );
