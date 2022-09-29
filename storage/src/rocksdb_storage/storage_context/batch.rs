@@ -103,6 +103,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         &mut self,
         key: K,
         value: &[u8],
+        children_sizes: (Option<u32>, Option<u32>),
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
@@ -121,6 +122,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         self.cost_acc.add_key_value_storage_costs(
             prefixed_key.len() as u32,
             value.len() as u32,
+            Some(children_sizes),
             updated_cost_info,
         )?;
 
@@ -140,6 +142,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         self.cost_acc.add_key_value_storage_costs(
             prefixed_key.len() as u32,
             value.len() as u32,
+            None,
             cost_info,
         )?;
 
@@ -159,6 +162,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         self.cost_acc.add_key_value_storage_costs(
             prefixed_key.len() as u32,
             value.len() as u32,
+            None,
             cost_info,
         )?;
 
@@ -201,6 +205,7 @@ impl Batch for PrefixedMultiContextBatchPart {
         &mut self,
         key: K,
         value: &[u8],
+        children_sizes: (Option<u32>, Option<u32>),
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
@@ -216,7 +221,12 @@ impl Batch for PrefixedMultiContextBatchPart {
         });
 
         self.batch
-            .put(prefixed_key, value.to_vec(), updated_cost_info)
+            .put(
+                prefixed_key,
+                value.to_vec(),
+                children_sizes,
+                updated_cost_info,
+            )
             .unwrap_add_cost(&mut self.acc_cost);
         Ok(())
     }

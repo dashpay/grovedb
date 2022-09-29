@@ -63,12 +63,14 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
         &self,
         key: K,
         value: &[u8],
+        children_sizes: (Option<u32>, Option<u32>),
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
         self.batch
             .put(
                 make_prefixed_key(self.prefix.clone(), key),
                 value.to_vec(),
+                children_sizes,
                 cost_info,
             )
             .map(Ok)

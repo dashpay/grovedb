@@ -2,6 +2,7 @@ use std::io::{Read, Write};
 
 use costs::{CostContext, CostsExt, OperationCost};
 use ed::{Decode, Encode, Result, Terminated};
+use integer_encoding::VarInt;
 
 use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
 use crate::tree::{hash::value_hash, kv_digest_to_kv_hash};
@@ -128,8 +129,20 @@ impl KV {
     }
 
     #[inline]
-    pub(crate) fn encoding_length_with_parent_to_child_reference(&self) -> usize {
-        self.encoding_length().unwrap() + HASH_LENGTH + self.value.len() + 2
+    pub(crate) fn value_encoding_length_with_parent_to_child_reference(&self) -> usize {
+        // encoding a reference encodes the key last and doesn't encode the size of the
+        // key. so no need for a varint required space calculation for the
+        // reference.
+
+        // however we do need the varint required space for the cost of the key in
+        // rocks_db
+        let key_len = self.key.len();
+        let value_len = self.encoding_length().unwrap();
+        // 3 = 2 + 1
+        // 2 for child lengths
+        // 1 for key_len size in encoding
+        let parent_to_child_reference_len = key_len + HASH_LENGTH + 3;
+        value_len + value_len.required_space() + parent_to_child_reference_len
     }
 }
 

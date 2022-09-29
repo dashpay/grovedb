@@ -53,6 +53,13 @@ impl Tree {
     }
 
     #[inline]
+    pub fn value_encoding_length_with_parent_to_child_reference(&self) -> usize {
+        self.inner
+            .kv
+            .value_encoding_length_with_parent_to_child_reference()
+    }
+
+    #[inline]
     pub fn decode_into(&mut self, key: Vec<u8>, input: &[u8]) -> ed::Result<()> {
         let mut tree_inner: TreeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;
@@ -75,7 +82,10 @@ mod tests {
     #[test]
     fn encode_leaf_tree() {
         let tree = Tree::from_fields(vec![0], vec![1], [55; 32], None, None).unwrap();
-        assert_eq!(tree.encoding_length(), 67);
+        assert_eq!(
+            tree.value_encoding_length_with_parent_to_child_reference(),
+            67
+        );
         assert_eq!(
             tree.encode(),
             vec![
@@ -173,7 +183,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(tree.encoding_length(), 103);
+        assert_eq!(
+            tree.value_encoding_length_with_parent_to_child_reference(),
+            103
+        );
         assert_eq!(
             tree.encode(),
             vec![

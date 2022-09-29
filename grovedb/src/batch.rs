@@ -1670,7 +1670,9 @@ mod tests {
             b"key1".to_vec(),
             Element::empty_tree(),
         )];
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost_result = db.apply_batch(ops, None, Some(&tx));
+        cost_result.value.expect("expected to execute batch");
+        let cost = cost_result.cost;
         // Explanation for 176 storage_written_bytes
         // 2 bytes for left and right height
         // 1 byte for the key length size

@@ -55,7 +55,7 @@ impl Terminated for Box<TreeInner> {}
 #[derive(Clone)]
 pub struct Tree {
     inner: Box<TreeInner>,
-    pub(crate) old_size: u32,
+    pub(crate) old_size_with_parent_to_child_hook: u32,
     pub(crate) old_value: Option<Vec<u8>>,
 }
 
@@ -70,28 +70,28 @@ impl Tree {
                 left: None,
                 right: None,
             }),
-            old_size: 0,
+            old_size_with_parent_to_child_hook: 0,
             old_value: None,
         })
     }
 
     /// Creates a new `Tree` given an inner tree
     pub fn new_with_tree_inner(inner_tree: TreeInner) -> Self {
-        let decode_size = inner_tree.kv.encoding_length_with_parent_to_child_reference();
+        let decode_size = inner_tree
+            .kv
+            .value_encoding_length_with_parent_to_child_reference();
         let old_value = inner_tree.kv.value.clone();
         Self {
             inner: Box::new(inner_tree),
             // TODO: figure out why adding the required space for this doesn't affect the tests
-            old_size: (decode_size + decode_size.required_space()) as u32,
+            old_size_with_parent_to_child_hook: (decode_size + decode_size.required_space()) as u32,
             old_value: Some(old_value),
         }
     }
 
-    pub fn size_and_storage_cost(&self) -> (u32, KeyValueStorageCost) {
-        let mut current_tree_size = self.encoding_length() as u32;
-
-        // add the required space to the current tree size
-        current_tree_size += current_tree_size.required_space() as u32;
+    pub fn kv_with_parent_hook_size_and_storage_cost(&self) -> (u32, KeyValueStorageCost) {
+        let mut current_kv_size =
+            self.value_encoding_length_with_parent_to_child_reference() as u32;
 
         let key_storage_cost = StorageCost {
             ..Default::default()
@@ -101,31 +101,35 @@ impl Tree {
         };
 
         // Update the value storage_cost cost
-        match self.old_size.cmp(&current_tree_size) {
+        match self
+            .old_size_with_parent_to_child_hook
+            .cmp(&current_kv_size)
+        {
             Ordering::Equal => {
-                value_storage_cost.replaced_bytes += self.old_size;
+                value_storage_cost.replaced_bytes += self.old_size_with_parent_to_child_hook;
             }
             Ordering::Greater => {
                 // old size is greater than current size, storage_cost will be freed
-                value_storage_cost.replaced_bytes += current_tree_size;
+                value_storage_cost.replaced_bytes += current_kv_size;
                 value_storage_cost.removed_bytes +=
-                    BasicStorageRemoval(self.old_size - current_tree_size);
+                    BasicStorageRemoval(self.old_size_with_parent_to_child_hook - current_kv_size);
             }
             Ordering::Less => {
                 // current size is greater than old size, storage_cost will be created
                 // this also handles the case where the tree.old_size = 0
-                value_storage_cost.replaced_bytes += self.old_size;
-                value_storage_cost.added_bytes += current_tree_size - self.old_size;
+                value_storage_cost.replaced_bytes += self.old_size_with_parent_to_child_hook;
+                value_storage_cost.added_bytes +=
+                    current_kv_size - self.old_size_with_parent_to_child_hook;
             }
         }
 
         let key_value_storage_cost = KeyValueStorageCost {
             key_storage_cost,
             value_storage_cost,
-            new_node: self.old_size == 0,
+            new_node: self.old_size_with_parent_to_child_hook == 0,
         };
 
-        (current_tree_size, key_value_storage_cost)
+        (current_kv_size, key_value_storage_cost)
     }
 
     /// Creates a new `Tree` with the given key, value and value hash, and no
@@ -143,7 +147,7 @@ impl Tree {
                 left: None,
                 right: None,
             }),
-            old_size: 0,
+            old_size_with_parent_to_child_hook: 0,
             old_value: None,
         })
     }
@@ -163,7 +167,7 @@ impl Tree {
                 left,
                 right,
             }),
-            old_size: 0,
+            old_size_with_parent_to_child_hook: 0,
             old_value: None,
         })
     }
@@ -235,6 +239,12 @@ impl Tree {
         } else {
             self.inner.right.as_mut()
         }
+    }
+
+    /// Returns a the size of node's child on the given side, if any.
+    /// If there is no child, returns `None`.
+    pub fn child_ref_size(&self, left: bool) -> Option<u32> {
+        self.link(left).map(|link| link.key().len() as u32 + 35)
     }
 
     /// Returns a reference to the root node's child on the given side, if any.

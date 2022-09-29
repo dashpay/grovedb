@@ -211,6 +211,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                 AbstractBatchOperation::Put {
                     key,
                     value,
+                    children_sizes,
                     cost_info,
                 } => {
                     db_batch.put(&key, &value);
@@ -220,6 +221,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                             .add_key_value_storage_costs(
                                 key.len() as u32,
                                 value.len() as u32,
+                                Some(children_sizes),
                                 cost_info
                             )
                             .map_err(CostError)
@@ -237,6 +239,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                             .add_key_value_storage_costs(
                                 key.len() as u32,
                                 value.len() as u32,
+                                None,
                                 cost_info
                             )
                             .map_err(CostError)
@@ -254,6 +257,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                             .add_key_value_storage_costs(
                                 key.len() as u32,
                                 value.len() as u32,
+                                None,
                                 cost_info
                             )
                             .map_err(CostError)
@@ -271,6 +275,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                             .add_key_value_storage_costs(
                                 key.len() as u32,
                                 value.len() as u32,
+                                None,
                                 cost_info
                             )
                             .map_err(CostError)

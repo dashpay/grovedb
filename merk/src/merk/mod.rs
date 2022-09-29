@@ -164,8 +164,16 @@ impl<S> fmt::Debug for Merk<S> {
     }
 }
 
-pub type UseTreeMutResult =
-    CostContext<Result<Vec<(Vec<u8>, Option<Vec<u8>>, Option<KeyValueStorageCost>)>>>;
+// key, maybe value, maybe child reference hooks, maybe key value storage costs
+pub type UseTreeMutResult = CostContext<
+    Result<
+        Vec<(
+            Vec<u8>,
+            Option<(Vec<u8>, Option<u32>, Option<u32>)>,
+            Option<KeyValueStorageCost>,
+        )>,
+    >,
+>;
 
 impl<'db, S> Merk<S>
 where
@@ -660,10 +668,12 @@ where
         }
         to_batch.sort_by(|a, b| a.0.cmp(&b.0));
         for (key, maybe_value, maybe_cost) in to_batch {
-            if let Some(value) = maybe_value {
+            if let Some((value, left_size, right_size)) = maybe_value {
                 cost_return_on_error_no_add!(
                     &cost,
-                    batch.put(&key, &value, maybe_cost).map_err(|e| e.into())
+                    batch
+                        .put(&key, &value, (left_size, right_size), maybe_cost)
+                        .map_err(|e| e.into())
                 );
             } else {
                 batch.delete(&key);
@@ -819,7 +829,14 @@ where
 }
 
 struct MerkCommitter {
-    batch: Vec<(Vec<u8>, Option<Vec<u8>>, Option<KeyValueStorageCost>)>,
+    /// The batch has a key, maybe a value, with the value bytes, maybe the left
+    /// child size and maybe the right child size, then the
+    /// key_value_storage_cost
+    batch: Vec<(
+        Vec<u8>,
+        Option<(Vec<u8>, Option<u32>, Option<u32>)>,
+        Option<KeyValueStorageCost>,
+    )>,
     height: u8,
     levels: u8,
 }
@@ -845,7 +862,9 @@ impl Commit for MerkCommitter {
         ) -> Result<bool>,
         section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> Result<()> {
-        let (mut current_tree_size, mut storage_costs) = tree.size_and_storage_cost();
+        let tree_size = tree.encoding_length();
+        let (mut current_tree_plus_hook_size, mut storage_costs) =
+            tree.kv_with_parent_hook_size_and_storage_cost();
         let mut i = 0;
 
         if let Some(old_value) = tree.old_value.clone() {
@@ -860,12 +879,14 @@ impl Commit for MerkCommitter {
                 if !changed {
                     break;
                 } else {
-                    let after_update_tree_size = tree.encoding_length() as u32;
-                    if after_update_tree_size == current_tree_size {
+                    let after_update_tree_plus_hook_size =
+                        tree.value_encoding_length_with_parent_to_child_reference() as u32;
+                    if after_update_tree_plus_hook_size == current_tree_plus_hook_size {
                         break;
                     }
-                    let new_size_and_storage_costs = tree.size_and_storage_cost();
-                    current_tree_size = new_size_and_storage_costs.0;
+                    let new_size_and_storage_costs =
+                        tree.kv_with_parent_hook_size_and_storage_cost();
+                    current_tree_plus_hook_size = new_size_and_storage_costs.0;
                     storage_costs = new_size_and_storage_costs.1;
                 }
                 if i > MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES {
@@ -876,14 +897,19 @@ impl Commit for MerkCommitter {
         }
 
         // Update old tree size after generating value storage_cost cost
-        tree.old_size = current_tree_size;
+        tree.old_size_with_parent_to_child_hook = current_tree_plus_hook_size;
         tree.old_value = Some(tree.value_ref().clone());
 
-        let mut buf = Vec::with_capacity(current_tree_size as usize);
+        let mut buf = Vec::with_capacity(tree_size as usize);
         tree.encode_into(&mut buf);
 
-        self.batch
-            .push((tree.key().to_vec(), Some(buf), Some(storage_costs)));
+        let left_child_ref_size = tree.child_ref_size(true);
+        let right_child_ref_size = tree.child_ref_size(false);
+        self.batch.push((
+            tree.key().to_vec(),
+            Some((buf, left_child_ref_size, right_child_ref_size)),
+            Some(storage_costs),
+        ));
         Ok(())
     }
 

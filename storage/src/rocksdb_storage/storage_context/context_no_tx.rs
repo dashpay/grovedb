@@ -62,6 +62,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
         &self,
         key: K,
         value: &[u8],
+        children_sizes: (Option<u32>, Option<u32>),
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost {
@@ -71,6 +72,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
         match cost.add_key_value_storage_costs(
             key.as_ref().len() as u32,
             value.len() as u32,
+            Some(children_sizes),
             cost_info,
         ) {
             Ok(_) => {}
@@ -97,6 +99,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
         match cost.add_key_value_storage_costs(
             key.as_ref().len() as u32,
             value.len() as u32,
+            None,
             cost_info,
         ) {
             Ok(_) => {}
@@ -127,6 +130,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
         match cost.add_key_value_storage_costs(
             key.as_ref().len() as u32,
             value.len() as u32,
+            None,
             cost_info,
         ) {
             Ok(_) => {}
@@ -157,6 +161,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
         match cost.add_key_value_storage_costs(
             key.as_ref().len() as u32,
             value.len() as u32,
+            None,
             cost_info,
         ) {
             Ok(_) => {}

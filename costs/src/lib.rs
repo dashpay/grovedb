@@ -101,20 +101,39 @@ impl OperationCost {
         &mut self,
         key_len: u32,
         value_len: u32,
+        children_sizes: Option<(Option<u32>, Option<u32>)>,
         storage_cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), Error> {
+        let mut paid_value_len = value_len;
+
+        // We need to remove the child sizes if they exist
+        if let Some((left_child, right_child)) = children_sizes {
+            paid_value_len -= 2; // for the options
+
+            // We need to add the cost of a parent
+            paid_value_len += key_len + 3; // Hash Length - Hash Length + 3 (2 for child sizes, 1 for key_len)
+
+            // We need to remove the costs of the children
+            if let Some(left_child_len) = left_child {
+                paid_value_len -= left_child_len;
+            }
+            if let Some(right_child_len) = right_child {
+                paid_value_len -= right_child_len;
+            }
+        }
+
         let (key_storage_cost, value_storage_costs) = match storage_cost_info {
             None => (None, None),
             Some(s) => {
                 s.key_storage_cost
                     .verify_key_storage_cost(key_len, s.new_node)?;
-                s.value_storage_cost.verify(value_len)?;
+                s.value_storage_cost.verify(paid_value_len)?;
                 (Some(s.key_storage_cost), Some(s.value_storage_cost))
             }
         };
 
         self.add_storage_costs(key_len, key_storage_cost);
-        self.add_storage_costs(value_len, value_storage_costs);
+        self.add_storage_costs(paid_value_len, value_storage_costs);
         Ok(())
     }
 
