@@ -63,7 +63,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
         &self,
         key: K,
         value: &[u8],
-        children_sizes: (Option<u32>, Option<u32>),
+        children_sizes: Option<(Option<u32>, Option<u32>)>,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
         self.batch

@@ -672,7 +672,7 @@ where
                 cost_return_on_error_no_add!(
                     &cost,
                     batch
-                        .put(&key, &value, (left_size, right_size), maybe_cost)
+                        .put(&key, &value, Some((left_size, right_size)), maybe_cost)
                         .map_err(|e| e.into())
                 );
             } else {

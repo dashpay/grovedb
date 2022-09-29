@@ -115,7 +115,7 @@ pub trait StorageContext<'db> {
         &self,
         key: K,
         value: &[u8],
-        children_sizes: (Option<u32>, Option<u32>),
+        children_sizes: Option<(Option<u32>, Option<u32>)>,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>>;
 
@@ -186,7 +186,7 @@ pub trait Batch {
         &mut self,
         key: K,
         value: &[u8],
-        children_sizes: (Option<u32>, Option<u32>),
+        children_sizes: Option<(Option<u32>, Option<u32>)>,
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error>;
 
@@ -298,7 +298,7 @@ impl StorageBatch {
         &self,
         key: Vec<u8>,
         value: Vec<u8>,
-        children_sizes: (Option<u32>, Option<u32>),
+        children_sizes: Option<(Option<u32>, Option<u32>)>,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<()> {
         self.operations.borrow_mut().data.insert(
@@ -504,7 +504,7 @@ pub enum AbstractBatchOperation {
     Put {
         key: Vec<u8>,
         value: Vec<u8>,
-        children_sizes: (Option<u32>, Option<u32>),
+        children_sizes: Option<(Option<u32>, Option<u32>)>,
         cost_info: Option<KeyValueStorageCost>,
     },
     /// Deferred put operation for aux storage_cost

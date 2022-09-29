@@ -103,7 +103,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
             let bytes = node.encode();
             batch
-                .put(key, &bytes, (None, None), None)
+                .put(key, &bytes, None, None)
                 .map_err(|e| e.into())
         })?;
 
@@ -205,7 +205,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let parent_bytes = parent.encode();
         self.merk
             .storage
-            .put(parent_key, &parent_bytes, (None, None), None)
+            .put(parent_key, &parent_bytes, None, None)
             .unwrap()?;
 
         if !is_left_child {
@@ -240,7 +240,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             *cloned_node.link_mut(false).unwrap().child_heights_mut() = right_child_heights;
 
             let bytes = cloned_node.encode();
-            batch.put(node.tree().key(), &bytes, (None, None), None)?;
+            batch.put(node.tree().key(), &bytes, None, None)?;
 
             Ok((left_height, right_height))
         }

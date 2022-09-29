@@ -221,7 +221,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                             .add_key_value_storage_costs(
                                 key.len() as u32,
                                 value.len() as u32,
-                                Some(children_sizes),
+                                children_sizes,
                                 cost_info
                             )
                             .map_err(CostError)
