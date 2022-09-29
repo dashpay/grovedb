@@ -1846,6 +1846,68 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_root_one_insert_cost_right_above_value_required_cost_of_2() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let ops = vec![GroveDbOp::insert_run_op(
+            vec![],
+            b"key1".to_vec(),
+            Element::new_item([0u8; 61].to_vec()),
+        )];
+        let cost_result = db.apply_batch(ops, None, Some(&tx));
+        cost_result.value.expect("expected to execute batch");
+        let cost = cost_result.cost;
+        // Explanation for 243 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 130
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type
+        //   1 for the value size
+        //   61 bytes
+        // 32 for node hash
+        // 32 for value hash
+        // 2 byte for the value_size (required space for 128)
+
+        // Parent Hook -> 39
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+
+        // Root -> 39
+        // 1 byte for the root key length size
+        // 1 byte for the root value length size
+        // 32 for the root key prefix
+        // 4 bytes for the key to put in root
+        // 1 byte for the root "r"
+
+        // Total 37 + 128 + 39 + 39
+
+        // Hash node calls
+        // 2 for the node hash
+        // 1 for the value hash
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 1, // 1 to insert
+                storage_cost: StorageCost {
+                    added_bytes: 245,
+                    replaced_bytes: 0,
+                    removed_bytes: NoStorageRemoval,
+                },
+                storage_loaded_bytes: 0,
+                hash_node_calls: 5,
+            }
+        );
+    }
+
+    #[test]
     fn test_batch_root_one_update_bigger_cost_no_flags() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();

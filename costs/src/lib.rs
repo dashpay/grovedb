@@ -105,17 +105,11 @@ impl OperationCost {
         storage_cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), Error> {
         let paid_key_len = key_len + key_len.required_space() as u32;
-        let mut paid_value_len = value_len + value_len.required_space() as u32;
+        let mut paid_value_len = value_len;
 
         // We need to remove the child sizes if they exist
         if let Some((left_child, right_child)) = children_sizes {
-            paid_value_len -= 2; // for the options
-
-            // We need to add the cost of a parent
-            // key_len has a hash length already in it from the key prefix
-            // So we need to remove it and then add a hash length
-            // For the parent ref + 3 (2 for child sizes, 1 for key_len)
-            paid_value_len += key_len + 3;
+            paid_value_len -= 2; // for the child options
 
             // We need to remove the costs of the children
             if let Some(left_child_len) = left_child {
@@ -124,6 +118,18 @@ impl OperationCost {
             if let Some(right_child_len) = right_child {
                 paid_value_len -= right_child_len;
             }
+
+            // This is the moment we need to add the required space (after removing children)
+            // but before adding the parent to child hook
+            paid_value_len += paid_value_len.required_space() as u32;
+
+            // We need to add the cost of a parent
+            // key_len has a hash length already in it from the key prefix
+            // So we need to remove it and then add a hash length
+            // For the parent ref + 3 (2 for child sizes, 1 for key_len)
+            paid_value_len += key_len + 3;
+        } else {
+            paid_value_len += paid_value_len.required_space() as u32;
         }
 
         let (key_storage_cost, value_storage_costs) = match storage_cost_info {
