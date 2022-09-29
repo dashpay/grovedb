@@ -104,14 +104,18 @@ impl OperationCost {
         children_sizes: Option<(Option<u32>, Option<u32>)>,
         storage_cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), Error> {
-        let mut paid_value_len = value_len;
+        let paid_key_len = key_len + key_len.required_space() as u32;
+        let mut paid_value_len = value_len + value_len.required_space() as u32;
 
         // We need to remove the child sizes if they exist
         if let Some((left_child, right_child)) = children_sizes {
             paid_value_len -= 2; // for the options
 
             // We need to add the cost of a parent
-            paid_value_len += key_len + 3; // Hash Length - Hash Length + 3 (2 for child sizes, 1 for key_len)
+            // key_len has a hash length already in it from the key prefix
+            // So we need to remove it and then add a hash length
+            // For the parent ref + 3 (2 for child sizes, 1 for key_len)
+            paid_value_len += key_len + 3;
 
             // We need to remove the costs of the children
             if let Some(left_child_len) = left_child {
@@ -126,24 +130,24 @@ impl OperationCost {
             None => (None, None),
             Some(s) => {
                 s.key_storage_cost
-                    .verify_key_storage_cost(key_len, s.new_node)?;
+                    .verify_key_storage_cost(paid_key_len, s.new_node)?;
                 s.value_storage_cost.verify(paid_value_len)?;
                 (Some(s.key_storage_cost), Some(s.value_storage_cost))
             }
         };
 
-        self.add_storage_costs(key_len, key_storage_cost);
+        self.add_storage_costs(paid_key_len, key_storage_cost);
         self.add_storage_costs(paid_value_len, value_storage_costs);
         Ok(())
     }
 
     /// add_storage_costs adds storage_cost costs for a key or a value
-    fn add_storage_costs(&mut self, len: u32, storage_cost_info: Option<StorageCost>) {
+    fn add_storage_costs(&mut self, len_with_required_space: u32, storage_cost_info: Option<StorageCost>) {
         match storage_cost_info {
             // There is no storage_cost cost info, just use value len
             None => {
                 self.storage_cost += StorageCost {
-                    added_bytes: len + len.required_space() as u32,
+                    added_bytes: len_with_required_space,
                     ..Default::default()
                 }
             }

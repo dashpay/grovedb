@@ -51,13 +51,11 @@ impl StorageCost {
         // from the length we first need to remove 2 bytes for the left and right
         // optional links we then should add the parent link
         let size = self.added_bytes + self.replaced_bytes;
-
-        let total_to_verify = len + len.required_space() as u32;
-        match size == total_to_verify {
+        match size == len {
             true => Ok(()),
             false => Err(Error::StorageCostMismatch {
                 expected: self.clone(),
-                actual_total_bytes: total_to_verify,
+                actual_total_bytes: len,
             }),
         }
     }
