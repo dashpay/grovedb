@@ -45,10 +45,8 @@ pub enum Element {
     Item(Vec<u8>, Option<ElementFlags>),
     /// A reference to an object by its path
     Reference(ReferencePathType, MaxReferenceHop, Option<ElementFlags>),
-    /// A subtree, contains a root hash of the underlying Merk.
-    /// Hash is stored to make Merk become different when its subtrees have
-    /// changed, otherwise changes won't be reflected in parent trees.
-    Tree([u8; 32], Option<ElementFlags>),
+    /// A subtree, contains the a prefixed key representing the root of the subtree.
+    Tree(Option<Vec<u8>>, Option<ElementFlags>),
 }
 
 impl fmt::Debug for Element {
@@ -123,12 +121,12 @@ impl Element {
         Element::Reference(reference_path, max_reference_hop, flags)
     }
 
-    pub fn new_tree(tree_hash: [u8; 32]) -> Self {
-        Element::Tree(tree_hash, None)
+    pub fn new_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::Tree(maybe_root_key, None)
     }
 
-    pub fn new_tree_with_flags(tree_hash: [u8; 32], flags: Option<ElementFlags>) -> Self {
-        Element::Tree(tree_hash, flags)
+    pub fn new_tree_with_flags(maybe_root_key: Option<Vec<u8>>, flags: Option<ElementFlags>) -> Self {
+        Element::Tree(maybe_root_key, flags)
     }
 
     /// Grab the optional flag stored in an element
@@ -1184,7 +1182,7 @@ mod tests {
             "02000000000000000000000000000000000000000000000000000000000000000000"
         );
 
-        let empty_tree = Element::new_tree_with_flags([0; 32], Some(vec![5]));
+        let empty_tree = Element::new_tree_with_flags(None, Some(vec![5]));
         let serialized = empty_tree.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 36);
         assert_eq!(

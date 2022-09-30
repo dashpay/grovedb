@@ -14,7 +14,7 @@ use costs::{
     storage_cost::{
         removal::{
             StorageRemovedBytes,
-            StorageRemovedBytes::{BasicStorageRemoval, NoStorageRemoval},
+            StorageRemovedBytes::{BasicStorageRemoval},
         },
         StorageCost,
     },
@@ -41,7 +41,7 @@ use crate::{
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
-    ReplaceTreeHash { hash: [u8; 32] },
+    ReplaceTreeRootKey { root_key: Option<Vec<u8>> },
     Insert { element: Element },
     Delete,
 }
@@ -49,10 +49,10 @@ pub enum Op {
 impl Op {
     fn worst_case_cost(&self, key: &KeyInfo, input: MerkWorstCaseInput) -> OperationCost {
         match self {
-            Op::ReplaceTreeHash { .. } => OperationCost {
+            Op::ReplaceTreeRootKey { .. } => OperationCost {
                 seek_count: 1,
                 storage_cost: StorageCost {
-                    added_bytes: 32,
+                    added_bytes: 32, //todo
                     ..Default::default()
                 },
                 ..Default::default()
@@ -330,7 +330,7 @@ impl fmt::Debug for GroveDbOp {
                 Element::Tree(..) => "Insert Tree",
             },
             Op::Delete => "Delete",
-            Op::ReplaceTreeHash { .. } => "Replace Tree Hash",
+            Op::ReplaceTreeRootKey { .. } => "Replace Tree Root Key",
         };
 
         f.debug_struct("GroveDbOp")
@@ -538,7 +538,7 @@ trait TreeCache<G, SR> {
         batch_apply_options: &BatchApplyOptions,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
-    ) -> CostResult<[u8; 32], Error>;
+    ) -> CostResult<Option<Vec<u8>>, Error>;
 }
 
 impl<'db, S, F> TreeCacheMerkByPath<S, F>
@@ -571,7 +571,7 @@ where
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
             // the path is being modified, inserted or deleted in the batch of operations
             match op {
-                Op::ReplaceTreeHash { .. } => {
+                Op::ReplaceTreeRootKey { .. } => {
                     return Err(Error::InvalidBatchOperation(
                         "references can not point to trees being updated",
                     ))
@@ -738,7 +738,7 @@ where
         batch_apply_options: &BatchApplyOptions,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
-    ) -> CostResult<[u8; 32], Error> {
+    ) -> CostResult<Option<Vec<u8>>, Error> {
         let mut cost = OperationCost::default();
         // todo: fix this
         let p = path.to_path();
@@ -831,13 +831,13 @@ where
                         )
                     );
                 }
-                Op::ReplaceTreeHash { hash } => {
+                Op::ReplaceTreeRootKey { root_key } => {
                     cost_return_on_error!(
                         &mut cost,
                         GroveDb::update_tree_item_preserve_flag_into_batch_operations(
                             &merk,
                             key_info.get_key(),
-                            hash,
+                            root_key,
                             &mut batch_operations
                         )
                     );
@@ -883,7 +883,7 @@ where
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         });
-        merk.root_hash().add_cost(cost).map(Ok)
+        merk.root_key().wrap_with_cost(cost).map(Ok)
     }
 }
 
@@ -905,7 +905,7 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
         _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
-    ) -> CostResult<[u8; 32], Error> {
+    ) -> CostResult<Option<Vec<u8>>, Error> {
         let mut cost = OperationCost::default();
 
         if !self.paths.remove(path) {
@@ -922,7 +922,7 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
             &mut cost,
             MerkWorstCaseInput::NumberOfLevels(path.len()),
         );
-        Ok([0u8; 32]).wrap_with_cost(cost)
+        Ok(None).wrap_with_cost(cost)
     }
 }
 
@@ -1002,7 +1002,7 @@ where
                     Ok(())
                 }
                 Op::Delete => Ok(()),
-                Op::ReplaceTreeHash { .. } => Err(Error::InvalidBatchOperation(
+                Op::ReplaceTreeRootKey { .. } => Err(Error::InvalidBatchOperation(
                     "replace tree hash is an internal operation only",
                 )),
             };
@@ -1089,8 +1089,8 @@ impl GroveDb {
                                 ))
                                 .wrap_with_cost(cost);
                             }
-                            Op::ReplaceTreeHash { hash } => {
-                                root_tree_ops.insert(key, Op::ReplaceTreeHash { hash });
+                            Op::ReplaceTreeRootKey { root_key } => {
+                                root_tree_ops.insert(key, Op::ReplaceTreeRootKey { root_key });
                             }
                         }
                     }
@@ -1107,7 +1107,7 @@ impl GroveDb {
                         )
                     );
                 } else {
-                    let root_hash = cost_return_on_error!(
+                    let calculated_root_key = cost_return_on_error!(
                         &mut cost,
                         merk_tree_cache.execute_ops_on_path(
                             &path,
@@ -1133,14 +1133,14 @@ impl GroveDb {
                                     match ops_on_path.entry(key.clone()) {
                                         Entry::Vacant(vacant_entry) => {
                                             vacant_entry
-                                                .insert(Op::ReplaceTreeHash { hash: root_hash });
+                                                .insert(Op::ReplaceTreeRootKey { root_key : calculated_root_key });
                                         }
                                         Entry::Occupied(occupied_entry) => {
                                             match occupied_entry.into_mut() {
-                                                Op::ReplaceTreeHash { hash } => *hash = root_hash,
+                                                Op::ReplaceTreeRootKey { root_key } => *root_key = calculated_root_key,
                                                 Op::Insert { element } => {
-                                                    if let Element::Tree(hash, _) = element {
-                                                        *hash = root_hash
+                                                    if let Element::Tree(root_key, _) = element {
+                                                        *root_key = calculated_root_key
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "insertion of element under a non tree",
@@ -1149,7 +1149,7 @@ impl GroveDb {
                                                     }
                                                 }
                                                 Op::Delete => {
-                                                    if root_hash != [0u8; 32] {
+                                                    if calculated_root_key.is_some() {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "modification of tree when it will be \
                                                              deleted",
@@ -1164,14 +1164,14 @@ impl GroveDb {
                                     let mut ops_on_path: BTreeMap<KeyInfo, Op> = BTreeMap::new();
                                     ops_on_path.insert(
                                         key.clone(),
-                                        Op::ReplaceTreeHash { hash: root_hash },
+                                        Op::ReplaceTreeRootKey { root_key: calculated_root_key },
                                     );
                                     ops_at_level_above.insert(parent_path, ops_on_path);
                                 }
                             } else {
                                 let mut ops_on_path: BTreeMap<KeyInfo, Op> = BTreeMap::new();
                                 ops_on_path
-                                    .insert(key.clone(), Op::ReplaceTreeHash { hash: root_hash });
+                                    .insert(key.clone(), Op::ReplaceTreeRootKey { root_key: calculated_root_key });
                                 let mut ops_on_level: BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>> =
                                     BTreeMap::new();
                                 ops_on_level.insert(KeyInfoPath(parent_path.to_vec()), ops_on_path);

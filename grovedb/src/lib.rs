@@ -104,7 +104,7 @@ impl GroveDb {
                     Self::update_tree_item_preserve_flag(
                         &mut parent_tree,
                         key,
-                        subtree.root_hash().unwrap_add_cost(&mut cost),
+                        subtree.root_key(),
                     )
                 );
             } else {
@@ -132,7 +132,7 @@ impl GroveDb {
                     Self::update_tree_item_preserve_flag(
                         &mut parent_tree,
                         key,
-                        subtree.root_hash().unwrap_add_cost(&mut cost),
+                        subtree.root_key(),
                     )
                 );
             }
@@ -148,11 +148,11 @@ impl GroveDb {
     >(
         parent_tree: &mut Merk<S>,
         key: K,
-        root_hash: Hash,
+        maybe_root_key: Option<Vec<u8>>,
     ) -> CostResult<(), Error> {
         Self::get_element_from_subtree(parent_tree, key).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
-                let tree = Element::new_tree_with_flags(root_hash, flag);
+                let tree = Element::new_tree_with_flags(maybe_root_key, flag);
                 tree.insert(parent_tree, key.as_ref())
             } else {
                 Err(Error::InvalidPath("can only propagate on tree items"))
@@ -168,12 +168,12 @@ impl GroveDb {
     >(
         parent_tree: &Merk<S>,
         key: K,
-        root_hash: Hash,
+        maybe_root_key: Option<Vec<u8>>,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         Self::get_element_from_subtree(parent_tree, key.as_ref()).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
-                let tree = Element::new_tree_with_flags(root_hash, flag);
+                let tree = Element::new_tree_with_flags(maybe_root_key, flag);
                 tree.insert_into_batch_operations(key, batch_operations)
             } else {
                 Err(Error::InvalidPath("can only propagate on tree items"))

@@ -336,6 +336,15 @@ where
         })
     }
 
+    /// Returns the root non-prefixed key of the tree. If the tree is empty, None.
+    pub fn root_key(&self) -> Option<Vec<u8>> {
+        self.use_tree(|tree| {
+            tree.map(|tree| {
+                tree.key().to_vec()
+            })
+        })
+    }
+
     /// Applies a batch of operations (puts and deletes) to the tree.
     ///
     /// This will fail if the keys in `batch` are not sorted and unique. This

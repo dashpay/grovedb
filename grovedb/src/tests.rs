@@ -421,7 +421,7 @@ fn test_element_with_flags() {
     db.insert(
         [TEST_LEAF, b"key1"],
         b"elem3",
-        Element::new_tree_with_flags([0; 32], Some([1].to_vec())),
+        Element::new_tree_with_flags(None, Some([1].to_vec())),
         None,
     )
     .unwrap()

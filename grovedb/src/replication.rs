@@ -161,17 +161,17 @@ impl<'db> Restorer<'db> {
             ops.push(op);
             match ops.last().expect("just inserted") {
                 Op::Push(Node::KV(key, bytes)) | Op::PushInverted(Node::KV(key, bytes)) => {
-                    if let Element::Tree(hash, _) =
+                    if let Element::Tree(root_key, _) =
                         Element::deserialize(bytes).map_err(|e| RestorerError(e.to_string()))?
                     {
-                        if hash == [0; 32] || self.current_merk_path.last() == Some(key) {
+                        if root_key.is_none() || self.current_merk_path.last() == Some(key) {
                             // We add only subtrees of the current subtree to queue, skipping
                             // itself; Also skipping empty Merks.
                             continue;
                         }
                         let mut path = self.current_merk_path.clone();
                         path.push(key.clone());
-                        self.queue.push_back((path, hash));
+                        self.queue.push_back((path, root_key)); //todo: this needs to be fixed
                     }
                 }
                 _ => {}

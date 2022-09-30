@@ -191,7 +191,7 @@ impl GroveDb {
                     .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
             );
             let element = Element::new_tree_with_flags(
-                child_subtree.root_hash().unwrap_add_cost(&mut cost),
+                child_subtree.root_key(),
                 element_flag,
             );
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
@@ -215,7 +215,7 @@ impl GroveDb {
                     .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
             );
             let element = Element::new_tree_with_flags(
-                child_subtree.root_hash().unwrap_add_cost(&mut cost),
+                child_subtree.root_key(),
                 element_flag,
             );
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));

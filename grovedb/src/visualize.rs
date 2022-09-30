@@ -28,9 +28,9 @@ impl Visualize for Element {
                 // }
                 // drawer.write(b"]")?;
             }
-            Element::Tree(hash, _) => {
+            Element::Tree(root_key, _) => {
                 drawer.write(b"tree: ")?;
-                drawer = hash.visualize(drawer)?;
+                drawer = root_key.visualize(drawer)?;
             }
         }
         Ok(drawer)

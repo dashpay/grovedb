@@ -145,8 +145,8 @@ impl GroveDb {
 
             let element = cost_return_on_error_no_add!(&cost, raw_decode(&value_bytes));
             match element {
-                Element::Tree(tree_hash, _) => {
-                    if tree_hash == EMPTY_TREE_HASH {
+                Element::Tree(root_key, _) => {
+                    if root_key.is_none() {
                         continue;
                     }
 

@@ -113,8 +113,8 @@ impl ProofVerifier {
                 for (key, value_bytes) in children {
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
                     match child_element {
-                        Element::Tree(mut expected_root_hash, _) => {
-                            if expected_root_hash == EMPTY_TREE_HASH {
+                        Element::Tree(mut expected_root_key, _) => {
+                            if expected_root_key.is_none() {
                                 // child node is empty, move on to next
                                 continue;
                             }
@@ -168,8 +168,8 @@ impl ProofVerifier {
                                         continue;
                                     }
 
-                                    Self::update_root_hash_from_subquery_key_element(
-                                        &mut expected_root_hash,
+                                    Self::update_root_key_from_subquery_key_element(
+                                        &mut expected_root_key,
                                         &subquery_key_result_set,
                                     )?;
                                 }
@@ -186,7 +186,7 @@ impl ProofVerifier {
                                 new_path_query,
                             )?;
 
-                            if child_hash != expected_root_hash {
+                            if child_hash != expected_root_key {
                                 return Err(Error::InvalidProof(
                                     "child hash doesn't match the expected hash",
                                 ));
@@ -214,16 +214,16 @@ impl ProofVerifier {
     }
 
     /// Deserialize subkey_element and update expected root hash
-    fn update_root_hash_from_subquery_key_element(
-        expected_root_hash: &mut [u8; 32],
+    fn update_root_key_from_subquery_key_element(
+        expected_root_key: &mut Option<Vec<u8>>,
         subquery_key_result_set: &[ProofKeyValue],
     ) -> Result<(), Error> {
         let elem_value = &subquery_key_result_set[0].1;
         let subquery_key_element = Element::deserialize(elem_value)
             .map_err(|_| Error::CorruptedData("failed to deserialize element".to_string()))?;
         match subquery_key_element {
-            Element::Tree(new_exptected_hash, _) => {
-                *expected_root_hash = new_exptected_hash;
+            Element::Tree(new_expected_root_key, _) => {
+                *expected_root_key = new_expected_root_key;
             }
             _ => {
                 // the means that the subquery key pointed to a non tree
