@@ -313,6 +313,77 @@ mod tests {
     }
 
     #[test]
+    fn test_one_insert_cost_under_tree() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"tree", Element::empty_tree(), Some(&tx))
+            .cost;
+
+        let cost = db.insert(
+            vec![b"tree".as_slice()],
+            b"key1",
+            Element::new_item(b"test".to_vec()),
+            Some(&tx),
+        )
+            .cost;
+
+        // Explanation for 187 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 72
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type
+        //   1 for size of test bytes
+        //   4 for test bytes
+        // 32 for node hash
+        // 32 for value hash
+        // 1 byte for the value_size (required space for 98)
+
+        // Parent Hook -> 39
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+
+        // Root -> 39
+        // 1 byte for the root key length size
+        // 1 byte for the root value length size
+        // 32 for the root key prefix
+        // 4 bytes for the key to put in root
+        // 1 byte for the root "r"
+
+        // Total 37 + 72 + 39 + 39
+
+        // Explanation for replaced bytes
+
+        // Replaced parent Value -> 99
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type
+        //   32 for empty tree
+        // 32 for node hash
+        // 32 for value hash
+        // 1 byte for the value_size (required space for 98)
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 11, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 187,
+                    replaced_bytes: 99,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 285,
+                hash_node_calls: 8, // todo: verify this
+            }
+        );
+    }
+
+    #[test]
     fn test_one_update_bigger_cost() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();

@@ -155,6 +155,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk<S> {
     pub(crate) tree: Cell<Option<Tree>>,
+    pub(crate) root_tree_key: Cell<Option<Vec<u8>>>,
     pub storage: S,
 }
 
@@ -183,7 +184,9 @@ where
     pub fn open(storage: S) -> CostContext<Result<Self>> {
         let mut merk = Self {
             tree: Cell::new(None),
+            root_tree_key: Cell::new(None),
             storage,
+
         };
 
         merk.load_root().map_ok(|_| merk)
@@ -634,6 +637,13 @@ where
                 );
 
                 let tree_key = tree.key();
+                // if the root was updated then the root key needs to be placed.
+                match self.root_tree_key.take() {
+                    None => {
+
+                    }
+                    Some(_) => {}
+                }
                 let costs = if updated_keys.contains(tree_key) {
                     Some(KeyValueStorageCost::for_updated_root_cost(
                         tree_key.len() as u32
@@ -768,6 +778,9 @@ where
                     // Trying to build a tree out of it, costs will be accumulated because
                     // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
                     Tree::get(&self.storage, &tree_root_key).map_ok(|tree| {
+                        tree.as_ref().map(|t| {
+                            self.root_tree_key = Cell::new(Some(t.key().to_vec()));
+                        });
                         self.tree = Cell::new(tree);
                     })
                 } else {
