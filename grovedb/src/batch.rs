@@ -33,15 +33,18 @@ use crate::{
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     worst_case_costs::MerkWorstCaseInput,
-    Element,
-    Element::Tree,
-    ElementFlags, Error, GroveDb, TransactionArg, MAX_ELEMENTS_NUMBER,
+    Element, ElementFlags, Error, GroveDb, TransactionArg, MAX_ELEMENTS_NUMBER,
 };
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
-    ReplaceTreeRootKey { root_key: Option<Vec<u8>> },
-    Insert { element: Element },
+    ReplaceTreeRootKey {
+        hash: [u8; 32],
+        root_key: Option<Vec<u8>>,
+    },
+    Insert {
+        element: Element,
+    },
     Delete,
 }
 
@@ -121,7 +124,7 @@ impl Hash for KeyInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
             KnownKey(k) => k.hash(state),
-            KeyInfo::MaxKeySize {
+            MaxKeySize {
                 unique_id,
                 max_size,
             } => {
@@ -329,7 +332,7 @@ impl fmt::Debug for GroveDbOp {
                 Element::Tree(..) => "Insert Tree",
             },
             Op::Delete => "Delete",
-            Op::ReplaceTreeRootKey { .. } => "Replace Tree Root Key",
+            Op::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key",
         };
 
         f.debug_struct("GroveDbOp")
@@ -537,7 +540,7 @@ trait TreeCache<G, SR> {
         batch_apply_options: &BatchApplyOptions,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
-    ) -> CostResult<Option<Vec<u8>>, Error>;
+    ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error>;
 }
 
 impl<'db, S, F> TreeCacheMerkByPath<S, F>
@@ -737,7 +740,7 @@ where
         batch_apply_options: &BatchApplyOptions,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
-    ) -> CostResult<Option<Vec<u8>>, Error> {
+    ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error> {
         let mut cost = OperationCost::default();
         // todo: fix this
         let p = path.to_path();
@@ -754,11 +757,7 @@ where
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } => match &element {
-                    Element::Reference(
-                        path_reference,
-                        element_max_reference_hop,
-                        element_flags,
-                    ) => {
+                    Element::Reference(path_reference, element_max_reference_hop, _) => {
                         let path_iter = path.iter().map(|x| x.as_slice());
                         let path_reference = cost_return_on_error!(
                             &mut cost,
@@ -794,7 +793,27 @@ where
                             )
                         );
                     }
-                    Element::Item(_, element_flags) | Element::Tree(_, element_flags) => {
+                    Element::Tree(root_key, _) => {
+                        let path_iter = path.iter().map(|x| x.as_slice());
+                        let referenced_element_value_hash = cost_return_on_error!(
+                            &mut cost,
+                            self.follow_reference_get_value_hash(
+                                path_reference.as_slice(),
+                                ops_by_qualified_paths,
+                                element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8)
+                            )
+                        );
+
+                        cost_return_on_error!(
+                            &mut cost,
+                            element.insert_subtree_into_batch_operations(
+                                key_info.get_key_clone(),
+                                referenced_element_value_hash,
+                                &mut batch_operations
+                            )
+                        );
+                    }
+                    Element::Item(..) => {
                         if batch_apply_options.validate_insertion_does_not_override {
                             let inserted = cost_return_on_error!(
                                 &mut cost,
@@ -830,12 +849,13 @@ where
                         )
                     );
                 }
-                Op::ReplaceTreeRootKey { root_key } => {
+                Op::ReplaceTreeRootKey { hash, root_key } => {
                     cost_return_on_error!(
                         &mut cost,
                         GroveDb::update_tree_item_preserve_flag_into_batch_operations(
                             &merk,
                             key_info.get_key(),
+                            hash,
                             root_key,
                             &mut batch_operations
                         )
@@ -882,7 +902,7 @@ where
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         });
-        merk.root_key().wrap_with_cost(cost).map(Ok)
+        merk.root_hash_and_key().add_cost(cost).map(Ok)
     }
 }
 
@@ -904,7 +924,7 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
         _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
-    ) -> CostResult<Option<Vec<u8>>, Error> {
+    ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error> {
         let mut cost = OperationCost::default();
 
         if !self.paths.remove(path) {
@@ -921,7 +941,7 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
             &mut cost,
             MerkWorstCaseInput::NumberOfLevels(path.len()),
         );
-        Ok(None).wrap_with_cost(cost)
+        Ok(([0u8; 32], None)).wrap_with_cost(cost)
     }
 }
 
@@ -1088,8 +1108,9 @@ impl GroveDb {
                                 ))
                                 .wrap_with_cost(cost);
                             }
-                            Op::ReplaceTreeRootKey { root_key } => {
-                                root_tree_ops.insert(key, Op::ReplaceTreeRootKey { root_key });
+                            Op::ReplaceTreeRootKey { hash, root_key } => {
+                                root_tree_ops
+                                    .insert(key, Op::ReplaceTreeRootKey { hash, root_key });
                             }
                         }
                     }
@@ -1106,7 +1127,7 @@ impl GroveDb {
                         )
                     );
                 } else {
-                    let calculated_root_key = cost_return_on_error!(
+                    let (root_hash, calculated_root_key) = cost_return_on_error!(
                         &mut cost,
                         merk_tree_cache.execute_ops_on_path(
                             &path,
@@ -1132,13 +1153,15 @@ impl GroveDb {
                                     match ops_on_path.entry(key.clone()) {
                                         Entry::Vacant(vacant_entry) => {
                                             vacant_entry.insert(Op::ReplaceTreeRootKey {
+                                                hash: root_hash,
                                                 root_key: calculated_root_key,
                                             });
                                         }
                                         Entry::Occupied(occupied_entry) => {
                                             match occupied_entry.into_mut() {
-                                                Op::ReplaceTreeRootKey { root_key } => {
-                                                    *root_key = calculated_root_key
+                                                Op::ReplaceTreeRootKey { hash, root_key } => {
+                                                    *hash = root_hash;
+                                                    *root_key = calculated_root_key;
                                                 }
                                                 Op::Insert { element } => {
                                                     if let Element::Tree(root_key, _) = element {
@@ -1167,6 +1190,7 @@ impl GroveDb {
                                     ops_on_path.insert(
                                         key.clone(),
                                         Op::ReplaceTreeRootKey {
+                                            hash: root_hash,
                                             root_key: calculated_root_key,
                                         },
                                     );
@@ -1177,6 +1201,7 @@ impl GroveDb {
                                 ops_on_path.insert(
                                     key.clone(),
                                     Op::ReplaceTreeRootKey {
+                                        hash: root_hash,
                                         root_key: calculated_root_key,
                                     },
                                 );
@@ -1380,7 +1405,7 @@ impl GroveDb {
                                 .wrap_with_cost(cost)
                             }
                         } else {
-                            Merk::open(storage).map_err(|_| {
+                            Merk::open_base(storage).map_err(|_| {
                                 Error::CorruptedData("cannot open a subtree".to_owned())
                             })
                         }
@@ -1443,7 +1468,7 @@ impl GroveDb {
                                 .wrap_with_cost(cost)
                             }
                         } else {
-                            Merk::open(storage).map_err(|_| {
+                            Merk::open_base(storage).map_err(|_| {
                                 Error::CorruptedData("cannot open a subtree".to_owned())
                             })
                         }

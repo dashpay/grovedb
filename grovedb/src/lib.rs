@@ -18,7 +18,7 @@ use std::path::Path;
 
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 pub use merk::proofs::{query::QueryItem, Query};
-use merk::{self, BatchEntry, Merk};
+use merk::{self, BatchEntry, CryptoHash, Merk};
 pub use query::{PathQuery, SizedQuery};
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
 pub use storage::{
@@ -64,7 +64,7 @@ impl GroveDb {
         })
     }
 
-    /// Method to propagate updated subtree root hashes up to GroveDB root
+    /// Method to propagate updated subtree key changes one level up
     fn propagate_changes<'p, P>(
         &self,
         path: P,
@@ -77,57 +77,54 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         let mut path_iter = path.into_iter();
-
-        while path_iter.len() > 0 {
-            if let Some(tx) = transaction {
-                let subtree_storage = self
-                    .db
-                    .get_transactional_storage_context(path_iter.clone(), tx)
-                    .unwrap_add_cost(&mut cost);
-                let subtree = cost_return_on_error!(
-                    &mut cost,
-                    Merk::open(subtree_storage)
-                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                );
-                let key = path_iter.next_back().expect("next element is `Some`");
-                let parent_storage = self
-                    .db
-                    .get_transactional_storage_context(path_iter.clone(), tx)
-                    .unwrap_add_cost(&mut cost);
-                let mut parent_tree = cost_return_on_error!(
-                    &mut cost,
-                    Merk::open(parent_storage)
-                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                );
-                cost_return_on_error!(
-                    &mut cost,
-                    Self::update_tree_item_preserve_flag(&mut parent_tree, key, subtree.root_key(),)
-                );
-            } else {
-                let subtree_storage = self
-                    .db
-                    .get_storage_context(path_iter.clone())
-                    .unwrap_add_cost(&mut cost);
-                let subtree = cost_return_on_error!(
-                    &mut cost,
-                    Merk::open(subtree_storage)
-                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                );
-                let key = path_iter.next_back().expect("next element is `Some`");
-                let parent_storage = self
-                    .db
-                    .get_storage_context(path_iter.clone())
-                    .unwrap_add_cost(&mut cost);
-                let mut parent_tree = cost_return_on_error!(
-                    &mut cost,
-                    Merk::open(parent_storage)
-                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                );
-                cost_return_on_error!(
-                    &mut cost,
-                    Self::update_tree_item_preserve_flag(&mut parent_tree, key, subtree.root_key(),)
-                );
-            }
+        if let Some(tx) = transaction {
+            let subtree_storage = self
+                .db
+                .get_transactional_storage_context(path_iter.clone(), tx)
+                .unwrap_add_cost(&mut cost);
+            let key = path_iter.next_back().expect("next element is `Some`");
+            let parent_storage = self
+                .db
+                .get_transactional_storage_context(path_iter.clone(), tx)
+                .unwrap_add_cost(&mut cost);
+            let subtree = cost_return_on_error!(
+                &mut cost,
+                Merk::open_with_root_key(subtree_storage)
+                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+            );
+            let mut parent_tree = cost_return_on_error!(
+                &mut cost,
+                Merk::open(parent_storage)
+                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+            );
+            cost_return_on_error!(
+                &mut cost,
+                Self::update_tree_item_preserve_flag(&mut parent_tree, key, subtree.root_key(),)
+            );
+        } else {
+            let subtree_storage = self
+                .db
+                .get_storage_context(path_iter.clone())
+                .unwrap_add_cost(&mut cost);
+            let key = path_iter.next_back().expect("next element is `Some`");
+            let parent_storage = self
+                .db
+                .get_storage_context(path_iter.clone())
+                .unwrap_add_cost(&mut cost);
+            let subtree = cost_return_on_error!(
+                &mut cost,
+                Merk::open(subtree_storage)
+                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+            );
+            let mut parent_tree = cost_return_on_error!(
+                &mut cost,
+                Merk::open(parent_storage)
+                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+            );
+            cost_return_on_error!(
+                &mut cost,
+                Self::update_tree_item_preserve_flag(&mut parent_tree, key, subtree.root_key(),)
+            );
         }
 
         Ok(()).wrap_with_cost(cost)
@@ -160,13 +157,14 @@ impl GroveDb {
     >(
         parent_tree: &Merk<S>,
         key: K,
+        hash: CryptoHash,
         maybe_root_key: Option<Vec<u8>>,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         Self::get_element_from_subtree(parent_tree, key.as_ref()).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(maybe_root_key, flag);
-                tree.insert_into_batch_operations(key, batch_operations)
+                tree.insert_subtree_into_batch_operations(key, hash, batch_operations)
             } else {
                 Err(Error::InvalidPath("can only propagate on tree items"))
                     .wrap_with_cost(Default::default())

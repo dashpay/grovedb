@@ -181,7 +181,7 @@ where
     S: StorageContext<'db>,
     <S as StorageContext<'db>>::Error: std::error::Error,
 {
-    pub fn open(storage: S) -> CostContext<Result<Self>> {
+    pub fn open_base(storage: S) -> CostContext<Result<Self>> {
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
@@ -349,6 +349,16 @@ where
     /// None.
     pub fn root_key(&self) -> Option<Vec<u8>> {
         self.use_tree(|tree| tree.map(|tree| tree.key().to_vec()))
+    }
+
+    /// Returns the root hash and non-prefixed key of the tree.
+    pub fn root_hash_and_key(&self) -> CostContext<(CryptoHash, Option<Vec<u8>>)> {
+        self.use_tree(|tree| {
+            tree.map_or(
+                (NULL_HASH, None).wrap_with_cost(Default::default()),
+                |tree| tree.hash().map(|hash| (hash, Some(tree.key().to_vec()))),
+            )
+        })
     }
 
     /// Applies a batch of operations (puts and deletes) to the tree.

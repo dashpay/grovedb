@@ -1097,6 +1097,42 @@ impl Element {
         Ok(()).wrap_with_cost(Default::default())
     }
 
+    /// Insert a tree element in Merk under a key; path should be resolved
+    /// and proper Merk should be loaded by this moment
+    /// If transaction is not passed, the batch will be written immediately.
+    /// If transaction is passed, the operation will be committed on the
+    /// transaction commit.
+    pub fn insert_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        subtree_root_hash: Hash,
+    ) -> CostResult<(), Error> {
+        let serialized = match self.serialize() {
+            Ok(s) => s,
+            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+        };
+
+        let batch_operations = [(key, Op::PutReference(serialized, subtree_root_hash))];
+        merk.apply::<_, Vec<u8>>(&batch_operations, &[])
+            .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    pub fn insert_subtree_into_batch_operations<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        subtree_root_hash: Hash,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+    ) -> CostResult<(), Error> {
+        let serialized = match self.serialize() {
+            Ok(s) => s,
+            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+        };
+        let entry = (key, Op::PutReference(serialized, subtree_root_hash));
+        batch_operations.push(entry);
+        Ok(()).wrap_with_cost(Default::default())
+    }
+
     pub fn serialize(&self) -> Result<Vec<u8>, Error> {
         bincode::DefaultOptions::default()
             .with_varint_encoding()
