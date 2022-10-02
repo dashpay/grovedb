@@ -19,6 +19,7 @@ use costs::{
 };
 use merk::{tree::value_hash, CryptoHash, Merk};
 use nohash_hasher::IntMap;
+use merk::tree::NULL_HASH;
 use storage::{
     rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch,
     StorageContext,
@@ -793,22 +794,12 @@ where
                             )
                         );
                     }
-                    Element::Tree(root_key, _) => {
-                        let path_iter = path.iter().map(|x| x.as_slice());
-                        let referenced_element_value_hash = cost_return_on_error!(
-                            &mut cost,
-                            self.follow_reference_get_value_hash(
-                                path_reference.as_slice(),
-                                ops_by_qualified_paths,
-                                element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8)
-                            )
-                        );
-
+                    Element::Tree(..) => {
                         cost_return_on_error!(
                             &mut cost,
                             element.insert_subtree_into_batch_operations(
                                 key_info.get_key_clone(),
-                                referenced_element_value_hash,
+                                NULL_HASH,
                                 &mut batch_operations
                             )
                         );
