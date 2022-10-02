@@ -12,10 +12,7 @@ use std::{
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
-        removal::{
-            StorageRemovedBytes,
-            StorageRemovedBytes::{BasicStorageRemoval},
-        },
+        removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
     },
     CostResult, CostsExt, OperationCost,
@@ -36,7 +33,9 @@ use crate::{
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     worst_case_costs::MerkWorstCaseInput,
-    Element, ElementFlags, Error, GroveDb, TransactionArg, MAX_ELEMENTS_NUMBER,
+    Element,
+    Element::Tree,
+    ElementFlags, Error, GroveDb, TransactionArg, MAX_ELEMENTS_NUMBER,
 };
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -52,7 +51,7 @@ impl Op {
             Op::ReplaceTreeRootKey { .. } => OperationCost {
                 seek_count: 1,
                 storage_cost: StorageCost {
-                    added_bytes: 32, //todo
+                    added_bytes: 32, // todo
                     ..Default::default()
                 },
                 ..Default::default()
@@ -1132,12 +1131,15 @@ impl GroveDb {
                                 {
                                     match ops_on_path.entry(key.clone()) {
                                         Entry::Vacant(vacant_entry) => {
-                                            vacant_entry
-                                                .insert(Op::ReplaceTreeRootKey { root_key : calculated_root_key });
+                                            vacant_entry.insert(Op::ReplaceTreeRootKey {
+                                                root_key: calculated_root_key,
+                                            });
                                         }
                                         Entry::Occupied(occupied_entry) => {
                                             match occupied_entry.into_mut() {
-                                                Op::ReplaceTreeRootKey { root_key } => *root_key = calculated_root_key,
+                                                Op::ReplaceTreeRootKey { root_key } => {
+                                                    *root_key = calculated_root_key
+                                                }
                                                 Op::Insert { element } => {
                                                     if let Element::Tree(root_key, _) = element {
                                                         *root_key = calculated_root_key
@@ -1164,14 +1166,20 @@ impl GroveDb {
                                     let mut ops_on_path: BTreeMap<KeyInfo, Op> = BTreeMap::new();
                                     ops_on_path.insert(
                                         key.clone(),
-                                        Op::ReplaceTreeRootKey { root_key: calculated_root_key },
+                                        Op::ReplaceTreeRootKey {
+                                            root_key: calculated_root_key,
+                                        },
                                     );
                                     ops_at_level_above.insert(parent_path, ops_on_path);
                                 }
                             } else {
                                 let mut ops_on_path: BTreeMap<KeyInfo, Op> = BTreeMap::new();
-                                ops_on_path
-                                    .insert(key.clone(), Op::ReplaceTreeRootKey { root_key: calculated_root_key });
+                                ops_on_path.insert(
+                                    key.clone(),
+                                    Op::ReplaceTreeRootKey {
+                                        root_key: calculated_root_key,
+                                    },
+                                );
                                 let mut ops_on_level: BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>> =
                                     BTreeMap::new();
                                 ops_on_level.insert(KeyInfoPath(parent_path.to_vec()), ops_on_path);
@@ -1340,8 +1348,42 @@ impl GroveDb {
                                 tx,
                             )
                             .unwrap_add_cost(&mut cost);
-                        Merk::open(storage)
-                            .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+
+                        if let Some((last, base_path)) = path.split_last() {
+                            let parent_storage = self
+                                .db
+                                .get_batch_transactional_storage_context(
+                                    base_path.iter().map(|x| x.as_slice()),
+                                    &storage_batch,
+                                    tx,
+                                )
+                                .unwrap_add_cost(&mut cost);
+                            let element = cost_return_on_error!(
+                                &mut cost,
+                                Element::get_from_storage(&parent_storage, last).map_err(|_| {
+                                    Error::CorruptedData(
+                                        "could not get key for parent of subtree".to_owned(),
+                                    )
+                                })
+                            );
+                            if let Element::Tree(root_key, _) = element {
+                                Merk::open_with_root_key(storage, root_key).map_err(|_| {
+                                    Error::CorruptedData(
+                                        "cannot open a subtree with given root key".to_owned(),
+                                    )
+                                })
+                            } else {
+                                Err(Error::CorruptedData(
+                                    "cannot open a subtree as parent exists but is not a tree"
+                                        .to_owned(),
+                                ))
+                                .wrap_with_cost(cost)
+                            }
+                        } else {
+                            Merk::open(storage).map_err(|_| {
+                                Error::CorruptedData("cannot open a subtree".to_owned())
+                            })
+                        }
                     }
                 )
             );
@@ -1370,8 +1412,41 @@ impl GroveDb {
                                 &storage_batch,
                             )
                             .unwrap_add_cost(&mut cost);
-                        Merk::open(storage)
-                            .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+
+                        if let Some((last, base_path)) = path.split_last() {
+                            let parent_storage = self
+                                .db
+                                .get_batch_storage_context(
+                                    base_path.iter().map(|x| x.as_slice()),
+                                    &storage_batch,
+                                )
+                                .unwrap_add_cost(&mut cost);
+                            let element = cost_return_on_error!(
+                                &mut cost,
+                                Element::get_from_storage(&parent_storage, last).map_err(|_| {
+                                    Error::CorruptedData(
+                                        "could not get key for parent of subtree".to_owned(),
+                                    )
+                                })
+                            );
+                            if let Element::Tree(root_key, _) = element {
+                                Merk::open_with_root_key(storage, root_key).map_err(|_| {
+                                    Error::CorruptedData(
+                                        "cannot open a subtree with given root key".to_owned(),
+                                    )
+                                })
+                            } else {
+                                Err(Error::CorruptedData(
+                                    "cannot open a subtree as parent exists but is not a tree"
+                                        .to_owned(),
+                                ))
+                                .wrap_with_cost(cost)
+                            }
+                        } else {
+                            Merk::open(storage).map_err(|_| {
+                                Error::CorruptedData("cannot open a subtree".to_owned())
+                            })
+                        }
                     }
                 )
             );
@@ -1729,7 +1804,7 @@ mod tests {
         let ops = vec![GroveDbOp::insert_run_op(
             vec![],
             b"key1".to_vec(),
-            Element::new_item([0u8;32].to_vec()),
+            Element::new_item([0u8; 32].to_vec()),
         )];
         let cost_result = db.apply_batch(ops, None, Some(&tx));
         cost_result.value.expect("expected to execute batch");

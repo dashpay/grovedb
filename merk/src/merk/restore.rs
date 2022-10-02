@@ -73,7 +73,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             self.rewrite_trunk_child_heights()?;
         }
 
-        self.merk.load_root().unwrap()?;
+        self.merk.load_base_root().unwrap()?;
 
         Ok(self.merk)
     }
@@ -102,9 +102,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             *node.slot_mut(false) = proof_node.right.as_ref().map(Child::as_link);
 
             let bytes = node.encode();
-            batch
-                .put(key, &bytes, None, None)
-                .map_err(|e| e.into())
+            batch.put(key, &bytes, None, None).map_err(|e| e.into())
         })?;
 
         self.merk.storage.commit_batch(batch).unwrap()?;
@@ -162,7 +160,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         // because if anything fails during the restore process we will just
         // scrap the whole restore and start over
         self.write_chunk(trunk)?;
-        self.merk.set_root_key(&root_key)?;
+        self.merk.set_base_root_key(&root_key)?;
 
         Ok(chunks_remaining)
     }
@@ -245,7 +243,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             Ok((left_height, right_height))
         }
 
-        self.merk.load_root().unwrap()?;
+        self.merk.load_base_root().unwrap()?;
 
         let mut batch = self.merk.storage.new_batch();
 

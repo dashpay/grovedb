@@ -16,7 +16,9 @@ use merk::{
     BatchEntry, Op, HASH_LENGTH,
 };
 use serde::{Deserialize, Serialize};
-use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+use storage::{
+    rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageBatch, StorageContext,
+};
 use visualize::visualize_to_vec;
 
 use crate::{
@@ -26,7 +28,7 @@ use crate::{
     },
     reference_path::{path_from_reference_path_type, ReferencePathType},
     util::{merk_optional_tx, storage_context_optional_tx},
-    Error, Hash, Merk, PathQuery, SizedQuery, TransactionArg,
+    Error, GroveDb, Hash, Merk, PathQuery, SizedQuery, Transaction, TransactionArg,
 };
 
 /// Optional meta-data to be stored per element
@@ -45,7 +47,8 @@ pub enum Element {
     Item(Vec<u8>, Option<ElementFlags>),
     /// A reference to an object by its path
     Reference(ReferencePathType, MaxReferenceHop, Option<ElementFlags>),
-    /// A subtree, contains the a prefixed key representing the root of the subtree.
+    /// A subtree, contains the a prefixed key representing the root of the
+    /// subtree.
     Tree(Option<Vec<u8>>, Option<ElementFlags>),
 }
 
@@ -125,7 +128,10 @@ impl Element {
         Element::Tree(maybe_root_key, None)
     }
 
-    pub fn new_tree_with_flags(maybe_root_key: Option<Vec<u8>>, flags: Option<ElementFlags>) -> Self {
+    pub fn new_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
         Element::Tree(maybe_root_key, flags)
     }
 
@@ -297,6 +303,33 @@ impl Element {
         let value_opt = cost_return_on_error!(
             &mut cost,
             merk.get(key.as_ref())
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+        );
+        let value = cost_return_on_error_no_add!(
+            &cost,
+            value_opt.ok_or_else(|| {
+                Error::PathKeyNotFound(format!("key not found in Merk: {}", hex::encode(key)))
+            })
+        );
+        let element = cost_return_on_error_no_add!(
+            &cost,
+            Self::deserialize(value.as_slice())
+                .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
+        );
+        Ok(element).wrap_with_cost(cost)
+    }
+
+    /// Get an element directly from storage under a key
+    /// Merk does not need to be loaded
+    pub fn get_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        storage: &S,
+        key: K,
+    ) -> CostResult<Element, Error> {
+        let mut cost = OperationCost::default();
+        let value_opt = cost_return_on_error!(
+            &mut cost,
+            storage
+                .get(key.as_ref())
                 .map_err(|e| Error::CorruptedData(e.to_string()))
         );
         let value = cost_return_on_error_no_add!(

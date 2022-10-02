@@ -190,10 +190,7 @@ impl GroveDb {
                 Merk::open(child_storage)
                     .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
             );
-            let element = Element::new_tree_with_flags(
-                child_subtree.root_key(),
-                element_flag,
-            );
+            let element = Element::new_tree_with_flags(child_subtree.root_key(), element_flag);
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
         } else {
             let parent_storage = self
@@ -214,10 +211,7 @@ impl GroveDb {
                 Merk::open(child_storage)
                     .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
             );
-            let element = Element::new_tree_with_flags(
-                child_subtree.root_key(),
-                element_flag,
-            );
+            let element = Element::new_tree_with_flags(child_subtree.root_key(), element_flag);
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
         }
         Ok(()).wrap_with_cost(cost)
@@ -320,12 +314,13 @@ mod tests {
         db.insert(vec![], b"tree", Element::empty_tree(), Some(&tx))
             .cost;
 
-        let cost = db.insert(
-            vec![b"tree".as_slice()],
-            b"key1",
-            Element::new_item(b"test".to_vec()),
-            Some(&tx),
-        )
+        let cost = db
+            .insert(
+                vec![b"tree".as_slice()],
+                b"key1",
+                Element::new_item(b"test".to_vec()),
+                Some(&tx),
+            )
             .cost;
 
         // Explanation for 187 storage_written_bytes

@@ -186,7 +186,16 @@ where
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
             storage,
+        };
 
+        merk.load_base_root().map_ok(|_| merk)
+    }
+
+    pub fn open_with_root_key(storage: S, root_key: Option<Vec<u8>>) -> CostContext<Result<Self>> {
+        let mut merk = Self {
+            tree: Cell::new(None),
+            root_tree_key: Cell::new(root_key),
+            storage,
         };
 
         merk.load_root().map_ok(|_| merk)
@@ -336,13 +345,10 @@ where
         })
     }
 
-    /// Returns the root non-prefixed key of the tree. If the tree is empty, None.
+    /// Returns the root non-prefixed key of the tree. If the tree is empty,
+    /// None.
     pub fn root_key(&self) -> Option<Vec<u8>> {
-        self.use_tree(|tree| {
-            tree.map(|tree| {
-                tree.key().to_vec()
-            })
-        })
+        self.use_tree(|tree| tree.map(|tree| tree.key().to_vec()))
     }
 
     /// Applies a batch of operations (puts and deletes) to the tree.
@@ -648,9 +654,7 @@ where
                 let tree_key = tree.key();
                 // if the root was updated then the root key needs to be placed.
                 match self.root_tree_key.take() {
-                    None => {
-
-                    }
+                    None => {}
                     Some(_) => {}
                 }
                 let costs = if updated_keys.contains(tree_key) {
@@ -773,11 +777,17 @@ where
         res
     }
 
-    pub(crate) fn set_root_key(&mut self, key: &[u8]) -> Result<()> {
+    /// Sets the tree's top node (base) key
+    /// The base root key should only be used if the Merk tree is independent
+    /// Meaning that it doesn't have a parent Merk
+    pub(crate) fn set_base_root_key(&mut self, key: &[u8]) -> Result<()> {
         Ok(self.storage.put_root(ROOT_KEY_KEY, key, None).unwrap()?) // todo: maybe change None?
     }
 
-    pub(crate) fn load_root(&mut self) -> CostContext<Result<()>> {
+    /// Loads the Merk from the base root key
+    /// The base root key should only be used if the Merk tree is independent
+    /// Meaning that it doesn't have a parent Merk
+    pub(crate) fn load_base_root(&mut self) -> CostContext<Result<()>> {
         self.storage
             .get_root(ROOT_KEY_KEY)
             .map(|root_result| root_result.map_err(|e| anyhow!(e)))
@@ -796,6 +806,23 @@ where
                     Ok(()).wrap_with_cost(Default::default())
                 }
             })
+    }
+
+    /// Loads the Merk from it's parent root key
+    /// The base root key should only be used if the Merk tree is independent
+    /// Meaning that it doesn't have a parent Merk
+    pub(crate) fn load_root(&mut self) -> CostContext<Result<()>> {
+        // In case of successful seek for root key check if it exists
+        if let Some(tree_root_key) = self.root_tree_key.get_mut() {
+            // Trying to build a tree out of it, costs will be accumulated because
+            // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
+            Tree::get(&self.storage, tree_root_key).map_ok(|tree| {
+                self.tree = Cell::new(tree);
+            })
+        } else {
+            return Err(anyhow!("loading root without having root_tree_key set"))
+                .wrap_with_cost(Default::default());
+        }
     }
 }
 

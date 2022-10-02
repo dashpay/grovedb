@@ -119,8 +119,8 @@ impl OperationCost {
                 paid_value_len -= right_child_len;
             }
 
-            // This is the moment we need to add the required space (after removing children)
-            // but before adding the parent to child hook
+            // This is the moment we need to add the required space (after removing
+            // children) but before adding the parent to child hook
             paid_value_len += paid_value_len.required_space() as u32;
 
             // We need to add the cost of a parent
@@ -148,7 +148,11 @@ impl OperationCost {
     }
 
     /// add_storage_costs adds storage_cost costs for a key or a value
-    fn add_storage_costs(&mut self, len_with_required_space: u32, storage_cost_info: Option<StorageCost>) {
+    fn add_storage_costs(
+        &mut self,
+        len_with_required_space: u32,
+        storage_cost_info: Option<StorageCost>,
+    ) {
         match storage_cost_info {
             // There is no storage_cost cost info, just use value len
             None => {

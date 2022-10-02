@@ -101,11 +101,7 @@ impl GroveDb {
                 );
                 cost_return_on_error!(
                     &mut cost,
-                    Self::update_tree_item_preserve_flag(
-                        &mut parent_tree,
-                        key,
-                        subtree.root_key(),
-                    )
+                    Self::update_tree_item_preserve_flag(&mut parent_tree, key, subtree.root_key(),)
                 );
             } else {
                 let subtree_storage = self
@@ -129,11 +125,7 @@ impl GroveDb {
                 );
                 cost_return_on_error!(
                     &mut cost,
-                    Self::update_tree_item_preserve_flag(
-                        &mut parent_tree,
-                        key,
-                        subtree.root_key(),
-                    )
+                    Self::update_tree_item_preserve_flag(&mut parent_tree, key, subtree.root_key(),)
                 );
             }
         }

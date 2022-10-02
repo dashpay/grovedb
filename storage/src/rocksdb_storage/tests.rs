@@ -651,11 +651,11 @@ mod transaction {
             .unwrap()
             .expect("cannot insert into storage_cost");
         context_ayya
-            .put(b"key2", b"ayyavalue2", None,  None)
+            .put(b"key2", b"ayyavalue2", None, None)
             .unwrap()
             .expect("cannot insert into storage_cost");
         context_ayyb
-            .put(b"key1", b"ayybvalue1", None,  None)
+            .put(b"key1", b"ayybvalue1", None, None)
             .unwrap()
             .expect("cannot insert into storage_cost");
         context_ayyb

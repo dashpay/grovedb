@@ -171,7 +171,9 @@ impl<'db> Restorer<'db> {
                         }
                         let mut path = self.current_merk_path.clone();
                         path.push(key.clone());
-                        self.queue.push_back((path, root_key)); //todo: this needs to be fixed
+                        self.queue.push_back((path, root_key)); // todo: this
+                                                                // needs to be
+                                                                // fixed
                     }
                 }
                 _ => {}
