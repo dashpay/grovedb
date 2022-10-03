@@ -523,6 +523,7 @@ mod test {
         merk::OptionOrMerkType::{NoneOfType, SomeMerk},
         tree::TreeFeatureType::BasicMerk,
     };
+    use crate::merk::TreeFeatureType::SummedMerk;
 
     #[test]
     fn build_tree() {
@@ -708,5 +709,15 @@ mod test {
             .expect("commit failed");
 
         assert!(tree.link(false).expect("expected link").is_stored());
+    }
+
+    #[test]
+    fn sum_tree() {
+        let mut tree = Tree::new(vec![0], vec![1], SummedMerk(3)).unwrap().attach(
+            false,
+            SomeMerk(Tree::new(vec![2], vec![3], SummedMerk(5)).unwrap())
+        );
+        tree.commit(&mut NoopCommit{}).unwrap().expect("should commit");
+        assert_eq!(Some(8), tree.sum());
     }
 }
