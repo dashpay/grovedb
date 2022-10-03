@@ -8,7 +8,7 @@ use crate::{subtree::Element, util::storage_context_optional_tx, GroveDb, Transa
 impl Visualize for Element {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
         match self {
-            Element::Item(value, _) => {
+            Element::Item(value, _) | Element::SumItem(value, _) => {
                 drawer.write(b"item: ")?;
                 drawer = value.visualize(drawer)?;
             }

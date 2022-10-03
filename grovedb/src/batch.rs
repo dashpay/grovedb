@@ -104,8 +104,10 @@ impl fmt::Debug for GroveDbOp {
         let op_dbg = match &self.op {
             Op::Insert { element } => match element {
                 Element::Item(..) => "Insert Item",
+                Element::SumItem(..) => "Insert Sum Item",
                 Element::Reference(..) => "Insert Ref",
-                Element::Tree(..) | Element::SumTree(..) => "Insert Tree",
+                Element::Tree(..) => "Insert Tree",
+                Element::SumTree(..) => "Insert Sum Tree",
             },
             Op::Delete => "Delete",
             Op::ReplaceTreeHash { .. } => "Replace Tree Hash",
@@ -314,7 +316,9 @@ where
                     .wrap_with_cost(cost);
                 }
                 Op::Insert { element } => match element {
-                    Element::Item(..) => Ok(Cow::Borrowed(element)).wrap_with_cost(cost),
+                    Element::Item(..) | Element::SumItem(..) => {
+                        Ok(Cow::Borrowed(element)).wrap_with_cost(cost)
+                    }
                     Element::Reference(path, _) => {
                         self.follow_reference(path, ops_by_qualified_paths, recursions_allowed - 1)
                     }
@@ -360,7 +364,9 @@ where
             );
 
             match element {
-                Element::Item(..) => Ok(Cow::Owned(element)).wrap_with_cost(cost),
+                Element::Item(..) | Element::SumItem(..) => {
+                    Ok(Cow::Owned(element)).wrap_with_cost(cost)
+                }
                 Element::Reference(path, _) => self.follow_reference(
                     path.as_slice(),
                     ops_by_qualified_paths,
@@ -442,7 +448,10 @@ where
                             )
                         );
                     }
-                    Element::Item(..) | Element::Tree(..) | Element::SumTree(..) => {
+                    Element::Item(..)
+                    | Element::SumItem(..)
+                    | Element::Tree(..)
+                    | Element::SumTree(..) => {
                         if batch_apply_options.validate_insertion_does_not_override {
                             let inserted = cost_return_on_error!(
                                 &mut cost,

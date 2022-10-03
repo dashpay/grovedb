@@ -38,12 +38,17 @@ pub type ElementFlags = Option<Vec<u8>>;
 pub enum Element {
     /// An ordinary value
     Item(Vec<u8>, ElementFlags),
+    // TODO: Expects some tests to break cause I didn't just append to the list
+    //  did it break?
     /// A reference to an object by its path
     Reference(Vec<Vec<u8>>, ElementFlags),
     /// A subtree, contains a root hash of the underlying Merk.
     /// Hash is stored to make Merk become different when its subtrees have
     /// changed, otherwise changes won't be reflected in parent trees.
     Tree([u8; 32], ElementFlags),
+    /// Vector encoded integer value that can be totaled in a sum tree
+    // TODO: Enforce the integer nature during insertion
+    SumItem(Vec<u8>, ElementFlags),
     /// Same as Element::Tree but underlying Merk sums value of it's summable
     /// nodes
     SumTree([u8; 32], ElementFlags),
@@ -103,6 +108,14 @@ impl Element {
         Element::Item(item_value, flags)
     }
 
+    pub fn new_sum_item(item_value: Vec<u8>) -> Self {
+        Element::SumItem(item_value, None)
+    }
+
+    pub fn new_sum_item_with_flags(item_value: Vec<u8>, flags: ElementFlags) -> Self {
+        Element::SumItem(item_value, flags)
+    }
+
     pub fn new_reference(reference_path: Vec<Vec<u8>>) -> Self {
         Element::Reference(reference_path, None)
     }
@@ -133,6 +146,7 @@ impl Element {
             Element::Tree(_, flags)
             | Element::SumTree(_, flags)
             | Element::Item(_, flags)
+            | Element::SumItem(_, flags)
             | Element::Reference(_, flags) => flags,
         }
     }
@@ -140,7 +154,7 @@ impl Element {
     /// Get the size of an element in bytes
     pub fn byte_size(&self) -> usize {
         match self {
-            Element::Item(item, element_flag) => {
+            Element::Item(item, element_flag) | Element::SumItem(item, element_flag) => {
                 if let Some(flag) = element_flag {
                     flag.len() + item.len()
                 } else {
@@ -177,7 +191,7 @@ impl Element {
     /// Get the size of the serialization of an element in bytes
     pub fn serialized_byte_size(&self) -> usize {
         match self {
-            Element::Item(item, element_flag) => {
+            Element::Item(item, element_flag) | Element::SumItem(item, element_flag) => {
                 let item_len = item.len();
                 let flag_len = if let Some(flag) = element_flag {
                     flag.len() + 1
@@ -1117,6 +1131,40 @@ mod tests {
         assert_eq!(serialized.len(), 14);
         assert_eq!(serialized.len(), reference.serialized_byte_size());
         assert_eq!(hex::encode(serialized), "0103010002abcd01050103010203");
+
+        let empty_sum_tree = Element::empty_sum_tree();
+        let serialized = empty_sum_tree.serialize().expect("expected to serialize");
+        assert_eq!(serialized.len(), 34);
+        assert_eq!(serialized.len(), empty_sum_tree.serialized_byte_size());
+        // The tree is fixed length 32 bytes, so it's enum 2 then 32 bytes of zeroes
+        assert_eq!(
+            hex::encode(serialized),
+            "04000000000000000000000000000000000000000000000000000000000000000000"
+        );
+
+        let empty_sum_tree = Element::new_sum_tree_with_flags([0; 32], Some(vec![5]));
+        let serialized = empty_sum_tree.serialize().expect("expected to serialize");
+        assert_eq!(serialized.len(), 36);
+        assert_eq!(
+            hex::encode(serialized),
+            "040000000000000000000000000000000000000000000000000000000000000000010105"
+        );
+
+        let sum_item = Element::new_sum_item(hex::decode("abcdef").expect("expected to decode"));
+        let serialized = sum_item.serialize().expect("expected to serialize");
+        assert_eq!(serialized.len(), 6);
+        assert_eq!(serialized.len(), sum_item.serialized_byte_size());
+        // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
+        assert_eq!(hex::encode(serialized), "0303abcdef00");
+
+        let sum_item = Element::new_sum_item_with_flags(
+            hex::decode("abcdef").expect("expected to decode"),
+            Some(vec![1]),
+        );
+        let serialized = sum_item.serialize().expect("expected to serialize");
+        assert_eq!(serialized.len(), 8);
+        assert_eq!(serialized.len(), sum_item.serialized_byte_size());
+        assert_eq!(hex::encode(serialized), "0303abcdef010101");
     }
 
     #[test]
