@@ -43,8 +43,8 @@ impl PathQuery {
     /// [a, b] + [a, b]
     ///     valid if they both point queries of the same depth
     ///     invalid if they point to queries of different depth
-    /// TODO: Currently not allowing unlimited depth queries when paths are equal
-    ///     this is possible, should handle later.
+    /// TODO: Currently not allowing unlimited depth queries when paths are
+    /// equal     this is possible, should handle later.
     /// [a] + [b] (valid, unique and non subset)
     pub fn merge(path_queries: Vec<&PathQuery>) -> CostContext<Result<Self, Error>> {
         let cost = OperationCost::default();
@@ -106,8 +106,10 @@ impl PathQuery {
 
                 if path_one_len == path_two_len {
                     // paths are equal, confirm that queries have no subquery
-                    if path_queries[i].query.query.has_subquery() || path_queries[j].query.query.has_subquery() {
-                       return true
+                    if path_queries[i].query.query.has_subquery()
+                        || path_queries[j].query.query.has_subquery()
+                    {
+                        return true;
                     }
                 }
 

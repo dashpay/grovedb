@@ -520,10 +520,12 @@ pub const fn side_to_str(left: bool) -> &'static str {
 mod test {
     use super::{commit::NoopCommit, hash::NULL_HASH, Tree};
     use crate::{
-        merk::OptionOrMerkType::{NoneOfType, SomeMerk},
+        merk::{
+            OptionOrMerkType::{NoneOfType, SomeMerk},
+            TreeFeatureType::SummedMerk,
+        },
         tree::TreeFeatureType::BasicMerk,
     };
-    use crate::merk::TreeFeatureType::SummedMerk;
 
     #[test]
     fn build_tree() {
@@ -715,9 +717,11 @@ mod test {
     fn sum_tree() {
         let mut tree = Tree::new(vec![0], vec![1], SummedMerk(3)).unwrap().attach(
             false,
-            SomeMerk(Tree::new(vec![2], vec![3], SummedMerk(5)).unwrap())
+            SomeMerk(Tree::new(vec![2], vec![3], SummedMerk(5)).unwrap()),
         );
-        tree.commit(&mut NoopCommit{}).unwrap().expect("should commit");
+        tree.commit(&mut NoopCommit {})
+            .unwrap()
+            .expect("should commit");
         assert_eq!(Some(8), tree.sum());
     }
 }

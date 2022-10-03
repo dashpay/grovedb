@@ -3937,3 +3937,19 @@ fn test_tree_value_exists_method_tx() {
     assert!(db.has_raw([TEST_LEAF], b"key", None).unwrap().unwrap());
     assert!(db.has_raw([], b"leaf", None).unwrap().unwrap());
 }
+
+#[test]
+fn test_sum_tree_behaves_like_regular_tree() {
+    let db = make_grovedb();
+    db.insert([TEST_LEAF], b"key", Element::empty_sum_tree(), None)
+        .unwrap()
+        .expect("should insert tree");
+    db.insert(
+        [TEST_LEAF, b"key"],
+        b"innerkey",
+        Element::new_item(vec![1]),
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+}

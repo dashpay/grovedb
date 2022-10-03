@@ -44,7 +44,8 @@ pub enum Element {
     /// Hash is stored to make Merk become different when its subtrees have
     /// changed, otherwise changes won't be reflected in parent trees.
     Tree([u8; 32], ElementFlags),
-    /// Same as Element::Tree but underlying Merk sums value of it's summable nodes
+    /// Same as Element::Tree but underlying Merk sums value of it's summable
+    /// nodes
     SumTree([u8; 32], ElementFlags),
 }
 
@@ -86,6 +87,14 @@ impl Element {
         Element::new_tree_with_flags(Default::default(), flags)
     }
 
+    pub fn empty_sum_tree() -> Self {
+        Element::new_sum_tree(Default::default())
+    }
+
+    pub fn empty_sum_tree_with_flags(flags: ElementFlags) -> Self {
+        Element::new_sum_tree_with_flags(Default::default(), flags)
+    }
+
     pub fn new_item(item_value: Vec<u8>) -> Self {
         Element::Item(item_value, None)
     }
@@ -110,12 +119,21 @@ impl Element {
         Element::Tree(tree_hash, flags)
     }
 
+    pub fn new_sum_tree(tree_hash: [u8; 32]) -> Self {
+        Element::SumTree(tree_hash, None)
+    }
+
+    pub fn new_sum_tree_with_flags(tree_hash: [u8; 32], flags: ElementFlags) -> Self {
+        Element::SumTree(tree_hash, flags)
+    }
+
     /// Grab the optional flag stored in an element
     pub fn get_flags(&self) -> &ElementFlags {
         match self {
-            Element::Tree(_, flags) | Element::SumTree(_, flags) | Element::Item(_, flags) | Element::Reference(_, flags) => {
-                flags
-            }
+            Element::Tree(_, flags)
+            | Element::SumTree(_, flags)
+            | Element::Item(_, flags)
+            | Element::Reference(_, flags) => flags,
         }
     }
 
@@ -142,7 +160,7 @@ impl Element {
                     path_length
                 }
             }
-            Element::Tree(_, element_flag) | Element::SumTree(_, element_flag)=> {
+            Element::Tree(_, element_flag) | Element::SumTree(_, element_flag) => {
                 if let Some(flag) = element_flag {
                     flag.len() + 32
                 } else {

@@ -273,7 +273,7 @@ where {
         let parent_key = parent_iter.next_back().expect("path is not empty");
         merk_optional_tx!(&mut cost, self.db, parent_iter, transaction, parent, {
             match Element::get(&parent, parent_key).unwrap_add_cost(&mut cost) {
-                Ok(Element::Tree(..)) => {}
+                Ok(Element::Tree(..)) | Ok(Element::SumTree(..)) => {}
                 Ok(_) | Err(Error::PathKeyNotFound(_)) => return Err(error).wrap_with_cost(cost),
                 Err(e) => return Err(e).wrap_with_cost(cost),
             }
