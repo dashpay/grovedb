@@ -228,7 +228,7 @@ where {
                             }
                         }
                         Element::Item(item, _) => Ok(item),
-                        Element::Tree(..) => Err(Error::InvalidQuery(
+                        Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items and references",
                         )),
                     }
