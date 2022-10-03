@@ -45,7 +45,7 @@ pub enum Element {
     /// changed, otherwise changes won't be reflected in parent trees.
     Tree([u8; 32], ElementFlags),
     /// Vector encoded integer value that can be totaled in a sum tree
-    // TODO: Enforce the integer nature during insertion
+    // TODO: Look into enforcing the integer nature during insertion
     SumItem(Vec<u8>, ElementFlags),
     /// Same as Element::Tree but underlying Merk sums value of it's summable
     /// nodes
@@ -138,14 +138,15 @@ impl Element {
         Element::SumTree(tree_hash, flags)
     }
 
-    /// Decoded the integer value in the SumItem element type, returns 0 for everything else
+    /// Decoded the integer value in the SumItem element type, returns 0 for
+    /// everything else
     pub fn sum_value(&self) -> Option<i64> {
         match self {
             Element::SumItem(value, _) => {
                 i64::decode_var(value).map(|(encoded_value, _)| encoded_value)
-            },
+            }
             // TODO: should this be None instead??
-            _ => Some(0)
+            _ => Some(0),
         }
     }
 

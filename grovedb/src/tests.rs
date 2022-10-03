@@ -4042,15 +4042,8 @@ fn test_sum_item_behaves_like_regular_item() {
         GroveDb::verify_query(&proof, &path_query).expect("should verify proof");
     assert_eq!(root_hash, db.db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 1);
-    let element_from_proof = Element::deserialize(&result_set[0].1).expect("should deserialize element");
-    assert_eq!(
-        element_from_proof,
-        Element::new_sum_item(5)
-    );
+    let element_from_proof =
+        Element::deserialize(&result_set[0].1).expect("should deserialize element");
+    assert_eq!(element_from_proof, Element::new_sum_item(5));
     assert_eq!(element_from_proof.sum_value(), Some(5));
-
-    // Test that integer limit is enforced when adding a sum item
-    // let m: u64 = 5;
-    // let max_int_as_vec = m.encode_fixed_vec();
-    // dbg!(max_int_as_vec);
 }
