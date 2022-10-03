@@ -21,10 +21,10 @@ pub struct CrashMerk {
 impl CrashMerk {
     /// Opens a `CrashMerk` at the given file path, creating a new one if it
     /// does not exist.
-    pub fn open() -> Result<CrashMerk> {
+    pub fn open_base() -> Result<CrashMerk> {
         let storage = Box::leak(Box::new(TempStorage::new()));
         let context = storage.get_storage_context(empty()).unwrap();
-        let merk = Merk::open(context).unwrap().unwrap();
+        let merk = Merk::open_base(context).unwrap().unwrap();
         Ok(CrashMerk { merk, storage })
     }
 
@@ -63,7 +63,7 @@ mod tests {
     #[test]
     #[ignore] // currently this still works because we enabled the WAL
     fn crash() {
-        let mut merk = CrashMerk::open().expect("failed to open merk");
+        let mut merk = CrashMerk::open_base().expect("failed to open merk");
         merk.apply::<_, Vec<u8>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[])
             .unwrap()
             .expect("apply failed");

@@ -1162,7 +1162,7 @@ mod test {
 
     #[test]
     fn simulated_crash() {
-        let mut merk = CrashMerk::open().expect("failed to open merk");
+        let mut merk = CrashMerk::open_base().expect("failed to open merk");
 
         merk.apply::<_, Vec<_>>(
             &[(vec![0], Op::Put(vec![1]))],

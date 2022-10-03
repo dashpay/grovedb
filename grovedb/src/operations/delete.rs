@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use merk::Merk;
 use storage::{Storage, StorageContext};
 
 use crate::{
