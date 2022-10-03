@@ -186,11 +186,18 @@ impl Element {
                     path_length
                 }
             }
-            Element::Tree(_, element_flag) | Element::SumTree(_, _, element_flag) => {
+            Element::Tree(_, element_flag) => {
                 if let Some(flag) = element_flag {
                     flag.len() + 32
                 } else {
                     32
+                }
+            }
+            Element::SumTree(_, _, element_flag) => {
+                if let Some(flag) = element_flag {
+                    flag.len() + 32 + 8
+                } else {
+                    32 + 8
                 }
             }
         }
