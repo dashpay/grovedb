@@ -3,7 +3,6 @@ use std::ops::{Deref, DerefMut};
 use ::visualize::{Drawer, Visualize};
 use integer_encoding::{FixedInt, VarInt};
 use rand::Rng;
-use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
 use tempfile::TempDir;
 
 use super::*;
@@ -4068,6 +4067,7 @@ fn test_sum_tree_feature() {
         .expect("should insert tree");
 
     // Sum should be non for non sum tree
+    // TODO: change interface to retrieve element directly
     let merk = open_merk!(db, [TEST_LEAF, b"key"]);
     assert_eq!(merk.sum(), None);
 
@@ -4075,6 +4075,17 @@ fn test_sum_tree_feature() {
     db.insert([TEST_LEAF], b"key2", Element::empty_sum_tree(), None)
         .unwrap()
         .expect("should insert sum tree");
-    let merk = open_merk!(db, [TEST_LEAF, b"key2"]);
-    assert_eq!(merk.sum(), Some(0));
+    let sum_tree = db
+        .get([TEST_LEAF], b"key2", None)
+        .unwrap()
+        .expect("should retrieve tree");
+    assert_eq!(sum_tree.sum_value(), Some(0));
+
+    // Add sum items to the sum tree
+    db.insert([TEST_LEAF, b"key2"], b"item1", Element::new_sum_item(30), None).unwrap().expect("should insert item");
+    let sum_tree = db
+        .get([TEST_LEAF], b"key2", None)
+        .unwrap()
+        .expect("should retrieve tree");
+    assert_eq!(sum_tree.sum_value(), Some(30));
 }
