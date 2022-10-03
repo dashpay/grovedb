@@ -154,7 +154,6 @@ impl Decode for KV {
 
     #[inline]
     fn decode_into<R: Read>(&mut self, mut input: R) -> Result<()> {
-        dbg!("decoding the kv");
         self.key.clear();
 
         input.read_exact(&mut self.hash[..])?;
@@ -163,7 +162,6 @@ impl Decode for KV {
         self.value.clear();
         input.read_to_end(self.value.as_mut())?;
 
-        dbg!("done decoding the kv");
         Ok(())
     }
 }

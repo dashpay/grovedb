@@ -335,8 +335,6 @@ impl Decode for Link {
             unreachable!()
         }
 
-        dbg!("done decoding the link");
-
         Ok(())
     }
 }
