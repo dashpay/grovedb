@@ -207,7 +207,7 @@ impl Tree {
     /// Returns the sum of the root node's child on the given side, if any. If
     /// there is no child, returns 0.
     #[inline]
-    pub fn child_sum(&self, left: bool) -> u64 {
+    pub fn child_sum(&self, left: bool) -> i64 {
         match self.link(left) {
             Some(link) => link.sum().unwrap_or_default(),
             _ => 0,
@@ -226,7 +226,7 @@ impl Tree {
 
     /// Computes and returns the hash of the root node.
     #[inline]
-    pub fn sum(&self) -> Option<u64> {
+    pub fn sum(&self) -> Option<i64> {
         match self.inner.feature_type {
             TreeFeatureType::BasicMerk => None,
             TreeFeatureType::SummedMerk(value) => {

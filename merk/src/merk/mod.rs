@@ -150,7 +150,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Encode, Decode)]
 pub enum TreeFeatureType {
     BasicMerk,
-    SummedMerk(u64),
+    SummedMerk(i64),
 }
 
 #[derive(PartialEq, Eq, Debug)]

@@ -19,7 +19,7 @@ pub enum Link {
         hash: Hash,
         child_heights: (u8, u8),
         key: Vec<u8>,
-        sum: Option<u64>,
+        sum: Option<i64>,
     },
 
     /// Represents a tree node which has been modified since the `Tree`'s last
@@ -39,7 +39,7 @@ pub enum Link {
         hash: Hash,
         child_heights: (u8, u8),
         tree: Tree,
-        sum: Option<u64>,
+        sum: Option<i64>,
     },
 
     /// Represents a tree node which has not been modified, has an up-to-date
@@ -48,7 +48,7 @@ pub enum Link {
         hash: Hash,
         child_heights: (u8, u8),
         tree: Tree,
-        sum: Option<u64>,
+        sum: Option<i64>,
     },
 }
 
@@ -136,7 +136,7 @@ impl Link {
     /// of variant `Link::Modified` since we have not yet recomputed the tree's
     /// hash.
     #[inline]
-    pub const fn sum(&self) -> Option<u64> {
+    pub const fn sum(&self) -> Option<i64> {
         match self {
             Link::Modified { .. } => panic!("Cannot get hash from modified link"),
             Link::Reference { sum, .. } => *sum,
@@ -330,7 +330,7 @@ impl Decode for Link {
             child_heights.1 = read_u8(&mut input)?;
 
             // TODO: make this optional
-            *sum = input.read_u64::<BigEndian>().ok();
+            *sum = input.read_i64::<BigEndian>().ok();
         } else {
             unreachable!()
         }
