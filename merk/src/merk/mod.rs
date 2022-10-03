@@ -408,6 +408,11 @@ where
         })
     }
 
+    /// Returns the total sum value in the Merk tree
+    pub fn sum(&self) -> Option<i64> {
+        self.use_tree(|tree| tree.map_or(None, |tree| tree.sum()))
+    }
+
     /// Applies a batch of operations (puts and deletes) to the tree.
     ///
     /// This will fail if the keys in `batch` are not sorted and unique. This

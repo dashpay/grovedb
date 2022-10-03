@@ -3,6 +3,7 @@ use std::ops::{Deref, DerefMut};
 use ::visualize::{Drawer, Visualize};
 use integer_encoding::{FixedInt, VarInt};
 use rand::Rng;
+use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
 use tempfile::TempDir;
 
 use super::*;
@@ -4046,4 +4047,34 @@ fn test_sum_item_behaves_like_regular_item() {
         Element::deserialize(&result_set[0].1).expect("should deserialize element");
     assert_eq!(element_from_proof, Element::new_sum_item(5));
     assert_eq!(element_from_proof.sum_value(), Some(5));
+}
+
+macro_rules! open_merk {
+    ($db:expr, $path:expr) => {{
+        $db.db
+            .db
+            .get_storage_context($path)
+            .flat_map(|storage| Merk::open(storage))
+            .unwrap()
+            .unwrap()
+    }};
+}
+
+#[test]
+fn test_sum_tree_feature() {
+    let db = make_grovedb();
+    db.insert([TEST_LEAF], b"key", Element::empty_tree(), None)
+        .unwrap()
+        .expect("should insert tree");
+
+    // Sum should be non for non sum tree
+    let merk = open_merk!(db, [TEST_LEAF, b"key"]);
+    assert_eq!(merk.sum(), None);
+
+    // Add sum tree
+    db.insert([TEST_LEAF], b"key2", Element::empty_sum_tree(), None)
+        .unwrap()
+        .expect("should insert sum tree");
+    let merk = open_merk!(db, [TEST_LEAF, b"key2"]);
+    assert_eq!(merk.sum(), Some(0));
 }
