@@ -38,8 +38,6 @@ pub type ElementFlags = Option<Vec<u8>>;
 pub enum Element {
     /// An ordinary value
     Item(Vec<u8>, ElementFlags),
-    // TODO: Expects some tests to break cause I didn't just append to the list
-    //  did it break?
     /// A reference to an object by its path
     Reference(Vec<Vec<u8>>, ElementFlags),
     /// A subtree, contains a root hash of the underlying Merk.
@@ -108,12 +106,12 @@ impl Element {
         Element::Item(item_value, flags)
     }
 
-    pub fn new_sum_item(item_value: Vec<u8>) -> Self {
-        Element::SumItem(item_value, None)
+    pub fn new_sum_item(value: i64) -> Self {
+        Element::SumItem(value.encode_var_vec(), None)
     }
 
-    pub fn new_sum_item_with_flags(item_value: Vec<u8>, flags: ElementFlags) -> Self {
-        Element::SumItem(item_value, flags)
+    pub fn new_sum_item_with_flags(value: i64, flags: ElementFlags) -> Self {
+        Element::SumItem(value.encode_var_vec(), flags)
     }
 
     pub fn new_reference(reference_path: Vec<Vec<u8>>) -> Self {
@@ -1150,14 +1148,14 @@ mod tests {
             "040000000000000000000000000000000000000000000000000000000000000000010105"
         );
 
-        let sum_item = Element::new_sum_item(hex::decode("abcdef").expect("expected to decode"));
+        let sum_item = Element::SumItem(hex::decode("abcdef").expect("expected to decode"), None);
         let serialized = sum_item.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 6);
         assert_eq!(serialized.len(), sum_item.serialized_byte_size());
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "0303abcdef00");
 
-        let sum_item = Element::new_sum_item_with_flags(
+        let sum_item = Element::SumItem(
             hex::decode("abcdef").expect("expected to decode"),
             Some(vec![1]),
         );

@@ -1,6 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 use ::visualize::{Drawer, Visualize};
+use integer_encoding::{FixedInt, VarInt};
 use rand::Rng;
 use tempfile::TempDir;
 
@@ -4012,7 +4013,7 @@ fn test_sum_item_behaves_like_regular_item() {
     db.insert(
         [TEST_LEAF, b"sumkey"],
         b"k2",
-        Element::new_sum_item(vec![1]),
+        Element::new_sum_item(5),
         None,
     )
     .unwrap()
@@ -4026,7 +4027,7 @@ fn test_sum_item_behaves_like_regular_item() {
         .get([TEST_LEAF, b"sumkey"], b"k2", None)
         .unwrap()
         .expect("should get item");
-    assert_eq!(item, Element::new_sum_item(vec![1]));
+    assert_eq!(item, Element::new_sum_item(5));
 
     // Test proof generation
     let mut query = Query::new();
@@ -4043,6 +4044,11 @@ fn test_sum_item_behaves_like_regular_item() {
     assert_eq!(result_set.len(), 1);
     assert_eq!(
         Element::deserialize(&result_set[0].1).expect("should deserialize element"),
-        Element::new_sum_item(vec![1])
+        Element::new_sum_item(5)
     );
+
+    // Test that integer limit is enforced when adding a sum item
+    // let m: u64 = 5;
+    // let max_int_as_vec = m.encode_fixed_vec();
+    // dbg!(max_int_as_vec);
 }
