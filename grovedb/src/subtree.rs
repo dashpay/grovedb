@@ -138,6 +138,17 @@ impl Element {
         Element::SumTree(tree_hash, flags)
     }
 
+    /// Decoded the integer value in the SumItem element type, returns 0 for everything else
+    pub fn sum_value(&self) -> Option<i64> {
+        match self {
+            Element::SumItem(value, _) => {
+                i64::decode_var(value).map(|(encoded_value, _)| encoded_value)
+            },
+            // TODO: should this be None instead??
+            _ => Some(0)
+        }
+    }
+
     /// Grab the optional flag stored in an element
     pub fn get_flags(&self) -> &ElementFlags {
         match self {
