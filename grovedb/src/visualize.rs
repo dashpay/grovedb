@@ -25,7 +25,7 @@ impl Visualize for Element {
                 // }
                 // drawer.write(b"]")?;
             }
-            Element::Tree(hash, _) | Element::SumTree(hash, _) => {
+            Element::Tree(hash, _) | Element::SumTree(hash, ..) => {
                 drawer.write(b"tree: ")?;
                 drawer = hash.visualize(drawer)?;
             }

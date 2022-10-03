@@ -30,6 +30,8 @@ use crate::{
 
 /// Optional single byte meta-data to be stored per element
 pub type ElementFlags = Option<Vec<u8>>;
+/// int 64 sum value
+pub type SumValue = i64;
 
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
@@ -49,7 +51,7 @@ pub enum Element {
     SumItem(Vec<u8>, ElementFlags),
     /// Same as Element::Tree but underlying Merk sums value of it's summable
     /// nodes
-    SumTree([u8; 32], ElementFlags),
+    SumTree([u8; 32], SumValue, ElementFlags),
 }
 
 impl fmt::Debug for Element {
@@ -131,11 +133,11 @@ impl Element {
     }
 
     pub fn new_sum_tree(tree_hash: [u8; 32]) -> Self {
-        Element::SumTree(tree_hash, None)
+        Element::SumTree(tree_hash, 0, None)
     }
 
     pub fn new_sum_tree_with_flags(tree_hash: [u8; 32], flags: ElementFlags) -> Self {
-        Element::SumTree(tree_hash, flags)
+        Element::SumTree(tree_hash, 0, flags)
     }
 
     /// Decoded the integer value in the SumItem element type, returns 0 for
@@ -154,7 +156,7 @@ impl Element {
     pub fn get_flags(&self) -> &ElementFlags {
         match self {
             Element::Tree(_, flags)
-            | Element::SumTree(_, flags)
+            | Element::SumTree(_, _, flags)
             | Element::Item(_, flags)
             | Element::SumItem(_, flags)
             | Element::Reference(_, flags) => flags,
@@ -184,7 +186,7 @@ impl Element {
                     path_length
                 }
             }
-            Element::Tree(_, element_flag) | Element::SumTree(_, element_flag) => {
+            Element::Tree(_, element_flag) | Element::SumTree(_, _, element_flag) => {
                 if let Some(flag) = element_flag {
                     flag.len() + 32
                 } else {
@@ -229,13 +231,22 @@ impl Element {
                     + flag_len.required_space()
                     + 1 // + 1 for enum
             }
-            Element::Tree(_, element_flag) | Element::SumTree(_, element_flag) => {
+            Element::Tree(_, element_flag) => {
                 let flag_len = if let Some(flag) = element_flag {
                     flag.len() + 1
                 } else {
                     0
                 };
                 32 + flag_len + flag_len.required_space() + 1 // + 1 for enum
+            }
+            Element::SumTree(_, sum_value, element_flag) => {
+                let flag_len = if let Some(flag) = element_flag {
+                    flag.len() + 1
+                } else {
+                    0
+                };
+                32 + sum_value.required_space() + flag_len + flag_len.required_space() + 1
+                // + 1 for enum
             }
         }
     }
@@ -1144,20 +1155,20 @@ mod tests {
 
         let empty_sum_tree = Element::empty_sum_tree();
         let serialized = empty_sum_tree.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 34);
+        assert_eq!(serialized.len(), 35);
         assert_eq!(serialized.len(), empty_sum_tree.serialized_byte_size());
         // The tree is fixed length 32 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(
             hex::encode(serialized),
-            "04000000000000000000000000000000000000000000000000000000000000000000"
+            "0400000000000000000000000000000000000000000000000000000000000000000000"
         );
 
         let empty_sum_tree = Element::new_sum_tree_with_flags([0; 32], Some(vec![5]));
         let serialized = empty_sum_tree.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 36);
+        assert_eq!(serialized.len(), 37);
         assert_eq!(
             hex::encode(serialized),
-            "040000000000000000000000000000000000000000000000000000000000000000010105"
+            "04000000000000000000000000000000000000000000000000000000000000000000010105"
         );
 
         let sum_item = Element::SumItem(hex::decode("abcdef").expect("expected to decode"), None);
