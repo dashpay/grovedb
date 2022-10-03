@@ -6,7 +6,7 @@ use storage::Storage;
 
 use crate::{
     reference_path::path_from_reference_path_type,
-    util::{merk_optional_tx, storage_context_optional_tx},
+    util::{merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx},
     Element, Error, GroveDb, TransactionArg,
 };
 

@@ -27,7 +27,7 @@ use crate::{
         QueryResultType::QueryElementResultType,
     },
     reference_path::{path_from_reference_path_type, ReferencePathType},
-    util::{merk_optional_tx, storage_context_optional_tx},
+    util::{merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx},
     Error, GroveDb, Hash, Merk, PathQuery, SizedQuery, Transaction, TransactionArg,
 };
 

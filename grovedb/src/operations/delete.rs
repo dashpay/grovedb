@@ -6,7 +6,7 @@ use storage::{Storage, StorageContext};
 
 use crate::{
     batch::{GroveDbOp, KeyInfo, KeyInfoPath, Op},
-    util::{merk_optional_tx, storage_context_optional_tx},
+    util::{merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx},
     Element, Error, GroveDb, TransactionArg,
 };
 
