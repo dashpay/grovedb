@@ -4082,7 +4082,14 @@ fn test_sum_tree_feature() {
     assert_eq!(sum_tree.sum_value(), Some(0));
 
     // Add sum items to the sum tree
-    db.insert([TEST_LEAF, b"key2"], b"item1", Element::new_sum_item(30), None).unwrap().expect("should insert item");
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"item1",
+        Element::new_sum_item(30),
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
     let sum_tree = db
         .get([TEST_LEAF], b"key2", None)
         .unwrap()

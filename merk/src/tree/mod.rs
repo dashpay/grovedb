@@ -227,6 +227,8 @@ impl Tree {
     /// Computes and returns the hash of the root node.
     #[inline]
     pub fn sum(&self) -> Option<i64> {
+        // TODO: potentially consider all basic merk values as 0, simplifies
+        //  the insertion process.
         match self.inner.feature_type {
             TreeFeatureType::BasicMerk => None,
             TreeFeatureType::SummedMerk(value) => {

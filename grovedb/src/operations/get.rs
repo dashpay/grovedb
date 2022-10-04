@@ -14,6 +14,9 @@ use crate::{
 /// Limit of possible indirections
 pub const MAX_REFERENCE_HOPS: usize = 10;
 
+/// Type to represent existence of a sum tree
+pub type IsSumTree = bool;
+
 impl GroveDb {
     pub fn get<'p, P>(
         &self,
@@ -257,7 +260,7 @@ where {
         path: P,
         transaction: TransactionArg,
         error: Error,
-    ) -> CostResult<(), Error>
+    ) -> CostResult<IsSumTree, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -266,27 +269,27 @@ where {
 
         let path_iter = path.into_iter();
         if path_iter.len() == 0 {
-            return Ok(()).wrap_with_cost(cost);
+            return Ok(false).wrap_with_cost(cost);
         }
 
         let mut parent_iter = path_iter;
         let parent_key = parent_iter.next_back().expect("path is not empty");
         merk_optional_tx!(&mut cost, self.db, parent_iter, transaction, parent, {
-            match Element::get(&parent, parent_key).unwrap_add_cost(&mut cost) {
-                Ok(Element::Tree(..)) | Ok(Element::SumTree(..)) => {}
+            let parent_element = Element::get(&parent, parent_key).unwrap_add_cost(&mut cost);
+            match parent_element {
+                Ok(Element::Tree(..)) => return Ok(false).wrap_with_cost(cost),
+                Ok(Element::SumTree(..)) => return Ok(true).wrap_with_cost(cost),
                 Ok(_) | Err(Error::PathKeyNotFound(_)) => return Err(error).wrap_with_cost(cost),
                 Err(e) => return Err(e).wrap_with_cost(cost),
             }
         });
-
-        Ok(()).wrap_with_cost(cost)
     }
 
     pub fn check_subtree_exists_path_not_found<'p, P>(
         &self,
         path: P,
         transaction: TransactionArg,
-    ) -> CostResult<(), Error>
+    ) -> CostResult<IsSumTree, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -302,7 +305,7 @@ where {
         &self,
         path: P,
         transaction: TransactionArg,
-    ) -> CostResult<(), Error>
+    ) -> CostResult<IsSumTree, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
