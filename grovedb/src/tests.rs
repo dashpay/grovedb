@@ -4093,9 +4093,24 @@ fn test_sum_tree_feature() {
     // TODO: change interface to retrieve element directly
     let merk = open_merk!(db, [TEST_LEAF, b"key2"]);
     assert_eq!(merk.sum(), Some(30));
-    // let sum_tree = db
-    //     .get([TEST_LEAF], b"key2", None)
-    //     .unwrap()
-    //     .expect("should retrieve tree");
-    // assert_eq!(sum_tree.sum_value(), Some(30));
+
+    // Add more sum items
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"item2",
+        Element::new_sum_item(-10),
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"item3",
+        Element::new_sum_item(50),
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+    let merk = open_merk!(db, [TEST_LEAF, b"key2"]);
+    assert_eq!(merk.sum(), Some(70)); // 30 - 10 + 50 = 70
 }
