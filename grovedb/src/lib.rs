@@ -18,7 +18,7 @@ use std::path::Path;
 
 use costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
 pub use merk::proofs::{query::QueryItem, Query};
-use merk::{self, BatchEntry, CryptoHash, Merk};
+use merk::{self, BatchEntry, Merk};
 pub use query::{PathQuery, SizedQuery};
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
 pub use storage::{
@@ -29,7 +29,7 @@ use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTra
 pub use subtree::{Element, ElementFlags};
 
 pub use crate::error::Error;
-use crate::util::merk_optional_tx;
+use crate::util::root_merk_optional_tx;
 
 // todo: remove this
 const MAX_ELEMENTS_NUMBER: u32 = 42069;
@@ -253,7 +253,7 @@ impl GroveDb {
             ..Default::default()
         };
 
-        merk_optional_tx!(&mut cost, self.db, [].to_vec().into_iter(), transaction, subtree, {
+        root_merk_optional_tx!(&mut cost, self.db, transaction, subtree, {
             let root_hash = subtree.root_hash().unwrap_add_cost(&mut cost);
             Ok(root_hash).wrap_with_cost(cost)
         })

@@ -1,6 +1,8 @@
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+use merk::Merk;
+use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 
 use crate::{
     reference_path::path_from_reference_path_type,
@@ -166,17 +168,22 @@ impl GroveDb {
         );
         let path_iter = path.into_iter();
 
-        cost_return_on_error!(
+        if transaction.is_some() {
+            let parent_subtree : Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
             &mut cost,
-            self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
+            self.open_merk_at_path(path_iter, transaction)
         );
+            let element = Element::empty_tree_with_flags(element_flag);
+            cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
+        } else {
+            let parent_subtree : Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+            &mut cost,
+            self.open_merk_at_path(path_iter, transaction)
+        );
+            let element = Element::empty_tree_with_flags(element_flag);
+            cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
+        }
 
-        let (child_subtree, parent_subtree) = cost_return_on_error!(
-            &mut cost,
-            self.open_merk_with_parent_at_path(path_iter.chain(std::iter::once(key)), transaction)
-        );
-        let element = Element::new_tree_with_flags(child_subtree.root_key(), element_flag);
-        cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
         Ok(()).wrap_with_cost(cost)
     }
 
