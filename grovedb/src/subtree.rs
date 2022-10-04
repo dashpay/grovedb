@@ -1397,7 +1397,7 @@ mod tests {
         let db = make_test_grovedb();
 
         let storage = &db.db;
-        let mut merk = db.db.open_merk_at_path([TEST_LEAF], None)
+        let mut merk = db.open_merk_at_path([TEST_LEAF], None)
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 

@@ -17,12 +17,12 @@ const DEEP_LEAF: &[u8] = b"deep_leaf";
 /// GroveDB wrapper to keep temp directory alive
 pub struct TempGroveDb {
     _tmp_dir: TempDir,
-    db: GroveDb,
+    grove_db: GroveDb,
 }
 
 impl DerefMut for TempGroveDb {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.db
+        &mut self.grove_db
     }
 }
 
@@ -30,13 +30,13 @@ impl Deref for TempGroveDb {
     type Target = GroveDb;
 
     fn deref(&self) -> &Self::Target {
-        &self.db
+        &self.grove_db
     }
 }
 
 impl Visualize for TempGroveDb {
     fn visualize<W: std::io::Write>(&self, drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
-        self.db.visualize(drawer)
+        self.grove_db.visualize(drawer)
     }
 }
 
@@ -46,7 +46,7 @@ pub fn make_empty_grovedb() -> TempGroveDb {
     let db = GroveDb::open(tmp_dir.path()).unwrap();
     TempGroveDb {
         _tmp_dir: tmp_dir,
-        db,
+        grove_db: db,
     }
 }
 
@@ -57,7 +57,7 @@ pub fn make_test_grovedb() -> TempGroveDb {
     add_test_leaves(&mut db);
     TempGroveDb {
         _tmp_dir: tmp_dir,
-        db,
+        grove_db: db,
     }
 }
 
@@ -513,7 +513,7 @@ fn test_element_with_flags() {
         .expect("should successfully create proof");
     let (root_hash, result_set) =
         GroveDb::verify_query(&proof, &path_query).expect("should verify proof");
-    assert_eq!(root_hash, db.db.root_hash(None).unwrap().unwrap());
+    assert_eq!(root_hash, db.grove_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
     assert_eq!(
         Element::deserialize(&result_set[0].1).expect("should deserialize element"),
@@ -1961,7 +1961,7 @@ fn test_subtree_pairs_iterator() {
     //     .elements_iterator(&[TEST_LEAF, b"subtree1"], None)
     //     .expect("cannot create iterator");
     let storage_context = db
-        .db
+        .grove_db
         .db
         .get_storage_context([TEST_LEAF, b"subtree1"])
         .unwrap();
@@ -2072,7 +2072,7 @@ fn test_get_subtree() {
     // Check if it returns the same instance that was inserted
     {
         let subtree_storage = db
-            .db
+            .grove_db
             .db
             .get_storage_context([TEST_LEAF, b"key1", b"key2"])
             .unwrap();
@@ -2105,7 +2105,7 @@ fn test_get_subtree() {
 
     // Retrieve subtree instance with transaction
     let subtree_storage = db
-        .db
+        .grove_db
         .db
         .get_transactional_storage_context([TEST_LEAF, b"key1", b"innertree"], &transaction)
         .unwrap();
@@ -2117,7 +2117,7 @@ fn test_get_subtree() {
 
     // Should be able to retrieve instances created before transaction
     let subtree_storage = db
-        .db
+        .grove_db
         .db
         .get_storage_context([TEST_LEAF, b"key1", b"key2"])
         .unwrap();

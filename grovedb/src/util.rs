@@ -114,20 +114,38 @@ macro_rules! merk_optional_tx {
         { $($body:tt)* }
     ) => {
         {
-            use crate::util::storage_context_with_parent_optional_tx;
-            storage_context_with_parent_optional_tx!(&mut $cost, $db, $path, $transaction, storage, root_key, {
-                let mut $subtree = cost_return_on_error!(
-                    &mut $cost,
-                    ::merk::Merk::open_with_root_key(storage, root_key)
-                        .map(|merk_res|
-                             merk_res
-                                .map_err(|_| crate::Error::CorruptedData(
-                                    "cannot open a subtree".to_owned()
-                                ))
-                             )
-                );
-                $($body)*
-            })
+            if $path.len() > 0 {
+                use crate::util::storage_context_with_parent_optional_tx;
+                storage_context_with_parent_optional_tx!(&mut $cost, $db, $path, $transaction, storage, root_key, {
+                    let mut $subtree = cost_return_on_error!(
+                        &mut $cost,
+                        ::merk::Merk::open_with_root_key(storage, root_key)
+                            .map(|merk_res|
+                                 merk_res
+                                    .map_err(|_| crate::Error::CorruptedData(
+                                        "cannot open a subtree".to_owned()
+                                    ))
+                                 )
+                    );
+                    $($body)*
+                })
+            } else {
+                use crate::util::storage_context_optional_tx;
+                storage_context_optional_tx!($db, $path, $transaction, storage, {
+                    let mut $subtree = cost_return_on_error!(
+                        &mut $cost,
+                        ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost))
+                            .map(|merk_res|
+                                 merk_res
+                                    .map_err(|_| crate::Error::CorruptedData(
+                                        "cannot open a subtree".to_owned()
+                                    ))
+                                 )
+                    );
+                    $($body)*
+                })
+            }
+
         }
     };
 }
