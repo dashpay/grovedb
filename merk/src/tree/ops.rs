@@ -104,7 +104,7 @@ where
 
         let mid_index = batch.len() / 2;
         // TODO: Make use of the feature type here
-        let (mid_key, mid_op, _) = &batch[mid_index];
+        let (mid_key, mid_op, mid_feature_type) = &batch[mid_index];
         let mid_value = match mid_op {
             Delete => {
                 let left_batch = &batch[..mid_index];
@@ -137,14 +137,14 @@ where
             Put(_) => Tree::new(
                 mid_key.as_ref().to_vec(),
                 mid_value.to_vec(),
-                tree_feature_type,
+                mid_feature_type.to_owned(),
             )
             .unwrap_add_cost(&mut cost),
             PutReference(_, referenced_value) => Tree::new_with_value_hash(
                 mid_key.as_ref().to_vec(),
                 mid_value.to_vec(),
                 value_hash(referenced_value).unwrap_add_cost(&mut cost),
-                tree_feature_type,
+                mid_feature_type.to_owned(),
             )
             .unwrap_add_cost(&mut cost),
             Delete => unreachable!("cannot get here, should return at the top"),

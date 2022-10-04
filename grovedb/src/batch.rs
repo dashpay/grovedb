@@ -11,9 +11,8 @@ use std::{
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use merk::{Merk, TreeFeatureType};
+use merk::{tree::Tree, Merk, TreeFeatureType};
 use nohash_hasher::IntMap;
-use merk::tree::Tree;
 use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 

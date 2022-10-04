@@ -4090,9 +4090,12 @@ fn test_sum_tree_feature() {
     )
     .unwrap()
     .expect("should insert item");
-    let sum_tree = db
-        .get([TEST_LEAF], b"key2", None)
-        .unwrap()
-        .expect("should retrieve tree");
-    assert_eq!(sum_tree.sum_value(), Some(30));
+    // TODO: change interface to retrieve element directly
+    let merk = open_merk!(db, [TEST_LEAF, b"key2"]);
+    assert_eq!(merk.sum(), Some(30));
+    // let sum_tree = db
+    //     .get([TEST_LEAF], b"key2", None)
+    //     .unwrap()
+    //     .expect("should retrieve tree");
+    // assert_eq!(sum_tree.sum_value(), Some(30));
 }

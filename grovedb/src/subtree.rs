@@ -13,10 +13,11 @@ use integer_encoding::VarInt;
 use merk::{
     proofs::{query::QueryItem, Query},
     tree::Tree,
-    BatchEntry, Op, HASH_LENGTH, TreeFeatureType
+    BatchEntry, Op, TreeFeatureType,
+    TreeFeatureType::BasicMerk,
+    HASH_LENGTH,
 };
 use serde::{Deserialize, Serialize};
-use merk::TreeFeatureType::BasicMerk;
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 use visualize::visualize_to_vec;
 
@@ -890,10 +891,10 @@ impl Element {
         // is_sum_tree: bool
     ) -> CostResult<(), Error> {
         // TODO: Fix this
-        let feature_type = match true{
+        let feature_type = match true {
             false => TreeFeatureType::BasicMerk,
             // TODO: Remove unwrap
-            true => TreeFeatureType::SummedMerk(self.sum_value().unwrap())
+            true => TreeFeatureType::SummedMerk(self.sum_value().unwrap()),
         };
         dbg!(feature_type);
 
@@ -987,7 +988,11 @@ impl Element {
         };
 
         // TODO: Build feature type here
-        let batch_operations = [(key, Op::PutReference(serialized, referenced_value), BasicMerk)];
+        let batch_operations = [(
+            key,
+            Op::PutReference(serialized, referenced_value),
+            BasicMerk,
+        )];
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -1003,7 +1008,11 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
         // TODO: Build featture type here
-        let entry = (key, Op::PutReference(serialized, referenced_value), BasicMerk);
+        let entry = (
+            key,
+            Op::PutReference(serialized, referenced_value),
+            BasicMerk,
+        );
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
