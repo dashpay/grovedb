@@ -251,7 +251,6 @@ impl<T> OptionOrMerkType<T> {
 pub struct Merk<S> {
     pub(crate) tree: Cell<Option<Tree>>,
     pub storage: S,
-    pub tree_feature_type: TreeFeatureType,
 }
 
 impl<S> fmt::Debug for Merk<S> {
@@ -271,7 +270,6 @@ where
         let mut merk = Self {
             tree: Cell::new(None),
             storage,
-            tree_feature_type: TreeFeatureType::BasicMerk,
         };
 
         merk.load_root().map_ok(|_| merk)
@@ -495,17 +493,15 @@ where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
     {
-        let maybe_walker = OptionOrMerkType::from_option(
-            self.tree
-                .take()
-                .take()
-                .map(|tree| Walker::new(tree, self.source())),
-            self.tree_feature_type,
-        );
+        let maybe_walker = self
+            .tree
+            .take()
+            .take()
+            .map(|tree| Walker::new(tree, self.source()));
 
         Walker::apply_to(maybe_walker, batch, self.source()).flat_map_ok(
             |(maybe_tree, deleted_keys)| {
-                self.tree.set(maybe_tree.to_option());
+                self.tree.set(maybe_tree);
                 // commit changes to db
                 self.commit(deleted_keys, aux)
             },

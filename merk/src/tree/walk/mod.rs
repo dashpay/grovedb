@@ -41,18 +41,18 @@ where
     /// Similar to `Tree#detach`, but yields a `Walker` which fetches from the
     /// same source as `self`. Returned tuple is `(updated_self,
     /// maybe_child_walker)`.
-    pub fn detach(mut self, left: bool) -> CostContext<Result<(Self, OptionOrMerkType<Self>)>> {
+    pub fn detach(mut self, left: bool) -> CostContext<Result<(Self, Option<Self>)>> {
         let mut cost = OperationCost::default();
 
         let feature_type = self.tree.inner.feature_type;
         let link = match self.tree.link(left) {
-            None => return Ok((self, NoneOfType(feature_type))).wrap_with_cost(cost),
+            None => return Ok((self, None)).wrap_with_cost(cost),
             Some(link) => link,
         };
 
         let child = if link.tree().is_some() {
             match self.tree.own_return(|t| t.detach(left)) {
-                SomeMerk(child) => child,
+                Some(child) => child,
                 _ => unreachable!("Expected Some"),
             }
         } else {
@@ -65,7 +65,7 @@ where
         };
 
         let child = self.wrap(child);
-        Ok((self, SomeMerk(child))).wrap_with_cost(cost)
+        Ok((self, Some(child))).wrap_with_cost(cost)
     }
 
     /// Similar to `Tree#detach_expect`, but yields a `Walker` which fetches
@@ -73,7 +73,7 @@ where
     /// child_walker)`.
     pub fn detach_expect(self, left: bool) -> CostContext<Result<(Self, Self)>> {
         self.detach(left).map_ok(|(walker, maybe_child)| {
-            if let SomeMerk(child) = maybe_child {
+            if let Some(child) = maybe_child {
                 (walker, child)
             } else {
                 panic!(
@@ -88,7 +88,7 @@ where
     /// same source as `self`.
     pub fn walk<F, T>(self, left: bool, f: F) -> CostContext<Result<Self>>
     where
-        F: FnOnce(OptionOrMerkType<Self>) -> CostContext<Result<OptionOrMerkType<T>>>,
+        F: FnOnce(Option<Self>) -> CostContext<Result<Option<T>>>,
         T: Into<Tree>,
     {
         let mut cost = OperationCost::default();
@@ -106,7 +106,7 @@ where
     /// the same source as `self`.
     pub fn walk_expect<F, T>(self, left: bool, f: F) -> CostContext<Result<Self>>
     where
-        F: FnOnce(Self) -> CostContext<Result<OptionOrMerkType<T>>>,
+        F: FnOnce(Self) -> CostContext<Result<Option<T>>>,
         T: Into<Tree>,
     {
         let mut cost = OperationCost::default();
@@ -143,7 +143,7 @@ where
 
     /// Similar to `Tree#attach`, but can also take a `Walker` since it
     /// implements `Into<Tree>`.
-    pub fn attach<T>(mut self, left: bool, maybe_child: OptionOrMerkType<T>) -> Self
+    pub fn attach<T>(mut self, left: bool, maybe_child: Option<T>) -> Self
     where
         T: Into<Tree>,
     {
@@ -206,20 +206,17 @@ mod test {
             .unwrap()
             .attach(
                 true,
-                SomeMerk(Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap()),
+                Some(Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap()),
             );
 
         let source = MockSource {};
         let walker = Walker::new(tree, source);
 
         let walker = walker
-            .walk(
-                true,
-                |child| -> CostContext<Result<OptionOrMerkType<Tree>>> {
-                    assert_eq!(child.expect("should have child").tree().key(), b"foo");
-                    Ok(NoneOfType(BasicMerk)).wrap_with_cost(Default::default())
-                },
-            )
+            .walk(true, |child| -> CostContext<Result<Option<Tree>>> {
+                assert_eq!(child.expect("should have child").tree().key(), b"foo");
+                Ok(None).wrap_with_cost(Default::default())
+            })
             .unwrap()
             .expect("walk failed");
         assert!(walker.into_inner().child(true).is_none());
@@ -231,7 +228,7 @@ mod test {
             .unwrap()
             .attach(
                 true,
-                SomeMerk(Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap()),
+                Some(Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap()),
             );
         tree.commit(&mut NoopCommit {})
             .unwrap()
@@ -241,13 +238,10 @@ mod test {
         let walker = Walker::new(tree, source);
 
         let walker = walker
-            .walk(
-                true,
-                |child| -> CostContext<Result<OptionOrMerkType<Tree>>> {
-                    assert_eq!(child.expect("should have child").tree().key(), b"foo");
-                    Ok(NoneOfType(BasicMerk)).wrap_with_cost(Default::default())
-                },
-            )
+            .walk(true, |child| -> CostContext<Result<Option<Tree>>> {
+                assert_eq!(child.expect("should have child").tree().key(), b"foo");
+                Ok(None).wrap_with_cost(Default::default())
+            })
             .unwrap()
             .expect("walk failed");
         assert!(walker.into_inner().child(true).is_none());
@@ -274,13 +268,10 @@ mod test {
         let walker = Walker::new(tree, source);
 
         let walker = walker
-            .walk_expect(
-                true,
-                |child| -> CostContext<Result<OptionOrMerkType<Tree>>> {
-                    assert_eq!(child.tree().key(), b"foo");
-                    Ok(NoneOfType(BasicMerk)).wrap_with_cost(Default::default())
-                },
-            )
+            .walk_expect(true, |child| -> CostContext<Result<Option<Tree>>> {
+                assert_eq!(child.tree().key(), b"foo");
+                Ok(None).wrap_with_cost(Default::default())
+            })
             .unwrap()
             .expect("walk failed");
         assert!(walker.into_inner().child(true).is_none());
@@ -294,13 +285,10 @@ mod test {
         let walker = Walker::new(tree, source);
 
         walker
-            .walk(
-                true,
-                |child| -> CostContext<Result<OptionOrMerkType<Tree>>> {
-                    assert!(child.is_none());
-                    Ok(NoneOfType(BasicMerk)).wrap_with_cost(Default::default())
-                },
-            )
+            .walk(true, |child| -> CostContext<Result<Option<Tree>>> {
+                assert!(child.is_none());
+                Ok(None).wrap_with_cost(Default::default())
+            })
             .unwrap()
             .expect("walk failed");
     }

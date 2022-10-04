@@ -1007,7 +1007,7 @@ impl Element {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
-        // TODO: Build featture type here
+        // TODO: Build feature type here
         let entry = (
             key,
             Op::PutReference(serialized, referenced_value),

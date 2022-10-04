@@ -27,17 +27,17 @@ pub fn assert_tree_invariants(tree: &Tree) {
         assert!(!right.is_modified());
     }
 
-    if let SomeMerk(left) = tree.child(true) {
+    if let Some(left) = tree.child(true) {
         assert_tree_invariants(left);
     }
-    if let SomeMerk(right) = tree.child(false) {
+    if let Some(right) = tree.child(false) {
         assert_tree_invariants(right);
     }
 }
 
 pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     let walker = Walker::<PanicSource>::new(tree, PanicSource {});
-    let mut tree = Walker::<PanicSource>::apply_to(SomeMerk(walker), batch, PanicSource {})
+    let mut tree = Walker::<PanicSource>::apply_to(Some(walker), batch, PanicSource {})
         .unwrap()
         .expect("apply failed")
         .0
@@ -54,10 +54,7 @@ pub fn apply_memonly(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     tree
 }
 
-pub fn apply_to_memonly(
-    maybe_tree: OptionOrMerkType<Tree>,
-    batch: &MerkBatch<Vec<u8>>,
-) -> OptionOrMerkType<Tree> {
+pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) -> Option<Tree> {
     let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
     Walker::<PanicSource>::apply_to(maybe_walker, batch, PanicSource {})
         .unwrap()

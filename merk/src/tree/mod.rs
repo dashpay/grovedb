@@ -173,24 +173,23 @@ impl Tree {
     /// Returns a reference to the root node's child on the given side, if any.
     /// If there is no child, returns `None`.
     #[inline]
-    pub fn child(&self, left: bool) -> OptionOrMerkType<&Self> {
+    pub fn child(&self, left: bool) -> Option<&Self> {
         match self.link(left) {
-            None => NoneOfType(self.inner.feature_type),
-            Some(link) => OptionOrMerkType::from_option(link.tree(), self.inner.feature_type),
+            None => None,
+            Some(link) => link.tree(),
         }
     }
 
     /// Returns a mutable reference to the root node's child on the given side,
     /// if any. If there is no child, returns `None`.
     #[inline]
-    pub fn child_mut(&mut self, left: bool) -> OptionOrMerkType<&mut Self> {
-        let feature_type = self.inner.feature_type;
+    pub fn child_mut(&mut self, left: bool) -> Option<&mut Self> {
         match self.slot_mut(left).as_mut() {
-            None => NoneOfType(feature_type),
-            Some(Link::Reference { .. }) => NoneOfType(feature_type),
-            Some(Link::Modified { tree, .. }) => SomeMerk(tree),
-            Some(Link::Uncommitted { tree, .. }) => SomeMerk(tree),
-            Some(Link::Loaded { tree, .. }) => SomeMerk(tree),
+            None => None,
+            Some(Link::Reference { .. }) => None,
+            Some(Link::Modified { tree, .. }) => Some(tree),
+            Some(Link::Uncommitted { tree, .. }) => Some(tree),
+            Some(Link::Loaded { tree, .. }) => Some(tree),
         }
     }
 
@@ -286,10 +285,10 @@ impl Tree {
     ///
     /// Panics if there is already a child on the given side.
     #[inline]
-    pub fn attach(mut self, left: bool, maybe_child: OptionOrMerkType<Self>) -> Self {
+    pub fn attach(mut self, left: bool, maybe_child: Option<Self>) -> Self {
         debug_assert_ne!(
             Some(self.key()),
-            maybe_child.as_ref().map_to_option(|c| c.key()),
+            maybe_child.as_ref().map(|c| c.key()),
             "Tried to attach tree with same key"
         );
 
@@ -301,7 +300,7 @@ impl Tree {
                 side_to_str(left)
             );
         }
-        *slot = Link::maybe_from_modified_tree(maybe_child.to_option());
+        *slot = Link::maybe_from_modified_tree(maybe_child);
 
         self
     }
@@ -312,14 +311,13 @@ impl Tree {
     /// One will usually want to reattach (see `attach`) a child on the same
     /// side after applying some operation to the detached child.
     #[inline]
-    pub fn detach(mut self, left: bool) -> (Self, OptionOrMerkType<Self>) {
-        let feature_type = self.inner.feature_type;
+    pub fn detach(mut self, left: bool) -> (Self, Option<Self>) {
         let maybe_child = match self.slot_mut(left).take() {
-            None => NoneOfType(feature_type),
-            Some(Link::Reference { .. }) => NoneOfType(feature_type),
-            Some(Link::Modified { tree, .. }) => SomeMerk(tree),
-            Some(Link::Uncommitted { tree, .. }) => SomeMerk(tree),
-            Some(Link::Loaded { tree, .. }) => SomeMerk(tree),
+            None => None,
+            Some(Link::Reference { .. }) => None,
+            Some(Link::Modified { tree, .. }) => Some(tree),
+            Some(Link::Uncommitted { tree, .. }) => Some(tree),
+            Some(Link::Loaded { tree, .. }) => Some(tree),
         };
 
         (self, maybe_child)
@@ -336,7 +334,7 @@ impl Tree {
     pub fn detach_expect(self, left: bool) -> (Self, Self) {
         let (parent, maybe_child) = self.detach(left);
 
-        if let SomeMerk(child) = maybe_child {
+        if let Some(child) = maybe_child {
             (parent, child)
         } else {
             panic!(
@@ -357,7 +355,7 @@ impl Tree {
     #[inline]
     pub fn walk<F>(self, left: bool, f: F) -> Self
     where
-        F: FnOnce(OptionOrMerkType<Self>) -> OptionOrMerkType<Self>,
+        F: FnOnce(Option<Self>) -> Option<Self>,
     {
         let (tree, maybe_child) = self.detach(left);
         tree.attach(left, f(maybe_child))
@@ -367,7 +365,7 @@ impl Tree {
     #[inline]
     pub fn walk_expect<F>(self, left: bool, f: F) -> Self
     where
-        F: FnOnce(Self) -> OptionOrMerkType<Self>,
+        F: FnOnce(Self) -> Option<Self>,
     {
         let (tree, child) = self.detach_expect(left);
         tree.attach(left, f(child))
@@ -537,13 +535,13 @@ mod test {
         assert!(tree.child(true).is_none());
         assert!(tree.child(false).is_none());
 
-        let tree = tree.attach(true, NoneOfType(BasicMerk));
+        let tree = tree.attach(true, None);
         assert!(tree.child(true).is_none());
         assert!(tree.child(false).is_none());
 
         let tree = tree.attach(
             true,
-            SomeMerk(Tree::new(vec![2], vec![102], BasicMerk).unwrap()),
+            Some(Tree::new(vec![2], vec![102], BasicMerk).unwrap()),
         );
         assert_eq!(tree.key(), &[1]);
         assert_eq!(tree.child(true).unwrap().key(), &[2]);
@@ -551,7 +549,7 @@ mod test {
 
         let tree = Tree::new(vec![3], vec![103], BasicMerk)
             .unwrap()
-            .attach(false, SomeMerk(tree));
+            .attach(false, Some(tree));
         assert_eq!(tree.key(), &[3]);
         assert_eq!(tree.child(false).unwrap().key(), &[1]);
         assert!(tree.child(true).is_none());
@@ -562,45 +560,33 @@ mod test {
     fn attach_existing() {
         Tree::new(vec![0], vec![1], BasicMerk)
             .unwrap()
-            .attach(
-                true,
-                SomeMerk(Tree::new(vec![2], vec![3], BasicMerk).unwrap()),
-            )
-            .attach(
-                true,
-                SomeMerk(Tree::new(vec![4], vec![5], BasicMerk).unwrap()),
-            );
+            .attach(true, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()))
+            .attach(true, Some(Tree::new(vec![4], vec![5], BasicMerk).unwrap()));
     }
 
     #[test]
     fn modify() {
         let tree = Tree::new(vec![0], vec![1], BasicMerk)
             .unwrap()
-            .attach(
-                true,
-                SomeMerk(Tree::new(vec![2], vec![3], BasicMerk).unwrap()),
-            )
-            .attach(
-                false,
-                SomeMerk(Tree::new(vec![4], vec![5], BasicMerk).unwrap()),
-            );
+            .attach(true, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()))
+            .attach(false, Some(Tree::new(vec![4], vec![5], BasicMerk).unwrap()));
 
         let tree = tree.walk(true, |left_opt| {
             assert_eq!(left_opt.as_ref().unwrap().key(), &[2]);
-            NoneOfType(BasicMerk)
+            None
         });
         assert!(tree.child(true).is_none());
         assert!(tree.child(false).is_some());
 
         let tree = tree.walk(true, |left_opt| {
             assert!(left_opt.is_none());
-            SomeMerk(Tree::new(vec![2], vec![3], BasicMerk).unwrap())
+            Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap())
         });
         assert_eq!(tree.link(true).unwrap().key(), &[2]);
 
         let tree = tree.walk_expect(false, |right| {
             assert_eq!(right.key(), &[4]);
-            NoneOfType(BasicMerk)
+            None
         });
         assert!(tree.child(true).is_some());
         assert!(tree.child(false).is_none());
@@ -608,10 +594,9 @@ mod test {
 
     #[test]
     fn child_and_link() {
-        let mut tree = Tree::new(vec![0], vec![1], BasicMerk).unwrap().attach(
-            true,
-            SomeMerk(Tree::new(vec![2], vec![3], BasicMerk).unwrap()),
-        );
+        let mut tree = Tree::new(vec![0], vec![1], BasicMerk)
+            .unwrap()
+            .attach(true, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()));
         assert!(tree.link(true).expect("expected link").is_modified());
         assert!(tree.child(true).is_some());
         assert!(tree.link(false).is_none());
@@ -627,17 +612,16 @@ mod test {
         // assert!(tree.link(true).expect("expected link").is_pruned());
         // assert!(tree.child(true).is_none());
 
-        let tree = tree.walk(true, |_| NoneOfType(BasicMerk));
+        let tree = tree.walk(true, |_| None);
         assert!(tree.link(true).is_none());
         assert!(tree.child(true).is_none());
     }
 
     #[test]
     fn child_hash() {
-        let mut tree = Tree::new(vec![0], vec![1], BasicMerk).unwrap().attach(
-            true,
-            SomeMerk(Tree::new(vec![2], vec![3], BasicMerk).unwrap()),
-        );
+        let mut tree = Tree::new(vec![0], vec![1], BasicMerk)
+            .unwrap()
+            .attach(true, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()));
         tree.commit(&mut NoopCommit {})
             .unwrap()
             .expect("commit failed");
@@ -669,10 +653,7 @@ mod test {
         assert_eq!(tree.child_pending_writes(true), 0);
         assert_eq!(tree.child_pending_writes(false), 0);
 
-        let tree = tree.attach(
-            true,
-            SomeMerk(Tree::new(vec![2], vec![3], BasicMerk).unwrap()),
-        );
+        let tree = tree.attach(true, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()));
         assert_eq!(tree.child_pending_writes(true), 1);
         assert_eq!(tree.child_pending_writes(false), 0);
     }
@@ -685,10 +666,7 @@ mod test {
         assert_eq!(tree.child_height(false), 0);
         assert_eq!(tree.balance_factor(), 0);
 
-        let tree = tree.attach(
-            true,
-            SomeMerk(Tree::new(vec![2], vec![3], BasicMerk).unwrap()),
-        );
+        let tree = tree.attach(true, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()));
         assert_eq!(tree.height(), 2);
         assert_eq!(tree.child_height(true), 1);
         assert_eq!(tree.child_height(false), 0);
@@ -704,10 +682,9 @@ mod test {
 
     #[test]
     fn commit() {
-        let mut tree = Tree::new(vec![0], vec![1], BasicMerk).unwrap().attach(
-            false,
-            SomeMerk(Tree::new(vec![2], vec![3], BasicMerk).unwrap()),
-        );
+        let mut tree = Tree::new(vec![0], vec![1], BasicMerk)
+            .unwrap()
+            .attach(false, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()));
         tree.commit(&mut NoopCommit {})
             .unwrap()
             .expect("commit failed");
@@ -719,7 +696,7 @@ mod test {
     fn sum_tree() {
         let mut tree = Tree::new(vec![0], vec![1], SummedMerk(3)).unwrap().attach(
             false,
-            SomeMerk(Tree::new(vec![2], vec![3], SummedMerk(5)).unwrap()),
+            Some(Tree::new(vec![2], vec![3], SummedMerk(5)).unwrap()),
         );
         tree.commit(&mut NoopCommit {})
             .unwrap()

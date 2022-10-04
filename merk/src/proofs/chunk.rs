@@ -401,7 +401,7 @@ mod tests {
         //   1
         let mut tree = BaseTree::new(vec![0], vec![], BasicMerk).unwrap().attach(
             false,
-            SomeMerk(BaseTree::new(vec![1], vec![], BasicMerk).unwrap()),
+            Some(BaseTree::new(vec![1], vec![], BasicMerk).unwrap()),
         );
         tree.commit(&mut NoopCommit {}).unwrap().unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -422,7 +422,7 @@ mod tests {
         // 0
         let mut tree = BaseTree::new(vec![1], vec![], BasicMerk).unwrap().attach(
             true,
-            SomeMerk(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()),
+            Some(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()),
         );
         tree.commit(&mut NoopCommit {}).unwrap().unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -445,11 +445,11 @@ mod tests {
             .unwrap()
             .attach(
                 true,
-                SomeMerk(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()),
+                Some(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()),
             )
             .attach(
                 false,
-                SomeMerk(BaseTree::new(vec![2], vec![], BasicMerk).unwrap()),
+                Some(BaseTree::new(vec![2], vec![], BasicMerk).unwrap()),
             );
         tree.commit(&mut NoopCommit {}).unwrap().unwrap();
 

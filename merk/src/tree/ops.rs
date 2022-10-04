@@ -66,21 +66,20 @@ where
     ///
     /// Keys in batch must be sorted and unique.
     pub fn apply_to<K: AsRef<[u8]>>(
-        maybe_tree: OptionOrMerkType<Self>,
+        maybe_tree: Option<Self>,
         batch: &MerkBatch<K>,
         source: S,
-    ) -> CostContext<Result<(OptionOrMerkType<Tree>, DeletedKeys)>> {
+    ) -> CostContext<Result<(Option<Tree>, DeletedKeys)>> {
         let mut cost = OperationCost::default();
 
         let (maybe_walker, deleted_keys) = if batch.is_empty() {
             (maybe_tree, LinkedList::default())
         } else {
             match maybe_tree {
-                NoneOfType(tree_feature_type) => {
-                    return Self::build(batch, source, tree_feature_type)
-                        .map_ok(|tree| (tree, LinkedList::default()))
+                None => {
+                    return Self::build(batch, source).map_ok(|tree| (tree, LinkedList::default()))
                 }
-                SomeMerk(tree) => cost_return_on_error!(&mut cost, tree.apply_sorted(batch)),
+                Some(tree) => cost_return_on_error!(&mut cost, tree.apply_sorted(batch)),
             }
         };
 
@@ -91,15 +90,11 @@ where
     /// Builds a `Tree` from a batch of operations.
     ///
     /// Keys in batch must be sorted and unique.
-    fn build<K: AsRef<[u8]>>(
-        batch: &MerkBatch<K>,
-        source: S,
-        tree_feature_type: TreeFeatureType,
-    ) -> CostContext<Result<OptionOrMerkType<Tree>>> {
+    fn build<K: AsRef<[u8]>>(batch: &MerkBatch<K>, source: S) -> CostContext<Result<Option<Tree>>> {
         let mut cost = OperationCost::default();
 
         if batch.is_empty() {
-            return Ok(NoneOfType(tree_feature_type)).wrap_with_cost(cost);
+            return Ok(None).wrap_with_cost(cost);
         }
 
         let mid_index = batch.len() / 2;
@@ -110,20 +105,17 @@ where
                 let left_batch = &batch[..mid_index];
                 let right_batch = &batch[mid_index + 1..];
 
-                let maybe_tree = cost_return_on_error!(
-                    &mut cost,
-                    Self::build(left_batch, source.clone(), tree_feature_type)
-                )
-                .map(|tree| Self::new(tree, source.clone()));
+                let maybe_tree =
+                    cost_return_on_error!(&mut cost, Self::build(left_batch, source.clone()))
+                        .map(|tree| Self::new(tree, source.clone()));
                 let maybe_tree = match maybe_tree {
-                    SomeMerk(tree) => {
+                    Some(tree) => {
                         cost_return_on_error!(&mut cost, tree.apply_sorted(right_batch)).0
                     }
-                    NoneOfType(tree_feature_type) => cost_return_on_error!(
-                        &mut cost,
-                        Self::build(right_batch, source.clone(), tree_feature_type)
-                    )
-                    .map(|tree| Self::new(tree, source.clone())),
+                    None => {
+                        cost_return_on_error!(&mut cost, Self::build(right_batch, source.clone()))
+                            .map(|tree| Self::new(tree, source.clone()))
+                    }
                 };
                 return Ok(maybe_tree.map(|tree| tree.into())).wrap_with_cost(cost);
             }
@@ -167,7 +159,7 @@ where
     fn apply_sorted<K: AsRef<[u8]>>(
         self,
         batch: &MerkBatch<K>,
-    ) -> CostContext<Result<(OptionOrMerkType<Self>, DeletedKeys)>> {
+    ) -> CostContext<Result<(Option<Self>, DeletedKeys)>> {
         let mut cost = OperationCost::default();
 
         // binary search to see if this node's key is in the batch, and to split
@@ -188,7 +180,7 @@ where
                 Delete => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply
                     let source = self.clone_source();
-                    let wrap = |maybe_tree: OptionOrMerkType<Tree>| {
+                    let wrap = |maybe_tree: Option<Tree>| {
                         maybe_tree.map(|tree| Self::new(tree, source.clone()))
                     };
                     let key = self.tree().key().to_vec();
@@ -234,7 +226,7 @@ where
         batch: &MerkBatch<K>,
         mid: usize,
         exclusive: bool,
-    ) -> CostContext<Result<(OptionOrMerkType<Self>, DeletedKeys)>> {
+    ) -> CostContext<Result<(Option<Self>, DeletedKeys)>> {
         let mut cost = OperationCost::default();
 
         let left_batch = &batch[..mid];
@@ -282,7 +274,7 @@ where
 
         let tree = cost_return_on_error!(&mut cost, tree.maybe_balance());
 
-        Ok((SomeMerk(tree), deleted_keys)).wrap_with_cost(cost)
+        Ok((Some(tree), deleted_keys)).wrap_with_cost(cost)
     }
 
     /// Gets the wrapped tree's balance factor.
@@ -308,9 +300,7 @@ where
         let tree = if left == (self.tree().link(left).unwrap().balance_factor() > 0) {
             cost_return_on_error!(
                 &mut cost,
-                self.walk_expect(left, |child| child
-                    .rotate(!left)
-                    .map_ok(OptionOrMerkType::SomeMerk))
+                self.walk_expect(left, |child| child.rotate(!left).map_ok(Option::Some))
             )
         } else {
             self
@@ -333,14 +323,14 @@ where
             .maybe_balance()
             .flat_map_ok(|tree| {
                 // attach self to child, return child
-                child.attach(!left, SomeMerk(tree)).maybe_balance()
+                child.attach(!left, Some(tree)).maybe_balance()
             })
             .add_cost(cost)
     }
 
     /// Removes the root node from the tree. Rearranges and rebalances
     /// descendants (if any) in order to maintain a valid tree.
-    pub fn remove(self) -> CostContext<Result<OptionOrMerkType<Self>>> {
+    pub fn remove(self) -> CostContext<Result<Option<Self>>> {
         let mut cost = OperationCost::default();
 
         let tree = self.tree();
@@ -355,13 +345,13 @@ where
             let (_, short_child) = cost_return_on_error!(&mut cost, tree.detach_expect(!left));
             let promoted =
                 cost_return_on_error!(&mut cost, tall_child.promote_edge(!left, short_child));
-            SomeMerk(promoted)
+            Some(promoted)
         } else if has_left || has_right {
             // single child, promote it
-            SomeMerk(cost_return_on_error!(&mut cost, self.detach_expect(left)).1)
+            Some(cost_return_on_error!(&mut cost, self.detach_expect(left)).1)
         } else {
             // no child
-            NoneOfType(feature)
+            None
         };
 
         Ok(maybe_tree).wrap_with_cost(cost)
@@ -374,7 +364,7 @@ where
     fn promote_edge(self, left: bool, attach: Self) -> CostContext<Result<Self>> {
         self.remove_edge(left).flat_map_ok(|(edge, maybe_child)| {
             edge.attach(!left, maybe_child)
-                .attach(left, SomeMerk(attach))
+                .attach(left, Some(attach))
                 .maybe_balance()
         })
     }
@@ -382,7 +372,7 @@ where
     /// Traverses to the tree's edge on the given side and detaches it
     /// (reattaching its child, if any, to its former parent). Return value is
     /// `(edge, maybe_updated_tree)`.
-    fn remove_edge(self, left: bool) -> CostContext<Result<(Self, OptionOrMerkType<Self>)>> {
+    fn remove_edge(self, left: bool) -> CostContext<Result<(Self, Option<Self>)>> {
         let mut cost = OperationCost::default();
 
         if self.tree().link(left).is_some() {
@@ -391,7 +381,7 @@ where
             let (edge, maybe_child) = cost_return_on_error!(&mut cost, child.remove_edge(left));
             tree.attach(left, maybe_child)
                 .maybe_balance()
-                .map_ok(|tree| (edge, SomeMerk(tree)))
+                .map_ok(|tree| (edge, Some(tree)))
                 .add_cost(cost)
         } else {
             // this node is the edge, detach its child if present
@@ -538,7 +528,7 @@ mod test {
     #[test]
     fn apply_empty_none() {
         let (maybe_tree, deleted_keys) =
-            Walker::<PanicSource>::apply_to::<Vec<u8>>(NoneOfType(BasicMerk), &[], PanicSource {})
+            Walker::<PanicSource>::apply_to::<Vec<u8>>(None, &[], PanicSource {})
                 .unwrap()
                 .expect("apply_to failed");
         assert!(maybe_tree.is_none());
@@ -549,7 +539,7 @@ mod test {
     fn insert_empty_single() {
         let batch = vec![(vec![0], Op::Put(vec![1]), BasicMerk)];
         let (maybe_tree, deleted_keys) =
-            Walker::<PanicSource>::apply_to(NoneOfType(BasicMerk), &batch, PanicSource {})
+            Walker::<PanicSource>::apply_to(None, &batch, PanicSource {})
                 .unwrap()
                 .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");

@@ -1369,14 +1369,8 @@ mod test {
     fn make_3_node_tree() -> Tree {
         let mut tree = Tree::new(vec![5], vec![5], BasicMerk)
             .unwrap()
-            .attach(
-                true,
-                SomeMerk(Tree::new(vec![3], vec![3], BasicMerk).unwrap()),
-            )
-            .attach(
-                false,
-                SomeMerk(Tree::new(vec![7], vec![7], BasicMerk).unwrap()),
-            );
+            .attach(true, Some(Tree::new(vec![3], vec![3], BasicMerk).unwrap()))
+            .attach(false, Some(Tree::new(vec![7], vec![7], BasicMerk).unwrap()));
         tree.commit(&mut NoopCommit {})
             .unwrap()
             .expect("commit failed");
@@ -1388,8 +1382,8 @@ mod test {
         let four_tree = Tree::new(vec![4], vec![4], BasicMerk).unwrap();
         let mut three_tree = Tree::new(vec![3], vec![3], BasicMerk)
             .unwrap()
-            .attach(true, SomeMerk(two_tree))
-            .attach(false, SomeMerk(four_tree));
+            .attach(true, Some(two_tree))
+            .attach(false, Some(four_tree));
         three_tree
             .commit(&mut NoopCommit {})
             .unwrap()
@@ -1398,7 +1392,7 @@ mod test {
         let seven_tree = Tree::new(vec![7], vec![7], BasicMerk).unwrap();
         let mut eight_tree = Tree::new(vec![8], vec![8], BasicMerk)
             .unwrap()
-            .attach(true, SomeMerk(seven_tree));
+            .attach(true, Some(seven_tree));
         eight_tree
             .commit(&mut NoopCommit {})
             .unwrap()
@@ -1406,8 +1400,8 @@ mod test {
 
         let mut root_tree = Tree::new(vec![5], vec![5], BasicMerk)
             .unwrap()
-            .attach(true, SomeMerk(three_tree))
-            .attach(false, SomeMerk(eight_tree));
+            .attach(true, Some(three_tree))
+            .attach(false, Some(eight_tree));
         root_tree
             .commit(&mut NoopCommit {})
             .unwrap()
@@ -2018,47 +2012,44 @@ mod test {
             .unwrap()
             .attach(
                 true,
-                SomeMerk(
+                Some(
                     Tree::new(vec![2], vec![2], BasicMerk)
                         .unwrap()
-                        .attach(
-                            true,
-                            SomeMerk(Tree::new(vec![1], vec![1], BasicMerk).unwrap()),
-                        )
+                        .attach(true, Some(Tree::new(vec![1], vec![1], BasicMerk).unwrap()))
                         .attach(
                             false,
-                            SomeMerk(Tree::new(vec![4], vec![4], BasicMerk).unwrap().attach(
+                            Some(Tree::new(vec![4], vec![4], BasicMerk).unwrap().attach(
                                 true,
-                                SomeMerk(Tree::new(vec![3], vec![3], BasicMerk).unwrap()),
+                                Some(Tree::new(vec![3], vec![3], BasicMerk).unwrap()),
                             )),
                         ),
                 ),
             )
             .attach(
                 false,
-                SomeMerk(
+                Some(
                     Tree::new(vec![9], vec![9], BasicMerk)
                         .unwrap()
                         .attach(
                             true,
-                            SomeMerk(
+                            Some(
                                 Tree::new(vec![7], vec![7], BasicMerk)
                                     .unwrap()
                                     .attach(
                                         true,
-                                        SomeMerk(Tree::new(vec![6], vec![6], BasicMerk).unwrap()),
+                                        Some(Tree::new(vec![6], vec![6], BasicMerk).unwrap()),
                                     )
                                     .attach(
                                         false,
-                                        SomeMerk(Tree::new(vec![8], vec![8], BasicMerk).unwrap()),
+                                        Some(Tree::new(vec![8], vec![8], BasicMerk).unwrap()),
                                     ),
                             ),
                         )
                         .attach(
                             false,
-                            SomeMerk(Tree::new(vec![11], vec![11], BasicMerk).unwrap().attach(
+                            Some(Tree::new(vec![11], vec![11], BasicMerk).unwrap().attach(
                                 true,
-                                SomeMerk(Tree::new(vec![10], vec![10], BasicMerk).unwrap()),
+                                Some(Tree::new(vec![10], vec![10], BasicMerk).unwrap()),
                             )),
                         ),
                 ),
