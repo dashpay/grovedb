@@ -17,9 +17,11 @@ use costs::{
     },
     CostResult, CostsExt, OperationCost,
 };
-use merk::{tree::value_hash, CryptoHash, Merk};
+use merk::{
+    tree::{value_hash, NULL_HASH},
+    CryptoHash, Merk,
+};
 use nohash_hasher::IntMap;
-use merk::tree::NULL_HASH;
 use storage::{
     rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch,
     StorageContext,
@@ -846,8 +848,8 @@ where
                         GroveDb::update_tree_item_preserve_flag_into_batch_operations(
                             &merk,
                             key_info.get_key(),
-                            hash,
                             root_key,
+                            hash,
                             &mut batch_operations
                         )
                     );

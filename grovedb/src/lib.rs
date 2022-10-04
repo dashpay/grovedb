@@ -77,54 +77,103 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         let mut path_iter = path.into_iter();
-        if let Some(tx) = transaction {
-            let subtree_storage = self
-                .db
-                .get_transactional_storage_context(path_iter.clone(), tx)
-                .unwrap_add_cost(&mut cost);
-            let key = path_iter.next_back().expect("next element is `Some`");
-            let parent_storage = self
-                .db
-                .get_transactional_storage_context(path_iter.clone(), tx)
-                .unwrap_add_cost(&mut cost);
-            let subtree = cost_return_on_error!(
-                &mut cost,
-                Merk::open_with_root_key(subtree_storage)
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            let mut parent_tree = cost_return_on_error!(
-                &mut cost,
-                Merk::open(parent_storage)
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            cost_return_on_error!(
-                &mut cost,
-                Self::update_tree_item_preserve_flag(&mut parent_tree, key, subtree.root_key(),)
-            );
-        } else {
-            let subtree_storage = self
-                .db
-                .get_storage_context(path_iter.clone())
-                .unwrap_add_cost(&mut cost);
-            let key = path_iter.next_back().expect("next element is `Some`");
-            let parent_storage = self
-                .db
-                .get_storage_context(path_iter.clone())
-                .unwrap_add_cost(&mut cost);
-            let subtree = cost_return_on_error!(
-                &mut cost,
-                Merk::open(subtree_storage)
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            let mut parent_tree = cost_return_on_error!(
-                &mut cost,
-                Merk::open(parent_storage)
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            cost_return_on_error!(
-                &mut cost,
-                Self::update_tree_item_preserve_flag(&mut parent_tree, key, subtree.root_key(),)
-            );
+
+        while path_iter.len() > 0 {
+            if let Some(tx) = transaction {
+                let subtree_storage = self
+                    .db
+                    .get_transactional_storage_context(path_iter.clone(), tx)
+                    .unwrap_add_cost(&mut cost);
+                let key = path_iter.next_back().expect("next element is `Some`");
+                let grandparent_storage = self
+                    .db
+                    .get_transactional_storage_context(path_iter.clone(), tx)
+                    .unwrap_add_cost(&mut cost);
+                let element = cost_return_on_error!(
+                    &mut cost,
+                    Element::get_from_storage(&grandparent_storage, key).map_err(|_| {
+                        Error::CorruptedData("could not get key for parent of subtree".to_owned())
+                    })
+                );
+                let mut parent_tree = cost_return_on_error!(
+                        &mut cost,
+                    if let Element::Tree(root_key, _) = element {
+                    Merk::open_with_root_key(storage, root_key).map_err(|_| {
+                            Error::CorruptedData(
+                                "cannot open a subtree with given root key".to_owned(),
+                            )
+                        })
+                } else {
+                    Err(Error::CorruptedData(
+                        "cannot open a subtree as parent exists but is not a tree"
+                            .to_owned(),
+                    ))
+                        .wrap_with_cost(OperationCost::default())
+                };
+                        );
+                let subtree = cost_return_on_error!(
+                    &mut cost,
+                    Merk::open_with_root_key(subtree_storage)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                );
+                let (root_hash, root_key) = subtree.root_hash_and_key().unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    Self::update_tree_item_preserve_flag(
+                        &mut parent_tree,
+                        key,
+                        root_key,
+                        root_hash
+                    )
+                );
+            } else {
+                let subtree_storage = self
+                    .db
+                    .get_storage_context(path_iter.clone())
+                    .unwrap_add_cost(&mut cost);
+                let key = path_iter.next_back().expect("next element is `Some`");
+                let grandparent_storage = self
+                    .db
+                    .get_storage_context(path_iter.clone())
+                    .unwrap_add_cost(&mut cost);
+                let element = cost_return_on_error!(
+                    &mut cost,
+                    Element::get_from_storage(&grandparent_storage, key).map_err(|_| {
+                        Error::CorruptedData("could not get key for parent of subtree".to_owned())
+                    })
+                );
+                let mut parent_tree = cost_return_on_error!(
+                        &mut cost,
+                    if let Element::Tree(root_key, _) = element {
+                    Merk::open_with_root_key(storage, root_key).map_err(|_| {
+                            Error::CorruptedData(
+                                "cannot open a subtree with given root key".to_owned(),
+                            )
+                        })
+                } else {
+                    Err(Error::CorruptedData(
+                        "cannot open a subtree as parent exists but is not a tree"
+                            .to_owned(),
+                    ))
+                        .wrap_with_cost(OperationCost::default())
+                };
+                        );
+                let subtree = cost_return_on_error!(
+                    &mut cost,
+                    Merk::open_with_root_key(subtree_storage)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                );
+                let (root_hash, root_key) = subtree.root_hash_and_key().unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    Self::update_tree_item_preserve_flag(
+                        &mut parent_tree,
+                        key,
+                        root_key,
+                        root_hash
+                    )
+                );
+            }
         }
 
         Ok(()).wrap_with_cost(cost)
@@ -138,11 +187,12 @@ impl GroveDb {
         parent_tree: &mut Merk<S>,
         key: K,
         maybe_root_key: Option<Vec<u8>>,
+        root_tree_hash: Hash,
     ) -> CostResult<(), Error> {
         Self::get_element_from_subtree(parent_tree, key).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(maybe_root_key, flag);
-                tree.insert(parent_tree, key.as_ref())
+                tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash)
             } else {
                 Err(Error::InvalidPath("can only propagate on tree items"))
                     .wrap_with_cost(Default::default())
@@ -157,14 +207,14 @@ impl GroveDb {
     >(
         parent_tree: &Merk<S>,
         key: K,
-        hash: CryptoHash,
         maybe_root_key: Option<Vec<u8>>,
+        root_tree_hash: Hash,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         Self::get_element_from_subtree(parent_tree, key.as_ref()).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(maybe_root_key, flag);
-                tree.insert_subtree_into_batch_operations(key, hash, batch_operations)
+                tree.insert_subtree_into_batch_operations(key, root_tree_hash, batch_operations)
             } else {
                 Err(Error::InvalidPath("can only propagate on tree items"))
                     .wrap_with_cost(Default::default())

@@ -25,11 +25,11 @@ macro_rules! storage_context_with_parent_optional_tx {
             use ::storage::Storage;
             if let Some(tx) = $transaction {
                 let $storage = $db
-                    .get_transactional_storage_context($path, tx);
-                if let Some((last, parent_path)) = $path.split_last() {
-                    let parent_storage = $db.get_transactional_storage_context(parent_path, tx);
+                    .get_transactional_storage_context($path, tx).unwrap_add_cost(&mut $cost);
+                if let Some(last) = $path.next_back() {
+                    let parent_storage = $db.get_transactional_storage_context($path, tx).unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(
-                                    &mut cost,
+                                    &mut $cost,
                                     Element::get_from_storage(&parent_storage, last).map_err(|_| {
                                         Error::CorruptedData(
                                             "could not get key for parent of subtree".to_owned(),
@@ -37,27 +37,27 @@ macro_rules! storage_context_with_parent_optional_tx {
                                     })
                                 );
                     if let Element::Tree(root_key, _) = element {
-                        $root_key = root_key;
-                                $($body)*
-                            } else {
-                                return Err(Error::CorruptedData(
-                                    "parent is not a tree"
-                                        .to_owned(),
-                                ));
-                            }
+                        let $root_key = root_key;
+                        $($body)*
+                    } else {
+                        return Err(Error::CorruptedData(
+                            "parent is not a tree"
+                                .to_owned(),
+                        )).wrap_with_cost($cost);
+                    }
 
                 } else {
-                    return Error::CorruptedData(
+                    return Err(Error::CorruptedData(
                                             "path is empty".to_owned(),
-                                        );
+                                        )).wrap_with_cost($cost);
                 }
             } else {
                 let $storage = $db
-                    .get_storage_context($path, tx);
-                if let Some((last, parent_path)) = $path.split_last() {
-                    let parent_storage = $db.get_storage_context(parent_path, tx);
+                    .get_storage_context($path).unwrap_add_cost(&mut $cost);
+                if let Some(last) = $path.next_back() {
+                    let parent_storage = $db.get_storage_context($path).unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(
-                                    &mut cost,
+                                    &mut $cost,
                                     Element::get_from_storage(&parent_storage, last).map_err(|_| {
                                         Error::CorruptedData(
                                             "could not get key for parent of subtree".to_owned(),
@@ -65,24 +65,23 @@ macro_rules! storage_context_with_parent_optional_tx {
                                     })
                                 );
                     if let Element::Tree(root_key, _) = element {
-                        $root_key = root_key;
+                        let $root_key = root_key;
                                 $($body)*
                             } else {
                                 return Err(Error::CorruptedData(
                                     "parent is not a tree"
                                         .to_owned(),
-                                ));
+                                )).wrap_with_cost($cost);
                             }
                 } else {
-                    return Error::CorruptedData(
+                    return Err(Error::CorruptedData(
                                             "path is empty".to_owned(),
-                                        );
+                                        )).wrap_with_cost($cost);
                 }
             }
         }
     };
 }
-
 
 /// Macro to execute same piece of code on different storage_cost contexts with
 /// empty prefix.
@@ -119,7 +118,7 @@ macro_rules! merk_optional_tx {
             storage_context_with_parent_optional_tx!(&mut $cost, $db, $path, $transaction, storage, root_key, {
                 let mut $subtree = cost_return_on_error!(
                     &mut $cost,
-                    ::merk::Merk::open_with_root_key(storage.unwrap_add_cost(&mut $cost), root_key)
+                    ::merk::Merk::open_with_root_key(storage, root_key)
                         .map(|merk_res|
                              merk_res
                                 .map_err(|_| crate::Error::CorruptedData(
@@ -137,4 +136,3 @@ pub(crate) use merk_optional_tx;
 pub(crate) use meta_storage_context_optional_tx;
 pub(crate) use storage_context_optional_tx;
 pub(crate) use storage_context_with_parent_optional_tx;
-

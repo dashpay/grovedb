@@ -27,7 +27,9 @@ use crate::{
         QueryResultType::QueryElementResultType,
     },
     reference_path::{path_from_reference_path_type, ReferencePathType},
-    util::{merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx},
+    util::{
+        merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
+    },
     Error, GroveDb, Hash, Merk, PathQuery, SizedQuery, Transaction, TransactionArg,
 };
 
@@ -1307,7 +1309,8 @@ mod tests {
 
         let storage = &db.db;
         let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
-        let mut merk = Merk::open(storage_context)
+        // The tree is empty
+        let mut merk = Merk::open_with_root_key(storage_context, None)
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 

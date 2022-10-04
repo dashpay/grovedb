@@ -830,8 +830,8 @@ where
                 self.tree = Cell::new(tree);
             })
         } else {
-            return Err(anyhow!("loading root without having root_tree_key set"))
-                .wrap_with_cost(Default::default());
+            // The tree is empty
+            Ok(()).wrap_with_cost(Default::default())
         }
     }
 }
