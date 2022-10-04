@@ -4113,4 +4113,28 @@ fn test_sum_tree_feature() {
     .expect("should insert item");
     let merk = open_merk!(db, [TEST_LEAF, b"key2"]);
     assert_eq!(merk.sum(), Some(70)); // 30 - 10 + 50 = 70
+
+    // Add non sum items, result should remain the same
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"item4",
+        Element::new_item(vec![29]),
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+    let merk = open_merk!(db, [TEST_LEAF, b"key2"]);
+    assert_eq!(merk.sum(), Some(70));
+
+    // Update an existing sum item
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"item2",
+        Element::new_sum_item(10),
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+    let merk = open_merk!(db, [TEST_LEAF, b"key2"]);
+    assert_eq!(merk.sum(), Some(90)); // 30 + 10 + 50 = 90
 }
