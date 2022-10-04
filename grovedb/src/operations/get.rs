@@ -113,7 +113,7 @@ impl GroveDb {
                 &mut cost,
                 self.check_subtree_exists_path_not_found([key], transaction)
             );
-            merk_optional_tx!(&mut cost, self.db, [key], transaction, subtree, {
+            merk_optional_tx!(&mut cost, self.db, [key].to_vec().into_iter(), transaction, subtree, {
                 Ok(Element::new_tree(subtree.root_key())).wrap_with_cost(cost)
             })
         } else {

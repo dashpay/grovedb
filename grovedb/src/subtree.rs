@@ -17,7 +17,7 @@ use merk::{
 };
 use serde::{Deserialize, Serialize};
 use storage::{
-    rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageBatch, StorageContext,
+    rocksdb_storage::RocksDbStorage, RawIterator, StorageBatch, StorageContext,
 };
 use visualize::visualize_to_vec;
 
@@ -1397,8 +1397,7 @@ mod tests {
         let db = make_test_grovedb();
 
         let storage = &db.db;
-        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
-        let mut merk = Merk::open(storage_context)
+        let mut merk = db.db.open_merk_at_path([TEST_LEAF], None)
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 
@@ -1454,8 +1453,7 @@ mod tests {
         let db = make_test_grovedb();
 
         let storage = &db.db;
-        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
-        let mut merk = Merk::open(storage_context)
+        let mut merk = db.db.open_merk_at_path([TEST_LEAF], None)
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 
@@ -1550,8 +1548,7 @@ mod tests {
         let db = make_test_grovedb();
 
         let storage = &db.db;
-        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
-        let mut merk = Merk::open(storage_context)
+        let mut merk = db.db.open_merk_at_path([TEST_LEAF], None)
             .unwrap()
             .expect("cannot open Merk");
 
@@ -1648,8 +1645,7 @@ mod tests {
         let db = make_test_grovedb();
 
         let storage = &db.db;
-        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
-        let mut merk = Merk::open(storage_context)
+        let mut merk = db.db.open_merk_at_path([TEST_LEAF], None)
             .unwrap()
             .expect("cannot open Merk");
 

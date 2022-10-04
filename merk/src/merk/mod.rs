@@ -17,7 +17,8 @@ use costs::{
     },
     CostContext, CostResult, CostsExt, OperationCost,
 };
-use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
+use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext, Storage};
+use storage::rocksdb_storage::RocksDbStorage;
 
 use crate::{
     merk::defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},

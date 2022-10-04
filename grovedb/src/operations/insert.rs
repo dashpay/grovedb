@@ -1,13 +1,11 @@
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use merk::Merk;
-use storage::Storage;
 
 use crate::{
     reference_path::path_from_reference_path_type,
     util::{
-        merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
+        merk_optional_tx, storage_context_with_parent_optional_tx,
     },
     Element, Error, GroveDb, TransactionArg,
 };
@@ -96,7 +94,7 @@ impl GroveDb {
                     self.db,
                     path_iter.clone(),
                     transaction,
-                    mut subtree,
+                    subtree,
                     {
                         cost_return_on_error!(
                             &mut cost,
@@ -129,7 +127,7 @@ impl GroveDb {
                     self.db,
                     path_iter.clone(),
                     transaction,
-                    mut subtree,
+                    subtree,
                     {
                         cost_return_on_error!(&mut cost, element.insert(&mut subtree, key));
                     }
@@ -173,49 +171,12 @@ impl GroveDb {
             self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
         );
 
-        if let Some(tx) = transaction {
-            let parent_storage = self
-                .db
-                .get_transactional_storage_context(path_iter.clone(), tx)
-                .unwrap_add_cost(&mut cost);
-            let mut parent_subtree = cost_return_on_error!(
-                &mut cost,
-                Merk::open(parent_storage)
-                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            let child_storage = self
-                .db
-                .get_transactional_storage_context(path_iter.chain(std::iter::once(key)), tx)
-                .unwrap_add_cost(&mut cost);
-            let child_subtree = cost_return_on_error!(
-                &mut cost,
-                Merk::open(child_storage)
-                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            let element = Element::new_tree_with_flags(child_subtree.root_key(), element_flag);
-            cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
-        } else {
-            let parent_storage = self
-                .db
-                .get_storage_context(path_iter.clone())
-                .unwrap_add_cost(&mut cost);
-            let mut parent_subtree = cost_return_on_error!(
-                &mut cost,
-                Merk::open(parent_storage)
-                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            let child_storage = self
-                .db
-                .get_storage_context(path_iter.chain(std::iter::once(key)))
-                .unwrap_add_cost(&mut cost);
-            let child_subtree = cost_return_on_error!(
-                &mut cost,
-                Merk::open(child_storage)
-                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            let element = Element::new_tree_with_flags(child_subtree.root_key(), element_flag);
-            cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
-        }
+        let (child_subtree, parent_subtree) = cost_return_on_error!(
+            &mut cost,
+            self.open_merk_with_parent_at_path(path_iter.chain(std::iter::once(key)), transaction)
+        );
+        let element = Element::new_tree_with_flags(child_subtree.root_key(), element_flag);
+        cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
         Ok(()).wrap_with_cost(cost)
     }
 

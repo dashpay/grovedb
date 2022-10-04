@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
-use merk::Merk;
 use storage::{Storage, StorageContext};
 
 use crate::{
@@ -356,7 +355,7 @@ impl GroveDb {
                                 self.db,
                                 subtree_path.iter().map(|x| x.as_slice()),
                                 transaction,
-                                mut subtree,
+                                subtree,
                                 {
                                     cost_return_on_error!(
                                         &mut cost,
@@ -376,7 +375,7 @@ impl GroveDb {
                         self.db,
                         path_iter.clone(),
                         transaction,
-                        mut parent_merk,
+                        parent_merk,
                         {
                             cost_return_on_error!(
                                 &mut cost,
@@ -391,7 +390,7 @@ impl GroveDb {
                     self.db,
                     path_iter.clone(),
                     transaction,
-                    mut parent_merk,
+                    parent_merk,
                     {
                         cost_return_on_error!(&mut cost, Element::delete(&mut parent_merk, &key));
                     }

@@ -1,6 +1,6 @@
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
-use crate::{util::merk_optional_tx, Error, GroveDb, TransactionArg};
+use crate::{util::merk_optional_tx, Error, GroveDb, TransactionArg, Element};
 
 impl GroveDb {
     pub fn is_empty_tree<'p, P>(

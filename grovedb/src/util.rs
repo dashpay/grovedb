@@ -110,7 +110,7 @@ macro_rules! merk_optional_tx {
         $db:expr,
         $path:expr,
         $transaction:ident,
-        mut $subtree:ident,
+        $subtree:ident,
         { $($body:tt)* }
     ) => {
         {
