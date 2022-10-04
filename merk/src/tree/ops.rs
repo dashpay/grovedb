@@ -1,6 +1,6 @@
 use std::{collections::LinkedList, fmt};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
 use Op::*;
 
@@ -41,7 +41,7 @@ impl fmt::Debug for Op {
 }
 
 /// A single `(key, operation)` pair.
-pub type BatchEntry<K> = (K, Op, TreeFeatureType);
+pub type BatchEntry<K> = (K, Op, Option<TreeFeatureType>);
 
 /// A mapping of keys and operations. Keys should be sorted and unique.
 pub type MerkBatch<K> = [BatchEntry<K>];
@@ -98,7 +98,7 @@ where
         }
 
         let mid_index = batch.len() / 2;
-        // TODO: Make use of the feature type here
+
         let (mid_key, mid_op, mid_feature_type) = &batch[mid_index];
         let mid_value = match mid_op {
             Delete => {
@@ -123,20 +123,27 @@ where
             PutReference(value, _) => value,
         };
 
-        // TODO: take from batch so we don't have to clone
+        // Delete case has been handled, feature type must be some for other operations
+        if mid_feature_type.is_none() {
+            return Err(anyhow!(
+                "feature type must be some for put and put reference operations"
+            ))
+            .wrap_with_cost(cost);
+        }
 
+        // TODO: take from batch so we don't have to clone
         let mid_tree = match mid_op {
             Put(_) => Tree::new(
                 mid_key.as_ref().to_vec(),
                 mid_value.to_vec(),
-                mid_feature_type.to_owned(),
+                mid_feature_type.expect("confirmed exists above").to_owned(),
             )
             .unwrap_add_cost(&mut cost),
             PutReference(_, referenced_value) => Tree::new_with_value_hash(
                 mid_key.as_ref().to_vec(),
                 mid_value.to_vec(),
                 value_hash(referenced_value).unwrap_add_cost(&mut cost),
-                mid_feature_type.to_owned(),
+                mid_feature_type.expect("confirmed exists above").to_owned(),
             )
             .unwrap_add_cost(&mut cost),
             Delete => unreachable!("cannot get here, should return at the top"),
@@ -334,7 +341,6 @@ where
         let mut cost = OperationCost::default();
 
         let tree = self.tree();
-        let feature = tree.inner.feature_type;
         let has_left = tree.link(true).is_some();
         let has_right = tree.link(false).is_some();
         let left = tree.child_height(true) > tree.child_height(false);
@@ -401,7 +407,7 @@ mod test {
 
     #[test]
     fn simple_insert() {
-        let batch = [(b"foo2".to_vec(), Op::Put(b"bar2".to_vec()), BasicMerk)];
+        let batch = [(b"foo2".to_vec(), Op::Put(b"bar2".to_vec()), Some(BasicMerk))];
         let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap();
         let (maybe_walker, deleted_keys) = Walker::new(tree, PanicSource {})
             .apply_sorted(&batch)
@@ -415,7 +421,7 @@ mod test {
 
     #[test]
     fn simple_update() {
-        let batch = [(b"foo".to_vec(), Op::Put(b"bar2".to_vec()), BasicMerk)];
+        let batch = [(b"foo".to_vec(), Op::Put(b"bar2".to_vec()), Some(BasicMerk))];
         let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap();
         let (maybe_walker, deleted_keys) = Walker::new(tree, PanicSource {})
             .apply_sorted(&batch)
@@ -431,7 +437,7 @@ mod test {
 
     #[test]
     fn simple_delete() {
-        let batch = [(b"foo2".to_vec(), Op::Delete, BasicMerk)];
+        let batch = [(b"foo2".to_vec(), Op::Delete, None)];
         let tree = Tree::from_fields(
             b"foo".to_vec(),
             b"bar".to_vec(),
@@ -462,7 +468,7 @@ mod test {
     #[test]
     fn delete_non_existent() {
         // TODO: should be none here
-        let batch = [(b"foo2".to_vec(), Op::Delete, BasicMerk)];
+        let batch = [(b"foo2".to_vec(), Op::Delete, None)];
         let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap();
         Walker::new(tree, PanicSource {})
             .apply_sorted(&batch)
@@ -473,7 +479,7 @@ mod test {
     #[test]
     fn delete_only_node() {
         // TODO: should be none here
-        let batch = [(b"foo".to_vec(), Op::Delete, BasicMerk)];
+        let batch = [(b"foo".to_vec(), Op::Delete, None)];
         let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap();
         let (maybe_walker, deleted_keys) = Walker::new(tree, PanicSource {})
             .apply_sorted(&batch)
@@ -537,7 +543,7 @@ mod test {
 
     #[test]
     fn insert_empty_single() {
-        let batch = vec![(vec![0], Op::Put(vec![1]), BasicMerk)];
+        let batch = vec![(vec![0], Op::Put(vec![1]), Some(BasicMerk))];
         let (maybe_tree, deleted_keys) =
             Walker::<PanicSource>::apply_to(None, &batch, PanicSource {})
                 .unwrap()
@@ -552,7 +558,7 @@ mod test {
     #[test]
     fn insert_root_single() {
         let tree = Tree::new(vec![5], vec![123], BasicMerk).unwrap();
-        let batch = vec![(vec![6], Op::Put(vec![123]), BasicMerk)];
+        let batch = vec![(vec![6], Op::Put(vec![123]), Some(BasicMerk))];
         let tree = apply_memonly(tree, &batch);
         assert_eq!(tree.key(), &[5]);
         assert!(tree.child(true).is_none());
@@ -563,8 +569,8 @@ mod test {
     fn insert_root_double() {
         let tree = Tree::new(vec![5], vec![123], BasicMerk).unwrap();
         let batch = vec![
-            (vec![4], Op::Put(vec![123]), BasicMerk),
-            (vec![6], Op::Put(vec![123]), BasicMerk),
+            (vec![4], Op::Put(vec![123]), Some(BasicMerk)),
+            (vec![6], Op::Put(vec![123]), Some(BasicMerk)),
         ];
         let tree = apply_memonly(tree, &batch);
         assert_eq!(tree.key(), &[5]);
@@ -576,10 +582,10 @@ mod test {
     fn insert_rebalance() {
         let tree = Tree::new(vec![5], vec![123], BasicMerk).unwrap();
 
-        let batch = vec![(vec![6], Op::Put(vec![123]), BasicMerk)];
+        let batch = vec![(vec![6], Op::Put(vec![123]), Some(BasicMerk))];
         let tree = apply_memonly(tree, &batch);
 
-        let batch = vec![(vec![7], Op::Put(vec![123]), BasicMerk)];
+        let batch = vec![(vec![7], Op::Put(vec![123]), Some(BasicMerk))];
         let tree = apply_memonly(tree, &batch);
 
         assert_eq!(tree.key(), &[6]);
@@ -592,7 +598,7 @@ mod test {
         let mut tree = Tree::new(vec![0], vec![123], BasicMerk).unwrap();
 
         for i in 0..100 {
-            let batch = vec![(vec![i + 1], Op::Put(vec![123]), BasicMerk)];
+            let batch = vec![(vec![i + 1], Op::Put(vec![123]), Some(BasicMerk))];
             tree = apply_memonly(tree, &batch);
         }
 

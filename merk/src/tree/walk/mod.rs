@@ -44,7 +44,6 @@ where
     pub fn detach(mut self, left: bool) -> CostContext<Result<(Self, Option<Self>)>> {
         let mut cost = OperationCost::default();
 
-        let feature_type = self.tree.inner.feature_type;
         let link = match self.tree.link(left) {
             None => return Ok((self, None)).wrap_with_cost(cost),
             Some(link) => link,

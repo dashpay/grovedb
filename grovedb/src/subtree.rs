@@ -285,8 +285,7 @@ impl Element {
         key: K,
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
-        // TODO: Tree reference type should be optional, doesn't make sense in delete
-        let batch = [(key, Op::Delete, BasicMerk)];
+        let batch = [(key, Op::Delete, None)];
         merk.apply::<_, Vec<u8>>(&batch, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -297,7 +296,7 @@ impl Element {
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         // TODO: Tree reference type should be optional, doesn't make sense in delete
-        let entry = (key, Op::Delete, BasicMerk);
+        let entry = (key, Op::Delete, None);
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -892,9 +891,9 @@ impl Element {
     ) -> CostResult<(), Error> {
         // TODO: Fix this
         let feature_type = match true {
-            false => TreeFeatureType::BasicMerk,
+            false => Some(TreeFeatureType::BasicMerk),
             // TODO: Remove unwrap
-            true => TreeFeatureType::SummedMerk(self.sum_value().unwrap()),
+            true => Some(TreeFeatureType::SummedMerk(self.sum_value().unwrap())),
         };
         dbg!(feature_type);
 
@@ -919,7 +918,7 @@ impl Element {
         };
 
         // TODO: build the feature type here
-        let entry = (key, Op::Put(serialized), BasicMerk);
+        let entry = (key, Op::Put(serialized), Some(BasicMerk));
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -991,7 +990,7 @@ impl Element {
         let batch_operations = [(
             key,
             Op::PutReference(serialized, referenced_value),
-            BasicMerk,
+            Some(BasicMerk),
         )];
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
@@ -1011,7 +1010,7 @@ impl Element {
         let entry = (
             key,
             Op::PutReference(serialized, referenced_value),
-            BasicMerk,
+            Some(BasicMerk),
         );
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
