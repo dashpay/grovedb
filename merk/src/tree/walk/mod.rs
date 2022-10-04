@@ -13,7 +13,7 @@ use crate::{
         OptionOrMerkType::{NoneOfType, SomeMerk},
     },
     owner::Owner,
-    Hash,
+    Hash, TreeFeatureType,
 };
 
 /// Allows traversal of a `Tree`, fetching from the given source when traversing
@@ -152,10 +152,10 @@ where
     }
 
     /// Similar to `Tree#with_value`.
-    pub fn put_value(mut self, value: Vec<u8>) -> CostContext<Self> {
+    pub fn put_value(mut self, value: Vec<u8>, feature_type: TreeFeatureType) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.tree
-            .own(|t| t.put_value(value).unwrap_add_cost(&mut cost));
+            .own(|t| t.put_value(value, feature_type).unwrap_add_cost(&mut cost));
         self.wrap_with_cost(cost)
     }
 
@@ -164,10 +164,11 @@ where
         mut self,
         value: Vec<u8>,
         value_hash: Hash,
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.tree.own(|t| {
-            t.put_value_and_value_hash(value, value_hash)
+            t.put_value_and_value_hash(value, value_hash, feature_type)
                 .unwrap_add_cost(&mut cost)
         });
         self.wrap_with_cost(cost)

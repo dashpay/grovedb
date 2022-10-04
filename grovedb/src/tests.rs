@@ -4126,7 +4126,7 @@ fn test_sum_tree_feature() {
     let merk = open_merk!(db, [TEST_LEAF, b"key2"]);
     assert_eq!(merk.sum(), Some(70));
 
-    // Update an existing sum item
+    // Update existing sum items
     db.insert(
         [TEST_LEAF, b"key2"],
         b"item2",
@@ -4135,6 +4135,14 @@ fn test_sum_tree_feature() {
     )
     .unwrap()
     .expect("should insert item");
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"item3",
+        Element::new_sum_item(-100),
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
     let merk = open_merk!(db, [TEST_LEAF, b"key2"]);
-    assert_eq!(merk.sum(), Some(90)); // 30 + 10 + 50 = 90
+    assert_eq!(merk.sum(), Some(-60)); // 30 + 10 - 100 = -60
 }

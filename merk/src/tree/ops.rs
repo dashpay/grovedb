@@ -173,15 +173,32 @@ where
         // into left and right batches
         let search =
             batch.binary_search_by(|(key, _op, _feature_type)| key.as_ref().cmp(self.tree().key()));
+
         let tree = if let Ok(index) = search {
+            let (_, op, feature_type) = &batch[index];
+
+            // feature type has to be some if operation is not delete
+            if op != &Op::Delete && feature_type.is_none() {
+                return Err(anyhow!(
+                    "feature type must be some for put and put reference operations"
+                ))
+                .wrap_with_cost(cost);
+            }
+
             // a key matches this node's key, apply op to this node
-            match &batch[index].1 {
+            match op {
                 // TODO: take vec from batch so we don't need to clone
-                Put(value) => self.put_value(value.to_vec()).unwrap_add_cost(&mut cost),
+                Put(value) => self
+                    .put_value(
+                        value.to_vec(),
+                        feature_type.expect("confirmed is some above"),
+                    )
+                    .unwrap_add_cost(&mut cost),
                 PutReference(value, referenced_value) => self
                     .put_value_and_value_hash(
                         value.to_vec(),
                         value_hash(referenced_value).unwrap_add_cost(&mut cost),
+                        feature_type.expect("confirmed is some above"),
                     )
                     .unwrap_add_cost(&mut cost),
                 Delete => {
