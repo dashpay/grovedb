@@ -13,9 +13,10 @@ use integer_encoding::VarInt;
 use merk::{
     proofs::{query::QueryItem, Query},
     tree::Tree,
-    BatchEntry, Op, HASH_LENGTH,
+    BatchEntry, Op, HASH_LENGTH, TreeFeatureType
 };
 use serde::{Deserialize, Serialize};
+use merk::TreeFeatureType::BasicMerk;
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 use visualize::visualize_to_vec;
 
@@ -283,7 +284,8 @@ impl Element {
         key: K,
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
-        let batch = [(key, Op::Delete)];
+        // TODO: Tree reference type should be optional, doesn't make sense in delete
+        let batch = [(key, Op::Delete, BasicMerk)];
         merk.apply::<_, Vec<u8>>(&batch, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -293,7 +295,8 @@ impl Element {
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
-        let entry = (key, Op::Delete);
+        // TODO: Tree reference type should be optional, doesn't make sense in delete
+        let entry = (key, Op::Delete, BasicMerk);
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -884,13 +887,22 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: K,
+        // is_sum_tree: bool
     ) -> CostResult<(), Error> {
+        // TODO: Fix this
+        let feature_type = match true{
+            false => TreeFeatureType::BasicMerk,
+            // TODO: Remove unwrap
+            true => TreeFeatureType::SummedMerk(self.sum_value().unwrap())
+        };
+        dbg!(feature_type);
+
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let batch_operations = [(key, Op::Put(serialized))];
+        let batch_operations = [(key, Op::Put(serialized), feature_type)];
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -905,7 +917,8 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let entry = (key, Op::Put(serialized));
+        // TODO: build the feature type here
+        let entry = (key, Op::Put(serialized), BasicMerk);
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -973,7 +986,8 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let batch_operations = [(key, Op::PutReference(serialized, referenced_value))];
+        // TODO: Build feature type here
+        let batch_operations = [(key, Op::PutReference(serialized, referenced_value), BasicMerk)];
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -988,7 +1002,8 @@ impl Element {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
-        let entry = (key, Op::PutReference(serialized, referenced_value));
+        // TODO: Build featture type here
+        let entry = (key, Op::PutReference(serialized, referenced_value), BasicMerk);
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }

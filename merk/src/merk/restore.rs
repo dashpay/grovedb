@@ -359,7 +359,10 @@ mod tests {
     #[test]
     fn restore_2_left_heavy() {
         restore_test(
-            &[&[(vec![0], Op::Put(vec![]))], &[(vec![1], Op::Put(vec![]))]],
+            &[
+                &[(vec![0], Op::Put(vec![]), BasicMerk)],
+                &[(vec![1], Op::Put(vec![]), BasicMerk)],
+            ],
             2,
         );
     }
@@ -367,7 +370,10 @@ mod tests {
     #[test]
     fn restore_2_right_heavy() {
         restore_test(
-            &[&[(vec![1], Op::Put(vec![]))], &[(vec![0], Op::Put(vec![]))]],
+            &[
+                &[(vec![1], Op::Put(vec![]), BasicMerk)],
+                &[(vec![0], Op::Put(vec![]), BasicMerk)],
+            ],
             2,
         );
     }

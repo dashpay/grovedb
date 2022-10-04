@@ -11,8 +11,9 @@ use std::{
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use merk::Merk;
+use merk::{Merk, TreeFeatureType};
 use nohash_hasher::IntMap;
+use merk::tree::Tree;
 use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
@@ -417,7 +418,7 @@ where
             .unwrap_or_else(|| (self.get_merk_fn)(path));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
 
-        let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
+        let mut batch_operations: Vec<(Vec<u8>, _, TreeFeatureType)> = vec![];
         for (key, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } => match &element {

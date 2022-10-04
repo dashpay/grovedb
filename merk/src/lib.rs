@@ -27,5 +27,6 @@ pub use tree::{BatchEntry, Hash, MerkBatch, Op, PanicSource, HASH_LENGTH};
 // #[cfg(feature = "full")]
 // // pub use crate::merk::{chunks, restore, Merk};
 pub use crate::merk::{
-    KVIterator, Merk, ProofConstructionResult, ProofWithoutEncodingResult, ROOT_KEY_KEY,
+    KVIterator, Merk, ProofConstructionResult, ProofWithoutEncodingResult, TreeFeatureType,
+    ROOT_KEY_KEY,
 };

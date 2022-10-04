@@ -19,6 +19,7 @@ use crate::{
     merk::OptionOrMerkType::{NoneOfType, SomeMerk},
     proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
     tree::{Commit, Fetch, Hash, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
+    TreeFeatureType::BasicMerk,
 };
 
 pub const ROOT_KEY_KEY: &[u8] = b"root";
@@ -423,13 +424,13 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[]).unwrap();
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]), BasicMerk)], &[]).unwrap();
     ///
-    /// use merk::Op;
+    /// use merk::{Op, TreeFeatureType::BasicMerk};
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), BasicMerk), // puts value [4,5,6] to key[1,2,3]
+    ///     (vec![4, 5, 6], Op::Delete, BasicMerk),             // deletes key [4,5,6]
     /// ];
     /// store.apply::<_, Vec<_>>(batch, &[]).unwrap();
     /// ```
@@ -444,7 +445,7 @@ where
     {
         // ensure keys in batch are sorted and unique
         let mut maybe_prev_key: Option<&KB> = None;
-        for (key, _) in batch.iter() {
+        for (key, ..) in batch.iter() {
             if let Some(prev_key) = maybe_prev_key {
                 match prev_key.as_ref().cmp(key.as_ref()) {
                     Ordering::Greater => {
@@ -475,13 +476,13 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[]).unwrap();
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]), BasicMerk)], &[]).unwrap();
     ///
-    /// use merk::Op;
+    /// use merk::{Op, TreeFeatureType::BasicMerk};
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key [1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), BasicMerk), // puts value [4,5,6] to key [1,2,3]
+    ///     (vec![4, 5, 6], Op::Delete, BasicMerk),             // deletes key [4,5,6]
     /// ];
     /// unsafe { store.apply_unchecked::<_, Vec<_>>(batch, &[]).unwrap() };
     /// ```
@@ -644,7 +645,7 @@ where
             }
         }
 
-        for (key, value) in aux {
+        for (key, value, _) in aux {
             match value {
                 Op::Put(value) => batch.put_aux(key, value),
                 Op::PutReference(value, _) => batch.put_aux(key, value),
@@ -825,7 +826,7 @@ mod test {
     use tempfile::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};
-    use crate::{test_utils::*, Op};
+    use crate::{test_utils::*, Op, TreeFeatureType::BasicMerk};
 
     // TODO: Close and then reopen test
 
@@ -846,7 +847,7 @@ mod test {
             .unwrap()
             .unwrap();
 
-        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[])
+        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), BasicMerk)], &[])
             .unwrap()
             .expect("apply failed");
 
@@ -875,7 +876,7 @@ mod test {
         ));
 
         let mut merk = merk_fee_context.unwrap().unwrap();
-        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[])
+        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), BasicMerk)], &[])
             .unwrap()
             .expect("apply failed");
 
@@ -938,7 +939,7 @@ mod test {
 
         assert!(!result);
 
-        let batch_entry = (key, Op::Put(vec![123; 60]));
+        let batch_entry = (key, Op::Put(vec![123; 60]), BasicMerk);
 
         let batch = vec![batch_entry];
 
@@ -976,7 +977,8 @@ mod test {
             .expect("apply failed");
 
         let key = batch.first().unwrap().0.clone();
-        merk.apply::<_, Vec<_>>(&[(key.clone(), Op::Delete)], &[])
+        // TODO: should be None here
+        merk.apply::<_, Vec<_>>(&[(key.clone(), Op::Delete, BasicMerk)], &[])
             .unwrap()
             .unwrap();
 
@@ -987,7 +989,8 @@ mod test {
     #[test]
     fn aux_data() {
         let mut merk = TempMerk::new();
-        merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))])
+        // TODO: Should be None here also
+        merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), BasicMerk)])
             .unwrap()
             .expect("apply failed");
         let val = merk.get_aux(&[1, 2, 3]).unwrap().unwrap();
@@ -999,8 +1002,9 @@ mod test {
         let mut merk = CrashMerk::open().expect("failed to open merk");
 
         merk.apply::<_, Vec<_>>(
-            &[(vec![0], Op::Put(vec![1]))],
-            &[(vec![2], Op::Put(vec![3]))],
+            &[(vec![0], Op::Put(vec![1]), BasicMerk)],
+            // TODO: should be none here
+            &[(vec![2], Op::Put(vec![3]), BasicMerk)],
         )
         .unwrap()
         .expect("apply failed");
@@ -1024,7 +1028,7 @@ mod test {
         assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
 
         // cached
-        merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![]))], &[])
+        merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![]), BasicMerk)], &[])
             .unwrap()
             .unwrap();
         assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
@@ -1032,9 +1036,9 @@ mod test {
         // uncached
         merk.apply::<_, Vec<_>>(
             &[
-                (vec![0, 0, 0], Op::Put(vec![])),
-                (vec![1, 1, 1], Op::Put(vec![])),
-                (vec![2, 2, 2], Op::Put(vec![])),
+                (vec![0, 0, 0], Op::Put(vec![]), BasicMerk),
+                (vec![1, 1, 1], Op::Put(vec![]), BasicMerk),
+                (vec![2, 2, 2], Op::Put(vec![]), BasicMerk),
             ],
             &[],
         )

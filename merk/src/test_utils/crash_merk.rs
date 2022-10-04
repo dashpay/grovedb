@@ -58,13 +58,13 @@ impl DerefMut for CrashMerk {
 #[cfg(test)]
 mod tests {
     use super::CrashMerk;
-    use crate::Op;
+    use crate::{Op, TreeFeatureType::BasicMerk};
 
     #[test]
     #[ignore] // currently this still works because we enabled the WAL
     fn crash() {
         let mut merk = CrashMerk::open().expect("failed to open merk");
-        merk.apply::<_, Vec<u8>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[])
+        merk.apply::<_, Vec<u8>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), BasicMerk)], &[])
             .unwrap()
             .expect("apply failed");
 
