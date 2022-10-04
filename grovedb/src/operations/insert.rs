@@ -81,6 +81,12 @@ impl GroveDb {
                     &mut cost,
                     self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
                 );
+
+                if matches!(element, Element::SumItem(..)) && !parent_is_sum_tree {
+                    return Err(Error::InvalidInput("cannot add sum item to non sum tree"))
+                        .wrap_with_cost(cost);
+                }
+
                 merk_optional_tx!(
                     &mut cost,
                     self.db,
@@ -119,7 +125,7 @@ impl GroveDb {
         let element_flag = cost_return_on_error_no_add!(
             &cost,
             match element {
-                Element::Tree(_, flag) | Element::SumTree(_, _, flag) => Ok(flag),
+                Element::Tree(_, ref flag) | Element::SumTree(_, _, ref flag) => Ok(flag.clone()),
                 _ => Err(Error::CorruptedData("element should be a tree".to_owned())),
             }
         );
@@ -149,10 +155,20 @@ impl GroveDb {
                 Merk::open(child_storage)
                     .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
             );
-            let element = Element::new_tree_with_flags(
-                child_subtree.root_hash().unwrap_add_cost(&mut cost),
-                element_flag,
-            );
+            let element = match element {
+                Element::SumTree(..) => Element::new_sum_tree_with_flags(
+                    child_subtree.root_hash().unwrap_add_cost(&mut cost),
+                    element_flag,
+                ),
+                Element::Tree(..) => Element::new_tree_with_flags(
+                    child_subtree.root_hash().unwrap_add_cost(&mut cost),
+                    element_flag,
+                ),
+                _ => {
+                    return Err(Error::InvalidInput("cannot add non tree as subtree"))
+                        .wrap_with_cost(cost)
+                }
+            };
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
         } else {
             let parent_storage = self
@@ -173,10 +189,20 @@ impl GroveDb {
                 Merk::open(child_storage)
                     .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
             );
-            let element = Element::new_tree_with_flags(
-                child_subtree.root_hash().unwrap_add_cost(&mut cost),
-                element_flag,
-            );
+            let element = match element {
+                Element::SumTree(..) => Element::new_sum_tree_with_flags(
+                    child_subtree.root_hash().unwrap_add_cost(&mut cost),
+                    element_flag,
+                ),
+                Element::Tree(..) => Element::new_tree_with_flags(
+                    child_subtree.root_hash().unwrap_add_cost(&mut cost),
+                    element_flag,
+                ),
+                _ => {
+                    return Err(Error::InvalidInput("cannot add non tree as subtree"))
+                        .wrap_with_cost(cost)
+                }
+            };
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
         }
         Ok(()).wrap_with_cost(cost)

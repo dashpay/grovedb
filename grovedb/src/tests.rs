@@ -3945,6 +3945,14 @@ fn test_sum_tree_behaves_like_regular_tree() {
     db.insert([TEST_LEAF], b"key", Element::empty_sum_tree(), None)
         .unwrap()
         .expect("should insert tree");
+
+    // Can fetch sum tree
+    let sum_tree = db
+        .get([TEST_LEAF], b"key", None)
+        .unwrap()
+        .expect("should get tree");
+    assert!(matches!(sum_tree, Element::SumTree(..)));
+
     db.insert(
         [TEST_LEAF, b"key"],
         b"innerkey",
@@ -4046,6 +4054,24 @@ fn test_sum_item_behaves_like_regular_item() {
         Element::deserialize(&result_set[0].1).expect("should deserialize element");
     assert_eq!(element_from_proof, Element::new_sum_item(5));
     assert_eq!(element_from_proof.sum_value(), Some(5));
+}
+
+#[test]
+fn test_cannot_insert_sum_item_in_regular_tree() {
+    let db = make_grovedb();
+    db.insert([TEST_LEAF], b"sumkey", Element::empty_tree(), None)
+        .unwrap()
+        .expect("should insert tree");
+    assert!(matches!(
+        db.insert(
+            [TEST_LEAF, b"sumkey"],
+            b"k1",
+            Element::new_sum_item(5),
+            None,
+        )
+        .unwrap(),
+        Err(Error::InvalidInput("cannot add sum item to non sum tree"))
+    ));
 }
 
 macro_rules! open_merk {
