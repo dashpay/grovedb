@@ -2,6 +2,7 @@ use std::{
     cmp::Ordering,
     ops::{Add, AddAssign},
 };
+use std::borrow::BorrowMut;
 
 use intmap::IntMap;
 
@@ -78,17 +79,17 @@ impl Add for StorageRemovedBytes {
 
 impl AddAssign for StorageRemovedBytes {
     fn add_assign(&mut self, rhs: Self) {
-        match self {
+        match self.borrow_mut() {
             NoStorageRemoval => *self = rhs,
-            BasicStorageRemoval(mut s) => match rhs {
+            BasicStorageRemoval(s) => match rhs {
                 NoStorageRemoval => {}
-                BasicStorageRemoval(r) => s += r,
+                BasicStorageRemoval(r) => *s += r,
                 SectionedStorageRemoval(mut map) => {
                     if map.contains_key(u64::MAX) {
                         let old_value = map.remove(u64::MAX).unwrap_or_default();
-                        map.insert(u64::MAX, old_value + s);
+                        map.insert(u64::MAX, old_value + *s);
                     } else {
-                        map.insert(u64::MAX, s);
+                        map.insert(u64::MAX, *s);
                     }
                     *self = SectionedStorageRemoval(map)
                 }
