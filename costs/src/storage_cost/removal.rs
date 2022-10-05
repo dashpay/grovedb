@@ -60,7 +60,7 @@ impl Add for StorageRemovedBytes {
                     }
                     SectionedStorageRemoval(smap)
                 }
-                SectionedStorageRemoval(mut rmap) => {
+                SectionedStorageRemoval(rmap) => {
                     rmap.into_iter().for_each(|(k, v)| {
                         if smap.contains_key(k) {
                             let old_value = smap.remove(k).unwrap_or_default();
@@ -103,7 +103,7 @@ impl AddAssign for StorageRemovedBytes {
                         smap.insert(u64::MAX, r);
                     }
                 }
-                SectionedStorageRemoval(mut rmap) => {
+                SectionedStorageRemoval(rmap) => {
                     rmap.into_iter().for_each(|(k, v)| {
                         if smap.contains_key(k) {
                             let old_value = smap.remove(k).unwrap_or_default();

@@ -1,7 +1,5 @@
 use std::ops::{Add, AddAssign};
 
-use integer_encoding::VarInt;
-
 use crate::{
     error::Error,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::NoStorageRemoval},

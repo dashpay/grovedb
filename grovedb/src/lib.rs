@@ -21,11 +21,11 @@ pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, BatchEntry, Merk};
 pub use query::{PathQuery, SizedQuery};
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
+use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
     Storage, StorageContext,
 };
-use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 pub use subtree::{Element, ElementFlags};
 
 pub use crate::error::Error;
@@ -48,30 +48,38 @@ impl GroveDb {
         Ok(GroveDb { db })
     }
 
-    pub fn open_merk_at_path<'p,'db, P, S>(&self, path: P, tx: TransactionArg) -> CostContext<Result<Merk<S>, Error>>
-        where
-            P: IntoIterator<Item = &'p [u8]>,
-            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-            S: StorageContext<'db>,
-            <S as StorageContext<'db>>::Error: std::error::Error,
+    pub fn open_merk_at_path<'p, 'db, P, S>(
+        &self,
+        path: P,
+        tx: TransactionArg,
+    ) -> CostContext<Result<Merk<S>, Error>>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + Clone,
+        S: StorageContext<'db>,
+        <S as StorageContext<'db>>::Error: std::error::Error,
     {
         let mut path_iter = path.into_iter();
         if let Some(tx) = tx {
             let mut cost = OperationCost::default();
-            let storage = self.db
+            let storage = self
+                .db
                 .get_transactional_storage_context(path_iter.clone(), tx)
                 .unwrap_add_cost(&mut cost);
             match path_iter.next_back() {
                 Some(key) => {
-                    let parent_storage = self.db
+                    let parent_storage = self
+                        .db
                         .get_transactional_storage_context(path_iter.clone(), tx)
                         .unwrap_add_cost(&mut cost);
                     let element = cost_return_on_error!(
-                    &mut cost,
-                    Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                        Error::CorruptedData("could not get key for parent of subtree".to_owned())
-                    })
-                );
+                        &mut cost,
+                        Element::get_from_storage(&parent_storage, key).map_err(|_| {
+                            Error::CorruptedData(
+                                "could not get key for parent of subtree".to_owned(),
+                            )
+                        })
+                    );
                     if let Element::Tree(root_key, _) = element {
                         Merk::open_with_root_key(storage, root_key).map_err(|_| {
                             Error::CorruptedData(
@@ -80,37 +88,34 @@ impl GroveDb {
                         })
                     } else {
                         Err(Error::CorruptedData(
-                            "cannot open a subtree as parent exists but is not a tree"
-                                .to_owned(),
+                            "cannot open a subtree as parent exists but is not a tree".to_owned(),
                         ))
-                            .wrap_with_cost(OperationCost::default())
+                        .wrap_with_cost(OperationCost::default())
                     }
                 }
-                None => {
-                    Merk::open_base(storage).map_err(|_| {
-                        Error::CorruptedData(
-                            "cannot open a the root subtree".to_owned(),
-                        )
-                    })
-                }
+                None => Merk::open_base(storage)
+                    .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned())),
             }
-
         } else {
             let mut cost = OperationCost::default();
-            let storage = self.db
+            let storage = self
+                .db
                 .get_storage_context(path_iter.clone())
                 .unwrap_add_cost(&mut cost);
             match path_iter.next_back() {
                 Some(key) => {
-                    let parent_storage = self.db
+                    let parent_storage = self
+                        .db
                         .get_storage_context(path_iter.clone())
                         .unwrap_add_cost(&mut cost);
                     let element = cost_return_on_error!(
-                    &mut cost,
-                    Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                        Error::CorruptedData("could not get key for parent of subtree".to_owned())
-                    })
-                );
+                        &mut cost,
+                        Element::get_from_storage(&parent_storage, key).map_err(|_| {
+                            Error::CorruptedData(
+                                "could not get key for parent of subtree".to_owned(),
+                            )
+                        })
+                    );
                     if let Element::Tree(root_key, _) = element {
                         Merk::open_with_root_key(storage, root_key).map_err(|_| {
                             Error::CorruptedData(
@@ -119,146 +124,138 @@ impl GroveDb {
                         })
                     } else {
                         Err(Error::CorruptedData(
-                            "cannot open a subtree as parent exists but is not a tree"
-                                .to_owned(),
+                            "cannot open a subtree as parent exists but is not a tree".to_owned(),
                         ))
-                            .wrap_with_cost(OperationCost::default())
+                        .wrap_with_cost(OperationCost::default())
                     }
                 }
-                None => {
-                    Merk::open_base(storage).map_err(|_| {
-                        Error::CorruptedData(
-                            "cannot open a the root subtree".to_owned(),
-                        )
-                    })
-                }
+                None => Merk::open_base(storage)
+                    .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned())),
             }
         }
     }
 
-    pub fn open_merk_with_parent_at_path<'p,'db, P, S>(&self, path: P, tx: TransactionArg) -> CostContext<Result<(Merk<S>,Merk<S>), Error>>
-        where
-            P: IntoIterator<Item = &'p [u8]>,
-            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-            S: StorageContext<'db>,
-            <S as StorageContext<'db>>::Error: std::error::Error,
+    pub fn open_merk_with_parent_at_path<'p, 'db, P, S>(
+        &self,
+        path: P,
+        tx: TransactionArg,
+    ) -> CostContext<Result<(Merk<S>, Merk<S>), Error>>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+        S: StorageContext<'db>,
+        <S as StorageContext<'db>>::Error: std::error::Error,
     {
         let mut path_iter = path.into_iter();
         if let Some(tx) = tx {
             let mut cost = OperationCost::default();
-            let storage = self.db
+            let storage = self
+                .db
                 .get_transactional_storage_context(path_iter.clone(), tx)
                 .unwrap_add_cost(&mut cost);
             let key = path_iter.next_back().expect("next element is `Some`");
-            let parent_storage = self.db
+            let parent_storage = self
+                .db
                 .get_transactional_storage_context(path_iter.clone(), tx)
                 .unwrap_add_cost(&mut cost);
             let parent_key = path_iter.next_back().expect("next element is `Some`");
-            let grandparent_storage = self.db
+            let grandparent_storage = self
+                .db
                 .get_transactional_storage_context(path_iter.clone(), tx)
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
-                    &mut cost,
-                    Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                        Error::CorruptedData("could not get key for parent of subtree".to_owned())
-                    })
-                );
+                &mut cost,
+                Element::get_from_storage(&parent_storage, key).map_err(|_| {
+                    Error::CorruptedData("could not get key for parent of subtree".to_owned())
+                })
+            );
             let parent_element = cost_return_on_error!(
-                    &mut cost,
-                    Element::get_from_storage(&grandparent_storage, parent_key).map_err(|_| {
-                        Error::CorruptedData("could not get key for parent of subtree".to_owned())
-                    })
-                );
+                &mut cost,
+                Element::get_from_storage(&grandparent_storage, parent_key).map_err(|_| {
+                    Error::CorruptedData("could not get key for parent of subtree".to_owned())
+                })
+            );
             let merk = cost_return_on_error!(
-                    &mut cost,
-                    if let Element::Tree(root_key, _) = element {
-                        Merk::open_with_root_key(storage, root_key).map_err(|_| {
-                            Error::CorruptedData(
-                                "cannot open a subtree with given root key".to_owned(),
-                            )
-                        })
-                    } else {
-                        Err(Error::CorruptedData(
-                            "cannot open a subtree as parent exists but is not a tree"
-                                .to_owned(),
-                        ))
-                            .wrap_with_cost(OperationCost::default())
-                    }
-                );
+                &mut cost,
+                if let Element::Tree(root_key, _) = element {
+                    Merk::open_with_root_key(storage, root_key).map_err(|_| {
+                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                    })
+                } else {
+                    Err(Error::CorruptedData(
+                        "cannot open a subtree as parent exists but is not a tree".to_owned(),
+                    ))
+                    .wrap_with_cost(OperationCost::default())
+                }
+            );
             let parent_merk = cost_return_on_error!(
-                    &mut cost,
-                    if let Element::Tree(root_key, _) = parent_element {
-                        Merk::open_with_root_key(parent_storage, root_key).map_err(|_| {
-                            Error::CorruptedData(
-                                "cannot open a subtree with given root key".to_owned(),
-                            )
-                        })
-                    } else {
-                        Err(Error::CorruptedData(
-                            "cannot open a subtree as parent exists but is not a tree"
-                                .to_owned(),
-                        ))
-                            .wrap_with_cost(OperationCost::default())
-                    }
-                );
+                &mut cost,
+                if let Element::Tree(root_key, _) = parent_element {
+                    Merk::open_with_root_key(parent_storage, root_key).map_err(|_| {
+                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                    })
+                } else {
+                    Err(Error::CorruptedData(
+                        "cannot open a subtree as parent exists but is not a tree".to_owned(),
+                    ))
+                    .wrap_with_cost(OperationCost::default())
+                }
+            );
             Ok((merk, parent_merk)).wrap_with_cost(cost)
         } else {
             let mut cost = OperationCost::default();
-            let storage = self.db
+            let storage = self
+                .db
                 .get_storage_context(path_iter.clone())
                 .unwrap_add_cost(&mut cost);
             let key = path_iter.next_back().expect("next element is `Some`");
-            let parent_storage = self.db
+            let parent_storage = self
+                .db
                 .get_storage_context(path_iter.clone())
                 .unwrap_add_cost(&mut cost);
             let parent_key = path_iter.next_back().expect("next element is `Some`");
-            let grandparent_storage = self.db
+            let grandparent_storage = self
+                .db
                 .get_storage_context(path_iter.clone())
                 .unwrap_add_cost(&mut cost);
             let element = cost_return_on_error!(
-                    &mut cost,
-                    Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                        Error::CorruptedData("could not get key for parent of subtree".to_owned())
-                    })
-                );
+                &mut cost,
+                Element::get_from_storage(&parent_storage, key).map_err(|_| {
+                    Error::CorruptedData("could not get key for parent of subtree".to_owned())
+                })
+            );
             let parent_element = cost_return_on_error!(
-                    &mut cost,
-                    Element::get_from_storage(&grandparent_storage, parent_key).map_err(|_| {
-                        Error::CorruptedData("could not get key for parent of subtree".to_owned())
-                    })
-                );
+                &mut cost,
+                Element::get_from_storage(&grandparent_storage, parent_key).map_err(|_| {
+                    Error::CorruptedData("could not get key for parent of subtree".to_owned())
+                })
+            );
             let merk = cost_return_on_error!(
-                    &mut cost,
-                    if let Element::Tree(root_key, _) = element {
-                        Merk::open_with_root_key(storage, root_key).map_err(|_| {
-                            Error::CorruptedData(
-                                "cannot open a subtree with given root key".to_owned(),
-                            )
-                        })
-                    } else {
-                        Err(Error::CorruptedData(
-                            "cannot open a subtree as parent exists but is not a tree"
-                                .to_owned(),
-                        ))
-                            .wrap_with_cost(OperationCost::default())
-                    }
-                );
+                &mut cost,
+                if let Element::Tree(root_key, _) = element {
+                    Merk::open_with_root_key(storage, root_key).map_err(|_| {
+                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                    })
+                } else {
+                    Err(Error::CorruptedData(
+                        "cannot open a subtree as parent exists but is not a tree".to_owned(),
+                    ))
+                    .wrap_with_cost(OperationCost::default())
+                }
+            );
             let parent_merk = cost_return_on_error!(
-                    &mut cost,
-                    if let Element::Tree(root_key, _) = parent_element {
-                        Merk::open_with_root_key(parent_storage, root_key).map_err(|_| {
-                            Error::CorruptedData(
-                                "cannot open a subtree with given root key".to_owned(),
-                            )
-                        })
-                    } else {
-                        Err(Error::CorruptedData(
-                            "cannot open a subtree as parent exists but is not a tree"
-                                .to_owned(),
-                        ))
-                            .wrap_with_cost(OperationCost::default())
-                    }
-                );
+                &mut cost,
+                if let Element::Tree(root_key, _) = parent_element {
+                    Merk::open_with_root_key(parent_storage, root_key).map_err(|_| {
+                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                    })
+                } else {
+                    Err(Error::CorruptedData(
+                        "cannot open a subtree as parent exists but is not a tree".to_owned(),
+                    ))
+                    .wrap_with_cost(OperationCost::default())
+                }
+            );
             Ok((merk, parent_merk)).wrap_with_cost(cost)
         }
     }
@@ -294,21 +291,17 @@ impl GroveDb {
 
         let mut path_iter = path.into_iter();
 
-
         if transaction.is_some() {
-            let mut child_tree : Merk<PrefixedRocksDbTransactionContext> =
-                cost_return_on_error!(
-                    &mut cost,
-            self.open_merk_at_path(path_iter, transaction)
-                );
+            let mut child_tree: Merk<PrefixedRocksDbTransactionContext> =
+                cost_return_on_error!(&mut cost, self.open_merk_at_path(path_iter, transaction));
             while path_iter.len() > 0 {
                 let key = path_iter.next_back().expect("next element is `Some`");
-                let mut parent_tree : Merk<PrefixedRocksDbTransactionContext> =
-                    cost_return_on_error!(
+                let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                     &mut cost,
                     self.open_merk_at_path(path_iter, transaction)
                 );
-                let (root_hash, root_key) = child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
+                let (root_hash, root_key) =
+                    child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
                 cost_return_on_error!(
                     &mut cost,
                     Self::update_tree_item_preserve_flag(
@@ -321,19 +314,16 @@ impl GroveDb {
                 child_tree = parent_tree;
             }
         } else {
-            let mut child_tree : Merk<PrefixedRocksDbStorageContext> =
-                cost_return_on_error!(
-                    &mut cost,
-            self.open_merk_at_path(path_iter, transaction)
-                );
+            let mut child_tree: Merk<PrefixedRocksDbStorageContext> =
+                cost_return_on_error!(&mut cost, self.open_merk_at_path(path_iter, transaction));
             while path_iter.len() > 0 {
                 let key = path_iter.next_back().expect("next element is `Some`");
-                let mut parent_tree : Merk<PrefixedRocksDbStorageContext> =
-                    cost_return_on_error!(
+                let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                     &mut cost,
                     self.open_merk_at_path(path_iter, transaction)
                 );
-                let (root_hash, root_key) = child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
+                let (root_hash, root_key) =
+                    child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
                 cost_return_on_error!(
                     &mut cost,
                     Self::update_tree_item_preserve_flag(

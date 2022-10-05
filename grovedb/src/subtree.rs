@@ -16,9 +16,7 @@ use merk::{
     BatchEntry, Op, HASH_LENGTH,
 };
 use serde::{Deserialize, Serialize};
-use storage::{
-    rocksdb_storage::RocksDbStorage, RawIterator, StorageContext,
-};
+use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 use visualize::visualize_to_vec;
 
 use crate::{
@@ -1211,8 +1209,10 @@ impl<I: RawIterator> ElementsIterator<I> {
 #[cfg(test)]
 mod tests {
     use merk::test_utils::TempMerk;
-    use storage::rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbStorageContext};
-    use storage::Storage;
+    use storage::{
+        rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbStorageContext},
+        Storage,
+    };
 
     use super::*;
     use crate::{
@@ -1398,7 +1398,8 @@ mod tests {
         let db = make_test_grovedb();
 
         let storage = &db.db;
-        let mut merk : Merk<PrefixedRocksDbStorageContext> = db.open_merk_at_path([TEST_LEAF], None)
+        let mut merk: Merk<PrefixedRocksDbStorageContext> = db
+            .open_merk_at_path([TEST_LEAF], None)
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 
@@ -1454,7 +1455,8 @@ mod tests {
         let db = make_test_grovedb();
 
         let storage = &db.db;
-        let mut merk : Merk<PrefixedRocksDbBatchStorageContext> = db.open_merk_at_path([TEST_LEAF], None)
+        let mut merk: Merk<PrefixedRocksDbBatchStorageContext> = db
+            .open_merk_at_path([TEST_LEAF], None)
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 
@@ -1549,7 +1551,8 @@ mod tests {
         let db = make_test_grovedb();
 
         let storage = &db.db;
-        let mut merk : Merk<PrefixedRocksDbStorageContext> = db.open_merk_at_path([TEST_LEAF], None)
+        let mut merk: Merk<PrefixedRocksDbStorageContext> = db
+            .open_merk_at_path([TEST_LEAF], None)
             .unwrap()
             .expect("cannot open Merk");
 
@@ -1646,7 +1649,8 @@ mod tests {
         let db = make_test_grovedb();
 
         let storage = &db.db;
-        let mut merk : Merk<PrefixedRocksDbStorageContext> = db.open_merk_at_path([TEST_LEAF], None)
+        let mut merk: Merk<PrefixedRocksDbStorageContext> = db
+            .open_merk_at_path([TEST_LEAF], None)
             .unwrap()
             .expect("cannot open Merk");
 

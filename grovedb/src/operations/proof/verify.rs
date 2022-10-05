@@ -310,7 +310,7 @@ impl ProofVerifier {
                     "intermediate proofs should be for trees",
                 )),
             }?;
-            expected_child_hash = Some(child_hash);
+            expected_child_hash = child_hash;
         }
 
         if last_result_set.is_empty() {

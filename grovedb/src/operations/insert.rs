@@ -6,9 +6,7 @@ use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTra
 
 use crate::{
     reference_path::path_from_reference_path_type,
-    util::{
-        merk_optional_tx, storage_context_with_parent_optional_tx,
-    },
+    util::{merk_optional_tx, storage_context_with_parent_optional_tx},
     Element, Error, GroveDb, TransactionArg,
 };
 
@@ -169,17 +167,13 @@ impl GroveDb {
         let path_iter = path.into_iter();
 
         if transaction.is_some() {
-            let parent_subtree : Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
-            &mut cost,
-            self.open_merk_at_path(path_iter, transaction)
-        );
+            let parent_subtree: Merk<PrefixedRocksDbTransactionContext> =
+                cost_return_on_error!(&mut cost, self.open_merk_at_path(path_iter, transaction));
             let element = Element::empty_tree_with_flags(element_flag);
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
         } else {
-            let parent_subtree : Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
-            &mut cost,
-            self.open_merk_at_path(path_iter, transaction)
-        );
+            let parent_subtree: Merk<PrefixedRocksDbStorageContext> =
+                cost_return_on_error!(&mut cost, self.open_merk_at_path(path_iter, transaction));
             let element = Element::empty_tree_with_flags(element_flag);
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
         }

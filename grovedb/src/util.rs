@@ -161,8 +161,8 @@ macro_rules! root_merk_optional_tx {
     };
 }
 
-pub(crate) use root_merk_optional_tx;
 pub(crate) use merk_optional_tx;
 pub(crate) use meta_storage_context_optional_tx;
+pub(crate) use root_merk_optional_tx;
 pub(crate) use storage_context_optional_tx;
 pub(crate) use storage_context_with_parent_optional_tx;

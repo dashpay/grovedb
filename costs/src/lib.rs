@@ -12,7 +12,6 @@ use std::ops::{Add, AddAssign};
 
 pub use context::{CostContext, CostResult, CostsExt};
 use integer_encoding::VarInt;
-use intmap::IntMap;
 
 use crate::{
     error::Error,

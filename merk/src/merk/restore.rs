@@ -91,22 +91,24 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let mut batch = self.merk.storage.new_batch();
 
         tree.visit_refs(&mut |proof_node| {
-            let (mut node, key) = match &proof_node.node {
-                Node::KV(key, value) => (Tree::new(key.clone(), value.clone()).unwrap(), key),
-                Node::KVValueHash(key, value, value_hash) => (
+            if let Some((mut node, key)) = match &proof_node.node {
+                Node::KV(key, value) => Some((Tree::new(key.clone(), value.clone()).unwrap(), key)),
+                Node::KVValueHash(key, value, value_hash) => Some((
                     Tree::new_with_value_hash(key.clone(), value.clone(), value_hash.clone())
                         .unwrap(),
                     key,
-                ),
-                _ => return,
-            };
+                )),
+                _ => None,
+            } {
+                // TODO: encode tree node without cloning key/value
+                *node.slot_mut(true) = proof_node.left.as_ref().map(Child::as_link);
+                *node.slot_mut(false) = proof_node.right.as_ref().map(Child::as_link);
 
-            // TODO: encode tree node without cloning key/value
-            *node.slot_mut(true) = proof_node.left.as_ref().map(Child::as_link);
-            *node.slot_mut(false) = proof_node.right.as_ref().map(Child::as_link);
-
-            let bytes = node.encode();
-            batch.put(key, &bytes, None, None).map_err(|e| e.into())
+                let bytes = node.encode();
+                batch.put(key, &bytes, None, None).map_err(|e| e.into())
+            } else {
+                Ok(())
+            }
         })?;
 
         self.merk.storage.commit_batch(batch).unwrap()?;

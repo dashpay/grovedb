@@ -811,7 +811,7 @@ where
     pub(crate) fn to_kv_value_hash_node(&self) -> Node {
         Node::KVValueHash(
             self.tree().key().to_vec(),
-            self.tree().value().to_vec(),
+            self.tree().value_ref().to_vec(),
             self.tree().value_hash().clone(),
         )
     }

@@ -180,7 +180,7 @@ pub(crate) fn get_next_chunk(
         //  only needed when dealing with references and trees
         let kv = Node::KVValueHash(
             key.to_vec(),
-            node.value().to_vec(),
+            node.value_ref().to_vec(),
             node.value_hash().clone(),
         );
 

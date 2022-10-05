@@ -7,10 +7,7 @@ use merk::{
     proofs::{Node, Op},
     Merk,
 };
-use storage::{
-    rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
-    Storage, StorageContext,
-};
+use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
 
 use crate::{Element, Error, GroveDb, Hash};
 
@@ -32,9 +29,9 @@ pub struct SubtreeChunkProducer<'db> {
 struct SubtreeChunkProducerCache<'db> {
     current_merk_path: Vec<Vec<u8>>,
     current_merk: Merk<PrefixedRocksDbStorageContext<'db>>,
-    // This needed to be an `Option` because it requires a reference on Merk but it's within the same
-    // struct and during struct init a referenced Merk would be moved inside a struct, using
-    // `Option` this init happens in two steps.
+    // This needed to be an `Option` because it requires a reference on Merk but it's within the
+    // same struct and during struct init a referenced Merk would be moved inside a struct,
+    // using `Option` this init happens in two steps.
     current_chunk_producer: Option<merk::ChunkProducer<'db, PrefixedRocksDbStorageContext<'db>>>,
 }
 
@@ -57,7 +54,7 @@ impl<'db> SubtreeChunkProducer<'db> {
     pub fn get_chunk<'p, P>(&mut self, path: P, index: usize) -> Result<Vec<Op>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator + ExactSizeIterator,
+        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
     {
         let path_iter = path.into_iter();
 
@@ -159,8 +156,8 @@ impl<'db> Restorer<'db> {
             match ops.last().expect("just inserted") {
                 Op::Push(Node::KVValueHash(key, value_bytes, value_hash))
                 | Op::PushInverted(Node::KVValueHash(key, value_bytes, value_hash)) => {
-                    if let Element::Tree(hash, _) =
-                        Element::deserialize(value_bytes).map_err(|e| RestorerError(e.to_string()))?
+                    if let Element::Tree(root_key, _) = Element::deserialize(value_bytes)
+                        .map_err(|e| RestorerError(e.to_string()))?
                     {
                         if root_key.is_none() || self.current_merk_path.last() == Some(key) {
                             // We add only subtrees of the current subtree to queue, skipping
@@ -197,11 +194,12 @@ impl<'db> Restorer<'db> {
                 .map_err(|e| RestorerError(e.to_string()))?;
             if let Some((next_path, expected_hash)) = self.queue.pop_front() {
                 // Process next subtree.
-                let merk : Merk<PrefixedRocksDbStorageContext> = self.grove_db.open_merk_at_path(next_path.clone().into_iter(), None).unwrap()?;
-                self.current_merk_restorer = Some(MerkRestorer::new(
-                    merk,
-                    expected_hash,
-                ));
+                let merk: Merk<PrefixedRocksDbStorageContext> = self
+                    .grove_db
+                    .open_merk_at_path(next_path.iter().map(|a| a.as_ref()), None)
+                    .unwrap()
+                    .map_err(|e| RestorerError(e.to_string()))?;
+                self.current_merk_restorer = Some(MerkRestorer::new(merk, expected_hash));
                 self.current_merk_chunk_index = 0;
                 self.current_merk_path = next_path;
 
@@ -270,6 +268,7 @@ impl<'db> SiblingsChunkProducer<'db> {
         let parent_ctx = self
             .chunk_producer
             .grove_db
+            .db
             .get_storage_context(parent_path.clone())
             .unwrap();
         let mut siblings_iter = Element::iterator(parent_ctx.raw_iter()).unwrap();
@@ -314,7 +313,7 @@ impl<'db> SiblingsChunkProducer<'db> {
     ) -> Result<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: Clone,
+        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
     {
         let path_iter = subtree_path.into_iter();
 
@@ -377,7 +376,6 @@ impl<'db> BufferedRestorer<'db> {
 #[cfg(test)]
 mod test {
     use rand::RngCore;
-    use storage::rocksdb_storage::test_utils::TempStorage;
     use tempfile::TempDir;
 
     use super::*;
@@ -391,15 +389,12 @@ mod test {
         let replica_tempdir = TempDir::new().unwrap();
 
         {
-            let replica_db =
-                GroveDb::open(replica_tempdir.path()).unwrap();
+            let replica_db = GroveDb::open(replica_tempdir.path()).unwrap();
             let mut chunk_producer = original_db.chunks();
 
-            let mut restorer = Restorer::new(
-                &replica_db,
-                original_db.root_hash(None).unwrap().unwrap(),
-            )
-            .expect("cannot create restorer");
+            let mut restorer =
+                Restorer::new(&replica_db, original_db.root_hash(None).unwrap().unwrap())
+                    .expect("cannot create restorer");
 
             // That means root tree chunk with index 0
             let mut next_chunk: (Vec<Vec<u8>>, usize) = (vec![], 0);
@@ -423,13 +418,12 @@ mod test {
         let replica_tempdir = TempDir::new().unwrap();
 
         {
-            let replica_storage =
-                RocksDbStorage::default_rocksdb_with_path(replica_tempdir.path()).unwrap();
+            let replica_grove_db = GroveDb::open(replica_tempdir.path()).unwrap();
             let mut chunk_producer = SiblingsChunkProducer::new(original_db.chunks());
 
             let mut restorer = BufferedRestorer::new(
                 Restorer::new(
-                    &replica_storage,
+                    &replica_grove_db,
                     original_db.root_hash(None).unwrap().unwrap(),
                 )
                 .expect("cannot create restorer"),
@@ -506,8 +500,9 @@ mod test {
         let mut bad_hash = db.root_hash(None).unwrap().unwrap();
         bad_hash[0] = bad_hash[0].wrapping_add(1);
 
-        let temp_storage = TempStorage::default();
-        let mut restorer = Restorer::new(&temp_storage, bad_hash).unwrap();
+        let tmp_dir = TempDir::new().unwrap();
+        let mut restored_db = GroveDb::open(tmp_dir.path()).unwrap();
+        let mut restorer = Restorer::new(&restored_db, bad_hash).unwrap();
         let mut chunks = db.chunks();
         assert!(restorer
             .process_chunk(chunks.get_chunk([], 0).unwrap())
@@ -536,8 +531,9 @@ mod test {
 
         let expected_hash = db.root_hash(None).unwrap().unwrap();
 
-        let temp_storage = TempStorage::default();
-        let mut restorer = Restorer::new(&temp_storage, expected_hash).unwrap();
+        let tmp_dir = TempDir::new().unwrap();
+        let mut restored_db = GroveDb::open(tmp_dir.path()).unwrap();
+        let mut restorer = Restorer::new(&restored_db, expected_hash).unwrap();
         let mut chunks = db.chunks();
 
         let next_op = restorer

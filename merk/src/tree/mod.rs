@@ -90,7 +90,7 @@ impl Tree {
     }
 
     pub fn kv_with_parent_hook_size_and_storage_cost(&self) -> (u32, KeyValueStorageCost) {
-        let mut current_kv_size =
+        let current_kv_size =
             self.value_encoding_length_with_parent_to_child_reference() as u32;
 
         let key_storage_cost = StorageCost {
