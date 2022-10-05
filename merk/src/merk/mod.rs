@@ -6,20 +6,22 @@ use std::{
     cmp::Ordering,
     collections::{BTreeSet, LinkedList},
     fmt,
+    io::{Read, Write},
     marker::Destruct,
     mem,
 };
 
 use anyhow::{anyhow, Result};
 use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
-use ed::{Decode, Encode};
+use ed::{Decode, Encode, Terminated};
+use integer_encoding::VarInt;
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
     merk::OptionOrMerkType::{NoneOfType, SomeMerk},
     proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
     tree::{Commit, Fetch, Hash, Link, MerkBatch, Op, RefWalker, Tree, Walker, NULL_HASH},
-    TreeFeatureType::BasicMerk,
+    TreeFeatureType::{BasicMerk, SummedMerk},
 };
 
 pub const ROOT_KEY_KEY: &[u8] = b"root";
@@ -148,10 +150,63 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Encode, Decode)]
+// TODO: Move to seperate file
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum TreeFeatureType {
     BasicMerk,
     SummedMerk(i64),
+}
+
+impl Terminated for TreeFeatureType {}
+
+impl Encode for TreeFeatureType {
+    #[inline]
+    fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
+        match self {
+            TreeFeatureType::BasicMerk => {
+                dest.write_all(&[0])?;
+                Ok(())
+            }
+            TreeFeatureType::SummedMerk(sum) => {
+                dest.write_all(&[1])?;
+                let encoded_sum = sum.encode_var_vec();
+                dest.write_all(&[encoded_sum.len() as u8]);
+                dest.write_all(&encoded_sum);
+                Ok(())
+            }
+        }
+    }
+
+    #[inline]
+    fn encoding_length(&self) -> ed::Result<usize> {
+        match self {
+            TreeFeatureType::BasicMerk => Ok(1),
+            TreeFeatureType::SummedMerk(sum) => {
+                let encoded_sum = sum.encode_var_vec();
+                Ok(1 + 1 + encoded_sum.len())
+            }
+        }
+    }
+}
+
+impl Decode for TreeFeatureType {
+    #[inline]
+    fn decode<R: Read>(mut input: R) -> ed::Result<Self> {
+        let mut feature_type: [u8; 1] = [13];
+        input.read_exact(&mut feature_type)?;
+        match feature_type {
+            [0] => Ok(BasicMerk),
+            [1] => {
+                let mut length: [u8; 1] = [0];
+                input.read_exact(&mut length)?;
+                let mut encoded_sum: Vec<u8> = vec![0; length[0] as usize];
+                input.read_exact(&mut encoded_sum)?;
+                let sum = i64::decode_var(&encoded_sum).ok_or(ed::Error::UnexpectedByte(55))?;
+                Ok(SummedMerk(sum.0))
+            }
+            _ => Err(ed::Error::UnexpectedByte(55)),
+        }
+    }
 }
 
 // TODO: We probably don't need this again
