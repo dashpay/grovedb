@@ -160,7 +160,10 @@ impl<'db> Restorer<'db> {
         for op in chunk_ops {
             ops.push(op);
             match ops.last().expect("just inserted") {
-                Op::Push(Node::KV(key, bytes)) | Op::PushInverted(Node::KV(key, bytes)) => {
+                Op::Push(Node::KV(key, bytes))
+                | Op::PushInverted(Node::KV(key, bytes))
+                | Op::Push(Node::KVValueHash(key, bytes, _))
+                | Op::PushInverted(Node::KVValueHash(key, bytes, _)) => {
                     if let Element::Tree(hash, _) =
                         Element::deserialize(bytes).map_err(|e| RestorerError(e.to_string()))?
                     {
@@ -740,6 +743,11 @@ mod test {
         // Build a replica from checkpoint
         let replica_dir = replicate(&checkpoint_db);
         let replica_db = GroveDb::open(&replica_dir).unwrap();
+
+        assert_eq!(
+            checkpoint_db.root_hash(None).unwrap().unwrap(),
+            replica_db.root_hash(None).unwrap().unwrap()
+        );
 
         assert_eq!(
             checkpoint_db
