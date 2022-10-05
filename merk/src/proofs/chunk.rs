@@ -173,6 +173,7 @@ pub(crate) fn get_next_chunk(
         let encoded_node = iter.value().unwrap_add_cost(&mut cost).unwrap();
         Tree::decode_into(&mut node, vec![], encoded_node);
 
+        // TODO: Only use the KVValueHash if needed, saves 32 bytes
         let kv = Node::KVValueHash(
             key.to_vec(),
             node.value().to_vec(),
