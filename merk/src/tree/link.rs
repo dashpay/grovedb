@@ -2,6 +2,7 @@ use std::io::{Read, Write};
 
 use byteorder::{BigEndian, ReadBytesExt};
 use ed::{Decode, Encode, Result, Terminated};
+use integer_encoding::VarInt;
 
 use super::{hash::Hash, Tree};
 use crate::merk::OptionOrMerkType;
@@ -259,8 +260,17 @@ impl Encode for Link {
 
         out.write_all(&[*left_height, *right_height])?;
 
-        // TODO make this optional
-        out.write_all(sum.unwrap_or(0).to_be_bytes().as_slice())?;
+        match sum {
+            None => {
+                out.write_all(&[0]);
+            }
+            Some(sum_value) => {
+                out.write_all(&[1]);
+                let encoded_sum = sum_value.encode_var_vec();
+                out.write_all(&[encoded_sum.len() as u8]);
+                out.write_all(&encoded_sum);
+            }
+        }
 
         Ok(())
     }
@@ -269,17 +279,30 @@ impl Encode for Link {
     fn encoding_length(&self) -> Result<usize> {
         debug_assert!(self.key().len() < 256, "Key length must be less than 256");
 
+        // TODO: Fix this
         Ok(match self {
-            Link::Reference { key, sum, .. } => {
-                1 + key.len() + 32 + 2 + (sum.is_some() as usize * 8)
-            }
+            Link::Reference { key, sum, .. } => match sum {
+                None => 1 + key.len() + 32 + 2 + 1,
+                Some(sum_value) => {
+                    let encoded_sum_value = sum_value.encode_var_vec();
+                    1 + key.len() + 32 + 2 + 1 + encoded_sum_value.len()
+                }
+            },
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
-            Link::Uncommitted { tree, sum, .. } => {
-                1 + tree.key().len() + 32 + 2 + (sum.is_some() as usize * 8)
-            }
-            Link::Loaded { tree, sum, .. } => {
-                1 + tree.key().len() + 32 + 2 + (sum.is_some() as usize * 8)
-            }
+            Link::Uncommitted { tree, sum, .. } => match sum {
+                None => 1 + tree.key().len() + 32 + 2 + 1,
+                Some(sum_value) => {
+                    let encoded_sum_value = sum_value.encode_var_vec();
+                    1 + tree.key().len() + 32 + 2 + 1 + encoded_sum_value.len()
+                }
+            },
+            Link::Loaded { tree, sum, .. } => match sum {
+                None => 1 + tree.key().len() + 32 + 2 + 1,
+                Some(sum_value) => {
+                    let encoded_sum_value = sum_value.encode_var_vec();
+                    1 + tree.key().len() + 32 + 2 + 1 + encoded_sum_value.len()
+                }
+            },
         })
     }
 }
@@ -329,8 +352,21 @@ impl Decode for Link {
             child_heights.0 = read_u8(&mut input)?;
             child_heights.1 = read_u8(&mut input)?;
 
-            // TODO: make this optional
-            *sum = input.read_i64::<BigEndian>().ok();
+            let has_sum = read_u8(&mut input)?;
+            *sum = match has_sum {
+                0 => None,
+                1 => {
+                    let length = read_u8(&mut input)?;
+                    let mut encoded_sum: Vec<u8> = vec![0; length as usize];
+                    input.read_exact(&mut encoded_sum)?;
+                    Some(
+                        i64::decode_var(&encoded_sum)
+                            .ok_or(ed::Error::UnexpectedByte(55))?
+                            .0,
+                    )
+                }
+                _ => return Err(ed::Error::UnexpectedByte(55)),
+            };
         } else {
             unreachable!()
         }

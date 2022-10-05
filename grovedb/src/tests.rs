@@ -4179,8 +4179,8 @@ fn test_sum_tree_feature() {
         Element::new_sum_item(10000000),
         None,
     )
-        .unwrap()
-        .expect("should insert item");
+    .unwrap()
+    .expect("should insert item");
     let merk = open_merk!(db, [TEST_LEAF, b"key2"]);
     assert_eq!(merk.sum(), Some(9999940)); // 30 + 10 - 100 + 10000000
 
