@@ -4171,4 +4171,18 @@ fn test_sum_tree_feature() {
     .expect("should insert item");
     let merk = open_merk!(db, [TEST_LEAF, b"key2"]);
     assert_eq!(merk.sum(), Some(-60)); // 30 + 10 - 100 = -60
+
+    // Use a large value
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"item4",
+        Element::new_sum_item(10000000),
+        None,
+    )
+        .unwrap()
+        .expect("should insert item");
+    let merk = open_merk!(db, [TEST_LEAF, b"key2"]);
+    assert_eq!(merk.sum(), Some(9999940)); // 30 + 10 - 100 + 10000000
+
+    // TODO: Test out overflows
 }
