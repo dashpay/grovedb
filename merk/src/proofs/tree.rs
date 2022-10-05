@@ -334,7 +334,7 @@ where
                 stack.push(parent);
             }
             Op::Push(node) => {
-                if let Node::KV(key, _) = &node {
+                if let Node::KV(key, _) | Node::KVValueHash(key, ..) = &node {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
                         if key <= last_key {
@@ -351,7 +351,7 @@ where
                 stack.push(tree);
             }
             Op::PushInverted(node) => {
-                if let Node::KV(key, _) = &node {
+                if let Node::KV(key, _) | Node::KVValueHash(key, ..) = &node {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
                         if key >= last_key {

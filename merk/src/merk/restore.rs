@@ -286,7 +286,7 @@ impl ProofTree {
 impl Child {
     fn as_link(&self) -> Link {
         let key = match &self.tree.node {
-            Node::KV(key, _) => key.as_slice(),
+            Node::KV(key, _) | Node::KVValueHash(key, ..) => key.as_slice(),
             // for the connection between the trunk and leaf chunks, we don't
             // have the child key so we must first write in an empty one. once
             // the leaf gets verified, we can write in this key to its parent
@@ -382,6 +382,8 @@ mod tests {
         original: &Merk<PrefixedRocksDbStorageContext>,
         length: usize,
     ) {
+        assert_eq!(restored.root_hash().unwrap(), original.root_hash().unwrap());
+
         let mut original_entries = original.storage.raw_iter();
         let mut restored_entries = restored.storage.raw_iter();
         original_entries.seek_to_first().unwrap();
