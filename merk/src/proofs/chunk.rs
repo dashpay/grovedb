@@ -216,7 +216,7 @@ pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op>>>(
     expected_hash: Hash,
 ) -> CostContext<Result<ProofTree>> {
     execute(ops, false, |node| match node {
-        Node::KVValueHash(..) => Ok(()),
+        Node::KVValueHash(..) | Node::KV(..) => Ok(()),
         _ => bail!("Leaf chunks must contain full subtree"),
     })
     .flat_map_ok(|tree| {
@@ -288,7 +288,7 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
     let tree = cost_return_on_error!(
         &mut cost,
         execute(ops, false, |node| {
-            kv_only &= matches!(node, Node::KVValueHash(..));
+            kv_only &= matches!(node, Node::KVValueHash(..)) || matches!(node, Node::KV(..));
             Ok(())
         })
     );
