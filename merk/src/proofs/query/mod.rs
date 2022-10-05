@@ -807,6 +807,15 @@ where
         )
     }
 
+    /// Creates a `Node::KVValueHash` from the key/value pair of the root node.
+    pub(crate) fn to_kv_value_hash_node(&self) -> Node {
+        Node::KVValueHash(
+            self.tree().key().to_vec(),
+            self.tree().value().to_vec(),
+            self.tree().value_hash().clone(),
+        )
+    }
+
     /// Creates a `Node::KVHash` from the hash of the key/value pair of the root
     /// node.
     pub(crate) fn to_kvhash_node(&self) -> Node {

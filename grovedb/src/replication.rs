@@ -157,8 +157,9 @@ impl<'db> Restorer<'db> {
         for op in chunk_ops {
             ops.push(op);
             match ops.last().expect("just inserted") {
-                Op::Push(Node::KVValueHash(key, value_bytes, value_hash)) | Op::PushInverted(Node::KVValueHash(key, value_bytes, value_hash)) => {
-                    if let Element::Tree(root_key, _) =
+                Op::Push(Node::KVValueHash(key, value_bytes, value_hash))
+                | Op::PushInverted(Node::KVValueHash(key, value_bytes, value_hash)) => {
+                    if let Element::Tree(hash, _) =
                         Element::deserialize(value_bytes).map_err(|e| RestorerError(e.to_string()))?
                     {
                         if root_key.is_none() || self.current_merk_path.last() == Some(key) {
@@ -169,7 +170,7 @@ impl<'db> Restorer<'db> {
                         let mut path = self.current_merk_path.clone();
                         path.push(key.clone());
                         // The value hash is the root tree hash
-                        self.queue.push_back((path, value_hash));
+                        self.queue.push_back((path, value_hash.clone()));
                     }
                 }
                 _ => {}
@@ -382,6 +383,7 @@ mod test {
     use super::*;
     use crate::{
         batch::GroveDbOp,
+        reference_path::ReferencePathType,
         tests::{make_test_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF},
     };
 
@@ -566,6 +568,14 @@ mod test {
         )
         .unwrap()
         .expect("cannot insert an element");
+        db.insert(
+            [TEST_LEAF],
+            b"key2",
+            Element::new_reference(ReferencePathType::SiblingReference(b"key1".to_vec())),
+            None,
+        )
+        .unwrap()
+        .expect("should insert reference");
         db.insert([ANOTHER_TEST_LEAF], b"key2", Element::empty_tree(), None)
             .unwrap()
             .expect("cannot insert an element");
@@ -589,6 +599,7 @@ mod test {
         let to_compare = [
             [TEST_LEAF].as_ref(),
             [TEST_LEAF, b"key1"].as_ref(),
+            [TEST_LEAF, b"key2"].as_ref(),
             [ANOTHER_TEST_LEAF].as_ref(),
             [ANOTHER_TEST_LEAF, b"key2"].as_ref(),
             [ANOTHER_TEST_LEAF, b"key2", b"key3"].as_ref(),
@@ -723,6 +734,11 @@ mod test {
         // Build a replica from checkpoint
         let replica_dir = replicate(&checkpoint_db);
         let replica_db = GroveDb::open(&replica_dir).unwrap();
+
+        assert_eq!(
+            checkpoint_db.root_hash(None).unwrap().unwrap(),
+            replica_db.root_hash(None).unwrap().unwrap()
+        );
 
         assert_eq!(
             checkpoint_db

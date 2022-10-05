@@ -1,4 +1,4 @@
-pub(crate) mod aux;
+pub(crate) mod auxiliary;
 pub(crate) mod delete;
 pub(crate) mod get;
 pub(crate) mod insert;

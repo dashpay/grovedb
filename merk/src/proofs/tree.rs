@@ -55,6 +55,11 @@ impl Tree {
             Node::KVHash(kv_hash) => compute_hash(self, *kv_hash),
             Node::KV(key, value) => kv_hash(key.as_slice(), value.as_slice())
                 .flat_map(|kv_hash| compute_hash(self, kv_hash)),
+            Node::KVValueHash(key, _, value_hash) => {
+                // TODO: add verification of the value
+                kv_digest_to_kv_hash(key.as_slice(), value_hash)
+                    .flat_map(|kv_hash| compute_hash(self, kv_hash))
+            }
             Node::KVDigest(key, value_hash) => kv_digest_to_kv_hash(key, value_hash)
                 .flat_map(|kv_hash| compute_hash(self, kv_hash)),
         }
@@ -154,7 +159,7 @@ impl Tree {
 
     pub(crate) fn key(&self) -> &[u8] {
         match self.node {
-            Node::KV(ref key, _) => key,
+            Node::KV(ref key, _) | Node::KVValueHash(ref key, ..) => key,
             _ => panic!("Expected node to be type KV"),
         }
     }
@@ -333,7 +338,7 @@ where
                 stack.push(parent);
             }
             Op::Push(node) => {
-                if let Node::KV(key, _) = &node {
+                if let Node::KV(key, _) | Node::KVValueHash(key, ..) = &node {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
                         if key <= last_key {
@@ -350,7 +355,7 @@ where
                 stack.push(tree);
             }
             Op::PushInverted(node) => {
-                if let Node::KV(key, _) = &node {
+                if let Node::KV(key, _) | Node::KVValueHash(key, ..) = &node {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
                         if key >= last_key {

@@ -1036,6 +1036,17 @@ fn test_path_query_proofs_without_subquery_with_reference() {
     );
 
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    assert_eq!(
+        hex::encode(&proof),
+        "0200000000000000450198ebd6dc7e1c82951c41fcfa6487711cac6a399ebb01bb\
+        979cbe4a51e0b2f08d03046b6579340009000676616c756531001003046b6579350\
+        009000676616c7565340011010000000000000052030a696e6e6572747265653200\
+        2202edf0f9030ce6fe3db08776af45de15fb2802dbd89dd25bf8c3bcaedfc586e22\
+        100014125425723b0b6db002a9057f9786fc56c377ea2f13609eb4b48d37634002a\
+        fd11010000000000000052020b1ff56a173dc672a0ad855a0aab09e6aa976878774\
+        c19dcae040487cd0f9dea030a746573745f6c65616632002202dfb03e0fddb258ca1\
+        da50134bc54dd617fc9c08dffbf1aa496e9ce80986791b80011"
+    );
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
@@ -1143,6 +1154,16 @@ fn test_path_query_proofs_without_subquery() {
     let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree".to_vec()], query);
 
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    assert_eq!(
+        hex::encode(proof.as_slice()),
+               "02000000000000005503046b6579310009000676616c7565310002018655e18e45\
+               55b0b65bbcec64c749db6b9ad84231969fb4fbe769a3093d10f2100198ebd6dc7e1c82951\
+               c41fcfa6487711cac6a399ebb01bb979cbe4a51e0b2f08d1101000000000000002f0309696e\
+               6e657274726565002202dae55c8bc9d330808358526ceecd881e8e205d19e50c78cdd2f355ada\
+               0246b64000100000000000000510309746573745f6c656166002202c52ba7ba97bb0cf1862352aa\
+               273763012f46e77f86b690f184a8d89e44bd65be0001b54a449bcb1ad8bb0da34a3a3c1b8a34c89b\
+               d426a9d4fe059e1ad88e53bf875011"
+    );
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
 
