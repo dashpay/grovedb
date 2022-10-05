@@ -61,56 +61,77 @@ impl GroveDb {
             let storage = self.db
                 .get_transactional_storage_context(path_iter.clone(), tx)
                 .unwrap_add_cost(&mut cost);
-            let key = path_iter.next_back().expect("next element is `Some`");
-            let parent_storage = self.db
-                .get_transactional_storage_context(path_iter.clone(), tx)
-                .unwrap_add_cost(&mut cost);
-            let element = cost_return_on_error!(
+            match path_iter.next_back() {
+                Some(key) => {
+                    let parent_storage = self.db
+                        .get_transactional_storage_context(path_iter.clone(), tx)
+                        .unwrap_add_cost(&mut cost);
+                    let element = cost_return_on_error!(
                     &mut cost,
                     Element::get_from_storage(&parent_storage, key).map_err(|_| {
                         Error::CorruptedData("could not get key for parent of subtree".to_owned())
                     })
                 );
-            if let Element::Tree(root_key, _) = element {
-                Merk::open_with_root_key(storage, root_key).map_err(|_| {
-                    Error::CorruptedData(
-                        "cannot open a subtree with given root key".to_owned(),
-                    )
-                })
-            } else {
-                Err(Error::CorruptedData(
-                    "cannot open a subtree as parent exists but is not a tree"
-                        .to_owned(),
-                ))
-                    .wrap_with_cost(OperationCost::default())
+                    if let Element::Tree(root_key, _) = element {
+                        Merk::open_with_root_key(storage, root_key).map_err(|_| {
+                            Error::CorruptedData(
+                                "cannot open a subtree with given root key".to_owned(),
+                            )
+                        })
+                    } else {
+                        Err(Error::CorruptedData(
+                            "cannot open a subtree as parent exists but is not a tree"
+                                .to_owned(),
+                        ))
+                            .wrap_with_cost(OperationCost::default())
+                    }
+                }
+                None => {
+                    Merk::open_base(storage).map_err(|_| {
+                        Error::CorruptedData(
+                            "cannot open a the root subtree".to_owned(),
+                        )
+                    })
+                }
             }
+
         } else {
             let mut cost = OperationCost::default();
             let storage = self.db
                 .get_storage_context(path_iter.clone())
                 .unwrap_add_cost(&mut cost);
-            let key = path_iter.next_back().expect("next element is `Some`");
-            let parent_storage = self.db
-                .get_storage_context(path_iter.clone())
-                .unwrap_add_cost(&mut cost);
-            let element = cost_return_on_error!(
+            match path_iter.next_back() {
+                Some(key) => {
+                    let parent_storage = self.db
+                        .get_storage_context(path_iter.clone())
+                        .unwrap_add_cost(&mut cost);
+                    let element = cost_return_on_error!(
                     &mut cost,
                     Element::get_from_storage(&parent_storage, key).map_err(|_| {
                         Error::CorruptedData("could not get key for parent of subtree".to_owned())
                     })
                 );
-            if let Element::Tree(root_key, _) = element {
-                Merk::open_with_root_key(storage, root_key).map_err(|_| {
-                    Error::CorruptedData(
-                        "cannot open a subtree with given root key".to_owned(),
-                    )
-                })
-            } else {
-                Err(Error::CorruptedData(
-                    "cannot open a subtree as parent exists but is not a tree"
-                        .to_owned(),
-                ))
-                    .wrap_with_cost(OperationCost::default())
+                    if let Element::Tree(root_key, _) = element {
+                        Merk::open_with_root_key(storage, root_key).map_err(|_| {
+                            Error::CorruptedData(
+                                "cannot open a subtree with given root key".to_owned(),
+                            )
+                        })
+                    } else {
+                        Err(Error::CorruptedData(
+                            "cannot open a subtree as parent exists but is not a tree"
+                                .to_owned(),
+                        ))
+                            .wrap_with_cost(OperationCost::default())
+                    }
+                }
+                None => {
+                    Merk::open_base(storage).map_err(|_| {
+                        Error::CorruptedData(
+                            "cannot open a the root subtree".to_owned(),
+                        )
+                    })
+                }
             }
         }
     }

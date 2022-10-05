@@ -5,7 +5,7 @@ use merk::{
     proofs::{encode_into, Node, Op},
     KVIterator, Merk, ProofWithoutEncodingResult,
 };
-use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
+use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, StorageContext};
 
 use crate::{
     operations::proof::util::{write_to_vec, ProofType, EMPTY_TREE_HASH},
@@ -389,9 +389,6 @@ impl GroveDb {
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
-        self.db.get_storage_context(path).flat_map(|storage| {
-            Merk::open(storage)
-                .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-        })
+        self.open_merk_at_path(path, None)
     }
 }

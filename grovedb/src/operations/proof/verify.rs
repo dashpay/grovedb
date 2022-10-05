@@ -186,7 +186,7 @@ impl ProofVerifier {
                                 new_path_query,
                             )?;
 
-                            if child_hash != expected_root_key {
+                            if child_hash != expected_root_key.unwrap().as_slice() {
                                 return Err(Error::InvalidProof(
                                     "child hash doesn't match the expected hash",
                                 ));
