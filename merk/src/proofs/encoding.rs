@@ -147,7 +147,7 @@ impl Decode for Op {
                 input.read_exact(value.as_mut_slice())?;
 
                 let mut value_hash = [0; HASH_LENGTH];
-                input.read_exact(&mut value_hash);
+                input.read_exact(&mut value_hash)?;
 
                 Self::Push(Node::KVValueHash(key, value, value_hash))
             }
@@ -192,7 +192,7 @@ impl Decode for Op {
                 input.read_exact(value.as_mut_slice())?;
 
                 let mut value_hash = [0; HASH_LENGTH];
-                input.read_exact(&mut value_hash);
+                input.read_exact(&mut value_hash)?;
 
                 Self::Push(Node::KVValueHash(key, value, value_hash))
             }
