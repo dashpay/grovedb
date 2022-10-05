@@ -91,13 +91,17 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let mut batch = self.merk.storage.new_batch();
 
         tree.visit_refs(&mut |proof_node| {
-            let (key, value) = match &proof_node.node {
-                Node::KV(key, value) => (key, value),
+            let (mut node, key) = match &proof_node.node {
+                Node::KV(key, value) => (Tree::new(key.clone(), value.clone()).unwrap(), key),
+                Node::KVValueHash(key, value, value_hash) => (
+                    Tree::new_with_value_hash(key.clone(), value.clone(), value_hash.clone())
+                        .unwrap(),
+                    key,
+                ),
                 _ => return,
             };
 
             // TODO: encode tree node without cloning key/value
-            let mut node = Tree::new(key.clone(), value.clone()).unwrap();
             *node.slot_mut(true) = proof_node.left.as_ref().map(Child::as_link);
             *node.slot_mut(false) = proof_node.right.as_ref().map(Child::as_link);
 
@@ -285,7 +289,7 @@ impl ProofTree {
 impl Child {
     fn as_link(&self) -> Link {
         let key = match &self.tree.node {
-            Node::KV(key, _) => key.as_slice(),
+            Node::KV(key, _) | Node::KVValueHash(key, ..) => key.as_slice(),
             // for the connection between the trunk and leaf chunks, we don't
             // have the child key so we must first write in an empty one. once
             // the leaf gets verified, we can write in this key to its parent
@@ -381,6 +385,8 @@ mod tests {
         original: &Merk<PrefixedRocksDbStorageContext>,
         length: usize,
     ) {
+        assert_eq!(restored.root_hash().unwrap(), original.root_hash().unwrap());
+
         let mut original_entries = original.storage.raw_iter();
         let mut restored_entries = restored.storage.raw_iter();
         original_entries.seek_to_first().unwrap();
