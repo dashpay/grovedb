@@ -354,7 +354,7 @@ impl GroveDb {
         for op in proof_result.proof.iter_mut() {
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
-                    Node::KV(key, value) => {
+                    Node::KV(key, value) | Node::KVValueHash(key, value, ..) => {
                         let elem = Element::deserialize(value);
                         if let Ok(Element::Reference(reference_path, ..)) = elem {
                             let mut current_path = path_iter.clone();

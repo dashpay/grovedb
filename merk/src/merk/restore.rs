@@ -91,14 +91,18 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let mut batch = self.merk.storage.new_batch();
 
         tree.visit_refs(&mut |proof_node| {
-            let (key, value) = match &proof_node.node {
-                Node::KV(key, value) => (key, value),
-                Node::KVValueHash(key, value, _) => (key, value),
+            let (mut node, key) = match &proof_node.node {
+                // TODO: why unwrap
+                Node::KV(key, value) => (Tree::new(key.clone(), value.clone()).unwrap(), key),
+                Node::KVValueHash(key, value, value_hash) => (
+                    Tree::new_with_value_hash(key.clone(), value.clone(), value_hash.clone())
+                        .unwrap(),
+                    key,
+                ),
                 _ => return,
             };
 
             // TODO: encode tree node without cloning key/value
-            let mut node = Tree::new(key.clone(), value.clone()).unwrap();
             *node.slot_mut(true) = proof_node.left.as_ref().map(Child::as_link);
             *node.slot_mut(false) = proof_node.right.as_ref().map(Child::as_link);
 
