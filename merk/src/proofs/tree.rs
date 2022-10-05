@@ -55,6 +55,8 @@ impl Tree {
             Node::KVHash(kv_hash) => compute_hash(self, *kv_hash),
             Node::KV(key, value) => kv_hash(key.as_slice(), value.as_slice())
                 .flat_map(|kv_hash| compute_hash(self, kv_hash)),
+            Node::KVValueHash(key, value, _) => kv_hash(key.as_slice(), value.as_slice())
+                .flat_map(|kv_hash| compute_hash(self, kv_hash)),
             Node::KVDigest(key, value_hash) => kv_digest_to_kv_hash(key, value_hash)
                 .flat_map(|kv_hash| compute_hash(self, kv_hash)),
         }
