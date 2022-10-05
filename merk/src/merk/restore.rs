@@ -93,6 +93,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         tree.visit_refs(&mut |proof_node| {
             let (key, value) = match &proof_node.node {
                 Node::KV(key, value) => (key, value),
+                Node::KVValueHash(key, value, _) => (key, value),
                 _ => return,
             };
 

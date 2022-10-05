@@ -155,7 +155,7 @@ impl Tree {
 
     pub(crate) fn key(&self) -> &[u8] {
         match self.node {
-            Node::KV(ref key, _) => key,
+            Node::KV(ref key, _) | Node::KVValueHash(ref key, ..) => key,
             _ => panic!("Expected node to be type KV"),
         }
     }
