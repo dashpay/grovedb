@@ -92,7 +92,6 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
         tree.visit_refs(&mut |proof_node| {
             let (mut node, key) = match &proof_node.node {
-                // TODO: why unwrap
                 Node::KV(key, value) => (Tree::new(key.clone(), value.clone()).unwrap(), key),
                 Node::KVValueHash(key, value, value_hash) => (
                     Tree::new_with_value_hash(key.clone(), value.clone(), value_hash.clone())
