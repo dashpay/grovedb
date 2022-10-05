@@ -389,6 +389,7 @@ mod test {
     use super::*;
     use crate::{
         batch::GroveDbOp,
+        reference_path::ReferencePathType,
         tests::{make_test_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF},
     };
 
@@ -573,6 +574,14 @@ mod test {
         )
         .unwrap()
         .expect("cannot insert an element");
+        db.insert(
+            [TEST_LEAF],
+            b"key2",
+            Element::new_reference(ReferencePathType::SiblingReference(b"key1".to_vec())),
+            None,
+        )
+        .unwrap()
+        .expect("should insert reference");
         db.insert([ANOTHER_TEST_LEAF], b"key2", Element::empty_tree(), None)
             .unwrap()
             .expect("cannot insert an element");
@@ -596,6 +605,7 @@ mod test {
         let to_compare = [
             [TEST_LEAF].as_ref(),
             [TEST_LEAF, b"key1"].as_ref(),
+            [TEST_LEAF, b"key2"].as_ref(),
             [ANOTHER_TEST_LEAF].as_ref(),
             [ANOTHER_TEST_LEAF, b"key2"].as_ref(),
             [ANOTHER_TEST_LEAF, b"key2", b"key3"].as_ref(),
