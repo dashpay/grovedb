@@ -47,18 +47,18 @@ impl Encode for Op {
 
             // PushInverted
             Op::PushInverted(Node::Hash(hash)) => {
-                dest.write_all(&[0x10])?;
+                dest.write_all(&[0x08])?;
                 dest.write_all(hash)?;
             }
             Op::PushInverted(Node::KVHash(kv_hash)) => {
-                dest.write_all(&[0x11])?;
+                dest.write_all(&[0x09])?;
                 dest.write_all(kv_hash)?;
             }
             Op::PushInverted(Node::KV(key, value)) => {
                 debug_assert!(key.len() < 256);
                 debug_assert!(value.len() < 65536);
 
-                dest.write_all(&[0x12, key.len() as u8])?;
+                dest.write_all(&[0x0a, key.len() as u8])?;
                 dest.write_all(key)?;
                 (value.len() as u16).encode_into(dest)?;
                 dest.write_all(value)?;
@@ -67,7 +67,7 @@ impl Encode for Op {
                 debug_assert!(key.len() < 256);
                 debug_assert!(value.len() < 65536);
 
-                dest.write_all(&[0x13, key.len() as u8])?;
+                dest.write_all(&[0x0b, key.len() as u8])?;
                 dest.write_all(key)?;
                 (value.len() as u16).encode_into(dest)?;
                 dest.write_all(value)?;
@@ -76,15 +76,15 @@ impl Encode for Op {
             Op::PushInverted(Node::KVDigest(key, value_hash)) => {
                 debug_assert!(key.len() < 256);
 
-                dest.write_all(&[0x14, key.len() as u8])?;
+                dest.write_all(&[0x0c, key.len() as u8])?;
                 dest.write_all(key)?;
                 dest.write_all(value_hash)?;
             }
 
-            Op::Parent => dest.write_all(&[0x20])?,
-            Op::Child => dest.write_all(&[0x21])?,
-            Op::ParentInverted => dest.write_all(&[0x22])?,
-            Op::ChildInverted => dest.write_all(&[0x23])?,
+            Op::Parent => dest.write_all(&[0x10])?,
+            Op::Child => dest.write_all(&[0x11])?,
+            Op::ParentInverted => dest.write_all(&[0x12])?,
+            Op::ChildInverted => dest.write_all(&[0x13])?,
         };
         Ok(())
     }
@@ -161,17 +161,17 @@ impl Decode for Op {
 
                 Self::Push(Node::KVDigest(key, value_hash))
             }
-            0x10 => {
+            0x08 => {
                 let mut hash = [0; HASH_LENGTH];
                 input.read_exact(&mut hash)?;
                 Self::PushInverted(Node::Hash(hash))
             }
-            0x11 => {
+            0x09 => {
                 let mut hash = [0; HASH_LENGTH];
                 input.read_exact(&mut hash)?;
                 Self::PushInverted(Node::KVHash(hash))
             }
-            0x12 => {
+            0x0a => {
                 let key_len: u8 = Decode::decode(&mut input)?;
                 let mut key = vec![0; key_len as usize];
                 input.read_exact(key.as_mut_slice())?;
@@ -182,7 +182,7 @@ impl Decode for Op {
 
                 Self::PushInverted(Node::KV(key, value))
             }
-            0x13 => {
+            0x0b => {
                 let key_len: u8 = Decode::decode(&mut input)?;
                 let mut key = vec![0; key_len as usize];
                 input.read_exact(key.as_mut_slice())?;
@@ -196,7 +196,7 @@ impl Decode for Op {
 
                 Self::Push(Node::KVValueHash(key, value, value_hash))
             }
-            0x14 => {
+            0x0c => {
                 let key_len: u8 = Decode::decode(&mut input)?;
                 let mut key = vec![0; key_len as usize];
                 input.read_exact(key.as_mut_slice())?;
@@ -206,10 +206,10 @@ impl Decode for Op {
 
                 Self::PushInverted(Node::KVDigest(key, value_hash))
             }
-            0x20 => Self::Parent,
-            0x21 => Self::Child,
-            0x22 => Self::ParentInverted,
-            0x23 => Self::ChildInverted,
+            0x10 => Self::Parent,
+            0x11 => Self::Child,
+            0x12 => Self::ParentInverted,
+            0x13 => Self::ChildInverted,
             // TODO: Remove dependency on ed and throw an internal error
             _ => return Err(ed::Error::UnexpectedByte(variant)),
         })
@@ -377,7 +377,7 @@ mod test {
         assert_eq!(
             bytes,
             vec![
-                0x10, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
+                0x08, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
                 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
                 123
             ]
@@ -394,7 +394,7 @@ mod test {
         assert_eq!(
             bytes,
             vec![
-                0x11, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
+                0x09, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
                 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
                 123
             ]
@@ -411,7 +411,7 @@ mod test {
         assert_eq!(
             bytes,
             vec![
-                0x14, 3, 1, 2, 3, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
+                0x0c, 3, 1, 2, 3, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
                 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
                 123, 123, 123
             ]
@@ -425,7 +425,7 @@ mod test {
 
         let mut bytes = vec![];
         op.encode_into(&mut bytes).unwrap();
-        assert_eq!(bytes, vec![0x12, 3, 1, 2, 3, 0, 3, 4, 5, 6]);
+        assert_eq!(bytes, vec![0x0a, 3, 1, 2, 3, 0, 3, 4, 5, 6]);
     }
 
     #[test]
@@ -438,7 +438,7 @@ mod test {
         assert_eq!(
             bytes,
             vec![
-                0x13, 3, 1, 2, 3, 0, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0x0b, 3, 1, 2, 3, 0, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
             ]
         )
@@ -451,7 +451,7 @@ mod test {
 
         let mut bytes = vec![];
         op.encode_into(&mut bytes).unwrap();
-        assert_eq!(bytes, vec![0x20]);
+        assert_eq!(bytes, vec![0x10]);
     }
 
     #[test]
@@ -461,7 +461,7 @@ mod test {
 
         let mut bytes = vec![];
         op.encode_into(&mut bytes).unwrap();
-        assert_eq!(bytes, vec![0x21]);
+        assert_eq!(bytes, vec![0x11]);
     }
 
     #[test]
@@ -471,7 +471,7 @@ mod test {
 
         let mut bytes = vec![];
         op.encode_into(&mut bytes).unwrap();
-        assert_eq!(bytes, vec![0x22]);
+        assert_eq!(bytes, vec![0x12]);
     }
 
     #[test]
@@ -481,7 +481,7 @@ mod test {
 
         let mut bytes = vec![];
         op.encode_into(&mut bytes).unwrap();
-        assert_eq!(bytes, vec![0x23]);
+        assert_eq!(bytes, vec![0x13]);
     }
 
     #[test]
@@ -549,7 +549,7 @@ mod test {
     #[test]
     fn decode_push_inverted_hash() {
         let bytes = [
-            0x10, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
+            0x08, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
             123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
         ];
         let op = Op::decode(&bytes[..]).expect("decode failed");
@@ -559,7 +559,7 @@ mod test {
     #[test]
     fn decode_push_inverted_kvhash() {
         let bytes = [
-            0x11, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
+            0x09, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
             123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
         ];
         let op = Op::decode(&bytes[..]).expect("decode failed");
@@ -569,7 +569,7 @@ mod test {
     #[test]
     fn decode_push_inverted_kvdigest() {
         let bytes = [
-            0x14, 3, 1, 2, 3, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
+            0x0c, 3, 1, 2, 3, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
             123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
             123,
         ];
@@ -582,35 +582,35 @@ mod test {
 
     #[test]
     fn decode_push_inverted_kv() {
-        let bytes = [0x12, 3, 1, 2, 3, 0, 3, 4, 5, 6];
+        let bytes = [0x0a, 3, 1, 2, 3, 0, 3, 4, 5, 6];
         let op = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(op, Op::PushInverted(Node::KV(vec![1, 2, 3], vec![4, 5, 6])));
     }
 
     #[test]
     fn decode_parent() {
-        let bytes = [0x20];
+        let bytes = [0x10];
         let op = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(op, Op::Parent);
     }
 
     #[test]
     fn decode_child() {
-        let bytes = [0x21];
+        let bytes = [0x11];
         let op = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(op, Op::Child);
     }
 
     #[test]
     fn decode_parent_inverted() {
-        let bytes = [0x22];
+        let bytes = [0x12];
         let op = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(op, Op::ParentInverted);
     }
 
     #[test]
     fn decode_child_inverted() {
-        let bytes = [0x23];
+        let bytes = [0x13];
         let op = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(op, Op::ChildInverted);
     }
