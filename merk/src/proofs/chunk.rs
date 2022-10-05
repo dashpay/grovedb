@@ -174,7 +174,7 @@ pub(crate) fn get_next_chunk(
         Tree::decode_into(&mut node, vec![], encoded_node);
 
         // TODO: Only use the KVValueHash if needed, saves 32 bytes
-        //  only needed when dealing with references and tree (with the root key structure)
+        //  only needed when dealing with references and trees
         let kv = Node::KVValueHash(
             key.to_vec(),
             node.value().to_vec(),
