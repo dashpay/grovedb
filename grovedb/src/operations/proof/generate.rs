@@ -389,6 +389,6 @@ impl GroveDb {
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
-        self.open_merk_at_path(path, None)
+        self.open_non_transactional_merk_at_path(path)
     }
 }

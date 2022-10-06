@@ -68,7 +68,7 @@ impl<'db> SubtreeChunkProducer<'db> {
         }
 
         if self.cache.is_none() {
-            let current_merk = self.grove_db.open_merk_at_path(path_iter, None).unwrap()?;
+            let current_merk = self.grove_db.open_non_transactional_merk_at_path(path_iter).unwrap()?;
 
             if current_merk.root_key().is_none() {
                 return Ok(Vec::new());
@@ -196,7 +196,7 @@ impl<'db> Restorer<'db> {
                 // Process next subtree.
                 let merk: Merk<PrefixedRocksDbStorageContext> = self
                     .grove_db
-                    .open_merk_at_path(next_path.iter().map(|a| a.as_ref()), None)
+                    .open_non_transactional_merk_at_path(next_path.iter().map(|a| a.as_ref()))
                     .unwrap()
                     .map_err(|e| RestorerError(e.to_string()))?;
                 self.current_merk_restorer = Some(MerkRestorer::new(merk, expected_hash));

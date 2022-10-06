@@ -166,14 +166,14 @@ impl GroveDb {
         );
         let path_iter = path.into_iter();
 
-        if transaction.is_some() {
+        if let Some(tx) = transaction {
             let parent_subtree: Merk<PrefixedRocksDbTransactionContext> =
-                cost_return_on_error!(&mut cost, self.open_merk_at_path(path_iter, transaction));
+                cost_return_on_error!(&mut cost, self.open_transactional_merk_at_path(path_iter, tx));
             let element = Element::empty_tree_with_flags(element_flag);
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
         } else {
             let parent_subtree: Merk<PrefixedRocksDbStorageContext> =
-                cost_return_on_error!(&mut cost, self.open_merk_at_path(path_iter, transaction));
+                cost_return_on_error!(&mut cost, self.open_non_transactional_merk_at_path(path_iter));
             let element = Element::empty_tree_with_flags(element_flag);
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
         }

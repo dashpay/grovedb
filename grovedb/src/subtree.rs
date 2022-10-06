@@ -1210,7 +1210,7 @@ impl<I: RawIterator> ElementsIterator<I> {
 mod tests {
     use merk::test_utils::TempMerk;
     use storage::{
-        rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbStorageContext},
+        rocksdb_storage::{PrefixedRocksDbStorageContext},
         Storage,
     };
 
@@ -1399,7 +1399,7 @@ mod tests {
 
         let storage = &db.db;
         let mut merk: Merk<PrefixedRocksDbStorageContext> = db
-            .open_merk_at_path([TEST_LEAF], None)
+            .open_non_transactional_merk_at_path([TEST_LEAF])
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 
@@ -1455,8 +1455,8 @@ mod tests {
         let db = make_test_grovedb();
 
         let storage = &db.db;
-        let mut merk: Merk<PrefixedRocksDbBatchStorageContext> = db
-            .open_merk_at_path([TEST_LEAF], None)
+        let mut merk = db
+            .open_non_transactional_merk_at_path([TEST_LEAF])
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 
@@ -1552,7 +1552,7 @@ mod tests {
 
         let storage = &db.db;
         let mut merk: Merk<PrefixedRocksDbStorageContext> = db
-            .open_merk_at_path([TEST_LEAF], None)
+            .open_non_transactional_merk_at_path([TEST_LEAF])
             .unwrap()
             .expect("cannot open Merk");
 
@@ -1650,7 +1650,7 @@ mod tests {
 
         let storage = &db.db;
         let mut merk: Merk<PrefixedRocksDbStorageContext> = db
-            .open_merk_at_path([TEST_LEAF], None)
+            .open_non_transactional_merk_at_path([TEST_LEAF])
             .unwrap()
             .expect("cannot open Merk");
 
