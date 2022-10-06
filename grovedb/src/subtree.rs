@@ -1209,10 +1209,7 @@ impl<I: RawIterator> ElementsIterator<I> {
 #[cfg(test)]
 mod tests {
     use merk::test_utils::TempMerk;
-    use storage::{
-        rocksdb_storage::{PrefixedRocksDbStorageContext},
-        Storage,
-    };
+    use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage};
 
     use super::*;
     use crate::{

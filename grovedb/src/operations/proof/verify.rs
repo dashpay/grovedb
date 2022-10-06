@@ -357,8 +357,8 @@ impl ProofVerifier {
             }
 
             let elem = Element::deserialize(result_set[0].1.as_slice())?;
-            let child_hash = match elem {
-                Element::Tree(hash, _) => Ok(hash),
+            let child_root_key = match elem {
+                Element::Tree(root_key, _) => Ok(root_key),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),
