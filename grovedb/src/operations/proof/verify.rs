@@ -5,8 +5,8 @@ use crate::{
     Element, Error, GroveDb, PathQuery,
 };
 
-type ProofKeyValue = (Vec<u8>, Vec<u8>);
-type Proof = Vec<(Vec<u8>, Vec<u8>)>;
+type ProofKeyValue = (Vec<u8>, Vec<u8>, CryptoHash);
+type Proof = Vec<(Vec<u8>, Vec<u8>, CryptoHash)>;
 
 impl GroveDb {
     pub fn verify_query_many(
@@ -110,10 +110,11 @@ impl ProofVerifier {
                     .1
                     .expect("MERK_PROOF always returns a result set");
 
-                for (key, value_bytes) in children {
+                for (key, value_bytes, value_hash) in children {
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
                     match child_element {
                         Element::Tree(mut expected_root_key, _) => {
+                            // What is the equivalent for an empty tree
                             if expected_root_key.is_none() {
                                 // child node is empty, move on to next
                                 continue;
@@ -186,7 +187,7 @@ impl ProofVerifier {
                                 new_path_query,
                             )?;
 
-                            if child_hash != expected_root_key.unwrap().as_slice() {
+                            if child_hash != value_hash {
                                 return Err(Error::InvalidProof(
                                     "child hash doesn't match the expected hash",
                                 ));
@@ -305,7 +306,7 @@ impl ProofVerifier {
 
             let elem = Element::deserialize(last_result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(hash, _) => Ok(hash),
+                Element::Tree(..) => Ok(Some(last_result_set[0].2)),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),
@@ -358,7 +359,7 @@ impl ProofVerifier {
 
             let elem = Element::deserialize(result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(hash, _) => Ok(hash),
+                Element::Tree(hash, _) => Ok(result_set[0].2),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),

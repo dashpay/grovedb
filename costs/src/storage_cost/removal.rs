@@ -1,8 +1,8 @@
 use std::{
+    borrow::BorrowMut,
     cmp::Ordering,
     ops::{Add, AddAssign},
 };
-use std::borrow::BorrowMut;
 
 use intmap::IntMap;
 

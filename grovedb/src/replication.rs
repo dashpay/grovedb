@@ -68,7 +68,10 @@ impl<'db> SubtreeChunkProducer<'db> {
         }
 
         if self.cache.is_none() {
-            let current_merk = self.grove_db.open_non_transactional_merk_at_path(path_iter).unwrap()?;
+            let current_merk = self
+                .grove_db
+                .open_non_transactional_merk_at_path(path_iter)
+                .unwrap()?;
 
             if current_merk.root_key().is_none() {
                 return Ok(Vec::new());
