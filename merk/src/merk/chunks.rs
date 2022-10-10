@@ -234,7 +234,7 @@ mod tests {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage_cost");
 
-            let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
+            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
                 .unwrap()
                 .unwrap();
             let batch = make_batch_seq(1..10);
@@ -249,7 +249,7 @@ mod tests {
         };
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage_cost");
-        let merk = Merk::open(storage.get_storage_context(empty()).unwrap())
+        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .unwrap();
         let reopen_chunks = merk.chunks().unwrap().into_iter().map(|x| x.unwrap());

@@ -1481,7 +1481,7 @@ mod test {
             .expect("verify failed");
 
         let mut values = std::collections::HashMap::new();
-        for (key, value) in result.result_set {
+        for (key, value, _) in result.result_set {
             assert!(values.insert(key, value).is_none());
         }
 
