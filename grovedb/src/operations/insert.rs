@@ -58,7 +58,7 @@ impl GroveDb {
                 );
 
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
-                let referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
+                let mut referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
                 let referenced_element_value_hash_opt = merk_optional_tx!(
                     &mut cost,
                     self.db,
@@ -167,14 +167,14 @@ impl GroveDb {
         let path_iter = path.into_iter();
 
         if let Some(tx) = transaction {
-            let parent_subtree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+            let mut parent_subtree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
                 self.open_transactional_merk_at_path(path_iter, tx)
             );
             let element = Element::empty_tree_with_flags(element_flag);
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
         } else {
-            let parent_subtree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+            let mut parent_subtree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
                 self.open_non_transactional_merk_at_path(path_iter)
             );

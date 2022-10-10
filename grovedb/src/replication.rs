@@ -70,7 +70,7 @@ impl<'db> SubtreeChunkProducer<'db> {
         if self.cache.is_none() {
             let current_merk = self
                 .grove_db
-                .open_non_transactional_merk_at_path(path_iter)
+                .open_non_transactional_merk_at_path(path_iter.clone())
                 .unwrap()?;
 
             if current_merk.root_key().is_none() {
@@ -504,7 +504,7 @@ mod test {
         bad_hash[0] = bad_hash[0].wrapping_add(1);
 
         let tmp_dir = TempDir::new().unwrap();
-        let mut restored_db = GroveDb::open(tmp_dir.path()).unwrap();
+        let restored_db = GroveDb::open(tmp_dir.path()).unwrap();
         let mut restorer = Restorer::new(&restored_db, bad_hash).unwrap();
         let mut chunks = db.chunks();
         assert!(restorer
@@ -535,7 +535,7 @@ mod test {
         let expected_hash = db.root_hash(None).unwrap().unwrap();
 
         let tmp_dir = TempDir::new().unwrap();
-        let mut restored_db = GroveDb::open(tmp_dir.path()).unwrap();
+        let restored_db = GroveDb::open(tmp_dir.path()).unwrap();
         let mut restorer = Restorer::new(&restored_db, expected_hash).unwrap();
         let mut chunks = db.chunks();
 

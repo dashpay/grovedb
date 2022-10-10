@@ -198,7 +198,7 @@ impl GroveDb {
             );
 
             if let Element::Tree(..) = element {
-                let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
+                let mut subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
                 let subtree_merk_path_vec = subtree_merk_path
                     .clone()
                     .map(|x| x.to_vec())
@@ -330,7 +330,7 @@ impl GroveDb {
             );
 
             if let Element::Tree(..) = element {
-                let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
+                let mut subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
                 let subtrees_paths = cost_return_on_error!(
                     &mut cost,
                     self.find_subtrees(subtree_merk_path.clone(), transaction)

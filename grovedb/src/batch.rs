@@ -1358,6 +1358,8 @@ impl GroveDb {
                     update_element_flags_function,
                     split_removal_bytes_function,
                     |path| {
+                        let mut local_cost = OperationCost::default();
+
                         let storage = self
                             .db
                             .get_batch_transactional_storage_context(
@@ -1365,7 +1367,7 @@ impl GroveDb {
                                 &storage_batch,
                                 tx,
                             )
-                            .unwrap_add_cost(&mut cost);
+                            .unwrap_add_cost(&mut local_cost);
 
                         if let Some((last, base_path)) = path.split_last() {
                             let parent_storage = self
@@ -1375,9 +1377,9 @@ impl GroveDb {
                                     &storage_batch,
                                     tx,
                                 )
-                                .unwrap_add_cost(&mut cost);
+                                .unwrap_add_cost(&mut local_cost);
                             let element = cost_return_on_error!(
-                                &mut cost,
+                                &mut local_cost,
                                 Element::get_from_storage(&parent_storage, last).map_err(|_| {
                                     Error::CorruptedData(
                                         "could not get key for parent of subtree".to_owned(),
@@ -1385,22 +1387,26 @@ impl GroveDb {
                                 })
                             );
                             if let Element::Tree(root_key, _) = element {
-                                Merk::open_with_root_key(storage, root_key).map_err(|_| {
-                                    Error::CorruptedData(
-                                        "cannot open a subtree with given root key".to_owned(),
-                                    )
-                                })
+                                Merk::open_with_root_key(storage, root_key)
+                                    .map_err(|_| {
+                                        Error::CorruptedData(
+                                            "cannot open a subtree with given root key".to_owned(),
+                                        )
+                                    })
+                                    .add_cost(local_cost)
                             } else {
                                 Err(Error::CorruptedData(
                                     "cannot open a subtree as parent exists but is not a tree"
                                         .to_owned(),
                                 ))
-                                .wrap_with_cost(cost)
+                                .wrap_with_cost(local_cost)
                             }
                         } else {
-                            Merk::open_base(storage).map_err(|_| {
-                                Error::CorruptedData("cannot open a subtree".to_owned())
-                            })
+                            Merk::open_base(storage)
+                                .map_err(|_| {
+                                    Error::CorruptedData("cannot open a subtree".to_owned())
+                                })
+                                .add_cost(local_cost)
                         }
                     }
                 )
@@ -1423,13 +1429,14 @@ impl GroveDb {
                     update_element_flags_function,
                     split_removal_bytes_function,
                     |path| {
+                        let mut local_cost = OperationCost::default();
                         let storage = self
                             .db
                             .get_batch_storage_context(
                                 path.iter().map(|x| x.as_slice()),
                                 &storage_batch,
                             )
-                            .unwrap_add_cost(&mut cost);
+                            .unwrap_add_cost(&mut local_cost);
 
                         if let Some((last, base_path)) = path.split_last() {
                             let parent_storage = self
@@ -1438,9 +1445,9 @@ impl GroveDb {
                                     base_path.iter().map(|x| x.as_slice()),
                                     &storage_batch,
                                 )
-                                .unwrap_add_cost(&mut cost);
+                                .unwrap_add_cost(&mut local_cost);
                             let element = cost_return_on_error!(
-                                &mut cost,
+                                &mut local_cost,
                                 Element::get_from_storage(&parent_storage, last).map_err(|_| {
                                     Error::CorruptedData(
                                         "could not get key for parent of subtree".to_owned(),
@@ -1448,22 +1455,26 @@ impl GroveDb {
                                 })
                             );
                             if let Element::Tree(root_key, _) = element {
-                                Merk::open_with_root_key(storage, root_key).map_err(|_| {
-                                    Error::CorruptedData(
-                                        "cannot open a subtree with given root key".to_owned(),
-                                    )
-                                })
+                                Merk::open_with_root_key(storage, root_key)
+                                    .map_err(|_| {
+                                        Error::CorruptedData(
+                                            "cannot open a subtree with given root key".to_owned(),
+                                        )
+                                    })
+                                    .add_cost(local_cost)
                             } else {
                                 Err(Error::CorruptedData(
                                     "cannot open a subtree as parent exists but is not a tree"
                                         .to_owned(),
                                 ))
-                                .wrap_with_cost(cost)
+                                .wrap_with_cost(local_cost)
                             }
                         } else {
-                            Merk::open_base(storage).map_err(|_| {
-                                Error::CorruptedData("cannot open a subtree".to_owned())
-                            })
+                            Merk::open_base(storage)
+                                .map_err(|_| {
+                                    Error::CorruptedData("cannot open a subtree".to_owned())
+                                })
+                                .add_cost(local_cost)
                         }
                     }
                 )

@@ -25,7 +25,7 @@ macro_rules! storage_context_with_parent_optional_tx {
             use ::storage::Storage;
             if let Some(tx) = $transaction {
                 let $storage = $db
-                    .get_transactional_storage_context($path, tx).unwrap_add_cost(&mut $cost);
+                    .get_transactional_storage_context($path.clone(), tx).unwrap_add_cost(&mut $cost);
                 if let Some(last) = $path.next_back() {
                     let parent_storage = $db.get_transactional_storage_context($path, tx).unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(
@@ -53,7 +53,7 @@ macro_rules! storage_context_with_parent_optional_tx {
                 }
             } else {
                 let $storage = $db
-                    .get_storage_context($path).unwrap_add_cost(&mut $cost);
+                    .get_storage_context($path.clone()).unwrap_add_cost(&mut $cost);
                 if let Some(last) = $path.next_back() {
                     let parent_storage = $db.get_storage_context($path).unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(
@@ -116,6 +116,7 @@ macro_rules! merk_optional_tx {
         {
             use crate::util::storage_context_with_parent_optional_tx;
             storage_context_with_parent_optional_tx!(&mut $cost, $db, $path, $transaction, storage, root_key, {
+                #[allow(unused_mut)]
                 let mut $subtree = cost_return_on_error!(
                     &mut $cost,
                     ::merk::Merk::open_with_root_key(storage, root_key)
@@ -145,7 +146,7 @@ macro_rules! root_merk_optional_tx {
         {
             use crate::util::storage_context_optional_tx;
             storage_context_optional_tx!($db, [], $transaction, storage, {
-                let mut $subtree = cost_return_on_error!(
+                let $subtree = cost_return_on_error!(
                     &mut $cost,
                     ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost))
                         .map(|merk_res|

@@ -107,7 +107,7 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
 
-        let path_iter = path.into_iter();
+        let mut path_iter = path.into_iter();
         if path_iter.len() == 0 {
             cost_return_on_error!(
                 &mut cost,

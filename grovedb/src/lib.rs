@@ -48,11 +48,11 @@ impl GroveDb {
         Ok(GroveDb { db })
     }
 
-    pub fn open_transactional_merk_at_path<'p, P>(
-        &self,
+    pub fn open_transactional_merk_at_path<'db, 'p, P>(
+        &'db self,
         path: P,
-        tx: &Transaction,
-    ) -> CostContext<Result<Merk<PrefixedRocksDbTransactionContext>, Error>>
+        tx: &'db Transaction,
+    ) -> CostContext<Result<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + Clone,
@@ -292,13 +292,13 @@ impl GroveDb {
         if let Some(tx) = transaction {
             let mut child_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(path_iter, tx)
+                self.open_transactional_merk_at_path(path_iter.clone(), tx)
             );
             while path_iter.len() > 0 {
                 let key = path_iter.next_back().expect("next element is `Some`");
                 let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                     &mut cost,
-                    self.open_transactional_merk_at_path(path_iter, tx)
+                    self.open_transactional_merk_at_path(path_iter.clone(), tx)
                 );
                 let (root_hash, root_key) =
                     child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
@@ -316,13 +316,13 @@ impl GroveDb {
         } else {
             let mut child_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_non_transactional_merk_at_path(path_iter)
+                self.open_non_transactional_merk_at_path(path_iter.clone())
             );
             while path_iter.len() > 0 {
                 let key = path_iter.next_back().expect("next element is `Some`");
                 let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                     &mut cost,
-                    self.open_non_transactional_merk_at_path(path_iter)
+                    self.open_non_transactional_merk_at_path(path_iter.clone())
                 );
                 let (root_hash, root_key) =
                     child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
