@@ -30,7 +30,7 @@ impl Visualize for Element {
             }
             Element::Tree(root_key, _) => {
                 drawer.write(b"tree: ")?;
-                drawer = root_key.unwrap_or(vec![]).visualize(drawer)?;
+                drawer = root_key.unwrap_or(vec![]).as_ref().visualize(drawer)?;
             }
         }
         Ok(drawer)

@@ -1383,6 +1383,17 @@ mod test {
         tree::{NoopCommit, PanicSource, RefWalker, Tree},
     };
 
+    fn compare_result_tuples(
+        result_set: Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,
+        expected_result_set: Vec<(Vec<u8>, Vec<u8>)>,
+    ) {
+        assert_eq!(expected_result_set.len(), result_set.len());
+        for i in 0..expected_result_set.len() {
+            assert_eq!(expected_result_set[i].0, result_set[i].0);
+            assert_eq!(expected_result_set[i].1, result_set[i].1);
+        }
+    }
+
     fn make_3_node_tree() -> Tree {
         let mut tree = Tree::new(vec![5], vec![5])
             .unwrap()
@@ -1760,7 +1771,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
     }
 
     #[test]
@@ -1811,7 +1822,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![3], vec![3])]);
+        compare_result_tuples(res.result_set, vec![(vec![3], vec![3])]);
     }
 
     #[test]
@@ -1856,10 +1867,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![3], vec![3]), (vec![7], vec![7]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![3], vec![3]), (vec![7], vec![7])]);
     }
 
     #[test]
@@ -1902,9 +1910,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![3], vec![3]), (vec![5], vec![5]), (vec![7], vec![7]),]
+            vec![(vec![3], vec![3]), (vec![5], vec![5]), (vec![7], vec![7])],
         );
     }
 
@@ -1965,7 +1973,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
     }
 
     #[test]
@@ -2028,7 +2036,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
     }
 
     #[test]
@@ -2150,14 +2158,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![1], vec![1]),
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
-            ]
+            ],
         );
     }
 
@@ -2330,12 +2338,12 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
-            ]
+            ],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -2368,9 +2376,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])]
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
         );
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
@@ -2403,7 +2411,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(0));
 
@@ -2435,7 +2443,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(198));
 
@@ -2467,12 +2475,12 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
-                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60])
-            ]
+                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
+            ],
         );
     }
 
@@ -2564,13 +2572,13 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60]),
-            ]
+            ],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -2603,9 +2611,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])]
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
         );
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
@@ -2638,9 +2646,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60])]
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60])],
         );
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
@@ -2673,7 +2681,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(197));
 
@@ -2706,13 +2714,13 @@ mod test {
         .unwrap()
         .unwrap();
 
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
-                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60])
-            ]
+                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
+            ],
         );
 
         let mut tree = make_tree_seq(10);
@@ -2743,9 +2751,9 @@ mod test {
         .unwrap()
         .unwrap();
 
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60])]
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60])],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, Some(0));
@@ -2795,9 +2803,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])]
+            vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -2837,7 +2845,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -2880,10 +2888,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![5], vec![5]), (vec![7], vec![7]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -2922,9 +2927,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])]
+            vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])],
         );
         assert_eq!(res.limit, Some(97));
         assert_eq!(res.offset, None);
@@ -2955,7 +2960,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![7], vec![7])]);
+        compare_result_tuples(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -2985,7 +2990,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![8], vec![8])]);
+        compare_result_tuples(res.result_set, vec![(vec![8], vec![8])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -3015,7 +3020,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(197));
 
@@ -3047,9 +3052,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5])]
+            vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5])],
         );
 
         let mut tree = make_6_node_tree();
@@ -3079,7 +3084,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![7], vec![7]), (vec![5], vec![5])]);
+        compare_result_tuples(res.result_set, vec![(vec![7], vec![7]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
     }
@@ -3141,14 +3146,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
-            ]
+            ],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -3188,7 +3193,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![2], vec![2])]);
+        compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -3227,10 +3232,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![2], vec![2]), (vec![3], vec![3]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -3269,14 +3271,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
-                (vec![5], vec![5])
-            ]
+                (vec![5], vec![5]),
+            ],
         );
         assert_eq!(res.limit, Some(96));
         assert_eq!(res.offset, None);
@@ -3307,7 +3309,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![3], vec![3])]);
+        compare_result_tuples(res.result_set, vec![(vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -3337,7 +3339,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -3367,7 +3369,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(196));
 
@@ -3399,14 +3401,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![5], vec![5]),
                 (vec![4], vec![4]),
                 (vec![3], vec![3]),
                 (vec![2], vec![2]),
-            ]
+            ],
         );
 
         let mut tree = make_6_node_tree();
@@ -3436,10 +3438,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![5], vec![5]), (vec![4], vec![4]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
     }
@@ -3501,14 +3500,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
-            ]
+            ],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -3548,7 +3547,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![2], vec![2])]);
+        compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -3587,10 +3586,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![2], vec![2]), (vec![3], vec![3]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -3629,14 +3625,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
-                (vec![5], vec![5])
-            ]
+                (vec![5], vec![5]),
+            ],
         );
         assert_eq!(res.limit, Some(96));
         assert_eq!(res.offset, None);
@@ -3667,7 +3663,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![3], vec![3])]);
+        compare_result_tuples(res.result_set, vec![(vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -3697,7 +3693,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -3727,7 +3723,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(196));
 
@@ -3759,14 +3755,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![5], vec![5]),
                 (vec![4], vec![4]),
                 (vec![3], vec![3]),
                 (vec![2], vec![2]),
-            ]
+            ],
         );
 
         let mut tree = make_6_node_tree();
@@ -3796,7 +3792,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4]),]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
     }
@@ -3858,14 +3854,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
                 (vec![7], vec![7]),
                 (vec![8], vec![8]),
-            ]
+            ],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -3905,7 +3901,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -3944,10 +3940,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -3986,14 +3979,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
                 (vec![7], vec![7]),
-                (vec![8], vec![8])
-            ]
+                (vec![8], vec![8]),
+            ],
         );
         assert_eq!(res.limit, Some(96));
         assert_eq!(res.offset, None);
@@ -4024,7 +4017,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -4054,7 +4047,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![7], vec![7])]);
+        compare_result_tuples(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -4084,7 +4077,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(196));
 
@@ -4116,14 +4109,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![8], vec![8]),
                 (vec![7], vec![7]),
                 (vec![5], vec![5]),
                 (vec![4], vec![4]),
-            ]
+            ],
         );
 
         let mut tree = make_6_node_tree();
@@ -4153,9 +4146,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5]),]
+            vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5])],
         );
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
@@ -4233,10 +4226,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
 
@@ -4275,7 +4265,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -4314,10 +4304,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -4356,10 +4343,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(98));
         assert_eq!(res.offset, None);
 
@@ -4389,7 +4373,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -4419,7 +4403,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(0));
 
@@ -4449,7 +4433,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(198));
 
@@ -4481,10 +4465,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![5], vec![5]), (vec![4], vec![4]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![4], vec![4])]);
 
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -4513,7 +4494,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(299));
         assert_eq!(res.offset, Some(0));
     }
@@ -4581,9 +4562,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])]
+            vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -4623,7 +4604,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -4662,10 +4643,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -4704,9 +4682,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])]
+            vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])],
         );
         assert_eq!(res.limit, Some(97));
         assert_eq!(res.offset, None);
@@ -4737,7 +4715,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -4767,7 +4745,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![7], vec![7])]);
+        compare_result_tuples(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -4797,7 +4775,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(197));
 
@@ -4829,9 +4807,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![7], vec![7]), (vec![5], vec![5]), (vec![4], vec![4])]
+            vec![(vec![7], vec![7]), (vec![5], vec![5]), (vec![4], vec![4])],
         );
     }
 
@@ -4878,7 +4856,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
@@ -4887,7 +4865,7 @@ mod test {
                 (vec![5], vec![5]),
                 (vec![7], vec![7]),
                 (vec![8], vec![8]),
-            ]
+            ],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -4927,7 +4905,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![2], vec![2])]);
+        compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -4966,10 +4944,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![2], vec![2]), (vec![3], vec![3]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -5008,7 +4983,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
@@ -5016,8 +4991,8 @@ mod test {
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
                 (vec![7], vec![7]),
-                (vec![8], vec![8])
-            ]
+                (vec![8], vec![8]),
+            ],
         );
         assert_eq!(res.limit, Some(94));
         assert_eq!(res.offset, None);
@@ -5048,9 +5023,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![3], vec![3]), (vec![4], vec![4]), (vec![5], vec![5]),]
+            vec![(vec![3], vec![3]), (vec![4], vec![4]), (vec![5], vec![5])],
         );
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
@@ -5081,10 +5056,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -5114,7 +5086,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(194));
 
@@ -5146,7 +5118,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![8], vec![8]),
@@ -5155,7 +5127,7 @@ mod test {
                 (vec![4], vec![4]),
                 (vec![3], vec![3]),
                 (vec![2], vec![2]),
-            ]
+            ],
         );
 
         let mut tree = make_6_node_tree();
@@ -5185,10 +5157,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![5], vec![5]), (vec![4], vec![4]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
     }
@@ -5260,7 +5229,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![2], vec![2])]);
+        compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
     }
@@ -5334,7 +5303,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
     }
@@ -5403,7 +5372,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![8], vec![8]),
@@ -5411,7 +5380,7 @@ mod test {
                 (vec![5], vec![5]),
                 (vec![4], vec![4]),
                 (vec![3], vec![3]),
-            ]
+            ],
         );
     }
 
@@ -5506,12 +5475,12 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
-            ]
+            ],
         );
     }
 
@@ -5610,9 +5579,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_(
             res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),]
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
         );
     }
 

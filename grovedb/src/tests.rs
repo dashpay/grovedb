@@ -1,6 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 use ::visualize::{Drawer, Visualize};
+use merk::CryptoHash;
 use rand::Rng;
 use tempfile::TempDir;
 
@@ -1054,9 +1055,9 @@ fn test_path_query_proofs_without_subquery_with_reference() {
     let r1 = Element::new_item(b"value1".to_vec()).serialize().unwrap();
     let r2 = Element::new_item(b"value4".to_vec()).serialize().unwrap();
 
-    assert_eq!(
+    compare_result_tuples(
         result_set,
-        vec![(b"key4".to_vec(), r1), (b"key5".to_vec(), r2),]
+        vec![(b"key4".to_vec(), r1), (b"key5".to_vec(), r2)],
     );
 }
 
@@ -1169,7 +1170,7 @@ fn test_path_query_proofs_without_subquery() {
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value1".to_vec()).serialize().unwrap();
-    assert_eq!(result_set, vec![(b"key1".to_vec(), r1)]);
+    compare_result_tuples(result_set, vec![(b"key1".to_vec(), r1)]);
 
     // Range query + limit
     let mut query = Query::new();
@@ -1185,7 +1186,7 @@ fn test_path_query_proofs_without_subquery() {
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value2".to_vec()).serialize().unwrap();
-    assert_eq!(result_set, vec![(b"key2".to_vec(), r1)]);
+    compare_result_tuples(result_set, vec![(b"key2".to_vec(), r1)]);
 
     // Range query + offset + limit
     let mut query = Query::new();
@@ -1201,7 +1202,7 @@ fn test_path_query_proofs_without_subquery() {
 
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value3".to_vec()).serialize().unwrap();
-    assert_eq!(result_set, vec![(b"key3".to_vec(), r1)]);
+    compare_result_tuples(result_set, vec![(b"key3".to_vec(), r1)]);
 
     // Range query + direction + limit
     let mut query = Query::new_with_direction(false);
@@ -1218,9 +1219,9 @@ fn test_path_query_proofs_without_subquery() {
     assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
     let r1 = Element::new_item(b"value3".to_vec()).serialize().unwrap();
     let r2 = Element::new_item(b"value2".to_vec()).serialize().unwrap();
-    assert_eq!(
+    compare_result_tuples(
         result_set,
-        vec![(b"key3".to_vec(), r1), (b"key2".to_vec(), r2)]
+        vec![(b"key3".to_vec(), r1), (b"key2".to_vec(), r2)],
     );
 }
 
@@ -1260,7 +1261,7 @@ fn test_path_query_proofs_with_default_subquery() {
     ];
     let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-    assert_eq!(result_set, expected_result_set);
+    compare_result_tuples(result_set, expected_result_set);
 
     let mut query = Query::new();
     query.insert_range_after(b"innertree".to_vec()..);
@@ -1282,7 +1283,7 @@ fn test_path_query_proofs_with_default_subquery() {
     let values = [b"value4".to_vec(), b"value5".to_vec()];
     let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-    assert_eq!(result_set, expected_result_set);
+    compare_result_tuples(result_set, expected_result_set);
 
     // range subquery
     let mut query = Query::new();
@@ -1307,7 +1308,7 @@ fn test_path_query_proofs_with_default_subquery() {
     let values = [b"value2".to_vec(), b"value3".to_vec(), b"value4".to_vec()];
     let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-    assert_eq!(result_set, expected_result_set);
+    compare_result_tuples(result_set, expected_result_set);
 
     // deep tree test
     let mut query = Query::new();
@@ -1359,7 +1360,7 @@ fn test_path_query_proofs_with_default_subquery() {
     ];
     let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-    assert_eq!(result_set, expected_result_set);
+    compare_result_tuples(result_set, expected_result_set);
 }
 
 #[test]
@@ -1388,7 +1389,7 @@ fn test_path_query_proofs_with_subquery_key() {
     let values = [b"value1".to_vec(), b"value2".to_vec(), b"value3".to_vec()];
     let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-    assert_eq!(result_set, expected_result_set);
+    compare_result_tuples(result_set, expected_result_set);
 }
 
 #[test]
@@ -1417,7 +1418,7 @@ fn test_path_query_proofs_with_key_and_subquery() {
     let values = [b"value1".to_vec(), b"value2".to_vec(), b"value3".to_vec()];
     let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-    assert_eq!(result_set, expected_result_set);
+    compare_result_tuples(result_set, expected_result_set);
 }
 
 #[test]
@@ -1507,9 +1508,12 @@ fn test_path_query_proofs_with_conditional_subquery() {
         b"value10".to_vec(),
         b"value11".to_vec(),
     ];
-    let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+    let elements = values
+        .map(|x| Element::new_item(x).serialize().unwrap())
+        .to_vec();
+    // compare_result_sets(&elements, &result_set);
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-    assert_eq!(result_set, expected_result_set);
+    compare_result_tuples(result_set, expected_result_set);
 }
 
 #[test]
@@ -1553,7 +1557,7 @@ fn test_path_query_proofs_with_sized_query() {
     let values = [b"value4".to_vec(), b"value5".to_vec(), b"value6".to_vec()];
     let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-    assert_eq!(result_set, expected_result_set);
+    compare_result_tuples(result_set, expected_result_set);
 }
 
 #[test]
@@ -1596,7 +1600,7 @@ fn test_path_query_proofs_with_direction() {
     let values = [b"value10".to_vec(), b"value6".to_vec(), b"value5".to_vec()];
     let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-    assert_eq!(result_set, expected_result_set);
+    compare_result_tuples(result_set, expected_result_set);
 
     // combined directions
     let mut query = Query::new();
@@ -1648,7 +1652,7 @@ fn test_path_query_proofs_with_direction() {
     ];
     let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-    assert_eq!(result_set, expected_result_set);
+    compare_result_tuples(result_set, expected_result_set);
 }
 
 #[test]
@@ -2775,7 +2779,18 @@ fn populate_tree_for_unique_range_subquery_with_non_unique_null_values(db: &mut 
     }
 }
 
-fn compare_result_sets(elements: &Vec<Vec<u8>>, result_set: &Vec<(Vec<u8>, Vec<u8>)>) {
+pub fn compare_result_tuples(
+    result_set: Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,
+    expected_result_set: Vec<(Vec<u8>, Vec<u8>)>,
+) {
+    assert_eq!(expected_result_set.len(), result_set.len());
+    for i in 0..expected_result_set.len() {
+        assert_eq!(expected_result_set[i].0, result_set[i].0);
+        assert_eq!(expected_result_set[i].1, result_set[i].1);
+    }
+}
+
+fn compare_result_sets(elements: &Vec<Vec<u8>>, result_set: &Vec<(Vec<u8>, Vec<u8>, CryptoHash)>) {
     for i in 0..elements.len() {
         assert_eq!(
             deserialize_and_extract_item_bytes(&result_set[i].1).unwrap(),

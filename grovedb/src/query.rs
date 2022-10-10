@@ -220,7 +220,7 @@ mod tests {
     use merk::proofs::Query;
 
     use crate::{
-        tests::{make_deep_tree, TEST_LEAF},
+        tests::{compare_result_tuples, make_deep_tree, TEST_LEAF},
         Element, Error, GroveDb, PathQuery,
     };
     #[test]
@@ -336,7 +336,7 @@ mod tests {
         let values = [b"value1".to_vec(), b"value4".to_vec()];
         let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-        assert_eq!(result_set_merged, expected_result_set);
+        compare_result_tuples(result_set_merged, expected_result_set);
 
         // longer length path queries
         let mut query_one = Query::new();
@@ -421,7 +421,7 @@ mod tests {
         ];
         let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-        assert_eq!(result_set_merged, expected_result_set);
+        compare_result_tuples(result_set_merged, expected_result_set);
     }
 
     #[test]
@@ -494,7 +494,7 @@ mod tests {
         ];
         let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-        assert_eq!(result_set_merged, expected_result_set);
+        compare_result_tuples(result_set_merged, expected_result_set);
     }
 
     #[test]
