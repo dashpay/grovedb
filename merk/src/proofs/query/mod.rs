@@ -5579,7 +5579,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        compare_(
+        compare_result_tuples(
             res.result_set,
             vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
         );
