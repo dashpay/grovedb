@@ -52,6 +52,10 @@ pub fn make_empty_grovedb() -> TempGroveDb {
 
 /// A helper method to create GroveDB with one leaf for a root tree
 pub fn make_test_grovedb() -> TempGroveDb {
+    // Tree Structure
+    // root
+    //  test_leaf
+    //  another_test_leaf
     let tmp_dir = TempDir::new().unwrap();
     let mut db = GroveDb::open(tmp_dir.path()).unwrap();
     add_test_leaves(&mut db);
@@ -747,6 +751,56 @@ fn test_too_many_indirections() {
         .unwrap();
 
     assert!(matches!(result, Err(Error::ReferenceLimit)));
+}
+
+#[test]
+fn test_reference_value_affects_state() {
+    let db_one = make_test_grovedb();
+    db_one
+        .insert([TEST_LEAF], b"key1", Element::new_item(vec![0]), None)
+        .unwrap()
+        .expect("should insert item");
+    db_one
+        .insert(
+            [ANOTHER_TEST_LEAF],
+            b"ref",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"key1".to_vec(),
+            ])),
+            None,
+        )
+        .unwrap()
+        .expect("should insert item");
+
+    let db_two = make_test_grovedb();
+    db_two
+        .insert([TEST_LEAF], b"key1", Element::new_item(vec![0]), None)
+        .unwrap()
+        .expect("should insert item");
+    db_two
+        .insert(
+            [ANOTHER_TEST_LEAF],
+            b"ref",
+            Element::new_reference(ReferencePathType::UpstreamRootHeightReference(
+                0,
+                vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+            )),
+            None,
+        )
+        .unwrap()
+        .expect("should insert item");
+
+    assert_ne!(
+        db_one
+            .root_hash(None)
+            .unwrap()
+            .expect("should return root hash"),
+        db_two
+            .root_hash(None)
+            .unwrap()
+            .expect("should return toor hash")
+    );
 }
 
 #[test]
