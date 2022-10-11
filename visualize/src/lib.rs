@@ -119,6 +119,23 @@ impl Visualize for [u8] {
     }
 }
 
+impl<T: Visualize + ?Sized> Visualize for &T {
+    fn visualize<'a, W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>> {
+	(*self).visualize(drawer)
+    }
+}
+
+impl<T: Visualize> Visualize for Option<T> {
+    fn visualize<'a, W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
+        Ok(if let Some(v) = self {
+            v.visualize(drawer)?
+        } else {
+            drawer.write(b"None")?;
+            drawer
+        })
+    }
+}
+
 /// `visulize` shortcut to write straight into stderr offhand
 pub fn visualize_stderr<T: Visualize + ?Sized>(value: &T) {
     let mut out = std::io::stderr();
@@ -128,7 +145,7 @@ pub fn visualize_stderr<T: Visualize + ?Sized>(value: &T) {
         .expect("IO error when trying to `visualize`");
 }
 
-/// `visulize` shortcut to write straight into stdout offhand
+/// `visualize` shortcut to write straight into stdout offhand
 pub fn visualize_stdout<T: Visualize + ?Sized>(value: &T) {
     let mut out = std::io::stdout();
     let drawer = Drawer::new(&mut out);
