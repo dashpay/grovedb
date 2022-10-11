@@ -424,7 +424,7 @@ impl GroveDb {
             }
             cost_return_on_error!(
                 &mut cost,
-                self.propagate_changes_with_transaction(merk_cache, path_iter, transaction)
+                self.propagate_changes_with_transaction(&mut merk_cache, path_iter, transaction)
             );
 
             Ok(true).wrap_with_cost(cost)
@@ -510,7 +510,7 @@ impl GroveDb {
             }
             cost_return_on_error!(
                 &mut cost,
-                self.propagate_changes_without_transaction(merk_cache, path)
+                self.propagate_changes_without_transaction(&mut merk_cache, path)
             );
 
             Ok(true).wrap_with_cost(cost)

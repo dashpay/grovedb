@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
@@ -5,11 +6,12 @@ use merk::Merk;
 use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 use visualize::visualize_stdout;
 
-use crate::{
-    reference_path::path_from_reference_path_type,
-    util::{merk_optional_tx, storage_context_with_parent_optional_tx},
-    Element, Error, GroveDb, TransactionArg,
-};
+
+use crate::{reference_path::path_from_reference_path_type, util::{
+    merk_no_tx, merk_optional_tx, merk_using_tx, storage_context_optional_tx,
+    storage_context_with_parent_no_tx, storage_context_with_parent_optional_tx,
+    storage_context_with_parent_using_tx,
+}, Element, Error, GroveDb, TransactionArg, Transaction};
 
 impl GroveDb {
     pub fn insert<'p, P>(
@@ -19,6 +21,24 @@ impl GroveDb {
         element: Element,
         transaction: TransactionArg,
     ) -> CostResult<(), Error>
+        where
+            P: IntoIterator<Item = &'p [u8]>,
+            <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        if let Some(transaction) = transaction {
+            self.insert_on_transaction(path, key, element, transaction)
+        } else {
+            self.insert_without_transaction(path, key, element)
+        }
+    }
+
+    fn insert_on_transaction<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        element: Element,
+        transaction: &Transaction,
+    ) -> CostResult<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
@@ -27,11 +47,13 @@ impl GroveDb {
 
         let path_iter = path.into_iter();
 
+        let mut merk_cache = HashMap::default();
+
         match element {
             Element::Tree(..) => {
                 cost_return_on_error!(
                     &mut cost,
-                    self.add_subtree(path_iter.clone(), key, element, transaction)
+                    self.add_subtree(path_iter.clone(), key, element, Some(transaction))
                 );
             }
             Element::Reference(ref reference_path, ..) => {
@@ -54,21 +76,23 @@ impl GroveDb {
 
                 cost_return_on_error!(
                     &mut cost,
-                    self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
+                    self.check_subtree_exists_invalid_path(path_iter.clone(), Some(transaction))
                 );
 
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
                 let mut referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
-                let referenced_element_value_hash_opt = merk_optional_tx!(
+                let referenced_element_value_hash_opt = merk_using_tx!(
                     &mut cost,
                     self.db,
                     referenced_path_iter,
                     transaction,
                     subtree,
                     {
-                        Element::get_value_hash(&subtree, referenced_key)
+                        let element = Element::get_value_hash(&subtree, referenced_key)
                             .unwrap_add_cost(&mut cost)
-                            .unwrap()
+                            .unwrap();
+                        merk_cache.insert(referenced_path_iter.collect::<Vec<&[u8]>>(), subtree);
+                        element
                     }
                 );
                 let referenced_element_value_hash = cost_return_on_error!(
@@ -89,7 +113,7 @@ impl GroveDb {
                         .wrap_with_cost(OperationCost::default())
                 );
 
-                merk_optional_tx!(
+                merk_using_tx!(
                     &mut cost,
                     self.db,
                     path_iter.clone(),
@@ -119,9 +143,9 @@ impl GroveDb {
                 }
                 cost_return_on_error!(
                     &mut cost,
-                    self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
+                    self.check_subtree_exists_invalid_path(path_iter.clone(), Some(transaction))
                 );
-                merk_optional_tx!(
+                merk_using_tx!(
                     &mut cost,
                     self.db,
                     path_iter.clone(),
@@ -133,7 +157,131 @@ impl GroveDb {
                 );
             }
         }
-        cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
+        cost_return_on_error!(&mut cost, self.propagate_changes_with_transaction(&mut merk_cache, path_iter, transaction));
+
+        Ok(()).wrap_with_cost(cost)
+    }
+
+    fn insert_without_transaction<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        element: Element
+    ) -> CostResult<(), Error>
+        where
+            P: IntoIterator<Item = &'p [u8]>,
+            <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+
+        let path_iter = path.into_iter();
+
+        let mut merk_cache = HashMap::default();
+
+        match element {
+            Element::Tree(..) => {
+                cost_return_on_error!(
+                    &mut cost,
+                    self.add_subtree(path_iter.clone(), key, element, None)
+                );
+            }
+            Element::Reference(ref reference_path, ..) => {
+                let reference_path = cost_return_on_error!(
+                    &mut cost,
+                    path_from_reference_path_type(
+                        reference_path.clone(),
+                        path_iter.clone(),
+                        Some(key)
+                    )
+                    .wrap_with_cost(OperationCost::default())
+                );
+
+                if path_iter.len() == 0 {
+                    return Err(Error::InvalidPath(
+                        "only subtrees are allowed as root tree's leafs",
+                    ))
+                        .wrap_with_cost(cost);
+                }
+
+                cost_return_on_error!(
+                    &mut cost,
+                    self.check_subtree_exists_invalid_path(path_iter.clone(), None)
+                );
+
+                let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
+                let mut referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
+                let referenced_element_value_hash_opt = merk_no_tx!(
+                    &mut cost,
+                    self.db,
+                    referenced_path_iter,
+                    subtree,
+                    {
+                        Element::get_value_hash(&subtree, referenced_key)
+                            .unwrap_add_cost(&mut cost)
+                            .unwrap()
+                    }
+                );
+                let referenced_element_value_hash = cost_return_on_error!(
+                    &mut cost,
+                    referenced_element_value_hash_opt
+                        .ok_or({
+                            let reference_string = reference_path
+                                .iter()
+                                .map(|a| hex::encode(a))
+                                .collect::<Vec<String>>()
+                                .join("/");
+                            Error::MissingReference(format!(
+                                "reference {}/{} can not be found",
+                                reference_string,
+                                hex::encode(key)
+                            ))
+                        })
+                        .wrap_with_cost(OperationCost::default())
+                );
+
+                merk_no_tx!(
+                    &mut cost,
+                    self.db,
+                    path_iter.clone(),
+                    subtree,
+                    {
+                        cost_return_on_error!(
+                            &mut cost,
+                            element.insert_reference(
+                                &mut subtree,
+                                key,
+                                referenced_element_value_hash
+                            )
+                        );
+                    }
+                );
+            }
+            Element::Item(..) => {
+                // If path is empty that means there is an attempt to insert
+                // something into a root tree and this branch is for anything
+                // but trees
+                if path_iter.len() == 0 {
+                    return Err(Error::InvalidPath(
+                        "only subtrees are allowed as root tree's leaves",
+                    ))
+                        .wrap_with_cost(cost);
+                }
+                cost_return_on_error!(
+                    &mut cost,
+                    self.check_subtree_exists_invalid_path(path_iter.clone(), None)
+                );
+                merk_no_tx!(
+                    &mut cost,
+                    self.db,
+                    path_iter.clone(),
+                    subtree,
+                    {
+                        cost_return_on_error!(&mut cost, element.insert(&mut subtree, key));
+                    }
+                );
+            }
+        }
+        cost_return_on_error!(&mut cost, self.propagate_changes_without_transaction(&mut merk_cache, path_iter));
 
         Ok(()).wrap_with_cost(cost)
     }
