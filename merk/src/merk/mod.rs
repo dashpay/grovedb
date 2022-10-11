@@ -181,6 +181,14 @@ where
     S: StorageContext<'db>,
     <S as StorageContext<'db>>::Error: std::error::Error,
 {
+    pub fn open_empty(storage: S) -> Self {
+        Self {
+            tree: Cell::new(None),
+            root_tree_key: Cell::new(None),
+            storage,
+        }
+    }
+
     pub fn open_base(storage: S) -> CostContext<Result<Self>> {
         let mut merk = Self {
             tree: Cell::new(None),

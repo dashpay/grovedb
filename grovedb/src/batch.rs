@@ -548,7 +548,7 @@ trait TreeCache<G, SR> {
 
 impl<'db, S, F> TreeCacheMerkByPath<S, F>
 where
-    F: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+    F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
     /// A reference assumes the value hash of the base item it points to.
@@ -619,7 +619,7 @@ where
                 .merks
                 .remove(reference_path)
                 .map(|x| Ok(x).wrap_with_cost(Default::default()))
-                .unwrap_or_else(|| (self.get_merk_fn)(reference_path));
+                .unwrap_or_else(|| (self.get_merk_fn)(reference_path, false));
             let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
 
             // Here the element being referenced doesn't change in the same batch
@@ -719,7 +719,7 @@ impl<'db, S, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F>
 where
     G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
     SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
-    F: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+    F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
@@ -728,7 +728,7 @@ where
         let mut inserted_path = op.path.to_path();
         inserted_path.push(op.key.get_key_clone());
         if !self.merks.contains_key(&inserted_path) {
-            let merk = cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path));
+            let merk = cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
             self.merks.insert(inserted_path, merk);
         }
 
@@ -753,7 +753,7 @@ where
             .merks
             .remove(path)
             .map(|x| Ok(x).wrap_with_cost(Default::default()))
-            .unwrap_or_else(|| (self.get_merk_fn)(path));
+            .unwrap_or_else(|| (self.get_merk_fn)(path, false));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
 
         let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
@@ -1228,7 +1228,7 @@ impl GroveDb {
             &mut ElementFlags,
             u32,
         ) -> Result<StorageRemovedBytes, Error>,
-        get_merk_fn: impl FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+        get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
@@ -1357,7 +1357,7 @@ impl GroveDb {
                     batch_apply_options,
                     update_element_flags_function,
                     split_removal_bytes_function,
-                    |path| {
+                    |path, new_merk| {
                         let mut local_cost = OperationCost::default();
 
                         let storage = self
@@ -1369,7 +1369,10 @@ impl GroveDb {
                             )
                             .unwrap_add_cost(&mut local_cost);
 
-                        if let Some((last, base_path)) = path.split_last() {
+                        if new_merk {
+                            Ok(Merk::open_empty(storage)).wrap_with_cost(local_cost)
+                        } else {
+                            if let Some((last, base_path)) = path.split_last() {
                             let parent_storage = self
                                 .db
                                 .get_batch_transactional_storage_context(
@@ -1408,6 +1411,7 @@ impl GroveDb {
                                 })
                                 .add_cost(local_cost)
                         }
+                        }
                     }
                 )
             );
@@ -1428,7 +1432,7 @@ impl GroveDb {
                     batch_apply_options,
                     update_element_flags_function,
                     split_removal_bytes_function,
-                    |path| {
+                    |path, new_merk| {
                         let mut local_cost = OperationCost::default();
                         let storage = self
                             .db
@@ -1437,6 +1441,10 @@ impl GroveDb {
                                 &storage_batch,
                             )
                             .unwrap_add_cost(&mut local_cost);
+
+                        if new_merk {
+                            Ok(Merk::open_empty(storage)).wrap_with_cost(local_cost)
+                        } else {
 
                         if let Some((last, base_path)) = path.split_last() {
                             let parent_storage = self
@@ -1476,6 +1484,7 @@ impl GroveDb {
                                 })
                                 .add_cost(local_cost)
                         }
+                            }
                     }
                 )
             );
