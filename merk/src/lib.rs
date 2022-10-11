@@ -24,6 +24,8 @@ pub use tree::{
     HASH_LENGTH_U32,
 };
 
+pub use ed;
+
 // #[cfg(feature = "full")]
 // // pub use crate::merk::{chunks, restore, Merk};
 pub use crate::merk::{

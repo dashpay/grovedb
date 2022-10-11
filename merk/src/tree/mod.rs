@@ -45,6 +45,18 @@ pub struct TreeInner {
     kv: KV,
 }
 
+impl TreeInner {
+    /// Get the value as owned of the key value struct
+    pub fn value_as_owned(self) -> Vec<u8> {
+        self.kv.value
+    }
+
+    /// Get the value as slice of the key value struct
+    pub fn value_as_slice(&self) -> &[u8] {
+        self.kv.value.as_slice()
+    }
+}
+
 impl Terminated for Box<TreeInner> {}
 
 /// A binary AVL tree data structure, with Merkle hashes.

@@ -11,8 +11,9 @@ use costs::{
 };
 use integer_encoding::VarInt;
 use merk::{
+    ed::Decode,
     proofs::{query::QueryItem, Query},
-    tree::Tree,
+    tree::{Tree, TreeInner},
     BatchEntry, Op, HASH_LENGTH,
 };
 use serde::{Deserialize, Serialize};
@@ -326,18 +327,23 @@ impl Element {
         key: K,
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
-        let value_opt = cost_return_on_error!(
+        let node_value_opt = cost_return_on_error!(
             &mut cost,
             storage
                 .get(key.as_ref())
                 .map_err(|e| Error::CorruptedData(e.to_string()))
         );
-        let value = cost_return_on_error_no_add!(
+        let node_value = cost_return_on_error_no_add!(
             &cost,
-            value_opt.ok_or_else(|| {
+            node_value_opt.ok_or_else(|| {
                 Error::PathKeyNotFound(format!("key not found in Merk: {}", hex::encode(key)))
             })
         );
+        let tree_inner: TreeInner = cost_return_on_error_no_add!(
+            &cost,
+            Decode::decode(node_value.as_slice()).map_err(|e| Error::CorruptedData(e.to_string()))
+        );
+        let value = tree_inner.value_as_owned();
         let element = cost_return_on_error_no_add!(
             &cost,
             Self::deserialize(value.as_slice())
