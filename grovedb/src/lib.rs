@@ -14,6 +14,7 @@ mod util;
 mod visualize;
 mod worst_case_costs;
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
@@ -279,7 +280,7 @@ impl GroveDb {
     /// transaction
     fn propagate_changes_with_transaction<'p, P>(
         &self,
-        child_tree: Merk<PrefixedRocksDbTransactionContext>,
+        &mut merk_cache: HashMap<P,Merk<PrefixedRocksDbTransactionContext>>,
         path: P,
         transaction: &Transaction,
     ) -> CostResult<(), Error>
@@ -290,6 +291,8 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         let mut path_iter = path.into_iter();
+
+        let mut child_tree = merk_cache.take(path).ok_or(Err(Error::CorruptedCodeExecution("Merk Cache should always contain the last path")))?;
 
         while path_iter.len() > 0 {
             let key = path_iter.next_back().expect("next element is `Some`");
@@ -310,7 +313,7 @@ impl GroveDb {
     /// Method to propagate updated subtree key changes one level up
     fn propagate_changes_without_transaction<'p, P>(
         &self,
-        child_tree: Merk<PrefixedRocksDbStorageContext>,
+        &mut merk_cache: HashMap<P,Merk<PrefixedRocksDbStorageContext>>,
         path: P,
     ) -> CostResult<(), Error>
     where
@@ -320,6 +323,8 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         let mut path_iter = path.into_iter();
+
+        let mut child_tree = merk_cache.take(path).ok_or(Err(Error::CorruptedCodeExecution("Merk Cache should always contain the last path")))?;
 
         while path_iter.len() > 0 {
             let key = path_iter.next_back().expect("next element is `Some`");
