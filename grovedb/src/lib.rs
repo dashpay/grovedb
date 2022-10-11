@@ -14,8 +14,7 @@ mod util;
 mod visualize;
 mod worst_case_costs;
 
-use std::collections::HashMap;
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
 pub use merk::proofs::{query::QueryItem, Query};
@@ -280,7 +279,7 @@ impl GroveDb {
     /// transaction
     fn propagate_changes_with_transaction<'p, P>(
         &self,
-        &mut merk_cache: HashMap<P,Merk<PrefixedRocksDbTransactionContext>>,
+        &mut merk_cache: HashMap<P, Merk<PrefixedRocksDbTransactionContext>>,
         path: P,
         transaction: &Transaction,
     ) -> CostResult<(), Error>
@@ -292,7 +291,11 @@ impl GroveDb {
 
         let mut path_iter = path.into_iter();
 
-        let mut child_tree = merk_cache.take(path).ok_or(Err(Error::CorruptedCodeExecution("Merk Cache should always contain the last path")))?;
+        let mut child_tree = merk_cache
+            .take(path)
+            .ok_or(Err(Error::CorruptedCodeExecution(
+                "Merk Cache should always contain the last path",
+            )))?;
 
         while path_iter.len() > 0 {
             let key = path_iter.next_back().expect("next element is `Some`");
@@ -307,13 +310,13 @@ impl GroveDb {
             );
             child_tree = parent_tree;
         }
-	Ok(()).wrap_with_cost(cost)
+        Ok(()).wrap_with_cost(cost)
     }
 
     /// Method to propagate updated subtree key changes one level up
     fn propagate_changes_without_transaction<'p, P>(
         &self,
-        &mut merk_cache: HashMap<P,Merk<PrefixedRocksDbStorageContext>>,
+        &mut merk_cache: HashMap<P, Merk<PrefixedRocksDbStorageContext>>,
         path: P,
     ) -> CostResult<(), Error>
     where
@@ -324,7 +327,11 @@ impl GroveDb {
 
         let mut path_iter = path.into_iter();
 
-        let mut child_tree = merk_cache.take(path).ok_or(Err(Error::CorruptedCodeExecution("Merk Cache should always contain the last path")))?;
+        let mut child_tree = merk_cache
+            .take(path)
+            .ok_or(Err(Error::CorruptedCodeExecution(
+                "Merk Cache should always contain the last path",
+            )))?;
 
         while path_iter.len() > 0 {
             let key = path_iter.next_back().expect("next element is `Some`");
@@ -339,7 +346,7 @@ impl GroveDb {
             );
             child_tree = parent_tree;
         }
-	Ok(()).wrap_with_cost(cost)
+        Ok(()).wrap_with_cost(cost)
     }
 
     pub(crate) fn update_tree_item_preserve_flag<

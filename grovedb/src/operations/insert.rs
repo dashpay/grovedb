@@ -183,7 +183,10 @@ impl GroveDb {
             );
             let element = Element::empty_tree_with_flags(element_flag);
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
-            dbg!(&parent_subtree.storage.prefix, parent_subtree.root_hash_and_key().unwrap());
+            dbg!(
+                &parent_subtree.storage.prefix,
+                parent_subtree.root_hash_and_key().unwrap()
+            );
         }
 
         Ok(()).wrap_with_cost(cost)
