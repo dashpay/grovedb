@@ -279,7 +279,7 @@ impl GroveDb {
     /// transaction
     fn propagate_changes_with_transaction<'p, P>(
         &self,
-        merk_cache: &mut HashMap<Vec<&[u8]>, Merk<PrefixedRocksDbTransactionContext>>,
+        mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>>,
         path: P,
         transaction: &Transaction,
     ) -> CostResult<(), Error>
@@ -295,7 +295,7 @@ impl GroveDb {
             cost_return_on_error_no_add!(
                 &cost,
             merk_cache
-            .remove(path_iter.clone().collect::<Vec<&[u8]>>().as_slice())
+            .remove(path_iter.clone().map(|k| k.to_vec()).collect::<Vec<Vec<u8>>>().as_slice())
             .ok_or(Error::CorruptedCodeExecution(
                 "Merk Cache should always contain the last path",
             ))
@@ -320,7 +320,7 @@ impl GroveDb {
     /// Method to propagate updated subtree key changes one level up
     fn propagate_changes_without_transaction<'p, P>(
         &self,
-        merk_cache: &mut HashMap<Vec<&[u8]>, Merk<PrefixedRocksDbStorageContext>>,
+        mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>>,
         path: P,
     ) -> CostResult<(), Error>
     where
@@ -335,7 +335,7 @@ impl GroveDb {
             cost_return_on_error_no_add!(
                 &cost,
             merk_cache
-            .remove(path_iter.clone().collect::<Vec<&[u8]>>().as_slice())
+            .remove(path_iter.clone().map(|k| k.to_vec()).collect::<Vec<Vec<u8>>>().as_slice())
             .ok_or(Error::CorruptedCodeExecution(
                 "Merk Cache should always contain the last path",
             ))

@@ -1,7 +1,9 @@
 use std::collections::{BTreeSet, HashMap};
 
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use merk::Merk;
 use storage::{Storage, StorageContext};
+use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 
 use crate::{
     batch::{GroveDbOp, KeyInfo, KeyInfoPath, Op},
@@ -349,10 +351,11 @@ impl GroveDb {
                 self.get_raw(path_iter.clone(), key.as_ref(), Some(transaction))
             );
 
-            let mut merk_cache = HashMap::default();
+            let mut merk_cache : HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> = HashMap::default();
 
             if let Element::Tree(..) = element {
                 let mut subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
+                let sub_tree_merk_path_for_cache = subtree_merk_path.clone().map(|k| k.to_vec()).collect::<Vec<Vec<u8>>>();
                 let subtrees_paths = cost_return_on_error!(
                     &mut cost,
                     self.find_subtrees(subtree_merk_path.clone(), Some(transaction))
@@ -365,7 +368,7 @@ impl GroveDb {
                     subtree,
                     {
                         let empty = subtree.is_empty_tree().unwrap_add_cost(&mut cost);
-                        merk_cache.insert(subtree_merk_path.collect::<Vec<&[u8]>>(), subtree);
+                        merk_cache.insert(sub_tree_merk_path_for_cache, subtree);
                         empty
                     }
                 );
@@ -424,7 +427,7 @@ impl GroveDb {
             }
             cost_return_on_error!(
                 &mut cost,
-                self.propagate_changes_with_transaction(&mut merk_cache, path_iter, transaction)
+                self.propagate_changes_with_transaction(merk_cache, path_iter, transaction)
             );
 
             Ok(true).wrap_with_cost(cost)
@@ -460,17 +463,18 @@ impl GroveDb {
                 self.get_raw(path_iter.clone(), key.as_ref(), None)
             );
 
-            let mut merk_cache = HashMap::default();
+            let mut merk_cache : HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>> = HashMap::default();
 
             if let Element::Tree(..) = element {
                 let mut subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
+                let sub_tree_merk_path_for_cache = subtree_merk_path.clone().map(|k| k.to_vec()).collect::<Vec<Vec<u8>>>();
                 let subtrees_paths = cost_return_on_error!(
                     &mut cost,
                     self.find_subtrees(subtree_merk_path.clone(), None)
                 );
                 let is_empty = merk_no_tx!(&mut cost, self.db, subtree_merk_path, subtree, {
                     let empty = subtree.is_empty_tree().unwrap_add_cost(&mut cost);
-                    merk_cache.insert(subtree_merk_path.collect::<Vec<&[u8]>>(), subtree);
+                    merk_cache.insert(sub_tree_merk_path_for_cache, subtree);
                     empty
                 });
 
@@ -510,7 +514,7 @@ impl GroveDb {
             }
             cost_return_on_error!(
                 &mut cost,
-                self.propagate_changes_without_transaction(&mut merk_cache, path)
+                self.propagate_changes_without_transaction(merk_cache, path_iter)
             );
 
             Ok(true).wrap_with_cost(cost)

@@ -47,7 +47,7 @@ impl GroveDb {
 
         let path_iter = path.into_iter();
 
-        let mut merk_cache = HashMap::default();
+        let mut merk_cache : HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> = HashMap::default();
 
         match element {
             Element::Tree(..) => {
@@ -84,14 +84,14 @@ impl GroveDb {
                 let referenced_element_value_hash_opt = merk_using_tx!(
                     &mut cost,
                     self.db,
-                    referenced_path_iter,
+                    referenced_path_iter.clone(),
                     transaction,
                     subtree,
                     {
                         let element = Element::get_value_hash(&subtree, referenced_key)
                             .unwrap_add_cost(&mut cost)
                             .unwrap();
-                        merk_cache.insert(referenced_path_iter.collect::<Vec<&[u8]>>(), subtree);
+                        merk_cache.insert(referenced_path.to_vec(), subtree);
                         element
                     }
                 );
@@ -157,7 +157,7 @@ impl GroveDb {
                 );
             }
         }
-        cost_return_on_error!(&mut cost, self.propagate_changes_with_transaction(&mut merk_cache, path_iter, transaction));
+        cost_return_on_error!(&mut cost, self.propagate_changes_with_transaction(merk_cache, path_iter, transaction));
 
         Ok(()).wrap_with_cost(cost)
     }
@@ -176,7 +176,7 @@ impl GroveDb {
 
         let path_iter = path.into_iter();
 
-        let mut merk_cache = HashMap::default();
+        let mut merk_cache : HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>>  = HashMap::default();
 
         match element {
             Element::Tree(..) => {
@@ -281,7 +281,7 @@ impl GroveDb {
                 );
             }
         }
-        cost_return_on_error!(&mut cost, self.propagate_changes_without_transaction(&mut merk_cache, path_iter));
+        cost_return_on_error!(&mut cost, self.propagate_changes_without_transaction(merk_cache, path_iter));
 
         Ok(()).wrap_with_cost(cost)
     }
