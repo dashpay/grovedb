@@ -3,6 +3,7 @@ use costs::{
 };
 use merk::Merk;
 use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
+use visualize::visualize_stdout;
 
 use crate::{
     reference_path::path_from_reference_path_type,
@@ -32,7 +33,6 @@ impl GroveDb {
                     &mut cost,
                     self.add_subtree(path_iter.clone(), key, element, transaction)
                 );
-                cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
             }
             Element::Reference(ref reference_path, ..) => {
                 let reference_path = cost_return_on_error!(
@@ -106,7 +106,6 @@ impl GroveDb {
                         );
                     }
                 );
-                cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
             }
             Element::Item(..) => {
                 // If path is empty that means there is an attempt to insert
@@ -132,9 +131,9 @@ impl GroveDb {
                         cost_return_on_error!(&mut cost, element.insert(&mut subtree, key));
                     }
                 );
-                cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
             }
         }
+        cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
 
         Ok(()).wrap_with_cost(cost)
     }
@@ -174,12 +173,17 @@ impl GroveDb {
             let element = Element::empty_tree_with_flags(element_flag);
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
         } else {
+            dbg!(
+                "we are inserting an empty tree",
+                path_iter.clone().collect::<Vec<&[u8]>>()
+            );
             let mut parent_subtree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
                 self.open_non_transactional_merk_at_path(path_iter)
             );
             let element = Element::empty_tree_with_flags(element_flag);
             cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
+            dbg!(&parent_subtree.storage.prefix, parent_subtree.root_hash_and_key().unwrap());
         }
 
         Ok(()).wrap_with_cost(cost)

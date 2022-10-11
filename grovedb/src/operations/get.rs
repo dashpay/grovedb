@@ -11,7 +11,7 @@ use crate::{
     reference_path::{
         path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
     },
-    util::{merk_optional_tx, storage_context_optional_tx},
+    util::{merk_optional_tx, root_merk_optional_tx, storage_context_optional_tx},
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
 
@@ -109,18 +109,9 @@ impl GroveDb {
 
         let mut path_iter = path.into_iter();
         if path_iter.len() == 0 {
-            cost_return_on_error!(
-                &mut cost,
-                self.check_subtree_exists_path_not_found([key], transaction)
-            );
-            merk_optional_tx!(
-                &mut cost,
-                self.db,
-                [key].to_vec().into_iter(),
-                transaction,
-                subtree,
-                { Ok(Element::new_tree(subtree.root_key())).wrap_with_cost(cost) }
-            )
+            root_merk_optional_tx!(&mut cost, self.db, transaction, subtree, {
+                Element::get(&subtree, key).add_cost(cost)
+            })
         } else {
             cost_return_on_error!(
                 &mut cost,

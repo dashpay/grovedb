@@ -1,6 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
-use ::visualize::{Drawer, Visualize};
+use ::visualize::{visualize_stdout, Drawer, Visualize};
 use merk::CryptoHash;
 use rand::Rng;
 use tempfile::TempDir;
@@ -2058,6 +2058,15 @@ fn test_find_subtrees() {
 }
 
 #[test]
+fn test_root_subtree_has_root_key() {
+    let db = make_test_grovedb();
+    let storage = db.db.get_storage_context([]).unwrap();
+    let root_merk = Merk::open_base(storage).unwrap().expect("expected to get root merk");
+    let (_, root_key) = root_merk.root_hash_and_key().unwrap();
+    assert!(root_key.is_some())
+}
+
+#[test]
 fn test_get_subtree() {
     let db = make_test_grovedb();
     let element = Element::new_item(b"ayy".to_vec());
@@ -2071,10 +2080,31 @@ fn test_get_subtree() {
         let subtree = db.get([], TEST_LEAF, None).unwrap();
         assert!(subtree.is_ok());
     }
+    visualize_stdout(&db);
     // Insert some nested subtrees
     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
         .unwrap()
         .expect("successful subtree 1 insert");
+
+    let key1_tree = db
+        .get([], TEST_LEAF, None)
+        .unwrap()
+        .expect("expected to get a root tree");
+
+    assert!(
+        matches!(key1_tree, Element::Tree(Some(_), _)),
+        "{}",
+        format!(
+            "expected tree with root key, got {:?}",
+            if let Element::Tree(tree, ..) = key1_tree {
+                format!("{:?}", tree)
+            } else {
+                "not a tree".to_string()
+            }
+        )
+    );
+
+    visualize_stdout(&db);
 
     db.insert([TEST_LEAF, b"key1"], b"key2", Element::empty_tree(), None)
         .unwrap()

@@ -318,6 +318,7 @@ impl GroveDb {
                 &mut cost,
                 self.open_non_transactional_merk_at_path(path_iter.clone())
             );
+            dbg!(&child_tree.storage.prefix, child_tree.root_hash_and_key().unwrap());
             while path_iter.len() > 0 {
                 let key = path_iter.next_back().expect("next element is `Some`");
                 let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
@@ -396,8 +397,14 @@ impl GroveDb {
                 subtree_opt.ok_or_else(|| {
                     let key = hex::encode(key.as_ref());
                     Error::PathKeyNotFound(format!(
-                        "can't find subtree with key {} in parent during propagation",
-                        key
+                        "can't find subtree with key {} in parent during propagation (subtree is \
+                         {})",
+                        key,
+                        if subtree.root_key().is_some() {
+                            "not empty"
+                        } else {
+                            "empty"
+                        }
                     ))
                 })
             })

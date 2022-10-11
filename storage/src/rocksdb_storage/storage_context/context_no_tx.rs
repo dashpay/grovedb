@@ -20,7 +20,8 @@ use crate::{
 /// outside of transaction.
 pub struct PrefixedRocksDbStorageContext<'db> {
     storage: &'db Db,
-    prefix: Vec<u8>,
+    /// ze prefix
+    pub prefix: Vec<u8>,
 }
 
 impl<'db> PrefixedRocksDbStorageContext<'db> {
