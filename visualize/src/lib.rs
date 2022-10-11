@@ -121,7 +121,7 @@ impl Visualize for [u8] {
 
 impl<T: Visualize + ?Sized> Visualize for &T {
     fn visualize<'a, W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>> {
-	(*self).visualize(drawer)
+        (*self).visualize(drawer)
     }
 }
 

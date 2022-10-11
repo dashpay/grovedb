@@ -30,7 +30,7 @@ impl Visualize for Element {
             }
             Element::Tree(root_key, _) => {
                 drawer.write(b"tree: ")?;
-                drawer = root_key.as_deref().unwrap_or(&[]).visualize(drawer)?;
+                drawer = root_key.as_deref().visualize(drawer)?;
             }
         }
         Ok(drawer)
@@ -111,7 +111,7 @@ impl GroveDb {
                     drawer.write(b" ")?;
                     match element {
                         Element::Tree(..) => {
-                            drawer.write(b"tree:")?;
+                            drawer = element.visualize(drawer)?;
                             drawer.down();
                             let mut inner_path = path.clone();
                             inner_path.push(key);
