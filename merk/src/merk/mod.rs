@@ -413,9 +413,11 @@ where
     /// # let mut store = merk::test_utils::TempMerk::new();
     /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
     ///     &[(vec![4,5,6], Op::Put(vec![0]))],
-    ///     &[], &mut |s, v| Ok(false)
+    ///     &[], &mut |s, v, o| Ok(false),
+    ///     &mut |s, o| Ok(NoStorageRemoval)
     /// ).unwrap().expect("");
     ///
+    /// use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     /// use merk::Op;
     ///
     /// let batch = &[
@@ -426,7 +428,8 @@ where
     /// store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
     ///     batch,
     ///     &[],
-    ///     &mut |s, v| Ok(false)
+    ///     &mut |s, v, o| Ok(false),
+    ///     &mut |s, o| Ok(NoStorageRemoval)
     /// ).unwrap().expect("");
     /// ```
     pub fn apply_with_costs_just_in_time_value_update<KB, KA>(
@@ -487,20 +490,24 @@ where
     /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
     ///     &[(vec![4,5,6], Op::Put(vec![0]))],
     ///     &[],
-    ///     &mut |s, o, v| Ok(false)
+    ///     &mut |s, o, v| Ok(false),
+    ///     &mut |s, o| Ok(NoStorageRemoval)
     /// ).unwrap().expect("");
     ///
+    /// use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     /// use merk::Op;
     ///
     /// let batch = &[
     ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key [1,2,3]
     ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
-    /// unsafe { store.apply_unchecked::<_, Vec<_>, _>(
+    /// unsafe { store.apply_unchecked::<_, Vec<_>, _, _>(
     ///     batch,
     ///     &[],
-    ///     &mut |s, o, v| Ok(false)
+    ///     &mut |s, o, v| Ok(false),
+    ///     &mut |s, o| Ok(NoStorageRemoval)
     /// ).unwrap().expect("");
+    /// }
     /// ```
     pub unsafe fn apply_unchecked<KB, KA, U, R>(
         &mut self,

@@ -82,9 +82,10 @@ mod tests {
     #[test]
     fn encode_leaf_tree() {
         let tree = Tree::from_fields(vec![0], vec![1], [55; 32], None, None).unwrap();
+        assert_eq!(tree.encoding_length(), 67);
         assert_eq!(
             tree.value_encoding_length_with_parent_to_child_reference(),
-            67
+            102
         );
         assert_eq!(
             tree.encode(),
@@ -184,8 +185,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            tree.value_encoding_length_with_parent_to_child_reference(),
+            tree.encoding_length(), /* this does not have the key encoded, just value and
+                                     * left/right */
             103
+        );
+        assert_eq!(
+            tree.value_encoding_length_with_parent_to_child_reference(),
+            102 // This is 1 less, because the right "Option" byte was not paid for
         );
         assert_eq!(
             tree.encode(),

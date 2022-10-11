@@ -437,7 +437,7 @@ mod test {
         assert_eq!(walker.tree().value_as_slice(), b"bar2");
         assert!(walker.tree().link(true).is_none());
         assert!(walker.tree().link(false).is_none());
-        assert!(updated_keys.is_empty());
+        assert!(!updated_keys.is_empty());
         assert!(deleted_keys.is_empty());
     }
 

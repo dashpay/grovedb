@@ -129,6 +129,23 @@ impl KV {
     }
 
     #[inline]
+    pub(crate) fn total_encoding_length_with_parent_to_child_reference(&self) -> usize {
+        // we do need the varint required space for the cost of the key in
+        // rocks_db
+        let key_len = self.key.len();
+        let value_len = self.encoding_length().unwrap();
+        // 3 = 2 + 1
+        // 2 for child lengths
+        // 1 for key_len size in encoding
+        let parent_to_child_reference_len = key_len + HASH_LENGTH + 3;
+        key_len
+            + key_len.required_space()
+            + value_len
+            + value_len.required_space()
+            + parent_to_child_reference_len
+    }
+
+    #[inline]
     pub(crate) fn value_encoding_length_with_parent_to_child_reference(&self) -> usize {
         // encoding a reference encodes the key last and doesn't encode the size of the
         // key. so no need for a varint required space calculation for the
@@ -143,6 +160,34 @@ impl KV {
         // 1 for key_len size in encoding
         let parent_to_child_reference_len = key_len + HASH_LENGTH + 3;
         value_len + value_len.required_space() + parent_to_child_reference_len
+    }
+
+    /// This function is used to calculate the cost of groveDB tree nodes
+    /// It pays for the parent hook.
+    /// Trees have the root key of the underlying tree as values.
+    /// This key cost will be already taken by the underlying tree.
+    /// If the tree is empty then the value hash is empty too.
+    /// The value hash is also paid for by the top element of the underlying
+    /// tree. Only the key_value_hash should be paid for by the actual tree
+    /// node
+    #[inline]
+    pub(crate) fn tree_multi_layer_encoding_length_with_parent_to_child_reference(&self) -> usize {
+        // encoding a reference encodes the key last and doesn't encode the size of the
+        // key. so no need for a varint required space calculation for the
+        // reference.
+
+        // however we do need the varint required space for the cost of the key in
+        // rocks_db
+        let key_len = self.key.len();
+        let value_len = HASH_LENGTH; // node hash
+                                     // 3 = 2 + 1
+                                     // 2 for child lengths
+                                     // 1 for key_len size in encoding
+        let parent_to_child_reference_len = key_len + HASH_LENGTH + 3;
+        // The required space is set to 2. However in reality it could be 1 or 3.
+        // This is because the underlying tree pays for the value cost and it's required
+        // length. And this is why we should set it at 2.
+        value_len + 2 + parent_to_child_reference_len
     }
 }
 
