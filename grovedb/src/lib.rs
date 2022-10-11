@@ -275,11 +275,13 @@ impl GroveDb {
         })
     }
 
-    /// Method to propagate updated subtree key changes one level up
-    fn propagate_changes<'p, P>(
+    /// Method to propagate updated subtree key changes one level up inside a
+    /// transaction
+    fn propagate_changes_with_transaction<'p, P>(
         &self,
+        child_tree: Merk<PrefixedRocksDbTransactionContext>,
         path: P,
-        transaction: TransactionArg,
+        transaction: &Transaction,
     ) -> CostResult<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -289,58 +291,50 @@ impl GroveDb {
 
         let mut path_iter = path.into_iter();
 
-        if let Some(tx) = transaction {
-            let mut child_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+        while path_iter.len() > 0 {
+            let key = path_iter.next_back().expect("next element is `Some`");
+            let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
-                self.open_transactional_merk_at_path(path_iter.clone(), tx)
+                self.open_transactional_merk_at_path(path_iter.clone(), transaction)
             );
-            while path_iter.len() > 0 {
-                let key = path_iter.next_back().expect("next element is `Some`");
-                let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
-                    &mut cost,
-                    self.open_transactional_merk_at_path(path_iter.clone(), tx)
-                );
-                let (root_hash, root_key) =
-                    child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    Self::update_tree_item_preserve_flag(
-                        &mut parent_tree,
-                        key,
-                        root_key,
-                        root_hash
-                    )
-                );
-                child_tree = parent_tree;
-            }
-        } else {
-            let mut child_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+            let (root_hash, root_key) = child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
+            cost_return_on_error!(
+                &mut cost,
+                Self::update_tree_item_preserve_flag(&mut parent_tree, key, root_key, root_hash)
+            );
+            child_tree = parent_tree;
+        }
+	Ok(()).wrap_with_cost(cost)
+    }
+
+    /// Method to propagate updated subtree key changes one level up
+    fn propagate_changes_without_transaction<'p, P>(
+        &self,
+        child_tree: Merk<PrefixedRocksDbStorageContext>,
+        path: P,
+    ) -> CostResult<(), Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+
+        let mut path_iter = path.into_iter();
+
+        while path_iter.len() > 0 {
+            let key = path_iter.next_back().expect("next element is `Some`");
+            let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
                 self.open_non_transactional_merk_at_path(path_iter.clone())
             );
-            dbg!(&child_tree.storage.prefix, child_tree.root_hash_and_key().unwrap());
-            while path_iter.len() > 0 {
-                let key = path_iter.next_back().expect("next element is `Some`");
-                let mut parent_tree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
-                    &mut cost,
-                    self.open_non_transactional_merk_at_path(path_iter.clone())
-                );
-                let (root_hash, root_key) =
-                    child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    Self::update_tree_item_preserve_flag(
-                        &mut parent_tree,
-                        key,
-                        root_key,
-                        root_hash
-                    )
-                );
-                child_tree = parent_tree;
-            }
+            let (root_hash, root_key) = child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
+            cost_return_on_error!(
+                &mut cost,
+                Self::update_tree_item_preserve_flag(&mut parent_tree, key, root_key, root_hash)
+            );
+            child_tree = parent_tree;
         }
-
-        Ok(()).wrap_with_cost(cost)
+	Ok(()).wrap_with_cost(cost)
     }
 
     pub(crate) fn update_tree_item_preserve_flag<
