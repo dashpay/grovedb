@@ -2150,6 +2150,8 @@ fn test_get_subtree() {
         .unwrap()
         .expect("successful subtree 2 insert");
 
+    visualize_stdout(&db);
+
     // Insert an element into subtree
     db.insert(
         [TEST_LEAF, b"key1", b"key2"],

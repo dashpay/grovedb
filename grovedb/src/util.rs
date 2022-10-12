@@ -32,7 +32,7 @@ macro_rules! storage_context_with_parent_optional_tx {
                         &mut $cost,
                         Element::get_from_storage(&parent_storage, last).map_err(|e| {
                             Error::CorruptedData(
-                                format!("could not get key for parent of subtree: {}", e)
+                                format!("could not get key for parent of subtree optional on tx: {}", e)
                             )
                         })
                     );
@@ -60,7 +60,7 @@ macro_rules! storage_context_with_parent_optional_tx {
                         &mut $cost,
 			Element::get_from_storage(&parent_storage, last).map_err(|e| {
                             Error::CorruptedData(
-                                format!("could not get key for parent of subtree: {}", e)
+                                format!("could not get key for parent of subtree optional no tx: {}", e)
                             )
                         })
                     );
@@ -96,7 +96,7 @@ macro_rules! storage_context_with_parent_using_tx {
                     &mut $cost,
 		    Element::get_from_storage(&parent_storage, last).map_err(|e| {
                         Error::CorruptedData(
-                            format!("could not get key for parent of subtree: {}", e)
+                            format!("could not get key for parent of subtree on tx: {}", e)
                         )
                     })
 		);
@@ -132,7 +132,7 @@ macro_rules! storage_context_with_parent_no_tx {
                         &mut $cost,
 			Element::get_from_storage(&parent_storage, last).map_err(|e| {
                             Error::CorruptedData(
-				format!("could not get key for parent of subtree: {}", e)
+				format!("could not get key for parent of subtree no tx: {}", e)
                             )
 			})
 		    );

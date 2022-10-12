@@ -309,7 +309,10 @@ impl Element {
         let value = cost_return_on_error_no_add!(
             &cost,
             value_opt.ok_or_else(|| {
-                Error::PathKeyNotFound(format!("key not found in Merk: {}", hex::encode(key)))
+                Error::PathKeyNotFound(format!(
+                    "key not found in Merk for get: {}",
+                    hex::encode(key)
+                ))
             })
         );
         let element = cost_return_on_error_no_add!(
@@ -336,7 +339,10 @@ impl Element {
         let node_value = cost_return_on_error_no_add!(
             &cost,
             node_value_opt.ok_or_else(|| {
-                Error::PathKeyNotFound(format!("key not found in Merk: {}", hex::encode(key)))
+                Error::PathKeyNotFound(format!(
+                    "key not found in Merk for get from storage: {}",
+                    hex::encode(key)
+                ))
             })
         );
         let tree_inner: TreeInner = cost_return_on_error_no_add!(
