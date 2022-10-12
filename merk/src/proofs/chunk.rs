@@ -341,7 +341,7 @@ mod tests {
                 Node::KV(..) => counts.kv += 1,
                 Node::KVValueHash(..) => counts.kvvaluehash += 1,
                 Node::KVDigest(..) => counts.kvdigest += 1,
-                Node::KVValueRefHash(..) => counts.kvvaluerefhash += 1,
+                Node::KVRefValueHash(..) => counts.kvvaluerefhash += 1,
             };
         });
 

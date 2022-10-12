@@ -64,10 +64,10 @@ impl Tree {
             }
             Node::KVDigest(key, value_hash) => kv_digest_to_kv_hash(key, value_hash)
                 .flat_map(|kv_hash| compute_hash(self, kv_hash)),
-            Node::KVValueRefHash(key, value, referenced_value_hash) => {
+            Node::KVRefValueHash(key, referenced_value, node_value_hash) => {
                 let mut cost = OperationCost::default();
-                let actual_value_hash = value_hash(value.as_slice()).unwrap_add_cost(&mut cost);
-                let combined_value_hash = combine_hash(&actual_value_hash, referenced_value_hash)
+                let referenced_value_hash = value_hash(referenced_value.as_slice()).unwrap_add_cost(&mut cost);
+                let combined_value_hash = combine_hash(node_value_hash, &referenced_value_hash)
                     .unwrap_add_cost(&mut cost);
 
                 kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash)
@@ -171,7 +171,7 @@ impl Tree {
         match self.node {
             Node::KV(ref key, _)
             | Node::KVValueHash(ref key, ..)
-            | Node::KVValueRefHash(ref key, ..) => key,
+            | Node::KVRefValueHash(ref key, ..) => key,
             _ => panic!("Expected node to be type KV"),
         }
     }
@@ -352,7 +352,7 @@ where
             Op::Push(node) => {
                 if let Node::KV(key, _)
                 | Node::KVValueHash(key, ..)
-                | Node::KVValueRefHash(key, ..) = &node
+                | Node::KVRefValueHash(key, ..) = &node
                 {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
@@ -372,7 +372,7 @@ where
             Op::PushInverted(node) => {
                 if let Node::KV(key, _)
                 | Node::KVValueHash(key, ..)
-                | Node::KVValueRefHash(key, ..) = &node
+                | Node::KVRefValueHash(key, ..) = &node
                 {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {

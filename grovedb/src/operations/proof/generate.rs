@@ -373,12 +373,11 @@ impl GroveDb {
                                 &mut cost,
                                 self.follow_reference(absolute_path, None)
                             );
-                            *node = Node::KVValueRefHash(
+                            *node = Node::KVRefValueHash(
                                 key.to_owned(),
-                                value.to_owned(),
                                 // TODO: remove unwrap
-                                value_hash(&referenced_elem.serialize().unwrap())
-                                    .unwrap_add_cost(&mut cost),
+                                referenced_elem.serialize().unwrap(),
+                                value_hash(value).unwrap_add_cost(&mut cost)
                             )
                         }
                     }
