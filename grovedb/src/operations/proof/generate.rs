@@ -373,9 +373,15 @@ impl GroveDb {
                                 &mut cost,
                                 self.follow_reference(absolute_path, None)
                             );
+
+                            let serialized_referenced_elem = referenced_elem.serialize();
+                            if serialized_referenced_elem.is_err() {
+                                return Err(Error::CorruptedData(String::from("unable to serialize element"))).wrap_with_cost(cost)
+                            }
+
                             *node = Node::KVRefValueHash(
                                 key.to_owned(),
-                                referenced_elem.serialize()?,
+                                serialized_referenced_elem.expect("confirmed ok above"),
                                 value_hash(value).unwrap_add_cost(&mut cost),
                             )
                         }
