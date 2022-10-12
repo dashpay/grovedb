@@ -4,7 +4,10 @@ use costs::{CostContext, CostsExt, OperationCost};
 use ed::{Decode, Encode, Result, Terminated};
 
 use super::hash::{Hash, HASH_LENGTH, NULL_HASH};
-use crate::tree::{hash::value_hash, kv_digest_to_kv_hash};
+use crate::tree::{
+    hash::{combine_hash, value_hash},
+    kv_digest_to_kv_hash,
+};
 
 // TODO: maybe use something similar to Vec but without capacity field,
 //       (should save 16 bytes per entry). also, maybe a shorter length
@@ -50,6 +53,27 @@ impl KV {
             value,
             hash,
             value_hash,
+        })
+    }
+
+    /// Creates a new 'KV' with a given key, value and supplied_value_hash
+    /// Combines the supplied_value_hash + hash(value) as the KV value_hash
+    #[inline]
+    pub fn new_with_combined_value_hash(
+        key: Vec<u8>,
+        value: Vec<u8>,
+        supplied_value_hash: Hash,
+    ) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
+        let actual_value_hash = value_hash(value.as_slice()).unwrap_add_cost(&mut cost);
+        let combined_value_hash =
+            combine_hash(&actual_value_hash, &supplied_value_hash).unwrap_add_cost(&mut cost);
+
+        kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash).map(|hash| Self {
+            key,
+            value,
+            hash,
+            value_hash: combined_value_hash,
         })
     }
 

@@ -88,3 +88,18 @@ pub fn node_hash(kv: &Hash, left: &Hash, right: &Hash) -> CostContext<Hash> {
         ..Default::default()
     })
 }
+
+/// Combines two hash values into one
+pub fn combine_hash(hash_one: &Hash, hash_two: &Hash) -> CostContext<Hash> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(hash_one);
+    hasher.update(hash_two);
+
+    let res = hasher.finalize();
+    let mut hash: Hash = Default::default();
+    hash.copy_from_slice(res.as_bytes());
+    hash.wrap_with_cost(OperationCost {
+        hash_node_calls: 1,
+        ..Default::default()
+    })
+}
