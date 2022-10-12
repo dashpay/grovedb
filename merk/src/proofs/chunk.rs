@@ -324,11 +324,11 @@ mod tests {
     #[derive(Default)]
     struct NodeCounts {
         hash: usize,
-        kvhash: usize,
+        kv_hash: usize,
         kv: usize,
-        kvvaluehash: usize,
-        kvdigest: usize,
-        kvvaluerefhash: usize,
+        kv_value_hash: usize,
+        kv_digest: usize,
+        kv_ref_value_hash: usize,
     }
 
     fn count_node_types(tree: Tree) -> NodeCounts {
@@ -337,11 +337,11 @@ mod tests {
         tree.visit_nodes(&mut |node| {
             match node {
                 Node::Hash(_) => counts.hash += 1,
-                Node::KVHash(_) => counts.kvhash += 1,
+                Node::KVHash(_) => counts.kv_hash += 1,
                 Node::KV(..) => counts.kv += 1,
-                Node::KVValueHash(..) => counts.kvvaluehash += 1,
-                Node::KVDigest(..) => counts.kvdigest += 1,
-                Node::KVRefValueHash(..) => counts.kvvaluerefhash += 1,
+                Node::KVValueHash(..) => counts.kv_value_hash += 1,
+                Node::KVDigest(..) => counts.kv_digest += 1,
+                Node::KVRefValueHash(..) => counts.kv_ref_value_hash += 1,
             };
         });
 
@@ -361,8 +361,8 @@ mod tests {
 
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kvvaluehash, 32);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_value_hash, 32);
+        assert_eq!(counts.kv_hash, 0);
     }
 
     #[test]
@@ -380,8 +380,8 @@ mod tests {
             counts.hash,
             2usize.pow(MIN_TRUNK_HEIGHT as u32) + MIN_TRUNK_HEIGHT - 1
         );
-        assert_eq!(counts.kvvaluehash, 2usize.pow(MIN_TRUNK_HEIGHT as u32) - 1);
-        assert_eq!(counts.kvhash, MIN_TRUNK_HEIGHT + 1);
+        assert_eq!(counts.kv_value_hash, 2usize.pow(MIN_TRUNK_HEIGHT as u32) - 1);
+        assert_eq!(counts.kv_hash, MIN_TRUNK_HEIGHT + 1);
     }
 
     #[test]
@@ -396,8 +396,8 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kvvaluehash, 1);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_value_hash, 1);
+        assert_eq!(counts.kv_hash, 0);
     }
 
     #[test]
@@ -416,8 +416,8 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kvvaluehash, 2);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_value_hash, 2);
+        assert_eq!(counts.kv_hash, 0);
     }
 
     #[test]
@@ -436,8 +436,8 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kvvaluehash, 2);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_value_hash, 2);
+        assert_eq!(counts.kv_hash, 0);
     }
 
     #[test]
@@ -458,8 +458,8 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kvvaluehash, 3);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_value_hash, 3);
+        assert_eq!(counts.kv_hash, 0);
     }
 
     #[test]
@@ -483,9 +483,9 @@ mod tests {
             .unwrap()
             .unwrap();
         let counts = count_node_types(chunk);
-        assert_eq!(counts.kvvaluehash, 31);
+        assert_eq!(counts.kv_value_hash, 31);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_hash, 0);
         drop(iter);
 
         let mut iter = merk.storage.raw_iter();
@@ -506,9 +506,9 @@ mod tests {
         .unwrap()
         .unwrap();
         let counts = count_node_types(chunk);
-        assert_eq!(counts.kvvaluehash, 15);
+        assert_eq!(counts.kv_value_hash, 15);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_hash, 0);
 
         // right leaf
         let chunk = get_next_chunk(&mut iter, None).unwrap().unwrap();
@@ -523,8 +523,8 @@ mod tests {
         .unwrap()
         .unwrap();
         let counts = count_node_types(chunk);
-        assert_eq!(counts.kvvaluehash, 15);
+        assert_eq!(counts.kv_value_hash, 15);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_hash, 0);
     }
 }
