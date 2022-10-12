@@ -37,7 +37,7 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         element: Element,
-        transaction: &Transaction,
+        transaction: &'p Transaction,
     ) -> CostResult<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -51,10 +51,11 @@ impl GroveDb {
 
         match element {
             Element::Tree(..) => {
-                cost_return_on_error!(
+                let merk = cost_return_on_error!(
                     &mut cost,
-                    self.add_subtree(path_iter.clone(), key, element, Some(transaction))
+                    self.add_subtree_on_transaction(path_iter.clone(), key, element, transaction)
                 );
+                merk_cache.insert(path_iter.clone().map(|k| k.to_vec()).collect(), merk);
             }
             Element::Reference(ref reference_path, ..) => {
                 let reference_path = cost_return_on_error!(
@@ -128,6 +129,7 @@ impl GroveDb {
                                 referenced_element_value_hash
                             )
                         );
+                        merk_cache.insert(path_iter.clone().map(|k| k.to_vec()).collect(), subtree);
                     }
                 );
             }
@@ -153,6 +155,7 @@ impl GroveDb {
                     subtree,
                     {
                         cost_return_on_error!(&mut cost, element.insert(&mut subtree, key));
+                        merk_cache.insert(path_iter.clone().map(|k| k.to_vec()).collect(), subtree);
                     }
                 );
             }
@@ -180,10 +183,11 @@ impl GroveDb {
 
         match element {
             Element::Tree(..) => {
-                cost_return_on_error!(
+                let merk = cost_return_on_error!(
                     &mut cost,
-                    self.add_subtree(path_iter.clone(), key, element, None)
+                    self.add_subtree_without_transaction(path_iter.clone(), key, element)
                 );
+                merk_cache.insert(path_iter.clone().map(|k| k.to_vec()).collect(), merk);
             }
             Element::Reference(ref reference_path, ..) => {
                 let reference_path = cost_return_on_error!(
@@ -216,9 +220,11 @@ impl GroveDb {
                     referenced_path_iter,
                     subtree,
                     {
-                        Element::get_value_hash(&subtree, referenced_key)
+                        let element = Element::get_value_hash(&subtree, referenced_key)
                             .unwrap_add_cost(&mut cost)
-                            .unwrap()
+                            .unwrap();
+                        merk_cache.insert(referenced_path.to_vec(), subtree);
+                        element
                     }
                 );
                 let referenced_element_value_hash = cost_return_on_error!(
@@ -253,6 +259,7 @@ impl GroveDb {
                                 referenced_element_value_hash
                             )
                         );
+                        merk_cache.insert(path_iter.clone().map(|k| k.to_vec()).collect(), subtree);
                     }
                 );
             }
@@ -277,6 +284,7 @@ impl GroveDb {
                     subtree,
                     {
                         cost_return_on_error!(&mut cost, element.insert(&mut subtree, key));
+                        merk_cache.insert(path_iter.clone().map(|k| k.to_vec()).collect(), subtree);
                     }
                 );
             }
@@ -291,13 +299,13 @@ impl GroveDb {
     /// first make sure other merk exist
     /// if it exists, then create merk to be inserted, and get root hash
     /// we only care about root hash of merk to be inserted
-    fn add_subtree<'p, P>(
-        &self,
+    fn add_subtree_on_transaction<'p, P>(
+        &'p self,
         path: P,
         key: &'p [u8],
         element: Element,
-        transaction: TransactionArg,
-    ) -> CostResult<(), Error>
+        transaction: &'p Transaction,
+    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -313,31 +321,50 @@ impl GroveDb {
         );
         let path_iter = path.into_iter();
 
-        if let Some(tx) = transaction {
-            let mut parent_subtree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
-                &mut cost,
-                self.open_transactional_merk_at_path(path_iter, tx)
-            );
-            let element = Element::empty_tree_with_flags(element_flag);
-            cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
-        } else {
-            dbg!(
-                "we are inserting an empty tree",
-                path_iter.clone().collect::<Vec<&[u8]>>()
-            );
-            let mut parent_subtree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
-                &mut cost,
-                self.open_non_transactional_merk_at_path(path_iter)
-            );
-            let element = Element::empty_tree_with_flags(element_flag);
-            cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
-            dbg!(
-                &parent_subtree.storage.prefix,
-                parent_subtree.root_hash_and_key().unwrap()
-            );
-        }
+        let mut parent_subtree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(path_iter, transaction)
+        );
+        let element = Element::empty_tree_with_flags(element_flag);
+        cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
 
-        Ok(()).wrap_with_cost(cost)
+        Ok(parent_subtree).wrap_with_cost(cost)
+    }
+
+    /// Add subtree to another subtree.
+    /// We want to add a new empty merk to another merk at a key
+    /// first make sure other merk exist
+    /// if it exists, then create merk to be inserted, and get root hash
+    /// we only care about root hash of merk to be inserted
+    fn add_subtree_without_transaction<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        element: Element
+    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
+        where
+            P: IntoIterator<Item = &'p [u8]>,
+            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+
+        let element_flag = cost_return_on_error_no_add!(
+            &cost,
+            match element {
+                Element::Tree(_, flag) => Ok(flag),
+                _ => Err(Error::CorruptedData("element should be a tree".to_owned())),
+            }
+        );
+        let path_iter = path.into_iter();
+
+        let mut parent_subtree: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+            &mut cost,
+            self.open_non_transactional_merk_at_path(path_iter)
+        );
+        let element = Element::empty_tree_with_flags(element_flag);
+        cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
+
+        Ok(parent_subtree).wrap_with_cost(cost)
     }
 
     pub fn insert_if_not_exists<'p, P>(
