@@ -376,7 +376,10 @@ impl GroveDb {
 
                             let serialized_referenced_elem = referenced_elem.serialize();
                             if serialized_referenced_elem.is_err() {
-                                return Err(Error::CorruptedData(String::from("unable to serialize element"))).wrap_with_cost(cost)
+                                return Err(Error::CorruptedData(String::from(
+                                    "unable to serialize element",
+                                )))
+                                .wrap_with_cost(cost);
                             }
 
                             *node = Node::KVRefValueHash(

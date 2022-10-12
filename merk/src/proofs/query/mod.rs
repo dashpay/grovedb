@@ -1292,8 +1292,6 @@ pub fn execute_proof(
             execute_node(key, Some(value))?;
         } else if let Node::KVDigest(key, _) = node {
             execute_node(key, None)?;
-        } else if let Node::KVValueHash(key, value, _) = node {
-            execute_node(key, Some(value))?;
         } else if let Node::KVRefValueHash(key, value, _) = node {
             execute_node(key, Some(value))?;
         } else if in_range {
