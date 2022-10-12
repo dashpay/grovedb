@@ -16,6 +16,9 @@ pub mod test_utils;
 /// The core tree data structure.
 pub mod tree;
 
+mod visualize;
+
+pub use ed;
 #[allow(deprecated)]
 pub use proofs::query::verify_query;
 pub use proofs::query::{execute_proof, verify};
@@ -24,10 +27,9 @@ pub use tree::{
     HASH_LENGTH_U32,
 };
 
-pub use ed;
-
 // #[cfg(feature = "full")]
 // // pub use crate::merk::{chunks, restore, Merk};
 pub use crate::merk::{
     defaults::ROOT_KEY_KEY, KVIterator, Merk, ProofConstructionResult, ProofWithoutEncodingResult,
 };
+pub use crate::visualize::VisualizeableMerk;

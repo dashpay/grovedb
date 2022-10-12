@@ -29,13 +29,13 @@ macro_rules! storage_context_with_parent_optional_tx {
                 if let Some(last) = $path.next_back() {
                     let parent_storage = $db.get_transactional_storage_context($path, tx).unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(
-                                    &mut $cost,
-                                    Element::get_from_storage(&parent_storage, last).map_err(|_| {
-                                        Error::CorruptedData(
-                                            "could not get key for parent of subtree".to_owned(),
-                                        )
-                                    })
-                                );
+                        &mut $cost,
+                        Element::get_from_storage(&parent_storage, last).map_err(|e| {
+                            Error::CorruptedData(
+                                format!("could not get key for parent of subtree: {}", e)
+                            )
+                        })
+                    );
                     if let Element::Tree(root_key, _) = element {
                         let $root_key = root_key;
                         $($body)*
@@ -48,8 +48,8 @@ macro_rules! storage_context_with_parent_optional_tx {
 
                 } else {
                     return Err(Error::CorruptedData(
-                                            "path is empty".to_owned(),
-                                        )).wrap_with_cost($cost);
+                        "path is empty".to_owned(),
+                    )).wrap_with_cost($cost);
                 }
             } else {
                 let $storage = $db
@@ -57,26 +57,25 @@ macro_rules! storage_context_with_parent_optional_tx {
                 if let Some(last) = $path.next_back() {
                     let parent_storage = $db.get_storage_context($path).unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(
-                                    &mut $cost,
-                                    Element::get_from_storage(&parent_storage, last).map_err(|_| {
-                                        Error::CorruptedData(
-                                            "could not get key for parent of subtree".to_owned(),
-                                        )
-                                    })
-                                );
+                        &mut $cost,
+			Element::get_from_storage(&parent_storage, last).map_err(|e| {
+                            Error::CorruptedData(
+                                format!("could not get key for parent of subtree: {}", e)
+                            )
+                        })
+                    );
                     if let Element::Tree(root_key, _) = element {
                         let $root_key = root_key;
-                                $($body)*
-                            } else {
-                                return Err(Error::CorruptedData(
-                                    "parent is not a tree"
-                                        .to_owned(),
-                                )).wrap_with_cost($cost);
-                            }
+                        $($body)*
+                    } else {
+                        return Err(Error::CorruptedData(
+                            "parent is not a tree".to_owned(),
+                        )).wrap_with_cost($cost);
+                    }
                 } else {
                     return Err(Error::CorruptedData(
-                                            "path is empty".to_owned(),
-                                        )).wrap_with_cost($cost);
+                        "path is empty".to_owned(),
+                    )).wrap_with_cost($cost);
                 }
             }
         }
@@ -94,13 +93,13 @@ macro_rules! storage_context_with_parent_using_tx {
             if let Some(last) = $path.next_back() {
                 let parent_storage = $db.get_transactional_storage_context($path, $transaction).unwrap_add_cost(&mut $cost);
                 let element = cost_return_on_error!(
-                                &mut $cost,
-                                Element::get_from_storage(&parent_storage, last).map_err(|_| {
-                                    Error::CorruptedData(
-                                        "could not get key for parent of subtree".to_owned(),
-                                    )
-                                })
-                            );
+                    &mut $cost,
+		    Element::get_from_storage(&parent_storage, last).map_err(|e| {
+                        Error::CorruptedData(
+                            format!("could not get key for parent of subtree: {}", e)
+                        )
+                    })
+		);
                 if let Element::Tree(root_key, _) = element {
                     let $root_key = root_key;
                     $($body)*
@@ -110,8 +109,7 @@ macro_rules! storage_context_with_parent_using_tx {
                             .to_owned(),
                     )).wrap_with_cost($cost);
                 }
-
-            } else {
+	    } else {
                 return Err(Error::CorruptedData(
                                         "path is empty".to_owned(),
                                     )).wrap_with_cost($cost);
@@ -131,26 +129,25 @@ macro_rules! storage_context_with_parent_no_tx {
                 if let Some(last) = $path.next_back() {
                     let parent_storage = $db.get_storage_context($path).unwrap_add_cost(&mut $cost);
                     let element = cost_return_on_error!(
-                                    &mut $cost,
-                                    Element::get_from_storage(&parent_storage, last).map_err(|_| {
-                                        Error::CorruptedData(
-                                            "could not get key for parent of subtree".to_owned(),
-                                        )
-                                    })
-                                );
-                    if let Element::Tree(root_key, _) = element {
+                        &mut $cost,
+			Element::get_from_storage(&parent_storage, last).map_err(|e| {
+                            Error::CorruptedData(
+				format!("could not get key for parent of subtree: {}", e)
+                            )
+			})
+		    );
+		    if let Element::Tree(root_key, _) = element {
                         let $root_key = root_key;
                                 $($body)*
                             } else {
                                 return Err(Error::CorruptedData(
-                                    "parent is not a tree"
-                                        .to_owned(),
+                                    "parent is not a tree".to_owned(),
                                 )).wrap_with_cost($cost);
                             }
                 } else {
                     return Err(Error::CorruptedData(
-                                            "path is empty".to_owned(),
-                                        )).wrap_with_cost($cost);
+                        "path is empty".to_owned(),
+                    )).wrap_with_cost($cost);
                 }
         }
     };

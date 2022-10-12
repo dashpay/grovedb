@@ -1,5 +1,9 @@
 use core::fmt;
-use std::io::{Result, Write};
+use std::{
+    borrow::Borrow,
+    io::{Result, Write},
+    ops::Deref,
+};
 
 use itertools::Itertools;
 
@@ -116,6 +120,12 @@ impl Visualize for [u8] {
         }
         drawer.write(b"]")?;
         Ok(drawer)
+    }
+}
+
+impl Visualize for Vec<u8> {
+    fn visualize<W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>> {
+        self.as_slice().visualize(drawer)
     }
 }
 

@@ -8,7 +8,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::{
     query_result_type::QueryResultType::QueryKeyElementPairResultType,
-    reference_path::ReferencePathType,
+    reference_path::ReferencePathType, visualize::visualize_merk_stdout,
 };
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
@@ -564,14 +564,50 @@ fn test_changes_propagated() {
     let old_hash = db.root_hash(None).unwrap().unwrap();
     let element = Element::new_item(b"ayy".to_vec());
 
+    dbg!("START");
+    visualize_stdout(&db);
     // Insert some nested subtrees
     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
         .unwrap()
         .expect("successful subtree 1 insert");
+    dbg!("1");
+    visualize_stdout(&db);
+
+    println!("\n\n");
+
+    let merk = db
+        .open_non_transactional_merk_at_path([TEST_LEAF])
+        .unwrap()
+        .unwrap();
+
+    visualize_merk_stdout(&merk);
+
+    println!("\n\n");
+
     db.insert([TEST_LEAF, b"key1"], b"key2", Element::empty_tree(), None)
         .unwrap()
         .expect("successful subtree 2 insert");
+    dbg!("2");
+    visualize_stdout(&db);
     // Insert an element into subtree
+    println!("\n\n");
+
+    let merk = db
+        .open_non_transactional_merk_at_path([TEST_LEAF])
+        .unwrap()
+        .unwrap();
+
+    visualize_merk_stdout(&merk);
+
+    let merk = db
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"])
+        .unwrap()
+        .unwrap();
+
+    visualize_merk_stdout(&merk);
+
+    println!("\n\n");
+
     db.insert(
         [TEST_LEAF, b"key1", b"key2"],
         b"key3",
@@ -580,6 +616,8 @@ fn test_changes_propagated() {
     )
     .unwrap()
     .expect("successful value insert");
+    dbg!("3");
+    visualize_stdout(&db);
     assert_eq!(
         db.get([TEST_LEAF, b"key1", b"key2"], b"key3", None)
             .unwrap()
@@ -1157,7 +1195,7 @@ fn test_path_query_proofs_without_subquery() {
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     assert_eq!(
         hex::encode(proof.as_slice()),
-               "02000000000000005503046b6579310009000676616c7565310002018655e18e45\
+        "02000000000000005503046b6579310009000676616c7565310002018655e18e45\
                55b0b65bbcec64c749db6b9ad84231969fb4fbe769a3093d10f2100198ebd6dc7e1c82951\
                c41fcfa6487711cac6a399ebb01bb979cbe4a51e0b2f08d1101000000000000002f0309696e\
                6e657274726565002202dae55c8bc9d330808358526ceecd881e8e205d19e50c78cdd2f355ada\

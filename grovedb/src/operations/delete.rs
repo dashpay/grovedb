@@ -2,8 +2,10 @@ use std::collections::{BTreeSet, HashMap};
 
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use merk::Merk;
-use storage::{Storage, StorageContext};
-use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
+use storage::{
+    rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
+    Storage, StorageContext,
+};
 
 use crate::{
     batch::{GroveDbOp, KeyInfo, KeyInfoPath, Op},
@@ -351,11 +353,15 @@ impl GroveDb {
                 self.get_raw(path_iter.clone(), key.as_ref(), Some(transaction))
             );
 
-            let mut merk_cache : HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> = HashMap::default();
+            let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
+                HashMap::default();
 
             if let Element::Tree(..) = element {
                 let mut subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
-                let sub_tree_merk_path_for_cache = subtree_merk_path.clone().map(|k| k.to_vec()).collect::<Vec<Vec<u8>>>();
+                let sub_tree_merk_path_for_cache = subtree_merk_path
+                    .clone()
+                    .map(|k| k.to_vec())
+                    .collect::<Vec<Vec<u8>>>();
                 let subtrees_paths = cost_return_on_error!(
                     &mut cost,
                     self.find_subtrees(subtree_merk_path.clone(), Some(transaction))
@@ -463,11 +469,15 @@ impl GroveDb {
                 self.get_raw(path_iter.clone(), key.as_ref(), None)
             );
 
-            let mut merk_cache : HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>> = HashMap::default();
+            let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>> =
+                HashMap::default();
 
             if let Element::Tree(..) = element {
                 let mut subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
-                let sub_tree_merk_path_for_cache = subtree_merk_path.clone().map(|k| k.to_vec()).collect::<Vec<Vec<u8>>>();
+                let sub_tree_merk_path_for_cache = subtree_merk_path
+                    .clone()
+                    .map(|k| k.to_vec())
+                    .collect::<Vec<Vec<u8>>>();
                 let subtrees_paths = cost_return_on_error!(
                     &mut cost,
                     self.find_subtrees(subtree_merk_path.clone(), None)

@@ -1,5 +1,3 @@
-extern crate core;
-
 pub mod batch;
 pub mod error;
 mod operations;
@@ -16,7 +14,10 @@ mod worst_case_costs;
 
 use std::{collections::HashMap, path::Path};
 
-use costs::{cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt, OperationCost};
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
+    OperationCost,
+};
 pub use merk::proofs::{query::QueryItem, Query};
 use merk::{self, BatchEntry, Merk};
 pub use query::{PathQuery, SizedQuery};
@@ -291,15 +292,20 @@ impl GroveDb {
 
         let mut path_iter = path.into_iter();
 
-        let mut child_tree =
-            cost_return_on_error_no_add!(
-                &cost,
+        let mut child_tree = cost_return_on_error_no_add!(
+            &cost,
             merk_cache
-            .remove(path_iter.clone().map(|k| k.to_vec()).collect::<Vec<Vec<u8>>>().as_slice())
-            .ok_or(Error::CorruptedCodeExecution(
-                "Merk Cache should always contain the last path",
-            ))
-                );
+                .remove(
+                    path_iter
+                        .clone()
+                        .map(|k| k.to_vec())
+                        .collect::<Vec<Vec<u8>>>()
+                        .as_slice()
+                )
+                .ok_or(Error::CorruptedCodeExecution(
+                    "Merk Cache should always contain the last path",
+                ))
+        );
 
         while path_iter.len() > 0 {
             let key = path_iter.next_back().expect("next element is `Some`");
@@ -331,15 +337,20 @@ impl GroveDb {
 
         let mut path_iter = path.into_iter();
 
-        let mut child_tree =
-            cost_return_on_error_no_add!(
-                &cost,
+        let mut child_tree = cost_return_on_error_no_add!(
+            &cost,
             merk_cache
-            .remove(path_iter.clone().map(|k| k.to_vec()).collect::<Vec<Vec<u8>>>().as_slice())
-            .ok_or(Error::CorruptedCodeExecution(
-                "Merk Cache should always contain the last path",
-            ))
-                );
+                .remove(
+                    path_iter
+                        .clone()
+                        .map(|k| k.to_vec())
+                        .collect::<Vec<Vec<u8>>>()
+                        .as_slice()
+                )
+                .ok_or(Error::CorruptedCodeExecution(
+                    "Merk Cache should always contain the last path",
+                ))
+        );
 
         while path_iter.len() > 0 {
             let key = path_iter.next_back().expect("next element is `Some`");

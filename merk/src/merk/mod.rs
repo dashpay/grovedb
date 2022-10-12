@@ -788,7 +788,7 @@ where
         }
     }
 
-    fn use_tree<T>(&self, f: impl FnOnce(Option<&Tree>) -> T) -> T {
+    pub(crate) fn use_tree<T>(&self, f: impl FnOnce(Option<&Tree>) -> T) -> T {
         let tree = self.tree.take();
         let res = f(tree.as_ref());
         self.tree.set(tree);

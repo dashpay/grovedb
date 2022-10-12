@@ -55,6 +55,16 @@ impl TreeInner {
     pub fn value_as_slice(&self) -> &[u8] {
         self.kv.value.as_slice()
     }
+
+    /// Get the key as owned of the key value struct
+    pub fn key_as_owned(self) -> Vec<u8> {
+        self.kv.key
+    }
+
+    /// Get the key as slice of the key value struct
+    pub fn key_as_slice(&self) -> &[u8] {
+        self.kv.key.as_slice()
+    }
 }
 
 impl Terminated for Box<TreeInner> {}
@@ -66,7 +76,7 @@ impl Terminated for Box<TreeInner> {}
 /// reattach without allocating or freeing heap memory.
 #[derive(Clone)]
 pub struct Tree {
-    inner: Box<TreeInner>,
+    pub(crate) inner: Box<TreeInner>,
     pub(crate) old_size_with_parent_to_child_hook: u32,
     pub(crate) old_value: Option<Vec<u8>>,
 }
