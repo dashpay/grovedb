@@ -377,7 +377,7 @@ impl GroveDb {
                                 key.to_owned(),
                                 // TODO: remove unwrap
                                 referenced_elem.serialize().unwrap(),
-                                value_hash(value).unwrap_add_cost(&mut cost)
+                                value_hash(value).unwrap_add_cost(&mut cost),
                             )
                         }
                     }

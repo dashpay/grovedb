@@ -66,7 +66,8 @@ impl Tree {
                 .flat_map(|kv_hash| compute_hash(self, kv_hash)),
             Node::KVRefValueHash(key, referenced_value, node_value_hash) => {
                 let mut cost = OperationCost::default();
-                let referenced_value_hash = value_hash(referenced_value.as_slice()).unwrap_add_cost(&mut cost);
+                let referenced_value_hash =
+                    value_hash(referenced_value.as_slice()).unwrap_add_cost(&mut cost);
                 let combined_value_hash = combine_hash(node_value_hash, &referenced_value_hash)
                     .unwrap_add_cost(&mut cost);
 
