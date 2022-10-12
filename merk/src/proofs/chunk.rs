@@ -328,6 +328,7 @@ mod tests {
         kv: usize,
         kvvaluehash: usize,
         kvdigest: usize,
+        kvvaluerefhash: usize,
     }
 
     fn count_node_types(tree: Tree) -> NodeCounts {
@@ -340,6 +341,7 @@ mod tests {
                 Node::KV(..) => counts.kv += 1,
                 Node::KVValueHash(..) => counts.kvvaluehash += 1,
                 Node::KVDigest(..) => counts.kvdigest += 1,
+                Node::KVValueRefHash(..) => counts.kvvaluerefhash += 1,
             };
         });
 
