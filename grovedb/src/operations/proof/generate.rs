@@ -3,6 +3,7 @@ use costs::{
 };
 use merk::{
     proofs::{encode_into, Node, Op},
+    tree::value_hash,
     KVIterator, Merk, ProofWithoutEncodingResult,
 };
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
@@ -372,7 +373,13 @@ impl GroveDb {
                                 &mut cost,
                                 self.follow_reference(absolute_path, None)
                             );
-                            *value = referenced_elem.serialize().unwrap();
+                            *node = Node::KVValueRefHash(
+                                key.to_owned(),
+                                value.to_owned(),
+                                // TODO: remove unwrap
+                                value_hash(&referenced_elem.serialize().unwrap())
+                                    .unwrap_add_cost(&mut cost),
+                            )
                         }
                     }
                     _ => continue,
