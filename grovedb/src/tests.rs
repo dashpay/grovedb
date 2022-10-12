@@ -52,6 +52,10 @@ pub fn make_empty_grovedb() -> TempGroveDb {
 
 /// A helper method to create GroveDB with one leaf for a root tree
 pub fn make_test_grovedb() -> TempGroveDb {
+    // Tree Structure
+    // root
+    //  test_leaf
+    //  another_test_leaf
     let tmp_dir = TempDir::new().unwrap();
     let mut db = GroveDb::open(tmp_dir.path()).unwrap();
     add_test_leaves(&mut db);
@@ -750,6 +754,56 @@ fn test_too_many_indirections() {
 }
 
 #[test]
+fn test_reference_value_affects_state() {
+    let db_one = make_test_grovedb();
+    db_one
+        .insert([TEST_LEAF], b"key1", Element::new_item(vec![0]), None)
+        .unwrap()
+        .expect("should insert item");
+    db_one
+        .insert(
+            [ANOTHER_TEST_LEAF],
+            b"ref",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"key1".to_vec(),
+            ])),
+            None,
+        )
+        .unwrap()
+        .expect("should insert item");
+
+    let db_two = make_test_grovedb();
+    db_two
+        .insert([TEST_LEAF], b"key1", Element::new_item(vec![0]), None)
+        .unwrap()
+        .expect("should insert item");
+    db_two
+        .insert(
+            [ANOTHER_TEST_LEAF],
+            b"ref",
+            Element::new_reference(ReferencePathType::UpstreamRootHeightReference(
+                0,
+                vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+            )),
+            None,
+        )
+        .unwrap()
+        .expect("should insert item");
+
+    assert_ne!(
+        db_one
+            .root_hash(None)
+            .unwrap()
+            .expect("should return root hash"),
+        db_two
+            .root_hash(None)
+            .unwrap()
+            .expect("should return toor hash")
+    );
+}
+
+#[test]
 fn test_tree_structure_is_persistent() {
     let tmp_dir = TempDir::new().unwrap();
     let element = Element::new_item(b"ayy".to_vec());
@@ -1037,14 +1091,16 @@ fn test_path_query_proofs_without_subquery_with_reference() {
     let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
     assert_eq!(
         hex::encode(&proof),
-        "0200000000000000450198ebd6dc7e1c82951c41fcfa6487711cac6a399ebb01bb\
-        979cbe4a51e0b2f08d03046b6579340009000676616c756531001003046b6579350\
-        009000676616c7565340011010000000000000052030a696e6e6572747265653200\
-        2202edf0f9030ce6fe3db08776af45de15fb2802dbd89dd25bf8c3bcaedfc586e22\
-        100014125425723b0b6db002a9057f9786fc56c377ea2f13609eb4b48d37634002a\
-        fd11010000000000000052020b1ff56a173dc672a0ad855a0aab09e6aa976878774\
-        c19dcae040487cd0f9dea030a746573745f6c65616632002202dfb03e0fddb258ca1\
-        da50134bc54dd617fc9c08dffbf1aa496e9ce80986791b80011"
+        "0200000000000000850198ebd6dc7e1c82951c41fcfa6487711cac6a399ebb01bb\
+        979cbe4a51e0b2f08d06046b6579340009000676616c75653100bf2f052b01c2bb8\
+        3ff3a40504d42b5b9141c582a3e0c98679189b33a24478a6f1006046b6579350009\
+        000676616c75653400f084ffdbc429a89c9b6620e7224d73c2ee505eb7e6fb5eb57\
+        4e1a8dc8b0d088411010000000000000052030a696e6e65727472656532002202b5\
+        7bdf756eddb8a49b1a66ccdcd7b82d8c319ba1fd20f2bf7d2027e88c835a3100014\
+        125425723b0b6db002a9057f9786fc56c377ea2f13609eb4b48d37634002afd1101\
+        0000000000000052020b1ff56a173dc672a0ad855a0aab09e6aa976878774c19dca\
+        e040487cd0f9dea030a746573745f6c65616632002202d81fb1ab2c29ba04debf8b\
+        0ba82f6175ecfe3eb90042b316650663b537ad836a0011",
     );
     let (hash, result_set) =
         GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");

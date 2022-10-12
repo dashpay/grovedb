@@ -59,4 +59,8 @@ pub enum Node {
 
     /// Represents the key, value and value_hash of a tree node
     KVValueHash(Vec<u8>, Vec<u8>, Hash),
+
+    /// Represents the key, value of some referenced node and value_hash of
+    /// current tree node
+    KVRefValueHash(Vec<u8>, Vec<u8>, Hash),
 }

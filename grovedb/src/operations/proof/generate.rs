@@ -3,6 +3,7 @@ use costs::{
 };
 use merk::{
     proofs::{encode_into, Node, Op},
+    tree::value_hash,
     KVIterator, Merk, ProofWithoutEncodingResult,
 };
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
@@ -372,7 +373,20 @@ impl GroveDb {
                                 &mut cost,
                                 self.follow_reference(absolute_path, None)
                             );
-                            *value = referenced_elem.serialize().unwrap();
+
+                            let serialized_referenced_elem = referenced_elem.serialize();
+                            if serialized_referenced_elem.is_err() {
+                                return Err(Error::CorruptedData(String::from(
+                                    "unable to serialize element",
+                                )))
+                                .wrap_with_cost(cost);
+                            }
+
+                            *node = Node::KVRefValueHash(
+                                key.to_owned(),
+                                serialized_referenced_elem.expect("confirmed ok above"),
+                                value_hash(value).unwrap_add_cost(&mut cost),
+                            )
                         }
                     }
                     _ => continue,

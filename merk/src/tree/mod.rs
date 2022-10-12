@@ -19,7 +19,8 @@ use costs::{
 };
 use ed::{Decode, Encode, Terminated};
 pub use hash::{
-    kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, Hash, HASH_LENGTH, NULL_HASH,
+    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, Hash, HASH_LENGTH,
+    NULL_HASH,
 };
 use kv::KV;
 pub use link::Link;
@@ -73,6 +74,23 @@ impl Tree {
         value_hash: Hash,
     ) -> CostContext<Self> {
         KV::new_with_value_hash(key, value, value_hash).map(|kv| Self {
+            inner: Box::new(TreeInner {
+                kv,
+                left: None,
+                right: None,
+            }),
+        })
+    }
+
+    /// Creates a new `Tree` with the given key, value and value hash, and no
+    /// children.
+    /// Sets the tree's value_hash = hash(value, supplied_value_hash)
+    pub fn new_with_combined_value_hash(
+        key: Vec<u8>,
+        value: Vec<u8>,
+        value_hash: Hash,
+    ) -> CostContext<Self> {
+        KV::new_with_combined_value_hash(key, value, value_hash).map(|kv| Self {
             inner: Box::new(TreeInner {
                 kv,
                 left: None,

@@ -121,7 +121,7 @@ where
             Put(_) => {
                 Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec()).unwrap_add_cost(&mut cost)
             }
-            PutReference(_, referenced_value) => Tree::new_with_value_hash(
+            PutReference(_, referenced_value) => Tree::new_with_combined_value_hash(
                 mid_key.as_ref().to_vec(),
                 mid_value.to_vec(),
                 referenced_value.to_owned(),

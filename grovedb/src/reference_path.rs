@@ -11,20 +11,24 @@ use crate::Error;
 pub enum ReferencePathType {
     /// Holds the absolute path to the element the reference points to
     AbsolutePathReference(Vec<Vec<u8>>),
+
     /// This takes the first n elements from the current path and appends a new
     /// path to the subpath. If current path is [a, b, c, d] and we take the
     /// first 2 elements, subpath = [a, b] we can then append some other
     /// path [p, q] result = [a, b, p, q]
     UpstreamRootHeightReference(u8, Vec<Vec<u8>>),
+
     /// This discards the last n elements from the current path and appends a
     /// new path to the subpath. If current path is [a, b, c, d] and we
     /// discard the last element, subpath = [a, b, c] we can then append
     /// some other path [p, q] result = [a, b, c, p, q]
     UpstreamFromElementHeightReference(u8, Vec<Vec<u8>>),
+
     /// This swaps the immediate parent of the stored path with a provided key,
     /// retaining the key value. e.g. current path = [a, b, m, d] you can use
     /// the cousin reference to swap m with c to get [a, b, c, d]
     CousinReference(Vec<u8>),
+
     /// This swaps the key with a new value, you use this to point to an element
     /// in the same tree.
     SiblingReference(Vec<u8>),

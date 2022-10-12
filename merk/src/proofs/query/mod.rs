@@ -1181,6 +1181,7 @@ pub fn execute_proof(
                             // is lower than the bound
                             Some(Node::KV(..)) => {}
                             Some(Node::KVDigest(..)) => {}
+                            Some(Node::KVRefValueHash(..)) => {}
 
                             // cannot verify lower bound - we have an abridged
                             // tree so we cannot tell what the preceding key was
@@ -1205,6 +1206,7 @@ pub fn execute_proof(
                             // is greater than the bound
                             Some(Node::KV(..)) => {}
                             Some(Node::KVDigest(..)) => {}
+                            Some(Node::KVRefValueHash(..)) => {}
 
                             // cannot verify upper bound - we have an abridged
                             // tree so we cannot tell what the previous key was
@@ -1290,6 +1292,8 @@ pub fn execute_proof(
             execute_node(key, Some(value))?;
         } else if let Node::KVDigest(key, _) = node {
             execute_node(key, None)?;
+        } else if let Node::KVRefValueHash(key, value, _) = node {
+            execute_node(key, Some(value))?;
         } else if in_range {
             // we encountered a queried range but the proof was abridged (saw a
             // non-KV push), we are missing some part of the range
@@ -1312,6 +1316,7 @@ pub fn execute_proof(
                 // last node in tree was less than queried item
                 Some(Node::KV(..)) => {}
                 Some(Node::KVDigest(..)) => {}
+                Some(Node::KVRefValueHash(..)) => {}
 
                 // proof contains abridged data so we cannot verify absence of
                 // remaining query items
