@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 
 use byteorder::{BigEndian, ReadBytesExt};
 use ed::{Decode, Encode, Result, Terminated};
-use integer_encoding::VarInt;
+use integer_encoding::{FixedInt, VarInt};
 
 use super::{hash::Hash, Tree};
 use crate::merk::OptionOrMerkType;
@@ -279,13 +279,20 @@ impl Encode for Link {
     fn encoding_length(&self) -> Result<usize> {
         debug_assert!(self.key().len() < 256, "Key length must be less than 256");
 
-        // TODO: Fix this
         Ok(match self {
             Link::Reference { key, sum, .. } => match sum {
                 None => 1 + key.len() + 32 + 2 + 1,
                 Some(sum_value) => {
                     let encoded_sum_value = sum_value.encode_var_vec();
-                    1 + key.len() + 32 + 2 + 1 + encoded_sum_value.len()
+                    // 1 for key len
+                    // key_len for keys
+                    // 32 for hash
+                    // 2 for child heights
+                    // 1 to represent presence of sum value
+                    //    if above is 1, then
+                    //    1 for sum len
+                    //    sum_len for sum vale
+                    1 + key.len() + 32 + 2 + 1 + 1 + encoded_sum_value.len()
                 }
             },
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
@@ -293,14 +300,14 @@ impl Encode for Link {
                 None => 1 + tree.key().len() + 32 + 2 + 1,
                 Some(sum_value) => {
                     let encoded_sum_value = sum_value.encode_var_vec();
-                    1 + tree.key().len() + 32 + 2 + 1 + encoded_sum_value.len()
+                    1 + tree.key().len() + 32 + 2 + 1 + 1 + encoded_sum_value.len()
                 }
             },
             Link::Loaded { tree, sum, .. } => match sum {
                 None => 1 + tree.key().len() + 32 + 2 + 1,
                 Some(sum_value) => {
                     let encoded_sum_value = sum_value.encode_var_vec();
-                    1 + tree.key().len() + 32 + 2 + 1 + encoded_sum_value.len()
+                    1 + tree.key().len() + 32 + 2 + 1 + 1 + encoded_sum_value.len()
                 }
             },
         })
@@ -525,7 +532,7 @@ mod test {
             child_heights: (123, 124),
             hash: [55; 32],
         };
-        assert_eq!(link.encoding_length().unwrap(), 38);
+        assert_eq!(link.encoding_length().unwrap(), 39);
 
         let mut bytes = vec![];
         link.encode_into(&mut bytes).unwrap();
@@ -533,8 +540,7 @@ mod test {
             bytes,
             vec![
                 3, 1, 2, 3, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
-                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 0, 0, 0, 0, 0, 0,
-                0, 0
+                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 0
             ]
         );
     }
@@ -547,16 +553,17 @@ mod test {
             child_heights: (123, 124),
             hash: [55; 32],
         };
-        assert_eq!(link.encoding_length().unwrap(), 46);
+        assert_eq!(link.encoding_length().unwrap(), 41);
 
         let mut bytes = vec![];
         link.encode_into(&mut bytes).unwrap();
+
+        assert_eq!(link.encoding_length().unwrap(), bytes.len());
         assert_eq!(
             bytes,
             vec![
                 3, 1, 2, 3, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
-                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 0, 0, 0, 0, 0, 0,
-                0, 50
+                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 1, 1, 100,
             ]
         );
     }
@@ -578,7 +585,7 @@ mod test {
     fn decode_link() {
         let bytes = vec![
             3, 1, 2, 3, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
-            55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124,
+            55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 0,
         ];
         let link = Link::decode(bytes.as_slice()).expect("expected to decode a link");
         assert_eq!(link.sum(), None);
