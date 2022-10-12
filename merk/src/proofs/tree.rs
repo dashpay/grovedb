@@ -169,7 +169,9 @@ impl Tree {
 
     pub(crate) fn key(&self) -> &[u8] {
         match self.node {
-            Node::KV(ref key, _) | Node::KVValueHash(ref key, ..) => key,
+            Node::KV(ref key, _)
+            | Node::KVValueHash(ref key, ..)
+            | Node::KVValueRefHash(ref key, ..) => key,
             _ => panic!("Expected node to be type KV"),
         }
     }
@@ -348,7 +350,10 @@ where
                 stack.push(parent);
             }
             Op::Push(node) => {
-                if let Node::KV(key, _) | Node::KVValueHash(key, ..) = &node {
+                if let Node::KV(key, _)
+                | Node::KVValueHash(key, ..)
+                | Node::KVValueRefHash(key, ..) = &node
+                {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
                         if key <= last_key {
@@ -365,7 +370,10 @@ where
                 stack.push(tree);
             }
             Op::PushInverted(node) => {
-                if let Node::KV(key, _) | Node::KVValueHash(key, ..) = &node {
+                if let Node::KV(key, _)
+                | Node::KVValueHash(key, ..)
+                | Node::KVValueRefHash(key, ..) = &node
+                {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
                         if key >= last_key {
