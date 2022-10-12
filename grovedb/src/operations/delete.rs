@@ -10,7 +10,7 @@ use storage::{
 use crate::{
     batch::{GroveDbOp, KeyInfo, KeyInfoPath, Op},
     util::{
-        merk_no_tx, merk_optional_tx, merk_using_tx, storage_context_optional_tx,
+        merk_optional_tx, storage_context_optional_tx,
         storage_context_with_parent_no_tx, storage_context_with_parent_optional_tx,
         storage_context_with_parent_using_tx,
     },
@@ -337,107 +337,75 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         let path_iter = path.into_iter();
-        if path_iter.len() == 0 {
-            // Attempt to delete a root tree leaf
-            Err(Error::InvalidPath(
-                "root tree leaves currently cannot be deleted",
-            ))
-            .wrap_with_cost(cost)
+        let element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw(path_iter.clone(), key.as_ref(), Some(transaction))
+        );
+        let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
+            HashMap::default();
+        let mut subtree_to_delete_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(path_iter.clone(), transaction)
+        );
+        if let Element::Tree(..) = element {
+            let mut subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
+            let subtrees_paths = cost_return_on_error!(
+                &mut cost,
+                self.find_subtrees(subtree_merk_path.clone(), Some(transaction))
+            );
+
+            let mut subtree_of_tree_we_are_deleting: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+                &mut cost,
+                self.open_transactional_merk_at_path(path_iter.clone(), transaction)
+            );
+            let is_empty = subtree_of_tree_we_are_deleting
+                .is_empty_tree()
+                .unwrap_add_cost(&mut cost);
+
+            if only_delete_tree_if_empty && !is_empty {
+                return Ok(false).wrap_with_cost(cost);
+            } else {
+                if !is_empty {
+                    // TODO: dumb traversal should not be tolerated
+                    for subtree_path in subtrees_paths {
+                        let mut inner_subtree_to_delete_from: Merk<
+                            PrefixedRocksDbTransactionContext,
+                        > = cost_return_on_error!(
+                            &mut cost,
+                            self.open_transactional_merk_at_path(
+                                subtree_path.iter().map(|x| x.as_slice()),
+                                transaction
+                            )
+                        );
+                        cost_return_on_error!(
+                            &mut cost,
+                            inner_subtree_to_delete_from.clear().map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "unable to cleanup tree from storage_cost: {}",
+                                    e
+                                ))
+                            })
+                        );
+                    }
+                }
+                cost_return_on_error!(
+                    &mut cost,
+                    Element::delete(&mut subtree_to_delete_from, &key)
+                );
+            }
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.check_subtree_exists_path_not_found(path_iter.clone(), Some(transaction))
+                Element::delete(&mut subtree_to_delete_from, &key)
             );
-            let element = cost_return_on_error!(
-                &mut cost,
-                self.get_raw(path_iter.clone(), key.as_ref(), Some(transaction))
-            );
-
-            let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
-                HashMap::default();
-
-            if let Element::Tree(..) = element {
-                let mut subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
-                let sub_tree_merk_path_for_cache = subtree_merk_path
-                    .clone()
-                    .map(|k| k.to_vec())
-                    .collect::<Vec<Vec<u8>>>();
-                let subtrees_paths = cost_return_on_error!(
-                    &mut cost,
-                    self.find_subtrees(subtree_merk_path.clone(), Some(transaction))
-                );
-                let is_empty = merk_using_tx!(
-                    &mut cost,
-                    self.db,
-                    subtree_merk_path,
-                    transaction,
-                    subtree,
-                    {
-                        let empty = subtree.is_empty_tree().unwrap_add_cost(&mut cost);
-                        merk_cache.insert(sub_tree_merk_path_for_cache, subtree);
-                        empty
-                    }
-                );
-
-                if only_delete_tree_if_empty && !is_empty {
-                    return Ok(false).wrap_with_cost(cost);
-                } else {
-                    if !is_empty {
-                        // TODO: dumb traversal should not be tolerated
-                        for subtree_path in subtrees_paths {
-                            merk_using_tx!(
-                                &mut cost,
-                                self.db,
-                                subtree_path.iter().map(|x| x.as_slice()),
-                                transaction,
-                                subtree,
-                                {
-                                    cost_return_on_error!(
-                                        &mut cost,
-                                        subtree.clear().map_err(|e| {
-                                            Error::CorruptedData(format!(
-                                                "unable to cleanup tree from storage_cost: {}",
-                                                e
-                                            ))
-                                        })
-                                    );
-                                }
-                            );
-                        }
-                    }
-                    merk_using_tx!(
-                        &mut cost,
-                        self.db,
-                        path_iter.clone(),
-                        transaction,
-                        parent_merk,
-                        {
-                            cost_return_on_error!(
-                                &mut cost,
-                                Element::delete(&mut parent_merk, &key)
-                            );
-                        }
-                    );
-                }
-            } else {
-                merk_using_tx!(
-                    &mut cost,
-                    self.db,
-                    path_iter.clone(),
-                    transaction,
-                    parent_merk,
-                    {
-                        cost_return_on_error!(&mut cost, Element::delete(&mut parent_merk, &key));
-                    }
-                );
-            }
-            cost_return_on_error!(
-                &mut cost,
-                self.propagate_changes_with_transaction(merk_cache, path_iter, transaction)
-            );
-
-            Ok(true).wrap_with_cost(cost)
         }
+        merk_cache.insert(path_iter.clone().map(|k| k.to_vec()).collect(), subtree_to_delete_from);
+        cost_return_on_error!(
+            &mut cost,
+            self.propagate_changes_with_transaction(merk_cache, path_iter, transaction)
+        );
+
+        Ok(true).wrap_with_cost(cost)
     }
 
     fn delete_internal_without_transaction<'p, P>(
@@ -453,82 +421,72 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         let path_iter = path.into_iter();
-        if path_iter.len() == 0 {
-            // Attempt to delete a root tree leaf
-            Err(Error::InvalidPath(
-                "root tree leaves currently cannot be deleted",
-            ))
-            .wrap_with_cost(cost)
+        let element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw(path_iter.clone(), key.as_ref(), None)
+        );
+        let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>> =
+            HashMap::default();
+        let mut subtree_to_delete_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+            &mut cost,
+            self.open_non_transactional_merk_at_path(path_iter.clone())
+        );
+        if let Element::Tree(..) = element {
+            let mut subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
+            let subtrees_paths = cost_return_on_error!(
+                &mut cost,
+                self.find_subtrees(subtree_merk_path.clone(), None)
+            );
+
+            let mut subtree_of_tree_we_are_deleting: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+                &mut cost,
+                self.open_non_transactional_merk_at_path(path_iter.clone())
+            );
+            let is_empty = subtree_of_tree_we_are_deleting
+                .is_empty_tree()
+                .unwrap_add_cost(&mut cost);
+
+            if only_delete_tree_if_empty && !is_empty {
+                return Ok(false).wrap_with_cost(cost);
+            } else {
+                if !is_empty {
+                    // TODO: dumb traversal should not be tolerated
+                    for subtree_path in subtrees_paths {
+                        let mut inner_subtree_to_delete_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+                            &mut cost,
+                            self.open_non_transactional_merk_at_path(
+                                subtree_path.iter().map(|x| x.as_slice())
+                            )
+                        );
+                        cost_return_on_error!(
+                            &mut cost,
+                            inner_subtree_to_delete_from.clear().map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "unable to cleanup tree from storage_cost: {}",
+                                    e
+                                ))
+                            })
+                        );
+                    }
+                }
+                cost_return_on_error!(
+                    &mut cost,
+                    Element::delete(&mut subtree_to_delete_from, &key)
+                );
+            }
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.check_subtree_exists_path_not_found(path_iter.clone(), None)
+                Element::delete(&mut subtree_to_delete_from, &key)
             );
-            let element = cost_return_on_error!(
-                &mut cost,
-                self.get_raw(path_iter.clone(), key.as_ref(), None)
-            );
-
-            let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbStorageContext>> =
-                HashMap::default();
-
-            if let Element::Tree(..) = element {
-                let mut subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
-                let sub_tree_merk_path_for_cache = subtree_merk_path
-                    .clone()
-                    .map(|k| k.to_vec())
-                    .collect::<Vec<Vec<u8>>>();
-                let subtrees_paths = cost_return_on_error!(
-                    &mut cost,
-                    self.find_subtrees(subtree_merk_path.clone(), None)
-                );
-                let is_empty = merk_no_tx!(&mut cost, self.db, subtree_merk_path, subtree, {
-                    let empty = subtree.is_empty_tree().unwrap_add_cost(&mut cost);
-                    merk_cache.insert(sub_tree_merk_path_for_cache, subtree);
-                    empty
-                });
-
-                if only_delete_tree_if_empty && !is_empty {
-                    return Ok(false).wrap_with_cost(cost);
-                } else {
-                    if !is_empty {
-                        // TODO: dumb traversal should not be tolerated
-                        for subtree_path in subtrees_paths {
-                            merk_no_tx!(
-                                &mut cost,
-                                self.db,
-                                subtree_path.iter().map(|x| x.as_slice()),
-                                subtree,
-                                {
-                                    cost_return_on_error!(
-                                        &mut cost,
-                                        subtree.clear().map_err(|e| {
-                                            Error::CorruptedData(format!(
-                                                "unable to cleanup tree from storage_cost: {}",
-                                                e
-                                            ))
-                                        })
-                                    );
-                                }
-                            );
-                        }
-                    }
-                    merk_no_tx!(&mut cost, self.db, path_iter.clone(), parent_merk, {
-                        cost_return_on_error!(&mut cost, Element::delete(&mut parent_merk, &key));
-                    });
-                }
-            } else {
-                merk_no_tx!(&mut cost, self.db, path_iter.clone(), parent_merk, {
-                    cost_return_on_error!(&mut cost, Element::delete(&mut parent_merk, &key));
-                });
-            }
-            cost_return_on_error!(
-                &mut cost,
-                self.propagate_changes_without_transaction(merk_cache, path_iter)
-            );
-
-            Ok(true).wrap_with_cost(cost)
         }
+        merk_cache.insert(path_iter.clone().map(|k| k.to_vec()).collect(), subtree_to_delete_from);
+        cost_return_on_error!(
+            &mut cost,
+            self.propagate_changes_without_transaction(merk_cache, path_iter)
+        );
+
+        Ok(true).wrap_with_cost(cost)
     }
 
     // TODO: dumb traversal should not be tolerated

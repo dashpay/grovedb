@@ -73,7 +73,7 @@ impl GroveDb {
                 let element = cost_return_on_error!(
                     &mut cost,
                     Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                        Error::CorruptedData("could not get key for parent of subtree".to_owned())
+                        Error::InvalidPath("could not get key for parent of subtree")
                     })
                 );
                 if let Element::Tree(root_key, _) = element {
@@ -81,8 +81,8 @@ impl GroveDb {
                         Error::CorruptedData("cannot open a subtree with given root key".to_owned())
                     })
                 } else {
-                    Err(Error::CorruptedData(
-                        "cannot open a subtree as parent exists but is not a tree".to_owned(),
+                    Err(Error::CorruptedPath(
+                        "cannot open a subtree as parent exists but is not a tree",
                     ))
                     .wrap_with_cost(OperationCost::default())
                 }
@@ -115,7 +115,7 @@ impl GroveDb {
                 let element = cost_return_on_error!(
                     &mut cost,
                     Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                        Error::CorruptedData("could not get key for parent of subtree".to_owned())
+                        Error::InvalidPath("could not get key for parent of subtree")
                     })
                 );
                 if let Element::Tree(root_key, _) = element {
@@ -123,8 +123,8 @@ impl GroveDb {
                         Error::CorruptedData("cannot open a subtree with given root key".to_owned())
                     })
                 } else {
-                    Err(Error::CorruptedData(
-                        "cannot open a subtree as parent exists but is not a tree".to_owned(),
+                    Err(Error::CorruptedPath(
+                        "cannot open a subtree as parent exists but is not a tree",
                     ))
                     .wrap_with_cost(OperationCost::default())
                 }
