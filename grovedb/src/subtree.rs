@@ -981,7 +981,16 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         referenced_value: Vec<u8>,
+        is_sum_tree: bool,
     ) -> CostResult<(), Error> {
+        // TODO: Fix this
+        let feature_type = match is_sum_tree {
+            false => Some(TreeFeatureType::BasicMerk),
+            // TODO: Remove unwrap
+            true => Some(TreeFeatureType::SummedMerk(self.sum_value().unwrap())),
+        };
+        dbg!(feature_type);
+
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
@@ -991,7 +1000,7 @@ impl Element {
         let batch_operations = [(
             key,
             Op::PutReference(serialized, referenced_value),
-            Some(BasicMerk),
+            feature_type,
         )];
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))

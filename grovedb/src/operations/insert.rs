@@ -61,7 +61,12 @@ impl GroveDb {
                             cost_return_on_error_no_add!(&cost, referenced_element.serialize());
                         cost_return_on_error!(
                             &mut cost,
-                            element.insert_reference(&mut subtree, key, serialized)
+                            element.insert_reference(
+                                &mut subtree,
+                                key,
+                                serialized,
+                                parent_is_sum_tree
+                            )
                         );
                     }
                 );
