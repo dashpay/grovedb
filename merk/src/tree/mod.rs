@@ -122,6 +122,12 @@ impl Tree {
         self.inner.kv.key()
     }
 
+    /// Returns the root node's feature type
+    #[inline]
+    pub fn feature_type(&self) -> TreeFeatureType {
+        self.inner.feature_type
+    }
+
     pub fn set_key(&mut self, key: Vec<u8>) {
         self.inner.kv.key = key;
     }

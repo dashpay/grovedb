@@ -41,7 +41,7 @@ impl GroveDb {
                     .wrap_with_cost(cost);
                 }
 
-                cost_return_on_error!(
+                let parent_is_sum_tree = cost_return_on_error!(
                     &mut cost,
                     self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
                 );
@@ -131,7 +131,7 @@ impl GroveDb {
         );
         let path_iter = path.into_iter();
 
-        cost_return_on_error!(
+        let parent_is_sum_tree = cost_return_on_error!(
             &mut cost,
             self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
         );
