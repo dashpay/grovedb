@@ -669,7 +669,8 @@ impl Element {
                     } else {
                         return Err(Error::InvalidPath(
                             "you must provide a subquery or a subquery_key when interacting with \
-                             a Tree of trees",
+                             a Tree of trees"
+                                .to_owned(),
                         ))
                         .wrap_with_cost(cost);
                     }
@@ -1317,36 +1318,28 @@ mod tests {
     fn test_get_query() {
         let db = make_test_grovedb();
 
-        let storage = &db.db;
-        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
-        // The tree is empty
-        let mut merk = Merk::open_with_root_key(storage_context, None)
+        db.insert([TEST_LEAF], b"d", Element::new_item(b"ayyd".to_vec()), None)
             .unwrap()
-            .expect("cannot open Merk"); // TODO implement costs
-
-        Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
+            .expect("cannot insert element");
+	db.insert([TEST_LEAF], b"c", Element::new_item(b"ayyc".to_vec()), None)
             .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
+            .expect("cannot insert element");
+	db.insert([TEST_LEAF], b"a", Element::new_item(b"ayya".to_vec()), None)
             .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
+            .expect("cannot insert element");
+	db.insert([TEST_LEAF], b"b", Element::new_item(b"ayyb".to_vec()), None)
             .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
-            .unwrap()
-            .expect("expected successful insertion");
+            .expect("cannot insert element");
 
         // Test queries by key
         let mut query = Query::new();
         query.insert_key(b"c".to_vec());
         query.insert_key(b"a".to_vec());
+
+        ::visualize::visualize_stdout(&db);
+
         assert_eq!(
-            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
                 .unwrap()
                 .expect("expected successful get_query"),
             vec![
@@ -1360,7 +1353,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
                 .unwrap()
                 .expect("expected successful get_query"),
             vec![
@@ -1375,7 +1368,7 @@ mod tests {
         query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
                 .unwrap()
                 .expect("expected successful get_query"),
             vec![
@@ -1391,7 +1384,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
                 .unwrap()
                 .expect("expected successful get_query"),
             vec![

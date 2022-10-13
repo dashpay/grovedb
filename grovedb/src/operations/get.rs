@@ -400,7 +400,7 @@ where {
         self.check_subtree_exists(
             path,
             transaction,
-            Error::InvalidPath("subtree doesn't exist"),
+            Error::InvalidPath("subtree doesn't exist".to_owned()),
         )
     }
 

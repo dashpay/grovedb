@@ -28,6 +28,7 @@ pub use storage::{
     Storage, StorageContext,
 };
 pub use subtree::{Element, ElementFlags};
+use ::visualize::DebugByteVectors;
 
 pub use crate::error::Error;
 use crate::util::root_merk_optional_tx;
@@ -73,7 +74,7 @@ impl GroveDb {
                 let element = cost_return_on_error!(
                     &mut cost,
                     Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                        Error::InvalidPath("could not get key for parent of subtree")
+                        Error::InvalidPath("could not get key for parent of subtree".to_owned())
                     })
                 );
                 if let Element::Tree(root_key, _) = element {
@@ -114,8 +115,12 @@ impl GroveDb {
                     .unwrap_add_cost(&mut cost);
                 let element = cost_return_on_error!(
                     &mut cost,
-                    Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                        Error::InvalidPath("could not get key for parent of subtree")
+                    Element::get_from_storage(&parent_storage, key).map_err(|e| {
+                        Error::InvalidPath(format!(
+                            "could not get key for parent {:?} of subtree: {}",
+                            DebugByteVectors(path_iter.clone().map(|x| x.to_vec()).collect()),
+                            e
+                        ))
                     })
                 );
                 if let Element::Tree(root_key, _) = element {
@@ -383,8 +388,10 @@ impl GroveDb {
                 let tree = Element::new_tree_with_flags(maybe_root_key, flag);
                 tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash)
             } else {
-                Err(Error::InvalidPath("can only propagate on tree items"))
-                    .wrap_with_cost(Default::default())
+                Err(Error::InvalidPath(
+                    "can only propagate on tree items".to_owned(),
+                ))
+                .wrap_with_cost(Default::default())
             }
         })
     }
@@ -405,8 +412,10 @@ impl GroveDb {
                 let tree = Element::new_tree_with_flags(maybe_root_key, flag);
                 tree.insert_subtree_into_batch_operations(key, root_tree_hash, batch_operations)
             } else {
-                Err(Error::InvalidPath("can only propagate on tree items"))
-                    .wrap_with_cost(Default::default())
+                Err(Error::InvalidPath(
+                    "can only propagate on tree items".to_owned(),
+                ))
+                .wrap_with_cost(Default::default())
             }
         })
     }
@@ -417,7 +426,9 @@ impl GroveDb {
     ) -> CostResult<Element, Error> {
         subtree
             .get(key.as_ref())
-            .map_err(|_| Error::InvalidPath("can't find subtree in parent during propagation"))
+            .map_err(|_| {
+                Error::InvalidPath("can't find subtree in parent during propagation".to_owned())
+            })
             .map_ok(|subtree_opt| {
                 subtree_opt.ok_or_else(|| {
                     let key = hex::encode(key.as_ref());

@@ -32,7 +32,7 @@ pub enum Error {
 
     // The invalid path represents a logical error from the client library
     #[error("invalid path: {0}")]
-    InvalidPath(&'static str),
+    InvalidPath(String),
     // The corrupted path represents a consistency error in internal groveDB logic
     #[error("corrupted path: {0}")]
     CorruptedPath(&'static str),

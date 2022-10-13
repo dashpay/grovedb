@@ -50,7 +50,7 @@ impl ProofVerifier {
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
         // TODO: get rid of this error once root tree is also of type merk
         if path_slices.is_empty() {
-            return Err(Error::InvalidPath("can't verify proof for empty path"));
+            return Err(Error::InvalidPath("can't verify proof for empty path".to_owned()));
         }
 
         let (proof_type, proof) = proof_reader.read_proof()?;

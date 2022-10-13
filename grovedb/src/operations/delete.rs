@@ -6,6 +6,7 @@ use storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageContext,
 };
+use visualize::DebugByteVectors;
 
 use crate::{
     batch::{GroveDbOp, KeyInfo, KeyInfoPath, Op},
@@ -188,7 +189,7 @@ impl GroveDb {
         if path_iter.len() == 0 {
             // Attempt to delete a root tree leaf
             Err(Error::InvalidPath(
-                "root tree leaves currently cannot be deleted",
+                "root tree leaves currently cannot be deleted".to_owned(),
             ))
             .wrap_with_cost(cost)
         } else {
@@ -289,7 +290,7 @@ impl GroveDb {
         if path.len() == 0 {
             // Attempt to delete a root tree leaf
             Err(Error::InvalidPath(
-                "root tree leaves currently cannot be deleted",
+                "root tree leaves currently cannot be deleted".to_owned(),
             ))
             .wrap_with_cost(cost)
         } else {
@@ -451,7 +452,7 @@ impl GroveDb {
             } else {
                 if !is_empty {
                     // TODO: dumb traversal should not be tolerated
-                    for subtree_path in subtrees_paths {
+                    for subtree_path in subtrees_paths.into_iter().rev() {
                         let mut inner_subtree_to_delete_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                             &mut cost,
                             self.open_non_transactional_merk_at_path(
