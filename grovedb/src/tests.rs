@@ -4087,7 +4087,7 @@ macro_rules! open_merk {
 }
 
 #[test]
-fn test_homogenous_node_type_in_sum_trees() {
+fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
     // All elements in a sum tree must have a summed feature type
     let db = make_grovedb();
     db.insert([TEST_LEAF], b"key", Element::empty_sum_tree(), None)
@@ -4155,6 +4155,43 @@ fn test_homogenous_node_type_in_sum_trees() {
         Some(SummedMerk(0))
     ));
     assert_eq!(merk.sum(), Some(40));
+
+    // Perform the same test on regular trees
+    let db = make_grovedb();
+    db.insert([TEST_LEAF], b"key", Element::empty_tree(), None)
+        .unwrap()
+        .expect("should insert tree");
+    db.insert(
+        [TEST_LEAF, b"key"],
+        b"item1",
+        Element::new_item(vec![30]),
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+    db.insert(
+        [TEST_LEAF, b"key"],
+        b"item2",
+        Element::new_item(vec![10]),
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+
+    let merk = open_merk!(db, [TEST_LEAF, b"key"]);
+    assert!(matches!(
+        merk.get_feature_type(b"item1")
+            .unwrap()
+            .expect("node should exist"),
+        Some(BasicMerk)
+    ));
+    assert!(matches!(
+        merk.get_feature_type(b"item2")
+            .unwrap()
+            .expect("node should exist"),
+        Some(BasicMerk)
+    ));
+    assert_eq!(merk.sum(), None);
 }
 
 #[test]
