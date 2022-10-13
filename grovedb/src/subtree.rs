@@ -1256,7 +1256,7 @@ mod tests {
     fn test_serialization() {
         let empty_tree = Element::empty_tree();
         let serialized = empty_tree.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 34);
+        assert_eq!(serialized.len(), 3);
         assert_eq!(serialized.len(), empty_tree.serialized_byte_size());
         // The tree is fixed length 32 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(
@@ -1336,8 +1336,6 @@ mod tests {
         query.insert_key(b"c".to_vec());
         query.insert_key(b"a".to_vec());
 
-        ::visualize::visualize_stdout(&db);
-
         assert_eq!(
             Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
                 .unwrap()
@@ -1399,28 +1397,18 @@ mod tests {
     fn test_get_query_with_path() {
         let db = make_test_grovedb();
 
-        let storage = &db.db;
-        let mut merk: Merk<PrefixedRocksDbStorageContext> = db
-            .open_non_transactional_merk_at_path([TEST_LEAF])
+	db.insert([TEST_LEAF], b"d", Element::new_item(b"ayyd".to_vec()), None)
             .unwrap()
-            .expect("cannot open Merk"); // TODO implement costs
-
-        Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
+            .expect("cannot insert element");
+	db.insert([TEST_LEAF], b"c", Element::new_item(b"ayyc".to_vec()), None)
             .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
+            .expect("cannot insert element");
+	db.insert([TEST_LEAF], b"a", Element::new_item(b"ayya".to_vec()), None)
             .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
+            .expect("cannot insert element");
+	db.insert([TEST_LEAF], b"b", Element::new_item(b"ayyb".to_vec()), None)
             .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
-            .unwrap()
-            .expect("expected successful insertion");
+            .expect("cannot insert element");
 
         // Test queries by key
         let mut query = Query::new();
@@ -1428,7 +1416,7 @@ mod tests {
         query.insert_key(b"a".to_vec());
         assert_eq!(
             Element::get_query(
-                &storage,
+                &db.db,
                 &[TEST_LEAF],
                 &query,
                 QueryPathKeyElementTrioResultType,
@@ -1650,28 +1638,18 @@ mod tests {
     fn test_get_limit_query() {
         let db = make_test_grovedb();
 
-        let storage = &db.db;
-        let mut merk: Merk<PrefixedRocksDbStorageContext> = db
-            .open_non_transactional_merk_at_path([TEST_LEAF])
+	db.insert([TEST_LEAF], b"d", Element::new_item(b"ayyd".to_vec()), None)
             .unwrap()
-            .expect("cannot open Merk");
-
-        Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
+            .expect("cannot insert element");
+	db.insert([TEST_LEAF], b"c", Element::new_item(b"ayyc".to_vec()), None)
             .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
+            .expect("cannot insert element");
+	db.insert([TEST_LEAF], b"a", Element::new_item(b"ayya".to_vec()), None)
             .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
+            .expect("cannot insert element");
+	db.insert([TEST_LEAF], b"b", Element::new_item(b"ayyb".to_vec()), None)
             .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
-            .unwrap()
-            .expect("expected successful insertion");
+            .expect("cannot insert element");
 
         // Test queries by key
         let mut query = Query::new_with_direction(true);
@@ -1681,7 +1659,7 @@ mod tests {
         // since these are just keys a backwards query will keep same order
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &backwards_query,
             QueryKeyElementPairResultType,
@@ -1706,7 +1684,7 @@ mod tests {
         // since these are just keys a backwards query will keep same order
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &backwards_query,
             QueryKeyElementPairResultType,
@@ -1726,7 +1704,7 @@ mod tests {
         // The limit will mean we will only get back 1 item
         let limit_query = SizedQuery::new(query.clone(), Some(1), None);
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &limit_query,
             QueryKeyElementPairResultType,
@@ -1746,7 +1724,7 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         let limit_query = SizedQuery::new(query.clone(), Some(2), None);
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &limit_query,
             QueryKeyElementPairResultType,
@@ -1765,7 +1743,7 @@ mod tests {
 
         let limit_offset_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &limit_offset_query,
             QueryKeyElementPairResultType,
@@ -1789,7 +1767,7 @@ mod tests {
 
         let limit_offset_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &limit_offset_backwards_query,
             QueryKeyElementPairResultType,
@@ -1812,7 +1790,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         let limit_full_query = SizedQuery::new(query.clone(), Some(5), Some(0));
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &limit_full_query,
             QueryKeyElementPairResultType,
@@ -1836,7 +1814,7 @@ mod tests {
 
         let limit_offset_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &limit_offset_backwards_query,
             QueryKeyElementPairResultType,
@@ -1860,7 +1838,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         let limit_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &limit_backwards_query,
             QueryKeyElementPairResultType,

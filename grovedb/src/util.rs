@@ -55,10 +55,8 @@ macro_rules! storage_context_with_parent_optional_tx {
             } else {
                 let $storage = $db
                     .get_storage_context(path.clone()).unwrap_add_cost(&mut $cost);
-		dbg!("wut", ::visualize::DebugByteVectors(path.clone().map(|x| x.to_vec()).collect()));
                 if let Some(last) = path.next_back() {
                     let parent_storage = $db.get_storage_context(path.clone()).unwrap_add_cost(&mut $cost);
-		    dbg!("parent storage", ::visualize::DebugByteVectors(path.clone().map(|x| x.to_vec()).collect()), "key", ::visualize::DebugBytes(last.to_vec()));
                     let element = cost_return_on_error!(
                         &mut $cost,
 			Element::get_from_storage(&parent_storage, last).map_err(|e| {
