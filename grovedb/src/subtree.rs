@@ -887,10 +887,10 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: K,
-        // is_sum_tree: bool
+        is_sum_tree: bool,
     ) -> CostResult<(), Error> {
         // TODO: Fix this
-        let feature_type = match true {
+        let feature_type = match is_sum_tree {
             false => Some(TreeFeatureType::BasicMerk),
             // TODO: Remove unwrap
             true => Some(TreeFeatureType::SummedMerk(self.sum_value().unwrap())),
@@ -932,6 +932,7 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
+        is_sum_tree: bool,
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
         let exists =
@@ -939,7 +940,7 @@ impl Element {
         if exists {
             Ok(false).wrap_with_cost(cost)
         } else {
-            cost_return_on_error!(&mut cost, self.insert(merk, key));
+            cost_return_on_error!(&mut cost, self.insert(merk, key, is_sum_tree));
             Ok(true).wrap_with_cost(cost)
         }
     }
@@ -1106,11 +1107,11 @@ mod tests {
     fn test_success_insert() {
         let mut merk = TempMerk::new();
         Element::empty_tree()
-            .insert(&mut merk, b"mykey")
+            .insert(&mut merk, b"mykey", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"value".to_vec())
-            .insert(&mut merk, b"another-key")
+            .insert(&mut merk, b"another-key", false)
             .unwrap()
             .expect("expected successful insertion 2");
 
@@ -1229,19 +1230,19 @@ mod tests {
             .expect("cannot open Merk"); // TODO implement costs
 
         Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
+            .insert(&mut merk, b"d", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
+            .insert(&mut merk, b"c", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
+            .insert(&mut merk, b"a", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
+            .insert(&mut merk, b"b", false)
             .unwrap()
             .expect("expected successful insertion");
 
@@ -1317,19 +1318,19 @@ mod tests {
             .expect("cannot open Merk"); // TODO implement costs
 
         Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
+            .insert(&mut merk, b"d", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
+            .insert(&mut merk, b"c", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
+            .insert(&mut merk, b"a", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
+            .insert(&mut merk, b"b", false)
             .unwrap()
             .expect("expected successful insertion");
 
@@ -1374,19 +1375,19 @@ mod tests {
             .expect("cannot open Merk"); // TODO implement costs
 
         Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
+            .insert(&mut merk, b"d", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
+            .insert(&mut merk, b"c", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
+            .insert(&mut merk, b"a", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
+            .insert(&mut merk, b"b", false)
             .unwrap()
             .expect("expected successful insertion");
 
@@ -1470,19 +1471,19 @@ mod tests {
             .expect("cannot open Merk");
 
         Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
+            .insert(&mut merk, b"d", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
+            .insert(&mut merk, b"c", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
+            .insert(&mut merk, b"a", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
+            .insert(&mut merk, b"b", false)
             .unwrap()
             .expect("expected successful insertion");
 
@@ -1568,19 +1569,19 @@ mod tests {
             .expect("cannot open Merk");
 
         Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
+            .insert(&mut merk, b"d", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
+            .insert(&mut merk, b"c", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
+            .insert(&mut merk, b"a", false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
+            .insert(&mut merk, b"b", false)
             .unwrap()
             .expect("expected successful insertion");
 

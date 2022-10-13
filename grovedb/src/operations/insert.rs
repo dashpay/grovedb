@@ -94,7 +94,10 @@ impl GroveDb {
                     transaction,
                     mut subtree,
                     {
-                        cost_return_on_error!(&mut cost, element.insert(&mut subtree, key));
+                        cost_return_on_error!(
+                            &mut cost,
+                            element.insert(&mut subtree, key, parent_is_sum_tree)
+                        );
                     }
                 );
                 cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
@@ -169,7 +172,10 @@ impl GroveDb {
                         .wrap_with_cost(cost)
                 }
             };
-            cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
+            cost_return_on_error!(
+                &mut cost,
+                element.insert(&mut parent_subtree, key, parent_is_sum_tree)
+            );
         } else {
             let parent_storage = self
                 .db
@@ -203,7 +209,10 @@ impl GroveDb {
                         .wrap_with_cost(cost)
                 }
             };
-            cost_return_on_error!(&mut cost, element.insert(&mut parent_subtree, key));
+            cost_return_on_error!(
+                &mut cost,
+                element.insert(&mut parent_subtree, key, parent_is_sum_tree)
+            );
         }
         Ok(()).wrap_with_cost(cost)
     }
