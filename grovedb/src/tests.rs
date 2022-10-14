@@ -4331,6 +4331,19 @@ fn test_sum_tree_propagation() {
     )
     .unwrap()
     .expect("should insert item");
+    db.insert(
+        [TEST_LEAF, b"key", b"tree2"],
+        b"item2",
+        Element::new_reference(vec![
+            TEST_LEAF.to_vec(),
+            b"key".to_vec(),
+            b"tree2".to_vec(),
+            b"sumitem1".to_vec(),
+        ]),
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
 
     // Assert node feature types
     let test_leaf_merk = open_merk!(db, [TEST_LEAF]);
@@ -4366,5 +4379,12 @@ fn test_sum_tree_propagation() {
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(5))
+    ));
+    assert!(matches!(
+        child_sum_tree
+            .get_feature_type(b"item2")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(0))
     ));
 }
