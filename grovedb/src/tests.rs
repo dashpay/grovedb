@@ -4295,3 +4295,76 @@ fn test_sum_tree_feature() {
 
     // TODO: Test out overflows
 }
+
+#[test]
+fn test_sum_tree_propagation() {
+    let db = make_grovedb();
+    // Tree
+    //   SumTree
+    //      SumTree
+    //        Item1
+    //        SumItem1
+    db.insert([TEST_LEAF], b"key", Element::empty_sum_tree(), None)
+        .unwrap()
+        .expect("should insert tree");
+    db.insert(
+        [TEST_LEAF, b"key"],
+        b"tree2",
+        Element::empty_sum_tree(),
+        None,
+    )
+    .unwrap()
+    .expect("should insert tree");
+    db.insert(
+        [TEST_LEAF, b"key", b"tree2"],
+        b"item1",
+        Element::new_item(vec![2]),
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+    db.insert(
+        [TEST_LEAF, b"key", b"tree2"],
+        b"sumitem1",
+        Element::new_sum_item(5),
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+
+    // Assert node feature types
+    let test_leaf_merk = open_merk!(db, [TEST_LEAF]);
+    assert!(matches!(
+        test_leaf_merk
+            .get_feature_type(b"key")
+            .unwrap()
+            .expect("node should exist"),
+        Some(BasicMerk)
+    ));
+
+    let parent_sum_tree = open_merk!(db, [TEST_LEAF, b"key"]);
+    assert!(matches!(
+        parent_sum_tree
+            .get_feature_type(b"tree2")
+            .unwrap()
+            .expect("node should exist"),
+        // TODO: test for the actual sum here
+        Some(SummedMerk(_))
+    ));
+
+    let child_sum_tree = open_merk!(db, [TEST_LEAF, b"key", b"tree2"]);
+    assert!(matches!(
+        child_sum_tree
+            .get_feature_type(b"item1")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(0))
+    ));
+    assert!(matches!(
+        child_sum_tree
+            .get_feature_type(b"sumitem1")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(5))
+    ));
+}
