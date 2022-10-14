@@ -378,7 +378,6 @@ where
     }
 
     /// Returns the feature type for the node at the given key.
-    // TODO: Remove this, does it work??
     pub fn get_feature_type(&self, key: &[u8]) -> CostContext<Result<Option<TreeFeatureType>>> {
         self.get_node_fn(key, |node| {
             node.feature_type().wrap_with_cost(Default::default())

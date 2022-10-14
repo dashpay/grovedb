@@ -16,7 +16,7 @@ use std::path::Path;
 
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 pub use merk::proofs::{query::QueryItem, Query};
-use merk::{self, BatchEntry, Merk};
+use merk::{self, BatchEntry, Merk, TreeFeatureType};
 pub use query::{PathQuery, SizedQuery};
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
 pub use storage::{
@@ -198,14 +198,32 @@ impl GroveDb {
         key: K,
         root_hash: Hash,
     ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        let parent_feature_type = parent_tree
+            .get_feature_type(key.as_ref())
+            .unwrap_add_cost(&mut cost);
+
+        if parent_feature_type.is_err() {
+            return Err(Error::InternalError("node must exist during propagation"))
+                .wrap_with_cost(cost);
+        }
+
+        let parent_is_sum_tree = match parent_feature_type.expect("confirmed ok above") {
+            None => {
+                return Err(Error::InternalError("all nodes must have a feature type"))
+                    .wrap_with_cost(cost)
+            }
+            Some(feature_type) => matches!(feature_type, TreeFeatureType::SummedMerk(_)),
+        };
+
         Self::get_element_from_subtree(parent_tree, key).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(root_hash, flag);
-                // TODO: Pass correct bool
-                tree.insert(parent_tree, key.as_ref(), false)
+                tree.insert(parent_tree, key.as_ref(), parent_is_sum_tree)
             } else if let Element::SumTree(_, _, flag) = element {
                 let tree = Element::new_sum_tree_with_flags(root_hash, flag);
-                tree.insert(parent_tree, key.as_ref(), false)
+                tree.insert(parent_tree, key.as_ref(), parent_is_sum_tree)
             } else {
                 Err(Error::InvalidPath("can only propagate on tree items"))
                     .wrap_with_cost(Default::default())
