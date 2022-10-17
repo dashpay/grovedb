@@ -4353,7 +4353,10 @@ fn test_sum_tree_propagation() {
     .unwrap()
     .expect("should insert item");
 
-    let sum_tree = db.get([TEST_LEAF], b"key", None).unwrap().expect("should fetch tree");
+    let sum_tree = db
+        .get([TEST_LEAF], b"key", None)
+        .unwrap()
+        .expect("should fetch tree");
     assert_eq!(sum_tree.sum_value(), Some(15));
 
     // Assert node feature types
