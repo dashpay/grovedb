@@ -1,3 +1,5 @@
+use std::option::Option::None;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use grovedb::{Element, GroveDb};
 use rand::Rng;
@@ -9,7 +11,7 @@ pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
     let test_leaf: &[u8] = b"leaf1";
-    db.insert([], test_leaf, Element::empty_tree(), None)
+    db.insert([], test_leaf, Element::empty_tree(), None, None)
         .unwrap()
         .unwrap();
     let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(N_ITEMS);
@@ -17,7 +19,7 @@ pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
     c.bench_function("scalars insertion without transaction", |b| {
         b.iter(|| {
             for k in keys.clone() {
-                db.insert([test_leaf], &k, Element::new_item(k.to_vec()), None)
+                db.insert([test_leaf], &k, Element::new_item(k.to_vec()), None, None)
                     .unwrap();
             }
         })
@@ -28,7 +30,7 @@ pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
     let test_leaf: &[u8] = b"leaf1";
-    db.insert([], test_leaf, Element::empty_tree(), None)
+    db.insert([], test_leaf, Element::empty_tree(), None, None)
         .unwrap()
         .unwrap();
     let keys = std::iter::repeat_with(|| rand::thread_rng().gen::<[u8; 32]>()).take(N_ITEMS);
@@ -37,8 +39,14 @@ pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
         b.iter(|| {
             let tx = db.start_transaction();
             for k in keys.clone() {
-                db.insert([test_leaf], &k, Element::new_item(k.to_vec()), Some(&tx))
-                    .unwrap();
+                db.insert(
+                    [test_leaf],
+                    &k,
+                    Element::new_item(k.to_vec()),
+                    None,
+                    Some(&tx),
+                )
+                .unwrap();
             }
             db.commit_transaction(tx).unwrap().unwrap();
         })
@@ -53,7 +61,8 @@ pub fn root_leaf_insertion_benchmark_without_transaction(c: &mut Criterion) {
     c.bench_function("root leaves insertion without transaction", |b| {
         b.iter(|| {
             for k in keys.clone() {
-                db.insert([], &k, Element::empty_tree(), None).unwrap();
+                db.insert([], &k, Element::empty_tree(), None, None)
+                    .unwrap();
             }
         })
     });
@@ -68,7 +77,8 @@ pub fn root_leaf_insertion_benchmark_with_transaction(c: &mut Criterion) {
         b.iter(|| {
             let tx = db.start_transaction();
             for k in keys.clone() {
-                db.insert([], &k, Element::empty_tree(), Some(&tx)).unwrap();
+                db.insert([], &k, Element::empty_tree(), None, Some(&tx))
+                    .unwrap();
             }
             db.commit_transaction(tx).unwrap().unwrap();
         })
@@ -85,6 +95,7 @@ pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) 
             &s,
             Element::empty_tree(),
             None,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -100,6 +111,7 @@ pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) 
                     nested_subtrees.iter().map(|x| x.as_slice()),
                     &k,
                     Element::new_item(k.to_vec()),
+                    None,
                     None,
                 )
                 .unwrap()
@@ -119,6 +131,7 @@ pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
             &s,
             Element::empty_tree(),
             None,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -135,6 +148,7 @@ pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
                     nested_subtrees.iter().map(|x| x.as_slice()),
                     &k,
                     Element::new_item(k.to_vec()),
+                    None,
                     Some(&tx),
                 )
                 .unwrap()

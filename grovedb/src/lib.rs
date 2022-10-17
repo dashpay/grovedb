@@ -470,18 +470,25 @@ impl GroveDb {
     /// # use tempfile::TempDir;
     /// #
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use std::option::Option::None;
     /// const TEST_LEAF: &[u8] = b"test_leaf";
     ///
     /// let tmp_dir = TempDir::new().unwrap();
     /// let mut db = GroveDb::open(tmp_dir.path())?;
-    /// db.insert([], TEST_LEAF, Element::empty_tree(), None)
+    /// db.insert([], TEST_LEAF, Element::empty_tree(), None, None)
     ///     .unwrap()?;
     ///
     /// let tx = db.start_transaction();
     ///
     /// let subtree_key = b"subtree_key";
-    /// db.insert([TEST_LEAF], subtree_key, Element::empty_tree(), Some(&tx))
-    ///     .unwrap()?;
+    /// db.insert(
+    ///     [TEST_LEAF],
+    ///     subtree_key,
+    ///     Element::empty_tree(),
+    ///     None,
+    ///     Some(&tx),
+    /// )
+    /// .unwrap()?;
     ///
     /// // This action exists only inside the transaction for now
     /// let result = db.get([TEST_LEAF], subtree_key, None).unwrap();

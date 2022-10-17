@@ -1,6 +1,7 @@
 mod converter;
 
 use std::{option::Option::None, path::Path, sync::mpsc, thread};
+use std::option::Option::None;
 
 use grovedb::{GroveDb, Transaction, TransactionArg};
 use neon::prelude::*;
@@ -414,6 +415,7 @@ impl GroveDbWrapper {
                     path_slice,
                     &key,
                     element,
+                    None,
                     using_transaction.then(|| transaction).flatten(),
                 )
                 .unwrap(); // Todo: Costs;

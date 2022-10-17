@@ -33,7 +33,7 @@ use crate::{
         GroveDbOpMode::WorstCaseOp,
         KeyInfo::{KnownKey, MaxKeySize},
     },
-    operations::get::MAX_REFERENCE_HOPS,
+    operations::{get::MAX_REFERENCE_HOPS, insert::InsertOptions},
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     worst_case_costs::MerkWorstCaseInput,
     Element, ElementFlags, Error, GroveDb, TransactionArg, MAX_ELEMENTS_NUMBER,
@@ -1056,10 +1056,21 @@ where
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct BatchApplyOptions {
     pub validate_insertion_does_not_override: bool,
+    pub validate_insertion_does_not_override_tree: bool,
     pub disable_operation_consistency_check: bool,
+}
+
+impl BatchApplyOptions {
+    fn as_insert_options(&self) -> InsertOptions {
+        InsertOptions {
+            validate_insertion_does_not_override: self.validate_insertion_does_not_override,
+            validate_insertion_does_not_override_tree: self
+                .validate_insertion_does_not_override_tree,
+        }
+    }
 }
 
 impl GroveDb {
@@ -1250,6 +1261,7 @@ impl GroveDb {
     pub fn apply_operations_without_batching(
         &self,
         ops: Vec<GroveDbOp>,
+        options: Option<BatchApplyOptions>,
         transaction: TransactionArg,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -1263,6 +1275,7 @@ impl GroveDb {
                             path_slices,
                             op.key.as_slice(),
                             element.to_owned(),
+                            options.clone().map(|o| o.as_insert_options()),
                             transaction,
                         )
                     );
@@ -1531,6 +1544,8 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
+    use std::option::Option::None;
+
     use costs::storage_cost::{
         removal::StorageRemovedBytes::NoStorageRemoval, transition::OperationStorageTransitionType,
         StorageCost,
@@ -1676,6 +1691,7 @@ mod tests {
                 ops,
                 Some(BatchApplyOptions {
                     validate_insertion_does_not_override: false,
+                    validate_insertion_does_not_override_tree: true,
                     disable_operation_consistency_check: true,
                 }),
                 None
@@ -1690,7 +1706,7 @@ mod tests {
         let db = make_test_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"keyb", Element::empty_tree(), Some(&tx))
+        db.insert(vec![], b"keyb", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -2015,7 +2031,7 @@ mod tests {
     fn test_batch_root_one_update_bigger_cost_no_flags() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(vec![], b"tree", Element::empty_tree(), None)
+        db.insert(vec![], b"tree", Element::empty_tree(), None, None)
             .unwrap()
             .expect("expected to insert tree");
 
@@ -2023,6 +2039,7 @@ mod tests {
             vec![b"tree".as_slice()],
             b"key1",
             Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0])),
+            None,
             None,
         )
         .unwrap()
@@ -2268,7 +2285,7 @@ mod tests {
     fn test_batch_root_one_update_bigger_cost() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
-        db.insert(vec![], b"tree", Element::empty_tree(), None)
+        db.insert(vec![], b"tree", Element::empty_tree(), None, None)
             .unwrap()
             .expect("expected to insert tree");
 
@@ -2276,6 +2293,7 @@ mod tests {
             vec![b"tree".as_slice()],
             b"key1",
             Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0, 0])),
+            None,
             None,
         )
         .unwrap()
@@ -2379,7 +2397,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"0", Element::empty_tree(), Some(&tx))
+        db.insert(vec![], b"0", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -2406,7 +2424,7 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .insert(vec![], b"key1", Element::empty_tree(), Some(&tx))
+            .insert(vec![], b"key1", Element::empty_tree(), None, Some(&tx))
             .cost;
         tx.rollback().expect("expected to rollback");
         let ops = vec![GroveDbOp::insert_run_op(
@@ -2423,7 +2441,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"keyb", Element::empty_tree(), Some(&tx))
+        db.insert(vec![], b"keyb", Element::empty_tree(), None, Some(&tx))
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -2616,7 +2634,7 @@ mod tests {
 
         db.rollback_transaction(&tx).expect("expected to rollback");
 
-        db.apply_operations_without_batching(ops, Some(&tx))
+        db.apply_operations_without_batching(ops, None, Some(&tx))
             .unwrap()
             .expect("expected to apply batch");
 
@@ -2660,10 +2678,10 @@ mod tests {
 
         db.rollback_transaction(&tx).expect("expected to rollback");
 
-        db.apply_operations_without_batching(ops, Some(&tx))
+        db.apply_operations_without_batching(ops, None, Some(&tx))
             .unwrap()
             .expect("expected to apply batch");
-        db.apply_operations_without_batching(document_ops, Some(&tx))
+        db.apply_operations_without_batching(document_ops, None, Some(&tx))
             .unwrap()
             .expect("expected to apply batch");
 
@@ -2736,12 +2754,18 @@ mod tests {
         let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
 
-        db.insert([], b"key1", Element::empty_tree(), None)
+        db.insert([], b"key1", Element::empty_tree(), None, None)
             .unwrap()
             .expect("cannot insert a subtree");
-        db.insert([b"key1".as_ref()], b"key2", Element::empty_tree(), None)
-            .unwrap()
-            .expect("cannot insert a subtree");
+        db.insert(
+            [b"key1".as_ref()],
+            b"key2",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert a subtree");
 
         let ops = vec![
             GroveDbOp::insert_run_op(
@@ -2795,10 +2819,10 @@ mod tests {
         let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
 
-        db.insert([TEST_LEAF], b"invalid", element.clone(), None)
+        db.insert([TEST_LEAF], b"invalid", element.clone(), None, None)
             .unwrap()
             .expect("cannot insert value");
-        db.insert([TEST_LEAF], b"valid", Element::empty_tree(), None)
+        db.insert([TEST_LEAF], b"valid", Element::empty_tree(), None, None)
             .unwrap()
             .expect("cannot insert value");
 
@@ -2832,10 +2856,16 @@ mod tests {
         let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
         let element2 = Element::new_item(b"ayy2".to_vec());
-        db.insert([TEST_LEAF], b"key_subtree", Element::empty_tree(), None)
-            .unwrap()
-            .expect("cannot insert a subtree");
-        db.insert([TEST_LEAF, b"key_subtree"], b"key2", element, None)
+        db.insert(
+            [TEST_LEAF],
+            b"key_subtree",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert a subtree");
+        db.insert([TEST_LEAF, b"key_subtree"], b"key2", element, None, None)
             .unwrap()
             .expect("cannot insert an item");
 
@@ -2853,6 +2883,7 @@ mod tests {
                 ops,
                 Some(BatchApplyOptions {
                     validate_insertion_does_not_override: true,
+                    validate_insertion_does_not_override_tree: true,
                     disable_operation_consistency_check: false,
                 }),
                 None
@@ -2887,6 +2918,7 @@ mod tests {
                 ops,
                 Some(BatchApplyOptions {
                     disable_operation_consistency_check: false,
+                    validate_insertion_does_not_override_tree: true,
                     validate_insertion_does_not_override: true
                 }),
                 None
@@ -2915,6 +2947,7 @@ mod tests {
                 ops,
                 Some(BatchApplyOptions {
                     validate_insertion_does_not_override: true,
+                    validate_insertion_does_not_override_tree: true,
                     disable_operation_consistency_check: false,
                 }),
                 None
@@ -2928,10 +2961,10 @@ mod tests {
         let db = make_test_grovedb();
         let element = Element::new_item(b"ayy".to_vec());
 
-        db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None)
+        db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
             .unwrap()
             .expect("cannot insert a subtree");
-        db.insert([TEST_LEAF, b"key1"], b"key2", element.clone(), None)
+        db.insert([TEST_LEAF, b"key1"], b"key2", element.clone(), None, None)
             .unwrap()
             .expect("cannot insert an item");
         let ops = vec![GroveDbOp::insert_run_op(
@@ -2958,15 +2991,21 @@ mod tests {
     #[test]
     fn test_multi_tree_insertion_deletion_with_propagation_no_tx() {
         let db = make_test_grovedb();
-        db.insert([], b"key1", Element::empty_tree(), None)
+        db.insert([], b"key1", Element::empty_tree(), None, None)
             .unwrap()
             .expect("cannot insert root leaf");
-        db.insert([], b"key2", Element::empty_tree(), None)
+        db.insert([], b"key2", Element::empty_tree(), None, None)
             .unwrap()
             .expect("cannot insert root leaf");
-        db.insert([ANOTHER_TEST_LEAF], b"key1", Element::empty_tree(), None)
-            .unwrap()
-            .expect("cannot insert root leaf");
+        db.insert(
+            [ANOTHER_TEST_LEAF],
+            b"key1",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert root leaf");
 
         let hash = db.root_hash(None).unwrap().expect("cannot get root hash");
         let element = Element::new_item(b"ayy".to_vec());
@@ -3040,6 +3079,7 @@ mod tests {
                 &p,
                 Element::empty_tree(),
                 None,
+                None,
             )
             .unwrap()
             .expect("expected to insert");
@@ -3076,6 +3116,7 @@ mod tests {
                 acc_path.iter().map(|x| x.as_slice()),
                 &p,
                 Element::empty_tree(),
+                None,
                 None,
             )
             .unwrap()

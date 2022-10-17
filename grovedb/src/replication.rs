@@ -378,6 +378,8 @@ impl<'db> BufferedRestorer<'db> {
 
 #[cfg(test)]
 mod test {
+    use std::option::Option::None;
+
     use rand::RngCore;
     use tempfile::TempDir;
 
@@ -520,6 +522,7 @@ mod test {
             b"key1",
             Element::new_item(b"ayya".to_vec()),
             None,
+            None,
         )
         .unwrap()
         .expect("cannot insert an element");
@@ -527,6 +530,7 @@ mod test {
             [ANOTHER_TEST_LEAF],
             b"key1",
             Element::new_item(b"ayyb".to_vec()),
+            None,
             None,
         )
         .unwrap()
@@ -564,6 +568,7 @@ mod test {
             b"key1",
             Element::new_item(b"ayya".to_vec()),
             None,
+            None,
         )
         .unwrap()
         .expect("cannot insert an element");
@@ -572,16 +577,24 @@ mod test {
             b"key2",
             Element::new_reference(ReferencePathType::SiblingReference(b"key1".to_vec())),
             None,
+            None,
         )
         .unwrap()
         .expect("should insert reference");
-        db.insert([ANOTHER_TEST_LEAF], b"key2", Element::empty_tree(), None)
-            .unwrap()
-            .expect("cannot insert an element");
+        db.insert(
+            [ANOTHER_TEST_LEAF],
+            b"key2",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
         db.insert(
             [ANOTHER_TEST_LEAF, b"key2"],
             b"key3",
             Element::empty_tree(),
+            None,
             None,
         )
         .unwrap()
@@ -590,6 +603,7 @@ mod test {
             [ANOTHER_TEST_LEAF, b"key2", b"key3"],
             b"key4",
             Element::new_item(b"ayyb".to_vec()),
+            None,
             None,
         )
         .unwrap()
@@ -623,7 +637,7 @@ mod test {
         for _ in 0..SUBTREES_FOR_EACH {
             let mut bytes = [0; 8];
             rng.fill_bytes(&mut bytes);
-            db.insert([], &bytes, Element::empty_tree(), None)
+            db.insert([], &bytes, Element::empty_tree(), None, None)
                 .unwrap()
                 .unwrap();
             subtrees.push_front(vec![bytes.clone()]);
@@ -683,6 +697,7 @@ mod test {
             b"key1",
             Element::new_item(b"ayya".to_vec()),
             None,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -690,6 +705,7 @@ mod test {
             [ANOTHER_TEST_LEAF],
             b"key2",
             Element::new_item(b"ayyb".to_vec()),
+            None,
             None,
         )
         .unwrap()
@@ -707,6 +723,7 @@ mod test {
             b"key3",
             Element::new_item(b"ayyd".to_vec()),
             None,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -714,6 +731,7 @@ mod test {
             [ANOTHER_TEST_LEAF],
             b"key2",
             Element::new_item(b"ayyc".to_vec()),
+            None,
             None,
         )
         .unwrap()

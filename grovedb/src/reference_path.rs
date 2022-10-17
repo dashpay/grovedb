@@ -191,6 +191,8 @@ impl ReferencePathType {
 
 #[cfg(test)]
 mod tests {
+    use std::option::Option::None;
+
     use merk::proofs::Query;
 
     use crate::{
@@ -274,6 +276,7 @@ mod tests {
                 b"key1".to_vec(),
             ])),
             None,
+            None,
         )
         .unwrap()
         .expect("should insert successfully");
@@ -286,6 +289,7 @@ mod tests {
                 vec![b"innertree".to_vec(), b"key1".to_vec()],
             )),
             None,
+            None,
         )
         .unwrap()
         .expect("should insert successfully");
@@ -297,6 +301,7 @@ mod tests {
                 1,
                 vec![b"innertree".to_vec(), b"key1".to_vec()],
             )),
+            None,
             None,
         )
         .unwrap()

@@ -293,7 +293,7 @@ pub(crate) enum MerkWorstCaseInput {
 
 #[cfg(test)]
 mod test {
-    use std::iter::empty;
+    use std::{iter::empty, option::Option::None};
 
     use costs::OperationCost;
     use merk::{test_utils::make_batch_seq, Merk, Op};
@@ -455,7 +455,7 @@ mod test {
         let db = GroveDb::open(tmp_dir.path()).unwrap();
 
         // insert empty tree to start
-        db.insert([], TEST_LEAF, Element::empty_tree(), None)
+        db.insert([], TEST_LEAF, Element::empty_tree(), None, None)
             .unwrap()
             .expect("successful root tree leaf insert");
 
@@ -463,13 +463,13 @@ mod test {
         // after tree rotation, 2 will be at the top hence would have both left and
         // right links this will serve as our worst case candidate.
         let elem = Element::new_item(b"value".to_vec());
-        db.insert([TEST_LEAF], &[1], elem.clone(), None)
+        db.insert([TEST_LEAF], &[1], elem.clone(), None, None)
             .unwrap()
             .expect("expected insert");
-        db.insert([TEST_LEAF], &[2], elem.clone(), None)
+        db.insert([TEST_LEAF], &[2], elem.clone(), None, None)
             .unwrap()
             .expect("expected insert");
-        db.insert([TEST_LEAF], &[3], elem.clone(), None)
+        db.insert([TEST_LEAF], &[3], elem.clone(), None, None)
             .unwrap()
             .expect("expected insert");
 

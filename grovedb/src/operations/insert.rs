@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, option::Option::None};
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -15,12 +15,33 @@ use crate::{
     Element, Error, GroveDb, Transaction, TransactionArg,
 };
 
+pub struct InsertOptions {
+    pub validate_insertion_does_not_override: bool,
+    pub validate_insertion_does_not_override_tree: bool,
+}
+
+impl Default for InsertOptions {
+    fn default() -> Self {
+        InsertOptions {
+            validate_insertion_does_not_override: false,
+            validate_insertion_does_not_override_tree: true,
+        }
+    }
+}
+
+impl InsertOptions {
+    fn checks_for_override(&self) -> bool {
+        self.validate_insertion_does_not_override_tree || self.validate_insertion_does_not_override
+    }
+}
+
 impl GroveDb {
     pub fn insert<'p, P>(
         &self,
         path: P,
         key: &'p [u8],
         element: Element,
+        options: Option<InsertOptions>,
         transaction: TransactionArg,
     ) -> CostResult<(), Error>
     where
@@ -28,9 +49,9 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
         if let Some(transaction) = transaction {
-            self.insert_on_transaction(path, key, element, transaction)
+            self.insert_on_transaction(path, key, element, options.unwrap_or_default(), transaction)
         } else {
-            self.insert_without_transaction(path, key, element)
+            self.insert_without_transaction(path, key, element, options.unwrap_or_default())
         }
     }
 
@@ -39,6 +60,7 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         element: Element,
+        options: InsertOptions,
         transaction: &'db Transaction,
     ) -> CostResult<(), Error>
     where
@@ -54,7 +76,7 @@ impl GroveDb {
 
         let merk = cost_return_on_error!(
             &mut cost,
-            self.add_element_on_transaction(path_iter.clone(), key, element, transaction)
+            self.add_element_on_transaction(path_iter.clone(), key, element, options, transaction)
         );
         merk_cache.insert(path_iter.clone().map(|k| k.to_vec()).collect(), merk);
         cost_return_on_error!(
@@ -70,6 +92,7 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         element: Element,
+        options: InsertOptions,
     ) -> CostResult<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -84,7 +107,7 @@ impl GroveDb {
 
         let merk = cost_return_on_error!(
             &mut cost,
-            self.add_element_without_transaction(path_iter.clone(), key, element)
+            self.add_element_without_transaction(path_iter.clone(), key, element, options)
         );
         merk_cache.insert(path_iter.clone().map(|k| k.to_vec()).collect(), merk);
 
@@ -106,6 +129,7 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         element: Element,
+        options: InsertOptions,
         transaction: &'db Transaction,
     ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
     where
@@ -118,6 +142,39 @@ impl GroveDb {
             &mut cost,
             self.open_transactional_merk_at_path(path_iter.clone(), transaction)
         );
+        // if we don't allow a tree override then we should check
+
+        if options.checks_for_override() {
+            let maybe_element_bytes = cost_return_on_error!(
+                &mut cost,
+                subtree_to_insert_into
+                    .get(key)
+                    .map_err(|e| Error::CorruptedData(e.to_string()))
+            );
+            if let Some(element_bytes) = maybe_element_bytes {
+                if options.validate_insertion_does_not_override {
+                    return Err(Error::OverrideNotAllowed(
+                        "insertion not allowed to override",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                if options.validate_insertion_does_not_override_tree {
+                    let element = cost_return_on_error_no_add!(
+                        &cost,
+                        Element::deserialize(element_bytes.as_slice()).map_err(|_| {
+                            Error::CorruptedData(String::from("unable to deserialize element"))
+                        })
+                    );
+                    if matches!(element, Element::Tree(..)) {
+                        return Err(Error::OverrideNotAllowed(
+                            "insertion not allowed to override tree",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                }
+            }
+        }
+
         match element {
             Element::Reference(ref reference_path, ..) => {
                 let reference_path = cost_return_on_error!(
@@ -183,6 +240,7 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         element: Element,
+        options: InsertOptions,
     ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -194,6 +252,38 @@ impl GroveDb {
             &mut cost,
             self.open_non_transactional_merk_at_path(path_iter.clone())
         );
+
+        if options.checks_for_override() {
+            let maybe_element_bytes = cost_return_on_error!(
+                &mut cost,
+                subtree_to_insert_into
+                    .get(key)
+                    .map_err(|e| Error::CorruptedData(e.to_string()))
+            );
+            if let Some(element_bytes) = maybe_element_bytes {
+                if options.validate_insertion_does_not_override {
+                    return Err(Error::OverrideNotAllowed(
+                        "insertion not allowed to override",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                if options.validate_insertion_does_not_override_tree {
+                    let element = cost_return_on_error_no_add!(
+                        &cost,
+                        Element::deserialize(element_bytes.as_slice()).map_err(|_| {
+                            Error::CorruptedData(String::from("unable to deserialize element"))
+                        })
+                    );
+                    if matches!(element, Element::Tree(..)) {
+                        return Err(Error::OverrideNotAllowed(
+                            "insertion not allowed to override tree",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                }
+            }
+        }
+
         match element {
             Element::Reference(ref reference_path, ..) => {
                 let reference_path = cost_return_on_error!(
@@ -266,7 +356,7 @@ impl GroveDb {
         if cost_return_on_error!(&mut cost, self.has_raw(path_iter.clone(), key, transaction)) {
             Ok(false).wrap_with_cost(cost)
         } else {
-            self.insert(path_iter, key, element, transaction)
+            self.insert(path_iter, key, element, None, transaction)
                 .map_ok(|_| true)
                 .add_cost(cost)
         }
@@ -275,6 +365,8 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
+    use std::option::Option::None;
+
     use costs::{
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
@@ -288,7 +380,7 @@ mod tests {
         let tx = db.start_transaction();
 
         let cost = db
-            .insert(vec![], b"key1", Element::empty_tree(), Some(&tx))
+            .insert(vec![], b"key1", Element::empty_tree(), None, Some(&tx))
             .cost;
         // Explanation for 214 storage_written_bytes
 
@@ -343,7 +435,7 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"tree", Element::empty_tree(), Some(&tx))
+        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
             .cost;
 
         let cost = db
@@ -351,6 +443,7 @@ mod tests {
                 vec![b"tree".as_slice()],
                 b"key1",
                 Element::new_item(b"test".to_vec()),
+                None,
                 Some(&tx),
             )
             .cost;
@@ -415,13 +508,14 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db.insert(vec![], b"tree", Element::empty_tree(), Some(&tx))
+        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
             .cost;
 
         db.insert(
             vec![b"tree".as_slice()],
             b"key1",
             Element::new_item(b"test".to_vec()),
+            None,
             Some(&tx),
         )
         .cost;
@@ -431,6 +525,7 @@ mod tests {
                 vec![b"tree".as_slice()],
                 b"key1",
                 Element::new_item(b"test1".to_vec()),
+                None,
                 Some(&tx),
             )
             .cost_as_result()

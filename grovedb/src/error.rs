@@ -67,6 +67,9 @@ pub enum Error {
     #[error("client returned non client error: {0}")]
     ClientReturnedNonClientError(&'static str),
 
+    #[error("override not allowed error: {0}")]
+    OverrideNotAllowed(&'static str),
+
     // Support errors
     #[error("not supported: {0}")]
     NotSupported(&'static str),

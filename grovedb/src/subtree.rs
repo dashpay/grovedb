@@ -1221,6 +1221,8 @@ impl<I: RawIterator> ElementsIterator<I> {
 
 #[cfg(test)]
 mod tests {
+    use std::option::Option::None;
+
     use merk::test_utils::TempMerk;
     use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage};
 
@@ -1318,18 +1320,42 @@ mod tests {
     fn test_get_query() {
         let db = make_test_grovedb();
 
-        db.insert([TEST_LEAF], b"d", Element::new_item(b"ayyd".to_vec()), None)
-            .unwrap()
-            .expect("cannot insert element");
-        db.insert([TEST_LEAF], b"c", Element::new_item(b"ayyc".to_vec()), None)
-            .unwrap()
-            .expect("cannot insert element");
-        db.insert([TEST_LEAF], b"a", Element::new_item(b"ayya".to_vec()), None)
-            .unwrap()
-            .expect("cannot insert element");
-        db.insert([TEST_LEAF], b"b", Element::new_item(b"ayyb".to_vec()), None)
-            .unwrap()
-            .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"d",
+            Element::new_item(b"ayyd".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"c",
+            Element::new_item(b"ayyc".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"a",
+            Element::new_item(b"ayya".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"b",
+            Element::new_item(b"ayyb".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
 
         // Test queries by key
         let mut query = Query::new();
@@ -1397,18 +1423,42 @@ mod tests {
     fn test_get_query_with_path() {
         let db = make_test_grovedb();
 
-        db.insert([TEST_LEAF], b"d", Element::new_item(b"ayyd".to_vec()), None)
-            .unwrap()
-            .expect("cannot insert element");
-        db.insert([TEST_LEAF], b"c", Element::new_item(b"ayyc".to_vec()), None)
-            .unwrap()
-            .expect("cannot insert element");
-        db.insert([TEST_LEAF], b"a", Element::new_item(b"ayya".to_vec()), None)
-            .unwrap()
-            .expect("cannot insert element");
-        db.insert([TEST_LEAF], b"b", Element::new_item(b"ayyb".to_vec()), None)
-            .unwrap()
-            .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"d",
+            Element::new_item(b"ayyd".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"c",
+            Element::new_item(b"ayyc".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"a",
+            Element::new_item(b"ayya".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"b",
+            Element::new_item(b"ayyb".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
 
         // Test queries by key
         let mut query = Query::new();
@@ -1638,18 +1688,42 @@ mod tests {
     fn test_get_limit_query() {
         let db = make_test_grovedb();
 
-        db.insert([TEST_LEAF], b"d", Element::new_item(b"ayyd".to_vec()), None)
-            .unwrap()
-            .expect("cannot insert element");
-        db.insert([TEST_LEAF], b"c", Element::new_item(b"ayyc".to_vec()), None)
-            .unwrap()
-            .expect("cannot insert element");
-        db.insert([TEST_LEAF], b"a", Element::new_item(b"ayya".to_vec()), None)
-            .unwrap()
-            .expect("cannot insert element");
-        db.insert([TEST_LEAF], b"b", Element::new_item(b"ayyb".to_vec()), None)
-            .unwrap()
-            .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"d",
+            Element::new_item(b"ayyd".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"c",
+            Element::new_item(b"ayyc".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"a",
+            Element::new_item(b"ayya".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"b",
+            Element::new_item(b"ayyb".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
 
         // Test queries by key
         let mut query = Query::new_with_direction(true);
