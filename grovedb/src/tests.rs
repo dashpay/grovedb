@@ -7,7 +7,7 @@ use rand::Rng;
 use tempfile::TempDir;
 
 use super::*;
-use crate::query_result_type::QueryResultType::QueryKeyElementPairResultType;
+use crate::{batch::GroveDbOp, query_result_type::QueryResultType::QueryKeyElementPairResultType};
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
 pub const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
@@ -4304,6 +4304,7 @@ fn test_sum_tree_propagation() {
     //      SumTree
     //        Item1
     //        SumItem1
+    //        SumItem2
     db.insert([TEST_LEAF], b"key", Element::empty_sum_tree(), None)
         .unwrap()
         .expect("should insert tree");
@@ -4407,5 +4408,46 @@ fn test_sum_tree_propagation() {
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(0))
+    ));
+}
+
+#[test]
+fn test_sum_tree_with_batches() {
+    let db = make_grovedb();
+    let ops = vec![
+        GroveDbOp::insert(
+            vec![TEST_LEAF.to_vec()],
+            b"key1".to_vec(),
+            Element::empty_sum_tree(),
+        ),
+        GroveDbOp::insert(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+            b"a".to_vec(),
+            Element::new_item(vec![214]),
+        ),
+        GroveDbOp::insert(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+            b"b".to_vec(),
+            Element::new_sum_item(10),
+        ),
+    ];
+    db.apply_batch(ops, None, None)
+        .unwrap()
+        .expect("should apply batch");
+
+    let sum_tree = open_merk!(db, [TEST_LEAF, b"key1"]);
+    assert!(matches!(
+        sum_tree
+            .get_feature_type(b"a")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(0))
+    ));
+    assert!(matches!(
+        sum_tree
+            .get_feature_type(b"b")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(10))
     ));
 }
