@@ -4333,6 +4333,14 @@ fn test_sum_tree_propagation() {
     .expect("should insert item");
     db.insert(
         [TEST_LEAF, b"key", b"tree2"],
+        b"sumitem2",
+        Element::new_sum_item(10),
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+    db.insert(
+        [TEST_LEAF, b"key", b"tree2"],
         b"item2",
         Element::new_reference(vec![
             TEST_LEAF.to_vec(),
@@ -4344,6 +4352,9 @@ fn test_sum_tree_propagation() {
     )
     .unwrap()
     .expect("should insert item");
+
+    let sum_tree = db.get([TEST_LEAF], b"key", None).unwrap().expect("should fetch tree");
+    assert_eq!(sum_tree.sum_value(), Some(15));
 
     // Assert node feature types
     let test_leaf_merk = open_merk!(db, [TEST_LEAF]);
@@ -4361,8 +4372,8 @@ fn test_sum_tree_propagation() {
             .get_feature_type(b"tree2")
             .unwrap()
             .expect("node should exist"),
-        // TODO: test for the actual sum here
-        Some(SummedMerk(_))
+        Some(SummedMerk(15)) /* 15 because the child sum tree has one sum item of value 5 and
+                              * another of value 10 */
     ));
 
     let child_sum_tree = open_merk!(db, [TEST_LEAF, b"key", b"tree2"]);
@@ -4379,6 +4390,13 @@ fn test_sum_tree_propagation() {
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(5))
+    ));
+    assert!(matches!(
+        child_sum_tree
+            .get_feature_type(b"sumitem2")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(10))
     ));
     assert!(matches!(
         child_sum_tree

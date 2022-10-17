@@ -153,6 +153,7 @@ impl GroveDb {
                         &mut parent_tree,
                         key,
                         subtree.root_hash().unwrap_add_cost(&mut cost),
+                        subtree.sum(),
                     )
                 );
             } else {
@@ -181,6 +182,7 @@ impl GroveDb {
                         &mut parent_tree,
                         key,
                         subtree.root_hash().unwrap_add_cost(&mut cost),
+                        subtree.sum(),
                     )
                 );
             }
@@ -197,6 +199,7 @@ impl GroveDb {
         parent_tree: &mut Merk<S>,
         key: K,
         root_hash: Hash,
+        sum: Option<i64>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -222,7 +225,11 @@ impl GroveDb {
                 let tree = Element::new_tree_with_flags(root_hash, flag);
                 tree.insert(parent_tree, key.as_ref(), parent_is_sum_tree)
             } else if let Element::SumTree(_, _, flag) = element {
-                let tree = Element::new_sum_tree_with_flags(root_hash, flag);
+                let tree = Element::new_sum_tree_with_flags_and_sum_value(
+                    root_hash,
+                    sum.unwrap_or_default(),
+                    flag,
+                );
                 tree.insert(parent_tree, key.as_ref(), parent_is_sum_tree)
             } else {
                 Err(Error::InvalidPath("can only propagate on tree items"))

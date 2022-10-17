@@ -142,6 +142,14 @@ impl Element {
         Element::SumTree(tree_hash, 0, flags)
     }
 
+    pub fn new_sum_tree_with_flags_and_sum_value(
+        tree_hash: [u8; 32],
+        sum_value: SumValue,
+        flags: ElementFlags,
+    ) -> Self {
+        Element::SumTree(tree_hash, sum_value, flags)
+    }
+
     /// Decoded the integer value in the SumItem element type, returns 0 for
     /// everything else
     pub fn sum_value(&self) -> Option<i64> {
@@ -149,7 +157,7 @@ impl Element {
             Element::SumItem(value, _) => {
                 i64::decode_var(value).map(|(encoded_value, _)| encoded_value)
             }
-            // TODO: should this be None instead??
+            Element::SumTree(_, sum_value, _) => Some(*sum_value),
             _ => Some(0),
         }
     }
