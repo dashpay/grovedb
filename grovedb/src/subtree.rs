@@ -1321,13 +1321,13 @@ mod tests {
         db.insert([TEST_LEAF], b"d", Element::new_item(b"ayyd".to_vec()), None)
             .unwrap()
             .expect("cannot insert element");
-	db.insert([TEST_LEAF], b"c", Element::new_item(b"ayyc".to_vec()), None)
+        db.insert([TEST_LEAF], b"c", Element::new_item(b"ayyc".to_vec()), None)
             .unwrap()
             .expect("cannot insert element");
-	db.insert([TEST_LEAF], b"a", Element::new_item(b"ayya".to_vec()), None)
+        db.insert([TEST_LEAF], b"a", Element::new_item(b"ayya".to_vec()), None)
             .unwrap()
             .expect("cannot insert element");
-	db.insert([TEST_LEAF], b"b", Element::new_item(b"ayyb".to_vec()), None)
+        db.insert([TEST_LEAF], b"b", Element::new_item(b"ayyb".to_vec()), None)
             .unwrap()
             .expect("cannot insert element");
 
@@ -1397,16 +1397,16 @@ mod tests {
     fn test_get_query_with_path() {
         let db = make_test_grovedb();
 
-	db.insert([TEST_LEAF], b"d", Element::new_item(b"ayyd".to_vec()), None)
+        db.insert([TEST_LEAF], b"d", Element::new_item(b"ayyd".to_vec()), None)
             .unwrap()
             .expect("cannot insert element");
-	db.insert([TEST_LEAF], b"c", Element::new_item(b"ayyc".to_vec()), None)
+        db.insert([TEST_LEAF], b"c", Element::new_item(b"ayyc".to_vec()), None)
             .unwrap()
             .expect("cannot insert element");
-	db.insert([TEST_LEAF], b"a", Element::new_item(b"ayya".to_vec()), None)
+        db.insert([TEST_LEAF], b"a", Element::new_item(b"ayya".to_vec()), None)
             .unwrap()
             .expect("cannot insert element");
-	db.insert([TEST_LEAF], b"b", Element::new_item(b"ayyb".to_vec()), None)
+        db.insert([TEST_LEAF], b"b", Element::new_item(b"ayyb".to_vec()), None)
             .unwrap()
             .expect("cannot insert element");
 
@@ -1638,16 +1638,16 @@ mod tests {
     fn test_get_limit_query() {
         let db = make_test_grovedb();
 
-	db.insert([TEST_LEAF], b"d", Element::new_item(b"ayyd".to_vec()), None)
+        db.insert([TEST_LEAF], b"d", Element::new_item(b"ayyd".to_vec()), None)
             .unwrap()
             .expect("cannot insert element");
-	db.insert([TEST_LEAF], b"c", Element::new_item(b"ayyc".to_vec()), None)
+        db.insert([TEST_LEAF], b"c", Element::new_item(b"ayyc".to_vec()), None)
             .unwrap()
             .expect("cannot insert element");
-	db.insert([TEST_LEAF], b"a", Element::new_item(b"ayya".to_vec()), None)
+        db.insert([TEST_LEAF], b"a", Element::new_item(b"ayya".to_vec()), None)
             .unwrap()
             .expect("cannot insert element");
-	db.insert([TEST_LEAF], b"b", Element::new_item(b"ayyb".to_vec()), None)
+        db.insert([TEST_LEAF], b"b", Element::new_item(b"ayyb".to_vec()), None)
             .unwrap()
             .expect("cannot insert element");
 

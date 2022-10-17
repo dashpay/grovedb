@@ -2335,6 +2335,7 @@ fn test_subtree_deletion_if_empty() {
             [TEST_LEAF, b"level1-A", b"level2-A"],
             b"level3-A",
             Some(0),
+            true,
             Some(&transaction),
         )
         .unwrap()
@@ -2420,6 +2421,7 @@ fn test_subtree_deletion_if_empty_without_transaction() {
             [TEST_LEAF, b"level1-A", b"level2-A"],
             b"level3-A",
             Some(0),
+            true,
             None,
         )
         .unwrap()

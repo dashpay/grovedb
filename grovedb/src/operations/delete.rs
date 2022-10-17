@@ -1,6 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
 
-use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 use merk::Merk;
 use storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
@@ -11,19 +13,21 @@ use visualize::DebugByteVectors;
 use crate::{
     batch::{GroveDbOp, KeyInfo, KeyInfoPath, Op},
     util::{
-        merk_optional_tx, storage_context_optional_tx,
-        storage_context_with_parent_no_tx, storage_context_with_parent_optional_tx,
-        storage_context_with_parent_using_tx,
+        merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_no_tx,
+        storage_context_with_parent_optional_tx, storage_context_with_parent_using_tx,
     },
     Element, Error, GroveDb, Transaction, TransactionArg,
 };
 
 impl GroveDb {
+    /// Delete up tree while empty will delete nodes while they are empty up a
+    /// tree.
     pub fn delete_up_tree_while_empty<'p, P>(
         &self,
         path: P,
         key: &'p [u8],
         stop_path_height: Option<u16>,
+        validate: bool,
         transaction: TransactionArg,
     ) -> CostResult<u16, Error>
     where
@@ -31,32 +35,40 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let mut cost = OperationCost::default();
-
-        let mut path_iter = path.into_iter();
-        cost_return_on_error!(
+        let mut batch_operations: Vec<GroveDbOp> = Vec::new();
+        let path_iter = path.into_iter();
+        let path_len = path_iter.len();
+        let maybe_ops = cost_return_on_error!(
             &mut cost,
-            self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
+            self.add_delete_operations_for_delete_up_tree_while_empty(
+                path_iter,
+                key,
+                stop_path_height,
+                validate,
+                &mut batch_operations,
+                transaction
+            )
         );
-        if let Some(stop_path_height) = stop_path_height {
-            if stop_path_height == path_iter.clone().len() as u16 {
-                return Ok(0).wrap_with_cost(cost);
+
+        let ops = cost_return_on_error_no_add!(
+            &cost,
+            if let Some(stop_path_height) = stop_path_height {
+                maybe_ops.ok_or(Error::DeleteUpTreeStopHeightMoreThanInitialPathSize(
+                    format!(
+                        "stop path height {} more than path size of {}",
+                        stop_path_height, path_len
+                    ),
+                ))
+            } else {
+                maybe_ops.ok_or(Error::CorruptedCodeExecution(
+                    "stop path height not set, but still not deleting element",
+                ))
             }
-        }
-        if !cost_return_on_error!(
-            &mut cost,
-            self.delete_internal(path_iter.clone(), key, true, transaction)
-        ) {
-            return Ok(0).wrap_with_cost(cost);
-        }
-        let mut delete_count: u16 = 1;
-        if let Some(last) = path_iter.next_back() {
-            let deleted_parent = cost_return_on_error!(
-                &mut cost,
-                self.delete_up_tree_while_empty(path_iter, last, stop_path_height, transaction)
-            );
-            delete_count += deleted_parent;
-        }
-        Ok(delete_count).wrap_with_cost(cost)
+        );
+        let ops_len = ops.len();
+        dbg!(&ops);
+        self.apply_batch(ops, None, transaction)
+            .map_ok(|_| ops_len as u16)
     }
 
     pub fn delete_operations_for_delete_up_tree_while_empty<'p, P>(
@@ -400,7 +412,10 @@ impl GroveDb {
                 Element::delete(&mut subtree_to_delete_from, &key)
             );
         }
-        merk_cache.insert(path_iter.clone().map(|k| k.to_vec()).collect(), subtree_to_delete_from);
+        merk_cache.insert(
+            path_iter.clone().map(|k| k.to_vec()).collect(),
+            subtree_to_delete_from,
+        );
         cost_return_on_error!(
             &mut cost,
             self.propagate_changes_with_transaction(merk_cache, path_iter, transaction)
@@ -481,7 +496,10 @@ impl GroveDb {
                 Element::delete(&mut subtree_to_delete_from, &key)
             );
         }
-        merk_cache.insert(path_iter.clone().map(|k| k.to_vec()).collect(), subtree_to_delete_from);
+        merk_cache.insert(
+            path_iter.clone().map(|k| k.to_vec()).collect(),
+            subtree_to_delete_from,
+        );
         cost_return_on_error!(
             &mut cost,
             self.propagate_changes_without_transaction(merk_cache, path_iter)

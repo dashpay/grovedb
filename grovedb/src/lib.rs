@@ -14,6 +14,7 @@ mod worst_case_costs;
 
 use std::{collections::HashMap, path::Path};
 
+use ::visualize::DebugByteVectors;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
@@ -28,7 +29,6 @@ pub use storage::{
     Storage, StorageContext,
 };
 pub use subtree::{Element, ElementFlags};
-use ::visualize::DebugByteVectors;
 
 pub use crate::error::Error;
 use crate::util::root_merk_optional_tx;

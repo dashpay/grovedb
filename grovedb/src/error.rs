@@ -54,6 +54,9 @@ pub enum Error {
     #[error("invalid batch operation error: {0}")]
     InvalidBatchOperation(&'static str),
 
+    #[error("delete up tree stop height more than initial path size error: {0}")]
+    DeleteUpTreeStopHeightMoreThanInitialPathSize(String),
+
     // Client allowed errors
     #[error("just in time element flags client error: {0}")]
     JustInTimeElementFlagsClientError(&'static str),

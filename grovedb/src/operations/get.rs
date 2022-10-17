@@ -366,7 +366,7 @@ where {
             Element::get(&merk_to_get_from, parent_key)
         }.unwrap_add_cost(&mut cost);
         match element {
-            Ok(Element::Tree(..)) => { Ok(()).wrap_with_cost(cost) }
+            Ok(Element::Tree(..)) => Ok(()).wrap_with_cost(cost),
             Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error).wrap_with_cost(cost),
             Err(e) => Err(e).wrap_with_cost(cost),
         }
