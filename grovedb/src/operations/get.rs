@@ -134,7 +134,12 @@ impl GroveDb {
         let mut path_iter = path.into_iter();
         let mut merk_to_get_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path_iter.clone(), transaction)
+            self.open_transactional_merk_at_path(path_iter.clone(), transaction).map_err(|e| match e {
+            Error::InvalidPath(s) => {
+                Error::PathNotFound(s)
+            }
+            _ => e
+        })
         );
 
         Element::get(&merk_to_get_from, key).add_cost(cost)
@@ -153,9 +158,15 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         let mut path_iter = path.into_iter();
+
         let mut merk_to_get_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path_iter.clone())
+                    self.open_non_transactional_merk_at_path(path_iter.clone()).map_err(|e| match e {
+            Error::InvalidPath(s) => {
+                Error::PathNotFound(s)
+            }
+            _ => e
+        })
         );
 
         Element::get(&merk_to_get_from, key).add_cost(cost)
@@ -381,10 +392,11 @@ where {
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
+        let path_iter = path.into_iter();
         self.check_subtree_exists(
-            path,
+            path_iter.clone(),
             transaction,
-            Error::PathNotFound("subtree doesn't exist"),
+            Error::PathNotFound(format!("subtree doesn't exist at path {:?}", path_iter.map(|k| hex::encode(k)).collect::<Vec<String>>())),
         )
     }
 
