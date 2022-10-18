@@ -491,14 +491,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 11, // todo: verify this
+                seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 187,
                     replaced_bytes: 99,
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 285,
-                hash_node_calls: 8, // todo: verify this
+                hash_node_calls: 4, // todo: verify this
             }
         );
     }
