@@ -8,13 +8,11 @@ use storage::{
     rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     Storage, StorageContext,
 };
-use visualize::DebugByteVectors;
 
 use crate::{
     batch::{GroveDbOp, KeyInfo, KeyInfoPath, Op},
     util::{
-        merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_no_tx,
-        storage_context_with_parent_optional_tx, storage_context_with_parent_using_tx,
+        merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
     },
     Element, Error, GroveDb, Transaction, TransactionArg,
 };
@@ -217,7 +215,7 @@ impl GroveDb {
             );
 
             if let Element::Tree(..) = element {
-                let mut subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
+                let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
                 let subtree_merk_path_vec = subtree_merk_path
                     .clone()
                     .map(|x| x.to_vec())
@@ -361,13 +359,13 @@ impl GroveDb {
             self.open_transactional_merk_at_path(path_iter.clone(), transaction)
         );
         if let Element::Tree(..) = element {
-            let mut subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
+            let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
             let subtrees_paths = cost_return_on_error!(
                 &mut cost,
                 self.find_subtrees(subtree_merk_path.clone(), Some(transaction))
             );
 
-            let mut subtree_of_tree_we_are_deleting: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+            let subtree_of_tree_we_are_deleting: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
                 self.open_transactional_merk_at_path(path_iter.clone(), transaction)
             );
@@ -448,13 +446,13 @@ impl GroveDb {
             self.open_non_transactional_merk_at_path(path_iter.clone())
         );
         if let Element::Tree(..) = element {
-            let mut subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
+            let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
             let subtrees_paths = cost_return_on_error!(
                 &mut cost,
                 self.find_subtrees(subtree_merk_path.clone(), None)
             );
 
-            let mut subtree_of_tree_we_are_deleting: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+            let subtree_of_tree_we_are_deleting: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
                 self.open_non_transactional_merk_at_path(path_iter.clone())
             );
@@ -554,7 +552,7 @@ impl GroveDb {
 
     pub fn worst_case_deletion_cost<'p, P>(
         &self,
-        path: P,
+        _path: P,
         key: &'p [u8],
         max_element_size: u32,
     ) -> OperationCost

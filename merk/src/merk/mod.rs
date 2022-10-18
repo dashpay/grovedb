@@ -938,7 +938,7 @@ impl Commit for MerkCommitter {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<bool>,
-        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
+        _section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>, /* TODO */
     ) -> Result<()> {
         let tree_size = tree.encoding_length();
         let (mut current_tree_plus_hook_size, mut storage_costs) =
@@ -1260,11 +1260,12 @@ mod test {
             .unwrap();
         drop(merk);
 
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
-            .unwrap()
-            .expect("cannot open merk");
-        let m = merk.get(&9_u64.to_be_bytes());
-        let m = merk.get(&8_u64.to_be_bytes());
+        // let merk =
+        // Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        //     .unwrap()
+        //     .expect("cannot open merk");
+        // let m = merk.get(&9_u64.to_be_bytes());
+        // let merk.get(&8_u64.to_be_bytes());
         // dbg!(m);
     }
 

@@ -17,7 +17,7 @@ use crate::{
     reference_path::{
         path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
     },
-    util::{merk_optional_tx, root_merk_optional_tx, storage_context_optional_tx},
+    util::storage_context_optional_tx,
     Element, Error, GroveDb, PathQuery, Transaction, TransactionArg,
 };
 
@@ -131,10 +131,9 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
 
-        let mut path_iter = path.into_iter();
-        let mut merk_to_get_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+        let merk_to_get_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
             &mut cost,
-            self.open_transactional_merk_at_path(path_iter.clone(), transaction)
+            self.open_transactional_merk_at_path(path.into_iter(), transaction)
                 .map_err(|e| match e {
                     Error::InvalidPath(s) => {
                         Error::PathNotFound(s)
@@ -158,11 +157,9 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
 
-        let mut path_iter = path.into_iter();
-
-        let mut merk_to_get_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+        let merk_to_get_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
             &mut cost,
-            self.open_non_transactional_merk_at_path(path_iter.clone())
+            self.open_non_transactional_merk_at_path(path.into_iter())
                 .map_err(|e| match e {
                     Error::InvalidPath(s) => {
                         Error::PathNotFound(s)
@@ -362,22 +359,22 @@ where {
 
         let mut parent_iter = path_iter;
         let parent_key = parent_iter.next_back().expect("path is not empty");
-        let element =
-                if let Some(transaction) = transaction {
-            let mut merk_to_get_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(parent_iter, transaction)
-        );
+        let element = if let Some(transaction) = transaction {
+            let merk_to_get_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+                &mut cost,
+                self.open_transactional_merk_at_path(parent_iter, transaction)
+            );
 
             Element::get(&merk_to_get_from, parent_key)
         } else {
-            let mut merk_to_get_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
-            &mut cost,
-            self.open_non_transactional_merk_at_path(parent_iter)
-        );
+            let merk_to_get_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+                &mut cost,
+                self.open_non_transactional_merk_at_path(parent_iter)
+            );
 
             Element::get(&merk_to_get_from, parent_key)
-        }.unwrap_add_cost(&mut cost);
+        }
+        .unwrap_add_cost(&mut cost);
         match element {
             Ok(Element::Tree(..)) => Ok(()).wrap_with_cost(cost),
             Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error).wrap_with_cost(cost),
