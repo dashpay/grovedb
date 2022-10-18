@@ -862,7 +862,7 @@ fn test_too_many_indirections() {
 fn test_reference_value_affects_state() {
     let db_one = make_test_grovedb();
     db_one
-        .insert([TEST_LEAF], b"key1", Element::new_item(vec![0]), None)
+        .insert([TEST_LEAF], b"key1", Element::new_item(vec![0]), None, None)
         .unwrap()
         .expect("should insert item");
     db_one
@@ -874,13 +874,14 @@ fn test_reference_value_affects_state() {
                 b"key1".to_vec(),
             ])),
             None,
+            None,
         )
         .unwrap()
         .expect("should insert item");
 
     let db_two = make_test_grovedb();
     db_two
-        .insert([TEST_LEAF], b"key1", Element::new_item(vec![0]), None)
+        .insert([TEST_LEAF], b"key1", Element::new_item(vec![0]), None, None)
         .unwrap()
         .expect("should insert item");
     db_two
@@ -891,6 +892,7 @@ fn test_reference_value_affects_state() {
                 0,
                 vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
             )),
+            None,
             None,
         )
         .unwrap()
