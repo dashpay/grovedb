@@ -480,7 +480,7 @@ mod test {
             &mut worst_case_has_raw_cost,
             &path,
             &key,
-            elem.serialized_byte_size() as u32,
+            elem.serialized_size() as u32,
         );
 
         let actual_cost = db.has_raw([TEST_LEAF], &[2], None);

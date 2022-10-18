@@ -2385,7 +2385,7 @@ fn test_subtree_deletion() {
     assert!(matches!(
         db.get([TEST_LEAF, b"key1", b"key2"], b"key3", None)
             .unwrap(),
-        Err(Error::InvalidPath(_))
+        Err(Error::PathNotFound(_))
     ));
     // assert_eq!(db.subtrees.len().unwrap(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF
     // TEST_LEAF.key4 stay

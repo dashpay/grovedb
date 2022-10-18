@@ -196,43 +196,6 @@ impl Element {
         len + len.required_space() + flag_len + flag_len.required_space() + 1
     }
 
-    /// Get the size of the serialization of an element in bytes
-    pub fn serialized_byte_size(&self) -> usize {
-        match self {
-            Element::Item(item, element_flag) => {
-                let item_len = item.len();
-                let flag_len = if let Some(flag) = element_flag {
-                    flag.len() + 1
-                } else {
-                    0
-                };
-                Self::required_item_space(item_len, flag_len)
-            }
-            Element::Reference(path_reference, _, element_flag) => {
-                let flag_len = if let Some(flag) = element_flag {
-                    flag.len() + 1
-                } else {
-                    0
-                };
-
-                path_reference.serialized_size()
-                    + path_reference.encoding_length().required_space()
-                    + flag_len
-                    + flag_len.required_space()
-                    + 1
-                    + 1 // + 1 for enum and +1 for max reference hop
-            }
-            Element::Tree(_, element_flag) => {
-                let flag_len = if let Some(flag) = element_flag {
-                    flag.len() + 1
-                } else {
-                    0
-                };
-                HASH_LENGTH + flag_len + flag_len.required_space() + 1 // + 1 for enum
-            }
-        }
-    }
-
     pub fn root_info_byte_size(&self, key_len: usize) -> usize {
         match self {
             Element::Tree(..) => {
@@ -255,8 +218,8 @@ impl Element {
     /// Get the size that the element will occupy on disk
     pub fn node_byte_size(&self, key_len: usize) -> usize {
         // todo v23: this is just an approximation for now
-        let serialized_value_size = self.serialized_byte_size();
-        Self::calculate_node_byte_size(serialized_value_size, key_len)
+        let serialized_value_size = self.serialized_size();
+        Self::calculate_node_byte_size(serialized_value_size as usize, key_len)
     }
 
     /// Get the size that the element will occupy on disk
@@ -1154,6 +1117,14 @@ impl Element {
             .map_err(|_| Error::CorruptedData(String::from("unable to serialize element")))
     }
 
+    pub fn serialized_size(&self) -> usize {
+        bincode::DefaultOptions::default()
+            .with_varint_encoding()
+            .reject_trailing_bytes()
+            .serialized_size(self)
+            .unwrap() as usize // this should not be able to error
+    }
+
     pub fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
         bincode::DefaultOptions::default()
             .with_varint_encoding()
@@ -1259,25 +1230,20 @@ mod tests {
         let empty_tree = Element::empty_tree();
         let serialized = empty_tree.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 3);
-        assert_eq!(serialized.len(), empty_tree.serialized_byte_size());
+        assert_eq!(serialized.len(), empty_tree.serialized_size());
         // The tree is fixed length 32 bytes, so it's enum 2 then 32 bytes of zeroes
-        assert_eq!(
-            hex::encode(serialized),
-            "02000000000000000000000000000000000000000000000000000000000000000000"
-        );
+        assert_eq!(hex::encode(serialized), "020000");
 
         let empty_tree = Element::new_tree_with_flags(None, Some(vec![5]));
         let serialized = empty_tree.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 36);
-        assert_eq!(
-            hex::encode(serialized),
-            "020000000000000000000000000000000000000000000000000000000000000000010105"
-        );
+        assert_eq!(serialized.len(), 5);
+        assert_eq!(serialized.len(), empty_tree.serialized_size());
+        assert_eq!(hex::encode(serialized), "0200010105");
 
         let item = Element::new_item(hex::decode("abcdef").expect("expected to decode"));
         let serialized = item.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 6);
-        assert_eq!(serialized.len(), item.serialized_byte_size());
+        assert_eq!(serialized.len(), item.serialized_size());
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "0003abcdef00");
 
@@ -1287,7 +1253,7 @@ mod tests {
         );
         let serialized = item.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 8);
-        assert_eq!(serialized.len(), item.serialized_byte_size());
+        assert_eq!(serialized.len(), item.serialized_size());
         assert_eq!(hex::encode(serialized), "0003abcdef010101");
 
         let reference = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
@@ -1297,7 +1263,7 @@ mod tests {
         ]));
         let serialized = reference.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 12);
-        assert_eq!(serialized.len(), reference.serialized_byte_size());
+        assert_eq!(serialized.len(), reference.serialized_size());
         // The item is variable length 2 bytes, so it's enum 1 then 1 byte for length,
         // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
         assert_eq!(hex::encode(serialized), "010003010002abcd01050000");
@@ -1312,7 +1278,7 @@ mod tests {
         );
         let serialized = reference.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 16);
-        assert_eq!(serialized.len(), reference.serialized_byte_size());
+        assert_eq!(serialized.len(), reference.serialized_size());
         assert_eq!(hex::encode(serialized), "010003010002abcd0105000103010203");
     }
 
