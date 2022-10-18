@@ -1,7 +1,6 @@
 mod converter;
 
 use std::{option::Option::None, path::Path, sync::mpsc, thread};
-use std::option::Option::None;
 
 use grovedb::{GroveDb, Transaction, TransactionArg};
 use neon::prelude::*;

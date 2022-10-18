@@ -862,7 +862,7 @@ where
                 &[],
                 &mut |storage_costs, old_value, new_value| {
                     // todo: change the flags without deserialization
-                    let mut old_element = Element::deserialize(old_value.as_slice())?;
+                    let old_element = Element::deserialize(old_value.as_slice())?;
                     let maybe_old_flags = old_element.get_flags_owned();
 
                     let mut new_element = Element::deserialize(new_value.as_slice())?;
@@ -1302,8 +1302,8 @@ impl GroveDb {
         self.apply_batch_with_element_flags_update(
             ops,
             batch_apply_options,
-            |cost, old_flags, new_flags| Ok(false),
-            |flags, removed_bytes| Ok(BasicStorageRemoval(removed_bytes)),
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, removed_bytes| Ok(BasicStorageRemoval(removed_bytes)),
             transaction,
         )
     }
@@ -2056,8 +2056,8 @@ mod tests {
             .apply_batch_with_element_flags_update(
                 ops,
                 None,
-                |cost, old_flags, new_flags| Ok(false),
-                |flags, removed_bytes| Ok(NoStorageRemoval),
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_bytes| Ok(NoStorageRemoval),
                 Some(&tx),
             )
             .cost;
@@ -2129,8 +2129,8 @@ mod tests {
         db.apply_batch_with_element_flags_update(
             ops,
             None,
-            |cost, old_flags, new_flags| Ok(false),
-            |flags, removed_bytes| Ok(NoStorageRemoval),
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_bytes| Ok(NoStorageRemoval),
             Some(&tx),
         )
         .unwrap()
@@ -2202,8 +2202,8 @@ mod tests {
         db.apply_batch_with_element_flags_update(
             ops,
             None,
-            |cost, old_flags, new_flags| Ok(false),
-            |flags, removed_bytes| Ok(NoStorageRemoval),
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_bytes| Ok(NoStorageRemoval),
             Some(&tx),
         )
         .unwrap()
@@ -2267,18 +2267,20 @@ mod tests {
             ),
         ];
 
-        let batch_result = db.apply_batch_with_element_flags_update(
+        db.apply_batch_with_element_flags_update(
             ops,
             None,
-            |cost, old_flags, new_flags| {
+            |cost, _old_flags, _new_flags| {
                 // we should only either have nodes that are completely replaced (inner_trees)
                 // or added
                 assert!((cost.added_bytes > 0) ^ (cost.replaced_bytes > 0));
                 Ok(false)
             },
-            |flags, removed_bytes| Ok(NoStorageRemoval),
+            |_flags, _removed_bytes| Ok(NoStorageRemoval),
             Some(&tx),
-        );
+        )
+        .unwrap()
+        .expect("successful batch apply");
     }
 
     #[test]
@@ -2331,7 +2333,7 @@ mod tests {
                     }
                     _ => Ok(false),
                 },
-                |flags, removed| Ok(BasicStorageRemoval(removed)),
+                |_flags, removed| Ok(BasicStorageRemoval(removed)),
                 Some(&tx),
             )
             .cost;
@@ -2365,8 +2367,8 @@ mod tests {
         let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(
             worst_case_ops,
             None,
-            |cost, old_flags, new_flags| Ok(false),
-            |flags, removed_bytes| Ok(NoStorageRemoval),
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_bytes| Ok(NoStorageRemoval),
         );
         assert!(worst_case_cost_result.value.is_ok());
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
@@ -2410,8 +2412,8 @@ mod tests {
         let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(
             worst_case_ops,
             None,
-            |cost, old_flags, new_flags| Ok(false),
-            |flags, removed_bytes| Ok(NoStorageRemoval),
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_bytes| Ok(NoStorageRemoval),
         );
         assert!(worst_case_cost_result.value.is_ok());
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
@@ -2454,8 +2456,8 @@ mod tests {
         let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(
             worst_case_ops,
             None,
-            |cost, old_flags, new_flags| Ok(false),
-            |flags, removed_bytes| Ok(NoStorageRemoval),
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_bytes| Ok(NoStorageRemoval),
         );
         assert!(worst_case_cost_result.value.is_ok());
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;

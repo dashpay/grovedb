@@ -135,7 +135,9 @@ where
         // TODO: take from batch so we don't have to clone
 
         let mid_tree = match mid_op {
-            Put(..) => Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec()).unwrap_add_cost(&mut cost),
+            Put(..) => {
+                Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec()).unwrap_add_cost(&mut cost)
+            }
             PutReference(_, referenced_value) => Tree::new_with_combined_value_hash(
                 mid_key.as_ref().to_vec(),
                 mid_value,
@@ -512,7 +514,7 @@ mod test {
     fn delete_recursive() {
         let tree = make_tree_seq(50);
         let batch = [del_entry(29), del_entry(34)];
-        let (maybe_walker, mut updated_keys, mut deleted_keys) = Walker::new(tree, PanicSource {})
+        let (maybe_walker, updated_keys, mut deleted_keys) = Walker::new(tree, PanicSource {})
             .apply_sorted(&batch)
             .unwrap()
             .expect("apply errored");

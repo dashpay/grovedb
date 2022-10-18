@@ -1195,7 +1195,7 @@ mod tests {
     use std::option::Option::None;
 
     use merk::test_utils::TempMerk;
-    use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage};
+    use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
 
     use super::*;
     use crate::{

@@ -7,12 +7,8 @@ use merk::Merk;
 use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 
 use crate::{
-    reference_path::path_from_reference_path_type,
-    util::{
-        merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_no_tx,
-        storage_context_with_parent_optional_tx, storage_context_with_parent_using_tx,
-    },
-    Element, Error, GroveDb, Transaction, TransactionArg,
+    reference_path::path_from_reference_path_type, Element, Error, GroveDb, Transaction,
+    TransactionArg,
 };
 
 pub struct InsertOptions {
@@ -184,8 +180,8 @@ impl GroveDb {
                 );
 
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
-                let mut referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
-                let mut subtree_for_reference: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+                let referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
+                let subtree_for_reference: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                     &mut cost,
                     self.open_transactional_merk_at_path(referenced_path_iter, transaction)
                 );
@@ -293,8 +289,8 @@ impl GroveDb {
                 );
 
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
-                let mut referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
-                let mut subtree_for_reference: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+                let referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
+                let subtree_for_reference: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                     &mut cost,
                     self.open_non_transactional_merk_at_path(referenced_path_iter)
                 );
@@ -371,6 +367,7 @@ mod tests {
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
     };
+    use pretty_assertions::assert_eq;
 
     use crate::{tests::make_empty_grovedb, Element};
 

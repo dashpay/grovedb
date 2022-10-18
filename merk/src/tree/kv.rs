@@ -5,9 +5,7 @@ use ed::{Decode, Encode, Result, Terminated};
 use integer_encoding::VarInt;
 
 use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
-use crate::tree::{
-    hash::{combine_hash, value_hash, kv_digest_to_kv_hash},
-};
+use crate::tree::hash::{combine_hash, kv_digest_to_kv_hash, value_hash};
 
 // TODO: maybe use something similar to Vec but without capacity field,
 //       (should save 16 bytes per entry). also, maybe a shorter length
@@ -151,6 +149,7 @@ impl KV {
         self.key
     }
 
+    #[allow(dead_code)] // TODO
     #[inline]
     pub(crate) fn total_encoding_length_with_parent_to_child_reference(&self) -> usize {
         // we do need the varint required space for the cost of the key in
@@ -185,6 +184,7 @@ impl KV {
         value_len + value_len.required_space() + parent_to_child_reference_len
     }
 
+    #[allow(dead_code)] // TODO
     /// This function is used to calculate the cost of groveDB tree nodes
     /// It pays for the parent hook.
     /// Trees have the root key of the underlying tree as values.

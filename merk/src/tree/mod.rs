@@ -25,8 +25,8 @@ use costs::{
 };
 use ed::{Decode, Encode, Terminated};
 pub use hash::{
-    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, HASH_BLOCK_SIZE, HASH_LENGTH, HASH_LENGTH_U32,
-    NULL_HASH,
+    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash,
+    HASH_BLOCK_SIZE, HASH_LENGTH, HASH_LENGTH_U32, NULL_HASH,
 };
 use integer_encoding::VarInt;
 use kv::KV;
@@ -188,7 +188,7 @@ impl Tree {
                 right: None,
             }),
             old_size_with_parent_to_child_hook: 0,
-            old_value: None
+            old_value: None,
         })
     }
 

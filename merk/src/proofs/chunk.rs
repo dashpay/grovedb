@@ -385,7 +385,10 @@ mod tests {
             counts.hash,
             2usize.pow(MIN_TRUNK_HEIGHT as u32) + MIN_TRUNK_HEIGHT - 1
         );
-        assert_eq!(counts.kv_value_hash, 2usize.pow(MIN_TRUNK_HEIGHT as u32) - 1);
+        assert_eq!(
+            counts.kv_value_hash,
+            2usize.pow(MIN_TRUNK_HEIGHT as u32) - 1
+        );
         assert_eq!(counts.kv_hash, MIN_TRUNK_HEIGHT + 1);
     }
 
