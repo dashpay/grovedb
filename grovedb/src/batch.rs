@@ -545,10 +545,7 @@ trait TreeCache<G, SR> {
         split_removal_bytes: &mut SR,
     ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error>;
 
-    fn update_base_merk_root_key(
-        &mut self,
-        root_key: Option<Vec<u8>>
-    ) -> CostResult<(), Error>;
+    fn update_base_merk_root_key(&mut self, root_key: Option<Vec<u8>>) -> CostResult<(), Error>;
 }
 
 impl<'db, S, F> TreeCacheMerkByPath<S, F>
@@ -740,10 +737,7 @@ where
         Ok(()).wrap_with_cost(cost)
     }
 
-    fn update_base_merk_root_key(
-        &mut self,
-        root_key: Option<Vec<u8>>
-    ) -> CostResult<(), Error> {
+    fn update_base_merk_root_key(&mut self, root_key: Option<Vec<u8>>) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let base_path = vec![];
         let merk_wrapped = self
@@ -752,7 +746,9 @@ where
             .map(|x| Ok(x).wrap_with_cost(Default::default()))
             .unwrap_or_else(|| (self.get_merk_fn)(&[], false));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
-        merk.set_base_root_key(root_key).add_cost(cost).map_err(|_| Error::InternalError("unable to set base root key"))
+        merk.set_base_root_key(root_key)
+            .add_cost(cost)
+            .map_err(|_| Error::InternalError("unable to set base root key"))
     }
 
     fn execute_ops_on_path(
@@ -969,7 +965,6 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
             // todo: add worst case of updating the base root
             // GroveDb::add_worst_case_insert_merk_node()
         } else {
-
         }
         Ok(()).wrap_with_cost(cost)
     }
@@ -1169,11 +1164,8 @@ impl GroveDb {
                     );
                     cost_return_on_error!(
                         &mut cost,
-                    merk_tree_cache.update_base_merk_root_key(
-                        calculated_root_key
-                    )
+                        merk_tree_cache.update_base_merk_root_key(calculated_root_key)
                     );
-
                 } else {
                     let (root_hash, calculated_root_key) = cost_return_on_error!(
                         &mut cost,
@@ -2064,7 +2056,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 6, //todo: explain this
+                hash_node_calls: 6, // todo: explain this
             }
         );
     }
