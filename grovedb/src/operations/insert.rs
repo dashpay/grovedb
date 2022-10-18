@@ -382,17 +382,17 @@ mod tests {
         let cost = db
             .insert(vec![], b"key1", Element::empty_tree(), None, Some(&tx))
             .cost;
-        // Explanation for 214 storage_written_bytes
+        // Explanation for 183 storage_written_bytes
 
         // Key -> 37 bytes
         // 32 bytes for the key prefix
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 99
+        // Value -> 68
         //   1 for the flag option (but no flags)
-        //   1 for the enum type
-        //   32 for empty tree
+        //   1 for the enum type tree
+        //   1 for empty option
         // 32 for node hash
         // 32 for value hash
         // 1 byte for the value_size (required space for 98)
@@ -410,22 +410,22 @@ mod tests {
         // 4 bytes for the key to put in root
         // 1 byte for the root "r"
 
-        // Total 37 + 99 + 39 + 39
+        // Total 37 + 68 + 39 + 39 = 183
 
         // Hash node calls
-        // 2 for the node hash
+        // 1 for the node hash
         // 1 for the value hash
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 4, // 1 to get tree, 1 to insert, 1 for root, 1 for insert into root
+                seek_count: 3, // 1 to get tree, 1 to insert, 1 for insert into root
                 storage_cost: StorageCost {
-                    added_bytes: 214,
+                    added_bytes: 183,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 4, // todo: verify this
+                hash_node_calls: 2, // todo: verify this
             }
         );
     }
