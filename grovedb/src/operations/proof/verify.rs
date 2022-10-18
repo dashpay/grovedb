@@ -368,7 +368,7 @@ impl ProofVerifier {
             }?;
 
             if child_hash != *expected_root_hash {
-                return Err(Error::InvalidProof("Bad path"));
+                return Err(Error::InvalidProof("Bad path: tree hash does not have expected hash"));
             }
 
             *expected_root_hash = proof_result.0;
