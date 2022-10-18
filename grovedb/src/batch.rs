@@ -544,6 +544,11 @@ trait TreeCache<G, SR> {
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
     ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error>;
+
+    fn update_base_merk_root_key(
+        &mut self,
+        root_key: Option<Vec<u8>>
+    ) -> CostResult<(), Error>;
 }
 
 impl<'db, S, F> TreeCacheMerkByPath<S, F>
@@ -735,6 +740,21 @@ where
         Ok(()).wrap_with_cost(cost)
     }
 
+    fn update_base_merk_root_key(
+        &mut self,
+        root_key: Option<Vec<u8>>
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        let base_path = vec![];
+        let merk_wrapped = self
+            .merks
+            .remove(&base_path)
+            .map(|x| Ok(x).wrap_with_cost(Default::default()))
+            .unwrap_or_else(|| (self.get_merk_fn)(&[], false));
+        let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
+        merk.set_base_root_key(root_key).add_cost(cost).map_err(|_| Error::InternalError("unable to set base root key"))
+    }
+
     fn execute_ops_on_path(
         &mut self,
         path: &KeyInfoPath,
@@ -920,7 +940,7 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
     ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error> {
         let mut cost = OperationCost::default();
 
-        if !self.paths.remove(path) {
+        if !self.paths.contains(path) {
             // Then we have to get the tree
             GroveDb::add_worst_case_get_merk::<RocksDbStorage>(&mut cost, path);
         }
@@ -935,6 +955,23 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
             MerkWorstCaseInput::NumberOfLevels(path.len()),
         );
         Ok(([0u8; 32], None)).wrap_with_cost(cost)
+    }
+
+    fn update_base_merk_root_key(&mut self, root_key: Option<Vec<u8>>) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        let base_path = KeyInfoPath(vec![]);
+        if !self.paths.contains(&base_path) {
+            // Then we have to get the tree
+            GroveDb::add_worst_case_get_merk::<RocksDbStorage>(&mut cost, &base_path);
+        }
+        if let Some(root_key) = root_key {
+            // todo: add worst case of updating the base root
+            // GroveDb::add_worst_case_insert_merk_node()
+        } else {
+
+        }
+        Ok(()).wrap_with_cost(cost)
     }
 }
 
@@ -1119,7 +1156,7 @@ impl GroveDb {
                         }
                     }
                     // execute the ops at this path
-                    cost_return_on_error!(
+                    let (root_hash, calculated_root_key) = cost_return_on_error!(
                         &mut cost,
                         merk_tree_cache.execute_ops_on_path(
                             &path,
@@ -1130,6 +1167,13 @@ impl GroveDb {
                             &mut split_removal_bytes,
                         )
                     );
+                    cost_return_on_error!(
+                        &mut cost,
+                    merk_tree_cache.update_base_merk_root_key(
+                        calculated_root_key
+                    )
+                    );
+
                 } else {
                     let (root_hash, calculated_root_key) = cost_return_on_error!(
                         &mut cost,
@@ -1383,11 +1427,9 @@ impl GroveDb {
                             .unwrap_add_cost(&mut local_cost);
 
                         if new_merk {
-                            dbg!("new tree {:?}", path);
                             Ok(Merk::open_empty(storage)).wrap_with_cost(local_cost)
                         } else {
                             if let Some((last, base_path)) = path.split_last() {
-                                dbg!("previous tree {:?}", path);
                                 let parent_storage = self
                                     .db
                                     .get_transactional_storage_context(
@@ -1800,10 +1842,10 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 99
+        // Value -> 68
         //   1 for the flag option (but no flags)
         //   1 for the enum type
-        //   32 for empty tree
+        //   1 for empty tree value
         // 32 for node hash
         // 32 for value hash
         // 1 byte for the value_size (required space for 98)
@@ -1821,7 +1863,7 @@ mod tests {
         // 4 bytes for the key to put in root
         // 1 byte for the root "r"
 
-        // Total 37 + 99 + 39 + 39
+        // Total 37 + 68 + 39 + 39
 
         // Hash node calls
         // 2 for the node hash
@@ -1831,12 +1873,12 @@ mod tests {
             OperationCost {
                 seek_count: 2, // 1 to get tree, 1 to insert
                 storage_cost: StorageCost {
-                    added_bytes: 214,
+                    added_bytes: 183,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 5,
+                hash_node_calls: 6,
             }
         );
     }
@@ -1891,14 +1933,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 1, // 1 to insert
+                seek_count: 2, // 1 to get tree, 1 to insert
                 storage_cost: StorageCost {
                     added_bytes: 215,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 5,
+                hash_node_calls: 6,
             }
         );
     }
@@ -1953,14 +1995,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 1, // 1 to insert
+                seek_count: 2, // 1 to insert, 1 for root tree.
                 storage_cost: StorageCost {
                     added_bytes: 243,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 5,
+                hash_node_calls: 6,
             }
         );
     }
@@ -2015,14 +2057,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 1, // 1 to insert
+                seek_count: 2, // 1 to insert, 1 for insert to root tree
                 storage_cost: StorageCost {
                     added_bytes: 245,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 5,
+                hash_node_calls: 6, //todo: explain this
             }
         );
     }
@@ -2065,7 +2107,7 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 4, // 1 to get tree, 1 to insert
+                seek_count: 6, // 1 to get tree, 1 to insert
                 storage_cost: StorageCost {
                     added_bytes: 2,
                     replaced_bytes: 257,

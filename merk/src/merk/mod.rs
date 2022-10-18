@@ -805,8 +805,12 @@ where
     /// Sets the tree's top node (base) key
     /// The base root key should only be used if the Merk tree is independent
     /// Meaning that it doesn't have a parent Merk
-    pub(crate) fn set_base_root_key(&mut self, key: &[u8]) -> Result<()> {
-        Ok(self.storage.put_root(ROOT_KEY_KEY, key, None).unwrap()?) // todo: maybe change None?
+    pub fn set_base_root_key(&mut self, key: Option<Vec<u8>>) -> CostContext<Result<(), Error>> {
+        if let Some(key) = key {
+            self.storage.put_root(ROOT_KEY_KEY, key.as_slice(), None).map_err(|e| anyhow!(e)) // todo: maybe change None?
+        } else {
+            self.storage.delete_root(ROOT_KEY_KEY).map_err(|e| anyhow!(e)) // todo: maybe change None?
+        }
     }
 
     /// Loads the Merk from the base root key
