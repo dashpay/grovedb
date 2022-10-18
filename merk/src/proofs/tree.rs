@@ -4,7 +4,9 @@ use costs::{
 };
 
 use super::{Node, Op};
-use crate::tree::{kv_digest_to_kv_hash, kv_hash, node_hash, CryptoHash, NULL_HASH};
+use crate::tree::{
+    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, NULL_HASH,
+};
 
 /// Contains a tree's child node and its hash. The hash can always be assumed to
 /// be up-to-date.
@@ -62,6 +64,16 @@ impl Tree {
             }
             Node::KVDigest(key, value_hash) => kv_digest_to_kv_hash(key, value_hash)
                 .flat_map(|kv_hash| compute_hash(self, kv_hash)),
+            Node::KVRefValueHash(key, referenced_value, node_value_hash) => {
+                let mut cost = OperationCost::default();
+                let referenced_value_hash =
+                    value_hash(referenced_value.as_slice()).unwrap_add_cost(&mut cost);
+                let combined_value_hash = combine_hash(node_value_hash, &referenced_value_hash)
+                    .unwrap_add_cost(&mut cost);
+
+                kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash)
+                    .flat_map(|kv_hash| compute_hash(self, kv_hash))
+            }
         }
     }
 
@@ -159,7 +171,9 @@ impl Tree {
 
     pub(crate) fn key(&self) -> &[u8] {
         match self.node {
-            Node::KV(ref key, _) | Node::KVValueHash(ref key, ..) => key,
+            Node::KV(ref key, _)
+            | Node::KVValueHash(ref key, ..)
+            | Node::KVRefValueHash(ref key, ..) => key,
             _ => panic!("Expected node to be type KV"),
         }
     }
@@ -338,7 +352,10 @@ where
                 stack.push(parent);
             }
             Op::Push(node) => {
-                if let Node::KV(key, _) | Node::KVValueHash(key, ..) = &node {
+                if let Node::KV(key, _)
+                | Node::KVValueHash(key, ..)
+                | Node::KVRefValueHash(key, ..) = &node
+                {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
                         if key <= last_key {
@@ -355,7 +372,10 @@ where
                 stack.push(tree);
             }
             Op::PushInverted(node) => {
-                if let Node::KV(key, _) | Node::KVValueHash(key, ..) = &node {
+                if let Node::KV(key, _)
+                | Node::KVValueHash(key, ..)
+                | Node::KVRefValueHash(key, ..) = &node
+                {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
                         if key >= last_key {

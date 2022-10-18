@@ -135,8 +135,8 @@ where
         // TODO: take from batch so we don't have to clone
 
         let mid_tree = match mid_op {
-            Put(..) => Tree::new(mid_key.as_ref().to_vec(), mid_value).unwrap_add_cost(&mut cost),
-            PutReference(_, referenced_value) => Tree::new_with_value_hash(
+            Put(..) => Tree::new(mid_key.as_ref().to_vec(), mid_value.to_vec()).unwrap_add_cost(&mut cost),
+            PutReference(_, referenced_value) => Tree::new_with_combined_value_hash(
                 mid_key.as_ref().to_vec(),
                 mid_value,
                 referenced_value.to_owned(),
