@@ -595,7 +595,7 @@ where
             let op_cost = OperationCost::default();
             let op_result = match &op.op {
                 Op::Insert { element } => {
-                    if let Element::Tree(..) = element {
+                    if let Element::Tree(..) | Element::SumTree(..) = element {
                         cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op));
                     }
                     Ok(())
