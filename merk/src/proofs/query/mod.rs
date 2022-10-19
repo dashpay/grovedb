@@ -1296,10 +1296,13 @@ pub fn execute_proof(
         };
 
         if let Node::KV(key, value) = node {
+            dbg!("pushing kv");
             execute_node(key, Some(value), value_hash(value).unwrap())?;
         } else if let Node::KVDigest(key, value_hash) = node {
+            dbg!("pushing kv digest");
             execute_node(key, None, value_hash.clone())?;
         } else if let Node::KVRefValueHash(key, value, value_hash) = node {
+            dbg!("pushing kv ref value hash");
             execute_node(key, Some(value), value_hash.clone())?;
         } else if in_range {
             // we encountered a queried range but the proof was abridged (saw a

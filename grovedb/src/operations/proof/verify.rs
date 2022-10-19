@@ -116,7 +116,6 @@ impl ProofVerifier {
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
                     match child_element {
                         Element::Tree(expected_root_key, _) => {
-
                             let mut expected_child_hash = value_hash;
 
                             // What is the equivalent for an empty tree
@@ -344,8 +343,10 @@ impl ProofVerifier {
         proof_reader: &mut ProofReader,
         expected_root_hash: &mut [u8; 32],
     ) -> Result<[u8; 32], Error> {
+        dbg!("verifying path to root");
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
+            dbg!(std::str::from_utf8(key));
             // for every subtree, there should be a corresponding proof for the parent
             // which should prove that this subtree is a child of the parent tree
             let parent_merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
@@ -364,18 +365,24 @@ impl ProofVerifier {
                 .1
                 .expect("MERK_PROOF always returns a result set");
             if result_set.is_empty() || &result_set[0].0 != key {
+                dbg!("I was called");
                 return Err(Error::InvalidProof("proof invalid: invalid parent"));
             }
 
             let elem = Element::deserialize(result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(..) => Ok(result_set[0].2),
+                Element::Tree(root_key, ..) => {
+                    dbg!(std::str::from_utf8(root_key.unwrap().as_slice()));
+                    Ok(result_set[0].2)
+                },
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),
             }?;
 
             if child_hash != *expected_root_hash {
+                // dbg!(&child_hash);
+                // dbg!(&expected_root_hash);
                 return Err(Error::InvalidProof(
                     "Bad path: tree hash does not have expected hash",
                 ));
