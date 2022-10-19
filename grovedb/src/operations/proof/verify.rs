@@ -115,7 +115,10 @@ impl ProofVerifier {
                 for (key, value_bytes, value_hash) in children {
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
                     match child_element {
-                        Element::Tree(mut expected_root_key, _) => {
+                        Element::Tree(expected_root_key, _) => {
+
+                            let mut expected_child_hash = value_hash;
+
                             // What is the equivalent for an empty tree
                             if expected_root_key.is_none() {
                                 // child node is empty, move on to next
@@ -172,7 +175,7 @@ impl ProofVerifier {
                                     }
 
                                     Self::update_root_key_from_subquery_key_element(
-                                        &mut expected_root_key,
+                                        &mut expected_child_hash,
                                         &subquery_key_result_set,
                                     )?;
                                 }
@@ -189,7 +192,9 @@ impl ProofVerifier {
                                 new_path_query,
                             )?;
 
-                            if child_hash != value_hash {
+                            if child_hash != expected_child_hash {
+                                // dbg!(child_hash);
+                                // dbg!(expected_child_hash);
                                 return Err(Error::InvalidProof(
                                     "child hash doesn't match the expected hash",
                                 ));
@@ -217,16 +222,19 @@ impl ProofVerifier {
     }
 
     /// Deserialize subkey_element and update expected root hash
-    fn update_root_key_from_subquery_key_element(
-        expected_root_key: &mut Option<Vec<u8>>,
+    fn update_root_key_from_subquery_key_element<'a>(
+        expected_child_hash: &mut CryptoHash,
         subquery_key_result_set: &[ProofKeyValue],
     ) -> Result<(), Error> {
+        // dbg!(&expected_value_hash);
         let elem_value = &subquery_key_result_set[0].1;
         let subquery_key_element = Element::deserialize(elem_value)
             .map_err(|_| Error::CorruptedData("failed to deserialize element".to_string()))?;
         match subquery_key_element {
-            Element::Tree(new_expected_root_key, _) => {
-                *expected_root_key = new_expected_root_key;
+            // TODO: Add sum trees here
+            Element::Tree(..) => {
+                *expected_child_hash = subquery_key_result_set[0].2;
+                // dbg!(&expected_value_hash);
             }
             _ => {
                 // the means that the subquery key pointed to a non tree
@@ -361,7 +369,7 @@ impl ProofVerifier {
 
             let elem = Element::deserialize(result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(hash, _) => Ok(result_set[0].2),
+                Element::Tree(..) => Ok(result_set[0].2),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),
