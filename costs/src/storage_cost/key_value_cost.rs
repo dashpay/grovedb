@@ -1,10 +1,14 @@
-use std::cmp::Ordering;
-use std::ops::{Add, AddAssign};
+use std::{
+    cmp::Ordering,
+    ops::{Add, AddAssign},
+};
 
 use integer_encoding::VarInt;
-use crate::BasicStorageRemoval;
 
-use crate::storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost};
+use crate::{
+    storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
+    BasicStorageRemoval,
+};
 
 /// Storage only Operation Costs separated by key and value
 #[derive(PartialEq, Clone, Eq)]
@@ -38,13 +42,11 @@ impl KeyValueStorageCost {
                         removed_bytes: BasicStorageRemoval(old_bytes - new_bytes),
                     }
                 }
-                Ordering::Equal => {
-                    StorageCost {
-                        added_bytes: 0,
-                        replaced_bytes: new_bytes,
-                        removed_bytes: NoStorageRemoval,
-                    }
-                }
+                Ordering::Equal => StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: new_bytes,
+                    removed_bytes: NoStorageRemoval,
+                },
                 Ordering::Greater => {
                     let old_bytes = old_tree_key_len + old_tree_key_len.required_space() as u32;
                     StorageCost {
@@ -61,7 +63,7 @@ impl KeyValueStorageCost {
             }
         } else {
             KeyValueStorageCost {
-                key_storage_cost : StorageCost {
+                key_storage_cost: StorageCost {
                     added_bytes: 34, // prefix + 1 for 'r' + 1 required space
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,

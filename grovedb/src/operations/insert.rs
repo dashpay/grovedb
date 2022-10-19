@@ -134,7 +134,7 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
         let path_iter = path.into_iter();
-        let mut subtree_to_insert_into: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+        let mut subtree_to_insert_into = cost_return_on_error!(
             &mut cost,
             self.open_transactional_merk_at_path(path_iter.clone(), transaction)
         );
@@ -181,7 +181,7 @@ impl GroveDb {
 
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
                 let referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
-                let subtree_for_reference: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+                let subtree_for_reference = cost_return_on_error!(
                     &mut cost,
                     self.open_transactional_merk_at_path(referenced_path_iter, transaction)
                 );
@@ -290,7 +290,7 @@ impl GroveDb {
 
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
                 let referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
-                let subtree_for_reference: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+                let subtree_for_reference = cost_return_on_error!(
                     &mut cost,
                     self.open_non_transactional_merk_at_path(referenced_path_iter)
                 );

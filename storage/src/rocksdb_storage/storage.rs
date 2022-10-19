@@ -254,16 +254,16 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     // We only add costs for put root if they are set, otherwise it is free
                     if cost_info.is_some() {
                         cost_return_on_error_no_add!(
-                        &cost,
-                        pending_costs
-                            .add_key_value_storage_costs(
-                                key.len() as u32,
-                                value.len() as u32,
-                                None,
-                                cost_info
-                            )
-                            .map_err(CostError)
-                    );
+                            &cost,
+                            pending_costs
+                                .add_key_value_storage_costs(
+                                    key.len() as u32,
+                                    value.len() as u32,
+                                    None,
+                                    cost_info
+                                )
+                                .map_err(CostError)
+                        );
                     }
                 }
                 AbstractBatchOperation::PutMeta {

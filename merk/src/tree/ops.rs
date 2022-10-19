@@ -84,26 +84,56 @@ where
         maybe_tree: Option<Self>,
         batch: &MerkBatch<K>,
         source: S,
-    ) -> CostContext<Result<(Option<Tree>, NewKeys, UpdatedKeys, DeletedKeys, UpdatedRootKeyFrom)>> {
+    ) -> CostContext<
+        Result<(
+            Option<Tree>,
+            NewKeys,
+            UpdatedKeys,
+            DeletedKeys,
+            UpdatedRootKeyFrom,
+        )>,
+    > {
         let mut cost = OperationCost::default();
 
-        let (maybe_walker, new_keys, updated_keys, deleted_keys, updated_root_key_from) = if batch.is_empty() {
-            (maybe_tree, BTreeSet::default(), BTreeSet::default(), LinkedList::default(), None)
-        } else {
-            match maybe_tree {
-                None => {
-                    return Self::build(batch, source)
-                        .map_ok(|tree| {
-                            let new_keys: BTreeSet<Vec<u8>> = batch.iter().map(|batch_entry| batch_entry.0.as_ref().to_vec()).collect();
-                            (tree, new_keys, BTreeSet::default(), LinkedList::default(), None)
+        let (maybe_walker, new_keys, updated_keys, deleted_keys, updated_root_key_from) =
+            if batch.is_empty() {
+                (
+                    maybe_tree,
+                    BTreeSet::default(),
+                    BTreeSet::default(),
+                    LinkedList::default(),
+                    None,
+                )
+            } else {
+                match maybe_tree {
+                    None => {
+                        return Self::build(batch, source).map_ok(|tree| {
+                            let new_keys: BTreeSet<Vec<u8>> = batch
+                                .iter()
+                                .map(|batch_entry| batch_entry.0.as_ref().to_vec())
+                                .collect();
+                            (
+                                tree,
+                                new_keys,
+                                BTreeSet::default(),
+                                LinkedList::default(),
+                                None,
+                            )
                         })
+                    }
+                    Some(tree) => cost_return_on_error!(&mut cost, tree.apply_sorted(batch)),
                 }
-                Some(tree) => cost_return_on_error!(&mut cost, tree.apply_sorted(batch)),
-            }
-        };
+            };
 
         let maybe_tree = maybe_walker.map(|walker| walker.into_inner());
-        Ok((maybe_tree, new_keys, updated_keys, deleted_keys, updated_root_key_from)).wrap_with_cost(cost)
+        Ok((
+            maybe_tree,
+            new_keys,
+            updated_keys,
+            deleted_keys,
+            updated_root_key_from,
+        ))
+        .wrap_with_cost(cost)
     }
 
     /// Builds a `Tree` from a batch of operations.
@@ -160,7 +190,13 @@ where
         // use walker, ignore deleted_keys since it should be empty
         Ok(cost_return_on_error!(
             &mut cost,
-            mid_walker.recurse(batch, mid_index, true, BTreeSet::default(), BTreeSet::default())
+            mid_walker.recurse(
+                batch,
+                mid_index,
+                true,
+                BTreeSet::default(),
+                BTreeSet::default()
+            )
         )
         .0
         .map(|w| w.into_inner()))
@@ -174,7 +210,15 @@ where
     fn apply_sorted<K: AsRef<[u8]>>(
         self,
         batch: &MerkBatch<K>,
-    ) -> CostContext<Result<(Option<Self>, NewKeys, UpdatedKeys, DeletedKeys, UpdatedRootKeyFrom)>> {
+    ) -> CostContext<
+        Result<(
+            Option<Self>,
+            NewKeys,
+            UpdatedKeys,
+            DeletedKeys,
+            UpdatedRootKeyFrom,
+        )>,
+    > {
         let mut cost = OperationCost::default();
 
         let key_vec = self.tree().key().to_vec();
@@ -199,13 +243,26 @@ where
                     let key = self.tree().key().to_vec();
                     let maybe_tree = cost_return_on_error!(&mut cost, self.remove());
 
-                    let (maybe_tree, mut new_keys, mut updated_keys, mut deleted_keys, _) = cost_return_on_error!(
+                    #[rustfmt::skip]
+                    let (
+			maybe_tree,
+			mut new_keys,
+			mut updated_keys,
+			mut deleted_keys,
+			_
+		    ) = cost_return_on_error!(
                         &mut cost,
                         Self::apply_to(maybe_tree, &batch[..index], source.clone())
                     );
                     let maybe_walker = wrap(maybe_tree);
 
-                    let (maybe_tree, mut new_keys_right, mut updated_keys_right, mut deleted_keys_right, _) = cost_return_on_error!(
+                    let (
+                        maybe_tree,
+                        mut new_keys_right,
+                        mut updated_keys_right,
+                        mut deleted_keys_right,
+                        _,
+                    ) = cost_return_on_error!(
                         &mut cost,
                         Self::apply_to(maybe_walker, &batch[index + 1..], source.clone())
                     );
@@ -216,7 +273,14 @@ where
                     deleted_keys.append(&mut deleted_keys_right);
                     deleted_keys.push_back(key);
 
-                    return Ok((maybe_walker, new_keys, updated_keys, deleted_keys, Some(key_vec))).wrap_with_cost(cost);
+                    return Ok((
+                        maybe_walker,
+                        new_keys,
+                        updated_keys,
+                        deleted_keys,
+                        Some(key_vec),
+                    ))
+                    .wrap_with_cost(cost);
                 }
             }
         } else {
@@ -251,7 +315,15 @@ where
         exclusive: bool,
         mut new_keys: BTreeSet<Vec<u8>>,
         mut updated_keys: BTreeSet<Vec<u8>>,
-    ) -> CostContext<Result<(Option<Self>, NewKeys, UpdatedKeys, DeletedKeys, UpdatedRootKeyFrom)>> {
+    ) -> CostContext<
+        Result<(
+            Option<Self>,
+            NewKeys,
+            UpdatedKeys,
+            DeletedKeys,
+            UpdatedRootKeyFrom,
+        )>,
+    > {
         let mut cost = OperationCost::default();
 
         let left_batch = &batch[..mid];
@@ -271,7 +343,13 @@ where
                 &mut cost,
                 self.walk(true, |maybe_left| {
                     Self::apply_to(maybe_left, left_batch, source).map_ok(
-                        |(maybe_left, mut new_keys_left, mut updated_keys_left, mut deleted_keys_left, _)| {
+                        |(
+                            maybe_left,
+                            mut new_keys_left,
+                            mut updated_keys_left,
+                            mut deleted_keys_left,
+                            _,
+                        )| {
                             new_keys.append(&mut new_keys_left);
                             updated_keys.append(&mut updated_keys_left);
                             deleted_keys.append(&mut deleted_keys_left);
@@ -290,7 +368,13 @@ where
                 &mut cost,
                 tree.walk(false, |maybe_right| {
                     Self::apply_to(maybe_right, right_batch, source).map_ok(
-                        |(maybe_right, mut new_keys_left, mut updated_keys_left, mut deleted_keys_right, _)| {
+                        |(
+                            maybe_right,
+                            mut new_keys_left,
+                            mut updated_keys_left,
+                            mut deleted_keys_right,
+                            _,
+                        )| {
                             new_keys.append(&mut new_keys_left);
                             updated_keys.append(&mut updated_keys_left);
                             deleted_keys.append(&mut deleted_keys_right);
@@ -307,9 +391,20 @@ where
 
         let new_root_key = tree.tree().key();
 
-        let updated_from = if !old_root_key.eq(new_root_key) { Some(old_root_key) } else { None };
+        let updated_from = if !old_root_key.eq(new_root_key) {
+            Some(old_root_key)
+        } else {
+            None
+        };
 
-        Ok((Some(tree), new_keys, updated_keys, deleted_keys, updated_from)).wrap_with_cost(cost)
+        Ok((
+            Some(tree),
+            new_keys,
+            updated_keys,
+            deleted_keys,
+            updated_from,
+        ))
+        .wrap_with_cost(cost)
     }
 
     /// Gets the wrapped tree's balance factor.

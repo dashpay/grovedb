@@ -354,7 +354,7 @@ impl GroveDb {
         );
         let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
             HashMap::default();
-        let mut subtree_to_delete_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+        let mut subtree_to_delete_from = cost_return_on_error!(
             &mut cost,
             self.open_transactional_merk_at_path(path_iter.clone(), transaction)
         );
@@ -365,7 +365,7 @@ impl GroveDb {
                 self.find_subtrees(subtree_merk_path.clone(), Some(transaction))
             );
 
-            let subtree_of_tree_we_are_deleting: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+            let subtree_of_tree_we_are_deleting = cost_return_on_error!(
                 &mut cost,
                 self.open_transactional_merk_at_path(path_iter.clone(), transaction)
             );
@@ -452,7 +452,7 @@ impl GroveDb {
                 self.find_subtrees(subtree_merk_path.clone(), None)
             );
 
-            let subtree_of_tree_we_are_deleting: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+            let subtree_of_tree_we_are_deleting = cost_return_on_error!(
                 &mut cost,
                 self.open_non_transactional_merk_at_path(path_iter.clone())
             );
@@ -466,7 +466,7 @@ impl GroveDb {
                 if !is_empty {
                     // TODO: dumb traversal should not be tolerated
                     for subtree_path in subtrees_paths.into_iter().rev() {
-                        let mut inner_subtree_to_delete_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+                        let mut inner_subtree_to_delete_from = cost_return_on_error!(
                             &mut cost,
                             self.open_non_transactional_merk_at_path(
                                 subtree_path.iter().map(|x| x.as_slice())
