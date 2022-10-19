@@ -26,6 +26,7 @@ use crate::{
         AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree, Walker,
         NULL_HASH,
     },
+    MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
 };
 
 type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
@@ -152,11 +153,34 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
     }
 }
 
+#[derive(PartialEq, Eq)]
+pub enum MerkType {
+    /// A StandaloneMerk has it's root key storage on a field and pays for root
+    /// key updates
+    StandaloneMerk,
+    /// A BaseMerk has it's root key storage on a field but does not pay for
+    /// when these keys change
+    BaseMerk,
+    /// A LayeredMerk has it's root key storage inside a parent merk
+    LayeredMerk,
+}
+
+impl MerkType {
+    pub(crate) fn requires_root_storage_update(&self) -> bool {
+        match self {
+            StandaloneMerk => true,
+            BaseMerk => true,
+            LayeredMerk => false,
+        }
+    }
+}
+
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk<S> {
     pub(crate) tree: Cell<Option<Tree>>,
     pub(crate) root_tree_key: Cell<Option<Vec<u8>>>,
     pub storage: S,
+    pub merk_type: MerkType,
 }
 
 impl<S> fmt::Debug for Merk<S> {
@@ -181,12 +205,24 @@ where
     S: StorageContext<'db>,
     <S as StorageContext<'db>>::Error: std::error::Error,
 {
-    pub fn open_empty(storage: S) -> Self {
+    pub fn open_empty(storage: S, merk_type: MerkType) -> Self {
         Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
             storage,
+            merk_type,
         }
+    }
+
+    pub fn open_standalone(storage: S) -> CostContext<Result<Self>> {
+        let mut merk = Self {
+            tree: Cell::new(None),
+            root_tree_key: Cell::new(None),
+            storage,
+            merk_type: StandaloneMerk,
+        };
+
+        merk.load_base_root().map_ok(|_| merk)
     }
 
     pub fn open_base(storage: S) -> CostContext<Result<Self>> {
@@ -194,16 +230,21 @@ where
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
             storage,
+            merk_type: BaseMerk,
         };
 
         merk.load_base_root().map_ok(|_| merk)
     }
 
-    pub fn open_with_root_key(storage: S, root_key: Option<Vec<u8>>) -> CostContext<Result<Self>> {
+    pub fn open_layered_with_root_key(
+        storage: S,
+        root_key: Option<Vec<u8>>,
+    ) -> CostContext<Result<Self>> {
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(root_key),
             storage,
+            merk_type: MerkType::LayeredMerk,
         };
 
         merk.load_root().map_ok(|_| merk)
@@ -541,12 +582,15 @@ where
         }
 
         Walker::apply_to(maybe_walker, batch, self.source()).flat_map_ok(
-            |(maybe_tree, updated_keys, deleted_keys)| {
+            |(maybe_tree, new_keys, updated_keys, deleted_keys, updated_root_key_from)| {
+                // we set the new root node of the merk tree
                 self.tree.set(maybe_tree);
                 // commit changes to db
                 self.commit(
+                    new_keys,
                     updated_keys,
                     deleted_keys,
+                    updated_root_key_from,
                     aux,
                     update_tree_value_based_on_costs,
                     section_removal_bytes,
@@ -643,8 +687,10 @@ where
 
     pub fn commit<K>(
         &mut self,
+        new_keys: BTreeSet<Vec<u8>>,
         updated_keys: BTreeSet<Vec<u8>>,
         deleted_keys: LinkedList<Vec<u8>>,
+        updated_root_key_from: Option<Vec<u8>>,
         aux: &AuxMerkBatch<K>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
@@ -682,26 +728,41 @@ where
                     None => {}
                     Some(_) => {}
                 }
-                let costs = if updated_keys.contains(tree_key) {
-                    Some(KeyValueStorageCost::for_updated_root_cost(
-                        tree_key.len() as u32
-                    ))
-                } else {
-                    None
-                };
-                // update pointer to root node
-                cost_return_on_error_no_add!(
-                    &inner_cost,
-                    batch
-                        .put_root(ROOT_KEY_KEY, tree_key, costs)
-                        .map_err(CostError)
-                        .map_err(|e| e.into())
-                );
+                // if they are a base merk we should update the root key
+                if self.merk_type.requires_root_storage_update() {
+                    // there are two situation where we want to put the root key
+                    // it was updated from something else
+                    // or it is part of new keys
+                    if updated_root_key_from.is_some() || new_keys.contains(tree_key) {
+                        let costs = if self.merk_type == StandaloneMerk {
+                            // if we are a standalone merk we want real costs
+                            Some(KeyValueStorageCost::for_updated_root_cost(
+                                updated_root_key_from.as_ref().map(|k| k.len() as u32),
+                                tree_key.len() as u32,
+                            ))
+                        } else {
+                            // if we are a base merk we estimate these costs are free
+                            // This None does not guarantee they are free though
+                            None
+                        };
+
+                        // update pointer to root node
+                        cost_return_on_error_no_add!(
+                            &inner_cost,
+                            batch
+                                .put_root(ROOT_KEY_KEY, tree_key, costs)
+                                .map_err(CostError)
+                                .map_err(|e| e.into())
+                        );
+                    }
+                }
 
                 Ok(committer.batch)
             } else {
-                // empty tree, delete pointer to root
-                batch.delete_root(ROOT_KEY_KEY);
+                if self.merk_type.requires_root_storage_update() {
+                    // empty tree, delete pointer to root
+                    batch.delete_root(ROOT_KEY_KEY);
+                }
 
                 Ok(vec![])
             }
@@ -805,8 +866,16 @@ where
     /// Sets the tree's top node (base) key
     /// The base root key should only be used if the Merk tree is independent
     /// Meaning that it doesn't have a parent Merk
-    pub(crate) fn set_base_root_key(&mut self, key: &[u8]) -> Result<()> {
-        Ok(self.storage.put_root(ROOT_KEY_KEY, key, None).unwrap()?) // todo: maybe change None?
+    pub fn set_base_root_key(&mut self, key: Option<Vec<u8>>) -> CostContext<Result<(), Error>> {
+        if let Some(key) = key {
+            self.storage
+                .put_root(ROOT_KEY_KEY, key.as_slice(), None)
+                .map_err(|e| anyhow!(e)) // todo: maybe change None?
+        } else {
+            self.storage
+                .delete_root(ROOT_KEY_KEY)
+                .map_err(|e| anyhow!(e)) // todo: maybe change None?
+        }
     }
 
     /// Loads the Merk from the base root key
@@ -934,7 +1003,8 @@ impl Commit for MerkCommitter {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<bool>,
-        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
+        // TODO
+        _section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> Result<()> {
         let tree_size = tree.encoding_length();
         let (mut current_tree_plus_hook_size, mut storage_costs) =
@@ -1256,11 +1326,12 @@ mod test {
             .unwrap();
         drop(merk);
 
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
-            .unwrap()
-            .expect("cannot open merk");
-        let m = merk.get(&9_u64.to_be_bytes());
-        let m = merk.get(&8_u64.to_be_bytes());
+        // let merk =
+        // Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        //     .unwrap()
+        //     .expect("cannot open merk");
+        // let m = merk.get(&9_u64.to_be_bytes());
+        // let merk.get(&8_u64.to_be_bytes());
         // dbg!(m);
     }
 

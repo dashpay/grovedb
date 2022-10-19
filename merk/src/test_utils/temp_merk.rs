@@ -30,7 +30,7 @@ impl TempMerk {
 impl Drop for TempMerk {
     fn drop(&mut self) {
         unsafe {
-            Box::from_raw(self.storage as *const _ as *mut TempStorage);
+            drop(Box::from_raw(self.storage as *const _ as *mut TempStorage));
         }
     }
 }

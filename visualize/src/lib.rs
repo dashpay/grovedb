@@ -1,9 +1,5 @@
 use core::fmt;
-use std::{
-    borrow::Borrow,
-    io::{Result, Write},
-    ops::Deref,
-};
+use std::io::{Result, Write};
 
 use itertools::Itertools;
 

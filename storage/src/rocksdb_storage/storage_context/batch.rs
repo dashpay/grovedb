@@ -159,12 +159,15 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
-        self.cost_acc.add_key_value_storage_costs(
-            prefixed_key.len() as u32,
-            value.len() as u32,
-            None,
-            cost_info,
-        )?;
+        // put root only pays if cost info is set
+        if cost_info.is_some() {
+            self.cost_acc.add_key_value_storage_costs(
+                prefixed_key.len() as u32,
+                value.len() as u32,
+                None,
+                cost_info,
+            )?;
+        }
 
         self.batch.put_cf(self.cf_roots, prefixed_key, value);
         Ok(())

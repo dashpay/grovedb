@@ -51,6 +51,7 @@ impl GroveDb {
         cost.storage_loaded_bytes += Self::worst_case_encoded_tree_size(key, max_element_size);
     }
 
+    #[allow(dead_code)] // TODO
     pub(crate) fn add_merk_worst_case_insert_reference(
         cost: &mut OperationCost,
         max_element_size: u32,

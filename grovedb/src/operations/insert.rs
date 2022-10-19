@@ -7,12 +7,8 @@ use merk::Merk;
 use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 
 use crate::{
-    reference_path::path_from_reference_path_type,
-    util::{
-        merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_no_tx,
-        storage_context_with_parent_optional_tx, storage_context_with_parent_using_tx,
-    },
-    Element, Error, GroveDb, Transaction, TransactionArg,
+    reference_path::path_from_reference_path_type, Element, Error, GroveDb, Transaction,
+    TransactionArg,
 };
 
 pub struct InsertOptions {
@@ -138,7 +134,7 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
         let path_iter = path.into_iter();
-        let mut subtree_to_insert_into: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+        let mut subtree_to_insert_into = cost_return_on_error!(
             &mut cost,
             self.open_transactional_merk_at_path(path_iter.clone(), transaction)
         );
@@ -184,8 +180,8 @@ impl GroveDb {
                 );
 
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
-                let mut referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
-                let mut subtree_for_reference: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+                let referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
+                let subtree_for_reference = cost_return_on_error!(
                     &mut cost,
                     self.open_transactional_merk_at_path(referenced_path_iter, transaction)
                 );
@@ -293,8 +289,8 @@ impl GroveDb {
                 );
 
                 let (referenced_key, referenced_path) = reference_path.split_last().unwrap();
-                let mut referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
-                let mut subtree_for_reference: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+                let referenced_path_iter = referenced_path.iter().map(|x| x.as_slice());
+                let subtree_for_reference = cost_return_on_error!(
                     &mut cost,
                     self.open_non_transactional_merk_at_path(referenced_path_iter)
                 );
@@ -371,6 +367,7 @@ mod tests {
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
     };
+    use pretty_assertions::assert_eq;
 
     use crate::{tests::make_empty_grovedb, Element};
 
@@ -403,14 +400,7 @@ mod tests {
         // Key Length 1
         // Child Heights 2
 
-        // Root -> 39
-        // 1 byte for the root key length size
-        // 1 byte for the root value length size
-        // 32 for the root key prefix
-        // 4 bytes for the key to put in root
-        // 1 byte for the root "r"
-
-        // Total 37 + 68 + 39 + 39 = 183
+        // Total 37 + 68 + 39 = 144
 
         // Hash node calls
         // 1 for the node hash
@@ -418,9 +408,9 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 3, // 1 to get tree, 1 to insert, 1 for insert into root
+                seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
                 storage_cost: StorageCost {
-                    added_bytes: 183,
+                    added_bytes: 144,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },
@@ -477,7 +467,7 @@ mod tests {
         // 4 bytes for the key to put in root
         // 1 byte for the root "r"
 
-        // Total 37 + 72 + 39 + 39
+        // Total 37 + 72 + 39 = 148
 
         // Explanation for replaced bytes
 
@@ -493,7 +483,7 @@ mod tests {
             OperationCost {
                 seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
-                    added_bytes: 187,
+                    added_bytes: 148,
                     replaced_bytes: 99,
                     removed_bytes: NoStorageRemoval
                 },

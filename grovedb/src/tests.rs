@@ -2382,7 +2382,7 @@ fn test_get_subtree() {
             .db
             .get_storage_context([TEST_LEAF, b"key1", b"key2"])
             .unwrap();
-        let subtree = Merk::open_with_root_key(subtree_storage, Some(b"key3".to_vec()))
+        let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()))
             .unwrap()
             .expect("cannot open merk");
         let result_element = Element::get(&subtree, b"key3").unwrap().unwrap();
@@ -2417,7 +2417,7 @@ fn test_get_subtree() {
         .db
         .get_transactional_storage_context([TEST_LEAF, b"key1", b"innertree"], &transaction)
         .unwrap();
-    let subtree = Merk::open_with_root_key(subtree_storage, Some(b"key4".to_vec()))
+    let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key4".to_vec()))
         .unwrap()
         .expect("cannot open merk");
     let result_element = Element::get(&subtree, b"key4").unwrap().unwrap();
@@ -2429,7 +2429,7 @@ fn test_get_subtree() {
         .db
         .get_storage_context([TEST_LEAF, b"key1", b"key2"])
         .unwrap();
-    let subtree = Merk::open_with_root_key(subtree_storage, Some(b"key3".to_vec()))
+    let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()))
         .unwrap()
         .expect("cannot open merk");
     let result_element = Element::get(&subtree, b"key3").unwrap().unwrap();

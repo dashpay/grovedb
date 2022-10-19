@@ -1,5 +1,8 @@
 //! GroveDB batch operations support
 
+mod cost_tests;
+mod worst_case_cost_tests;
+
 use core::fmt;
 use std::{
     cmp::Ordering,
@@ -19,7 +22,7 @@ use costs::{
 };
 use merk::{
     tree::{value_hash, NULL_HASH},
-    CryptoHash, Merk,
+    CryptoHash, Merk, MerkType,
 };
 use nohash_hasher::IntMap;
 use storage::{
@@ -544,6 +547,8 @@ trait TreeCache<G, SR> {
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
     ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error>;
+
+    fn update_base_merk_root_key(&mut self, root_key: Option<Vec<u8>>) -> CostResult<(), Error>;
 }
 
 impl<'db, S, F> TreeCacheMerkByPath<S, F>
@@ -735,6 +740,20 @@ where
         Ok(()).wrap_with_cost(cost)
     }
 
+    fn update_base_merk_root_key(&mut self, root_key: Option<Vec<u8>>) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        let base_path = vec![];
+        let merk_wrapped = self
+            .merks
+            .remove(&base_path)
+            .map(|x| Ok(x).wrap_with_cost(Default::default()))
+            .unwrap_or_else(|| (self.get_merk_fn)(&[], false));
+        let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
+        merk.set_base_root_key(root_key)
+            .add_cost(cost)
+            .map_err(|_| Error::InternalError("unable to set base root key"))
+    }
+
     fn execute_ops_on_path(
         &mut self,
         path: &KeyInfoPath,
@@ -862,7 +881,7 @@ where
                 &[],
                 &mut |storage_costs, old_value, new_value| {
                     // todo: change the flags without deserialization
-                    let mut old_element = Element::deserialize(old_value.as_slice())?;
+                    let old_element = Element::deserialize(old_value.as_slice())?;
                     let maybe_old_flags = old_element.get_flags_owned();
 
                     let mut new_element = Element::deserialize(new_value.as_slice())?;
@@ -920,7 +939,7 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
     ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error> {
         let mut cost = OperationCost::default();
 
-        if !self.paths.remove(path) {
+        if !self.paths.contains(path) {
             // Then we have to get the tree
             GroveDb::add_worst_case_get_merk::<RocksDbStorage>(&mut cost, path);
         }
@@ -935,6 +954,22 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
             MerkWorstCaseInput::NumberOfLevels(path.len()),
         );
         Ok(([0u8; 32], None)).wrap_with_cost(cost)
+    }
+
+    fn update_base_merk_root_key(&mut self, root_key: Option<Vec<u8>>) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        let base_path = KeyInfoPath(vec![]);
+        if !self.paths.contains(&base_path) {
+            // Then we have to get the tree
+            GroveDb::add_worst_case_get_merk::<RocksDbStorage>(&mut cost, &base_path);
+        }
+        if let Some(root_key) = root_key {
+            // todo: add worst case of updating the base root
+            // GroveDb::add_worst_case_insert_merk_node()
+        } else {
+        }
+        Ok(()).wrap_with_cost(cost)
     }
 }
 
@@ -1119,7 +1154,7 @@ impl GroveDb {
                         }
                     }
                     // execute the ops at this path
-                    cost_return_on_error!(
+                    let (root_hash, calculated_root_key) = cost_return_on_error!(
                         &mut cost,
                         merk_tree_cache.execute_ops_on_path(
                             &path,
@@ -1129,6 +1164,10 @@ impl GroveDb {
                             &mut flags_update,
                             &mut split_removal_bytes,
                         )
+                    );
+                    cost_return_on_error!(
+                        &mut cost,
+                        merk_tree_cache.update_base_merk_root_key(calculated_root_key)
                     );
                 } else {
                     let (root_hash, calculated_root_key) = cost_return_on_error!(
@@ -1302,8 +1341,8 @@ impl GroveDb {
         self.apply_batch_with_element_flags_update(
             ops,
             batch_apply_options,
-            |cost, old_flags, new_flags| Ok(false),
-            |flags, removed_bytes| Ok(BasicStorageRemoval(removed_bytes)),
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, removed_bytes| Ok(BasicStorageRemoval(removed_bytes)),
             transaction,
         )
     }
@@ -1383,11 +1422,14 @@ impl GroveDb {
                             .unwrap_add_cost(&mut local_cost);
 
                         if new_merk {
-                            dbg!("new tree {:?}", path);
-                            Ok(Merk::open_empty(storage)).wrap_with_cost(local_cost)
+                            let merk_type = if path.is_empty() {
+                                MerkType::BaseMerk
+                            } else {
+                                MerkType::LayeredMerk
+                            };
+                            Ok(Merk::open_empty(storage, merk_type)).wrap_with_cost(local_cost)
                         } else {
                             if let Some((last, base_path)) = path.split_last() {
-                                dbg!("previous tree {:?}", path);
                                 let parent_storage = self
                                     .db
                                     .get_transactional_storage_context(
@@ -1400,7 +1442,7 @@ impl GroveDb {
                                     Element::get_from_storage(&parent_storage, last)
                                 );
                                 if let Element::Tree(root_key, _) = element {
-                                    Merk::open_with_root_key(storage, root_key)
+                                    Merk::open_layered_with_root_key(storage, root_key)
                                         .map_err(|_| {
                                             Error::CorruptedData(
                                                 "cannot open a subtree with given root key"
@@ -1454,7 +1496,12 @@ impl GroveDb {
                             .unwrap_add_cost(&mut local_cost);
 
                         if new_merk {
-                            Ok(Merk::open_empty(storage)).wrap_with_cost(local_cost)
+                            let merk_type = if path.is_empty() {
+                                MerkType::BaseMerk
+                            } else {
+                                MerkType::LayeredMerk
+                            };
+                            Ok(Merk::open_empty(storage, merk_type)).wrap_with_cost(local_cost)
                         } else {
                             if let Some((last, base_path)) = path.split_last() {
                                 let parent_storage = self
@@ -1466,7 +1513,7 @@ impl GroveDb {
                                     Element::get_from_storage(&parent_storage, last)
                                 );
                                 if let Element::Tree(root_key, _) = element {
-                                    Merk::open_with_root_key(storage, root_key)
+                                    Merk::open_layered_with_root_key(storage, root_key)
                                         .map_err(|_| {
                                             Error::CorruptedData(
                                                 "cannot open a subtree with given root key"
@@ -1781,303 +1828,6 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_insert_tree_cost() {
-        let db = make_empty_grovedb();
-        let tx = db.start_transaction();
-
-        let ops = vec![GroveDbOp::insert_run_op(
-            vec![],
-            b"key1".to_vec(),
-            Element::empty_tree(),
-        )];
-        let cost_result = db.apply_batch(ops, None, Some(&tx));
-        cost_result.value.expect("expected to execute batch");
-        let cost = cost_result.cost;
-        // Explanation for 214 storage_written_bytes
-
-        // Key -> 37 bytes
-        // 32 bytes for the key prefix
-        // 4 bytes for the key
-        // 1 byte for key_size (required space for 36)
-
-        // Value -> 99
-        //   1 for the flag option (but no flags)
-        //   1 for the enum type
-        //   32 for empty tree
-        // 32 for node hash
-        // 32 for value hash
-        // 1 byte for the value_size (required space for 98)
-
-        // Parent Hook -> 39
-        // Key Bytes 4
-        // Hash Size 32
-        // Key Length 1
-        // Child Heights 2
-
-        // Root -> 39
-        // 1 byte for the root key length size
-        // 1 byte for the root value length size
-        // 32 for the root key prefix
-        // 4 bytes for the key to put in root
-        // 1 byte for the root "r"
-
-        // Total 37 + 99 + 39 + 39
-
-        // Hash node calls
-        // 2 for the node hash
-        // 1 for the value hash
-        assert_eq!(
-            cost,
-            OperationCost {
-                seek_count: 2, // 1 to get tree, 1 to insert
-                storage_cost: StorageCost {
-                    added_bytes: 214,
-                    replaced_bytes: 0,
-                    removed_bytes: NoStorageRemoval,
-                },
-                storage_loaded_bytes: 0,
-                hash_node_calls: 5,
-            }
-        );
-    }
-
-    #[test]
-    fn test_batch_root_one_insert_item_cost() {
-        let db = make_empty_grovedb();
-        let tx = db.start_transaction();
-
-        let ops = vec![GroveDbOp::insert_run_op(
-            vec![],
-            b"key1".to_vec(),
-            Element::new_item([0u8; 32].to_vec()),
-        )];
-        let cost_result = db.apply_batch(ops, None, Some(&tx));
-        cost_result.value.expect("expected to execute batch");
-        let cost = cost_result.cost;
-        // Explanation for 214 storage_written_bytes
-
-        // Key -> 37 bytes
-        // 32 bytes for the key prefix
-        // 4 bytes for the key
-        // 1 byte for key_size (required space for 36)
-
-        // Value -> 100
-        //   1 for the flag option (but no flags)
-        //   1 for the enum type
-        //   1 for required space for bytes
-        //   32 for item bytes
-        // 32 for node hash
-        // 32 for value hash
-        // 1 byte for the value_size (required space for 99)
-
-        // Parent Hook -> 39
-        // Key Bytes 4
-        // Hash Size 32
-        // Key Length 1
-        // Child Heights 2
-
-        // Root -> 39
-        // 1 byte for the root key length size
-        // 1 byte for the root value length size
-        // 32 for the root key prefix
-        // 4 bytes for the key to put in root
-        // 1 byte for the root "r"
-
-        // Total 37 + 99 + 39 + 39
-
-        // Hash node calls
-        // 2 for the node hash
-        // 1 for the value hash
-        assert_eq!(
-            cost,
-            OperationCost {
-                seek_count: 1, // 1 to insert
-                storage_cost: StorageCost {
-                    added_bytes: 215,
-                    replaced_bytes: 0,
-                    removed_bytes: NoStorageRemoval,
-                },
-                storage_loaded_bytes: 0,
-                hash_node_calls: 5,
-            }
-        );
-    }
-
-    #[test]
-    fn test_batch_root_one_insert_cost_right_below_value_required_cost_of_2() {
-        let db = make_empty_grovedb();
-        let tx = db.start_transaction();
-
-        let ops = vec![GroveDbOp::insert_run_op(
-            vec![],
-            b"key1".to_vec(),
-            Element::new_item([0u8; 60].to_vec()),
-        )];
-        let cost_result = db.apply_batch(ops, None, Some(&tx));
-        cost_result.value.expect("expected to execute batch");
-        let cost = cost_result.cost;
-        // Explanation for 243 storage_written_bytes
-
-        // Key -> 37 bytes
-        // 32 bytes for the key prefix
-        // 4 bytes for the key
-        // 1 byte for key_size (required space for 36)
-
-        // Value -> 128
-        //   1 for the flag option (but no flags)
-        //   1 for the enum type
-        //   1 for the value size
-        //   60 bytes
-        // 32 for node hash
-        // 32 for value hash
-        // 1 byte for the value_size (required space for 127)
-
-        // Parent Hook -> 39
-        // Key Bytes 4
-        // Hash Size 32
-        // Key Length 1
-        // Child Heights 2
-
-        // Root -> 39
-        // 1 byte for the root key length size
-        // 1 byte for the root value length size
-        // 32 for the root key prefix
-        // 4 bytes for the key to put in root
-        // 1 byte for the root "r"
-
-        // Total 37 + 128 + 39 + 39
-
-        // Hash node calls
-        // 2 for the node hash
-        // 1 for the value hash
-        assert_eq!(
-            cost,
-            OperationCost {
-                seek_count: 1, // 1 to insert
-                storage_cost: StorageCost {
-                    added_bytes: 243,
-                    replaced_bytes: 0,
-                    removed_bytes: NoStorageRemoval,
-                },
-                storage_loaded_bytes: 0,
-                hash_node_calls: 5,
-            }
-        );
-    }
-
-    #[test]
-    fn test_batch_root_one_insert_cost_right_above_value_required_cost_of_2() {
-        let db = make_empty_grovedb();
-        let tx = db.start_transaction();
-
-        let ops = vec![GroveDbOp::insert_run_op(
-            vec![],
-            b"key1".to_vec(),
-            Element::new_item([0u8; 61].to_vec()),
-        )];
-        let cost_result = db.apply_batch(ops, None, Some(&tx));
-        cost_result.value.expect("expected to execute batch");
-        let cost = cost_result.cost;
-        // Explanation for 243 storage_written_bytes
-
-        // Key -> 37 bytes
-        // 32 bytes for the key prefix
-        // 4 bytes for the key
-        // 1 byte for key_size (required space for 36)
-
-        // Value -> 130
-        //   1 for the flag option (but no flags)
-        //   1 for the enum type
-        //   1 for the value size
-        //   61 bytes
-        // 32 for node hash
-        // 32 for value hash
-        // 2 byte for the value_size (required space for 128)
-
-        // Parent Hook -> 39
-        // Key Bytes 4
-        // Hash Size 32
-        // Key Length 1
-        // Child Heights 2
-
-        // Root -> 39
-        // 1 byte for the root key length size
-        // 1 byte for the root value length size
-        // 32 for the root key prefix
-        // 4 bytes for the key to put in root
-        // 1 byte for the root "r"
-
-        // Total 37 + 128 + 39 + 39
-
-        // Hash node calls
-        // 2 for the node hash
-        // 1 for the value hash
-        assert_eq!(
-            cost,
-            OperationCost {
-                seek_count: 1, // 1 to insert
-                storage_cost: StorageCost {
-                    added_bytes: 245,
-                    replaced_bytes: 0,
-                    removed_bytes: NoStorageRemoval,
-                },
-                storage_loaded_bytes: 0,
-                hash_node_calls: 5,
-            }
-        );
-    }
-
-    #[test]
-    fn test_batch_root_one_update_bigger_cost_no_flags() {
-        let db = make_empty_grovedb();
-        let tx = db.start_transaction();
-        db.insert(vec![], b"tree", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("expected to insert tree");
-
-        db.insert(
-            vec![b"tree".as_slice()],
-            b"key1",
-            Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0])),
-            None,
-            None,
-        )
-        .unwrap()
-        .expect("expected to insert item");
-
-        // We are adding 2 bytes
-        let ops = vec![GroveDbOp::insert_run_op(
-            vec![b"tree".to_vec()],
-            b"key1".to_vec(),
-            Element::new_item_with_flags(b"value100".to_vec(), Some(vec![1])),
-        )];
-
-        let cost = db
-            .apply_batch_with_element_flags_update(
-                ops,
-                None,
-                |cost, old_flags, new_flags| Ok(false),
-                |flags, removed_bytes| Ok(NoStorageRemoval),
-                Some(&tx),
-            )
-            .cost;
-
-        assert_eq!(
-            cost,
-            OperationCost {
-                seek_count: 4, // 1 to get tree, 1 to insert
-                storage_cost: StorageCost {
-                    added_bytes: 2,
-                    replaced_bytes: 257,
-                    removed_bytes: NoStorageRemoval
-                },
-                storage_loaded_bytes: 185,
-                hash_node_calls: 6,
-            }
-        );
-    }
-
-    #[test]
     fn test_batch_add_other_element_in_sub_tree() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
@@ -2129,8 +1879,8 @@ mod tests {
         db.apply_batch_with_element_flags_update(
             ops,
             None,
-            |cost, old_flags, new_flags| Ok(false),
-            |flags, removed_bytes| Ok(NoStorageRemoval),
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_bytes| Ok(NoStorageRemoval),
             Some(&tx),
         )
         .unwrap()
@@ -2202,8 +1952,8 @@ mod tests {
         db.apply_batch_with_element_flags_update(
             ops,
             None,
-            |cost, old_flags, new_flags| Ok(false),
-            |flags, removed_bytes| Ok(NoStorageRemoval),
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_bytes| Ok(NoStorageRemoval),
             Some(&tx),
         )
         .unwrap()
@@ -2267,199 +2017,20 @@ mod tests {
             ),
         ];
 
-        let batch_result = db.apply_batch_with_element_flags_update(
+        db.apply_batch_with_element_flags_update(
             ops,
             None,
-            |cost, old_flags, new_flags| {
+            |cost, _old_flags, _new_flags| {
                 // we should only either have nodes that are completely replaced (inner_trees)
                 // or added
                 assert!((cost.added_bytes > 0) ^ (cost.replaced_bytes > 0));
                 Ok(false)
             },
-            |flags, removed_bytes| Ok(NoStorageRemoval),
+            |_flags, _removed_bytes| Ok(NoStorageRemoval),
             Some(&tx),
-        );
-    }
-
-    #[test]
-    fn test_batch_root_one_update_bigger_cost() {
-        let db = make_empty_grovedb();
-        let tx = db.start_transaction();
-        db.insert(vec![], b"tree", Element::empty_tree(), None, None)
-            .unwrap()
-            .expect("expected to insert tree");
-
-        db.insert(
-            vec![b"tree".as_slice()],
-            b"key1",
-            Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0, 0])),
-            None,
-            None,
         )
         .unwrap()
-        .expect("expected to insert item");
-
-        // We are adding 2 bytes
-        let ops = vec![GroveDbOp::insert_run_op(
-            vec![b"tree".to_vec()],
-            b"key1".to_vec(),
-            Element::new_item_with_flags(b"value100".to_vec(), Some(vec![0, 1])),
-        )];
-
-        let cost = db
-            .apply_batch_with_element_flags_update(
-                ops,
-                None,
-                |cost, old_flags, new_flags| match cost.transition_type() {
-                    OperationStorageTransitionType::OperationUpdateBiggerSize => {
-                        if new_flags[0] == 0 {
-                            new_flags[0] = 1;
-                            let new_flags_epoch = new_flags[1];
-                            new_flags[1] = old_flags.unwrap()[1];
-                            new_flags.push(new_flags_epoch);
-                            new_flags.extend(cost.added_bytes.encode_var_vec());
-                            assert_eq!(new_flags, &vec![1u8, 0, 1, 2]);
-                            Ok(true)
-                        } else {
-                            assert_eq!(new_flags[0], 1);
-                            Ok(false)
-                        }
-                    }
-                    OperationStorageTransitionType::OperationUpdateSmallerSize => {
-                        new_flags.extend(vec![1, 2]);
-                        Ok(true)
-                    }
-                    _ => Ok(false),
-                },
-                |flags, removed| Ok(BasicStorageRemoval(removed)),
-                Some(&tx),
-            )
-            .cost;
-
-        assert_eq!(
-            cost,
-            OperationCost {
-                seek_count: 4, // todo: verify this
-                storage_cost: StorageCost {
-                    added_bytes: 4,
-                    replaced_bytes: 258,
-                    removed_bytes: NoStorageRemoval
-                },
-                storage_loaded_bytes: 186, // todo: verify this
-                hash_node_calls: 6,        // todo: verify this
-            }
-        );
-    }
-
-    #[test]
-    fn test_batch_root_one_op_worst_case_costs() {
-        let db = make_empty_grovedb();
-        let tx = db.start_transaction();
-
-        let ops = vec![GroveDbOp::insert_run_op(
-            vec![],
-            b"key1".to_vec(),
-            Element::empty_tree(),
-        )];
-        let worst_case_ops = ops.iter().map(|op| op.to_worst_case_clone()).collect();
-        let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(
-            worst_case_ops,
-            None,
-            |cost, old_flags, new_flags| Ok(false),
-            |flags, removed_bytes| Ok(NoStorageRemoval),
-        );
-        assert!(worst_case_cost_result.value.is_ok());
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
-        assert!(
-            worst_case_cost_result.cost.worse_or_eq_than(&cost),
-            "not worse {:?} \n than {:?}",
-            worst_case_cost_result.cost,
-            cost
-        );
-
-        assert_eq!(
-            worst_case_cost_result.cost,
-            OperationCost {
-                seek_count: 4, // todo: why is this 4
-                storage_cost: StorageCost {
-                    added_bytes: 177,
-                    replaced_bytes: 640, // log(max_elements) * 32 = 640 // todo: verify
-                    removed_bytes: NoStorageRemoval,
-                },
-                storage_loaded_bytes: 0,
-                hash_node_calls: 22, // todo: verify why
-            }
-        );
-    }
-
-    #[test]
-    fn test_batch_root_one_op_under_element_worst_case_costs() {
-        let db = make_empty_grovedb();
-        let tx = db.start_transaction();
-
-        db.insert(vec![], b"0", Element::empty_tree(), None, Some(&tx))
-            .unwrap()
-            .expect("successful root tree leaf insert");
-
-        let ops = vec![GroveDbOp::insert_run_op(
-            vec![],
-            b"key1".to_vec(),
-            Element::empty_tree(),
-        )];
-        let worst_case_ops = ops.iter().map(|op| op.to_worst_case_clone()).collect();
-        let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(
-            worst_case_ops,
-            None,
-            |cost, old_flags, new_flags| Ok(false),
-            |flags, removed_bytes| Ok(NoStorageRemoval),
-        );
-        assert!(worst_case_cost_result.value.is_ok());
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
-        assert_eq!(worst_case_cost_result.cost, cost);
-    }
-
-    #[test]
-    fn test_batch_costs_match_non_batch() {
-        let db = make_empty_grovedb();
-        let tx = db.start_transaction();
-
-        let non_batch_cost = db
-            .insert(vec![], b"key1", Element::empty_tree(), None, Some(&tx))
-            .cost;
-        tx.rollback().expect("expected to rollback");
-        let ops = vec![GroveDbOp::insert_run_op(
-            vec![],
-            b"key1".to_vec(),
-            Element::empty_tree(),
-        )];
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
-        assert_eq!(non_batch_cost.storage_cost, cost.storage_cost);
-    }
-
-    #[test]
-    fn test_batch_worst_case_costs() {
-        let db = make_empty_grovedb();
-        let tx = db.start_transaction();
-
-        db.insert(vec![], b"keyb", Element::empty_tree(), None, Some(&tx))
-            .unwrap()
-            .expect("successful root tree leaf insert");
-
-        let ops = vec![GroveDbOp::insert_run_op(
-            vec![],
-            b"key1".to_vec(),
-            Element::empty_tree(),
-        )];
-        let worst_case_ops = ops.iter().map(|op| op.to_worst_case_clone()).collect();
-        let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(
-            worst_case_ops,
-            None,
-            |cost, old_flags, new_flags| Ok(false),
-            |flags, removed_bytes| Ok(NoStorageRemoval),
-        );
-        assert!(worst_case_cost_result.value.is_ok());
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
-        assert_eq!(worst_case_cost_result.cost, cost);
+        .expect("successful batch apply");
     }
 
     fn grove_db_ops_for_contract_insert() -> Vec<GroveDbOp> {

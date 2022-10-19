@@ -166,7 +166,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         // because if anything fails during the restore process we will just
         // scrap the whole restore and start over
         self.write_chunk(trunk)?;
-        self.merk.set_base_root_key(&root_key)?;
+        self.merk.set_base_root_key(Some(root_key)).unwrap()?;
 
         Ok(chunks_remaining)
     }
