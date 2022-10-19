@@ -78,7 +78,7 @@ impl GroveDb {
                     })
                 );
                 if let Element::Tree(root_key, _) = element {
-                    Merk::open_with_root_key(storage, root_key).map_err(|_| {
+                    Merk::open_layered_with_root_key(storage, root_key).map_err(|_| {
                         Error::CorruptedData("cannot open a subtree with given root key".to_owned())
                     })
                 } else {
@@ -124,7 +124,7 @@ impl GroveDb {
                     })
                 );
                 if let Element::Tree(root_key, _) = element {
-                    Merk::open_with_root_key(storage, root_key).map_err(|_| {
+                    Merk::open_layered_with_root_key(storage, root_key).map_err(|_| {
                         Error::CorruptedData("cannot open a subtree with given root key".to_owned())
                     })
                 } else {

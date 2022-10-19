@@ -400,14 +400,7 @@ mod tests {
         // Key Length 1
         // Child Heights 2
 
-        // Root -> 39
-        // 1 byte for the root key length size
-        // 1 byte for the root value length size
-        // 32 for the root key prefix
-        // 4 bytes for the key to put in root
-        // 1 byte for the root "r"
-
-        // Total 37 + 68 + 39 + 39 = 183
+        // Total 37 + 68 + 39 = 144
 
         // Hash node calls
         // 1 for the node hash
@@ -415,9 +408,9 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 3, // 1 to get tree, 1 to insert, 1 for insert into root
+                seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
                 storage_cost: StorageCost {
-                    added_bytes: 183,
+                    added_bytes: 144,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },
@@ -474,7 +467,7 @@ mod tests {
         // 4 bytes for the key to put in root
         // 1 byte for the root "r"
 
-        // Total 37 + 72 + 39 + 39
+        // Total 37 + 72 + 39 = 148
 
         // Explanation for replaced bytes
 
@@ -490,7 +483,7 @@ mod tests {
             OperationCost {
                 seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
-                    added_bytes: 187,
+                    added_bytes: 148,
                     replaced_bytes: 99,
                     removed_bytes: NoStorageRemoval
                 },

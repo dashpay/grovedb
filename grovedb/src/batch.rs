@@ -19,7 +19,7 @@ use costs::{
 };
 use merk::{
     tree::{value_hash, NULL_HASH},
-    CryptoHash, Merk,
+    CryptoHash, Merk, MerkType,
 };
 use nohash_hasher::IntMap;
 use storage::{
@@ -1419,7 +1419,12 @@ impl GroveDb {
                             .unwrap_add_cost(&mut local_cost);
 
                         if new_merk {
-                            Ok(Merk::open_empty(storage)).wrap_with_cost(local_cost)
+                            let merk_type = if path.is_empty() {
+                                MerkType::BaseMerk
+                            } else {
+                                MerkType::LayeredMerk
+                            };
+                            Ok(Merk::open_empty(storage, merk_type)).wrap_with_cost(local_cost)
                         } else {
                             if let Some((last, base_path)) = path.split_last() {
                                 let parent_storage = self
@@ -1434,7 +1439,7 @@ impl GroveDb {
                                     Element::get_from_storage(&parent_storage, last)
                                 );
                                 if let Element::Tree(root_key, _) = element {
-                                    Merk::open_with_root_key(storage, root_key)
+                                    Merk::open_layered_with_root_key(storage, root_key)
                                         .map_err(|_| {
                                             Error::CorruptedData(
                                                 "cannot open a subtree with given root key"
@@ -1488,7 +1493,12 @@ impl GroveDb {
                             .unwrap_add_cost(&mut local_cost);
 
                         if new_merk {
-                            Ok(Merk::open_empty(storage)).wrap_with_cost(local_cost)
+                            let merk_type = if path.is_empty() {
+                                MerkType::BaseMerk
+                            } else {
+                                MerkType::LayeredMerk
+                            };
+                            Ok(Merk::open_empty(storage, merk_type)).wrap_with_cost(local_cost)
                         } else {
                             if let Some((last, base_path)) = path.split_last() {
                                 let parent_storage = self
@@ -1500,7 +1510,7 @@ impl GroveDb {
                                     Element::get_from_storage(&parent_storage, last)
                                 );
                                 if let Element::Tree(root_key, _) = element {
-                                    Merk::open_with_root_key(storage, root_key)
+                                    Merk::open_layered_with_root_key(storage, root_key)
                                         .map_err(|_| {
                                             Error::CorruptedData(
                                                 "cannot open a subtree with given root key"
@@ -1848,14 +1858,7 @@ mod tests {
         // Key Length 1
         // Child Heights 2
 
-        // Root -> 39
-        // 1 byte for the root key length size
-        // 1 byte for the root value length size
-        // 32 for the root key prefix
-        // 4 bytes for the key to put in root
-        // 1 byte for the root "r"
-
-        // Total 37 + 68 + 39 + 39
+        // Total 37 + 68 + 39 = 144
 
         // Hash node calls
         // 2 for the node hash
@@ -1865,7 +1868,7 @@ mod tests {
             OperationCost {
                 seek_count: 2, // 1 to get tree, 1 to insert
                 storage_cost: StorageCost {
-                    added_bytes: 183,
+                    added_bytes: 144,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -1917,7 +1920,7 @@ mod tests {
         // 4 bytes for the key to put in root
         // 1 byte for the root "r"
 
-        // Total 37 + 99 + 39 + 39
+        // Total 37 + 99 + 39 = 175
 
         // Hash node calls
         // 2 for the node hash
@@ -1927,7 +1930,7 @@ mod tests {
             OperationCost {
                 seek_count: 2, // 1 to get tree, 1 to insert
                 storage_cost: StorageCost {
-                    added_bytes: 215,
+                    added_bytes: 175,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -1972,14 +1975,7 @@ mod tests {
         // Key Length 1
         // Child Heights 2
 
-        // Root -> 39
-        // 1 byte for the root key length size
-        // 1 byte for the root value length size
-        // 32 for the root key prefix
-        // 4 bytes for the key to put in root
-        // 1 byte for the root "r"
-
-        // Total 37 + 128 + 39 + 39
+        // Total 37 + 128 + 39 = 204
 
         // Hash node calls
         // 2 for the node hash
@@ -1989,7 +1985,7 @@ mod tests {
             OperationCost {
                 seek_count: 2, // 1 to insert, 1 for root tree.
                 storage_cost: StorageCost {
-                    added_bytes: 243,
+                    added_bytes: 204,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -2034,14 +2030,7 @@ mod tests {
         // Key Length 1
         // Child Heights 2
 
-        // Root -> 39
-        // 1 byte for the root key length size
-        // 1 byte for the root value length size
-        // 32 for the root key prefix
-        // 4 bytes for the key to put in root
-        // 1 byte for the root "r"
-
-        // Total 37 + 128 + 39 + 39
+        // Total 37 + 128 + 39 = 204
 
         // Hash node calls
         // 2 for the node hash
@@ -2051,7 +2040,7 @@ mod tests {
             OperationCost {
                 seek_count: 2, // 1 to insert, 1 for insert to root tree
                 storage_cost: StorageCost {
-                    added_bytes: 245,
+                    added_bytes: 204,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },

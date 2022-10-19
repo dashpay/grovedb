@@ -251,7 +251,9 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_roots(&self.db), &key, &value);
-                    cost_return_on_error_no_add!(
+                    // We only add costs for put root if they are set, otherwise it is free
+                    if cost_info.is_some() {
+                        cost_return_on_error_no_add!(
                         &cost,
                         pending_costs
                             .add_key_value_storage_costs(
@@ -262,6 +264,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                             )
                             .map_err(CostError)
                     );
+                    }
                 }
                 AbstractBatchOperation::PutMeta {
                     key,

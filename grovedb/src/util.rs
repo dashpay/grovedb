@@ -132,7 +132,7 @@ macro_rules! storage_context_with_parent_optional_tx {
 //                     .get_storage_context(path.clone()).unwrap_add_cost(&mut
 // $cost);                 if let Some(last) = path.next_back() {
 //                     let parent_storage =
-// $db.get_storage_context(path).unwrap_add_cost(&mut $cost);                   
+// $db.get_storage_context(path).unwrap_add_cost(&mut $cost);
 // let element = cost_return_on_error!(                         &mut $cost,
 // 			Element::get_from_storage(&parent_storage, last).map_err(|e| {
 //                             Error::CorruptedData(
@@ -254,7 +254,7 @@ macro_rules! merk_optional_tx {
                 #[allow(unused_mut)]
                 let mut $subtree = cost_return_on_error!(
                     &mut $cost,
-                    ::merk::Merk::open_with_root_key(storage, root_key)
+                    ::merk::Merk::open_layered_with_root_key(storage, root_key)
                         .map(|merk_res|
                              merk_res
                                 .map_err(|_| crate::Error::CorruptedData(

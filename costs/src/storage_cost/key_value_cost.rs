@@ -1,6 +1,8 @@
+use std::cmp::Ordering;
 use std::ops::{Add, AddAssign};
 
 use integer_encoding::VarInt;
+use crate::BasicStorageRemoval;
 
 use crate::storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost};
 
@@ -18,19 +20,59 @@ pub struct KeyValueStorageCost {
 impl KeyValueStorageCost {
     /// Convenience method for getting the cost of updating the key of the root
     /// of each merk
-    pub fn for_updated_root_cost(tree_key_len: u32) -> Self {
-        KeyValueStorageCost {
-            key_storage_cost: StorageCost {
+    pub fn for_updated_root_cost(old_tree_key_len: Option<u32>, tree_key_len: u32) -> Self {
+        if let Some(old_tree_key_len) = old_tree_key_len {
+            let key_storage_cost = StorageCost {
                 added_bytes: 0,
                 replaced_bytes: 34, // prefix + 1 for 'r' + 1 required space
                 removed_bytes: NoStorageRemoval,
-            },
-            value_storage_cost: StorageCost {
-                added_bytes: 0,
-                replaced_bytes: tree_key_len + tree_key_len.required_space() as u32,
-                removed_bytes: NoStorageRemoval,
-            },
-            new_node: false,
+            };
+            let new_bytes = tree_key_len + tree_key_len.required_space() as u32;
+            let value_storage_cost = match tree_key_len.cmp(&old_tree_key_len) {
+                Ordering::Less => {
+                    // we removed bytes
+                    let old_bytes = old_tree_key_len + old_tree_key_len.required_space() as u32;
+                    StorageCost {
+                        added_bytes: 0,
+                        replaced_bytes: new_bytes,
+                        removed_bytes: BasicStorageRemoval(old_bytes - new_bytes),
+                    }
+                }
+                Ordering::Equal => {
+                    StorageCost {
+                        added_bytes: 0,
+                        replaced_bytes: new_bytes,
+                        removed_bytes: NoStorageRemoval,
+                    }
+                }
+                Ordering::Greater => {
+                    let old_bytes = old_tree_key_len + old_tree_key_len.required_space() as u32;
+                    StorageCost {
+                        added_bytes: new_bytes - old_bytes,
+                        replaced_bytes: old_bytes,
+                        removed_bytes: NoStorageRemoval,
+                    }
+                }
+            };
+            KeyValueStorageCost {
+                key_storage_cost,
+                value_storage_cost,
+                new_node: false,
+            }
+        } else {
+            KeyValueStorageCost {
+                key_storage_cost : StorageCost {
+                    added_bytes: 34, // prefix + 1 for 'r' + 1 required space
+                    replaced_bytes: 0,
+                    removed_bytes: NoStorageRemoval,
+                },
+                value_storage_cost: StorageCost {
+                    added_bytes: tree_key_len + tree_key_len.required_space() as u32,
+                    replaced_bytes: 0,
+                    removed_bytes: NoStorageRemoval,
+                },
+                new_node: true,
+            }
         }
     }
 }
