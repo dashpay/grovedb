@@ -105,7 +105,7 @@ pub fn combine_hash(hash_one: &CryptoHash, hash_two: &CryptoHash) -> CostContext
     let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
     hash.wrap_with_cost(OperationCost {
-        hash_node_calls: 1,
+        hash_node_calls: 2, // as this would be over Blake 3's block size of 64 todo verify this is not 3
         ..Default::default()
     })
 }

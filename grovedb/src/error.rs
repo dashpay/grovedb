@@ -48,6 +48,8 @@ pub enum Error {
     #[error("data corruption error: {0}")]
     CorruptedData(String),
 
+    #[error("invalid code execution error: {0}")]
+    InvalidCodeExecution(&'static str),
     #[error("corrupted code execution error: {0}")]
     CorruptedCodeExecution(&'static str),
 

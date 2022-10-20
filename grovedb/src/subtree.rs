@@ -1053,7 +1053,7 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let batch_operations = [(key, Op::PutReference(serialized, referenced_value))];
+        let batch_operations = [(key, Op::PutCombinedReference(serialized, referenced_value))];
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -1068,7 +1068,7 @@ impl Element {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
-        let entry = (key, Op::PutReference(serialized, referenced_value));
+        let entry = (key, Op::PutCombinedReference(serialized, referenced_value));
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -1089,7 +1089,7 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let batch_operations = [(key, Op::PutReference(serialized, subtree_root_hash))];
+        let batch_operations = [(key, Op::PutImpliedReference(serialized, subtree_root_hash))];
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -1104,7 +1104,7 @@ impl Element {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
-        let entry = (key, Op::PutReference(serialized, subtree_root_hash));
+        let entry = (key, Op::PutImpliedReference(serialized, subtree_root_hash));
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
