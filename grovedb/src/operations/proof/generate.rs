@@ -325,7 +325,7 @@ impl GroveDb {
             .unwrap()
             .expect("should generate proof");
 
-        cost_return_on_error!(&mut cost, self.replace_references(path, &mut proof_result));
+        cost_return_on_error!(&mut cost, self.post_process_proof(path, &mut proof_result));
 
         let mut proof_bytes = Vec::with_capacity(128);
         encode_into(proof_result.proof.iter(), &mut proof_bytes);
@@ -338,8 +338,10 @@ impl GroveDb {
         Ok((proof_result.limit, proof_result.offset)).wrap_with_cost(cost)
     }
 
-    /// Replaces references with the base item they point to
-    fn replace_references<'p, P>(
+    /// Converts Items to Node::KV from Node::KVValueHash
+    /// Converts References to Node::KVRefValueHash and sets the value to the
+    /// referenced element
+    fn post_process_proof<'p, P>(
         &self,
         path: P,
         proof_result: &mut ProofWithoutEncodingResult,
@@ -357,36 +359,42 @@ impl GroveDb {
                 Op::Push(node) | Op::PushInverted(node) => match node {
                     Node::KV(key, value) | Node::KVValueHash(key, value, ..) => {
                         let elem = Element::deserialize(value);
-                        if let Ok(Element::Reference(reference_path, ..)) = elem {
-                            let mut current_path = path_iter.clone();
-                            let absolute_path = cost_return_on_error!(
-                                &mut cost,
-                                path_from_reference_path_type(
-                                    reference_path,
-                                    current_path,
-                                    Some(key.as_slice())
+                        match elem {
+                            Ok(Element::Reference(reference_path, ..)) => {
+                                let mut current_path = path_iter.clone();
+                                let absolute_path = cost_return_on_error!(
+                                    &mut cost,
+                                    path_from_reference_path_type(
+                                        reference_path,
+                                        current_path,
+                                        Some(key.as_slice())
+                                    )
+                                    .wrap_with_cost(OperationCost::default())
+                                );
+
+                                let referenced_elem = cost_return_on_error!(
+                                    &mut cost,
+                                    self.follow_reference(absolute_path, None)
+                                );
+
+                                let serialized_referenced_elem = referenced_elem.serialize();
+                                if serialized_referenced_elem.is_err() {
+                                    return Err(Error::CorruptedData(String::from(
+                                        "unable to serialize element",
+                                    )))
+                                    .wrap_with_cost(cost);
+                                }
+
+                                *node = Node::KVRefValueHash(
+                                    key.to_owned(),
+                                    serialized_referenced_elem.expect("confirmed ok above"),
+                                    value_hash(value).unwrap_add_cost(&mut cost),
                                 )
-                                .wrap_with_cost(OperationCost::default())
-                            );
-
-                            let referenced_elem = cost_return_on_error!(
-                                &mut cost,
-                                self.follow_reference(absolute_path, None)
-                            );
-
-                            let serialized_referenced_elem = referenced_elem.serialize();
-                            if serialized_referenced_elem.is_err() {
-                                return Err(Error::CorruptedData(String::from(
-                                    "unable to serialize element",
-                                )))
-                                .wrap_with_cost(cost);
                             }
-
-                            *node = Node::KVRefValueHash(
-                                key.to_owned(),
-                                serialized_referenced_elem.expect("confirmed ok above"),
-                                value_hash(value).unwrap_add_cost(&mut cost),
-                            )
+                            Ok(Element::Item(..)) => {
+                                *node = Node::KV(key.to_owned(), value.to_owned())
+                            }
+                            _ => continue,
                         }
                     }
                     _ => continue,
