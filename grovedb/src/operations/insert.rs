@@ -3,7 +3,7 @@ use std::{collections::HashMap, option::Option::None};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use merk::Merk;
+use merk::{tree::NULL_HASH, Merk};
 use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 
 use crate::{
@@ -218,6 +218,19 @@ impl GroveDb {
                     )
                 );
             }
+            Element::Tree(ref value, _) => {
+                if value.is_some() {
+                    return Err(Error::InvalidCodeExecution(
+                        "a tree should be empty at the moment of insertion when not using batches",
+                    ))
+                    .wrap_with_cost(cost);
+                } else {
+                    cost_return_on_error!(
+                        &mut cost,
+                        element.insert_subtree(&mut subtree_to_insert_into, key, NULL_HASH)
+                    );
+                }
+            }
             _ => {
                 cost_return_on_error!(&mut cost, element.insert(&mut subtree_to_insert_into, key));
             }
@@ -326,6 +339,19 @@ impl GroveDb {
                         referenced_element_value_hash
                     )
                 );
+            }
+            Element::Tree(ref value, _) => {
+                if value.is_some() {
+                    return Err(Error::InvalidCodeExecution(
+                        "a tree should be empty at the moment of insertion when not using batches",
+                    ))
+                    .wrap_with_cost(cost);
+                } else {
+                    cost_return_on_error!(
+                        &mut cost,
+                        element.insert_subtree(&mut subtree_to_insert_into, key, NULL_HASH)
+                    );
+                }
             }
             _ => {
                 cost_return_on_error!(&mut cost, element.insert(&mut subtree_to_insert_into, key));

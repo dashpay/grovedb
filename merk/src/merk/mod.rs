@@ -18,6 +18,7 @@ use costs::{
     CostContext, CostResult, CostsExt, OperationCost,
 };
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
+use visualize::visualize_stdout;
 
 use crate::{
     merk::defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
@@ -244,7 +245,7 @@ where
             tree: Cell::new(None),
             root_tree_key: Cell::new(root_key),
             storage,
-            merk_type: MerkType::LayeredMerk,
+            merk_type: LayeredMerk
         };
 
         merk.load_root().map_ok(|_| merk)
@@ -797,13 +798,13 @@ where
                         .put_aux(key, value, storage_cost.clone())
                         .map_err(|e| e.into())
                 ),
-                Op::PutReference(value, _) => cost_return_on_error_no_add!(
-                    &cost,
-                    batch
-                        .put_aux(key, value, storage_cost.clone())
-                        .map_err(|e| e.into())
-                ),
                 Op::Delete => batch.delete_aux(key),
+                _ => {
+                    cost_return_on_error_no_add!(
+                        &cost,
+                    Err(anyhow!("only put and delete allowed for aux storage"))
+                        );
+                }
             };
         }
 
