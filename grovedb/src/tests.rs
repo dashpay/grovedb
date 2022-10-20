@@ -4,7 +4,10 @@ use std::{
 };
 
 use ::visualize::{visualize_stdout, Drawer, Visualize};
-use merk::CryptoHash;
+use merk::{
+    tree::{combine_hash, value_hash},
+    CryptoHash,
+};
 use rand::Rng;
 use tempfile::TempDir;
 
@@ -4384,8 +4387,8 @@ fn test_tree_value_hash_matches_underlying_merk_root_hash() {
         .unwrap()
         .expect("should open merk");
 
-    let elem_value_hash = test_leaf_merk
-        .get_value_hash(b"key1")
+    let (elem_value, elem_value_hash) = test_leaf_merk
+        .get_value_and_value_hash(b"key1")
         .unwrap()
         .expect("should get value hash")
         .expect("value hash should be some");
@@ -4395,5 +4398,10 @@ fn test_tree_value_hash_matches_underlying_merk_root_hash() {
         .unwrap()
         .expect("should open merk");
 
-    assert_eq!(elem_value_hash, underlying_merk.root_hash().unwrap(),);
+    let root_hash = underlying_merk.root_hash().unwrap();
+
+    let actual_value_hash = value_hash(&elem_value).unwrap();
+    let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
+
+    assert_eq!(elem_value_hash, combined_value_hash);
 }

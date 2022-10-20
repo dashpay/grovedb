@@ -315,6 +315,17 @@ where
         })
     }
 
+    /// Gets the value and value hash of a node by a given key, `None` is returned in case
+    /// when node not found by the key.
+    pub fn get_value_and_value_hash(&self, key: &[u8]) -> CostContext<Result<Option<(Vec<u8>, CryptoHash)>>> {
+        self.get_node_fn(key, |node| {
+            (node.value_as_slice()
+                .to_vec(),node.value_hash()
+                .clone())
+                .wrap_with_cost(OperationCost::default())
+        })
+    }
+
     /// See if a node's field exists
     fn has_node(&self, key: &[u8]) -> CostContext<Result<bool>> {
         self.use_tree(move |maybe_tree| {

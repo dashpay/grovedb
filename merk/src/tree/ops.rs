@@ -33,10 +33,6 @@ pub enum Op {
     /// because the value is independent of the reference hash
     /// In GroveDB this is used for references
     PutCombinedReference(Vec<u8>, CryptoHash),
-    /// Combined references include the value in the node hash
-    /// because the value is already represented in the hash
-    /// In GroveDB this is used for trees
-    PutImpliedReference(Vec<u8>, CryptoHash),
     Delete,
 }
 
@@ -49,8 +45,6 @@ impl fmt::Debug for Op {
                 Put(value) => format!("Put({:?})", value),
                 PutCombinedReference(value, referenced_value) =>
                     format!("Put Combined Reference({:?}) for ({:?})", value, referenced_value),
-                PutImpliedReference(value, referenced_value) =>
-                    format!("Put Implied Reference({:?}) for ({:?})", value, referenced_value),
                 Delete => "Delete".to_string(),
             }
         )
@@ -177,8 +171,7 @@ where
                 return Ok(maybe_tree.map(|tree| tree.into())).wrap_with_cost(cost);
             }
             Put(value)
-            | PutCombinedReference(value, _)
-            | PutImpliedReference(value, _) => value.to_vec(),
+            | PutCombinedReference(value, _) => value.to_vec(),
 
         };
 
@@ -194,12 +187,6 @@ where
                 referenced_value.to_owned(),
             )
             .unwrap_add_cost(&mut cost),
-            PutImpliedReference(_, referenced_value) => Tree::new_with_value_hash(
-                mid_key.as_ref().to_vec(),
-                mid_value,
-                referenced_value.to_owned(),
-            )
-                .unwrap_add_cost(&mut cost),
             Delete => unreachable!("cannot get here, should return at the top"),
         };
         let mid_walker = Walker::new(mid_tree, PanicSource {});
@@ -248,8 +235,7 @@ where
             match &batch[index].1 {
                 // TODO: take vec from batch so we don't need to clone
                 Put(value) => self.put_value(value.to_vec()).unwrap_add_cost(&mut cost),
-                PutCombinedReference(value, referenced_value)
-                | PutImpliedReference(value, referenced_value)  => self
+                PutCombinedReference(value, referenced_value) => self
                     .put_value_and_value_hash(value.to_vec(), referenced_value.to_owned())
                     .unwrap_add_cost(&mut cost),
                 Delete => {
