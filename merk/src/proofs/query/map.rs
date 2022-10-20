@@ -33,7 +33,7 @@ impl MapBuilder {
     /// `Hash`).
     pub fn insert(&mut self, node: &Node) -> Result<()> {
         match node {
-            Node::KV(key, value) => {
+            Node::KV(key, value) | Node::KVValueHash(key, value, ..) => {
                 if let Some((prev_key, _)) = self.0.entries.last_key_value() {
                     ensure!(
                         key > prev_key,
