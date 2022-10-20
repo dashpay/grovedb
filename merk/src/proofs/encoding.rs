@@ -234,7 +234,7 @@ impl Decode for Op {
                 let mut value_hash = [0; HASH_LENGTH];
                 input.read_exact(&mut value_hash)?;
 
-                Self::Push(Node::KVValueHash(key, value, value_hash))
+                Self::PushInverted(Node::KVValueHash(key, value, value_hash))
             }
             0x0c => {
                 let key_len: u8 = Decode::decode(&mut input)?;
@@ -695,7 +695,7 @@ mod test {
         let op = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(
             op,
-            Op::Push(Node::KVValueHash(vec![1, 2, 3], vec![4, 5, 6], [0; 32]))
+            Op::PushInverted(Node::KVValueHash(vec![1, 2, 3], vec![4, 5, 6], [0; 32]))
         );
     }
 

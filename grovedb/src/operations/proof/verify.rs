@@ -374,7 +374,7 @@ impl ProofVerifier {
                 Element::Tree(root_key, ..) => {
                     dbg!(std::str::from_utf8(root_key.unwrap().as_slice()));
                     Ok(result_set[0].2)
-                },
+                }
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),

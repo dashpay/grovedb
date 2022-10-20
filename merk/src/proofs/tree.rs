@@ -376,7 +376,7 @@ where
                 | Node::KVValueHash(key, ..)
                 | Node::KVRefValueHash(key, ..) = &node
                 {
-                    // keys should always increase
+                    // keys should always decrease
                     if let Some(last_key) = &maybe_last_key {
                         if key >= last_key {
                             return Err(anyhow!("Incorrect key ordering")).wrap_with_cost(cost);
