@@ -59,13 +59,13 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 68
+        // Value -> 37
         //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for empty tree value
         // 32 for node hash
-        // 32 for value hash
-        // 1 byte for the value_size (required space for 98)
+        // 0 for value hash
+        // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
         // Parent Hook -> 39
         // Key Bytes 4
@@ -73,7 +73,7 @@ mod tests {
         // Key Length 1
         // Child Heights 2
 
-        // Total 37 + 68 + 39 = 144
+        // Total 37 + 37 + 39 = 113
 
         // Hash node calls
         // 2 for the node hash
@@ -83,7 +83,7 @@ mod tests {
             OperationCost {
                 seek_count: 2, // 1 to get tree, 1 to insert
                 storage_cost: StorageCost {
-                    added_bytes: 144,
+                    added_bytes: 113,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
