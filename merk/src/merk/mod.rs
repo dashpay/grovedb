@@ -1027,6 +1027,7 @@ impl Commit for MerkCommitter {
             // At this point the tree value can be updated based on client requirements
             // For example to store the costs
             loop {
+
                 let changed = update_tree_value_based_on_costs(
                     &storage_costs.value_storage_cost,
                     &old_value,

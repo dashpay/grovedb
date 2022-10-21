@@ -19,6 +19,8 @@ pub struct KeyValueStorageCost {
     pub value_storage_cost: StorageCost,
     /// Is this a new node
     pub new_node: bool,
+    /// Should we verify this at storage time
+    pub needs_value_verification: bool,
 }
 
 impl KeyValueStorageCost {
@@ -60,6 +62,7 @@ impl KeyValueStorageCost {
                 key_storage_cost,
                 value_storage_cost,
                 new_node: false,
+                needs_value_verification: false,
             }
         } else {
             KeyValueStorageCost {
@@ -74,6 +77,7 @@ impl KeyValueStorageCost {
                     removed_bytes: NoStorageRemoval,
                 },
                 new_node: true,
+                needs_value_verification: false,
             }
         }
     }
@@ -87,6 +91,7 @@ impl Add for KeyValueStorageCost {
             key_storage_cost: self.key_storage_cost + rhs.key_storage_cost,
             value_storage_cost: self.value_storage_cost + rhs.value_storage_cost,
             new_node: self.new_node & rhs.new_node,
+            needs_value_verification: self.needs_value_verification & rhs.needs_value_verification,
         }
     }
 }
@@ -96,5 +101,6 @@ impl AddAssign for KeyValueStorageCost {
         self.key_storage_cost += rhs.key_storage_cost;
         self.value_storage_cost += rhs.value_storage_cost;
         self.new_node &= rhs.new_node;
+        self.needs_value_verification &= rhs.needs_value_verification;
     }
 }

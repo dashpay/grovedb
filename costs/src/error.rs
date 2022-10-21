@@ -6,7 +6,7 @@ use crate::StorageCost;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Storage Cost Value mismatch
-    #[error("storage_cost cost mismatch")]
+    #[error("storage_cost cost mismatch added: {0} replaced: {1} actual:{actual_total_bytes}", expected.added_bytes, expected.replaced_bytes)]
     StorageCostMismatch {
         /// The expected storage cost, decomposed
         expected: StorageCost,

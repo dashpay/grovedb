@@ -33,6 +33,12 @@ pub enum Op {
     /// because the value is independent of the reference hash
     /// In GroveDB this is used for references
     PutCombinedReference(Vec<u8>, CryptoHash),
+    /// Layered references include the value in the node hash
+    /// because the value is independent of the reference hash
+    /// In GroveDB this is used for trees
+    /// A layered reference does not pay for the tree's value,
+    /// instead providing a cost for the value
+    PutLayeredReference(Vec<u8>, u32, CryptoHash),
     Delete,
 }
 
@@ -45,6 +51,8 @@ impl fmt::Debug for Op {
                 Put(value) => format!("Put({:?})", value),
                 PutCombinedReference(value, referenced_value) =>
                     format!("Put Combined Reference({:?}) for ({:?})", value, referenced_value),
+                PutLayeredReference(value, cost, referenced_value) =>
+                    format!("Put Layered Reference({:?}) with cost ({:?}) for ({:?})", value, cost, referenced_value),
                 Delete => "Delete".to_string(),
             }
         )
@@ -171,7 +179,8 @@ where
                 return Ok(maybe_tree.map(|tree| tree.into())).wrap_with_cost(cost);
             }
             Put(value)
-            | PutCombinedReference(value, _) => value.to_vec(),
+            | PutCombinedReference(value, _)
+            | PutLayeredReference(value, ..) => value.to_vec()
 
         };
 
@@ -187,6 +196,13 @@ where
                 referenced_value.to_owned(),
             )
             .unwrap_add_cost(&mut cost),
+            PutLayeredReference(_, value_cost, referenced_value) => Tree::new_with_layered_value_hash(
+                mid_key.as_ref().to_vec(),
+                mid_value,
+                *value_cost,
+                referenced_value.to_owned(),
+            )
+                .unwrap_add_cost(&mut cost),
             Delete => unreachable!("cannot get here, should return at the top"),
         };
         let mid_walker = Walker::new(mid_tree, PanicSource {});
@@ -237,6 +253,9 @@ where
                 Put(value) => self.put_value(value.to_vec()).unwrap_add_cost(&mut cost),
                 PutCombinedReference(value, referenced_value) => self
                     .put_value_and_value_hash(value.to_vec(), referenced_value.to_owned())
+                    .unwrap_add_cost(&mut cost),
+                PutLayeredReference(value, value_cost, referenced_value) => self
+                    .put_value_with_value_hash_and_value_cost(value.to_vec(), referenced_value.to_owned(), *value_cost)
                     .unwrap_add_cost(&mut cost),
                 Delete => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply

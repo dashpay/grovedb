@@ -1089,7 +1089,10 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let batch_operations = [(key, Op::PutCombinedReference(serialized, subtree_root_hash))];
+        let batch_operations = [(
+            key,
+            Op::PutLayeredReference(serialized, 3, subtree_root_hash),
+        )];
         merk.apply::<_, Vec<u8>>(&batch_operations, &[])
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -1104,7 +1107,10 @@ impl Element {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
-        let entry = (key, Op::PutCombinedReference(serialized, subtree_root_hash));
+        let entry = (
+            key,
+            Op::PutLayeredReference(serialized, 3, subtree_root_hash),
+        );
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }

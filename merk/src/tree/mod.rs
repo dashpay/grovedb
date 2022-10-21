@@ -121,26 +121,35 @@ impl Tree {
             ..Default::default()
         };
 
-        // Update the value storage_cost cost
-        match self
-            .old_size_with_parent_to_child_hook
-            .cmp(&current_kv_size)
-        {
-            Ordering::Equal => {
-                value_storage_cost.replaced_bytes += self.old_size_with_parent_to_child_hook;
+        if self.inner.kv.value_defined_cost.is_some() {
+            if self.old_size_with_parent_to_child_hook != 0 {
+                value_storage_cost.replaced_bytes = current_kv_size;
+            } else {
+                value_storage_cost.added_bytes = current_kv_size;
             }
-            Ordering::Greater => {
-                // old size is greater than current size, storage_cost will be freed
-                value_storage_cost.replaced_bytes += current_kv_size;
-                value_storage_cost.removed_bytes +=
-                    BasicStorageRemoval(self.old_size_with_parent_to_child_hook - current_kv_size);
-            }
-            Ordering::Less => {
-                // current size is greater than old size, storage_cost will be created
-                // this also handles the case where the tree.old_size = 0
-                value_storage_cost.replaced_bytes += self.old_size_with_parent_to_child_hook;
-                value_storage_cost.added_bytes +=
-                    current_kv_size - self.old_size_with_parent_to_child_hook;
+
+        } else {
+            // Update the value storage_cost cost
+            match self
+                .old_size_with_parent_to_child_hook
+                .cmp(&current_kv_size)
+            {
+                Ordering::Equal => {
+                    value_storage_cost.replaced_bytes += self.old_size_with_parent_to_child_hook;
+                }
+                Ordering::Greater => {
+                    // old size is greater than current size, storage_cost will be freed
+                    value_storage_cost.replaced_bytes += current_kv_size;
+                    value_storage_cost.removed_bytes +=
+                        BasicStorageRemoval(self.old_size_with_parent_to_child_hook - current_kv_size);
+                }
+                Ordering::Less => {
+                    // current size is greater than old size, storage_cost will be created
+                    // this also handles the case where the tree.old_size = 0
+                    value_storage_cost.replaced_bytes += self.old_size_with_parent_to_child_hook;
+                    value_storage_cost.added_bytes +=
+                        current_kv_size - self.old_size_with_parent_to_child_hook;
+                }
             }
         }
 
@@ -148,6 +157,7 @@ impl Tree {
             key_storage_cost,
             value_storage_cost,
             new_node: self.old_size_with_parent_to_child_hook == 0,
+            needs_value_verification: self.inner.kv.value_defined_cost.is_none()
         };
 
         (current_kv_size, key_value_storage_cost)
@@ -182,6 +192,26 @@ impl Tree {
         value_hash: CryptoHash,
     ) -> CostContext<Self> {
         KV::new_with_combined_value_hash(key, value, value_hash).map(|kv| Self {
+            inner: Box::new(TreeInner {
+                kv,
+                left: None,
+                right: None,
+            }),
+            old_size_with_parent_to_child_hook: 0,
+            old_value: None,
+        })
+    }
+
+    /// Creates a new `Tree` with the given key, value, value cost and value hash, and no
+    /// children.
+    /// Sets the tree's value_hash = hash(value, supplied_value_hash)
+    pub fn new_with_layered_value_hash(
+        key: Vec<u8>,
+        value: Vec<u8>,
+        value_cost: u32,
+        value_hash: CryptoHash,
+    ) -> CostContext<Self> {
+        KV::new_with_layered_value_hash(key, value, value_cost, value_hash).map(|kv| Self {
             inner: Box::new(TreeInner {
                 kv,
                 left: None,
@@ -513,6 +543,24 @@ impl Tree {
             .inner
             .kv
             .put_value_and_value_hash_then_update(value, value_hash)
+            .unwrap_add_cost(&mut cost);
+        self.wrap_with_cost(cost)
+    }
+
+    /// Replaces the root node's value with the given value and value hash
+    /// and returns the modified `Tree`.
+    #[inline]
+    pub fn put_value_with_value_hash_and_value_cost(
+        mut self,
+        value: Vec<u8>,
+        value_hash: CryptoHash,
+        value_cost: u32,
+    ) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
+        self.inner.kv = self
+            .inner
+            .kv
+            .put_value_with_value_hash_and_value_cost_then_update(value, value_hash, value_cost)
             .unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
     }

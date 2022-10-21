@@ -135,7 +135,7 @@ mod tests {
         // 4 bytes for the key to put in root
         // 1 byte for the root "r"
 
-        // Total 37 + 99 + 39 = 175
+        // Total 37 + 100 + 39 = 176
 
         // Hash node calls
         // 2 for the node hash
@@ -145,7 +145,7 @@ mod tests {
             OperationCost {
                 seek_count: 2, // 1 to get tree, 1 to insert
                 storage_cost: StorageCost {
-                    added_bytes: 175,
+                    added_bytes: 176,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -245,7 +245,7 @@ mod tests {
         // Key Length 1
         // Child Heights 2
 
-        // Total 37 + 128 + 39 = 204
+        // Total 37 + 130 + 39 = 206
 
         // Hash node calls
         // 2 for the node hash
@@ -255,7 +255,7 @@ mod tests {
             OperationCost {
                 seek_count: 2, // 1 to insert, 1 for insert to root tree
                 storage_cost: StorageCost {
-                    added_bytes: 204,
+                    added_bytes: 206,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },

@@ -412,13 +412,14 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 68
+        // Value -> 69
         //   1 for the flag option (but no flags)
         //   1 for the enum type tree
         //   1 for empty option
         // 32 for node hash
-        // 32 for value hash
-        // 1 byte for the value_size (required space for 98)
+        // 0 for value hash (trees have this for free)
+        // 2 byte for the value_size (required space for 98 + x where x can be up to
+        // 256)
 
         // Parent Hook -> 39
         // Key Bytes 4
@@ -426,7 +427,7 @@ mod tests {
         // Key Length 1
         // Child Heights 2
 
-        // Total 37 + 68 + 39 = 144
+        // Total 37 + 69 + 39 = 145
 
         // Hash node calls
         // 1 for the node hash
@@ -436,12 +437,12 @@ mod tests {
             OperationCost {
                 seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
                 storage_cost: StorageCost {
-                    added_bytes: 144,
+                    added_bytes: 113,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 2, // todo: verify this
+                hash_node_calls: 1, // todo: verify this
             }
         );
     }
@@ -452,7 +453,8 @@ mod tests {
         let tx = db.start_transaction();
 
         db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
-            .cost;
+            .unwrap()
+            .unwrap();
 
         let cost = db
             .insert(
@@ -462,9 +464,10 @@ mod tests {
                 None,
                 Some(&tx),
             )
-            .cost;
+            .cost_as_result()
+            .unwrap();
 
-        // Explanation for 187 storage_written_bytes
+        // Explanation for 152 storage_written_bytes
 
         // Key -> 37 bytes
         // 32 bytes for the key prefix
@@ -486,35 +489,28 @@ mod tests {
         // Key Length 1
         // Child Heights 2
 
-        // Root -> 39
-        // 1 byte for the root key length size
-        // 1 byte for the root value length size
-        // 32 for the root key prefix
-        // 4 bytes for the key to put in root
-        // 1 byte for the root "r"
-
         // Total 37 + 72 + 39 = 148
 
         // Explanation for replaced bytes
 
-        // Replaced parent Value -> 99
+        // Replaced parent Value -> 76
         //   1 for the flag option (but no flags)
         //   1 for the enum type
-        //   32 for empty tree
+        //   1 for an empty option
         // 32 for node hash
         // 32 for value hash
-        // 1 byte for the value_size (required space for 98)
+        // 1 byte for the value_size (required space for 75)
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 6, // todo: verify this
+                seek_count: 4, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 148,
-                    replaced_bytes: 99,
+                    replaced_bytes: 76,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 285,
-                hash_node_calls: 4, // todo: verify this
+                storage_loaded_bytes: 73, // todo: verify this
+                hash_node_calls: 4,       // todo: verify this
             }
         );
     }

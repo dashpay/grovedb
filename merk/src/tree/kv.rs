@@ -17,6 +17,7 @@ use crate::tree::hash::{combine_hash, kv_digest_to_kv_hash, value_hash};
 pub struct KV {
     pub(super) key: Vec<u8>,
     pub(super) value: Vec<u8>,
+    pub(super) value_defined_cost: Option<u32>,
     pub(super) hash: CryptoHash,
     pub(super) value_hash: CryptoHash,
 }
@@ -31,6 +32,7 @@ impl KV {
         Self {
             key,
             value,
+            value_defined_cost: None,
             hash: kv_hash,
             value_hash,
         }
@@ -49,6 +51,7 @@ impl KV {
         kv_digest_to_kv_hash(key.as_slice(), &value_hash).map(|hash| Self {
             key,
             value,
+            value_defined_cost: None,
             hash,
             value_hash,
         })
@@ -70,6 +73,27 @@ impl KV {
         kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash).map(|hash| Self {
             key,
             value,
+            value_defined_cost: None,
+            hash,
+            value_hash: combined_value_hash,
+        })
+    }
+
+    pub fn new_with_layered_value_hash(
+        key: Vec<u8>,
+        value: Vec<u8>,
+        value_cost: u32,
+        supplied_value_hash: CryptoHash,
+    ) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
+        let actual_value_hash = value_hash(value.as_slice()).unwrap_add_cost(&mut cost);
+        let combined_value_hash =
+            combine_hash(&actual_value_hash, &supplied_value_hash).unwrap_add_cost(&mut cost);
+
+        kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash).map(|hash| Self {
+            key,
+            value,
+            value_defined_cost: Some(value_cost),
             hash,
             value_hash: combined_value_hash,
         })
@@ -87,6 +111,7 @@ impl KV {
         Self {
             key,
             value,
+            value_defined_cost: None,
             hash,
             value_hash,
         }
@@ -115,6 +140,23 @@ impl KV {
         let mut cost = OperationCost::default();
         self.value = value;
         self.value_hash = value_hash;
+        self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
+        self.wrap_with_cost(cost)
+    }
+
+    /// Replaces the `KV`'s value with the given value and value hash,
+    /// updates the hash and returns the modified `KV`.
+    #[inline]
+    pub fn put_value_with_value_hash_and_value_cost_then_update(
+        mut self,
+        value: Vec<u8>,
+        value_hash: CryptoHash,
+        value_cost: u32,
+    ) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
+        self.value = value;
+        self.value_hash = value_hash;
+        self.value_defined_cost = Some(value_cost);
         self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
     }
@@ -184,7 +226,6 @@ impl KV {
         value_len + value_len.required_space() + parent_to_child_reference_len
     }
 
-    #[allow(dead_code)] // TODO
     /// This function is used to calculate the cost of groveDB tree nodes
     /// It pays for the parent hook.
     /// Trees have the root key of the underlying tree as values.
@@ -194,7 +235,7 @@ impl KV {
     /// tree. Only the key_value_hash should be paid for by the actual tree
     /// node
     #[inline]
-    pub(crate) fn tree_multi_layer_encoding_length_with_parent_to_child_reference(&self) -> usize {
+    pub(crate) fn tree_multi_layer_encoding_length_with_parent_to_child_reference(&self, value_cost: u32) -> usize {
         // encoding a reference encodes the key last and doesn't encode the size of the
         // key. so no need for a varint required space calculation for the
         // reference.
@@ -202,14 +243,16 @@ impl KV {
         // however we do need the varint required space for the cost of the key in
         // rocks_db
         let key_len = self.key.len();
-        let value_len = HASH_LENGTH; // node hash
+        // there is no point to pay for the value_hash because it is already being paid by the parent
+        // to child reference hook of the root of the underlying tree
+        let value_len = HASH_LENGTH + value_cost as usize; // node hash
                                      // 3 = 2 + 1
                                      // 2 for child lengths
                                      // 1 for key_len size in encoding
         let parent_to_child_reference_len = key_len + HASH_LENGTH + 3;
-        // The required space is set to 2. However in reality it could be 1 or 3.
+        // The required space is set to 2. However in reality it could be 1 or 2.
         // This is because the underlying tree pays for the value cost and it's required
-        // length. And this is why we should set it at 2.
+        // length. The value could be a key, and keys can only be 256 bytes.
         value_len + 2 + parent_to_child_reference_len
     }
 }
@@ -236,6 +279,7 @@ impl Decode for KV {
         let mut kv = Self {
             key: Vec::with_capacity(0),
             value: Vec::with_capacity(128),
+            value_defined_cost: None,
             hash: NULL_HASH,
             value_hash: NULL_HASH,
         };
