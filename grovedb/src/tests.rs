@@ -4375,10 +4375,45 @@ fn test_tree_value_exists_method_tx() {
 }
 
 #[test]
+fn test_tree_value_hash_matches_underlying_merk_root_hash_empty_tree() {
+    let db = make_test_grovedb();
+
+    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+
+    let test_leaf_merk = db
+        .open_non_transactional_merk_at_path([TEST_LEAF])
+        .unwrap()
+        .expect("should open merk");
+
+    let (elem_value, elem_value_hash) = test_leaf_merk
+        .get_value_and_value_hash(b"key1")
+        .unwrap()
+        .expect("should get value hash")
+        .expect("value hash should be some");
+
+    let underlying_merk = db
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"])
+        .unwrap()
+        .expect("should open merk");
+
+    let root_hash = underlying_merk.root_hash().unwrap();
+
+    let actual_value_hash = value_hash(&elem_value).unwrap();
+    let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
+
+    assert_eq!(elem_value_hash, combined_value_hash);
+}
+
+#[test]
 fn test_tree_value_hash_matches_underlying_merk_root_hash() {
     let db = make_test_grovedb();
 
     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert([TEST_LEAF, b"key1"], b"key2", Element::new_item(vec![0]), None, None)
         .unwrap()
         .expect("successful subtree insert");
 
