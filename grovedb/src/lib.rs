@@ -1,3 +1,5 @@
+extern crate core;
+
 pub mod batch;
 pub mod error;
 mod operations;

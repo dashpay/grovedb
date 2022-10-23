@@ -1,6 +1,7 @@
 //! GroveDB batch operations support
 
-mod cost_tests;
+mod multi_insert_cost_tests;
+mod single_insert_cost_tests;
 mod worst_case_cost_tests;
 
 use core::fmt;

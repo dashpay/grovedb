@@ -26,7 +26,7 @@ mod tests {
     };
 
     #[test]
-    fn test_batch_costs_match_non_batch() {
+    fn test_batch_one_insert_costs_match_non_batch() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
