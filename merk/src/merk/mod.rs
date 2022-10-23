@@ -17,6 +17,7 @@ use costs::{
     },
     CostContext, CostResult, CostsExt, OperationCost,
 };
+use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
 
 use crate::{
@@ -1020,8 +1021,7 @@ impl Commit for MerkCommitter {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<bool>,
-        // TODO
-        _section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
+        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> Result<()> {
         let tree_size = tree.encoding_length();
         let (mut current_tree_plus_hook_size, mut storage_costs) =
@@ -1032,7 +1032,6 @@ impl Commit for MerkCommitter {
             // At this point the tree value can be updated based on client requirements
             // For example to store the costs
             loop {
-
                 let changed = update_tree_value_based_on_costs(
                     &storage_costs.value_storage_cost,
                     &old_value,
@@ -1055,6 +1054,10 @@ impl Commit for MerkCommitter {
                     return Err(anyhow!("updated value based on costs too many times"));
                 }
                 i += 1;
+            }
+
+            if let BasicStorageRemoval(removed_bytes) = storage_costs.value_storage_cost.removed_bytes {
+                storage_costs.value_storage_cost.removed_bytes = section_removal_bytes(&old_value, removed_bytes)?;
             }
         }
 

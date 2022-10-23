@@ -4,13 +4,19 @@ mod tests {
 
     use costs::{
         storage_cost::{
-            removal::StorageRemovedBytes::{BasicStorageRemoval, NoStorageRemoval},
+            removal::{
+                StorageRemovedBytes,
+                StorageRemovedBytes::{
+                    BasicStorageRemoval, NoStorageRemoval, SectionedStorageRemoval,
+                },
+            },
             transition::OperationStorageTransitionType,
             StorageCost,
         },
         OperationCost,
     };
     use integer_encoding::VarInt;
+    use intmap::IntMap;
 
     use crate::{
         batch::GroveDbOp,
@@ -258,7 +264,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 6, // todo: explain this
+                hash_node_calls: 7, // todo: explain this
             }
         );
     }
@@ -308,7 +314,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 307, // todo: verify this
-                hash_node_calls: 14,       // todo: verify this
+                hash_node_calls: 13,       // todo: verify this
             }
         );
     }
@@ -378,7 +384,132 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 308, // todo: verify this
-                hash_node_calls: 14,       // todo: verify this
+                hash_node_calls: 13,       // todo: verify this
+            }
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_update_smaller_cost_no_flags() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+        db.insert(vec![], b"tree", Element::empty_tree(), None, None)
+            .unwrap()
+            .expect("expected to insert tree");
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            b"key1",
+            Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0])),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("expected to insert item");
+
+        // We are adding 2 bytes
+        let ops = vec![GroveDbOp::insert_run_op(
+            vec![b"tree".to_vec()],
+            b"key1".to_vec(),
+            Element::new_item_with_flags(b"value".to_vec(), Some(vec![1])),
+        )];
+
+        let cost = db
+            .apply_batch_with_element_flags_update(
+                ops,
+                None,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, removed_bytes| Ok(BasicStorageRemoval(removed_bytes)),
+                Some(&tx),
+            )
+            .cost;
+
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 6, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 190, // todo: verify this
+                    removed_bytes: BasicStorageRemoval(1)
+                },
+                storage_loaded_bytes: 307, // todo: verify this
+                hash_node_calls: 13,       // todo: verify this
+            }
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_update_smaller_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+        db.insert(vec![], b"tree", Element::empty_tree(), None, None)
+            .unwrap()
+            .expect("expected to insert tree");
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            b"key1",
+            Element::new_item_with_flags(b"value1".to_vec(), Some(vec![0, 0])),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("expected to insert item");
+
+        // We are adding 2 bytes
+        let ops = vec![GroveDbOp::insert_run_op(
+            vec![b"tree".to_vec()],
+            b"key1".to_vec(),
+            Element::new_item_with_flags(b"value".to_vec(), Some(vec![0, 1])),
+        )];
+
+        let cost = db
+            .apply_batch_with_element_flags_update(
+                ops,
+                None,
+                |cost, old_flags, new_flags| match cost.transition_type() {
+                    OperationStorageTransitionType::OperationUpdateBiggerSize => {
+                        if new_flags[0] == 0 {
+                            new_flags[0] = 1;
+                            let new_flags_epoch = new_flags[1];
+                            new_flags[1] = old_flags.unwrap()[1];
+                            new_flags.push(new_flags_epoch);
+                            new_flags.extend(cost.added_bytes.encode_var_vec());
+                            assert_eq!(new_flags, &vec![1u8, 0, 1, 2]);
+                            Ok(true)
+                        } else {
+                            assert_eq!(new_flags[0], 1);
+                            Ok(false)
+                        }
+                    }
+                    OperationStorageTransitionType::OperationUpdateSmallerSize => Ok(true),
+                    _ => Ok(false),
+                },
+                |flags, removed| {
+                    let mut removed_bytes: IntMap<u32> = IntMap::default();
+                    // we are removing 1 byte from epoch 0
+                    removed_bytes.insert(0, removed);
+                    Ok((SectionedStorageRemoval(removed_bytes)))
+                },
+                Some(&tx),
+            )
+            .cost;
+
+        let mut removed_bytes: IntMap<u32> = IntMap::default();
+        removed_bytes.insert(0, 1);
+
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 6, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 191, // todo: verify this
+                    removed_bytes: SectionedStorageRemoval(removed_bytes)
+                },
+                storage_loaded_bytes: 308, // todo: verify this
+                hash_node_calls: 13,       // todo: verify this
             }
         );
     }

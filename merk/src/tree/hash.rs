@@ -21,11 +21,13 @@ pub fn value_hash(value: &[u8]) -> CostContext<CryptoHash> {
     hasher.update(val_length.as_slice());
     hasher.update(value);
 
+    let hashes = 1 + (hasher.count() - 1) / 64;
+
     let res = hasher.finalize();
     let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
     hash.wrap_with_cost(OperationCost {
-        hash_node_calls: 1,
+        hash_node_calls: hashes as u16,
         ..Default::default()
     })
 }
@@ -46,11 +48,13 @@ pub fn kv_hash(key: &[u8], value: &[u8]) -> CostContext<CryptoHash> {
     let value_hash = value_hash(value);
     hasher.update(value_hash.unwrap_add_cost(&mut cost).as_slice());
 
+    let hashes = 1 + (hasher.count() - 1) / 64;
+
     let res = hasher.finalize();
     let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
 
-    cost.hash_node_calls += 1;
+    cost.hash_node_calls += hashes as u16;
     hash.wrap_with_cost(cost)
 }
 
@@ -64,11 +68,13 @@ pub fn kv_digest_to_kv_hash(key: &[u8], value_hash: &CryptoHash) -> CostContext<
 
     hasher.update(value_hash.as_slice());
 
+    let hashes = 1 + (hasher.count() - 1) / 64;
+
     let res = hasher.finalize();
     let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
     hash.wrap_with_cost(OperationCost {
-        hash_node_calls: 1,
+        hash_node_calls: hashes as u16,
         ..Default::default()
     })
 }
@@ -86,11 +92,13 @@ pub fn node_hash(
     hasher.update(left);
     hasher.update(right);
 
+    let hashes = 1 + (hasher.count() - 1) / 64;
+
     let res = hasher.finalize();
     let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
     hash.wrap_with_cost(OperationCost {
-        hash_node_calls: 2, // as this would be over Blake 3's block size of 64
+        hash_node_calls: hashes as u16,
         ..Default::default()
     })
 }
@@ -105,7 +113,7 @@ pub fn combine_hash(hash_one: &CryptoHash, hash_two: &CryptoHash) -> CostContext
     let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
     hash.wrap_with_cost(OperationCost {
-        hash_node_calls: 2, // as this would be over Blake 3's block size of 64 todo verify this is not 3
+        hash_node_calls: 1, // as this will fit on exactly 1 block
         ..Default::default()
     })
 }

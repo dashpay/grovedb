@@ -566,7 +566,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 73, // todo: verify this
-                hash_node_calls: 8,       // todo: verify this
+                hash_node_calls: 7,       // todo: verify this
             }
         );
     }
@@ -670,7 +670,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 150,
-                hash_node_calls: 8, // todo: verify this
+                hash_node_calls: 7, // todo: verify this
             }
         );
     }
@@ -712,7 +712,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 151,
-                hash_node_calls: 8, // todo: verify this
+                hash_node_calls: 7, // todo: verify this
             }
         );
     }
