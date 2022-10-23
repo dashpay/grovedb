@@ -398,7 +398,63 @@ mod tests {
     use crate::{tests::make_empty_grovedb, Element};
 
     #[test]
-    fn test_one_insert_cost() {
+    fn test_one_insert_item_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let cost = db
+            .insert(
+                vec![],
+                b"key1",
+                Element::new_item(b"cat".to_vec()),
+                None,
+                Some(&tx),
+            )
+            .cost;
+        // Explanation for 183 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 71
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type item
+        //   3 for "cat"
+        //   1 for cat length
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 1 byte for the value_size (required space for 70)
+
+        // Parent Hook -> 39
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+
+        // Total 37 + 71 + 39 = 147
+
+        // Hash node calls
+        // 1 for the node hash
+        // 1 for the value hash
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
+                storage_cost: StorageCost {
+                    added_bytes: 147,
+                    replaced_bytes: 0,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 0,
+                hash_node_calls: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_insert_empty_tree_cost() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -448,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn test_one_insert_cost_under_tree() {
+    fn test_one_insert_empty_tree_cost_under_tree() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -510,7 +566,111 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 73, // todo: verify this
-                hash_node_calls: 4,       // todo: verify this
+                hash_node_calls: 8,       // todo: verify this
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_update_item_same_cost_at_root() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(
+            vec![],
+            b"key1",
+            Element::new_item(b"cat".to_vec()),
+            None,
+            Some(&tx),
+        )
+        .cost;
+
+        let cost = db
+            .insert(
+                vec![],
+                b"key1",
+                Element::new_item(b"dog".to_vec()),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+
+        // Explanation for 110 replaced bytes
+
+        // Value -> 71
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type item
+        //   3 for "cat"
+        //   1 for cat length
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 1 byte for the value_size (required space for 70)
+
+        // Parent Hook -> 39
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+
+        // 71 + 39 = 110
+
+        // hash node calls
+        // 1 for value hash
+        // 1 for node hash
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 3, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 110,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 76,
+                hash_node_calls: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_update_same_cost_in_underlying_tree() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
+            .cost;
+
+        db.insert(
+            vec![b"tree".as_slice()],
+            b"key1",
+            Element::new_item(b"cat".to_vec()),
+            None,
+            Some(&tx),
+        )
+        .cost;
+
+        let cost = db
+            .insert(
+                vec![b"tree".as_slice()],
+                b"key1",
+                Element::new_item(b"dog".to_vec()),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("expected to insert");
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 5, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 186,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 150,
+                hash_node_calls: 8, // todo: verify this
             }
         );
     }
@@ -548,11 +708,11 @@ mod tests {
                 seek_count: 5, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 1,
-                    replaced_bytes: 224,
+                    replaced_bytes: 187, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 151,
-                hash_node_calls: 2, // todo: verify this
+                hash_node_calls: 8, // todo: verify this
             }
         );
     }

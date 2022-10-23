@@ -105,8 +105,7 @@ impl Tree {
         let old_value = inner_tree.kv.value.clone();
         Self {
             inner: Box::new(inner_tree),
-            // TODO: figure out why adding the required space for this doesn't affect the tests
-            old_size_with_parent_to_child_hook: (decode_size + decode_size.required_space()) as u32,
+            old_size_with_parent_to_child_hook: decode_size as u32,
             old_value: Some(old_value),
         }
     }

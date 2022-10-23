@@ -323,7 +323,7 @@ where
             new_keys.insert(key_vec);
         }
 
-        tree.recurse(batch, mid, exclusive, new_keys, updated_keys)
+        tree.recurse(batch, mid, exclusive, new_keys, updated_keys).add_cost(cost)
     }
 
     /// Recursively applies operations to the tree's children (if there are any
