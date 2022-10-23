@@ -252,10 +252,10 @@ where
                 // TODO: take vec from batch so we don't need to clone
                 Put(value) => self.put_value(value.to_vec()).unwrap_add_cost(&mut cost),
                 PutCombinedReference(value, referenced_value) => self
-                    .put_value_and_value_hash(value.to_vec(), referenced_value.to_owned())
+                    .put_value_and_reference_value_hash(value.to_vec(), referenced_value.to_owned())
                     .unwrap_add_cost(&mut cost),
                 PutLayeredReference(value, value_cost, referenced_value) => self
-                    .put_value_with_value_hash_and_value_cost(value.to_vec(), referenced_value.to_owned(), *value_cost)
+                    .put_value_with_reference_value_hash_and_value_cost(value.to_vec(), referenced_value.to_owned(), *value_cost)
                     .unwrap_add_cost(&mut cost),
                 Delete => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply

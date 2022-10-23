@@ -3,10 +3,7 @@ mod tests {
     use std::option::Option::None;
 
     use costs::{
-        storage_cost::{
-            removal::StorageRemovedBytes::NoStorageRemoval,
-            transition::OperationStorageTransitionType, StorageCost,
-        },
+        storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
     };
     use integer_encoding::VarInt;

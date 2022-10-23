@@ -18,7 +18,6 @@ use costs::{
     CostContext, CostResult, CostsExt, OperationCost,
 };
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
-use visualize::visualize_stdout;
 
 use crate::{
     merk::defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
@@ -313,6 +312,12 @@ where
                 .clone()
                 .wrap_with_cost(OperationCost::default())
         })
+    }
+
+    /// Gets a hash of a node by a given key, `None` is returned in case
+    /// when node not found by the key.
+    pub fn get_kv_hash(&self, key: &[u8]) -> CostContext<Result<Option<CryptoHash>>> {
+        self.get_node_fn(key, |node| node.inner.kv.hash().clone().wrap_with_cost(OperationCost::default()))
     }
 
     /// Gets the value and value hash of a node by a given key, `None` is returned in case
@@ -700,7 +705,7 @@ where
     pub fn commit<K>(
         &mut self,
         new_keys: BTreeSet<Vec<u8>>,
-        updated_keys: BTreeSet<Vec<u8>>,
+        _updated_keys: BTreeSet<Vec<u8>>,
         deleted_keys: LinkedList<Vec<u8>>,
         updated_root_key_from: Option<Vec<u8>>,
         aux: &AuxMerkBatch<K>,

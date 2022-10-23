@@ -153,21 +153,21 @@ where
     }
 
     /// Similar to `Tree#with_value_and_value_hash`.
-    pub fn put_value_and_value_hash(
+    pub fn put_value_and_reference_value_hash(
         mut self,
         value: Vec<u8>,
         value_hash: CryptoHash,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.tree.own(|t| {
-            t.put_value_and_value_hash(value, value_hash)
+            t.put_value_and_reference_value_hash(value, value_hash)
                 .unwrap_add_cost(&mut cost)
         });
         self.wrap_with_cost(cost)
     }
 
     /// Similar to `Tree#with_value_and_value_hash`.
-    pub fn put_value_with_value_hash_and_value_cost(
+    pub fn put_value_with_reference_value_hash_and_value_cost(
         mut self,
         value: Vec<u8>,
         value_hash: CryptoHash,
@@ -175,7 +175,7 @@ where
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.tree.own(|t| {
-            t.put_value_with_value_hash_and_value_cost(value, value_hash, value_fixed_cost)
+            t.put_value_with_reference_value_hash_and_value_cost(value, value_hash, value_fixed_cost)
                 .unwrap_add_cost(&mut cost)
         });
         self.wrap_with_cost(cost)

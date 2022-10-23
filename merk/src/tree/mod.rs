@@ -40,9 +40,9 @@ pub use walk::{Fetch, RefWalker, Walker};
 /// The fields of the `Tree` type, stored on the heap.
 #[derive(Clone, Encode, Decode, Debug)]
 pub struct TreeInner {
-    left: Option<Link>,
-    right: Option<Link>,
-    kv: KV,
+    pub(crate) left: Option<Link>,
+    pub(crate) right: Option<Link>,
+    pub(crate) kv: KV,
 }
 
 impl TreeInner {
@@ -533,7 +533,7 @@ impl Tree {
     /// Replaces the root node's value with the given value and value hash
     /// and returns the modified `Tree`.
     #[inline]
-    pub fn put_value_and_value_hash(
+    pub fn put_value_and_reference_value_hash(
         mut self,
         value: Vec<u8>,
         value_hash: CryptoHash,
@@ -542,7 +542,7 @@ impl Tree {
         self.inner.kv = self
             .inner
             .kv
-            .put_value_and_value_hash_then_update(value, value_hash)
+            .put_value_and_reference_value_hash_then_update(value, value_hash)
             .unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
     }
@@ -550,7 +550,7 @@ impl Tree {
     /// Replaces the root node's value with the given value and value hash
     /// and returns the modified `Tree`.
     #[inline]
-    pub fn put_value_with_value_hash_and_value_cost(
+    pub fn put_value_with_reference_value_hash_and_value_cost(
         mut self,
         value: Vec<u8>,
         value_hash: CryptoHash,
@@ -560,7 +560,7 @@ impl Tree {
         self.inner.kv = self
             .inner
             .kv
-            .put_value_with_value_hash_and_value_cost_then_update(value, value_hash, value_cost)
+            .put_value_with_reference_value_hash_and_value_cost_then_update(value, value_hash, value_cost)
             .unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
     }

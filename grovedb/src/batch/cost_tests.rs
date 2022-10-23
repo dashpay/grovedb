@@ -11,9 +11,7 @@ mod tests {
         OperationCost,
     };
     use integer_encoding::VarInt;
-    use merk::proofs::Query;
 
-    use super::*;
     use crate::{
         batch::GroveDbOp,
         reference_path::ReferencePathType,

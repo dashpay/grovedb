@@ -220,9 +220,10 @@ mod tests {
     use merk::proofs::Query;
 
     use crate::{
-        tests::{compare_result_tuples, make_deep_tree, TEST_LEAF},
+        tests::{common::compare_result_tuples, make_deep_tree, TEST_LEAF},
         Element, Error, GroveDb, PathQuery,
     };
+
     #[test]
     fn test_has_subpaths() {
         let path_query_one = PathQuery::new_unsized(vec![b"a".to_vec()], Query::new());
