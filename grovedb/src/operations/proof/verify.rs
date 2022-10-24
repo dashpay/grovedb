@@ -1,3 +1,4 @@
+use indexmap::Equivalent;
 use merk::{
     proofs::Query,
     tree::{combine_hash, value_hash as value_hash_fn},
@@ -197,12 +198,11 @@ impl ProofVerifier {
                                 new_path_query,
                             )?;
 
-                            // TODO: Remove unwrap
                             let combined_child_hash = combine_hash(
                                 value_hash_fn(&current_value_bytes).value(),
                                 &child_hash,
                             )
-                            .unwrap();
+                            .value().to_owned();
 
                             if combined_child_hash != expected_combined_child_hash {
                                 dbg!(&combined_child_hash);
@@ -317,7 +317,6 @@ impl ProofVerifier {
             if expected_child_hash == None {
                 root_key_hash = Some(proof_result.0);
             } else {
-                // TODO: Remove unwrap
                 let combined_hash = combine_hash(
                     value_hash_fn(last_result_set[0].1.as_slice()).value(),
                     &proof_result.0,
@@ -399,9 +398,8 @@ impl ProofVerifier {
                 )),
             }?;
 
-            // TODO: Remove unwrap
             let combined_root_hash =
-                combine_hash(value_hash_fn(&result_set[0].1).value(), expected_root_hash).unwrap();
+                combine_hash(value_hash_fn(&result_set[0].1).value(), expected_root_hash).value().to_owned();
             if child_hash != combined_root_hash {
                 return Err(Error::InvalidProof(
                     "Bad path: tree hash does not have expected hash",
