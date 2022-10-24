@@ -202,11 +202,10 @@ impl ProofVerifier {
                                 value_hash_fn(&current_value_bytes).value(),
                                 &child_hash,
                             )
-                            .value().to_owned();
+                            .value()
+                            .to_owned();
 
                             if combined_child_hash != expected_combined_child_hash {
-                                dbg!(&combined_child_hash);
-                                dbg!(&expected_combined_child_hash);
                                 return Err(Error::InvalidProof(
                                     "child hash doesn't match the expected hash",
                                 ));
@@ -399,7 +398,9 @@ impl ProofVerifier {
             }?;
 
             let combined_root_hash =
-                combine_hash(value_hash_fn(&result_set[0].1).value(), expected_root_hash).value().to_owned();
+                combine_hash(value_hash_fn(&result_set[0].1).value(), expected_root_hash)
+                    .value()
+                    .to_owned();
             if child_hash != combined_root_hash {
                 return Err(Error::InvalidProof(
                     "Bad path: tree hash does not have expected hash",
