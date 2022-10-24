@@ -3,6 +3,7 @@
 mod multi_insert_cost_tests;
 mod single_insert_cost_tests;
 mod worst_case_cost_tests;
+mod single_deletion_cost_tests;
 
 use core::fmt;
 use std::{
@@ -1139,14 +1140,8 @@ impl GroveDb {
                     let mut root_tree_ops: BTreeMap<KeyInfo, Op> = BTreeMap::new();
                     for (key, op) in ops_at_path.into_iter() {
                         match op {
-                            Op::Insert { .. } => {
+                            Op::Insert { .. } | Op::Delete => {
                                 root_tree_ops.insert(key, op);
-                            }
-                            Op::Delete => {
-                                return Err(Error::InvalidBatchOperation(
-                                    "deletion of root tree not possible",
-                                ))
-                                .wrap_with_cost(cost);
                             }
                             Op::ReplaceTreeRootKey { hash, root_key } => {
                                 root_tree_ops

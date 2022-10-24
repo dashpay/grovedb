@@ -570,3 +570,73 @@ impl GroveDb {
         cost
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::option::Option::None;
+
+    use costs::{
+        storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
+        OperationCost,
+    };
+    use pretty_assertions::assert_eq;
+    use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
+
+    use crate::{tests::make_empty_grovedb, Element};
+
+    #[test]
+    fn test_one_delete_tree_item_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db
+            .insert(
+                vec![],
+                b"key1",
+                Element::new_item(b"cat".to_vec()),
+                None,
+                Some(&tx),
+            ).cost_as_result().expect("expected to insert");
+
+        let cost = db.delete(vec![], b"key1", Some(&tx)).cost_as_result().expect("expected to delete");
+        // Explanation for 147 storage removed bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 71
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type item
+        //   3 for "cat"
+        //   1 for cat length
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 1 byte for the value_size (required space for 70)
+
+        // Parent Hook -> 39
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+
+        // Total 37 + 71 + 39 = 147
+
+        // Hash node calls
+        // everything is empty, so no need for hashes?
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 8, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 0,
+                    removed_bytes: BasicStorageRemoval(147)
+                },
+                storage_loaded_bytes: 152, // todo: verify this
+                hash_node_calls: 0, // todo: verify this
+            }
+        );
+    }
+}

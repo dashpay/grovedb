@@ -462,7 +462,7 @@ where
             aux,
             &mut |_costs, _old_value, _value| Ok(false),
             &mut |_a, bytes_to_remove| {
-                Ok(StorageRemovedBytes::BasicStorageRemoval(bytes_to_remove))
+                Ok(BasicStorageRemoval(bytes_to_remove))
             },
         )
     }
