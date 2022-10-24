@@ -396,7 +396,150 @@ mod tests {
     };
     use pretty_assertions::assert_eq;
 
-    use crate::{tests::make_empty_grovedb, Element};
+    use crate::{
+        tests::{make_empty_grovedb, make_test_grovedb, TEST_LEAF},
+        Element, Error,
+    };
+
+    #[test]
+    fn test_non_root_insert_item_without_transaction() {
+        let db = make_test_grovedb();
+        let element = Element::new_item(b"ayy".to_vec());
+        db.insert([TEST_LEAF], b"key", element.clone(), None, None)
+            .unwrap()
+            .expect("successful insert");
+        assert_eq!(
+            db.get([TEST_LEAF], b"key", None)
+                .unwrap()
+                .expect("successful get"),
+            element
+        );
+    }
+
+    #[test]
+    fn test_non_root_insert_subtree_then_insert_item_without_transaction() {
+        let db = make_test_grovedb();
+        let element = Element::new_item(b"ayy".to_vec());
+
+        // Insert a subtree first
+        db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
+            .unwrap()
+            .expect("successful subtree insert");
+        // Insert an element into subtree
+        db.insert([TEST_LEAF, b"key1"], b"key2", element.clone(), None, None)
+            .unwrap()
+            .expect("successful value insert");
+        assert_eq!(
+            db.get([TEST_LEAF, b"key1"], b"key2", None)
+                .unwrap()
+                .expect("successful get"),
+            element
+        );
+    }
+
+    #[test]
+    fn test_non_root_insert_item_with_transaction() {
+        let item_key = b"key3";
+
+        let db = make_test_grovedb();
+        let transaction = db.start_transaction();
+
+        // Check that there's no such key in the DB
+        let result = db.get([TEST_LEAF], item_key, None).unwrap();
+        assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
+
+        let element1 = Element::new_item(b"ayy".to_vec());
+
+        db.insert([TEST_LEAF], item_key, element1, None, Some(&transaction))
+            .unwrap()
+            .expect("cannot insert an item into GroveDB");
+
+        // The key was inserted inside the transaction, so it shouldn't be
+        // possible to get it back without committing or using transaction
+        let result = db.get([TEST_LEAF], item_key, None).unwrap();
+        assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
+        // Check that the element can be retrieved when transaction is passed
+        let result_with_transaction = db
+            .get([TEST_LEAF], item_key, Some(&transaction))
+            .unwrap()
+            .expect("Expected to work");
+        assert_eq!(result_with_transaction, Element::new_item(b"ayy".to_vec()));
+
+        // Test that commit works
+        db.commit_transaction(transaction).unwrap().unwrap();
+
+        // Check that the change was committed
+        let result = db
+            .get([TEST_LEAF], item_key, None)
+            .unwrap()
+            .expect("Expected transaction to work");
+        assert_eq!(result, Element::new_item(b"ayy".to_vec()));
+    }
+
+    #[test]
+    fn test_non_root_insert_subtree_with_transaction() {
+        let subtree_key = b"subtree_key";
+
+        let db = make_test_grovedb();
+        let transaction = db.start_transaction();
+
+        // Check that there's no such key in the DB
+        let result = db.get([TEST_LEAF], subtree_key, None).unwrap();
+        assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
+
+        db.insert(
+            [TEST_LEAF],
+            subtree_key,
+            Element::empty_tree(),
+            None,
+            Some(&transaction),
+        )
+        .unwrap()
+        .expect("cannot insert an item into GroveDB");
+
+        let result = db.get([TEST_LEAF], subtree_key, None).unwrap();
+        assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
+
+        let result_with_transaction = db
+            .get([TEST_LEAF], subtree_key, Some(&transaction))
+            .unwrap()
+            .expect("Expected to work");
+        assert_eq!(result_with_transaction, Element::empty_tree());
+
+        db.commit_transaction(transaction).unwrap().unwrap();
+
+        let result = db
+            .get([TEST_LEAF], subtree_key, None)
+            .unwrap()
+            .expect("Expected transaction to work");
+        assert_eq!(result, Element::empty_tree());
+    }
+
+    #[test]
+    fn test_insert_if_not_exists() {
+        let db = make_test_grovedb();
+
+        // Insert twice at the same path
+        assert!(db
+            .insert_if_not_exists([TEST_LEAF], b"key1", Element::empty_tree(), None)
+            .unwrap()
+            .expect("Provided valid path"));
+        assert!(!db
+            .insert_if_not_exists([TEST_LEAF], b"key1", Element::empty_tree(), None)
+            .unwrap()
+            .expect("Provided valid path"));
+
+        // Should propagate errors from insertion
+        let result = db
+            .insert_if_not_exists(
+                [TEST_LEAF, b"unknown"],
+                b"key1",
+                Element::empty_tree(),
+                None,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidPath(_))));
+    }
 
     #[test]
     fn test_one_insert_item_cost() {
@@ -449,7 +592,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 2,
+                hash_node_calls: 3,
             }
         );
     }
@@ -499,7 +642,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 1, // todo: verify this
+                hash_node_calls: 2, // todo: verify this
             }
         );
     }
@@ -560,14 +703,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 4, // todo: verify this
+                seek_count: 5, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 148,
                     replaced_bytes: 76,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 73, // todo: verify this
-                hash_node_calls: 7,       // todo: verify this
+                storage_loaded_bytes: 142, // todo: verify this
+                hash_node_calls: 10,       // todo: verify this
             }
         );
     }
@@ -629,7 +772,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 76,
-                hash_node_calls: 2,
+                hash_node_calls: 3,
             }
         );
     }
@@ -664,14 +807,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 5, // todo: verify this
+                seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 186,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 150,
-                hash_node_calls: 7, // todo: verify this
+                storage_loaded_bytes: 224,
+                hash_node_calls: 10, // todo: verify this
             }
         );
     }
@@ -706,14 +849,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 5, // todo: verify this
+                seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 1,
                     replaced_bytes: 187, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 151,
-                hash_node_calls: 7, // todo: verify this
+                storage_loaded_bytes: 225,
+                hash_node_calls: 10, // todo: verify this
             }
         );
     }

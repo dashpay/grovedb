@@ -20,6 +20,7 @@ mod tests {
 
     use crate::{
         batch::GroveDbOp,
+        operations::delete::DeleteOptions,
         reference_path::ReferencePathType,
         tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
         Element, PathQuery,
@@ -36,7 +37,7 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .delete(vec![], b"key1", Some(&tx))
+            .delete(vec![], b"key1", None, Some(&tx))
             .cost_as_result()
             .expect("expected to delete successfully");
 

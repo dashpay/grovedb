@@ -1,17 +1,10 @@
 //! Storage context implementation with a transaction.
-use costs::{
-    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostsExt, OperationCost,
-};
+use costs::{storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostsExt, OperationCost, cost_return_on_error};
 use error::Error;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
 
 use super::{batch::PrefixedMultiContextBatchPart, make_prefixed_key, PrefixedRocksDbRawIterator};
-use crate::{
-    error,
-    error::Error::RocksDBError,
-    rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
-    StorageBatch, StorageContext,
-};
+use crate::{Batch, error, error::Error::RocksDBError, RawIterator, rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME}, StorageBatch, StorageContext};
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
 /// transaction.
@@ -36,6 +29,25 @@ impl<'db> PrefixedRocksDbBatchTransactionContext<'db> {
             prefix,
             batch,
         }
+    }
+
+    /// Clears all the data in the tree at the storage level
+    pub fn clear(&mut self) -> CostContext<Result<(), Error>> {
+        let mut cost = OperationCost::default();
+
+        let mut iter = self.raw_iter();
+        iter.seek_to_first().unwrap_add_cost(&mut cost);
+
+        while iter.valid().unwrap_add_cost(&mut cost) {
+            if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
+                cost_return_on_error!(
+            &mut cost,
+            self.delete(key)
+        );
+            }
+            iter.next().unwrap_add_cost(&mut cost);
+        }
+        Ok(()).wrap_with_cost(cost)
     }
 }
 

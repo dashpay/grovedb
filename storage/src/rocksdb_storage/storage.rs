@@ -206,6 +206,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         // of early termination).
         let mut pending_costs = OperationCost::default();
 
+        dbg!(&batch);
         for op in batch.into_iter() {
             match op {
                 AbstractBatchOperation::Put {

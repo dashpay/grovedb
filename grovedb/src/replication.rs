@@ -717,7 +717,9 @@ mod test {
         db.create_checkpoint(&checkpoint_dir).unwrap();
 
         // Alter the db to make difference between current state and checkpoint
-        db.delete([TEST_LEAF], b"key1", None).unwrap().unwrap();
+        db.delete([TEST_LEAF], b"key1", None, None)
+            .unwrap()
+            .unwrap();
         db.insert(
             [TEST_LEAF],
             b"key3",
