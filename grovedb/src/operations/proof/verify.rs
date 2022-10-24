@@ -1,4 +1,9 @@
-use merk::{proofs::Query, CryptoHash};
+use indexmap::Equivalent;
+use merk::{
+    proofs::Query,
+    tree::{combine_hash, value_hash as value_hash_fn},
+    CryptoHash,
+};
 
 use crate::{
     operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
@@ -116,7 +121,8 @@ impl ProofVerifier {
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
                     match child_element {
                         Element::Tree(expected_root_key, _) => {
-                            let mut expected_child_hash = value_hash;
+                            let mut expected_combined_child_hash = value_hash;
+                            let mut current_value_bytes = value_bytes;
 
                             // What is the equivalent for an empty tree
                             if expected_root_key.is_none() {
@@ -174,7 +180,8 @@ impl ProofVerifier {
                                     }
 
                                     Self::update_root_key_from_subquery_key_element(
-                                        &mut expected_child_hash,
+                                        &mut expected_combined_child_hash,
+                                        &mut current_value_bytes,
                                         &subquery_key_result_set,
                                     )?;
                                 }
@@ -191,9 +198,14 @@ impl ProofVerifier {
                                 new_path_query,
                             )?;
 
-                            if child_hash != expected_child_hash {
-                                // dbg!(child_hash);
-                                // dbg!(expected_child_hash);
+                            let combined_child_hash = combine_hash(
+                                value_hash_fn(&current_value_bytes).value(),
+                                &child_hash,
+                            )
+                            .value()
+                            .to_owned();
+
+                            if combined_child_hash != expected_combined_child_hash {
                                 return Err(Error::InvalidProof(
                                     "child hash doesn't match the expected hash",
                                 ));
@@ -220,9 +232,11 @@ impl ProofVerifier {
         Ok(last_root_hash)
     }
 
-    /// Deserialize subkey_element and update expected root hash
+    /// Deserialize subkey_element and update expected root hash and element
+    /// value
     fn update_root_key_from_subquery_key_element<'a>(
         expected_child_hash: &mut CryptoHash,
+        current_value_bytes: &mut Vec<u8>,
         subquery_key_result_set: &[ProofKeyValue],
     ) -> Result<(), Error> {
         // dbg!(&expected_value_hash);
@@ -233,7 +247,7 @@ impl ProofVerifier {
             // TODO: Add sum trees here
             Element::Tree(..) => {
                 *expected_child_hash = subquery_key_result_set[0].2;
-                // dbg!(&expected_value_hash);
+                *current_value_bytes = subquery_key_result_set[0].1.to_owned();
             }
             _ => {
                 // the means that the subquery key pointed to a non tree
@@ -288,7 +302,7 @@ impl ProofVerifier {
     ) -> Result<[u8; 32], Error> {
         let mut root_key_hash = None;
         let mut expected_child_hash = None;
-        let mut last_result_set = vec![];
+        let mut last_result_set: Proof = vec![];
 
         for key in path_slices {
             let merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
@@ -301,8 +315,16 @@ impl ProofVerifier {
 
             if expected_child_hash == None {
                 root_key_hash = Some(proof_result.0);
-            } else if Some(proof_result.0) != expected_child_hash {
-                return Err(Error::InvalidProof("proof invalid: invalid parent"));
+            } else {
+                let combined_hash = combine_hash(
+                    value_hash_fn(last_result_set[0].1.as_slice()).value(),
+                    &proof_result.0,
+                )
+                .value()
+                .to_owned();
+                if Some(combined_hash) != expected_child_hash {
+                    return Err(Error::InvalidProof("proof invalid: invalid parent"));
+                }
             }
 
             last_result_set = proof_result
@@ -343,7 +365,6 @@ impl ProofVerifier {
         proof_reader: &mut ProofReader,
         expected_root_hash: &mut [u8; 32],
     ) -> Result<[u8; 32], Error> {
-        dbg!("verifying path to root");
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             dbg!(std::str::from_utf8(key));
@@ -365,24 +386,22 @@ impl ProofVerifier {
                 .1
                 .expect("MERK_PROOF always returns a result set");
             if result_set.is_empty() || &result_set[0].0 != key {
-                dbg!("I was called");
                 return Err(Error::InvalidProof("proof invalid: invalid parent"));
             }
 
             let elem = Element::deserialize(result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(root_key, ..) => {
-                    dbg!(std::str::from_utf8(root_key.unwrap().as_slice()));
-                    Ok(result_set[0].2)
-                }
+                Element::Tree(root_key, ..) => Ok(result_set[0].2),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),
             }?;
 
-            if child_hash != *expected_root_hash {
-                // dbg!(&child_hash);
-                // dbg!(&expected_root_hash);
+            let combined_root_hash =
+                combine_hash(value_hash_fn(&result_set[0].1).value(), expected_root_hash)
+                    .value()
+                    .to_owned();
+            if child_hash != combined_root_hash {
                 return Err(Error::InvalidProof(
                     "Bad path: tree hash does not have expected hash",
                 ));

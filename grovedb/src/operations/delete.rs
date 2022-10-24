@@ -576,11 +576,13 @@ mod tests {
     use std::option::Option::None;
 
     use costs::{
-        storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
+        storage_cost::{
+            removal::StorageRemovedBytes::{BasicStorageRemoval, NoStorageRemoval},
+            StorageCost,
+        },
         OperationCost,
     };
     use pretty_assertions::assert_eq;
-    use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
 
     use crate::{tests::make_empty_grovedb, Element};
 
@@ -589,16 +591,20 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        db
-            .insert(
-                vec![],
-                b"key1",
-                Element::new_item(b"cat".to_vec()),
-                None,
-                Some(&tx),
-            ).cost_as_result().expect("expected to insert");
+        db.insert(
+            vec![],
+            b"key1",
+            Element::new_item(b"cat".to_vec()),
+            None,
+            Some(&tx),
+        )
+        .cost_as_result()
+        .expect("expected to insert");
 
-        let cost = db.delete(vec![], b"key1", Some(&tx)).cost_as_result().expect("expected to delete");
+        let cost = db
+            .delete(vec![], b"key1", Some(&tx))
+            .cost_as_result()
+            .expect("expected to delete");
         // Explanation for 147 storage removed bytes
 
         // Key -> 37 bytes
@@ -635,7 +641,7 @@ mod tests {
                     removed_bytes: BasicStorageRemoval(147)
                 },
                 storage_loaded_bytes: 152, // todo: verify this
-                hash_node_calls: 0, // todo: verify this
+                hash_node_calls: 0,        // todo: verify this
             }
         );
     }
