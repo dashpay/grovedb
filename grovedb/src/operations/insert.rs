@@ -11,6 +11,7 @@ use crate::{
     TransactionArg,
 };
 
+#[derive(Clone)]
 pub struct InsertOptions {
     pub validate_insertion_does_not_override: bool,
     pub validate_insertion_does_not_override_tree: bool,
