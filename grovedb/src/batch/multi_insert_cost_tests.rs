@@ -180,22 +180,15 @@ mod tests {
         assert_eq!(cost.storage_cost.removed_bytes, NoStorageRemoval);
     }
 
-
     #[test]
     fn test_batch_root_two_insert_tree_cost_same_level() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![GroveDbOp::insert_run_op(
-            vec![],
-            b"key1".to_vec(),
-            Element::empty_tree(),
-        ),
-                       GroveDbOp::insert_run_op(
-                           vec![],
-                           b"key2".to_vec(),
-                           Element::empty_tree(),
-                       )];
+        let ops = vec![
+            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_run_op(vec![], b"key2".to_vec(), Element::empty_tree()),
+        ];
         let cost_result = db.apply_batch(ops, None, Some(&tx));
         cost_result.value.expect("expected to execute batch");
         let cost = cost_result.cost;
@@ -241,16 +234,14 @@ mod tests {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
-        let ops = vec![GroveDbOp::insert_run_op(
-            vec![],
-            b"key1".to_vec(),
-            Element::empty_tree(),
-        ),
-                       GroveDbOp::insert_run_op(
-                           vec![b"key1".to_vec()],
-                           b"key2".to_vec(),
-                           Element::empty_tree(),
-                       )];
+        let ops = vec![
+            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_run_op(
+                vec![b"key1".to_vec()],
+                b"key2".to_vec(),
+                Element::empty_tree(),
+            ),
+        ];
         let cost_result = db.apply_batch(ops, None, Some(&tx));
         cost_result.value.expect("expected to execute batch");
         let cost = cost_result.cost;

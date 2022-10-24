@@ -1,4 +1,8 @@
-use merk::{proofs::Query, CryptoHash};
+use merk::{
+    proofs::Query,
+    tree::{combine_hash, value_hash as value_hash_fn},
+    CryptoHash,
+};
 
 use crate::{
     operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
@@ -116,7 +120,7 @@ impl ProofVerifier {
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
                     match child_element {
                         Element::Tree(expected_root_key, _) => {
-                            let mut expected_child_hash = value_hash;
+                            let mut expected_combined_child_hash = value_hash;
 
                             // What is the equivalent for an empty tree
                             if expected_root_key.is_none() {
@@ -174,7 +178,7 @@ impl ProofVerifier {
                                     }
 
                                     Self::update_root_key_from_subquery_key_element(
-                                        &mut expected_child_hash,
+                                        &mut expected_combined_child_hash,
                                         &subquery_key_result_set,
                                     )?;
                                 }
@@ -191,9 +195,15 @@ impl ProofVerifier {
                                 new_path_query,
                             )?;
 
-                            if child_hash != expected_child_hash {
-                                // dbg!(child_hash);
-                                // dbg!(expected_child_hash);
+                            // TODO: Remove unwrap
+                            let vh = value_hash_fn(&value_bytes).unwrap();
+                            dbg!(&vh);
+                            let combined_child_hash = combine_hash(&vh, &child_hash).unwrap();
+                            // let combined_child_hash = combine_hash(&child_hash, &vh).unwrap();
+
+                            if combined_child_hash != expected_combined_child_hash {
+                                dbg!(&combined_child_hash);
+                                dbg!(&expected_combined_child_hash);
                                 return Err(Error::InvalidProof(
                                     "child hash doesn't match the expected hash",
                                 ));
@@ -233,7 +243,6 @@ impl ProofVerifier {
             // TODO: Add sum trees here
             Element::Tree(..) => {
                 *expected_child_hash = subquery_key_result_set[0].2;
-                // dbg!(&expected_value_hash);
             }
             _ => {
                 // the means that the subquery key pointed to a non tree
@@ -288,7 +297,7 @@ impl ProofVerifier {
     ) -> Result<[u8; 32], Error> {
         let mut root_key_hash = None;
         let mut expected_child_hash = None;
-        let mut last_result_set = vec![];
+        let mut last_result_set: Proof = vec![];
 
         for key in path_slices {
             let merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
@@ -301,8 +310,17 @@ impl ProofVerifier {
 
             if expected_child_hash == None {
                 root_key_hash = Some(proof_result.0);
-            } else if Some(proof_result.0) != expected_child_hash {
-                return Err(Error::InvalidProof("proof invalid: invalid parent"));
+            } else {
+                // TODO: Remove unwrap
+                let combined_hash = combine_hash(
+                    value_hash_fn(last_result_set[0].1.as_slice()).value(),
+                    &proof_result.0,
+                )
+                .value()
+                .to_owned();
+                if Some(combined_hash) != expected_child_hash {
+                    return Err(Error::InvalidProof("proof invalid: invalid parent"));
+                }
             }
 
             last_result_set = proof_result
@@ -343,7 +361,6 @@ impl ProofVerifier {
         proof_reader: &mut ProofReader,
         expected_root_hash: &mut [u8; 32],
     ) -> Result<[u8; 32], Error> {
-        dbg!("verifying path to root");
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
             dbg!(std::str::from_utf8(key));
@@ -365,24 +382,21 @@ impl ProofVerifier {
                 .1
                 .expect("MERK_PROOF always returns a result set");
             if result_set.is_empty() || &result_set[0].0 != key {
-                dbg!("I was called");
                 return Err(Error::InvalidProof("proof invalid: invalid parent"));
             }
 
             let elem = Element::deserialize(result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(root_key, ..) => {
-                    dbg!(std::str::from_utf8(root_key.unwrap().as_slice()));
-                    Ok(result_set[0].2)
-                }
+                Element::Tree(root_key, ..) => Ok(result_set[0].2),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),
             }?;
 
-            if child_hash != *expected_root_hash {
-                // dbg!(&child_hash);
-                // dbg!(&expected_root_hash);
+            // TODO: Remove unwrap
+            let combined_root_hash =
+                combine_hash(value_hash_fn(&result_set[0].1).value(), expected_root_hash).unwrap();
+            if child_hash != combined_root_hash {
                 return Err(Error::InvalidProof(
                     "Bad path: tree hash does not have expected hash",
                 ));
