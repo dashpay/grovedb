@@ -2,7 +2,7 @@ extern crate core;
 
 pub mod batch;
 pub mod error;
-mod operations;
+pub mod operations;
 mod query;
 pub mod query_result_type;
 pub mod reference_path;
