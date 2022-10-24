@@ -121,6 +121,7 @@ impl ProofVerifier {
                     match child_element {
                         Element::Tree(expected_root_key, _) => {
                             let mut expected_combined_child_hash = value_hash;
+                            let mut current_value_bytes = value_bytes;
 
                             // What is the equivalent for an empty tree
                             if expected_root_key.is_none() {
@@ -179,6 +180,7 @@ impl ProofVerifier {
 
                                     Self::update_root_key_from_subquery_key_element(
                                         &mut expected_combined_child_hash,
+                                        &mut current_value_bytes,
                                         &subquery_key_result_set,
                                     )?;
                                 }
@@ -196,10 +198,11 @@ impl ProofVerifier {
                             )?;
 
                             // TODO: Remove unwrap
-                            let vh = value_hash_fn(&value_bytes).unwrap();
-                            dbg!(&vh);
-                            let combined_child_hash = combine_hash(&vh, &child_hash).unwrap();
-                            // let combined_child_hash = combine_hash(&child_hash, &vh).unwrap();
+                            let combined_child_hash = combine_hash(
+                                value_hash_fn(&current_value_bytes).value(),
+                                &child_hash,
+                            )
+                            .unwrap();
 
                             if combined_child_hash != expected_combined_child_hash {
                                 dbg!(&combined_child_hash);
@@ -230,9 +233,11 @@ impl ProofVerifier {
         Ok(last_root_hash)
     }
 
-    /// Deserialize subkey_element and update expected root hash
+    /// Deserialize subkey_element and update expected root hash and element
+    /// value
     fn update_root_key_from_subquery_key_element<'a>(
         expected_child_hash: &mut CryptoHash,
+        current_value_bytes: &mut Vec<u8>,
         subquery_key_result_set: &[ProofKeyValue],
     ) -> Result<(), Error> {
         // dbg!(&expected_value_hash);
@@ -243,6 +248,7 @@ impl ProofVerifier {
             // TODO: Add sum trees here
             Element::Tree(..) => {
                 *expected_child_hash = subquery_key_result_set[0].2;
+                *current_value_bytes = subquery_key_result_set[0].1.to_owned();
             }
             _ => {
                 // the means that the subquery key pointed to a non tree
