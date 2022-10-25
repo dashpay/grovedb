@@ -28,8 +28,11 @@ use merk::{
 };
 use nohash_hasher::IntMap;
 use storage::{
-    rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch,
-    StorageContext,
+    rocksdb_storage::{
+        PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext, RocksDbStorage,
+    },
+    worst_case_costs::WorstKeyLength,
+    Storage, StorageBatch, StorageContext,
 };
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
@@ -38,10 +41,10 @@ use crate::{
         GroveDbOpMode::WorstCaseOp,
         KeyInfo::{KnownKey, MaxKeySize},
     },
-    operations::{get::MAX_REFERENCE_HOPS, insert::InsertOptions},
+    operations::{delete::DeleteOptions, get::MAX_REFERENCE_HOPS, insert::InsertOptions},
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     worst_case_costs::MerkWorstCaseInput,
-    Element, ElementFlags, Error, GroveDb, TransactionArg, MAX_ELEMENTS_NUMBER,
+    Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg, MAX_ELEMENTS_NUMBER,
 };
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -318,10 +321,6 @@ pub struct GroveDbOp {
     pub op: Op,
     /// Mode of operation, run or worst case
     pub mode: GroveDbOpMode,
-    // /// Holds the path based on key info in path
-    // resolved_path: Vec<Vec<u8>>,
-    // /// Holds the key based on key info
-    // resolved_key: Vec<u8>,
 }
 
 impl fmt::Debug for GroveDbOp {
@@ -1097,6 +1096,8 @@ where
 pub struct BatchApplyOptions {
     pub validate_insertion_does_not_override: bool,
     pub validate_insertion_does_not_override_tree: bool,
+    pub allow_deleting_non_empty_trees: bool,
+    pub deleting_non_empty_trees_returns_error: bool,
     pub disable_operation_consistency_check: bool,
 }
 
@@ -1106,6 +1107,13 @@ impl BatchApplyOptions {
             validate_insertion_does_not_override: self.validate_insertion_does_not_override,
             validate_insertion_does_not_override_tree: self
                 .validate_insertion_does_not_override_tree,
+        }
+    }
+
+    fn as_delete_options(&self) -> DeleteOptions {
+        DeleteOptions {
+            allow_deleting_non_empty_trees: self.allow_deleting_non_empty_trees,
+            deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
         }
     }
 }
@@ -1319,7 +1327,12 @@ impl GroveDb {
                     let path_slices: Vec<&[u8]> = op.path.iter().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,
-                        self.delete(path_slices, op.key.as_slice(), transaction,)
+                        self.delete(
+                            path_slices,
+                            op.key.as_slice(),
+                            options.clone().map(|o| o.as_delete_options()),
+                            transaction
+                        )
                     );
                 }
                 _ => {}
@@ -1341,6 +1354,120 @@ impl GroveDb {
             |_flags, removed_bytes| Ok(BasicStorageRemoval(removed_bytes)),
             transaction,
         )
+    }
+
+    pub fn open_batch_transactional_merk_at_path<'db, 'p, P>(
+        &'db self,
+        storage_batch: &'db StorageBatch,
+        path: P,
+        tx: &'db Transaction,
+        new_merk: bool,
+    ) -> CostResult<Merk<PrefixedRocksDbBatchTransactionContext<'db>>, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + Clone,
+    {
+        let mut path_iter = path.into_iter();
+        let mut cost = OperationCost::default();
+        let storage = self
+            .db
+            .get_batch_transactional_storage_context(path_iter.clone(), &storage_batch, tx)
+            .unwrap_add_cost(&mut cost);
+
+        match path_iter.next_back() {
+            Some(key) => {
+                if new_merk {
+                    Ok(Merk::open_empty(storage, MerkType::LayeredMerk)).wrap_with_cost(cost)
+                } else {
+                    let parent_storage = self
+                        .db
+                        .get_transactional_storage_context(path_iter.clone(), tx)
+                        .unwrap_add_cost(&mut cost);
+                    let element = cost_return_on_error!(
+                        &mut cost,
+                        Element::get_from_storage(&parent_storage, key).map_err(|_| {
+                            Error::InvalidPath("could not get key for parent of subtree".to_owned())
+                        })
+                    );
+                    if let Element::Tree(root_key, _) = element {
+                        Merk::open_layered_with_root_key(storage, root_key)
+                            .map_err(|_| {
+                                Error::CorruptedData(
+                                    "cannot open a subtree with given root key".to_owned(),
+                                )
+                            })
+                            .add_cost(cost)
+                    } else {
+                        Err(Error::CorruptedPath(
+                            "cannot open a subtree as parent exists but is not a tree",
+                        ))
+                        .wrap_with_cost(OperationCost::default())
+                    }
+                }
+            }
+            None => {
+                if new_merk {
+                    Ok(Merk::open_empty(storage, MerkType::BaseMerk)).wrap_with_cost(cost)
+                } else {
+                    Merk::open_base(storage)
+                        .map_err(|_| {
+                            Error::CorruptedData("cannot open a the root subtree".to_owned())
+                        })
+                        .add_cost(cost)
+                }
+            }
+        }
+    }
+
+    pub fn open_batch_merk_at_path<'a>(
+        &'a self,
+        storage_batch: &'a StorageBatch,
+        path: &[Vec<u8>],
+        new_merk: bool,
+    ) -> CostResult<Merk<PrefixedRocksDbBatchStorageContext>, Error> {
+        let mut local_cost = OperationCost::default();
+        let storage = self
+            .db
+            .get_batch_storage_context(path.iter().map(|x| x.as_slice()), storage_batch)
+            .unwrap_add_cost(&mut local_cost);
+
+        if new_merk {
+            let merk_type = if path.is_empty() {
+                MerkType::BaseMerk
+            } else {
+                MerkType::LayeredMerk
+            };
+            Ok(Merk::open_empty(storage, merk_type)).wrap_with_cost(local_cost)
+        } else {
+            if let Some((last, base_path)) = path.split_last() {
+                let parent_storage = self
+                    .db
+                    .get_storage_context(base_path.iter().map(|x| x.as_slice()))
+                    .unwrap_add_cost(&mut local_cost);
+                let element = cost_return_on_error!(
+                    &mut local_cost,
+                    Element::get_from_storage(&parent_storage, last)
+                );
+                if let Element::Tree(root_key, _) = element {
+                    Merk::open_layered_with_root_key(storage, root_key)
+                        .map_err(|_| {
+                            Error::CorruptedData(
+                                "cannot open a subtree with given root key".to_owned(),
+                            )
+                        })
+                        .add_cost(local_cost)
+                } else {
+                    Err(Error::CorruptedData(
+                        "cannot open a subtree as parent exists but is not a tree".to_owned(),
+                    ))
+                    .wrap_with_cost(local_cost)
+                }
+            } else {
+                Merk::open_base(storage)
+                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                    .add_cost(local_cost)
+            }
+        }
     }
 
     /// Applies batch of operations on GroveDB
@@ -1406,61 +1533,12 @@ impl GroveDb {
                     update_element_flags_function,
                     split_removal_bytes_function,
                     |path, new_merk| {
-                        let mut local_cost = OperationCost::default();
-
-                        let storage = self
-                            .db
-                            .get_batch_transactional_storage_context(
-                                path.iter().map(|x| x.as_slice()),
-                                &storage_batch,
-                                tx,
-                            )
-                            .unwrap_add_cost(&mut local_cost);
-
-                        if new_merk {
-                            let merk_type = if path.is_empty() {
-                                MerkType::BaseMerk
-                            } else {
-                                MerkType::LayeredMerk
-                            };
-                            Ok(Merk::open_empty(storage, merk_type)).wrap_with_cost(local_cost)
-                        } else {
-                            if let Some((last, base_path)) = path.split_last() {
-                                let parent_storage = self
-                                    .db
-                                    .get_transactional_storage_context(
-                                        base_path.iter().map(|x| x.as_slice()),
-                                        tx,
-                                    )
-                                    .unwrap_add_cost(&mut local_cost);
-                                let element = cost_return_on_error!(
-                                    &mut local_cost,
-                                    Element::get_from_storage(&parent_storage, last)
-                                );
-                                if let Element::Tree(root_key, _) = element {
-                                    Merk::open_layered_with_root_key(storage, root_key)
-                                        .map_err(|_| {
-                                            Error::CorruptedData(
-                                                "cannot open a subtree with given root key"
-                                                    .to_owned(),
-                                            )
-                                        })
-                                        .add_cost(local_cost)
-                                } else {
-                                    Err(Error::CorruptedData(
-                                        "cannot open a subtree as parent exists but is not a tree"
-                                            .to_owned(),
-                                    ))
-                                    .wrap_with_cost(local_cost)
-                                }
-                            } else {
-                                Merk::open_base(storage)
-                                    .map_err(|_| {
-                                        Error::CorruptedData("cannot open a subtree".to_owned())
-                                    })
-                                    .add_cost(local_cost)
-                            }
-                        }
+                        self.open_batch_transactional_merk_at_path(
+                            &storage_batch,
+                            path.iter().map(|x| x.as_slice()),
+                            &tx,
+                            new_merk,
+                        )
                     }
                 )
             );
@@ -1482,56 +1560,7 @@ impl GroveDb {
                     update_element_flags_function,
                     split_removal_bytes_function,
                     |path, new_merk| {
-                        let mut local_cost = OperationCost::default();
-                        let storage = self
-                            .db
-                            .get_batch_storage_context(
-                                path.iter().map(|x| x.as_slice()),
-                                &storage_batch,
-                            )
-                            .unwrap_add_cost(&mut local_cost);
-
-                        if new_merk {
-                            let merk_type = if path.is_empty() {
-                                MerkType::BaseMerk
-                            } else {
-                                MerkType::LayeredMerk
-                            };
-                            Ok(Merk::open_empty(storage, merk_type)).wrap_with_cost(local_cost)
-                        } else {
-                            if let Some((last, base_path)) = path.split_last() {
-                                let parent_storage = self
-                                    .db
-                                    .get_storage_context(base_path.iter().map(|x| x.as_slice()))
-                                    .unwrap_add_cost(&mut local_cost);
-                                let element = cost_return_on_error!(
-                                    &mut local_cost,
-                                    Element::get_from_storage(&parent_storage, last)
-                                );
-                                if let Element::Tree(root_key, _) = element {
-                                    Merk::open_layered_with_root_key(storage, root_key)
-                                        .map_err(|_| {
-                                            Error::CorruptedData(
-                                                "cannot open a subtree with given root key"
-                                                    .to_owned(),
-                                            )
-                                        })
-                                        .add_cost(local_cost)
-                                } else {
-                                    Err(Error::CorruptedData(
-                                        "cannot open a subtree as parent exists but is not a tree"
-                                            .to_owned(),
-                                    ))
-                                    .wrap_with_cost(local_cost)
-                                }
-                            } else {
-                                Merk::open_base(storage)
-                                    .map_err(|_| {
-                                        Error::CorruptedData("cannot open a subtree".to_owned())
-                                    })
-                                    .add_cost(local_cost)
-                            }
-                        }
+                        self.open_batch_merk_at_path(&storage_batch, path, new_merk)
                     }
                 )
             );
@@ -1735,6 +1764,8 @@ mod tests {
                 Some(BatchApplyOptions {
                     validate_insertion_does_not_override: false,
                     validate_insertion_does_not_override_tree: true,
+                    allow_deleting_non_empty_trees: false,
+                    deleting_non_empty_trees_returns_error: true,
                     disable_operation_consistency_check: true,
                 }),
                 None
@@ -2451,6 +2482,8 @@ mod tests {
                 Some(BatchApplyOptions {
                     validate_insertion_does_not_override: true,
                     validate_insertion_does_not_override_tree: true,
+                    allow_deleting_non_empty_trees: false,
+                    deleting_non_empty_trees_returns_error: true,
                     disable_operation_consistency_check: false,
                 }),
                 None
@@ -2486,7 +2519,9 @@ mod tests {
                 Some(BatchApplyOptions {
                     disable_operation_consistency_check: false,
                     validate_insertion_does_not_override_tree: true,
-                    validate_insertion_does_not_override: true
+                    allow_deleting_non_empty_trees: false,
+                    validate_insertion_does_not_override: true,
+                    deleting_non_empty_trees_returns_error: true
                 }),
                 None
             )
@@ -2515,6 +2550,8 @@ mod tests {
                 Some(BatchApplyOptions {
                     validate_insertion_does_not_override: true,
                     validate_insertion_does_not_override_tree: true,
+                    allow_deleting_non_empty_trees: false,
+                    deleting_non_empty_trees_returns_error: true,
                     disable_operation_consistency_check: false,
                 }),
                 None

@@ -5,6 +5,7 @@ use std::{iter::Peekable, u8};
 
 use anyhow::{anyhow, Error};
 use storage::{Batch, StorageContext};
+use visualize::visualize_stdout;
 
 use super::Merk;
 use crate::{

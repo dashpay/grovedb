@@ -59,6 +59,9 @@ pub enum Error {
     #[error("delete up tree stop height more than initial path size error: {0}")]
     DeleteUpTreeStopHeightMoreThanInitialPathSize(String),
 
+    #[error("deleting non empty tree error: {0}")]
+    DeletingNonEmptyTree(&'static str),
+
     // Client allowed errors
     #[error("just in time element flags client error: {0}")]
     JustInTimeElementFlagsClientError(&'static str),
