@@ -82,7 +82,6 @@ impl GroveDb {
             }
         );
         let ops_len = ops.len();
-        // dbg!(&ops);
         self.apply_batch(ops, None, transaction)
             .map_ok(|_| ops_len as u16)
     }

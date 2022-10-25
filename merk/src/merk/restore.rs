@@ -18,6 +18,7 @@ use crate::{
     tree::{Link, RefWalker, Tree},
     CryptoHash,
 };
+use crate::tree::{combine_hash, value_hash};
 
 /// A `Restorer` handles decoding, verifying, and storing chunk proofs to
 /// replicate an entire Merk tree. It expects the chunks to be processed in
@@ -28,7 +29,7 @@ pub struct Restorer<S> {
     trunk_height: Option<usize>,
     merk: Merk<S>,
     expected_root_hash: CryptoHash,
-    expected_root_key: Vec<u8>,
+    combining_value: Option<Vec<u8>>,
 }
 
 impl<'db, S: StorageContext<'db>> Restorer<S> {
@@ -37,10 +38,10 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// `expected_root_hash`, then each subsequent chunk will be compared
     /// against the hashes stored in the trunk, so that the restore process will
     /// never allow malicious peers to send more than a single invalid chunk.
-    pub fn new(merk: Merk<S>, expected_root_key: Vec<u8>, expected_root_hash: CryptoHash) -> Self {
+    pub fn new(merk: Merk<S>, combining_value: Option<Vec<u8>>, expected_root_hash: CryptoHash) -> Self {
         Self {
             expected_root_hash,
-            expected_root_key,
+            combining_value,
             trunk_height: None,
             merk,
             leaf_hashes: None,
@@ -121,14 +122,14 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// Verifies the trunk then writes its data to the RocksDB.
     fn process_trunk(&mut self, ops: impl IntoIterator<Item = Op>) -> Result<usize, Error> {
         let (trunk, height) = verify_trunk(ops.into_iter().map(Ok)).unwrap()?;
-        if trunk.key() != self.expected_root_key {
-            return Err(anyhow!(
-                "Proof did not match expected key\n\tExpected: {:?}\n\tActual: {:?}",
-                self.expected_root_key,
-                trunk.key()
-            ));
-        }
-        if trunk.hash().unwrap() != self.expected_root_hash {
+
+        let root_hash = if self.combining_value.is_none() {
+            trunk.hash().unwrap()
+        } else {
+            combine_hash(value_hash(self.combining_value.as_ref().expect("confirmed exists")).value(), &trunk.hash().unwrap()).value
+        };
+
+        if root_hash != self.expected_root_hash {
             return Err(anyhow!(
                 "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
                 self.expected_root_hash,
@@ -286,8 +287,8 @@ impl<'db, S: StorageContext<'db>> Merk<S> {
     /// Creates a new `Restorer`, which can be used to verify chunk proofs to
     /// replicate an entire Merk tree. A new Merk instance will be initialized
     /// by creating a RocksDB at `path`.
-    pub fn restore(merk: Merk<S>, expected_root_key: Vec<u8>, expected_root_hash: CryptoHash) -> Restorer<S> {
-        Restorer::new(merk, expected_root_key, expected_root_hash)
+    pub fn restore(merk: Merk<S>, expected_root_hash: CryptoHash) -> Restorer<S> {
+        Restorer::new(merk, None, expected_root_hash)
     }
 }
 
