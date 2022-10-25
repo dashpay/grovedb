@@ -5,9 +5,9 @@ use std::{
 
 use merk::{
     proofs::{Node, Op},
+    tree::{combine_hash, value_hash},
     Merk,
 };
-use merk::tree::{value_hash, combine_hash};
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
 
 use crate::{Element, Error, GroveDb, Hash};
@@ -128,7 +128,11 @@ pub struct RestorerError(String);
 
 impl<'db> Restorer<'db> {
     /// Create a GroveDb restorer using a backing storage_cost and root hash.
-    pub fn new(grove_db: &'db GroveDb, root_key: Vec<u8>, root_hash: Hash) -> Result<Self, RestorerError> {
+    pub fn new(
+        grove_db: &'db GroveDb,
+        root_key: Vec<u8>,
+        root_hash: Hash,
+    ) -> Result<Self, RestorerError> {
         Ok(Restorer {
             current_merk_restorer: Some(MerkRestorer::new(
                 Merk::open_base(grove_db.db.get_storage_context(empty()).unwrap())
@@ -173,7 +177,8 @@ impl<'db> Restorer<'db> {
                         path.push(key.clone());
 
                         // The value hash is already combined the root tree hash
-                        self.queue.push_back((path, root_key.unwrap().clone(), value_hash.clone()));
+                        self.queue
+                            .push_back((path, root_key.unwrap().clone(), value_hash.clone()));
                     }
                 }
                 _ => {}
@@ -205,7 +210,8 @@ impl<'db> Restorer<'db> {
                     .open_non_transactional_merk_at_path(next_path.iter().map(|a| a.as_ref()))
                     .unwrap()
                     .map_err(|e| RestorerError(e.to_string()))?;
-                self.current_merk_restorer = Some(MerkRestorer::new(merk, expected_key, expected_hash));
+                self.current_merk_restorer =
+                    Some(MerkRestorer::new(merk, expected_key, expected_hash));
                 self.current_merk_chunk_index = 0;
                 self.current_merk_path = next_path;
 
@@ -400,9 +406,12 @@ mod test {
             let replica_db = GroveDb::open(replica_tempdir.path()).unwrap();
             let mut chunk_producer = original_db.chunks();
 
-            let mut restorer =
-                Restorer::new(&replica_db, original_db.root_key(None).unwrap().unwrap(), original_db.root_hash(None).unwrap().unwrap())
-                    .expect("cannot create restorer");
+            let mut restorer = Restorer::new(
+                &replica_db,
+                original_db.root_key(None).unwrap().unwrap(),
+                original_db.root_hash(None).unwrap().unwrap(),
+            )
+            .expect("cannot create restorer");
 
             // That means root tree chunk with index 0
             let mut next_chunk: (Vec<Vec<u8>>, usize) = (vec![], 0);
