@@ -106,14 +106,6 @@ fn test_tree_hashes_when_inserting_empty_tree() {
     let node_hash = node_hash(&kv_hash, &NULL_HASH, &NULL_HASH).unwrap();
 
     assert_eq!(elem_node_hash, node_hash);
-
-    let a = [2, 1, 4, 107, 101, 121, 49, 0];
-    let b = [
-        162, 252, 4, 124, 102, 155, 107, 68, 7, 49, 135, 179, 205, 171, 89, 109, 29, 161, 177, 165,
-        156, 93, 114, 137, 117, 120, 246, 16, 216, 8, 26, 116,
-    ];
-    let c = combine_hash(value_hash(&a).value(), &b);
-    dbg!(c);
 }
 
 #[test]
