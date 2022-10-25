@@ -7,6 +7,7 @@ use merk::{
     proofs::{Node, Op},
     Merk,
 };
+use merk::tree::{value_hash, combine_hash};
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
 
 use crate::{Element, Error, GroveDb, Hash};
@@ -110,7 +111,7 @@ pub struct Restorer<'db> {
     current_merk_restorer: Option<MerkRestorer<'db>>,
     current_merk_chunk_index: usize,
     current_merk_path: Path,
-    queue: VecDeque<(Path, Hash)>,
+    queue: VecDeque<(Path, Vec<u8>, Hash)>,
     grove_db: &'db GroveDb,
 }
 
@@ -127,12 +128,13 @@ pub struct RestorerError(String);
 
 impl<'db> Restorer<'db> {
     /// Create a GroveDb restorer using a backing storage_cost and root hash.
-    pub fn new(grove_db: &'db GroveDb, root_hash: Hash) -> Result<Self, RestorerError> {
+    pub fn new(grove_db: &'db GroveDb, root_key: Vec<u8>, root_hash: Hash) -> Result<Self, RestorerError> {
         Ok(Restorer {
             current_merk_restorer: Some(MerkRestorer::new(
                 Merk::open_base(grove_db.db.get_storage_context(empty()).unwrap())
                     .unwrap()
                     .map_err(|e| RestorerError(e.to_string()))?,
+                root_key,
                 root_hash,
             )),
             current_merk_chunk_index: 0,
@@ -169,8 +171,9 @@ impl<'db> Restorer<'db> {
                         }
                         let mut path = self.current_merk_path.clone();
                         path.push(key.clone());
-                        // The value hash is the root tree hash
-                        self.queue.push_back((path, value_hash.clone()));
+
+                        // The value hash is already combined the root tree hash
+                        self.queue.push_back((path, root_key.unwrap().clone(), value_hash.clone()));
                     }
                 }
                 _ => {}
@@ -195,14 +198,14 @@ impl<'db> Restorer<'db> {
                 .expect("restorer exists at this point")
                 .finalize()
                 .map_err(|e| RestorerError(e.to_string()))?;
-            if let Some((next_path, expected_hash)) = self.queue.pop_front() {
+            if let Some((next_path, expected_key, expected_hash)) = self.queue.pop_front() {
                 // Process next subtree.
                 let merk: Merk<PrefixedRocksDbStorageContext> = self
                     .grove_db
                     .open_non_transactional_merk_at_path(next_path.iter().map(|a| a.as_ref()))
                     .unwrap()
                     .map_err(|e| RestorerError(e.to_string()))?;
-                self.current_merk_restorer = Some(MerkRestorer::new(merk, expected_hash));
+                self.current_merk_restorer = Some(MerkRestorer::new(merk, expected_key, expected_hash));
                 self.current_merk_chunk_index = 0;
                 self.current_merk_path = next_path;
 
@@ -398,7 +401,7 @@ mod test {
             let mut chunk_producer = original_db.chunks();
 
             let mut restorer =
-                Restorer::new(&replica_db, original_db.root_hash(None).unwrap().unwrap())
+                Restorer::new(&replica_db, original_db.root_key(None).unwrap().unwrap(), original_db.root_hash(None).unwrap().unwrap())
                     .expect("cannot create restorer");
 
             // That means root tree chunk with index 0
@@ -429,6 +432,7 @@ mod test {
             let mut restorer = BufferedRestorer::new(
                 Restorer::new(
                     &replica_grove_db,
+                    original_db.root_key(None).unwrap().unwrap(),
                     original_db.root_hash(None).unwrap().unwrap(),
                 )
                 .expect("cannot create restorer"),
@@ -502,12 +506,13 @@ mod test {
     #[test]
     fn replicate_wrong_root_hash() {
         let db = make_test_grovedb();
+        let good_key = db.root_key(None).unwrap().unwrap();
         let mut bad_hash = db.root_hash(None).unwrap().unwrap();
         bad_hash[0] = bad_hash[0].wrapping_add(1);
 
         let tmp_dir = TempDir::new().unwrap();
         let restored_db = GroveDb::open(tmp_dir.path()).unwrap();
-        let mut restorer = Restorer::new(&restored_db, bad_hash).unwrap();
+        let mut restorer = Restorer::new(&restored_db, good_key, bad_hash).unwrap();
         let mut chunks = db.chunks();
         assert!(restorer
             .process_chunk(chunks.get_chunk([], 0).unwrap())
@@ -536,11 +541,12 @@ mod test {
         .unwrap()
         .expect("cannot insert an element");
 
+        let expected_key = db.root_key(None).unwrap().unwrap();
         let expected_hash = db.root_hash(None).unwrap().unwrap();
 
         let tmp_dir = TempDir::new().unwrap();
         let restored_db = GroveDb::open(tmp_dir.path()).unwrap();
-        let mut restorer = Restorer::new(&restored_db, expected_hash).unwrap();
+        let mut restorer = Restorer::new(&restored_db, expected_key, expected_hash).unwrap();
         let mut chunks = db.chunks();
 
         let next_op = restorer

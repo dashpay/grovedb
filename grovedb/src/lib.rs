@@ -286,6 +286,19 @@ impl GroveDb {
         self.db.create_checkpoint(path).map_err(|e| e.into())
     }
 
+    /// Returns root key of GroveDb.
+    /// Will be `None` if GroveDb is empty.
+    pub fn root_key(&self, transaction: TransactionArg) -> CostResult<Vec<u8>, Error> {
+        let mut cost = OperationCost {
+            ..Default::default()
+        };
+
+        root_merk_optional_tx!(&mut cost, self.db, transaction, subtree, {
+            let root_key = subtree.root_key().unwrap();
+            Ok(root_key).wrap_with_cost(cost)
+        })
+    }
+
     /// Returns root hash of GroveDb.
     /// Will be `None` if GroveDb is empty.
     pub fn root_hash(&self, transaction: TransactionArg) -> CostResult<Hash, Error> {

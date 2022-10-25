@@ -5,6 +5,7 @@ use std::{iter::Peekable, u8};
 
 use anyhow::{anyhow, Error};
 use storage::{Batch, StorageContext};
+use visualize::visualize_stdout;
 
 use super::Merk;
 use crate::{
@@ -27,6 +28,7 @@ pub struct Restorer<S> {
     trunk_height: Option<usize>,
     merk: Merk<S>,
     expected_root_hash: CryptoHash,
+    expected_root_key: Vec<u8>,
 }
 
 impl<'db, S: StorageContext<'db>> Restorer<S> {
@@ -35,9 +37,10 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// `expected_root_hash`, then each subsequent chunk will be compared
     /// against the hashes stored in the trunk, so that the restore process will
     /// never allow malicious peers to send more than a single invalid chunk.
-    pub fn new(merk: Merk<S>, expected_root_hash: CryptoHash) -> Self {
+    pub fn new(merk: Merk<S>, expected_root_key: Vec<u8>, expected_root_hash: CryptoHash) -> Self {
         Self {
             expected_root_hash,
+            expected_root_key,
             trunk_height: None,
             merk,
             leaf_hashes: None,
@@ -118,7 +121,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// Verifies the trunk then writes its data to the RocksDB.
     fn process_trunk(&mut self, ops: impl IntoIterator<Item = Op>) -> Result<usize, Error> {
         let (trunk, height) = verify_trunk(ops.into_iter().map(Ok)).unwrap()?;
-
+        if trunk.key() != self.expected_root_key {
+            return Err(anyhow!(
+                "Proof did not match expected key\n\tExpected: {:?}\n\tActual: {:?}",
+                self.expected_root_key,
+                trunk.key()
+            ));
+        }
         if trunk.hash().unwrap() != self.expected_root_hash {
             return Err(anyhow!(
                 "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
@@ -277,8 +286,8 @@ impl<'db, S: StorageContext<'db>> Merk<S> {
     /// Creates a new `Restorer`, which can be used to verify chunk proofs to
     /// replicate an entire Merk tree. A new Merk instance will be initialized
     /// by creating a RocksDB at `path`.
-    pub fn restore(merk: Merk<S>, expected_root_hash: CryptoHash) -> Restorer<S> {
-        Restorer::new(merk, expected_root_hash)
+    pub fn restore(merk: Merk<S>, expected_root_key: Vec<u8>, expected_root_hash: CryptoHash) -> Restorer<S> {
+        Restorer::new(merk, expected_root_key, expected_root_hash)
     }
 }
 
