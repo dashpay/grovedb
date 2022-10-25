@@ -367,7 +367,6 @@ impl ProofVerifier {
     ) -> Result<[u8; 32], Error> {
         let mut split_path = path_slices.split_last();
         while let Some((key, path_slice)) = split_path {
-            dbg!(std::str::from_utf8(key));
             // for every subtree, there should be a corresponding proof for the parent
             // which should prove that this subtree is a child of the parent tree
             let parent_merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
