@@ -257,7 +257,7 @@ impl GroveDbOpConsistencyResults {
 
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F> {
-    merks: HashMap<Vec<Vec<u8>>, (Merk<S>, TreeFeatureType)>,
+    merks: HashMap<Vec<Vec<u8>>, (Merk<S>, bool)>,
     get_merk_fn: F,
 }
 
@@ -293,7 +293,7 @@ trait TreeCache {
 
 impl<'db, S, F> TreeCacheMerkByPath<S, F>
 where
-    F: FnMut(&[Vec<u8>]) -> (CostResult<Merk<S>, Error>, TreeFeatureType),
+    F: FnMut(&[Vec<u8>]) -> (CostResult<Merk<S>, Error>, bool),
     S: StorageContext<'db>,
 {
     fn follow_reference<'a>(
@@ -338,11 +338,11 @@ where
             }
         } else {
             let (key, reference_path) = qualified_path.split_last().unwrap(); // already checked
-            let (reference_merk_wrapped, feature_type) = self
+            let (reference_merk_wrapped, is_sum_tree) = self
                 .merks
                 .remove(reference_path)
-                .map(|(merk, feature_type)| {
-                    (Ok(merk).wrap_with_cost(Default::default()), feature_type)
+                .map(|(merk, is_sum_tree)| {
+                    (Ok(merk).wrap_with_cost(Default::default()), is_sum_tree)
                 })
                 .unwrap_or_else(|| (self.get_merk_fn)(reference_path));
             let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
@@ -387,7 +387,7 @@ where
 
 impl<'db, S, F> TreeCache for TreeCacheMerkByPath<S, F>
 where
-    F: FnMut(&[Vec<u8>]) -> (CostResult<Merk<S>, Error>, TreeFeatureType),
+    F: FnMut(&[Vec<u8>]) -> (CostResult<Merk<S>, Error>, bool),
     S: StorageContext<'db>,
 {
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
@@ -784,7 +784,7 @@ impl GroveDb {
         &self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
-        get_merk_fn: impl FnMut(&[Vec<u8>]) -> (CostResult<Merk<S>, Error>, TreeFeatureType),
+        get_merk_fn: impl FnMut(&[Vec<u8>]) -> (CostResult<Merk<S>, Error>, bool),
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
@@ -872,7 +872,7 @@ impl GroveDb {
                     (
                         Merk::open(storage)
                             .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned())),
-                        BasicMerk,
+                        false,
                     )
                 })
             );
@@ -899,7 +899,7 @@ impl GroveDb {
                     (
                         Merk::open(storage)
                             .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned())),
-                        BasicMerk,
+                        false,
                     )
                 })
             );
