@@ -56,12 +56,12 @@ mod tests {
             OperationCost {
                 seek_count: 6, // todo: why is this 6
                 storage_cost: StorageCost {
-                    added_bytes: 146,
+                    added_bytes: 113,
                     replaced_bytes: 640, // log(max_elements) * 32 = 640 // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 22, // todo: verify why
+                hash_node_calls: 20, // todo: verify why
             }
         );
     }

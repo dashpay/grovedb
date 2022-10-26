@@ -203,11 +203,28 @@ impl KV {
     /// Get the costs for the node, this has the parent to child hooks
     #[inline]
     pub fn node_byte_cost_size_for_key_and_value_lengths(not_prefixed_key_len: u32, value_len: u32) -> u32 {
-        let node_value_size = value_len + value_len.required_space() as u32;
+        let node_value_size = value_len + HASH_LENGTH_U32_X2 + (value_len + HASH_LENGTH_U32_X2).required_space() as u32;
         // Hash length is for the key prefix
         let node_key_size = HASH_LENGTH_U32 + not_prefixed_key_len + (not_prefixed_key_len + HASH_LENGTH_U32).required_space() as u32;
-        // Each node stores the key and value, the value hash and the key_value hash
-        let node_size = node_value_size + node_key_size + HASH_LENGTH_U32_X2;
+        // Each node stores the key and value, the value hash and node hash
+        let node_size = node_value_size + node_key_size;
+        // The node will be a child of another node which stores it's key and hash
+        // That will be added during propagation
+        let parent_to_child_cost = Link::encoded_link_size(not_prefixed_key_len);
+        node_size + parent_to_child_cost
+    }
+
+    /// Get the costs for the node, this has the parent to child hooks
+    #[inline]
+    pub fn layered_node_byte_cost_size_for_key_and_value_lengths(not_prefixed_key_len: u32, value_len: u32) -> u32 {
+        // Each node stores the key and value, and the node hash
+        // the value hash on a layered node is not stored directly in the node
+        // The required space is set to 2, even though it could be potentially 1
+        let node_value_size = value_len + HASH_LENGTH_U32 + 2;
+        // Hash length is for the key prefix
+        let node_key_size = HASH_LENGTH_U32 + not_prefixed_key_len + (not_prefixed_key_len + HASH_LENGTH_U32).required_space() as u32;
+
+        let node_size = node_value_size + node_key_size;
         // The node will be a child of another node which stores it's key and hash
         // That will be added during propagation
         let parent_to_child_cost = Link::encoded_link_size(not_prefixed_key_len);

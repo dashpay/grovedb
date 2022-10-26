@@ -2,7 +2,8 @@ use costs::OperationCost;
 use merk::{
     tree::Tree,
     worst_case_costs::{
-        add_worst_case_get_merk_node, add_worst_case_merk_insert, MerkWorstCaseInput,
+        add_worst_case_get_merk_node, add_worst_case_merk_insert,
+        add_worst_case_merk_insert_layered, MerkWorstCaseInput,
     },
     Merk, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
 };
@@ -149,9 +150,11 @@ impl GroveDb {
         value: &Element,
         input: MerkWorstCaseInput,
     ) {
-        let value_len = value.serialized_size() as u32;
         let key_len = key.len() as u32;
-        add_worst_case_merk_insert(cost, key_len, value_len, input);
+        match value {
+            Element::Tree(..) => add_worst_case_merk_insert_layered(cost, key_len, 3, input),
+            _ => add_worst_case_merk_insert(cost, key_len, value.serialized_size() as u32, input),
+        };
     }
 
     pub fn add_worst_case_delete_cost(

@@ -74,6 +74,21 @@ impl KV {
         add_worst_case_merk_propagate(cost, input);
     }
 
+    /// Add worst case for insertion into merk
+    pub fn add_worst_case_merk_insert_layered(
+        cost: &mut OperationCost,
+        key_len: u32,
+        value_len: u32,
+        input: MerkWorstCaseInput,
+    ) {
+        cost.storage_cost.added_bytes += KV::layered_node_byte_cost_size_for_key_and_value_lengths(key_len, value_len);
+        // .. and hash computation for the inserted element itself
+        // todo: verify this
+        cost.hash_node_calls += ((value_len + 1) / HASH_BLOCK_SIZE_U32) as u16;
+
+        add_worst_case_merk_propagate(cost, input);
+    }
+
     const fn node_hash_update_count() -> u16 {
         // It's a hash of node hash, left and right
         let bytes = HASH_LENGTH * 3;

@@ -111,7 +111,7 @@ impl Tree {
     }
 
     pub fn kv_with_parent_hook_size_and_storage_cost(&self) -> (u32, KeyValueStorageCost) {
-        let current_kv_size = self.value_encoding_length_with_parent_to_child_reference() as u32;
+        let current_value_size = self.value_encoding_length_with_parent_to_child_reference() as u32;
 
         let key_storage_cost = StorageCost {
             ..Default::default()
@@ -122,44 +122,44 @@ impl Tree {
 
         if self.inner.kv.value_defined_cost.is_some() {
             if self.old_size_with_parent_to_child_hook != 0 {
-                value_storage_cost.replaced_bytes = current_kv_size;
+                value_storage_cost.replaced_bytes = current_value_size;
             } else {
-                value_storage_cost.added_bytes = current_kv_size;
+                value_storage_cost.added_bytes = current_value_size;
             }
 
         } else {
             // Update the value storage_cost cost
             match self
                 .old_size_with_parent_to_child_hook
-                .cmp(&current_kv_size)
+                .cmp(&current_value_size)
             {
                 Ordering::Equal => {
                     value_storage_cost.replaced_bytes += self.old_size_with_parent_to_child_hook;
                 }
                 Ordering::Greater => {
                     // old size is greater than current size, storage_cost will be freed
-                    value_storage_cost.replaced_bytes += current_kv_size;
+                    value_storage_cost.replaced_bytes += current_value_size;
                     value_storage_cost.removed_bytes +=
-                        BasicStorageRemoval(self.old_size_with_parent_to_child_hook - current_kv_size);
+                        BasicStorageRemoval(self.old_size_with_parent_to_child_hook - current_value_size);
                 }
                 Ordering::Less => {
                     // current size is greater than old size, storage_cost will be created
                     // this also handles the case where the tree.old_size = 0
                     value_storage_cost.replaced_bytes += self.old_size_with_parent_to_child_hook;
                     value_storage_cost.added_bytes +=
-                        current_kv_size - self.old_size_with_parent_to_child_hook;
+                        current_value_size - self.old_size_with_parent_to_child_hook;
                 }
             }
         }
 
         let key_value_storage_cost = KeyValueStorageCost {
-            key_storage_cost,
+            key_storage_cost, //the key storage cost is added later
             value_storage_cost,
             new_node: self.old_size_with_parent_to_child_hook == 0,
             needs_value_verification: self.inner.kv.value_defined_cost.is_none()
         };
 
-        (current_kv_size, key_value_storage_cost)
+        (current_value_size, key_value_storage_cost)
     }
 
     /// Creates a new `Tree` with the given key, value and value hash, and no
