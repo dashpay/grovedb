@@ -723,7 +723,7 @@ impl GroveDb {
                                             match occupied_entry.into_mut() {
                                                 Op::ReplaceTreeHash { hash } => *hash = root_hash,
                                                 Op::Insert { element } => {
-                                                    if let Element::Tree(hash, _) = element {
+                                                    if let Element::Tree(hash, _) | Element::SumTree(hash, ..) = element {
                                                         *hash = root_hash
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
