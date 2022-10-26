@@ -17,14 +17,15 @@ pub mod test_utils;
 pub mod tree;
 
 mod visualize;
+pub mod worst_case_costs;
 
 pub use ed;
 #[allow(deprecated)]
 pub use proofs::query::verify_query;
 pub use proofs::query::{execute_proof, verify};
 pub use tree::{
-    BatchEntry, CryptoHash, MerkBatch, Op, PanicSource, HASH_BLOCK_SIZE, HASH_LENGTH,
-    HASH_LENGTH_U32,
+    BatchEntry, CryptoHash, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2, MerkBatch, Op,
+    PanicSource, Link,
 };
 
 // #[cfg(feature = "full")]

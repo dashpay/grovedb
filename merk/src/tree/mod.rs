@@ -5,7 +5,7 @@ mod encoding;
 mod fuzz_tests;
 mod hash;
 mod iter;
-mod kv;
+pub mod kv;
 mod link;
 mod ops;
 mod walk;
@@ -26,7 +26,7 @@ use costs::{
 use ed::{Decode, Encode, Terminated};
 pub use hash::{
     combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash,
-    HASH_BLOCK_SIZE, HASH_LENGTH, HASH_LENGTH_U32, NULL_HASH,
+    HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2, NULL_HASH,
 };
 use integer_encoding::VarInt;
 use kv::KV;

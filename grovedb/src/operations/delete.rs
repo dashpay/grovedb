@@ -13,7 +13,7 @@ use storage::{
 };
 
 use crate::{
-    batch::{GroveDbOp, KeyInfo, KeyInfoPath, Op},
+    batch::{key_info::KeyInfo, GroveDbOp, KeyInfoPath, Op},
     util::{
         merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
     },
@@ -338,7 +338,7 @@ impl GroveDb {
             .wrap_with_cost(cost)
         } else {
             if validate {
-                GroveDb::add_worst_case_get_merk::<S>(&mut cost, path);
+                GroveDb::add_worst_case_get_merk_at_path::<S>(&mut cost, path);
             }
             GroveDb::add_worst_case_get_raw_cost::<S>(&mut cost, path, key, max_element_size);
             Ok(Some(GroveDbOp::delete_worst_case_op(

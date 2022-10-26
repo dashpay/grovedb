@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 
 use ed::{Decode, Encode, Result, Terminated};
+use crate::{HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
 
 use super::{hash::CryptoHash, Tree};
 
@@ -202,6 +203,18 @@ impl Link {
             } => child_heights,
         }
     }
+
+    // Costs for operations within a single merk
+    #[inline]
+    pub const fn encoded_link_size(not_prefixed_key_len: u32) -> u32 {
+        // Links are optional values that represent the right or left node for a given
+        // 1 byte to represent key_length (this is a u8)
+        // key_length to represent the actual key
+        // 32 bytes for the hash of the node
+        // 1 byte for the left child height
+        // 1 byte for the right child height
+        not_prefixed_key_len + HASH_LENGTH_U32 + 3
+    }
 }
 
 impl Encode for Link {
@@ -244,10 +257,10 @@ impl Encode for Link {
         debug_assert!(self.key().len() < 256, "Key length must be less than 256");
 
         Ok(match self {
-            Link::Reference { key, .. } => 1 + key.len() + 32 + 2,
+            Link::Reference { key, .. } => 1 + key.len() + HASH_LENGTH + 2,
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
-            Link::Uncommitted { tree, .. } => 1 + tree.key().len() + 32 + 2,
-            Link::Loaded { tree, .. } => 1 + tree.key().len() + 32 + 2,
+            Link::Uncommitted { tree, .. } => 1 + tree.key().len() + HASH_LENGTH + 2,
+            Link::Loaded { tree, .. } => 1 + tree.key().len() + HASH_LENGTH + 2,
         })
     }
 }

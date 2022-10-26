@@ -12,7 +12,7 @@ use storage::{
 };
 
 use crate::{
-    batch::{KeyInfo, KeyInfoPath},
+    batch::{key_info::KeyInfo, KeyInfoPath},
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::{
         path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,

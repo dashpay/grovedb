@@ -28,27 +28,35 @@ mod tests {
             Element::empty_tree(),
         )];
         let worst_case_ops = ops.iter().map(|op| op.to_worst_case_clone()).collect();
-        let worst_case_cost_result = GroveDb::worst_case_operations_for_batch(
+        let worst_case_cost = GroveDb::worst_case_operations_for_batch(
             worst_case_ops,
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_bytes| Ok(NoStorageRemoval),
-        );
-        assert!(worst_case_cost_result.value.is_ok());
+        )
+        .cost_as_result()
+        .expect("expected to get worst case costs");
+
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(
-            worst_case_cost_result.cost.worse_or_eq_than(&cost),
+            worst_case_cost.worse_or_eq_than(&cost),
             "not worse {:?} \n than {:?}",
-            worst_case_cost_result.cost,
+            worst_case_cost,
             cost
+        );
+        /// because we know the object we are inserting we can know the worst
+        /// case cost if it doesn't already exist
+        assert_eq!(
+            cost.storage_cost.added_bytes,
+            worst_case_cost.storage_cost.added_bytes
         );
 
         assert_eq!(
-            worst_case_cost_result.cost,
+            worst_case_cost,
             OperationCost {
                 seek_count: 6, // todo: why is this 6
                 storage_cost: StorageCost {
-                    added_bytes: 177,
+                    added_bytes: 146,
                     replaced_bytes: 640, // log(max_elements) * 32 = 640 // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },

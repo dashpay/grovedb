@@ -53,7 +53,7 @@ impl Tree {
     }
 
     #[inline]
-    pub fn value_encoding_length_with_parent_to_child_reference(&self) -> usize {
+    pub fn value_encoding_length_with_parent_to_child_reference(&self) -> u32 {
         // in the case of a grovedb tree the value cost is fixed
         if let Some(value_cost) =  self.inner.kv.value_defined_cost {
             self.inner

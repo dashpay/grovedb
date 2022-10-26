@@ -12,22 +12,22 @@ use std::{
 use anyhow::{anyhow, Error, Result};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
-    storage_cost::{
+    CostContext,
+    CostResult, CostsExt, OperationCost, storage_cost::{
         key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes, StorageCost,
     },
-    CostContext, CostResult, CostsExt, OperationCost,
 };
 use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
-use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
+use storage::{self, Batch, error::Error::CostError, RawIterator, StorageContext};
 
 use crate::{
     merk::defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
-    proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
-    tree::{
-        AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree, Walker,
-        NULL_HASH,
-    },
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
+    proofs::{encode_into, Op as ProofOp, Query, query::QueryItem},
+    tree::{
+        AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, NULL_HASH, Op, RefWalker, Tree,
+        Walker,
+    },
 };
 
 type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
@@ -1091,13 +1091,13 @@ mod test {
 
     use costs::OperationCost;
     use storage::{
-        rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
-        RawIterator, Storage, StorageContext,
+        RawIterator,
+        rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage}, Storage, StorageContext,
     };
     use tempfile::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};
-    use crate::{test_utils::*, Op};
+    use crate::{Op, test_utils::*};
 
     // TODO: Close and then reopen test
 

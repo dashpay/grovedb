@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use costs::{CostContext, CostsExt, OperationCost};
 use ed::{Decode, Encode, Result, Terminated};
 use integer_encoding::VarInt;
+use crate::{HASH_LENGTH_U32, HASH_LENGTH_U32_X2, Link};
 
 use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
 use crate::tree::hash::{combine_hash, kv_digest_to_kv_hash, value_hash};
@@ -193,37 +194,38 @@ impl KV {
 
     #[allow(dead_code)] // TODO
     #[inline]
-    pub(crate) fn total_encoding_length_with_parent_to_child_reference(&self) -> usize {
-        // we do need the varint required space for the cost of the key in
-        // rocks_db
-        let key_len = self.key.len();
-        let value_len = self.encoding_length().unwrap();
-        // 3 = 2 + 1
-        // 2 for child lengths
-        // 1 for key_len size in encoding
-        let parent_to_child_reference_len = key_len + HASH_LENGTH + 3;
-        key_len
-            + key_len.required_space()
-            + value_len
-            + value_len.required_space()
-            + parent_to_child_reference_len
+    pub fn node_byte_cost_size(&self) -> u32 {
+        let key_len = self.key.len() as u32;
+        let value_len = self.encoding_length().unwrap() as u32;
+        Self::node_byte_cost_size_for_key_and_value_lengths(key_len, value_len)
+    }
+
+    /// Get the costs for the node, this has the parent to child hooks
+    #[inline]
+    pub fn node_byte_cost_size_for_key_and_value_lengths(not_prefixed_key_len: u32, value_len: u32) -> u32 {
+        let node_value_size = value_len + value_len.required_space() as u32;
+        // Hash length is for the key prefix
+        let node_key_size = HASH_LENGTH_U32 + not_prefixed_key_len + (not_prefixed_key_len + HASH_LENGTH_U32).required_space() as u32;
+        // Each node stores the key and value, the value hash and the key_value hash
+        let node_size = node_value_size + node_key_size + HASH_LENGTH_U32_X2;
+        // The node will be a child of another node which stores it's key and hash
+        // That will be added during propagation
+        let parent_to_child_cost = Link::encoded_link_size(not_prefixed_key_len);
+        node_size + parent_to_child_cost
     }
 
     #[inline]
-    pub(crate) fn value_encoding_length_with_parent_to_child_reference(&self) -> usize {
+    pub(crate) fn value_encoding_length_with_parent_to_child_reference(&self) -> u32 {
         // encoding a reference encodes the key last and doesn't encode the size of the
         // key. so no need for a varint required space calculation for the
         // reference.
 
         // however we do need the varint required space for the cost of the key in
         // rocks_db
-        let key_len = self.key.len();
-        let value_len = self.encoding_length().unwrap();
-        // 3 = 2 + 1
-        // 2 for child lengths
-        // 1 for key_len size in encoding
-        let parent_to_child_reference_len = key_len + HASH_LENGTH + 3;
-        value_len + value_len.required_space() + parent_to_child_reference_len
+        let key_len = self.key.len() as u32;
+        let value_len = self.encoding_length().unwrap() as u32;
+        let parent_to_child_reference_len = Link::encoded_link_size(key_len);
+        value_len + value_len.required_space() as u32 + parent_to_child_reference_len
     }
 
     /// This function is used to calculate the cost of groveDB tree nodes
@@ -235,21 +237,19 @@ impl KV {
     /// tree. Only the key_value_hash should be paid for by the actual tree
     /// node
     #[inline]
-    pub(crate) fn tree_multi_layer_encoding_length_with_parent_to_child_reference(&self, value_cost: u32) -> usize {
+    pub(crate) fn tree_multi_layer_encoding_length_with_parent_to_child_reference(&self, value_cost: u32) -> u32 {
         // encoding a reference encodes the key last and doesn't encode the size of the
         // key. so no need for a varint required space calculation for the
         // reference.
 
         // however we do need the varint required space for the cost of the key in
         // rocks_db
-        let key_len = self.key.len();
+        let key_len = self.key.len() as u32;
         // there is no point to pay for the value_hash because it is already being paid by the parent
         // to child reference hook of the root of the underlying tree
-        let value_len = HASH_LENGTH + value_cost as usize; // node hash
-                                     // 3 = 2 + 1
-                                     // 2 for child lengths
-                                     // 1 for key_len size in encoding
-        let parent_to_child_reference_len = key_len + HASH_LENGTH + 3;
+        let value_len = HASH_LENGTH_U32 + value_cost; // node hash
+
+        let parent_to_child_reference_len = Link::encoded_link_size(key_len);
         // The required space is set to 2. However in reality it could be 1 or 2.
         // This is because the underlying tree pays for the value cost and it's required
         // length. The value could be a key, and keys can only be 256 bytes.

@@ -4,7 +4,9 @@ use integer_encoding::*;
 /// The length of a `Hash` (in bytes).
 pub const HASH_LENGTH: usize = 32;
 pub const HASH_LENGTH_U32: u32 = 32;
+pub const HASH_LENGTH_U32_X2: u32 = 64;
 pub const HASH_BLOCK_SIZE: usize = 64;
+pub const HASH_BLOCK_SIZE_U32: u32 = 64;
 
 /// A zero-filled `Hash`.
 pub const NULL_HASH: CryptoHash = [0; HASH_LENGTH];

@@ -1,5 +1,6 @@
 //! GroveDB batch operations support
 
+pub mod key_info;
 mod multi_insert_cost_tests;
 mod single_deletion_cost_tests;
 mod single_insert_cost_tests;
@@ -22,8 +23,12 @@ use costs::{
     },
     CostResult, CostsExt, OperationCost,
 };
+use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     tree::{value_hash, NULL_HASH},
+    worst_case_costs::{
+        add_worst_case_get_merk_node, add_worst_case_merk_propagate, MerkWorstCaseInput,
+    },
     CryptoHash, Merk, MerkType,
 };
 use nohash_hasher::IntMap;
@@ -37,13 +42,9 @@ use storage::{
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
 
 use crate::{
-    batch::{
-        GroveDbOpMode::WorstCaseOp,
-        KeyInfo::{KnownKey, MaxKeySize},
-    },
+    batch::GroveDbOpMode::{RunOp, WorstCaseOp},
     operations::{delete::DeleteOptions, get::MAX_REFERENCE_HOPS, insert::InsertOptions},
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
-    worst_case_costs::MerkWorstCaseInput,
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg, MAX_ELEMENTS_NUMBER,
 };
 
@@ -62,22 +63,24 @@ pub enum Op {
 impl Op {
     fn worst_case_cost(&self, key: &KeyInfo, input: MerkWorstCaseInput) -> OperationCost {
         match self {
-            Op::ReplaceTreeRootKey { .. } => OperationCost {
-                seek_count: 1,
-                storage_cost: StorageCost {
-                    added_bytes: 32, // todo
+            Op::ReplaceTreeRootKey { .. } => {
+                OperationCost {
+                    seek_count: 1,
+                    storage_cost: StorageCost {
+                        added_bytes: 32, // todo
+                        ..Default::default()
+                    },
                     ..Default::default()
-                },
-                ..Default::default()
-            },
+                }
+            }
             Op::Insert { element } => {
                 let mut cost = OperationCost::default();
-                GroveDb::add_worst_case_merk_insert(&mut cost, key, &element, input);
+                GroveDb::add_worst_case_merk_insert_element(&mut cost, key, &element, input);
                 cost
             }
             Op::Delete => {
                 let mut cost = OperationCost::default();
-                GroveDb::add_worst_case_merk_propagate(&mut cost, input);
+                add_worst_case_merk_propagate(&mut cost, input);
                 cost
             }
         }
@@ -97,111 +100,6 @@ impl PartialOrd for Op {
 impl Ord for Op {
     fn cmp(&self, other: &Self) -> Ordering {
         self.partial_cmp(other).expect("all ops have order")
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum KeyInfo {
-    KnownKey(Vec<u8>),
-    MaxKeySize { unique_id: Vec<u8>, max_size: u8 },
-}
-
-impl PartialOrd<Self> for KeyInfo {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match self.get_key_ref().partial_cmp(other.get_key_ref()) {
-            None => None,
-            Some(ord) => match ord {
-                Ordering::Less => Some(Ordering::Less),
-                Ordering::Equal => {
-                    let other_len = other.len();
-                    match self.len().partial_cmp(&other_len) {
-                        None => Some(Ordering::Equal),
-                        Some(ord) => Some(ord),
-                    }
-                }
-                Ordering::Greater => Some(Ordering::Less),
-            },
-        }
-    }
-}
-
-impl Ord for KeyInfo {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.get_key_ref().cmp(other.get_key_ref())
-    }
-}
-
-impl Hash for KeyInfo {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            KnownKey(k) => k.hash(state),
-            MaxKeySize {
-                unique_id,
-                max_size,
-            } => {
-                unique_id.hash(state);
-                max_size.hash(state);
-            }
-        }
-    }
-}
-
-impl WorstKeyLength for KeyInfo {
-    fn len(&self) -> u8 {
-        match self {
-            Self::KnownKey(key) => key.len() as u8,
-            Self::MaxKeySize { max_size, .. } => *max_size,
-        }
-    }
-}
-
-impl KeyInfo {
-    pub fn as_slice(&self) -> &[u8] {
-        match self {
-            KnownKey(key) => key.as_slice(),
-            MaxKeySize { unique_id, .. } => unique_id.as_slice(),
-        }
-    }
-
-    fn get_key(self) -> Vec<u8> {
-        match self {
-            KnownKey(key) => key,
-            MaxKeySize { unique_id, .. } => unique_id,
-        }
-    }
-
-    fn get_key_clone(&self) -> Vec<u8> {
-        match self {
-            KnownKey(key) => key.clone(),
-            MaxKeySize { unique_id, .. } => unique_id.clone(),
-        }
-    }
-
-    fn get_key_ref(&self) -> &[u8] {
-        match self {
-            KnownKey(key) => key.as_slice(),
-            MaxKeySize { unique_id, .. } => unique_id.as_slice(),
-        }
-    }
-}
-
-impl Visualize for KeyInfo {
-    fn visualize<W: std::io::Write>(&self, mut drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
-        match self {
-            KnownKey(k) => {
-                drawer.write(b"key: ")?;
-                drawer = k.visualize(drawer)?;
-            }
-            MaxKeySize {
-                unique_id,
-                max_size,
-            } => {
-                drawer.write(b"max_size_key: ")?;
-                drawer = unique_id.visualize(drawer)?;
-                drawer.write(format!(", max_size: {max_size}").as_bytes())?;
-            }
-        }
-        Ok(drawer)
     }
 }
 
@@ -363,7 +261,7 @@ impl GroveDbOp {
             path,
             key: KnownKey(key),
             op: Op::Insert { element },
-            mode: GroveDbOpMode::RunOp,
+            mode: RunOp,
         }
     }
 
@@ -372,7 +270,7 @@ impl GroveDbOp {
             path,
             key,
             op: Op::Insert { element },
-            mode: GroveDbOpMode::WorstCaseOp,
+            mode: WorstCaseOp,
         }
     }
 
@@ -382,7 +280,7 @@ impl GroveDbOp {
             path,
             key: KnownKey(key),
             op: Op::Delete,
-            mode: GroveDbOpMode::RunOp,
+            mode: RunOp,
         }
     }
 
@@ -391,7 +289,7 @@ impl GroveDbOp {
             path,
             key,
             op: Op::Delete,
-            mode: GroveDbOpMode::WorstCaseOp,
+            mode: WorstCaseOp,
         }
     }
 
@@ -925,7 +823,7 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
         inserted_path.push(op.key.clone());
         self.paths.insert(inserted_path);
         let mut worst_case_cost = OperationCost::default();
-        GroveDb::add_worst_case_get_merk::<RocksDbStorage>(&mut worst_case_cost, &op.path);
+        GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut worst_case_cost, &op.path);
         Ok(()).wrap_with_cost(worst_case_cost)
     }
 
@@ -942,7 +840,7 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
 
         if !self.paths.contains(path) {
             // Then we have to get the tree
-            GroveDb::add_worst_case_get_merk::<RocksDbStorage>(&mut cost, path);
+            GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, path);
         }
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost += op.worst_case_cost(
@@ -950,10 +848,7 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
                 MerkWorstCaseInput::MaxElementsNumber(MAX_ELEMENTS_NUMBER),
             );
         }
-        GroveDb::add_worst_case_merk_propagate(
-            &mut cost,
-            MerkWorstCaseInput::NumberOfLevels(path.len()),
-        );
+        add_worst_case_merk_propagate(&mut cost, MerkWorstCaseInput::NumberOfLevels(path.len()));
         Ok(([0u8; 32], None)).wrap_with_cost(cost)
     }
 
@@ -963,7 +858,7 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
         let base_path = KeyInfoPath(vec![]);
         if !self.paths.contains(&base_path) {
             // Then we have to get the tree
-            GroveDb::add_worst_case_get_merk::<RocksDbStorage>(&mut cost, &base_path);
+            GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, &base_path);
         }
         if let Some(root_key) = root_key {
             // todo: add worst case of updating the base root

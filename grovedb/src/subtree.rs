@@ -13,7 +13,7 @@ use integer_encoding::VarInt;
 use merk::{
     ed::Decode,
     proofs::{query::QueryItem, Query},
-    tree::{Tree, TreeInner},
+    tree::{kv::KV, Tree, TreeInner},
     BatchEntry, Op, HASH_LENGTH,
 };
 use serde::{Deserialize, Serialize};
@@ -196,43 +196,10 @@ impl Element {
         len + len.required_space() + flag_len + flag_len.required_space() + 1
     }
 
-    pub fn root_info_byte_size(&self, key_len: usize) -> usize {
-        match self {
-            Element::Tree(..) => {
-                // 32 for the root key prefix
-                // 1 byte for the root "r"
-                // 1 byte for the key length
-                // 1 byte for the value length
-                HASH_LENGTH + key_len + 3
-            }
-            _ => 0,
-        }
-    }
-
-    /// Get the size that the element will occupy on disk with meta and root
-    /// storage_cost
-    pub fn total_byte_size(&self, key_len: usize) -> usize {
-        self.node_byte_size(key_len) + self.root_info_byte_size(key_len)
-    }
-
     /// Get the size that the element will occupy on disk
-    pub fn node_byte_size(&self, key_len: usize) -> usize {
-        // todo v23: this is just an approximation for now
-        let serialized_value_size = self.serialized_size();
-        Self::calculate_node_byte_size(serialized_value_size as usize, key_len)
-    }
-
-    /// Get the size that the element will occupy on disk
-    pub fn calculate_node_byte_size(serialized_value_size: usize, key_len: usize) -> usize {
-        let node_value_size = serialized_value_size + serialized_value_size.required_space();
-        // Hash length is for the key prefix
-        let node_key_size = HASH_LENGTH + key_len + (key_len + HASH_LENGTH).required_space();
-        // Each node stores the key and value, the value hash and the key_value hash
-        let node_size = node_value_size + node_key_size + HASH_LENGTH + HASH_LENGTH;
-        // The node will be a child of another node which stores it's key and hash
-        // That will be added during propagation
-        let child_sizes = 2_usize;
-        node_size + child_sizes
+    pub fn node_byte_size(&self, key_len: u32) -> u32 {
+        let serialized_value_size = self.serialized_size() as u32; // this includes the flags
+        KV::node_byte_cost_size_for_key_and_value_lengths(key_len, serialized_value_size)
     }
 
     /// Delete an element from Merk under a key
