@@ -11,7 +11,7 @@ use std::{
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use merk::{tree::Tree, Merk, TreeFeatureType};
+use merk::{tree::Tree, Merk, TreeFeatureType, TreeFeatureType::BasicMerk};
 use nohash_hasher::IntMap;
 use storage::{Storage, StorageBatch, StorageContext};
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
@@ -257,7 +257,7 @@ impl GroveDbOpConsistencyResults {
 
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F> {
-    merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
+    merks: HashMap<Vec<Vec<u8>>, (Merk<S>, TreeFeatureType)>,
     get_merk_fn: F,
 }
 
@@ -293,7 +293,7 @@ trait TreeCache {
 
 impl<'db, S, F> TreeCacheMerkByPath<S, F>
 where
-    F: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+    F: FnMut(&[Vec<u8>]) -> (CostResult<Merk<S>, Error>, TreeFeatureType),
     S: StorageContext<'db>,
 {
     fn follow_reference<'a>(
@@ -338,10 +338,12 @@ where
             }
         } else {
             let (key, reference_path) = qualified_path.split_last().unwrap(); // already checked
-            let reference_merk_wrapped = self
+            let (reference_merk_wrapped, feature_type) = self
                 .merks
                 .remove(reference_path)
-                .map(|x| Ok(x).wrap_with_cost(Default::default()))
+                .map(|(merk, feature_type)| {
+                    (Ok(merk).wrap_with_cost(Default::default()), feature_type)
+                })
                 .unwrap_or_else(|| (self.get_merk_fn)(reference_path));
             let merk = cost_return_on_error!(&mut cost, reference_merk_wrapped);
 
@@ -385,7 +387,7 @@ where
 
 impl<'db, S, F> TreeCache for TreeCacheMerkByPath<S, F>
 where
-    F: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+    F: FnMut(&[Vec<u8>]) -> (CostResult<Merk<S>, Error>, TreeFeatureType),
     S: StorageContext<'db>,
 {
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
@@ -394,8 +396,9 @@ where
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
         if !self.merks.contains_key(&inserted_path) {
-            let merk = cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path));
-            self.merks.insert(inserted_path, merk);
+            let (merk_wrapped, feature_type) = (self.get_merk_fn)(&inserted_path);
+            let merk = cost_return_on_error!(&mut cost, merk_wrapped);
+            self.merks.insert(inserted_path, (merk, feature_type));
         }
 
         Ok(()).wrap_with_cost(cost)
@@ -410,10 +413,10 @@ where
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
 
-        let merk_wrapped = self
+        let (merk_wrapped, feature_type) = self
             .merks
             .remove(path)
-            .map(|x| Ok(x).wrap_with_cost(Default::default()))
+            .map(|(merk, feature_type)| (Ok(merk).wrap_with_cost(Default::default()), feature_type))
             .unwrap_or_else(|| (self.get_merk_fn)(path));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
 
@@ -723,7 +726,9 @@ impl GroveDb {
                                             match occupied_entry.into_mut() {
                                                 Op::ReplaceTreeHash { hash } => *hash = root_hash,
                                                 Op::Insert { element } => {
-                                                    if let Element::Tree(hash, _) | Element::SumTree(hash, ..) = element {
+                                                    if let Element::Tree(hash, _)
+                                                    | Element::SumTree(hash, ..) = element
+                                                    {
                                                         *hash = root_hash
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
@@ -779,7 +784,7 @@ impl GroveDb {
         &self,
         ops: Vec<GroveDbOp>,
         batch_apply_options: Option<BatchApplyOptions>,
-        get_merk_fn: impl FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+        get_merk_fn: impl FnMut(&[Vec<u8>]) -> (CostResult<Merk<S>, Error>, TreeFeatureType),
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let batch_structure = cost_return_on_error!(
@@ -864,8 +869,11 @@ impl GroveDb {
                             tx,
                         )
                         .unwrap_add_cost(&mut cost);
-                    Merk::open(storage)
-                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                    (
+                        Merk::open(storage)
+                            .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned())),
+                        BasicMerk,
+                    )
                 })
             );
 
@@ -888,8 +896,11 @@ impl GroveDb {
                             &storage_batch,
                         )
                         .unwrap_add_cost(&mut cost);
-                    Merk::open(storage)
-                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                    (
+                        Merk::open(storage)
+                            .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned())),
+                        BasicMerk,
+                    )
                 })
             );
 
