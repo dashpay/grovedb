@@ -280,7 +280,7 @@ impl fmt::Debug for TreeCacheKnownPaths {
 }
 
 trait TreeCache {
-    fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error>;
+    fn insert(&mut self, op: &GroveDbOp, is_sum_tree: bool) -> CostResult<(), Error>;
 
     fn execute_ops_on_path(
         &mut self,
@@ -390,15 +390,15 @@ where
     F: FnMut(&[Vec<u8>]) -> (CostResult<Merk<S>, Error>, bool),
     S: StorageContext<'db>,
 {
-    fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
+    fn insert(&mut self, op: &GroveDbOp, is_sum_tree: bool) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
         if !self.merks.contains_key(&inserted_path) {
-            let (merk_wrapped, feature_type) = (self.get_merk_fn)(&inserted_path);
+            let (merk_wrapped,_) = (self.get_merk_fn)(&inserted_path);
             let merk = cost_return_on_error!(&mut cost, merk_wrapped);
-            self.merks.insert(inserted_path, (merk, feature_type));
+            self.merks.insert(inserted_path, (merk, is_sum_tree));
         }
 
         Ok(()).wrap_with_cost(cost)
@@ -506,7 +506,7 @@ where
 }
 
 impl TreeCache for TreeCacheKnownPaths {
-    fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
+    fn insert(&mut self, op: &GroveDbOp, is_sum_tree: bool) -> CostResult<(), Error> {
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
         self.paths.insert(inserted_path);
@@ -598,8 +598,10 @@ where
             let op_cost = OperationCost::default();
             let op_result = match &op.op {
                 Op::Insert { element } => {
-                    if let Element::Tree(..) | Element::SumTree(..) = element {
-                        cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op));
+                    if let Element::Tree(..) = element {
+                        cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op, false))
+                    } else if let Element::SumTree(..) = element {
+                        cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op, true))
                     }
                     Ok(())
                 }
