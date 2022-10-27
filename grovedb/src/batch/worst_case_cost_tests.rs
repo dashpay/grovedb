@@ -57,7 +57,7 @@ mod tests {
                 seek_count: 6, // todo: why is this 6
                 storage_cost: StorageCost {
                     added_bytes: 113,
-                    replaced_bytes: 18432, // log(max_elements) * MAX_VALUE_SIZE = 640 // todo: verify
+                    replaced_bytes: 18432, // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 23040,
@@ -65,7 +65,6 @@ mod tests {
             }
         );
     }
-
 
     #[test]
     fn test_batch_root_one_item_insert_op_worst_case_costs() {
@@ -84,8 +83,8 @@ mod tests {
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_bytes| Ok(NoStorageRemoval),
         )
-            .cost_as_result()
-            .expect("expected to get worst case costs");
+        .cost_as_result()
+        .expect("expected to get worst case costs");
 
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(
@@ -116,7 +115,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn test_batch_root_one_tree_insert_op_under_element_worst_case_costs() {
         let db = make_empty_grovedb();
@@ -138,8 +136,8 @@ mod tests {
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_bytes| Ok(NoStorageRemoval),
         )
-            .cost_as_result()
-            .expect("expected to get worst case costs");
+        .cost_as_result()
+        .expect("expected to get worst case costs");
 
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(
@@ -161,7 +159,7 @@ mod tests {
                 seek_count: 6, // todo: why is this 6
                 storage_cost: StorageCost {
                     added_bytes: 113,
-                    replaced_bytes: 18432, // log(max_elements) * MAX_VALUE_SIZE = 640 // todo: verify
+                    replaced_bytes: 18432, // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 23040,
@@ -191,8 +189,8 @@ mod tests {
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_bytes| Ok(NoStorageRemoval),
         )
-            .cost_as_result()
-            .expect("expected to get worst case costs");
+        .cost_as_result()
+        .expect("expected to get worst case costs");
 
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(
@@ -214,7 +212,7 @@ mod tests {
                 seek_count: 8, // todo: why is this 8
                 storage_cost: StorageCost {
                     added_bytes: 113,
-                    replaced_bytes: 36937, // log(max_elements) * MAX_VALUE_SIZE = 640 // todo: verify
+                    replaced_bytes: 36937, // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 46420,
@@ -247,6 +245,9 @@ mod tests {
         assert!(worst_case_cost_result.value.is_ok());
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         // at the moment we just check the added bytes are the same
-        assert_eq!(worst_case_cost_result.cost.storage_cost.added_bytes, cost.storage_cost.added_bytes);
+        assert_eq!(
+            worst_case_cost_result.cost.storage_cost.added_bytes,
+            cost.storage_cost.added_bytes
+        );
     }
 }

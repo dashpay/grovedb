@@ -346,7 +346,7 @@ impl GroveDb {
 
         while path_iter.len() > 0 {
             let key = path_iter.next_back().expect("next element is `Some`");
-            let mut parent_tree: Merk<PrefixedRocksDbBatchTransactionContext> = cost_return_on_error!(
+            let mut parent_tree = cost_return_on_error!(
                 &mut cost,
                 self.open_batch_transactional_merk_at_path(
                     storage_batch,
