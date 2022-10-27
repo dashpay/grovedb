@@ -919,14 +919,23 @@ impl Element {
         &self,
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        is_sum_tree: bool,
     ) -> CostResult<(), Error> {
+        // TODO: Fix this
+        let feature_type = match is_sum_tree {
+            false => Some(TreeFeatureType::BasicMerk),
+            // TODO: Remove unwrap
+            true => Some(TreeFeatureType::SummedMerk(self.sum_value().unwrap())),
+        };
+        dbg!(feature_type);
+
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
         // TODO: build the feature type here
-        let entry = (key, Op::Put(serialized), Some(BasicMerk));
+        let entry = (key, Op::Put(serialized), feature_type);
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -962,6 +971,7 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        is_sum_tree: bool,
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
         let exists = cost_return_on_error!(
@@ -973,7 +983,7 @@ impl Element {
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.insert_into_batch_operations(key, batch_operations)
+                self.insert_into_batch_operations(key, batch_operations, is_sum_tree)
             );
             Ok(true).wrap_with_cost(cost)
         }
@@ -1019,7 +1029,16 @@ impl Element {
         key: K,
         referenced_value: Vec<u8>,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        is_sum_tree: bool,
     ) -> CostResult<(), Error> {
+        // TODO: Fix this
+        let feature_type = match is_sum_tree {
+            false => Some(TreeFeatureType::BasicMerk),
+            // TODO: Remove unwrap
+            true => Some(TreeFeatureType::SummedMerk(self.sum_value().unwrap())),
+        };
+        dbg!(feature_type);
+
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
@@ -1028,7 +1047,7 @@ impl Element {
         let entry = (
             key,
             Op::PutReference(serialized, referenced_value),
-            Some(BasicMerk),
+            feature_type,
         );
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())

@@ -396,7 +396,7 @@ where
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
         if !self.merks.contains_key(&inserted_path) {
-            let (merk_wrapped,_) = (self.get_merk_fn)(&inserted_path);
+            let (merk_wrapped, _) = (self.get_merk_fn)(&inserted_path);
             let merk = cost_return_on_error!(&mut cost, merk_wrapped);
             self.merks.insert(inserted_path, (merk, is_sum_tree));
         }
@@ -413,12 +413,14 @@ where
     ) -> CostResult<[u8; 32], Error> {
         let mut cost = OperationCost::default();
 
-        let (merk_wrapped, feature_type) = self
+        let (merk_wrapped, is_sum_tree) = self
             .merks
             .remove(path)
             .map(|(merk, feature_type)| (Ok(merk).wrap_with_cost(Default::default()), feature_type))
             .unwrap_or_else(|| (self.get_merk_fn)(path));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
+
+        dbg!(is_sum_tree);
 
         let mut batch_operations: Vec<(Vec<u8>, _, Option<TreeFeatureType>)> = vec![];
         for (key, op) in ops_at_path_by_key.into_iter() {
@@ -447,7 +449,8 @@ where
                             element.insert_reference_into_batch_operations(
                                 key,
                                 serialized,
-                                &mut batch_operations
+                                &mut batch_operations,
+                                is_sum_tree
                             )
                         );
                     }
@@ -461,7 +464,8 @@ where
                                 element.insert_if_not_exists_into_batch_operations(
                                     &mut merk,
                                     key,
-                                    &mut batch_operations
+                                    &mut batch_operations,
+                                    is_sum_tree
                                 )
                             );
                             if !inserted {
@@ -473,7 +477,11 @@ where
                         } else {
                             cost_return_on_error!(
                                 &mut cost,
-                                element.insert_into_batch_operations(key, &mut batch_operations)
+                                element.insert_into_batch_operations(
+                                    key,
+                                    &mut batch_operations,
+                                    is_sum_tree
+                                )
                             );
                         }
                     }

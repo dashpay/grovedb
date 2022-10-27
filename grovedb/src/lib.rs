@@ -251,10 +251,12 @@ impl GroveDb {
         Self::get_element_from_subtree(parent_tree, key.as_ref()).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(root_hash, flag);
-                tree.insert_into_batch_operations(key, batch_operations)
+                // TODO: fix
+                tree.insert_into_batch_operations(key, batch_operations, false)
             } else if let Element::SumTree(_, _, flag) = element {
+                // TODO: fix
                 let tree = Element::new_sum_tree_with_flags(root_hash, flag);
-                tree.insert_into_batch_operations(key, batch_operations)
+                tree.insert_into_batch_operations(key, batch_operations, false)
             } else {
                 Err(Error::InvalidPath("can only propagate on tree items"))
                     .wrap_with_cost(Default::default())
