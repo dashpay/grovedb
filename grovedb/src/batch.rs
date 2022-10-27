@@ -420,8 +420,6 @@ where
             .unwrap_or_else(|| (self.get_merk_fn)(path));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
 
-        dbg!(is_sum_tree);
-
         let mut batch_operations: Vec<(Vec<u8>, _, Option<TreeFeatureType>)> = vec![];
         for (key, op) in ops_at_path_by_key.into_iter() {
             match op {
@@ -871,18 +869,26 @@ impl GroveDb {
             cost_return_on_error!(
                 &mut cost,
                 self.apply_body(ops, batch_apply_options, |path| {
+                    // How do we get the feature type of this merk??
+                    // We need to get the element for the associated merk
+                    let path_iter = path.iter().map(|x| x.as_slice());
+                    let is_sum_tree = if path.len() == 0 {
+                        // the root tree is not a sum tree
+                        true
+                    } else {
+                        self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
+                            .unwrap_add_cost(&mut cost)
+                            .unwrap_or(false)
+                    };
+
                     let storage = self
                         .db
-                        .get_batch_transactional_storage_context(
-                            path.iter().map(|x| x.as_slice()),
-                            &storage_batch,
-                            tx,
-                        )
+                        .get_batch_transactional_storage_context(path_iter, &storage_batch, tx)
                         .unwrap_add_cost(&mut cost);
                     (
                         Merk::open(storage)
                             .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned())),
-                        false,
+                        is_sum_tree,
                     )
                 })
             );
@@ -899,17 +905,24 @@ impl GroveDb {
             cost_return_on_error!(
                 &mut cost,
                 self.apply_body(ops, batch_apply_options, |path| {
+                    let path_iter = path.iter().map(|x| x.as_slice());
+                    let is_sum_tree = if path.len() == 0 {
+                        // the root tree is not a sum tree
+                        true
+                    } else {
+                        self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
+                            .unwrap_add_cost(&mut cost)
+                            .unwrap_or(false)
+                    };
+
                     let storage = self
                         .db
-                        .get_batch_storage_context(
-                            path.iter().map(|x| x.as_slice()),
-                            &storage_batch,
-                        )
+                        .get_batch_storage_context(path_iter, &storage_batch)
                         .unwrap_add_cost(&mut cost);
                     (
                         Merk::open(storage)
                             .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned())),
-                        false,
+                        is_sum_tree,
                     )
                 })
             );
