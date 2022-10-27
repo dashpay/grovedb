@@ -4450,4 +4450,22 @@ fn test_sum_tree_with_batches() {
             .expect("node should exist"),
         Some(SummedMerk(10))
     ));
+
+    // Create new batch to use existing tree
+    let ops = vec![GroveDbOp::insert(
+        vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+        b"c".to_vec(),
+        Element::new_item(vec![10]),
+    )];
+    db.apply_batch(ops, None, None)
+        .unwrap()
+        .expect("should apply batch");
+    let sum_tree = open_merk!(db, [TEST_LEAF, b"key1"]);
+    assert!(matches!(
+        sum_tree
+            .get_feature_type(b"c")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(0))
+    ));
 }
