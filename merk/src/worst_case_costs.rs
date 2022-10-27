@@ -64,14 +64,22 @@ impl KV {
         cost: &mut OperationCost,
         key_len: u32,
         value_len: u32,
-        input: MerkWorstCaseInput,
     ) {
         cost.storage_cost.added_bytes += KV::node_byte_cost_size_for_key_and_value_lengths(key_len, value_len);
         // .. and hash computation for the inserted element itself
         // todo: verify this
         cost.hash_node_calls += ((value_len + 1) / HASH_BLOCK_SIZE_U32) as u16;
+    }
 
-        add_worst_case_merk_propagate(cost, input);
+    /// Add worst case for insertion into merk
+    pub fn add_worst_case_merk_replace_layered(
+        cost: &mut OperationCost,
+        key_len: u32,
+        value_len: u32,
+    ) {
+        // todo: verify this
+        cost.hash_node_calls += ((value_len + 1) / HASH_BLOCK_SIZE_U32) as u16;
+        cost.storage_cost.replaced_bytes = KV::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_len); // 37 + 35 + key_len
     }
 
     /// Add worst case for insertion into merk
@@ -79,14 +87,11 @@ impl KV {
         cost: &mut OperationCost,
         key_len: u32,
         value_len: u32,
-        input: MerkWorstCaseInput,
     ) {
         cost.storage_cost.added_bytes += KV::layered_node_byte_cost_size_for_key_and_value_lengths(key_len, value_len);
         // .. and hash computation for the inserted element itself
         // todo: verify this
         cost.hash_node_calls += ((value_len + 1) / HASH_BLOCK_SIZE_U32) as u16;
-
-        add_worst_case_merk_propagate(cost, input);
     }
 
     const fn node_hash_update_count() -> u16 {
@@ -102,6 +107,10 @@ impl KV {
     pub fn add_worst_case_merk_root_hash(cost: &mut OperationCost) {
         cost.hash_node_calls += node_hash_update_count();
     }
+
+
+pub const MERK_BIGGEST_VALUE_SIZE: u32 = 1024;
+pub const MERK_BIGGEST_KEY_SIZE: u32 = 256;
 
     pub fn add_worst_case_merk_propagate(
         cost: &mut OperationCost,
@@ -119,7 +128,9 @@ impl KV {
         // root, thus two more updates.
         nodes_updated += 2;
 
-        cost.storage_cost.replaced_bytes += nodes_updated * HASH_LENGTH_U32;
+        // todo: verify these numbers
+        cost.storage_cost.replaced_bytes += nodes_updated * MERK_BIGGEST_VALUE_SIZE;
+        cost.storage_loaded_bytes += nodes_updated * (MERK_BIGGEST_VALUE_SIZE + MERK_BIGGEST_KEY_SIZE);
         // Same number of hash recomputations for propagation
         cost.hash_node_calls += (nodes_updated as u16) * node_hash_update_count();
     }

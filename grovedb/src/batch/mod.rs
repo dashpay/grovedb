@@ -61,26 +61,20 @@ pub enum Op {
 }
 
 impl Op {
-    fn worst_case_cost(&self, key: &KeyInfo, input: MerkWorstCaseInput) -> OperationCost {
+    fn worst_case_cost(&self, key: &KeyInfo, propagate_if_input: Option<MerkWorstCaseInput>) -> OperationCost {
         match self {
             Op::ReplaceTreeRootKey { .. } => {
-                OperationCost {
-                    seek_count: 1,
-                    storage_cost: StorageCost {
-                        added_bytes: 32, // todo
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }
+                let mut cost = OperationCost::default();
+                GroveDb::add_worst_case_merk_replace_tree(&mut cost, key, propagate_if_input);
+                cost
             }
             Op::Insert { element } => {
                 let mut cost = OperationCost::default();
-                GroveDb::add_worst_case_merk_insert_element(&mut cost, key, &element, input);
+                GroveDb::add_worst_case_merk_insert_element(&mut cost, key, &element, propagate_if_input);
                 cost
             }
             Op::Delete => {
                 let mut cost = OperationCost::default();
-                add_worst_case_merk_propagate(&mut cost, input);
                 cost
             }
         }
@@ -845,10 +839,10 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost += op.worst_case_cost(
                 &key,
-                MerkWorstCaseInput::MaxElementsNumber(MAX_ELEMENTS_NUMBER),
+                None,
             );
         }
-        add_worst_case_merk_propagate(&mut cost, MerkWorstCaseInput::NumberOfLevels(path.len()));
+        add_worst_case_merk_propagate(&mut cost, MerkWorstCaseInput::MaxElementsNumber(MAX_ELEMENTS_NUMBER));
         Ok(([0u8; 32], None)).wrap_with_cost(cost)
     }
 

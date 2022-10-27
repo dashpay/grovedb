@@ -112,13 +112,9 @@ fn test_tree_hashes_when_inserting_empty_tree() {
 fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     let db = make_test_grovedb();
 
-    dbg!("base inserts done");
-
     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
         .unwrap()
         .expect("successful subtree insert");
-
-    dbg!("key1 insert done");
 
     db.insert(
         [TEST_LEAF, b"key1"],
@@ -129,8 +125,6 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     )
     .unwrap()
     .expect("successful subtree insert");
-
-    dbg!("inserts done");
 
     let under_top_merk = db
         .open_non_transactional_merk_at_path([TEST_LEAF])

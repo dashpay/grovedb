@@ -7,6 +7,7 @@ use merk::{
     },
     Merk, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
 };
+use merk::worst_case_costs::{add_worst_case_merk_propagate, add_worst_case_merk_replace_layered};
 use storage::{worst_case_costs::WorstKeyLength, Storage};
 
 use super::GroveDb;
@@ -144,17 +145,33 @@ impl GroveDb {
     }
 
     /// Add worst case for insertion into merk
+    pub(crate) fn add_worst_case_merk_replace_tree(
+        cost: &mut OperationCost,
+        key: &KeyInfo,
+        propagate_if_input: Option<MerkWorstCaseInput>,
+    ) {
+        let key_len = key.len() as u32;
+        add_worst_case_merk_replace_layered(cost, key_len, 3);
+        if let Some(input) = propagate_if_input {
+            add_worst_case_merk_propagate(cost, input);
+        }
+    }
+
+    /// Add worst case for insertion into merk
     pub(crate) fn add_worst_case_merk_insert_element(
         cost: &mut OperationCost,
         key: &KeyInfo,
         value: &Element,
-        input: MerkWorstCaseInput,
+        propagate_if_input: Option<MerkWorstCaseInput>,
     ) {
         let key_len = key.len() as u32;
         match value {
-            Element::Tree(..) => add_worst_case_merk_insert_layered(cost, key_len, 3, input),
-            _ => add_worst_case_merk_insert(cost, key_len, value.serialized_size() as u32, input),
+            Element::Tree(..) => add_worst_case_merk_insert_layered(cost, key_len, 3),
+            _ => add_worst_case_merk_insert(cost, key_len, value.serialized_size() as u32),
         };
+        if let Some(input) = propagate_if_input {
+            add_worst_case_merk_propagate(cost, input);
+        }
     }
 
     pub fn add_worst_case_delete_cost(

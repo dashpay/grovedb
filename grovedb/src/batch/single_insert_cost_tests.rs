@@ -104,27 +104,27 @@ mod tests {
 
         let ops = vec![GroveDbOp::insert_run_op(
             vec![],
-            b"key1".to_vec(),
-            Element::new_item([0u8; 32].to_vec()),
+            b"0".to_vec(),
+            Element::new_item(b"cat".to_vec()),
         )];
         let cost_result = db.apply_batch(ops, None, Some(&tx));
         cost_result.value.expect("expected to execute batch");
         let cost = cost_result.cost;
         // Explanation for 214 storage_written_bytes
 
-        // Key -> 37 bytes
+        // Key -> 34 bytes
         // 32 bytes for the key prefix
-        // 4 bytes for the key
+        // 1 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 100
+        // Value -> 71
         //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for required space for bytes
-        //   32 for item bytes
+        //   3 for item bytes
         // 32 for node hash
         // 32 for value hash
-        // 1 byte for the value_size (required space for 99)
+        // 1 byte for the value_size (required space for 71)
 
         // Parent Hook -> 39
         // Key Bytes 4
@@ -136,10 +136,10 @@ mod tests {
         // 1 byte for the root key length size
         // 1 byte for the root value length size
         // 32 for the root key prefix
-        // 4 bytes for the key to put in root
+        // 1 bytes for the key to put in root
         // 1 byte for the root "r"
 
-        // Total 37 + 100 + 39 = 176
+        // Total 34 + 71 + 36 = 141
 
         // Hash node calls
         // 2 for the node hash
@@ -149,12 +149,147 @@ mod tests {
             OperationCost {
                 seek_count: 2, // 1 to get tree, 1 to insert
                 storage_cost: StorageCost {
-                    added_bytes: 176,
+                    added_bytes: 141,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 6,
+            }
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_insert_tree_under_parent_item_in_same_merk_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let cost = db.insert(vec![], b"0", Element::new_item(b"cat".to_vec()), None, Some(&tx))
+            .cost_as_result()
+            .expect("successful root tree leaf insert");
+
+        assert_eq!(cost.storage_cost.added_bytes, 141);
+
+        let ops = vec![GroveDbOp::insert_run_op(
+            vec![],
+            b"key1".to_vec(),
+            Element::empty_tree(),
+        )];
+        let cost_result = db.apply_batch(ops, None, Some(&tx));
+        cost_result.value.expect("expected to execute batch");
+        let cost = cost_result.cost;
+        // Explanation for 214 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 37
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type
+        //   1 for empty tree value
+        // 32 for node hash
+        // 0 for value hash
+        // 2 byte for the value_size (required space for 98 + up to 256 for child key)
+
+        // Parent Hook -> 39
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+
+        // Total 37 + 37 + 39 = 113
+
+        // Replaced bytes
+
+        // Value -> 71
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type
+        //   1 for required space for bytes
+        //   3 for item bytes
+        // 32 for node hash
+        // 32 for value hash
+        // 1 byte for the value_size (required space for 99)
+
+        // 71 + 36 = 107 (key is not replaced)
+
+        // Hash node calls
+        // 2 for the node hash
+        // 1 for the value hash
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 4, // todo: verify and explain
+                storage_cost: StorageCost {
+                    added_bytes: 113,
+                    replaced_bytes: 107,
+                    removed_bytes: NoStorageRemoval,
+                },
+                storage_loaded_bytes: 146, // todo: verify and explain
+                hash_node_calls: 8, // todo: verify and explain
+            }
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_insert_tree_under_parent_tree_in_same_merk_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"0", Element::empty_tree(), None, Some(&tx))
+            .unwrap()
+            .expect("successful root tree leaf insert");
+
+        let ops = vec![GroveDbOp::insert_run_op(
+            vec![],
+            b"key1".to_vec(),
+            Element::empty_tree(),
+        )];
+        let cost_result = db.apply_batch(ops, None, Some(&tx));
+        cost_result.value.expect("expected to execute batch");
+        let cost = cost_result.cost;
+        // Explanation for 113 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 37
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type
+        //   1 for empty tree value
+        // 32 for node hash
+        // 0 for value hash
+        // 2 byte for the value_size (required space for 98 + up to 256 for child key)
+
+        // Parent Hook -> 39
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+
+        // Total 37 + 37 + 39 = 113
+
+        // Replaced bytes
+
+        // 37 + 36 = 76 (key is not replaced)
+
+        // Hash node calls
+        // 2 for the node hash
+        // 1 for the value hash
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 4, // todo: verify and explain
+                storage_cost: StorageCost {
+                    added_bytes: 113,
+                    replaced_bytes: 76,
+                    removed_bytes: NoStorageRemoval,
+                },
+                storage_loaded_bytes: 140, // todo: verify and explain
+                hash_node_calls: 8, // todo: verify and explain
             }
         );
     }

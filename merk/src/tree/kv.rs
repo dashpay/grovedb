@@ -231,6 +231,19 @@ impl KV {
         node_size + parent_to_child_cost
     }
 
+    /// Get the costs for the node, this has the parent to child hooks
+    #[inline]
+    pub fn layered_value_byte_cost_size_for_key_and_value_lengths(not_prefixed_key_len: u32, value_len: u32) -> u32 {
+        // Each node stores the key and value, and the node hash
+        // the value hash on a layered node is not stored directly in the node
+        // The required space is set to 2, even though it could be potentially 1
+        let node_value_size = value_len + HASH_LENGTH_U32 + 2;
+        // The node will be a child of another node which stores it's key and hash
+        // That will be added during propagation
+        let parent_to_child_cost = Link::encoded_link_size(not_prefixed_key_len);
+        node_value_size + parent_to_child_cost
+    }
+
     #[inline]
     pub(crate) fn value_encoding_length_with_parent_to_child_reference(&self) -> u32 {
         // encoding a reference encodes the key last and doesn't encode the size of the

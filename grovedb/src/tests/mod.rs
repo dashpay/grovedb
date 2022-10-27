@@ -589,25 +589,15 @@ fn test_changes_propagated() {
     let old_hash = db.root_hash(None).unwrap().unwrap();
     let element = Element::new_item(b"ayy".to_vec());
 
-    dbg!("START");
-    visualize_stdout(&db);
     // Insert some nested subtrees
     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
         .unwrap()
         .expect("successful subtree 1 insert");
-    dbg!("1");
-    visualize_stdout(&db);
-
-    println!("\n\n");
 
     let merk = db
         .open_non_transactional_merk_at_path([TEST_LEAF])
         .unwrap()
         .unwrap();
-
-    visualize_merk_stdout(&merk);
-
-    println!("\n\n");
 
     db.insert(
         [TEST_LEAF, b"key1"],
@@ -618,26 +608,6 @@ fn test_changes_propagated() {
     )
     .unwrap()
     .expect("successful subtree 2 insert");
-    dbg!("2");
-    visualize_stdout(&db);
-    // Insert an element into subtree
-    println!("\n\n");
-
-    let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF])
-        .unwrap()
-        .unwrap();
-
-    visualize_merk_stdout(&merk);
-
-    let merk = db
-        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"])
-        .unwrap()
-        .unwrap();
-
-    visualize_merk_stdout(&merk);
-
-    println!("\n\n");
 
     db.insert(
         [TEST_LEAF, b"key1", b"key2"],
@@ -648,8 +618,7 @@ fn test_changes_propagated() {
     )
     .unwrap()
     .expect("successful value insert");
-    dbg!("3");
-    visualize_stdout(&db);
+
     assert_eq!(
         db.get([TEST_LEAF, b"key1", b"key2"], b"key3", None)
             .unwrap()
@@ -2153,7 +2122,7 @@ fn test_get_subtree() {
         let subtree = db.get([], TEST_LEAF, None).unwrap();
         assert!(subtree.is_ok());
     }
-    visualize_stdout(&db);
+
     // Insert some nested subtrees
     db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
         .unwrap()
@@ -2177,8 +2146,6 @@ fn test_get_subtree() {
         )
     );
 
-    visualize_stdout(&db);
-
     db.insert(
         [TEST_LEAF, b"key1"],
         b"key2",
@@ -2188,8 +2155,6 @@ fn test_get_subtree() {
     )
     .unwrap()
     .expect("successful subtree 2 insert");
-
-    visualize_stdout(&db);
 
     // Insert an element into subtree
     db.insert(
