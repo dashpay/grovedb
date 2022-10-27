@@ -20,7 +20,7 @@ use crate::{operations::get::MAX_REFERENCE_HOPS, Element, Error, GroveDb, Transa
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
-    ReplaceTreeHash { hash: [u8; 32] },
+    ReplaceTreeHash { hash: [u8; 32], sum: Option<i64> },
     Insert { element: Element },
     Delete,
 }
@@ -288,7 +288,7 @@ trait TreeCache {
         ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
         ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
-    ) -> CostResult<[u8; 32], Error>;
+    ) -> CostResult<([u8; 32], Option<i64>), Error>;
 }
 
 impl<'db, S, F> TreeCacheMerkByPath<S, F>
@@ -410,7 +410,7 @@ where
         ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
         ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         batch_apply_options: &BatchApplyOptions,
-    ) -> CostResult<[u8; 32], Error> {
+    ) -> CostResult<([u8; 32], Option<i64>), Error> {
         let mut cost = OperationCost::default();
 
         let (merk_wrapped, is_sum_tree) = self
@@ -490,14 +490,15 @@ where
                         Element::delete_into_batch_operations(key, &mut batch_operations)
                     );
                 }
-                Op::ReplaceTreeHash { hash } => {
+                Op::ReplaceTreeHash { hash, sum } => {
                     cost_return_on_error!(
                         &mut cost,
                         GroveDb::update_tree_item_preserve_flag_into_batch_operations(
                             &merk,
                             key,
                             hash,
-                            &mut batch_operations
+                            &mut batch_operations,
+                            sum
                         )
                     );
                 }
@@ -507,7 +508,9 @@ where
             merk.apply_unchecked::<_, Vec<u8>>(&batch_operations, &[])
                 .map_err(|e| Error::CorruptedData(e.to_string()))
         });
-        merk.root_hash().add_cost(cost).map(Ok)
+        (merk.root_hash().unwrap_add_cost(&mut cost), merk.sum())
+            .wrap_with_cost(cost)
+            .map(Ok)
     }
 }
 
@@ -527,7 +530,7 @@ impl TreeCache for TreeCacheKnownPaths {
         ops_at_path_by_key: BTreeMap<Vec<u8>, Op>,
         _ops_by_qualified_paths: &HashMap<Vec<Vec<u8>>, Op>,
         _batch_apply_options: &BatchApplyOptions,
-    ) -> CostResult<[u8; 32], Error> {
+    ) -> CostResult<([u8; 32], Option<i64>), Error> {
         let mut cost = OperationCost::default();
 
         if !self.paths.remove(path) {
@@ -538,7 +541,7 @@ impl TreeCache for TreeCacheKnownPaths {
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost += op.worst_case_cost(key);
         }
-        Ok([0u8; 32]).wrap_with_cost(cost)
+        Ok(([0u8; 32], None)).wrap_with_cost(cost)
     }
 }
 
@@ -691,8 +694,8 @@ impl GroveDb {
                                 ))
                                 .wrap_with_cost(cost);
                             }
-                            Op::ReplaceTreeHash { hash } => {
-                                root_tree_ops.insert(key, Op::ReplaceTreeHash { hash });
+                            Op::ReplaceTreeHash { hash, sum } => {
+                                root_tree_ops.insert(key, Op::ReplaceTreeHash { hash, sum });
                             }
                         }
                     }
@@ -707,7 +710,7 @@ impl GroveDb {
                         )
                     );
                 } else {
-                    let root_hash = cost_return_on_error!(
+                    let (root_hash, merk_sum) = cost_return_on_error!(
                         &mut cost,
                         merk_tree_cache.execute_ops_on_path(
                             &path,
@@ -727,17 +730,25 @@ impl GroveDb {
                                 if let Some(ops_on_path) = ops_at_level_above.get_mut(parent_path) {
                                     match ops_on_path.entry(key.clone()) {
                                         Entry::Vacant(vacant_entry) => {
-                                            vacant_entry
-                                                .insert(Op::ReplaceTreeHash { hash: root_hash });
+                                            vacant_entry.insert(Op::ReplaceTreeHash {
+                                                hash: root_hash,
+                                                sum: merk_sum,
+                                            });
                                         }
                                         Entry::Occupied(occupied_entry) => {
                                             match occupied_entry.into_mut() {
-                                                Op::ReplaceTreeHash { hash } => *hash = root_hash,
+                                                Op::ReplaceTreeHash { hash, sum } => {
+                                                    *hash = root_hash;
+                                                    *sum = merk_sum;
+                                                }
                                                 Op::Insert { element } => {
-                                                    if let Element::Tree(hash, _)
-                                                    | Element::SumTree(hash, ..) = element
+                                                    if let Element::Tree(hash, _) = element {
+                                                        *hash = root_hash;
+                                                    } else if let Element::SumTree(hash, sum, _) =
+                                                        element
                                                     {
-                                                        *hash = root_hash
+                                                        *hash = root_hash;
+                                                        *sum = merk_sum.unwrap_or_default();
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "insertion of element under a non tree",
@@ -761,14 +772,22 @@ impl GroveDb {
                                     let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
                                     ops_on_path.insert(
                                         key.clone(),
-                                        Op::ReplaceTreeHash { hash: root_hash },
+                                        Op::ReplaceTreeHash {
+                                            hash: root_hash,
+                                            sum: merk_sum,
+                                        },
                                     );
                                     ops_at_level_above.insert(parent_path.to_vec(), ops_on_path);
                                 }
                             } else {
                                 let mut ops_on_path: BTreeMap<Vec<u8>, Op> = BTreeMap::new();
-                                ops_on_path
-                                    .insert(key.clone(), Op::ReplaceTreeHash { hash: root_hash });
+                                ops_on_path.insert(
+                                    key.clone(),
+                                    Op::ReplaceTreeHash {
+                                        hash: root_hash,
+                                        sum: merk_sum,
+                                    },
+                                );
                                 let mut ops_on_level: BTreeMap<
                                     Vec<Vec<u8>>,
                                     BTreeMap<Vec<u8>, Op>,
@@ -905,6 +924,8 @@ impl GroveDb {
             cost_return_on_error!(
                 &mut cost,
                 self.apply_body(ops, batch_apply_options, |path| {
+                    // TODO: get merk fn should optionally check if sum tree
+                    //  for elements inserted from batch, we have that information
                     let path_iter = path.iter().map(|x| x.as_slice());
                     let is_sum_tree = if path.len() == 0 {
                         // the root tree is not a sum tree

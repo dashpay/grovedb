@@ -4455,7 +4455,7 @@ fn test_sum_tree_with_batches() {
     let ops = vec![GroveDbOp::insert(
         vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
         b"c".to_vec(),
-        Element::new_item(vec![10]),
+        Element::new_sum_item(10),
     )];
     db.apply_batch(ops, None, None)
         .unwrap()
@@ -4466,6 +4466,33 @@ fn test_sum_tree_with_batches() {
             .get_feature_type(b"c")
             .unwrap()
             .expect("node should exist"),
-        Some(SummedMerk(0))
+        Some(SummedMerk(10))
     ));
+    assert_eq!(sum_tree.sum(), Some(20));
+
+    // Test propagation
+    // Add a new sum tree with it's own sum items, should affect sum of original
+    // tree
+    let ops = vec![
+        GroveDbOp::insert(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+            b"d".to_vec(),
+            Element::empty_sum_tree(),
+        ),
+        GroveDbOp::insert(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"d".to_vec()],
+            b"first".to_vec(),
+            Element::new_sum_item(4),
+        ),
+        GroveDbOp::insert(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"d".to_vec()],
+            b"second".to_vec(),
+            Element::new_item(vec![4]),
+        ),
+    ];
+    db.apply_batch(ops, None, None)
+        .unwrap()
+        .expect("should apply batch");
+    let sum_tree = open_merk!(db, [TEST_LEAF, b"key1"]);
+    assert_eq!(sum_tree.sum(), Some(24));
 }

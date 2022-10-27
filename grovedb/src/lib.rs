@@ -247,16 +247,40 @@ impl GroveDb {
         key: K,
         root_hash: Hash,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        sum: Option<i64>,
     ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        let parent_feature_type = parent_tree
+            .get_feature_type(key.as_ref())
+            .unwrap_add_cost(&mut cost);
+
+        if parent_feature_type.is_err() {
+            return Err(Error::InternalError("node must exist during propagation"))
+                .wrap_with_cost(cost);
+        }
+
+        let parent_is_sum_tree = match parent_feature_type.expect("confirmed ok above") {
+            None => {
+                return Err(Error::InternalError("all nodes must have a feature type"))
+                    .wrap_with_cost(cost)
+            }
+            Some(feature_type) => matches!(feature_type, TreeFeatureType::SummedMerk(_)),
+        };
+
         Self::get_element_from_subtree(parent_tree, key.as_ref()).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(root_hash, flag);
                 // TODO: fix
-                tree.insert_into_batch_operations(key, batch_operations, false)
+                tree.insert_into_batch_operations(key, batch_operations, parent_is_sum_tree)
             } else if let Element::SumTree(_, _, flag) = element {
                 // TODO: fix
-                let tree = Element::new_sum_tree_with_flags(root_hash, flag);
-                tree.insert_into_batch_operations(key, batch_operations, false)
+                let tree = Element::new_sum_tree_with_flags_and_sum_value(
+                    root_hash,
+                    sum.unwrap_or_default(),
+                    flag,
+                );
+                tree.insert_into_batch_operations(key, batch_operations, parent_is_sum_tree)
             } else {
                 Err(Error::InvalidPath("can only propagate on tree items"))
                     .wrap_with_cost(Default::default())

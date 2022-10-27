@@ -903,7 +903,6 @@ impl Element {
             // TODO: Remove unwrap
             true => Some(TreeFeatureType::SummedMerk(self.sum_value().unwrap())),
         };
-        dbg!(feature_type);
 
         let serialized = match self.serialize() {
             Ok(s) => s,
@@ -927,7 +926,6 @@ impl Element {
             // TODO: Remove unwrap
             true => Some(TreeFeatureType::SummedMerk(self.sum_value().unwrap())),
         };
-        dbg!(feature_type);
 
         let serialized = match self.serialize() {
             Ok(s) => s,
@@ -1007,7 +1005,6 @@ impl Element {
             // TODO: Remove unwrap
             true => Some(TreeFeatureType::SummedMerk(self.sum_value().unwrap())),
         };
-        dbg!(feature_type);
 
         let serialized = match self.serialize() {
             Ok(s) => s,
@@ -1037,7 +1034,6 @@ impl Element {
             // TODO: Remove unwrap
             true => Some(TreeFeatureType::SummedMerk(self.sum_value().unwrap())),
         };
-        dbg!(feature_type);
 
         let serialized = match self.serialize() {
             Ok(s) => s,
