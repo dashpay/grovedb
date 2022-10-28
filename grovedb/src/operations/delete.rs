@@ -24,7 +24,7 @@ use crate::{
 pub struct DeleteOptions {
     pub allow_deleting_non_empty_trees: bool,
     pub deleting_non_empty_trees_returns_error: bool,
-    pub base_root_is_free: bool,
+    pub base_root_storage_is_free: bool,
 }
 
 impl Default for DeleteOptions {
@@ -32,7 +32,7 @@ impl Default for DeleteOptions {
         DeleteOptions {
             allow_deleting_non_empty_trees: false,
             deleting_non_empty_trees_returns_error: true,
-            base_root_is_free: true,
+            base_root_storage_is_free: true,
         }
     }
 }
@@ -40,7 +40,7 @@ impl Default for DeleteOptions {
 impl DeleteOptions {
     fn as_merk_options(&self) -> MerkOptions {
         MerkOptions {
-            base_root_is_free: self.base_root_is_free,
+            base_root_storage_is_free: self.base_root_storage_is_free,
         }
     }
 }

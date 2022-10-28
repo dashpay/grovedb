@@ -794,7 +794,7 @@ where
             } else {
                 if self.merk_type.requires_root_storage_update() {
                     // empty tree, delete pointer to root
-                    let cost = if options.base_root_is_free {
+                    let cost = if options.base_root_storage_is_free {
                         Some(KeyValueStorageCost::default()) // don't pay for root costs
                     } else {
                         None // means it will be calculated

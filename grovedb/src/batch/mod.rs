@@ -14,6 +14,7 @@ use std::{
     slice::Iter,
     vec::IntoIter,
 };
+use std::ops::AddAssign;
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
@@ -1021,7 +1022,7 @@ pub struct BatchApplyOptions {
     pub allow_deleting_non_empty_trees: bool,
     pub deleting_non_empty_trees_returns_error: bool,
     pub disable_operation_consistency_check: bool,
-    pub base_root_is_free: bool,
+    pub base_root_storage_is_free: bool,
 }
 
 impl Default for BatchApplyOptions {
@@ -1032,7 +1033,7 @@ impl Default for BatchApplyOptions {
             allow_deleting_non_empty_trees: false,
             deleting_non_empty_trees_returns_error: true,
             disable_operation_consistency_check: false,
-            base_root_is_free: true,
+            base_root_storage_is_free: true,
         }
     }
 }
@@ -1043,7 +1044,7 @@ impl BatchApplyOptions {
             validate_insertion_does_not_override: self.validate_insertion_does_not_override,
             validate_insertion_does_not_override_tree: self
                 .validate_insertion_does_not_override_tree,
-            base_root_is_free: self.base_root_is_free,
+            base_root_storage_is_free: self.base_root_storage_is_free,
         }
     }
 
@@ -1051,13 +1052,13 @@ impl BatchApplyOptions {
         DeleteOptions {
             allow_deleting_non_empty_trees: self.allow_deleting_non_empty_trees,
             deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
-            base_root_is_free: self.base_root_is_free,
+            base_root_storage_is_free: self.base_root_storage_is_free,
         }
     }
 
     fn as_merk_options(&self) -> MerkOptions {
         MerkOptions {
-            base_root_is_free: self.base_root_is_free,
+            base_root_storage_is_free: self.base_root_storage_is_free,
         }
     }
 }
@@ -1113,14 +1114,16 @@ impl GroveDb {
                             &mut split_removal_bytes,
                         )
                     );
-                    if batch_apply_options.base_root_is_free {
+                    if batch_apply_options.base_root_storage_is_free {
                         // the base root is free
-                        cost_return_on_error_no_add!(
-                            &cost,
-                            merk_tree_cache
-                                .update_base_merk_root_key(calculated_root_key)
-                                .unwrap()
-                        );
+                        let mut update_root_cost =
+                            cost_return_on_error_no_add!(
+                                &cost,
+                                merk_tree_cache
+                            .update_base_merk_root_key(calculated_root_key).cost_as_result()
+                                );
+                        update_root_cost.storage_cost = StorageCost::default();
+                        cost.add_assign(update_root_cost);
                     } else {
                         cost_return_on_error!(
                             &mut cost,
@@ -1721,7 +1724,7 @@ mod tests {
                     allow_deleting_non_empty_trees: false,
                     deleting_non_empty_trees_returns_error: true,
                     disable_operation_consistency_check: true,
-                    base_root_is_free: true,
+                    base_root_storage_is_free: true,
                 }),
                 None
             )
@@ -2440,7 +2443,7 @@ mod tests {
                     allow_deleting_non_empty_trees: false,
                     deleting_non_empty_trees_returns_error: true,
                     disable_operation_consistency_check: false,
-                    base_root_is_free: true,
+                    base_root_storage_is_free: true,
                 }),
                 None
             )
@@ -2478,7 +2481,7 @@ mod tests {
                     allow_deleting_non_empty_trees: false,
                     validate_insertion_does_not_override: true,
                     deleting_non_empty_trees_returns_error: true,
-                    base_root_is_free: true,
+                    base_root_storage_is_free: true,
                 }),
                 None
             )
@@ -2510,7 +2513,7 @@ mod tests {
                     allow_deleting_non_empty_trees: false,
                     deleting_non_empty_trees_returns_error: true,
                     disable_operation_consistency_check: false,
-                    base_root_is_free: true,
+                    base_root_storage_is_free: true,
                 }),
                 None
             )

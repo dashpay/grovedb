@@ -15,7 +15,7 @@ use crate::{
 pub struct InsertOptions {
     pub validate_insertion_does_not_override: bool,
     pub validate_insertion_does_not_override_tree: bool,
-    pub base_root_is_free: bool,
+    pub base_root_storage_is_free: bool,
 }
 
 impl Default for InsertOptions {
@@ -23,7 +23,7 @@ impl Default for InsertOptions {
         InsertOptions {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: true,
-            base_root_is_free: true,
+            base_root_storage_is_free: true,
         }
     }
 }
@@ -35,7 +35,7 @@ impl InsertOptions {
 
     fn as_merk_options(&self) -> MerkOptions {
         MerkOptions {
-            base_root_is_free: self.base_root_is_free,
+            base_root_storage_is_free: self.base_root_storage_is_free,
         }
     }
 }
