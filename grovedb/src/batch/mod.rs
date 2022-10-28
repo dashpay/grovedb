@@ -29,7 +29,7 @@ use merk::{
     worst_case_costs::{
         add_worst_case_get_merk_node, add_worst_case_merk_propagate, MerkWorstCaseInput,
     },
-    CryptoHash, Merk, MerkType,
+    CryptoHash, Merk, MerkOptions, MerkType,
 };
 use nohash_hasher::IntMap;
 use storage::{
@@ -58,6 +58,7 @@ pub enum Op {
         element: Element,
     },
     Delete,
+    DeleteTree,
 }
 
 impl Op {
@@ -82,7 +83,7 @@ impl Op {
                 );
                 cost
             }
-            Op::Delete => {
+            Op::Delete | Op::DeleteTree => {
                 let mut cost = OperationCost::default();
                 cost
             }
@@ -240,6 +241,7 @@ impl fmt::Debug for GroveDbOp {
                 Element::Tree(..) => "Insert Tree",
             },
             Op::Delete => "Delete",
+            Op::DeleteTree => "Delete Tree",
             Op::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key",
         };
 
@@ -283,6 +285,16 @@ impl GroveDbOp {
             path,
             key: KnownKey(key),
             op: Op::Delete,
+            mode: RunOp,
+        }
+    }
+
+    pub fn delete_tree_run_op(path: Vec<Vec<u8>>, key: Vec<u8>) -> Self {
+        let path = KeyInfoPath(path.into_iter().map(|k| KnownKey(k)).collect());
+        Self {
+            path,
+            key: KnownKey(key),
+            op: Op::DeleteTree,
             mode: RunOp,
         }
     }
@@ -513,7 +525,7 @@ where
                         .wrap_with_cost(cost);
                     }
                 },
-                Op::Delete => {
+                Op::Delete | Op::DeleteTree => {
                     return Err(Error::InvalidBatchOperation(
                         "references can not point to something currently being deleted",
                     ))
@@ -759,6 +771,17 @@ where
                         &mut cost,
                         Element::delete_into_batch_operations(
                             key_info.get_key(),
+                            false,
+                            &mut batch_operations
+                        )
+                    );
+                }
+                Op::DeleteTree => {
+                    cost_return_on_error!(
+                        &mut cost,
+                        Element::delete_into_batch_operations(
+                            key_info.get_key(),
+                            true,
                             &mut batch_operations
                         )
                     );
@@ -781,6 +804,7 @@ where
             merk.apply_unchecked::<_, Vec<u8>, _, _>(
                 &batch_operations,
                 &[],
+                Some(batch_apply_options.as_merk_options()),
                 &mut |storage_costs, old_value, new_value| {
                     // todo: change the flags without deserialization
                     let old_element = Element::deserialize(old_value.as_slice())?;
@@ -947,7 +971,7 @@ where
                     }
                     Ok(())
                 }
-                Op::Delete => Ok(()),
+                Op::Delete | Op::DeleteTree => Ok(()),
                 Op::ReplaceTreeRootKey { .. } => Err(Error::InvalidBatchOperation(
                     "replace tree hash is an internal operation only",
                 )),
@@ -990,13 +1014,27 @@ where
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BatchApplyOptions {
     pub validate_insertion_does_not_override: bool,
     pub validate_insertion_does_not_override_tree: bool,
     pub allow_deleting_non_empty_trees: bool,
     pub deleting_non_empty_trees_returns_error: bool,
     pub disable_operation_consistency_check: bool,
+    pub base_root_is_free: bool,
+}
+
+impl Default for BatchApplyOptions {
+    fn default() -> Self {
+        BatchApplyOptions {
+            validate_insertion_does_not_override: false,
+            validate_insertion_does_not_override_tree: false,
+            allow_deleting_non_empty_trees: false,
+            deleting_non_empty_trees_returns_error: true,
+            disable_operation_consistency_check: false,
+            base_root_is_free: true,
+        }
+    }
 }
 
 impl BatchApplyOptions {
@@ -1005,6 +1043,7 @@ impl BatchApplyOptions {
             validate_insertion_does_not_override: self.validate_insertion_does_not_override,
             validate_insertion_does_not_override_tree: self
                 .validate_insertion_does_not_override_tree,
+            base_root_is_free: self.base_root_is_free,
         }
     }
 
@@ -1012,6 +1051,13 @@ impl BatchApplyOptions {
         DeleteOptions {
             allow_deleting_non_empty_trees: self.allow_deleting_non_empty_trees,
             deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
+            base_root_is_free: self.base_root_is_free,
+        }
+    }
+
+    fn as_merk_options(&self) -> MerkOptions {
+        MerkOptions {
+            base_root_is_free: self.base_root_is_free,
         }
     }
 }
@@ -1046,7 +1092,7 @@ impl GroveDb {
                     let mut root_tree_ops: BTreeMap<KeyInfo, Op> = BTreeMap::new();
                     for (key, op) in ops_at_path.into_iter() {
                         match op {
-                            Op::Insert { .. } | Op::Delete => {
+                            Op::Insert { .. } | Op::Delete | Op::DeleteTree => {
                                 root_tree_ops.insert(key, op);
                             }
                             Op::ReplaceTreeRootKey { hash, root_key } => {
@@ -1067,10 +1113,20 @@ impl GroveDb {
                             &mut split_removal_bytes,
                         )
                     );
-                    cost_return_on_error!(
-                        &mut cost,
-                        merk_tree_cache.update_base_merk_root_key(calculated_root_key)
-                    );
+                    if batch_apply_options.base_root_is_free {
+                        // the base root is free
+                        cost_return_on_error_no_add!(
+                            &cost,
+                            merk_tree_cache
+                                .update_base_merk_root_key(calculated_root_key)
+                                .unwrap()
+                        );
+                    } else {
+                        cost_return_on_error!(
+                            &mut cost,
+                            merk_tree_cache.update_base_merk_root_key(calculated_root_key)
+                        );
+                    }
                 } else {
                     let (root_hash, calculated_root_key) = cost_return_on_error!(
                         &mut cost,
@@ -1118,7 +1174,7 @@ impl GroveDb {
                                                         .wrap_with_cost(cost);
                                                     }
                                                 }
-                                                Op::Delete => {
+                                                Op::Delete | Op::DeleteTree => {
                                                     if calculated_root_key.is_some() {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "modification of tree when it will be \
@@ -1665,6 +1721,7 @@ mod tests {
                     allow_deleting_non_empty_trees: false,
                     deleting_non_empty_trees_returns_error: true,
                     disable_operation_consistency_check: true,
+                    base_root_is_free: true,
                 }),
                 None
             )
@@ -2383,6 +2440,7 @@ mod tests {
                     allow_deleting_non_empty_trees: false,
                     deleting_non_empty_trees_returns_error: true,
                     disable_operation_consistency_check: false,
+                    base_root_is_free: true,
                 }),
                 None
             )
@@ -2419,7 +2477,8 @@ mod tests {
                     validate_insertion_does_not_override_tree: true,
                     allow_deleting_non_empty_trees: false,
                     validate_insertion_does_not_override: true,
-                    deleting_non_empty_trees_returns_error: true
+                    deleting_non_empty_trees_returns_error: true,
+                    base_root_is_free: true,
                 }),
                 None
             )
@@ -2451,6 +2510,7 @@ mod tests {
                     allow_deleting_non_empty_trees: false,
                     deleting_non_empty_trees_returns_error: true,
                     disable_operation_consistency_check: false,
+                    base_root_is_free: true,
                 }),
                 None
             )

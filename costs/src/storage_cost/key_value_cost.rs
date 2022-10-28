@@ -5,13 +5,10 @@ use std::{
 
 use integer_encoding::VarInt;
 
-use crate::{
-    storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
-    BasicStorageRemoval,
-};
+use crate::{storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost}, BasicStorageRemoval, StorageRemovedBytes};
 
 /// Storage only Operation Costs separated by key and value
-#[derive(PartialEq, Clone, Eq)]
+#[derive(PartialEq, Clone, Eq, Default)]
 pub struct KeyValueStorageCost {
     /// Key storage_cost costs
     pub key_storage_cost: StorageCost,
@@ -80,6 +77,11 @@ impl KeyValueStorageCost {
                 needs_value_verification: false,
             }
         }
+    }
+
+    /// Returns the total removed bytes between the key removed bytes and the value removed bytes
+    pub fn combined_removed_bytes(self) -> StorageRemovedBytes {
+        self.key_storage_cost.removed_bytes + self.value_storage_cost.removed_bytes
     }
 }
 

@@ -33,6 +33,7 @@ impl GroveDb {
     pub fn delete_aux<K: AsRef<[u8]>>(
         &self,
         key: K,
+        cost_info: Option<KeyValueStorageCost>,
         transaction: TransactionArg,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -42,7 +43,7 @@ impl GroveDb {
                 &cost,
                 aux_storage
                     .unwrap_add_cost(&mut cost)
-                    .delete_aux(key.as_ref())
+                    .delete_aux(key.as_ref(), cost_info)
                     .unwrap_add_cost(&mut cost)
                     .map_err(|e| e.into())
             );

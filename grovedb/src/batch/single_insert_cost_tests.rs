@@ -56,7 +56,7 @@ mod tests {
         let cost_result = db.apply_batch(ops, None, Some(&tx));
         cost_result.value.expect("expected to execute batch");
         let cost = cost_result.cost;
-        // Explanation for 214 storage_written_bytes
+        // Explanation for 113 storage_written_bytes
 
         // Key -> 37 bytes
         // 32 bytes for the key prefix

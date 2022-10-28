@@ -3,7 +3,7 @@ use std::{collections::HashMap, option::Option::None};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use merk::{tree::NULL_HASH, Merk};
+use merk::{tree::NULL_HASH, Merk, MerkOptions};
 use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 
 use crate::{
@@ -15,6 +15,7 @@ use crate::{
 pub struct InsertOptions {
     pub validate_insertion_does_not_override: bool,
     pub validate_insertion_does_not_override_tree: bool,
+    pub base_root_is_free: bool,
 }
 
 impl Default for InsertOptions {
@@ -22,6 +23,7 @@ impl Default for InsertOptions {
         InsertOptions {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: true,
+            base_root_is_free: true,
         }
     }
 }
@@ -29,6 +31,12 @@ impl Default for InsertOptions {
 impl InsertOptions {
     fn checks_for_override(&self) -> bool {
         self.validate_insertion_does_not_override_tree || self.validate_insertion_does_not_override
+    }
+
+    fn as_merk_options(&self) -> MerkOptions {
+        MerkOptions {
+            base_root_is_free: self.base_root_is_free,
+        }
     }
 }
 
@@ -215,7 +223,8 @@ impl GroveDb {
                     element.insert_reference(
                         &mut subtree_to_insert_into,
                         key,
-                        referenced_element_value_hash
+                        referenced_element_value_hash,
+                        Some(options.as_merk_options()),
                     )
                 );
             }
@@ -228,12 +237,24 @@ impl GroveDb {
                 } else {
                     cost_return_on_error!(
                         &mut cost,
-                        element.insert_subtree(&mut subtree_to_insert_into, key, NULL_HASH)
+                        element.insert_subtree(
+                            &mut subtree_to_insert_into,
+                            key,
+                            NULL_HASH,
+                            Some(options.as_merk_options())
+                        )
                     );
                 }
             }
             _ => {
-                cost_return_on_error!(&mut cost, element.insert(&mut subtree_to_insert_into, key));
+                cost_return_on_error!(
+                    &mut cost,
+                    element.insert(
+                        &mut subtree_to_insert_into,
+                        key,
+                        Some(options.as_merk_options())
+                    )
+                );
             }
         }
 
@@ -337,7 +358,8 @@ impl GroveDb {
                     element.insert_reference(
                         &mut subtree_to_insert_into,
                         key,
-                        referenced_element_value_hash
+                        referenced_element_value_hash,
+                        Some(options.as_merk_options())
                     )
                 );
             }
@@ -350,12 +372,24 @@ impl GroveDb {
                 } else {
                     cost_return_on_error!(
                         &mut cost,
-                        element.insert_subtree(&mut subtree_to_insert_into, key, NULL_HASH)
+                        element.insert_subtree(
+                            &mut subtree_to_insert_into,
+                            key,
+                            NULL_HASH,
+                            Some(options.as_merk_options())
+                        )
                     );
                 }
             }
             _ => {
-                cost_return_on_error!(&mut cost, element.insert(&mut subtree_to_insert_into, key));
+                cost_return_on_error!(
+                    &mut cost,
+                    element.insert(
+                        &mut subtree_to_insert_into,
+                        key,
+                        Some(options.as_merk_options())
+                    )
+                );
             }
         }
 

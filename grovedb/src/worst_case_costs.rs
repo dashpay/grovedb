@@ -252,7 +252,7 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[])
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
             .unwrap()
             .unwrap();
 
@@ -364,7 +364,7 @@ mod test {
             b"8".to_vec(),
         ];
         for m in a {
-            merk.apply::<_, Vec<_>>(&[(m, Op::Put(b"a".to_vec()))], &[])
+            merk.apply::<_, Vec<_>>(&[(m, Op::Put(b"a".to_vec()))], &[], None)
                 .unwrap()
                 .unwrap();
         }
@@ -376,7 +376,8 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
 
-        let actual_cost = merk.apply::<_, Vec<_>>(&[(b"9".to_vec(), Op::Put(b"a".to_vec()))], &[]);
+        let actual_cost =
+            merk.apply::<_, Vec<_>>(&[(b"9".to_vec(), Op::Put(b"a".to_vec()))], &[], None);
 
         assert_eq!(actual_cost.cost, worst_case_cost);
     }

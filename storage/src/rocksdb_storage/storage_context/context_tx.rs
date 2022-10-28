@@ -185,15 +185,21 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .wrap_with_cost(cost)
     }
 
-    fn delete<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>> {
+    fn delete<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
-        let deleted_len = cost_return_on_error!(&mut cost, self.get(&key))
-            .map(|x| x.len() as u32)
-            .unwrap_or(0);
+        if let Some(cost_info) = cost_info {
+            cost.storage_cost.removed_bytes += cost_info.combined_removed_bytes();
+            cost.seek_count += 1;
+        } else {
+            let deleted_len = cost_return_on_error!(&mut cost, self.get(&key))
+                .map(|x| x.len() as u32)
+                .unwrap_or(0);
 
-        cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
-        cost.seek_count += 1;
+            // todo: improve deletion
+            cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
+            cost.seek_count += 2;
+        }
 
         self.transaction
             .delete(make_prefixed_key(self.prefix.clone(), key))
@@ -201,15 +207,20 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .wrap_with_cost(cost)
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>> {
+    fn delete_aux<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
-        let deleted_len = cost_return_on_error!(&mut cost, self.get_aux(&key))
-            .map(|x| x.len() as u32)
-            .unwrap_or(0);
+        if let Some(cost_info) = cost_info {
+            cost.storage_cost.removed_bytes += cost_info.combined_removed_bytes();
+            cost.seek_count += 1;
+        } else {
+            let deleted_len = cost_return_on_error!(&mut cost, self.get_aux(&key))
+                .map(|x| x.len() as u32)
+                .unwrap_or(0);
 
-        cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
-        cost.seek_count += 1;
+            cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
+            cost.seek_count += 2;
+        }
 
         self.transaction
             .delete_cf(self.cf_aux(), make_prefixed_key(self.prefix.clone(), key))
@@ -217,15 +228,20 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .wrap_with_cost(cost)
     }
 
-    fn delete_root<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>> {
+    fn delete_root<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
-        let deleted_len = cost_return_on_error!(&mut cost, self.get_root(&key))
-            .map(|x| x.len() as u32)
-            .unwrap_or(0);
+        if let Some(cost_info) = cost_info {
+            cost.storage_cost.removed_bytes += cost_info.combined_removed_bytes();
+            cost.seek_count += 1;
+        } else {
+            let deleted_len = cost_return_on_error!(&mut cost, self.get_root(&key))
+                .map(|x| x.len() as u32)
+                .unwrap_or(0);
 
-        cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
-        cost.seek_count += 1;
+            cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
+            cost.seek_count += 2;
+        }
 
         self.transaction
             .delete_cf(self.cf_roots(), make_prefixed_key(self.prefix.clone(), key))
@@ -233,15 +249,20 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .wrap_with_cost(cost)
     }
 
-    fn delete_meta<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>> {
+    fn delete_meta<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
-        let deleted_len = cost_return_on_error!(&mut cost, self.get_meta(&key))
-            .map(|x| x.len() as u32)
-            .unwrap_or(0);
+        if let Some(cost_info) = cost_info {
+            cost.storage_cost.removed_bytes += cost_info.combined_removed_bytes();
+            cost.seek_count += 1;
+        } else {
+            let deleted_len = cost_return_on_error!(&mut cost, self.get_meta(&key))
+                .map(|x| x.len() as u32)
+                .unwrap_or(0);
 
-        cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
-        cost.seek_count += 1;
+            cost.storage_cost.removed_bytes += BasicStorageRemoval(deleted_len);
+            cost.seek_count += 2;
+        }
 
         self.transaction
             .delete_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
@@ -338,10 +359,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
 
     fn commit_batch(&self, mut batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
-
-        // If deletion cost finalization fails, only cost of this finalization will be
-        // returned as no batch will be commited.
-        cost_return_on_error!(&mut cost, batch.finalize_deletion_costs(&self.storage));
 
         // On unsuccessul batch commit only deletion finalization cost will be returned.
         cost_return_on_error_no_add!(

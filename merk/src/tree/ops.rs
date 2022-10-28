@@ -4,14 +4,19 @@ use std::{
 };
 
 use anyhow::Result;
+use integer_encoding::VarInt;
 use costs::{
     cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostsExt,
     OperationCost,
 };
+use costs::storage_cost::removal::StorageRemovedBytes;
+use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
+use costs::storage_cost::StorageCost;
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};
-use crate::CryptoHash;
+use crate::{CryptoHash, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
+use crate::tree::kv::KV;
 
 /// Type alias to add more sense to function signatures.
 type UpdatedRootKeyFrom = Option<Vec<u8>>;
@@ -23,7 +28,7 @@ type NewKeys = BTreeSet<Vec<u8>>;
 type UpdatedKeys = BTreeSet<Vec<u8>>;
 
 /// Type alias to add more sense to function signatures.
-type DeletedKeys = LinkedList<Vec<u8>>;
+type DeletedKeys = LinkedList<(Vec<u8>, Option<KeyValueStorageCost>)>;
 
 /// An operation to be applied to a key in the store.
 #[derive(PartialEq, Clone, Eq)]
@@ -40,6 +45,7 @@ pub enum Op {
     /// instead providing a cost for the value
     PutLayeredReference(Vec<u8>, u32, CryptoHash),
     Delete,
+    DeleteLayered(u32),
 }
 
 impl fmt::Debug for Op {
@@ -54,6 +60,7 @@ impl fmt::Debug for Op {
                 PutLayeredReference(value, cost, referenced_value) =>
                     format!("Put Layered Reference({:?}) with cost ({:?}) for ({:?})", value, cost, referenced_value),
                 Delete => "Delete".to_string(),
+                DeleteLayered(cost) => format!("Delete Layered {:?}", cost),
             }
         )
     }
@@ -160,7 +167,7 @@ where
         let mid_index = batch.len() / 2;
         let (mid_key, mid_op) = &batch[mid_index];
         let mid_value = match mid_op {
-            Delete => {
+            Delete | DeleteLayered (..) => {
                 let left_batch = &batch[..mid_index];
                 let right_batch = &batch[mid_index + 1..];
 
@@ -203,7 +210,7 @@ where
                 referenced_value.to_owned(),
             )
                 .unwrap_add_cost(&mut cost),
-            Delete => unreachable!("cannot get here, should return at the top"),
+            Delete | DeleteLayered(..) => unreachable!("cannot get here, should return at the top"),
         };
         let mid_walker = Walker::new(mid_tree, PanicSource {});
 
@@ -257,23 +264,49 @@ where
                 PutLayeredReference(value, value_cost, referenced_value) => self
                     .put_value_with_reference_value_hash_and_value_cost(value.to_vec(), referenced_value.to_owned(), *value_cost)
                     .unwrap_add_cost(&mut cost),
-                Delete => {
+                Delete | DeleteLayered(..) => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply
                     let source = self.clone_source();
                     let wrap = |maybe_tree: Option<Tree>| {
                         maybe_tree.map(|tree| Self::new(tree, source.clone()))
                     };
                     let key = self.tree().key().to_vec();
+
                     let maybe_tree = cost_return_on_error!(&mut cost, self.remove());
+
+                    let deletion_cost = match &batch[index].1  {
+                        DeleteLayered(cost) => {
+                            let key_len = key.len() as u32;
+                            let prefixed_key_len = HASH_LENGTH_U32 + key_len;
+                            let total_key_len = prefixed_key_len + prefixed_key_len.required_space() as u32;
+                            let value_len = KV::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, *cost);
+                                Some(
+                            KeyValueStorageCost {
+                                key_storage_cost: StorageCost {
+                                    added_bytes: 0,
+                                    replaced_bytes: 0,
+                                    removed_bytes: BasicStorageRemoval(total_key_len)
+                                },
+                                value_storage_cost: StorageCost {
+                                    added_bytes: 0,
+                                    replaced_bytes: 0,
+                                    removed_bytes: BasicStorageRemoval(value_len)
+                                },
+                                new_node: false,
+                                needs_value_verification: false
+                            })
+                        }
+                        _ => { None}
+                    };
 
                     #[rustfmt::skip]
                     let (
-			maybe_tree,
-			mut new_keys,
-			mut updated_keys,
-			mut deleted_keys,
-			_
-		    ) = cost_return_on_error!(
+                        maybe_tree,
+                        mut new_keys,
+                        mut updated_keys,
+                        mut deleted_keys,
+                        _
+                    ) = cost_return_on_error!(
                         &mut cost,
                         Self::apply_to(maybe_tree, &batch[..index], source.clone())
                     );
@@ -294,7 +327,7 @@ where
                     new_keys.append(&mut new_keys_right);
                     updated_keys.append(&mut updated_keys_right);
                     deleted_keys.append(&mut deleted_keys_right);
-                    deleted_keys.push_back(key);
+                    deleted_keys.push_back((key, deletion_cost));
 
                     return Ok((
                         maybe_walker,

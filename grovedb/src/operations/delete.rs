@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use merk::Merk;
+use merk::{Merk, MerkOptions};
 use storage::{
     rocksdb_storage::{
         PrefixedRocksDbBatchTransactionContext, PrefixedRocksDbStorageContext,
@@ -24,6 +24,7 @@ use crate::{
 pub struct DeleteOptions {
     pub allow_deleting_non_empty_trees: bool,
     pub deleting_non_empty_trees_returns_error: bool,
+    pub base_root_is_free: bool,
 }
 
 impl Default for DeleteOptions {
@@ -31,6 +32,15 @@ impl Default for DeleteOptions {
         DeleteOptions {
             allow_deleting_non_empty_trees: false,
             deleting_non_empty_trees_returns_error: true,
+            base_root_is_free: true,
+        }
+    }
+}
+
+impl DeleteOptions {
+    fn as_merk_options(&self) -> MerkOptions {
+        MerkOptions {
+            base_root_is_free: self.base_root_is_free,
         }
     }
 }
@@ -144,6 +154,7 @@ impl GroveDb {
                 DeleteOptions {
                     allow_deleting_non_empty_trees: false,
                     deleting_non_empty_trees_returns_error: false,
+                    ..Default::default()
                 },
                 validate,
                 current_batch_operations,
@@ -202,6 +213,7 @@ impl GroveDb {
         let options = DeleteOptions {
             allow_deleting_non_empty_trees: false,
             deleting_non_empty_trees_returns_error: false,
+            ..Default::default()
         };
         self.delete_internal(path, key, options, transaction)
     }
@@ -458,9 +470,15 @@ impl GroveDb {
                             )
                         })
                     );
+                    // We are deleting a tree, a tree uses 3 bytes
                     cost_return_on_error!(
                         &mut cost,
-                        Element::delete(&mut merk_to_delete_tree_from, &key)
+                        Element::delete(
+                            &mut merk_to_delete_tree_from,
+                            &key,
+                            Some(options.as_merk_options()),
+                            Some(3)
+                        )
                     );
                     let mut merk_cache: HashMap<
                         Vec<Vec<u8>>,
@@ -487,9 +505,15 @@ impl GroveDb {
                             .map_err(|e| e.into())
                     );
                 } else {
+                    // We are deleting a tree, a tree uses 3 bytes
                     cost_return_on_error!(
                         &mut cost,
-                        Element::delete(&mut subtree_to_delete_from, &key)
+                        Element::delete(
+                            &mut subtree_to_delete_from,
+                            &key,
+                            Some(options.as_merk_options()),
+                            Some(3)
+                        )
                     );
                     let mut merk_cache: HashMap<
                         Vec<Vec<u8>>,
@@ -508,7 +532,12 @@ impl GroveDb {
         } else {
             cost_return_on_error!(
                 &mut cost,
-                Element::delete(&mut subtree_to_delete_from, &key)
+                Element::delete(
+                    &mut subtree_to_delete_from,
+                    &key,
+                    Some(options.as_merk_options()),
+                    None
+                )
             );
             let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
                 HashMap::default();
@@ -595,13 +624,23 @@ impl GroveDb {
                 }
                 cost_return_on_error!(
                     &mut cost,
-                    Element::delete(&mut subtree_to_delete_from, &key)
+                    Element::delete(
+                        &mut subtree_to_delete_from,
+                        &key,
+                        Some(options.as_merk_options()),
+                        Some(3)
+                    )
                 );
             }
         } else {
             cost_return_on_error!(
                 &mut cost,
-                Element::delete(&mut subtree_to_delete_from, &key)
+                Element::delete(
+                    &mut subtree_to_delete_from,
+                    &key,
+                    Some(options.as_merk_options()),
+                    None
+                )
             );
         }
         merk_cache.insert(
@@ -1017,6 +1056,7 @@ mod tests {
             Some(DeleteOptions {
                 allow_deleting_non_empty_trees: true,
                 deleting_non_empty_trees_returns_error: false,
+                ..Default::default()
             }),
             Some(&transaction),
         )
@@ -1071,6 +1111,7 @@ mod tests {
             Some(DeleteOptions {
                 allow_deleting_non_empty_trees: true,
                 deleting_non_empty_trees_returns_error: false,
+                ..Default::default()
             }),
             None,
         )

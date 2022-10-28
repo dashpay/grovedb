@@ -335,7 +335,7 @@ mod tests {
         let mut original = TempMerk::new();
         for batch in batches {
             original
-                .apply::<Vec<_>, Vec<_>>(batch, &[])
+                .apply::<Vec<_>, Vec<_>>(batch, &[], )
                 .unwrap()
                 .unwrap();
         }

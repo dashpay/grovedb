@@ -8,6 +8,7 @@ use costs::{
 };
 use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
+use costs::storage_cost::removal::StorageRemovedBytes;
 
 use super::make_prefixed_key;
 use crate::{
@@ -173,28 +174,43 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         Ok(())
     }
 
-    fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
+    fn delete<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
+
+        if let Some(removed_bytes) = cost_info {
+            self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
+        }
+
         self.delete_keys_for_costs.push(prefixed_key.clone());
 
         self.batch.delete(prefixed_key);
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) {
+    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
+
+        if let Some(removed_bytes) = cost_info {
+            self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
+        }
+
         self.delete_keys_for_costs_aux.push(prefixed_key.clone());
 
         self.batch.delete_cf(self.cf_aux, prefixed_key);
     }
 
-    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) {
+    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
+
+        if let Some(removed_bytes) = cost_info {
+            self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
+        }
+
         self.delete_keys_for_costs_roots.push(prefixed_key.clone());
 
         self.batch.delete_cf(self.cf_roots, prefixed_key);
@@ -266,21 +282,21 @@ impl Batch for PrefixedMultiContextBatchPart {
         Ok(())
     }
 
-    fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
+    fn delete<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         self.batch
-            .delete(make_prefixed_key(self.prefix.clone(), key))
+            .delete(make_prefixed_key(self.prefix.clone(), key), cost_info)
             .unwrap_add_cost(&mut self.acc_cost);
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) {
+    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         self.batch
-            .delete_aux(make_prefixed_key(self.prefix.clone(), key))
+            .delete_aux(make_prefixed_key(self.prefix.clone(), key), cost_info)
             .unwrap_add_cost(&mut self.acc_cost);
     }
 
-    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) {
+    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         self.batch
-            .delete_root(make_prefixed_key(self.prefix.clone(), key))
+            .delete_root(make_prefixed_key(self.prefix.clone(), key), cost_info)
             .unwrap_add_cost(&mut self.acc_cost);
     }
 }

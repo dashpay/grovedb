@@ -282,7 +282,7 @@ mod no_transaction {
             .is_none());
 
         let mut batch = context_ayya.new_batch();
-        batch.delete(b"key1");
+        batch.delete(b"key1", );
         batch.put(b"key3", b"ayyavalue3", None, None);
 
         assert!(context_ayya
@@ -727,7 +727,7 @@ mod transaction {
             .is_none());
 
         let mut batch = context_ayya.new_batch();
-        batch.delete(b"key1");
+        batch.delete(b"key1", );
         batch.put(b"key3", b"ayyavalue3", None, None);
 
         assert!(context_ayya

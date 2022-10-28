@@ -490,7 +490,7 @@ mod tests {
     fn leaf_chunk_roundtrip() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(0..31);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[])
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], )
             .unwrap()
             .unwrap();
 

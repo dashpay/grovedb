@@ -6,7 +6,8 @@ use core::fmt;
 
 use bincode::Options;
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
     OperationCost,
 };
 use integer_encoding::VarInt;
@@ -14,7 +15,7 @@ use merk::{
     ed::Decode,
     proofs::{query::QueryItem, Query},
     tree::{kv::KV, Tree, TreeInner},
-    BatchEntry, Op, HASH_LENGTH,
+    BatchEntry, MerkOptions, Op, HASH_LENGTH,
 };
 use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
@@ -206,19 +207,32 @@ impl Element {
     pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
         key: K,
+        merk_options: Option<MerkOptions>,
+        is_layered: Option<u32>,
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
-        let batch = [(key, Op::Delete)];
-        merk.apply::<_, Vec<u8>>(&batch, &[])
+        let op = if let Some(cost) = is_layered {
+            Op::DeleteLayered(cost)
+        } else {
+            Op::Delete
+        };
+        let batch = [(key, op)];
+        merk.apply::<_, Vec<u8>>(&batch, &[], merk_options)
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     /// Delete an element from Merk under a key to batch operations
     pub fn delete_into_batch_operations<K: AsRef<[u8]>>(
         key: K,
+        is_layered: bool,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
-        let entry = (key, Op::Delete);
+        let op = if is_layered {
+            Op::DeleteLayered(3)
+        } else {
+            Op::Delete
+        };
+        let entry = (key, op);
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -931,6 +945,7 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: K,
+        options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
@@ -938,7 +953,7 @@ impl Element {
         };
 
         let batch_operations = [(key, Op::Put(serialized))];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[])
+        merk.apply::<_, Vec<u8>>(&batch_operations, &[], options)
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -966,6 +981,7 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
+        options: Option<MerkOptions>,
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
         let exists =
@@ -973,7 +989,7 @@ impl Element {
         if exists {
             Ok(false).wrap_with_cost(cost)
         } else {
-            cost_return_on_error!(&mut cost, self.insert(merk, key));
+            cost_return_on_error!(&mut cost, self.insert(merk, key, options));
             Ok(true).wrap_with_cost(cost)
         }
     }
@@ -1014,6 +1030,7 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         referenced_value: Hash,
+        options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
@@ -1021,7 +1038,7 @@ impl Element {
         };
 
         let batch_operations = [(key, Op::PutCombinedReference(serialized, referenced_value))];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[])
+        merk.apply::<_, Vec<u8>>(&batch_operations, &[], options)
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -1050,6 +1067,7 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         subtree_root_hash: Hash,
+        options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
@@ -1065,7 +1083,7 @@ impl Element {
             key,
             Op::PutLayeredReference(serialized, 3, subtree_root_hash),
         )];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[])
+        merk.apply::<_, Vec<u8>>(&batch_operations, &[], options)
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
@@ -1187,11 +1205,11 @@ mod tests {
     fn test_success_insert() {
         let mut merk = TempMerk::new();
         Element::empty_tree()
-            .insert(&mut merk, b"mykey")
+            .insert(&mut merk, b"mykey", None)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"value".to_vec())
-            .insert(&mut merk, b"another-key")
+            .insert(&mut merk, b"another-key", None)
             .unwrap()
             .expect("expected successful insertion 2");
 
@@ -1445,19 +1463,19 @@ mod tests {
             .expect("cannot open Merk"); // TODO implement costs
 
         Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
+            .insert(&mut merk, b"d", None)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
+            .insert(&mut merk, b"c", None)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
+            .insert(&mut merk, b"a", None)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
+            .insert(&mut merk, b"b", None)
             .unwrap()
             .expect("expected successful insertion");
 
@@ -1541,19 +1559,19 @@ mod tests {
             .expect("cannot open Merk");
 
         Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
+            .insert(&mut merk, b"d", None)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
+            .insert(&mut merk, b"c", None)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
+            .insert(&mut merk, b"a", None)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
+            .insert(&mut merk, b"b", None)
             .unwrap()
             .expect("expected successful insertion");
 

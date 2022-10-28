@@ -2345,7 +2345,7 @@ fn test_aux_uses_separate_cf() {
     db.put_aux(b"key3", b"c", None, None)
         .unwrap()
         .expect("cannot put aux");
-    db.delete_aux(b"key3", None)
+    db.delete_aux(b"key3", None, None)
         .unwrap()
         .expect("cannot delete from aux");
 

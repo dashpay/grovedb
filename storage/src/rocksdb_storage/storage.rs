@@ -284,97 +284,119 @@ impl<'db> Storage<'db> for RocksDbStorage {
                             .map_err(CostError)
                     );
                 }
-                AbstractBatchOperation::Delete { key } => {
+                AbstractBatchOperation::Delete { key, cost_info } => {
                     db_batch.delete(&key);
 
                     // TODO: fix not atomic freed size computation
-                    cost.seek_count += 1;
-                    let value_len = cost_return_on_error_no_add!(
+
+                    if let Some(key_value_removed_bytes) = cost_info {
+                        cost.seek_count += 1;
+                        pending_costs.storage_cost.removed_bytes += key_value_removed_bytes.combined_removed_bytes();
+                    } else {
+                        cost.seek_count += 2;
+                        // lets get the values
+                        let value_len = cost_return_on_error_no_add!(
                         &cost,
                         self.db.get(&key).map_err(RocksDBError)
                     )
-                    .map(|x| x.len() as u32)
-                    .unwrap_or(0);
-                    cost.storage_loaded_bytes += value_len;
-
-                    let key_len = key.len() as u32;
-                    // todo: improve deletion
-                    pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
-                        key_len
-                            + value_len
-                            + key_len.required_space() as u32
-                            + value_len.required_space() as u32,
-                    );
+                            .map(|x| x.len() as u32)
+                            .unwrap_or(0);
+                        cost.storage_loaded_bytes += value_len;
+                        let key_len = key.len() as u32;
+                        // todo: improve deletion
+                        pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
+                            key_len
+                                + value_len
+                                + key_len.required_space() as u32
+                                + value_len.required_space() as u32,
+                        );
+                    }
                 }
-                AbstractBatchOperation::DeleteAux { key } => {
+                AbstractBatchOperation::DeleteAux { key , cost_info} => {
                     db_batch.delete_cf(cf_aux(&self.db), &key);
 
                     // TODO: fix not atomic freed size computation
-                    cost.seek_count += 1;
-                    let value_len = cost_return_on_error_no_add!(
+                    if let Some(key_value_removed_bytes) = cost_info {
+                        cost.seek_count += 1;
+                        pending_costs.storage_cost.removed_bytes += key_value_removed_bytes.combined_removed_bytes();
+                    } else {
+                        cost.seek_count += 2;
+                        let value_len = cost_return_on_error_no_add!(
                         &cost,
                         self.db.get_cf(cf_aux(&self.db), &key).map_err(RocksDBError)
                     )
-                    .map(|x| x.len() as u32)
-                    .unwrap_or(0);
-                    cost.storage_loaded_bytes += value_len;
+                            .map(|x| x.len() as u32)
+                            .unwrap_or(0);
+                        cost.storage_loaded_bytes += value_len;
 
-                    let key_len = key.len() as u32;
-                    // todo: improve deletion
-                    pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
-                        key_len
-                            + value_len
-                            + key_len.required_space() as u32
-                            + value_len.required_space() as u32,
-                    );
+                        let key_len = key.len() as u32;
+                        // todo: improve deletion
+                        pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
+                            key_len
+                                + value_len
+                                + key_len.required_space() as u32
+                                + value_len.required_space() as u32,
+                        );
+                    }
                 }
-                AbstractBatchOperation::DeleteRoot { key } => {
+                AbstractBatchOperation::DeleteRoot { key , cost_info } => {
                     db_batch.delete_cf(cf_roots(&self.db), &key);
 
                     // TODO: fix not atomic freed size computation
-                    cost.seek_count += 1;
-                    let value_len = cost_return_on_error_no_add!(
+                    if let Some(key_value_removed_bytes) = cost_info {
+                        cost.seek_count += 1;
+                        pending_costs.storage_cost.removed_bytes += key_value_removed_bytes.combined_removed_bytes();
+                    } else {
+                        cost.seek_count += 2;
+                        let value_len = cost_return_on_error_no_add!(
                         &cost,
                         self.db
                             .get_cf(cf_roots(&self.db), &key)
                             .map_err(RocksDBError)
                     )
-                    .map(|x| x.len() as u32)
-                    .unwrap_or(0);
-                    cost.storage_loaded_bytes += value_len as u32;
+                            .map(|x| x.len() as u32)
+                            .unwrap_or(0);
+                        cost.storage_loaded_bytes += value_len as u32;
 
-                    let key_len = key.len() as u32;
-                    // todo: improve deletion
-                    pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
-                        key_len
-                            + value_len
-                            + key_len.required_space() as u32
-                            + value_len.required_space() as u32,
-                    );
+                        let key_len = key.len() as u32;
+                        // todo: improve deletion
+                        pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
+                            key_len
+                                + value_len
+                                + key_len.required_space() as u32
+                                + value_len.required_space() as u32,
+                        );
+                    }
                 }
-                AbstractBatchOperation::DeleteMeta { key } => {
+                AbstractBatchOperation::DeleteMeta { key , cost_info} => {
                     db_batch.delete_cf(cf_meta(&self.db), &key);
 
                     // TODO: fix not atomic freed size computation
-                    cost.seek_count += 1;
-                    let value_len = cost_return_on_error_no_add!(
+                    if let Some(key_value_removed_bytes) = cost_info {
+                        cost.seek_count += 1;
+                        pending_costs.storage_cost.removed_bytes += key_value_removed_bytes.combined_removed_bytes();
+                    } else {
+                        cost.seek_count += 2;
+                        let value_len = cost_return_on_error_no_add!(
                         &cost,
                         self.db
                             .get_cf(cf_meta(&self.db), &key)
                             .map_err(RocksDBError)
                     )
-                    .map(|x| x.len() as u32)
-                    .unwrap_or(0);
-                    cost.storage_loaded_bytes += value_len;
+                            .map(|x| x.len() as u32)
+                            .unwrap_or(0);
+                        cost.storage_loaded_bytes += value_len;
 
-                    let key_len = key.len() as u32;
-                    // todo: improve deletion
-                    pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
-                        key_len
-                            + value_len
-                            + key_len.required_space() as u32
-                            + value_len.required_space() as u32,
-                    );
+                        let key_len = key.len() as u32;
+                        // todo: improve deletion
+                        pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
+                            key_len
+                                + value_len
+                                + key_len.required_space() as u32
+                                + value_len.required_space() as u32,
+                        );
+                    }
+
                 }
             }
         }

@@ -14,7 +14,7 @@ mod util;
 mod visualize;
 mod worst_case_costs;
 
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, option::Option::None, path::Path};
 
 use ::visualize::DebugByteVectors;
 use costs::{
@@ -470,7 +470,7 @@ impl GroveDb {
         Self::get_element_from_subtree(parent_tree, key).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(maybe_root_key, flag);
-                tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash)
+                tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash, None)
             } else {
                 Err(Error::InvalidPath(
                     "can only propagate on tree items".to_owned(),
