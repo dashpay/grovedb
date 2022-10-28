@@ -11,10 +11,10 @@ use std::{
     cmp::Ordering,
     collections::{btree_map::Entry, BTreeMap, HashMap, HashSet},
     hash::{Hash, Hasher},
+    ops::AddAssign,
     slice::Iter,
     vec::IntoIter,
 };
-use std::ops::AddAssign;
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
@@ -1116,12 +1116,12 @@ impl GroveDb {
                     );
                     if batch_apply_options.base_root_storage_is_free {
                         // the base root is free
-                        let mut update_root_cost =
-                            cost_return_on_error_no_add!(
-                                &cost,
-                                merk_tree_cache
-                            .update_base_merk_root_key(calculated_root_key).cost_as_result()
-                                );
+                        let mut update_root_cost = cost_return_on_error_no_add!(
+                            &cost,
+                            merk_tree_cache
+                                .update_base_merk_root_key(calculated_root_key)
+                                .cost_as_result()
+                        );
                         update_root_cost.storage_cost = StorageCost::default();
                         cost.add_assign(update_root_cost);
                     } else {
