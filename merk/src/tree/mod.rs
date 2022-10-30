@@ -101,7 +101,7 @@ impl Tree {
     pub fn new_with_tree_inner(inner_tree: TreeInner) -> Self {
         let decode_size = inner_tree
             .kv
-            .value_encoding_length_with_parent_to_child_reference();
+            .value_byte_cost_size();
         let old_value = inner_tree.kv.value.clone();
         Self {
             inner: Box::new(inner_tree),
@@ -110,7 +110,7 @@ impl Tree {
         }
     }
 
-    pub fn kv_with_parent_hook_size_and_storage_cost(&self) -> (u32, KeyValueStorageCost) {
+    pub fn kv_with_parent_hook_size_and_storage_cost(&self, old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>) -> Result<(u32, KeyValueStorageCost)> {
         let current_value_size = self.value_encoding_length_with_parent_to_child_reference() as u32;
 
         let key_storage_cost = StorageCost {
@@ -120,35 +120,31 @@ impl Tree {
             ..Default::default()
         };
 
-        if self.inner.kv.value_defined_cost.is_some() {
-            if self.old_size_with_parent_to_child_hook != 0 {
-                value_storage_cost.replaced_bytes = current_value_size;
-            } else {
-                value_storage_cost.added_bytes = current_value_size;
-            }
-
+        let old_cost = if self.inner.kv.value_defined_cost.is_some() && self.old_value.is_some() {
+            old_tree_cost(self.key_as_ref(), self.old_value.as_ref().unwrap())
         } else {
-            // Update the value storage_cost cost
-            match self
-                .old_size_with_parent_to_child_hook
-                .cmp(&current_value_size)
-            {
-                Ordering::Equal => {
-                    value_storage_cost.replaced_bytes += self.old_size_with_parent_to_child_hook;
-                }
-                Ordering::Greater => {
-                    // old size is greater than current size, storage_cost will be freed
-                    value_storage_cost.replaced_bytes += current_value_size;
-                    value_storage_cost.removed_bytes +=
-                        BasicStorageRemoval(self.old_size_with_parent_to_child_hook - current_value_size);
-                }
-                Ordering::Less => {
-                    // current size is greater than old size, storage_cost will be created
-                    // this also handles the case where the tree.old_size = 0
-                    value_storage_cost.replaced_bytes += self.old_size_with_parent_to_child_hook;
-                    value_storage_cost.added_bytes +=
-                        current_value_size - self.old_size_with_parent_to_child_hook;
-                }
+            Ok(self.old_size_with_parent_to_child_hook)
+        }?;
+
+        // Update the value storage_cost cost
+        match old_cost
+            .cmp(&current_value_size)
+        {
+            Ordering::Equal => {
+                value_storage_cost.replaced_bytes += old_cost;
+            }
+            Ordering::Greater => {
+                // old size is greater than current size, storage_cost will be freed
+                value_storage_cost.replaced_bytes += current_value_size;
+                value_storage_cost.removed_bytes +=
+                    BasicStorageRemoval(old_cost - current_value_size);
+            }
+            Ordering::Less => {
+                // current size is greater than old size, storage_cost will be created
+                // this also handles the case where the tree.old_size = 0
+                value_storage_cost.replaced_bytes += old_cost;
+                value_storage_cost.added_bytes +=
+                    current_value_size - old_cost;
             }
         }
 
@@ -159,7 +155,7 @@ impl Tree {
             needs_value_verification: self.inner.kv.value_defined_cost.is_none()
         };
 
-        (current_value_size, key_value_storage_cost)
+        Ok((current_value_size, key_value_storage_cost))
     }
 
     /// Creates a new `Tree` with the given key, value and value hash, and no
@@ -245,6 +241,12 @@ impl Tree {
     #[inline]
     pub fn key(&self) -> &[u8] {
         self.inner.kv.key()
+    }
+
+    /// Returns the root node's key as a slice.
+    #[inline]
+    pub fn key_as_ref(&self) -> &Vec<u8> {
+        self.inner.kv.key_as_ref()
     }
 
     pub fn set_key(&mut self, key: Vec<u8>) {
@@ -576,7 +578,7 @@ impl Tree {
     pub fn commit<C: Commit>(
         &mut self,
         c: &mut C,
-        old_tree_cost: &impl Fn(&Vec<u8>) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,

@@ -494,7 +494,12 @@ impl GroveDb {
         Self::get_element_from_subtree(parent_tree, key.as_ref()).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(maybe_root_key, flag);
-                tree.insert_subtree_into_batch_operations(key, root_tree_hash, batch_operations)
+                tree.insert_subtree_into_batch_operations(
+                    key,
+                    root_tree_hash,
+                    true,
+                    batch_operations,
+                )
             } else {
                 Err(Error::InvalidPath(
                     "can only propagate on tree items".to_owned(),

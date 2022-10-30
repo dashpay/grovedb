@@ -168,6 +168,12 @@ impl KV {
         self.key.as_slice()
     }
 
+    /// Returns the key as a slice.
+    #[inline]
+    pub fn key_as_ref(&self) -> &Vec<u8> {
+        &self.key
+    }
+
     /// Returns the value as a slice.
     #[inline]
     pub fn value_as_slice(&self) -> &[u8] {
@@ -236,7 +242,11 @@ impl KV {
     pub fn layered_value_byte_cost_size_for_key_and_value_lengths(not_prefixed_key_len: u32, value_len: u32) -> u32 {
         // Each node stores the key and value, and the node hash
         // the value hash on a layered node is not stored directly in the node
-        // The required space is set to 2, even though it could be potentially 1
+        // The required space is set to 2. However in reality it could be 1 or 2.
+        // This is because the underlying tree pays for the value cost and it's required
+        // length. The value could be a key, and keys can only be 256 bytes.
+        // There is no point to pay for the value_hash because it is already being paid by the parent
+        // to child reference hook of the root of the underlying tree
         let node_value_size = value_len + HASH_LENGTH_U32 + 2;
         // The node will be a child of another node which stores it's key and hash
         // That will be added during propagation
@@ -245,7 +255,7 @@ impl KV {
     }
 
     #[inline]
-    pub(crate) fn value_encoding_length_with_parent_to_child_reference(&self) -> u32 {
+    pub(crate) fn value_byte_cost_size(&self) -> u32 {
         // encoding a reference encodes the key last and doesn't encode the size of the
         // key. so no need for a varint required space calculation for the
         // reference.
@@ -267,23 +277,11 @@ impl KV {
     /// tree. Only the key_value_hash should be paid for by the actual tree
     /// node
     #[inline]
-    pub(crate) fn tree_multi_layer_encoding_length_with_parent_to_child_reference(&self, value_cost: u32) -> u32 {
-        // encoding a reference encodes the key last and doesn't encode the size of the
-        // key. so no need for a varint required space calculation for the
-        // reference.
+    pub(crate) fn layered_value_byte_cost_size(&self, value_cost: u32) -> u32 {
 
-        // however we do need the varint required space for the cost of the key in
-        // rocks_db
         let key_len = self.key.len() as u32;
-        // there is no point to pay for the value_hash because it is already being paid by the parent
-        // to child reference hook of the root of the underlying tree
-        let value_len = HASH_LENGTH_U32 + value_cost; // node hash
 
-        let parent_to_child_reference_len = Link::encoded_link_size(key_len);
-        // The required space is set to 2. However in reality it could be 1 or 2.
-        // This is because the underlying tree pays for the value cost and it's required
-        // length. The value could be a key, and keys can only be 256 bytes.
-        value_len + 2 + parent_to_child_reference_len
+        Self::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_cost)
     }
 }
 

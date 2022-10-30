@@ -44,6 +44,11 @@ pub enum Op {
     /// A layered reference does not pay for the tree's value,
     /// instead providing a cost for the value
     PutLayeredReference(Vec<u8>, u32, CryptoHash),
+    /// Replacing a layered reference is slightly more efficient
+    /// than putting it as the replace will not modify the size
+    /// hence there is no need to calculate a difference in
+    /// costs.
+    ReplaceLayeredReference(Vec<u8>, u32, CryptoHash),
     Delete,
     DeleteLayered(u32),
 }
@@ -59,6 +64,8 @@ impl fmt::Debug for Op {
                     format!("Put Combined Reference({:?}) for ({:?})", value, referenced_value),
                 PutLayeredReference(value, cost, referenced_value) =>
                     format!("Put Layered Reference({:?}) with cost ({:?}) for ({:?})", value, cost, referenced_value),
+                ReplaceLayeredReference(value, cost, referenced_value) =>
+                    format!("Replace Layered Reference({:?}) with cost ({:?}) for ({:?})", value, cost, referenced_value),
                 Delete => "Delete".to_string(),
                 DeleteLayered(cost) => format!("Delete Layered {:?}", cost),
             }
@@ -187,8 +194,8 @@ where
             }
             Put(value)
             | PutCombinedReference(value, _)
-            | PutLayeredReference(value, ..) => value.to_vec()
-
+            | PutLayeredReference(value, ..)
+            | ReplaceLayeredReference(value, ..) => value.to_vec()
         };
 
         // TODO: take from batch so we don't have to clone
@@ -203,7 +210,7 @@ where
                 referenced_value.to_owned(),
             )
             .unwrap_add_cost(&mut cost),
-            PutLayeredReference(_, value_cost, referenced_value) => Tree::new_with_layered_value_hash(
+            PutLayeredReference(_, value_cost, referenced_value) | ReplaceLayeredReference(_, value_cost, referenced_value) => Tree::new_with_layered_value_hash(
                 mid_key.as_ref().to_vec(),
                 mid_value,
                 *value_cost,
@@ -261,7 +268,7 @@ where
                 PutCombinedReference(value, referenced_value) => self
                     .put_value_and_reference_value_hash(value.to_vec(), referenced_value.to_owned())
                     .unwrap_add_cost(&mut cost),
-                PutLayeredReference(value, value_cost, referenced_value) => self
+                PutLayeredReference(value, value_cost, referenced_value) |ReplaceLayeredReference(value, value_cost, referenced_value) => self
                     .put_value_with_reference_value_hash_and_value_cost(value.to_vec(), referenced_value.to_owned(), *value_cost)
                     .unwrap_add_cost(&mut cost),
                 Delete | DeleteLayered(..) => {
@@ -296,7 +303,7 @@ where
                             })
                         }
                         Delete => {
-                            let value_len = self.tree().inner.kv.value_encoding_length_with_parent_to_child_reference();
+                            let value_len = self.tree().inner.kv.value_byte_cost_size();
                             Some(
                                 KeyValueStorageCost {
                                     key_storage_cost: StorageCost {

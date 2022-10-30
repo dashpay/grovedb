@@ -20,6 +20,7 @@ mod visualize;
 pub mod worst_case_costs;
 
 pub use ed;
+pub use anyhow;
 #[allow(deprecated)]
 pub use proofs::query::verify_query;
 pub use proofs::query::{execute_proof, verify};

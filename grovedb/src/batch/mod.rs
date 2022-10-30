@@ -24,9 +24,11 @@ use costs::{
     },
     CostResult, CostsExt, OperationCost,
 };
+use integer_encoding::VarInt;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
-    tree::{value_hash, NULL_HASH},
+    anyhow::anyhow,
+    tree::{kv::KV, value_hash, NULL_HASH},
     worst_case_costs::{
         add_worst_case_get_merk_node, add_worst_case_merk_propagate, MerkWorstCaseInput,
     },
@@ -46,6 +48,7 @@ use crate::{
     batch::GroveDbOpMode::{RunOp, WorstCaseOp},
     operations::{delete::DeleteOptions, get::MAX_REFERENCE_HOPS, insert::InsertOptions},
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
+    subtree::TREE_COST_SIZE,
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg, MAX_ELEMENTS_NUMBER,
 };
 
@@ -736,6 +739,7 @@ where
                             element.insert_subtree_into_batch_operations(
                                 key_info.get_key_clone(),
                                 NULL_HASH,
+                                false,
                                 &mut batch_operations
                             )
                         );
@@ -806,7 +810,23 @@ where
                 &batch_operations,
                 &[],
                 Some(batch_apply_options.as_merk_options()),
-                &|old_value| Ok(old_value.len() as u32),
+                &|key, value| {
+                    let element = Element::deserialize(value)?;
+                    match element {
+                        Element::Tree(_, flags) => {
+                            let flags_len = flags.map_or(0, |flags| {
+                                let flags_len = flags.len() as u32;
+                                flags_len + flags_len.required_space() as u32
+                            });
+                            let value_len = TREE_COST_SIZE + flags_len;
+                            let key_len = key.len() as u32;
+                            Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                                key_len, value_len,
+                            ))
+                        }
+                        _ => Err(anyhow!("only trees are supported for specialized costs")),
+                    }
+                },
                 &mut |storage_costs, old_value, new_value| {
                     // todo: change the flags without deserialization
                     let old_element = Element::deserialize(old_value.as_slice())?;

@@ -867,6 +867,134 @@ mod tests {
     }
 
     #[test]
+    fn test_one_insert_item_with_apple_flags_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let cost = db
+            .insert(
+                vec![],
+                b"key1",
+                Element::new_item_with_flags(b"test".to_vec(), Some(b"apple".to_vec())),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .unwrap();
+
+        // Explanation for 152 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 78
+        //   1 for the flag option
+        //   1 for flags byte size
+        //   5 for flags bytes
+        //   1 for the enum type
+        //   1 for size of test bytes
+        //   4 for test bytes
+        // 32 for node hash
+        // 32 for value hash
+        // 1 byte for the value_size (required space for 77)
+
+        // Parent Hook -> 39
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+
+        // Total 37 + 78 + 39 = 154
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 3, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 154,
+                    replaced_bytes: 0,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 0,
+                hash_node_calls: 3, // todo: verify this
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_insert_item_with_flags_cost_under_tree() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"tree", Element::empty_tree(), None, Some(&tx))
+            .unwrap()
+            .unwrap();
+
+        let cost = db
+            .insert(
+                vec![b"tree".as_slice()],
+                b"key1",
+                Element::new_item_with_flags(b"test".to_vec(), Some(b"apple".to_vec())),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .unwrap();
+
+        // Explanation for 152 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 78
+        //   1 for the flag option
+        //   1 for flags byte size
+        //   5 for flags bytes
+        //   1 for the enum type
+        //   1 for size of test bytes
+        //   4 for test bytes
+        // 32 for node hash
+        // 32 for value hash
+        // 1 byte for the value_size (required space for 98)
+
+        // Parent Hook -> 39
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+
+        // Total 37 + 76 + 39 = 152
+
+        // Explanation for replaced bytes
+
+        // Replaced parent Value -> 76
+        //   1 for the flag option
+        //   3 bytes for flags
+        //   1 for flags size
+        //   1 for the enum type
+        //   1 for an empty option
+        // 32 for node hash
+        // 32 for value hash
+        // 1 byte for the value_size (required space for 75)
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 5, // todo: verify this
+                storage_cost: StorageCost {
+                    added_bytes: 154,
+                    replaced_bytes: 76,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 142, // todo: verify this
+                hash_node_calls: 10,       // todo: verify this
+            }
+        );
+    }
+
+    #[test]
     fn test_one_insert_item_with_flags_cost_under_tree_with_flags() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
@@ -1153,11 +1281,11 @@ mod tests {
                 seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 4,
-                    replaced_bytes: 187, // todo: verify this
+                    replaced_bytes: 152, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 225,
-                hash_node_calls: 10, // todo: verify this
+                storage_loaded_bytes: 221,
+                hash_node_calls: 11, // todo: verify this
             }
         );
     }

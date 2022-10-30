@@ -58,11 +58,11 @@ impl Tree {
         if let Some(value_cost) =  self.inner.kv.value_defined_cost {
             self.inner
                 .kv
-                .tree_multi_layer_encoding_length_with_parent_to_child_reference(value_cost)
+                .layered_value_byte_cost_size(value_cost)
         } else {
             self.inner
                 .kv
-                .value_encoding_length_with_parent_to_child_reference()
+                .value_byte_cost_size()
         }
     }
 

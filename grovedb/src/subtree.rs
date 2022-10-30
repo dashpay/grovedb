@@ -12,6 +12,7 @@ use costs::{
 };
 use integer_encoding::VarInt;
 use merk::{
+    anyhow::anyhow,
     ed::Decode,
     proofs::{query::QueryItem, Query},
     tree::{kv::KV, Tree, TreeInner},
@@ -956,8 +957,24 @@ impl Element {
         };
 
         let batch_operations = [(key, Op::Put(serialized))];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[], options)
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
+            let element = Element::deserialize(value)?;
+            match element {
+                Element::Tree(_, flags) => {
+                    let flags_len = flags.map_or(0, |flags| {
+                        let flags_len = flags.len() as u32;
+                        flags_len + flags_len.required_space() as u32
+                    });
+                    let value_len = TREE_COST_SIZE + flags_len;
+                    let key_len = key.len() as u32;
+                    Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                        key_len, value_len,
+                    ))
+                }
+                _ => Err(anyhow!("only trees are supported for specialized costs")),
+            }
+        })
+        .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     pub fn insert_into_batch_operations<K: AsRef<[u8]>>(
@@ -1092,14 +1109,31 @@ impl Element {
             key,
             Op::PutLayeredReference(serialized, cost, subtree_root_hash),
         )];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[], options)
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
+            let element = Element::deserialize(value)?;
+            match element {
+                Element::Tree(_, flags) => {
+                    let flags_len = flags.map_or(0, |flags| {
+                        let flags_len = flags.len() as u32;
+                        flags_len + flags_len.required_space() as u32
+                    });
+                    let value_len = TREE_COST_SIZE + flags_len;
+                    let key_len = key.len() as u32;
+                    Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                        key_len, value_len,
+                    ))
+                }
+                _ => Err(anyhow!("only trees are supported for specialized costs")),
+            }
+        })
+        .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     pub fn insert_subtree_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
         subtree_root_hash: Hash,
+        is_replace: bool,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
@@ -1111,10 +1145,18 @@ impl Element {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32
             });
-        let entry = (
-            key,
-            Op::PutLayeredReference(serialized, cost, subtree_root_hash),
-        );
+        /// Replacing is more efficient, but should lead to the same costs
+        let entry = if is_replace {
+            (
+                key,
+                Op::ReplaceLayeredReference(serialized, cost, subtree_root_hash),
+            )
+        } else {
+            (
+                key,
+                Op::PutLayeredReference(serialized, cost, subtree_root_hash),
+            )
+        };
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }

@@ -9,6 +9,7 @@ use rand::prelude::*;
 pub use temp_merk::TempMerk;
 
 use crate::tree::{BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker};
+use crate::tree::kv::KV;
 
 pub fn assert_tree_invariants(tree: &Tree) {
     assert!(tree.balance_factor().abs() < 2);
@@ -42,7 +43,7 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
         .expect("expected tree");
     tree.commit(
         &mut NoopCommit {},
-        &|value| Ok(value.len() as u32),
+        &|key, value| Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(key.len() as u32, value.len() as u32)),
         &mut |_, _, _| Ok(false),
         &mut |_, bytes_to_remove| Ok(StorageRemovedBytes::BasicStorageRemoval(bytes_to_remove)),
     )
@@ -66,7 +67,7 @@ pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) ->
         .map(|mut tree| {
             tree.commit(
                 &mut NoopCommit {},
-                &|value| Ok(value.len() as u32),
+                &|key, value| Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(key.len() as u32, value.len() as u32)),
                 &mut |_, _, _| Ok(false),
                 &mut |_, bytes_to_remove| {
                     Ok(StorageRemovedBytes::BasicStorageRemoval(bytes_to_remove))
