@@ -802,10 +802,11 @@ where
             }
         }
         cost_return_on_error!(&mut cost, unsafe {
-            merk.apply_unchecked::<_, Vec<u8>, _, _>(
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                 &batch_operations,
                 &[],
                 Some(batch_apply_options.as_merk_options()),
+                &|old_value| Ok(old_value.len() as u32),
                 &mut |storage_costs, old_value, new_value| {
                     // todo: change the flags without deserialization
                     let old_element = Element::deserialize(old_value.as_slice())?;

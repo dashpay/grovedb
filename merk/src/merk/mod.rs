@@ -465,6 +465,7 @@ where
             batch,
             aux,
             options,
+            &|value| Ok(value.len() as u32),
             &mut |_costs, _old_value, _value| Ok(false),
             &mut |_a, bytes_to_remove| {
                 Ok(BasicStorageRemoval(bytes_to_remove))
@@ -512,6 +513,7 @@ where
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
+        old_tree_cost: &impl Fn(&Vec<u8>) -> Result<u32>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -547,6 +549,7 @@ where
                 batch,
                 aux,
                 options,
+                old_tree_cost,
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
             )
@@ -588,17 +591,19 @@ where
     /// ).unwrap().expect("");
     /// }
     /// ```
-    pub unsafe fn apply_unchecked<KB, KA, U, R>(
+    pub unsafe fn apply_unchecked<KB, KA, C, U, R>(
         &mut self,
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
+        old_tree_cost: &C,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
     ) -> CostContext<Result<()>>
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
+        C: Fn(&Vec<u8>) -> Result<u32>,
         U: FnMut(&StorageCost, &Vec<u8>, &mut Vec<u8>) -> Result<bool>,
         R: FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     {
@@ -624,6 +629,7 @@ where
                     updated_root_key_from,
                     aux,
                     options,
+                    old_tree_cost,
                     update_tree_value_based_on_costs,
                     section_removal_bytes,
                 )
@@ -725,6 +731,7 @@ where
         updated_root_key_from: Option<Vec<u8>>,
         aux: &AuxMerkBatch<K>,
         options: Option<MerkOptions>,
+        old_tree_cost: &impl Fn(&Vec<u8>) -> Result<u32>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -750,6 +757,7 @@ where
                     &mut inner_cost,
                     tree.commit(
                         &mut committer,
+                        old_tree_cost,
                         update_tree_value_based_on_costs,
                         section_removal_bytes
                     )
@@ -1036,6 +1044,7 @@ impl Commit for MerkCommitter {
     fn write(
         &mut self,
         tree: &mut Tree,
+        old_tree_cost: impl Fn(&Vec<u8>) -> Result<u32>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -1047,6 +1056,7 @@ impl Commit for MerkCommitter {
         let (mut current_tree_plus_hook_size, mut storage_costs) =
             tree.kv_with_parent_hook_size_and_storage_cost();
         let mut i = 0;
+
 
         if let Some(old_value) = tree.old_value.clone() {
             // At this point the tree value can be updated based on client requirements

@@ -42,6 +42,7 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
         .expect("expected tree");
     tree.commit(
         &mut NoopCommit {},
+        &|value| Ok(value.len() as u32),
         &mut |_, _, _| Ok(false),
         &mut |_, bytes_to_remove| Ok(StorageRemovedBytes::BasicStorageRemoval(bytes_to_remove)),
     )
@@ -65,6 +66,7 @@ pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) ->
         .map(|mut tree| {
             tree.commit(
                 &mut NoopCommit {},
+                &|value| Ok(value.len() as u32),
                 &mut |_, _, _| Ok(false),
                 &mut |_, bytes_to_remove| {
                     Ok(StorageRemovedBytes::BasicStorageRemoval(bytes_to_remove))

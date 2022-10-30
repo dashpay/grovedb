@@ -576,6 +576,7 @@ impl Tree {
     pub fn commit<C: Commit>(
         &mut self,
         c: &mut C,
+        old_tree_cost: &impl Fn(&Vec<u8>) -> Result<u32>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -600,7 +601,7 @@ impl Tree {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
                 cost_return_on_error!(
                     &mut cost,
-                    tree.commit(c, update_tree_value_based_on_costs, section_removal_bytes)
+                    tree.commit(c, old_tree_cost, update_tree_value_based_on_costs, section_removal_bytes)
                 );
                 self.inner.left = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
@@ -623,7 +624,7 @@ impl Tree {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
                 cost_return_on_error!(
                     &mut cost,
-                    tree.commit(c, update_tree_value_based_on_costs, section_removal_bytes)
+                    tree.commit(c, old_tree_cost, update_tree_value_based_on_costs, section_removal_bytes)
                 );
                 self.inner.right = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
@@ -639,6 +640,7 @@ impl Tree {
             &cost,
             c.write(
                 self,
+                old_tree_cost,
                 update_tree_value_based_on_costs,
                 section_removal_bytes
             )

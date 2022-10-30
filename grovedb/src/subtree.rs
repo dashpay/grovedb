@@ -1106,9 +1106,14 @@ impl Element {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
+        let cost = TREE_COST_SIZE
+            + self.get_flags().as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
         let entry = (
             key,
-            Op::PutLayeredReference(serialized, 3, subtree_root_hash),
+            Op::PutLayeredReference(serialized, cost, subtree_root_hash),
         );
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
