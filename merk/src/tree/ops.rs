@@ -272,13 +272,12 @@ where
                     };
                     let key = self.tree().key().to_vec();
 
-                    let maybe_tree = cost_return_on_error!(&mut cost, self.remove());
+                    let key_len = key.len() as u32;
+                    let prefixed_key_len = HASH_LENGTH_U32 + key_len;
+                    let total_key_len = prefixed_key_len + prefixed_key_len.required_space() as u32;
 
                     let deletion_cost = match &batch[index].1  {
                         DeleteLayered(cost) => {
-                            let key_len = key.len() as u32;
-                            let prefixed_key_len = HASH_LENGTH_U32 + key_len;
-                            let total_key_len = prefixed_key_len + prefixed_key_len.required_space() as u32;
                             let value_len = KV::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, *cost);
                                 Some(
                             KeyValueStorageCost {
@@ -296,8 +295,28 @@ where
                                 needs_value_verification: false
                             })
                         }
-                        _ => { None}
+                        Delete => {
+                            let value_len = self.tree().inner.kv.value_encoding_length_with_parent_to_child_reference();
+                            Some(
+                                KeyValueStorageCost {
+                                    key_storage_cost: StorageCost {
+                                        added_bytes: 0,
+                                        replaced_bytes: 0,
+                                        removed_bytes: BasicStorageRemoval(total_key_len)
+                                    },
+                                    value_storage_cost: StorageCost {
+                                        added_bytes: 0,
+                                        replaced_bytes: 0,
+                                        removed_bytes: BasicStorageRemoval(value_len)
+                                    },
+                                    new_node: false,
+                                    needs_value_verification: false
+                                })
+                        },
+                        _ => {None}
                     };
+
+                    let maybe_tree = cost_return_on_error!(&mut cost, self.remove());
 
                     #[rustfmt::skip]
                     let (

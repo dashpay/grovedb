@@ -14,6 +14,7 @@ use storage::{
 
 use crate::{
     batch::{key_info::KeyInfo, GroveDbOp, KeyInfoPath, Op},
+    subtree::TREE_COST_SIZE,
     util::{
         merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
     },
@@ -477,7 +478,7 @@ impl GroveDb {
                             &mut merk_to_delete_tree_from,
                             &key,
                             Some(options.as_merk_options()),
-                            Some(3)
+                            Some(TREE_COST_SIZE)
                         )
                     );
                     let mut merk_cache: HashMap<
@@ -512,7 +513,7 @@ impl GroveDb {
                             &mut subtree_to_delete_from,
                             &key,
                             Some(options.as_merk_options()),
-                            Some(3)
+                            Some(TREE_COST_SIZE)
                         )
                     );
                     let mut merk_cache: HashMap<
@@ -628,7 +629,7 @@ impl GroveDb {
                         &mut subtree_to_delete_from,
                         &key,
                         Some(options.as_merk_options()),
-                        Some(3)
+                        Some(TREE_COST_SIZE)
                     )
                 );
             }
@@ -1193,7 +1194,7 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 8, // todo: verify this
+                seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 0,

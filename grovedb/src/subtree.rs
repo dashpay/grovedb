@@ -40,6 +40,9 @@ pub type ElementFlags = Vec<u8>;
 /// base element
 pub type MaxReferenceHop = Option<u8>;
 
+/// The cost of a tree
+pub const TREE_COST_SIZE: u32 = 3;
+
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
@@ -228,7 +231,7 @@ impl Element {
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         let op = if is_layered {
-            Op::DeleteLayered(3)
+            Op::DeleteLayered(TREE_COST_SIZE)
         } else {
             Op::Delete
         };
@@ -1069,6 +1072,11 @@ impl Element {
         subtree_root_hash: Hash,
         options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
+        let cost = TREE_COST_SIZE
+            + self.get_flags().as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
@@ -1079,9 +1087,10 @@ impl Element {
         //     std::str::from_utf8(key.as_ref()),
         //     hex::encode(subtree_root_hash)
         // );
+
         let batch_operations = [(
             key,
-            Op::PutLayeredReference(serialized, 3, subtree_root_hash),
+            Op::PutLayeredReference(serialized, cost, subtree_root_hash),
         )];
         merk.apply::<_, Vec<u8>>(&batch_operations, &[], options)
             .map_err(|e| Error::CorruptedData(e.to_string()))

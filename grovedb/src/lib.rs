@@ -7,7 +7,7 @@ mod query;
 pub mod query_result_type;
 pub mod reference_path;
 mod replication;
-mod subtree;
+pub mod subtree;
 #[cfg(test)]
 mod tests;
 mod util;
