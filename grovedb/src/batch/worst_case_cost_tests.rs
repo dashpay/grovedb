@@ -138,8 +138,8 @@ mod tests {
             worst_case_cost,
             cost
         );
-        /// because we know the object we are inserting we can know the worst
-        /// case cost if it doesn't already exist
+        // because we know the object we are inserting we can know the worst
+        // case cost if it doesn't already exist
         assert_eq!(
             cost.storage_cost.added_bytes,
             worst_case_cost.storage_cost.added_bytes
