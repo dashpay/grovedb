@@ -44,7 +44,7 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     tree.commit(
         &mut NoopCommit {},
         &|key, value| Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(key.len() as u32, value.len() as u32)),
-        &mut |_, _, _| Ok(false),
+        &mut |_, _, _| Ok((false, None)),
         &mut |_, bytes_to_remove| Ok(StorageRemovedBytes::BasicStorageRemoval(bytes_to_remove)),
     )
     .unwrap()
@@ -68,7 +68,7 @@ pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) ->
             tree.commit(
                 &mut NoopCommit {},
                 &|key, value| Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(key.len() as u32, value.len() as u32)),
-                &mut |_, _, _| Ok(false),
+                &mut |_, _, _| Ok((false, None)),
                 &mut |_, bytes_to_remove| {
                     Ok(StorageRemovedBytes::BasicStorageRemoval(bytes_to_remove))
                 },

@@ -467,7 +467,7 @@ where
             aux,
             options,
             &|key, value| Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(key.len() as u32, value.len() as u32)),
-            &mut |_costs, _old_value, _value| Ok(false),
+            &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, bytes_to_remove| {
                 Ok(BasicStorageRemoval(bytes_to_remove))
             },
@@ -510,7 +510,7 @@ where
             aux,
             options,
             old_tree_cost,
-            &mut |_costs, _old_value, _value| Ok(false),
+            &mut |_costs, _old_value, _value| Ok((false, None)),
             &mut |_a, bytes_to_remove| {
                 Ok(BasicStorageRemoval(bytes_to_remove))
             },
@@ -562,7 +562,7 @@ where
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<bool>,
+        ) -> Result<(bool, Option<u32>)>,
         section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> CostContext<Result<()>>
     where
@@ -648,7 +648,7 @@ where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
-        U: FnMut(&StorageCost, &Vec<u8>, &mut Vec<u8>) -> Result<bool>,
+        U: FnMut(&StorageCost, &Vec<u8>, &mut Vec<u8>) -> Result<(bool, Option<u32>)>,
         R: FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     {
         let maybe_walker = self
@@ -780,7 +780,7 @@ where
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<bool>,
+        ) -> Result<(bool, Option<u32>)>,
         section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> CostResult<(), Error>
     where
@@ -1093,7 +1093,7 @@ impl Commit for MerkCommitter {
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<bool>,
+        ) -> Result<(bool, Option<u32>)>,
         section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> Result<()> {
         let tree_size = tree.encoding_length();
@@ -1106,7 +1106,7 @@ impl Commit for MerkCommitter {
             // At this point the tree value can be updated based on client requirements
             // For example to store the costs
             loop {
-                let changed = update_tree_value_based_on_costs(
+                let (changed, value_defined_cost) = update_tree_value_based_on_costs(
                     &storage_costs.value_storage_cost,
                     &old_value,
                     tree.value_mut_ref(),
@@ -1114,6 +1114,7 @@ impl Commit for MerkCommitter {
                 if !changed {
                     break;
                 } else {
+                    tree.inner.kv.value_defined_cost = value_defined_cost;
                     let after_update_tree_plus_hook_size =
                         tree.value_encoding_length_with_parent_to_child_reference() as u32;
                     if after_update_tree_plus_hook_size == current_tree_plus_hook_size {

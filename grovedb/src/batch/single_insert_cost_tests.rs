@@ -677,11 +677,11 @@ mod tests {
         .unwrap()
         .expect("expected to insert item");
 
-        // We are adding 2 bytes
+        // We are adding 1 byte to the flags
         let ops = vec![GroveDbOp::insert_run_op(
             vec![b"tree".to_vec()],
             b"key1".to_vec(),
-            Element::new_tree_with_flags(None, Some(vec![0, 1])),
+            Element::new_tree_with_flags(None, Some(vec![0, 1, 1])),
         )];
 
         let cost = db
@@ -693,10 +693,11 @@ mod tests {
                         if new_flags[0] == 0 {
                             new_flags[0] = 1;
                             let new_flags_epoch = new_flags[1];
-                            new_flags[1] = old_flags.unwrap()[1];
+                            let old_flags = old_flags.unwrap();
+                            new_flags[1] = old_flags[1];
                             new_flags.push(new_flags_epoch);
                             new_flags.extend(cost.added_bytes.encode_var_vec());
-                            assert_eq!(new_flags, &vec![1u8, 0, 1, 2]);
+                            assert_eq!(new_flags, &vec![1u8, 0, 1, 1, 1]);
                             Ok(true)
                         } else {
                             assert_eq!(new_flags[0], 1);
@@ -719,12 +720,12 @@ mod tests {
             OperationCost {
                 seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
-                    added_bytes: 4,
-                    replaced_bytes: 192, // todo: verify this
+                    added_bytes: 3,
+                    replaced_bytes: 155, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 308, // todo: verify this
-                hash_node_calls: 13,       // todo: verify this
+                storage_loaded_bytes: 302, // todo: verify this
+                hash_node_calls: 15,       // todo: verify this
             }
         );
     }

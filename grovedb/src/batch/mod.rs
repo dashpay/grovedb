@@ -828,14 +828,14 @@ where
                     }
                 },
                 &mut |storage_costs, old_value, new_value| {
-                    // todo: change the flags without deserialization
+                    // todo: change the flags without full deserialization
                     let old_element = Element::deserialize(old_value.as_slice())?;
                     let maybe_old_flags = old_element.get_flags_owned();
 
                     let mut new_element = Element::deserialize(new_value.as_slice())?;
                     let maybe_new_flags = new_element.get_flags_mut();
                     match maybe_new_flags {
-                        None => Ok(false),
+                        None => Ok((false, None)),
                         Some(new_flags) => {
                             let changed = (flags_update)(storage_costs, maybe_old_flags, new_flags)
                                 .map_err(|e| match e {
@@ -843,9 +843,22 @@ where
                                     _ => Error::ClientReturnedNonClientError("non client error"),
                                 })?;
                             if changed {
+                                let flags_len = new_flags.len() as u32;
                                 new_value.clone_from(&new_element.serialize()?);
+                                // we need to give back the value defined cost in the case that the
+                                // new element is a tree
+                                match new_element {
+                                    Element::Tree(..) => {
+                                        let tree_value_cost = TREE_COST_SIZE
+                                            + flags_len
+                                            + flags_len.required_space() as u32;
+                                        Ok((true, Some(tree_value_cost)))
+                                    }
+                                    _ => Ok((true, None)),
+                                }
+                            } else {
+                                Ok((false, None))
                             }
-                            Ok(changed)
                         }
                     }
                 },

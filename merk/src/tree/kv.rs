@@ -18,7 +18,7 @@ use crate::tree::hash::{combine_hash, kv_digest_to_kv_hash, value_hash};
 pub struct KV {
     pub(super) key: Vec<u8>,
     pub(super) value: Vec<u8>,
-    pub(super) value_defined_cost: Option<u32>,
+    pub(crate) value_defined_cost: Option<u32>,
     pub(super) hash: CryptoHash,
     pub(super) value_hash: CryptoHash,
 }

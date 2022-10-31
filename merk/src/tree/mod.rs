@@ -110,9 +110,7 @@ impl Tree {
         }
     }
 
-    pub fn kv_with_parent_hook_size_and_storage_cost(&self, old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>) -> Result<(u32, KeyValueStorageCost)> {
-        let current_value_size = self.value_encoding_length_with_parent_to_child_reference() as u32;
-
+    pub fn kv_with_parent_hook_size_and_storage_cost_from_old_cost(&self, current_value_byte_cost: u32, old_cost: u32) -> Result<(u32, KeyValueStorageCost)> {
         let key_storage_cost = StorageCost {
             ..Default::default()
         };
@@ -120,31 +118,25 @@ impl Tree {
             ..Default::default()
         };
 
-        let old_cost = if self.inner.kv.value_defined_cost.is_some() && self.old_value.is_some() {
-            old_tree_cost(self.key_as_ref(), self.old_value.as_ref().unwrap())
-        } else {
-            Ok(self.old_size_with_parent_to_child_hook)
-        }?;
-
         // Update the value storage_cost cost
         match old_cost
-            .cmp(&current_value_size)
+            .cmp(&current_value_byte_cost)
         {
             Ordering::Equal => {
                 value_storage_cost.replaced_bytes += old_cost;
             }
             Ordering::Greater => {
                 // old size is greater than current size, storage_cost will be freed
-                value_storage_cost.replaced_bytes += current_value_size;
+                value_storage_cost.replaced_bytes += current_value_byte_cost;
                 value_storage_cost.removed_bytes +=
-                    BasicStorageRemoval(old_cost - current_value_size);
+                    BasicStorageRemoval(old_cost - current_value_byte_cost);
             }
             Ordering::Less => {
                 // current size is greater than old size, storage_cost will be created
                 // this also handles the case where the tree.old_size = 0
                 value_storage_cost.replaced_bytes += old_cost;
                 value_storage_cost.added_bytes +=
-                    current_value_size - old_cost;
+                    current_value_byte_cost - old_cost;
             }
         }
 
@@ -155,7 +147,19 @@ impl Tree {
             needs_value_verification: self.inner.kv.value_defined_cost.is_none()
         };
 
-        Ok((current_value_size, key_value_storage_cost))
+        Ok((current_value_byte_cost, key_value_storage_cost))
+    }
+
+    pub fn kv_with_parent_hook_size_and_storage_cost(&self, old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>) -> Result<(u32, KeyValueStorageCost)> {
+        let current_value_byte_cost = self.value_encoding_length_with_parent_to_child_reference() as u32;
+
+        let old_cost = if self.inner.kv.value_defined_cost.is_some() && self.old_value.is_some() {
+            old_tree_cost(self.key_as_ref(), self.old_value.as_ref().unwrap())
+        } else {
+            Ok(self.old_size_with_parent_to_child_hook)
+        }?;
+
+        self.kv_with_parent_hook_size_and_storage_cost_from_old_cost(current_value_byte_cost, old_cost)
     }
 
     /// Creates a new `Tree` with the given key, value and value hash, and no
@@ -583,7 +587,7 @@ impl Tree {
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<bool>,
+        ) -> Result<(bool, Option<u32>)>,
         section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> CostContext<Result<()>> {
         // TODO: make this method less ugly

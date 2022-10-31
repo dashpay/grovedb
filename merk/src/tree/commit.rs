@@ -16,7 +16,7 @@ pub trait Commit {
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<bool>,
+        ) -> Result<(bool, Option<u32>)>,
         section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> Result<()>;
 
@@ -41,7 +41,7 @@ impl Commit for NoopCommit {
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<bool>,
+        ) -> Result<(bool, Option<u32>)>,
         _section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
     ) -> Result<()> {
         Ok(())

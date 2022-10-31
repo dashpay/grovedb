@@ -307,8 +307,9 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 40
+        // Value -> 41
         //   1 for the flag option (but no flags)
+        //   1 for the flags size
         //   3 bytes for flags
         //   1 for the enum type
         //   1 for empty tree value
@@ -322,9 +323,9 @@ mod tests {
         // Key Length 1
         // Child Heights 2
 
-        // Total 37 + 37 + 39 = 116
+        // Total 37 + 37 + 39 = 117
 
-        assert_eq!(insertion_cost.storage_cost.added_bytes, 116);
+        assert_eq!(insertion_cost.storage_cost.added_bytes, 117);
         assert_eq!(
             insertion_cost.storage_cost.added_bytes,
             non_batch_cost
