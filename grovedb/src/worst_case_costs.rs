@@ -6,7 +6,7 @@ use merk::{
         add_worst_case_merk_insert_layered, add_worst_case_merk_propagate,
         add_worst_case_merk_replace_layered, MerkWorstCaseInput,
     },
-    Merk, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
+    HASH_LENGTH,
 };
 use storage::{worst_case_costs::WorstKeyLength, Storage};
 

@@ -3,29 +3,15 @@ mod tests {
     use std::{ops::Add, option::Option::None};
 
     use costs::{
-        storage_cost::{
-            removal::{
-                StorageRemovedBytes,
-                StorageRemovedBytes::{
-                    BasicStorageRemoval, NoStorageRemoval, SectionedStorageRemoval,
-                },
-            },
-            transition::OperationStorageTransitionType,
-            StorageCost,
-        },
+        storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
     };
-    use integer_encoding::VarInt;
-    use intmap::IntMap;
 
     use crate::{
         batch::GroveDbOp,
-        reference_path::{
-            ReferencePathType,
-            ReferencePathType::{SiblingReference, UpstreamFromElementHeightReference},
-        },
-        tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
-        Element, ElementFlags, PathQuery,
+        reference_path::ReferencePathType::{SiblingReference, UpstreamFromElementHeightReference},
+        tests::make_empty_grovedb,
+        Element,
     };
 
     #[test]

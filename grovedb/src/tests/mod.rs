@@ -7,19 +7,13 @@ use std::{
     option::Option::None,
 };
 
-use ::visualize::{visualize_stdout, Drawer, Visualize};
-use merk::{
-    tree::{combine_hash, kv_digest_to_kv_hash, node_hash, value_hash, NULL_HASH},
-    CryptoHash,
-};
-use rand::Rng;
+use ::visualize::{Drawer, Visualize};
 use tempfile::TempDir;
 
 use super::*;
 use crate::{
     query_result_type::QueryResultType::QueryKeyElementPairResultType,
     reference_path::ReferencePathType, tests::common::compare_result_tuples,
-    visualize::visualize_merk_stdout,
 };
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
@@ -594,7 +588,7 @@ fn test_changes_propagated() {
         .unwrap()
         .expect("successful subtree 1 insert");
 
-    let merk = db
+    let _merk = db
         .open_non_transactional_merk_at_path([TEST_LEAF])
         .unwrap()
         .unwrap();

@@ -1,4 +1,3 @@
-use indexmap::Equivalent;
 use merk::{
     proofs::Query,
     tree::{combine_hash, value_hash as value_hash_fn},
@@ -390,7 +389,7 @@ impl ProofVerifier {
 
             let elem = Element::deserialize(result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(root_key, ..) => Ok(result_set[0].2),
+                Element::Tree(_root_key, ..) => Ok(result_set[0].2),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),

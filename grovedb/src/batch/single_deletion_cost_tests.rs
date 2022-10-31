@@ -2,29 +2,7 @@
 mod tests {
     use std::option::Option::None;
 
-    use costs::{
-        storage_cost::{
-            removal::{
-                StorageRemovedBytes,
-                StorageRemovedBytes::{
-                    BasicStorageRemoval, NoStorageRemoval, SectionedStorageRemoval,
-                },
-            },
-            transition::OperationStorageTransitionType,
-            StorageCost,
-        },
-        OperationCost,
-    };
-    use integer_encoding::VarInt;
-    use intmap::IntMap;
-
-    use crate::{
-        batch::GroveDbOp,
-        operations::delete::DeleteOptions,
-        reference_path::ReferencePathType,
-        tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
-        Element, PathQuery,
-    };
+    use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element};
 
     #[test]
     fn test_batch_one_deletion_tree_costs_match_non_batch_on_transaction() {
@@ -192,7 +170,7 @@ mod tests {
 
         let db = make_empty_grovedb();
 
-        let insertion_cost = db
+        let _insertion_cost = db
             .insert(vec![], b"key1", Element::empty_tree(), None, None)
             .cost_as_result()
             .expect("expected to insert successfully");
@@ -259,7 +237,7 @@ mod tests {
 
         let db = make_empty_grovedb();
 
-        let insertion_cost = db
+        let _insertion_cost = db
             .insert(
                 vec![],
                 b"key1",
@@ -463,7 +441,7 @@ mod tests {
 
         let db = make_empty_grovedb();
 
-        let insertion_cost = db
+        let _insertion_cost = db
             .insert(
                 vec![],
                 b"key1",
@@ -536,7 +514,7 @@ mod tests {
 
         let db = make_empty_grovedb();
 
-        let insertion_cost = db
+        let _insertion_cost = db
             .insert(
                 vec![],
                 b"key1",

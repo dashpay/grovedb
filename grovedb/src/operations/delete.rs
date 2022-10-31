@@ -14,7 +14,6 @@ use storage::{
 
 use crate::{
     batch::{key_info::KeyInfo, GroveDbOp, KeyInfoPath, Op},
-    subtree::TREE_COST_SIZE,
     util::{
         merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
     },
@@ -726,10 +725,7 @@ mod tests {
     use std::option::Option::None;
 
     use costs::{
-        storage_cost::{
-            removal::StorageRemovedBytes::{BasicStorageRemoval, NoStorageRemoval},
-            StorageCost,
-        },
+        storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
         OperationCost,
     };
     use pretty_assertions::assert_eq;
@@ -742,7 +738,7 @@ mod tests {
 
     #[test]
     fn test_empty_subtree_deletion_without_transaction() {
-        let element = Element::new_item(b"ayy".to_vec());
+        let _element = Element::new_item(b"ayy".to_vec());
         let db = make_test_grovedb();
         // Insert some nested subtrees
         db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
@@ -771,7 +767,7 @@ mod tests {
 
     #[test]
     fn test_empty_subtree_deletion_with_transaction() {
-        let element = Element::new_item(b"ayy".to_vec());
+        let _element = Element::new_item(b"ayy".to_vec());
 
         let db = make_test_grovedb();
         let transaction = db.start_transaction();

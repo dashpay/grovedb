@@ -373,8 +373,8 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         }
     }
 
-    fn commit_batch(&self, mut batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
-        let mut cost = OperationCost::default();
+    fn commit_batch(&self, batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
+        let cost = OperationCost::default();
 
         // On unsuccessul batch commit only deletion finalization cost will be returned.
         cost_return_on_error_no_add!(

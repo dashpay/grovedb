@@ -29,9 +29,7 @@ use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     anyhow::anyhow,
     tree::{kv::KV, value_hash, NULL_HASH},
-    worst_case_costs::{
-        add_worst_case_get_merk_node, add_worst_case_merk_propagate, MerkWorstCaseInput,
-    },
+    worst_case_costs::{add_worst_case_merk_propagate, MerkWorstCaseInput},
     CryptoHash, Merk, MerkOptions, MerkType,
 };
 use nohash_hasher::IntMap;
@@ -88,7 +86,7 @@ impl Op {
                 cost
             }
             Op::Delete | Op::DeleteTree => {
-                let mut cost = OperationCost::default();
+                let cost = OperationCost::default();
                 cost
             }
         }
@@ -922,7 +920,7 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
             // Then we have to get the tree
             GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, &base_path);
         }
-        if let Some(root_key) = root_key {
+        if let Some(_root_key) = root_key {
             // todo: add worst case of updating the base root
             // GroveDb::add_worst_case_insert_merk_node()
         } else {
@@ -1137,7 +1135,7 @@ impl GroveDb {
                         }
                     }
                     // execute the ops at this path
-                    let (root_hash, calculated_root_key) = cost_return_on_error!(
+                    let (_root_hash, calculated_root_key) = cost_return_on_error!(
                         &mut cost,
                         merk_tree_cache.execute_ops_on_path(
                             &path,
@@ -1609,11 +1607,7 @@ impl GroveDb {
 mod tests {
     use std::option::Option::None;
 
-    use costs::storage_cost::{
-        removal::StorageRemovedBytes::NoStorageRemoval, transition::OperationStorageTransitionType,
-        StorageCost,
-    };
-    use integer_encoding::VarInt;
+    use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     use merk::proofs::Query;
 
     use super::*;

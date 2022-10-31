@@ -6,18 +6,16 @@ use core::fmt;
 
 use bincode::Options;
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
-    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
 use integer_encoding::VarInt;
 use merk::{
     anyhow,
-    anyhow::anyhow,
     ed::Decode,
     proofs::{query::QueryItem, Query},
     tree::{kv::KV, Tree, TreeInner},
-    BatchEntry, MerkOptions, Op, HASH_LENGTH,
+    BatchEntry, MerkOptions, Op,
 };
 use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
@@ -1142,7 +1140,7 @@ impl Element {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32
             });
-        /// Replacing is more efficient, but should lead to the same costs
+        // Replacing is more efficient, but should lead to the same costs
         let entry = if is_replace {
             (
                 key,

@@ -2,8 +2,7 @@
 use costs::{
     cost_return_on_error_no_add,
     storage_cost::{
-        key_value_cost::KeyValueStorageCost,
-        removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
     },
     CostContext, CostsExt, OperationCost,
 };
