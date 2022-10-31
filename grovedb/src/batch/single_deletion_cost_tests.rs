@@ -464,7 +464,13 @@ mod tests {
         let db = make_empty_grovedb();
 
         let insertion_cost = db
-            .insert(vec![], b"key1", Element::empty_tree_with_flags(Some(b"dog".to_vec())), None, None)
+            .insert(
+                vec![],
+                b"key1",
+                Element::empty_tree_with_flags(Some(b"dog".to_vec())),
+                None,
+                None,
+            )
             .cost_as_result()
             .expect("expected to insert successfully");
 

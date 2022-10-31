@@ -1,12 +1,11 @@
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::option::Option::None;
+    use std::{collections::BTreeMap, option::Option::None};
 
     use costs::{
         storage_cost::{
             removal::{
-                StorageRemovedBytes,
+                Identifier, StorageRemovalPerEpochByIdentifier, StorageRemovedBytes,
                 StorageRemovedBytes::{
                     BasicStorageRemoval, NoStorageRemoval, SectionedStorageRemoval,
                 },
@@ -18,7 +17,6 @@ mod tests {
     };
     use integer_encoding::VarInt;
     use intmap::IntMap;
-    use costs::storage_cost::removal::{Identifier, StorageRemovalPerEpochByIdentifier};
 
     use crate::{
         batch::GroveDbOp,
