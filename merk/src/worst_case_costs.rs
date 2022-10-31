@@ -1,8 +1,5 @@
-use integer_encoding::VarInt;
 use costs::OperationCost;
-use storage::{Storage, StorageContext};
-use storage::worst_case_costs::WorstKeyLength;
-use crate::{HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2, Merk};
+use crate::{HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32};
 use crate::tree::{Link, Tree};
 use crate::tree::kv::KV;
 

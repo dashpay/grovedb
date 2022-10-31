@@ -36,7 +36,8 @@ pub fn assert_tree_invariants(tree: &Tree) {
 
 pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     let walker = Walker::<PanicSource>::new(tree, PanicSource {});
-    let mut tree = Walker::<PanicSource>::apply_to(Some(walker), batch, PanicSource {})
+    let mut tree = Walker::<PanicSource>::apply_to(Some(walker), batch, PanicSource {},
+                                                   &|key, value| Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(key.len() as u32, value.len() as u32)),)
         .unwrap()
         .expect("apply failed")
         .0
@@ -60,7 +61,8 @@ pub fn apply_memonly(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
 
 pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) -> Option<Tree> {
     let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
-    Walker::<PanicSource>::apply_to(maybe_walker, batch, PanicSource {})
+    Walker::<PanicSource>::apply_to(maybe_walker, batch, PanicSource {},
+                                    &|key, value| Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(key.len() as u32, value.len() as u32)),)
         .unwrap()
         .expect("apply failed")
         .0

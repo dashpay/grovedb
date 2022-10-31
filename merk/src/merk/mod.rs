@@ -661,7 +661,7 @@ where
             // dbg!(&maybe_walker.as_ref().unwrap().tree());
         }
 
-        Walker::apply_to(maybe_walker, batch, self.source()).flat_map_ok(
+        Walker::apply_to(maybe_walker, batch, self.source(), old_tree_cost).flat_map_ok(
             |(maybe_tree, new_keys, updated_keys, deleted_keys, updated_root_key_from)| {
                 // we set the new root node of the merk tree
                 self.tree.set(maybe_tree);

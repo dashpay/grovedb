@@ -9,14 +9,12 @@ use costs::{
     cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostsExt,
     OperationCost,
 };
-use costs::storage_cost::removal::StorageRemovedBytes;
 use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
 use costs::storage_cost::StorageCost;
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};
-use crate::{CryptoHash, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
-use crate::tree::kv::KV;
+use crate::{CryptoHash, HASH_LENGTH_U32};
 
 /// Type alias to add more sense to function signatures.
 type UpdatedRootKeyFrom = Option<Vec<u8>>;
@@ -105,10 +103,11 @@ where
     /// not require a non-empty tree.
     ///
     /// Keys in batch must be sorted and unique.
-    pub fn apply_to<K: AsRef<[u8]>>(
+    pub fn apply_to<K: AsRef<[u8]>, C>(
         maybe_tree: Option<Self>,
         batch: &MerkBatch<K>,
         source: S,
+        old_tree_cost: &C,
     ) -> CostContext<
         Result<(
             Option<Tree>,
@@ -117,7 +116,10 @@ where
             DeletedKeys,
             UpdatedRootKeyFrom,
         )>,
-    > {
+    >
+    where
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+    {
         let mut cost = OperationCost::default();
 
         let (maybe_walker, new_keys, updated_keys, deleted_keys, updated_root_key_from) =
@@ -132,7 +134,7 @@ where
             } else {
                 match maybe_tree {
                     None => {
-                        return Self::build(batch, source).map_ok(|tree| {
+                        return Self::build(batch, source, old_tree_cost).map_ok(|tree| {
                             let new_keys: BTreeSet<Vec<u8>> = batch
                                 .iter()
                                 .map(|batch_entry| batch_entry.0.as_ref().to_vec())
@@ -146,7 +148,7 @@ where
                             )
                         })
                     }
-                    Some(tree) => cost_return_on_error!(&mut cost, tree.apply_sorted(batch)),
+                    Some(tree) => cost_return_on_error!(&mut cost, tree.apply_sorted(batch, old_tree_cost)),
                 }
             };
 
@@ -164,7 +166,10 @@ where
     /// Builds a `Tree` from a batch of operations.
     ///
     /// Keys in batch must be sorted and unique.
-    fn build<K: AsRef<[u8]>>(batch: &MerkBatch<K>, source: S) -> CostContext<Result<Option<Tree>>> {
+    fn build<K: AsRef<[u8]>, C>(batch: &MerkBatch<K>, source: S, old_tree_cost: &C) -> CostContext<Result<Option<Tree>>>
+        where
+            C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+    {
         let mut cost = OperationCost::default();
 
         if batch.is_empty() {
@@ -179,14 +184,14 @@ where
                 let right_batch = &batch[mid_index + 1..];
 
                 let maybe_tree =
-                    cost_return_on_error!(&mut cost, Self::build(left_batch, source.clone()))
+                    cost_return_on_error!(&mut cost, Self::build(left_batch, source.clone(), old_tree_cost))
                         .map(|tree| Self::new(tree, source.clone()));
                 let maybe_tree = match maybe_tree {
                     Some(tree) => {
-                        cost_return_on_error!(&mut cost, tree.apply_sorted(right_batch)).0
+                        cost_return_on_error!(&mut cost, tree.apply_sorted(right_batch, old_tree_cost)).0
                     }
                     None => {
-                        cost_return_on_error!(&mut cost, Self::build(right_batch, source.clone()))
+                        cost_return_on_error!(&mut cost, Self::build(right_batch, source.clone(), old_tree_cost))
                             .map(|tree| Self::new(tree, source.clone()))
                     }
                 };
@@ -229,7 +234,8 @@ where
                 mid_index,
                 true,
                 BTreeSet::default(),
-                BTreeSet::default()
+                BTreeSet::default(),
+                old_tree_cost,
             )
         )
         .0
@@ -241,9 +247,10 @@ where
     /// `Walker<S>::apply`_to, but requires a populated tree.
     ///
     /// Keys in batch must be sorted and unique.
-    fn apply_sorted<K: AsRef<[u8]>>(
+    fn apply_sorted<K: AsRef<[u8]>, C>(
         self,
         batch: &MerkBatch<K>,
+        old_tree_cost: &C,
     ) -> CostContext<
         Result<(
             Option<Self>,
@@ -252,7 +259,10 @@ where
             DeletedKeys,
             UpdatedRootKeyFrom,
         )>,
-    > {
+    >
+        where
+            C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+    {
         let mut cost = OperationCost::default();
 
         let key_vec = self.tree().key().to_vec();
@@ -278,14 +288,16 @@ where
                         maybe_tree.map(|tree| Self::new(tree, source.clone()))
                     };
                     let key = self.tree().key().to_vec();
-
                     let key_len = key.len() as u32;
+
                     let prefixed_key_len = HASH_LENGTH_U32 + key_len;
                     let total_key_len = prefixed_key_len + prefixed_key_len.required_space() as u32;
 
                     let deletion_cost = match &batch[index].1  {
                         DeleteLayered(cost) => {
-                            let value_len = KV::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, *cost);
+                            let value = self.tree().value_ref();
+                            let value_len = value.len() as u32;
+                            let old_cost = cost_return_on_error!(&mut cost, old_tree_cost(&key, value));
                                 Some(
                             KeyValueStorageCost {
                                 key_storage_cost: StorageCost {
@@ -296,7 +308,7 @@ where
                                 value_storage_cost: StorageCost {
                                     added_bytes: 0,
                                     replaced_bytes: 0,
-                                    removed_bytes: BasicStorageRemoval(value_len)
+                                    removed_bytes: BasicStorageRemoval(old_cost)
                                 },
                                 new_node: false,
                                 needs_value_verification: false
@@ -334,7 +346,7 @@ where
                         _
                     ) = cost_return_on_error!(
                         &mut cost,
-                        Self::apply_to(maybe_tree, &batch[..index], source.clone())
+                        Self::apply_to(maybe_tree, &batch[..index], source.clone(), old_tree_cost)
                     );
                     let maybe_walker = wrap(maybe_tree);
 
@@ -346,7 +358,7 @@ where
                         _,
                     ) = cost_return_on_error!(
                         &mut cost,
-                        Self::apply_to(maybe_walker, &batch[index + 1..], source.clone())
+                        Self::apply_to(maybe_walker, &batch[index + 1..], source.clone(), old_tree_cost)
                     );
                     let maybe_walker = wrap(maybe_tree);
 
@@ -382,7 +394,7 @@ where
             new_keys.insert(key_vec);
         }
 
-        tree.recurse(batch, mid, exclusive, new_keys, updated_keys).add_cost(cost)
+        tree.recurse(batch, mid, exclusive, new_keys, updated_keys, old_tree_cost).add_cost(cost)
     }
 
     /// Recursively applies operations to the tree's children (if there are any
@@ -390,13 +402,14 @@ where
     ///
     /// This recursion executes serially in the same thread, but in the future
     /// will be dispatched to workers in other threads.
-    fn recurse<K: AsRef<[u8]>>(
+    fn recurse<K: AsRef<[u8]>, C>(
         self,
         batch: &MerkBatch<K>,
         mid: usize,
         exclusive: bool,
         mut new_keys: BTreeSet<Vec<u8>>,
         mut updated_keys: BTreeSet<Vec<u8>>,
+        old_tree_cost: &C,
     ) -> CostContext<
         Result<(
             Option<Self>,
@@ -405,7 +418,10 @@ where
             DeletedKeys,
             UpdatedRootKeyFrom,
         )>,
-    > {
+    >
+        where
+            C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+    {
         let mut cost = OperationCost::default();
 
         let left_batch = &batch[..mid];
@@ -424,7 +440,7 @@ where
             cost_return_on_error!(
                 &mut cost,
                 self.walk(true, |maybe_left| {
-                    Self::apply_to(maybe_left, left_batch, source).map_ok(
+                    Self::apply_to(maybe_left, left_batch, source, old_tree_cost).map_ok(
                         |(
                             maybe_left,
                             mut new_keys_left,
@@ -449,7 +465,7 @@ where
             cost_return_on_error!(
                 &mut cost,
                 tree.walk(false, |maybe_right| {
-                    Self::apply_to(maybe_right, right_batch, source).map_ok(
+                    Self::apply_to(maybe_right, right_batch, source, old_tree_cost).map_ok(
                         |(
                             maybe_right,
                             mut new_keys_left,

@@ -12,6 +12,7 @@ use costs::{
 };
 use integer_encoding::VarInt;
 use merk::{
+    anyhow,
     anyhow::anyhow,
     ed::Decode,
     proofs::{query::QueryItem, Query},
@@ -221,8 +222,10 @@ impl Element {
             Op::Delete
         };
         let batch = [(key, op)];
-        merk.apply::<_, Vec<u8>>(&batch, &[], merk_options)
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch, &[], merk_options, &|key, value| {
+            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+        })
+        .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     /// Delete an element from Merk under a key to batch operations
@@ -958,23 +961,29 @@ impl Element {
 
         let batch_operations = [(key, Op::Put(serialized))];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            let element = Element::deserialize(value)?;
-            match element {
-                Element::Tree(_, flags) => {
-                    let flags_len = flags.map_or(0, |flags| {
-                        let flags_len = flags.len() as u32;
-                        flags_len + flags_len.required_space() as u32
-                    });
-                    let value_len = TREE_COST_SIZE + flags_len;
-                    let key_len = key.len() as u32;
-                    Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                        key_len, value_len,
-                    ))
-                }
-                _ => Err(anyhow!("only trees are supported for specialized costs")),
-            }
+            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    pub fn tree_costs_for_key_value(key: &Vec<u8>, value: &Vec<u8>) -> Result<u32, Error> {
+        let element = Element::deserialize(value)?;
+        match element {
+            Element::Tree(_, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = TREE_COST_SIZE + flags_len;
+                let key_len = key.len() as u32;
+                Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len,
+                ))
+            }
+            _ => Err(Error::CorruptedCodeExecution(
+                "only trees are supported for specialized costs",
+            )),
+        }
     }
 
     pub fn insert_into_batch_operations<K: AsRef<[u8]>>(
@@ -1058,8 +1067,10 @@ impl Element {
         };
 
         let batch_operations = [(key, Op::PutCombinedReference(serialized, referenced_value))];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[], options)
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
+            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+        })
+        .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     pub fn insert_reference_into_batch_operations<K: AsRef<[u8]>>(
@@ -1110,21 +1121,7 @@ impl Element {
             Op::PutLayeredReference(serialized, cost, subtree_root_hash),
         )];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            let element = Element::deserialize(value)?;
-            match element {
-                Element::Tree(_, flags) => {
-                    let flags_len = flags.map_or(0, |flags| {
-                        let flags_len = flags.len() as u32;
-                        flags_len + flags_len.required_space() as u32
-                    });
-                    let value_len = TREE_COST_SIZE + flags_len;
-                    let key_len = key.len() as u32;
-                    Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                        key_len, value_len,
-                    ))
-                }
-                _ => Err(anyhow!("only trees are supported for specialized costs")),
-            }
+            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }

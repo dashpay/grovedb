@@ -28,7 +28,6 @@ pub use hash::{
     combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash,
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2, NULL_HASH,
 };
-use integer_encoding::VarInt;
 use kv::KV;
 pub use link::Link;
 pub use ops::{AuxMerkBatch, BatchEntry, MerkBatch, Op, PanicSource};

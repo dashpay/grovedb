@@ -286,7 +286,7 @@ mod tests {
             .insert(
                 vec![],
                 b"key1",
-                Element::empty_tree_with_flags(Some(b"cat".to_vec())),
+                Element::empty_tree_with_flags(Some(b"dog".to_vec())),
                 None,
                 None,
             )
@@ -351,7 +351,7 @@ mod tests {
             .insert(
                 vec![],
                 b"key1",
-                Element::new_item(b"cat".to_vec()),
+                Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
                 None,
                 None,
             )
@@ -411,7 +411,13 @@ mod tests {
         let db = make_empty_grovedb();
 
         let insertion_cost = db
-            .insert(vec![], b"key1", Element::empty_tree(), None, None)
+            .insert(
+                vec![],
+                b"key1",
+                Element::empty_tree_with_flags(Some(b"dog".to_vec())),
+                None,
+                None,
+            )
             .cost_as_result()
             .expect("expected to insert successfully");
 
@@ -442,6 +448,8 @@ mod tests {
         // Child Heights 2
 
         // Total 37 + 37 + 39 = 113
+
+        assert_eq!(insertion_cost.storage_cost.added_bytes, 117);
 
         assert_eq!(
             insertion_cost.storage_cost.added_bytes,
@@ -474,7 +482,7 @@ mod tests {
             .insert(
                 vec![],
                 b"key1",
-                Element::new_item(b"cat".to_vec()),
+                Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
                 None,
                 None,
             )
@@ -524,7 +532,7 @@ mod tests {
             .insert(
                 vec![],
                 b"key1",
-                Element::new_item(b"cat".to_vec()),
+                Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
                 None,
                 None,
             )
