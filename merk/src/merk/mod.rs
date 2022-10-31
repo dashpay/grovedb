@@ -1,7 +1,7 @@
 pub mod chunks;
 pub(crate) mod defaults;
-pub mod restore;
 pub mod options;
+pub mod restore;
 
 use std::{
     cell::Cell,
@@ -13,25 +13,27 @@ use std::{
 use anyhow::{anyhow, Error, Result};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
-    CostContext,
-    CostResult, CostsExt, OperationCost, storage_cost::{
-        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes, StorageCost,
+    storage_cost::{
+        key_value_cost::KeyValueStorageCost,
+        removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+        StorageCost,
     },
+    CostContext, CostResult, CostsExt, OperationCost,
 };
-use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
-use storage::{self, Batch, error::Error::CostError, RawIterator, StorageContext};
+use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
 
 use crate::{
-    merk::defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
-    MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
-    proofs::{encode_into, Op as ProofOp, Query, query::QueryItem},
-    tree::{
-        AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, NULL_HASH, Op, RefWalker, Tree,
-        Walker,
+    merk::{
+        defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
+        options::MerkOptions,
     },
+    proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
+    tree::{
+        kv::KV, AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree,
+        Walker, NULL_HASH,
+    },
+    MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
 };
-use crate::merk::options::MerkOptions;
-use crate::tree::kv::KV;
 
 type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
 
@@ -248,7 +250,7 @@ where
             tree: Cell::new(None),
             root_tree_key: Cell::new(root_key),
             storage,
-            merk_type: LayeredMerk
+            merk_type: LayeredMerk,
         };
 
         merk.load_root().map_ok(|_| merk)
@@ -264,7 +266,7 @@ where
         let mut to_delete = self.storage.new_batch();
         while iter.valid().unwrap_add_cost(&mut cost) {
             if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
-                //todo: deal with cost reimbursement
+                // todo: deal with cost reimbursement
                 to_delete.delete(key, None);
             }
             iter.next().unwrap_add_cost(&mut cost);
@@ -322,16 +324,23 @@ where
     /// Gets a hash of a node by a given key, `None` is returned in case
     /// when node not found by the key.
     pub fn get_kv_hash(&self, key: &[u8]) -> CostContext<Result<Option<CryptoHash>>> {
-        self.get_node_fn(key, |node| node.inner.kv.hash().clone().wrap_with_cost(OperationCost::default()))
+        self.get_node_fn(key, |node| {
+            node.inner
+                .kv
+                .hash()
+                .clone()
+                .wrap_with_cost(OperationCost::default())
+        })
     }
 
-    /// Gets the value and value hash of a node by a given key, `None` is returned in case
-    /// when node not found by the key.
-    pub fn get_value_and_value_hash(&self, key: &[u8]) -> CostContext<Result<Option<(Vec<u8>, CryptoHash)>>> {
+    /// Gets the value and value hash of a node by a given key, `None` is
+    /// returned in case when node not found by the key.
+    pub fn get_value_and_value_hash(
+        &self,
+        key: &[u8],
+    ) -> CostContext<Result<Option<(Vec<u8>, CryptoHash)>>> {
         self.get_node_fn(key, |node| {
-            (node.value_as_slice()
-                .to_vec(),node.value_hash()
-                .clone())
+            (node.value_as_slice().to_vec(), node.value_hash().clone())
                 .wrap_with_cost(OperationCost::default())
         })
     }
@@ -442,7 +451,8 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &None, &[],).unwrap().expect("");
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[], None)
+    ///         .unwrap().expect("");
     ///
     /// use merk::Op;
     ///
@@ -450,7 +460,7 @@ where
     ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
     ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
-    /// store.apply::<_, Vec<_>>(batch, &[], &None).unwrap().expect("");
+    /// store.apply::<_, Vec<_>>(batch, &[], None).unwrap().expect("");
     /// ```
     pub fn apply<KB, KA>(
         &mut self,
@@ -466,11 +476,14 @@ where
             batch,
             aux,
             options,
-            &|key, value| Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(key.len() as u32, value.len() as u32)),
-            &mut |_costs, _old_value, _value| Ok((false, None)),
-            &mut |_a, bytes_to_remove| {
-                Ok(BasicStorageRemoval(bytes_to_remove))
+            &|key, value| {
+                Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key.len() as u32,
+                    value.len() as u32,
+                ))
             },
+            &mut |_costs, _old_value, _value| Ok((false, None)),
+            &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
         )
     }
 
@@ -484,7 +497,8 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &None, &[],).unwrap().expect("");
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[], None)
+    ///         .unwrap().expect("");
     ///
     /// use merk::Op;
     ///
@@ -492,18 +506,18 @@ where
     ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
     ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
-    /// store.apply::<_, Vec<_>>(batch, &[], &None).unwrap().expect("");
+    /// store.apply::<_, Vec<_>>(batch, &[], None).unwrap().expect("");
     /// ```
     pub fn apply_with_tree_costs<KB, KA>(
         &mut self,
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
-        old_tree_cost: &impl Fn(&Vec<u8>,&Vec<u8>) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
     ) -> CostContext<Result<()>>
-        where
-            KB: AsRef<[u8]>,
-            KA: AsRef<[u8]>,
+    where
+        KB: AsRef<[u8]>,
+        KA: AsRef<[u8]>,
     {
         self.apply_with_costs_just_in_time_value_update(
             batch,
@@ -511,9 +525,7 @@ where
             options,
             old_tree_cost,
             &mut |_costs, _old_value, _value| Ok((false, None)),
-            &mut |_a, bytes_to_remove| {
-                Ok(BasicStorageRemoval(bytes_to_remove))
-            },
+            &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
         )
     }
 
@@ -532,7 +544,8 @@ where
     ///     &[(vec![4,5,6], Op::Put(vec![0]))],
     ///     &[],
     ///     None,
-    ///     &mut |s, v, o| Ok(false),
+    ///     &|k, v| Ok(0),
+    ///     &mut |s, v, o| Ok((false, None)),
     ///     &mut |s, o| Ok(NoStorageRemoval)
     /// ).unwrap().expect("");
     ///
@@ -548,7 +561,8 @@ where
     ///     batch,
     ///     &[],
     ///     None,
-    ///     &mut |s, v, o| Ok(false),
+    ///     &|k, v| Ok(0),
+    ///     &mut |s, v, o| Ok((false, None)),
     ///     &mut |s, o| Ok(NoStorageRemoval)
     /// ).unwrap().expect("");
     /// ```
@@ -557,7 +571,7 @@ where
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
-        old_tree_cost: &impl Fn(&Vec<u8>,&Vec<u8>) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -615,7 +629,8 @@ where
     ///     &[(vec![4,5,6], Op::Put(vec![0]))],
     ///     &[],
     ///     None,
-    ///     &mut |s, o, v| Ok(false),
+    ///     &|k, v| Ok(0),
+    ///     &mut |s, o, v| Ok((false, None)),
     ///     &mut |s, o| Ok(NoStorageRemoval)
     /// ).unwrap().expect("");
     ///
@@ -626,11 +641,12 @@ where
     ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key [1,2,3]
     ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
     /// ];
-    ///     unsafe { store.apply_unchecked::<_, Vec<_>, _, _>(    /// /// ///
+    ///     unsafe { store.apply_unchecked::<_, Vec<_>, _, _, _>(    /// /// ///
     ///     batch,
     ///     &[],
     ///     None,
-    ///     &mut |s, o, v| Ok(false),
+    ///     &|k, v| Ok(0),
+    ///     &mut |s, o, v| Ok((false, None)),
     ///     &mut |s, o| Ok(NoStorageRemoval)
     /// ).unwrap().expect("");
     /// }
@@ -847,7 +863,8 @@ where
                 if self.merk_type.requires_root_storage_update() {
                     // empty tree, delete pointer to root
                     let cost = if options.base_root_storage_is_free {
-                        Some(KeyValueStorageCost::default()) // don't pay for root costs
+                        Some(KeyValueStorageCost::default()) // don't pay for
+                                                             // root costs
                     } else {
                         None // means it will be calculated
                     };
@@ -891,8 +908,8 @@ where
                 _ => {
                     cost_return_on_error_no_add!(
                         &cost,
-                    Err(anyhow!("only put and delete allowed for aux storage"))
-                        );
+                        Err(anyhow!("only put and delete allowed for aux storage"))
+                    );
                 }
             };
         }
@@ -1101,7 +1118,6 @@ impl Commit for MerkCommitter {
             tree.kv_with_parent_hook_size_and_storage_cost(old_tree_cost)?;
         let mut i = 0;
 
-
         if let Some(old_value) = tree.old_value.clone() {
             // At this point the tree value can be updated based on client requirements
             // For example to store the costs
@@ -1131,8 +1147,11 @@ impl Commit for MerkCommitter {
                 i += 1;
             }
 
-            if let BasicStorageRemoval(removed_bytes) = storage_costs.value_storage_cost.removed_bytes {
-                storage_costs.value_storage_cost.removed_bytes = section_removal_bytes(&old_value, removed_bytes)?;
+            if let BasicStorageRemoval(removed_bytes) =
+                storage_costs.value_storage_cost.removed_bytes
+            {
+                storage_costs.value_storage_cost.removed_bytes =
+                    section_removal_bytes(&old_value, removed_bytes)?;
             }
         }
 
@@ -1166,13 +1185,13 @@ mod test {
 
     use costs::OperationCost;
     use storage::{
-        RawIterator,
-        rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage}, Storage, StorageContext,
+        rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
+        RawIterator, Storage, StorageContext,
     };
     use tempfile::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};
-    use crate::{Op, test_utils::*};
+    use crate::{test_utils::*, Op};
 
     // TODO: Close and then reopen test
 
@@ -1193,7 +1212,7 @@ mod test {
             .unwrap()
             .unwrap();
 
-        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[], )
+        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[], None)
             .unwrap()
             .expect("apply failed");
 
@@ -1222,7 +1241,7 @@ mod test {
         ));
 
         let mut merk = merk_fee_context.unwrap().unwrap();
-        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[], )
+        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[], None)
             .unwrap()
             .expect("apply failed");
 
@@ -1243,7 +1262,7 @@ mod test {
         let batch_size = 20;
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(0..batch_size);
-        merk.apply::<_, Vec<_>>(&batch, &[], )
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
             .unwrap()
             .expect("apply failed");
 
@@ -1263,13 +1282,13 @@ mod test {
         let mut merk = TempMerk::new();
 
         let batch = make_batch_seq(0..batch_size);
-        merk.apply::<_, Vec<_>>(&batch, &[], )
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
             .unwrap()
             .expect("apply failed");
         assert_invariants(&merk);
 
         let batch = make_batch_seq(batch_size..(batch_size * 2));
-        merk.apply::<_, Vec<_>>(&batch, &[], )
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
             .unwrap()
             .expect("apply failed");
         assert_invariants(&merk);
@@ -1289,7 +1308,7 @@ mod test {
 
         let batch = vec![batch_entry];
 
-        merk.apply::<_, Vec<_>>(&batch, &[], )
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
             .unwrap()
             .expect("should ...");
 
@@ -1307,7 +1326,7 @@ mod test {
         for i in 0..(tree_size / batch_size) {
             println!("i:{}", i);
             let batch = make_batch_rand(batch_size, i);
-            merk.apply::<_, Vec<_>>(&batch, &[], )
+            merk.apply::<_, Vec<_>>(&batch, &[], None)
                 .unwrap()
                 .expect("apply failed");
         }
@@ -1318,12 +1337,12 @@ mod test {
         let mut merk = TempMerk::new();
 
         let batch = make_batch_rand(10, 1);
-        merk.apply::<_, Vec<_>>(&batch, &[], )
+        merk.apply::<_, Vec<_>>(&batch, &[], None)
             .unwrap()
             .expect("apply failed");
 
         let key = batch.first().unwrap().0.clone();
-        merk.apply::<_, Vec<_>>(&[(key.clone(), Op::Delete)], &[], )
+        merk.apply::<_, Vec<_>>(&[(key.clone(), Op::Delete)], &[], None)
             .unwrap()
             .unwrap();
 
@@ -1334,7 +1353,7 @@ mod test {
     #[test]
     fn aux_data() {
         let mut merk = TempMerk::new();
-        merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), None)], )
+        merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), None)], None)
             .unwrap()
             .expect("apply failed");
         let val = merk.get_aux(&[1, 2, 3]).unwrap().unwrap();
@@ -1348,14 +1367,14 @@ mod test {
         merk.apply::<_, Vec<_>>(
             &[(vec![0], Op::Put(vec![1]))],
             &[(vec![2], Op::Put(vec![3]), None)],
-            &None,
+            None,
         )
         .unwrap()
         .expect("apply failed");
 
         // make enough changes so that main column family gets auto-flushed
         for i in 0..250 {
-            merk.apply::<_, Vec<_>>(&make_batch_seq(i * 2_000..(i + 1) * 2_000), &[], )
+            merk.apply::<_, Vec<_>>(&make_batch_seq(i * 2_000..(i + 1) * 2_000), &[], None)
                 .unwrap()
                 .expect("apply failed");
         }
@@ -1372,7 +1391,7 @@ mod test {
         assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
 
         // cached
-        merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![]))], &[], )
+        merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![]))], &[], None)
             .unwrap()
             .unwrap();
         assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
@@ -1385,7 +1404,7 @@ mod test {
                 (vec![2, 2, 2], Op::Put(vec![])),
             ],
             &[],
-            &None,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -1401,11 +1420,11 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], )
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
             .unwrap()
             .unwrap();
         let batch = make_batch_seq(11..12);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], )
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
             .unwrap()
             .unwrap();
     }
@@ -1419,7 +1438,7 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], )
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
             .unwrap()
             .unwrap();
         drop(merk);
@@ -1457,7 +1476,7 @@ mod test {
                 .unwrap()
                 .expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
-            merk.apply::<_, Vec<_>>(batch.as_slice(), &[], )
+            merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
                 .unwrap()
                 .unwrap();
             let mut tree = merk.tree.take().unwrap();
@@ -1508,7 +1527,7 @@ mod test {
                 .unwrap()
                 .expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
-            merk.apply::<_, Vec<_>>(batch.as_slice(), &[], )
+            merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
                 .unwrap()
                 .unwrap();
 
@@ -1537,10 +1556,10 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
 
-        merk.apply::<_, Vec<_>>(&[(b"9".to_vec(), Op::Put(b"a".to_vec()))], &[], )
+        merk.apply::<_, Vec<_>>(&[(b"9".to_vec(), Op::Put(b"a".to_vec()))], &[], None)
             .unwrap()
             .expect("should insert successfully");
-        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"a".to_vec()))], &[], )
+        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"a".to_vec()))], &[], None)
             .unwrap()
             .expect("should insert successfully");
 
@@ -1551,7 +1570,7 @@ mod test {
         assert_eq!(result, Some(b"a".to_vec()));
 
         // Update the node
-        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"b".to_vec()))], &[], )
+        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"b".to_vec()))], &[], None)
             .unwrap()
             .expect("should insert successfully");
         let result = merk
@@ -1567,7 +1586,7 @@ mod test {
             .expect("cannot open merk");
 
         // Update the node after dropping merk
-        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"c".to_vec()))], &[], )
+        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"c".to_vec()))], &[], None)
             .unwrap()
             .expect("should insert successfully");
         let result = merk

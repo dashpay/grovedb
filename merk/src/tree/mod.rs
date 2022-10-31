@@ -26,7 +26,8 @@ use costs::{
 use ed::{Decode, Encode, Terminated};
 pub use hash::{
     combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash,
-    HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2, NULL_HASH,
+    HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
+    NULL_HASH,
 };
 use kv::KV;
 pub use link::Link;
@@ -98,9 +99,7 @@ impl Tree {
 
     /// Creates a new `Tree` given an inner tree
     pub fn new_with_tree_inner(inner_tree: TreeInner) -> Self {
-        let decode_size = inner_tree
-            .kv
-            .value_byte_cost_size();
+        let decode_size = inner_tree.kv.value_byte_cost_size();
         let old_value = inner_tree.kv.value.clone();
         Self {
             inner: Box::new(inner_tree),
@@ -109,7 +108,11 @@ impl Tree {
         }
     }
 
-    pub fn kv_with_parent_hook_size_and_storage_cost_from_old_cost(&self, current_value_byte_cost: u32, old_cost: u32) -> Result<(u32, KeyValueStorageCost)> {
+    pub fn kv_with_parent_hook_size_and_storage_cost_from_old_cost(
+        &self,
+        current_value_byte_cost: u32,
+        old_cost: u32,
+    ) -> Result<(u32, KeyValueStorageCost)> {
         let key_storage_cost = StorageCost {
             ..Default::default()
         };
@@ -118,9 +121,7 @@ impl Tree {
         };
 
         // Update the value storage_cost cost
-        match old_cost
-            .cmp(&current_value_byte_cost)
-        {
+        match old_cost.cmp(&current_value_byte_cost) {
             Ordering::Equal => {
                 value_storage_cost.replaced_bytes += old_cost;
             }
@@ -134,23 +135,26 @@ impl Tree {
                 // current size is greater than old size, storage_cost will be created
                 // this also handles the case where the tree.old_size = 0
                 value_storage_cost.replaced_bytes += old_cost;
-                value_storage_cost.added_bytes +=
-                    current_value_byte_cost - old_cost;
+                value_storage_cost.added_bytes += current_value_byte_cost - old_cost;
             }
         }
 
         let key_value_storage_cost = KeyValueStorageCost {
-            key_storage_cost, //the key storage cost is added later
+            key_storage_cost, // the key storage cost is added later
             value_storage_cost,
             new_node: self.old_size_with_parent_to_child_hook == 0,
-            needs_value_verification: self.inner.kv.value_defined_cost.is_none()
+            needs_value_verification: self.inner.kv.value_defined_cost.is_none(),
         };
 
         Ok((current_value_byte_cost, key_value_storage_cost))
     }
 
-    pub fn kv_with_parent_hook_size_and_storage_cost(&self, old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>) -> Result<(u32, KeyValueStorageCost)> {
-        let current_value_byte_cost = self.value_encoding_length_with_parent_to_child_reference() as u32;
+    pub fn kv_with_parent_hook_size_and_storage_cost(
+        &self,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+    ) -> Result<(u32, KeyValueStorageCost)> {
+        let current_value_byte_cost =
+            self.value_encoding_length_with_parent_to_child_reference() as u32;
 
         let old_cost = if self.inner.kv.value_defined_cost.is_some() && self.old_value.is_some() {
             old_tree_cost(self.key_as_ref(), self.old_value.as_ref().unwrap())
@@ -158,7 +162,10 @@ impl Tree {
             Ok(self.old_size_with_parent_to_child_hook)
         }?;
 
-        self.kv_with_parent_hook_size_and_storage_cost_from_old_cost(current_value_byte_cost, old_cost)
+        self.kv_with_parent_hook_size_and_storage_cost_from_old_cost(
+            current_value_byte_cost,
+            old_cost,
+        )
     }
 
     /// Creates a new `Tree` with the given key, value and value hash, and no
@@ -200,8 +207,8 @@ impl Tree {
         })
     }
 
-    /// Creates a new `Tree` with the given key, value, value cost and value hash, and no
-    /// children.
+    /// Creates a new `Tree` with the given key, value, value cost and value
+    /// hash, and no children.
     /// Sets the tree's value_hash = hash(value, supplied_value_hash)
     pub fn new_with_layered_value_hash(
         key: Vec<u8>,
@@ -564,7 +571,9 @@ impl Tree {
         self.inner.kv = self
             .inner
             .kv
-            .put_value_with_reference_value_hash_and_value_cost_then_update(value, value_hash, value_cost)
+            .put_value_with_reference_value_hash_and_value_cost_then_update(
+                value, value_hash, value_cost,
+            )
             .unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)
     }
@@ -606,7 +615,12 @@ impl Tree {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
                 cost_return_on_error!(
                     &mut cost,
-                    tree.commit(c, old_tree_cost, update_tree_value_based_on_costs, section_removal_bytes)
+                    tree.commit(
+                        c,
+                        old_tree_cost,
+                        update_tree_value_based_on_costs,
+                        section_removal_bytes
+                    )
                 );
                 self.inner.left = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
@@ -629,7 +643,12 @@ impl Tree {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
                 cost_return_on_error!(
                     &mut cost,
-                    tree.commit(c, old_tree_cost, update_tree_value_based_on_costs, section_removal_bytes)
+                    tree.commit(
+                        c,
+                        old_tree_cost,
+                        update_tree_value_based_on_costs,
+                        section_removal_bytes
+                    )
                 );
                 self.inner.right = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
@@ -777,9 +796,12 @@ mod test {
         assert!(tree.link(false).is_none());
         assert!(tree.child(false).is_none());
 
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .expect("commit failed");
         assert!(tree.link(true).expect("expected link").is_stored());
@@ -799,9 +821,12 @@ mod test {
         let mut tree = Tree::new(vec![0], vec![1])
             .unwrap()
             .attach(true, Some(Tree::new(vec![2], vec![3]).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .expect("commit failed");
         assert_eq!(
@@ -864,9 +889,12 @@ mod test {
         let mut tree = Tree::new(vec![0], vec![1])
             .unwrap()
             .attach(false, Some(Tree::new(vec![2], vec![3]).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .expect("commit failed");
 

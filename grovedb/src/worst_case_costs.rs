@@ -280,6 +280,8 @@ mod test {
         assert_eq!(cost, node_result.cost);
     }
 
+    // this test needs to eventually be rewritten
+    #[ignore]
     #[test]
     fn test_insert_merk_node_worst_case() {
         // Setup

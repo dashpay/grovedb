@@ -4,10 +4,15 @@ use std::{
 };
 
 use anyhow::Result;
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::{
+        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
+        StorageCost,
+    },
+    CostContext, CostsExt, OperationCost,
+};
 use integer_encoding::VarInt;
-use costs::{cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostsExt, OperationCost, cost_return_on_error_no_add};
-use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
-use costs::storage_cost::StorageCost;
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};
@@ -55,12 +60,18 @@ impl fmt::Debug for Op {
             "{}",
             match self {
                 Put(value) => format!("Put({:?})", value),
-                PutCombinedReference(value, referenced_value) =>
-                    format!("Put Combined Reference({:?}) for ({:?})", value, referenced_value),
-                PutLayeredReference(value, cost, referenced_value) =>
-                    format!("Put Layered Reference({:?}) with cost ({:?}) for ({:?})", value, cost, referenced_value),
-                ReplaceLayeredReference(value, cost, referenced_value) =>
-                    format!("Replace Layered Reference({:?}) with cost ({:?}) for ({:?})", value, cost, referenced_value),
+                PutCombinedReference(value, referenced_value) => format!(
+                    "Put Combined Reference({:?}) for ({:?})",
+                    value, referenced_value
+                ),
+                PutLayeredReference(value, cost, referenced_value) => format!(
+                    "Put Layered Reference({:?}) with cost ({:?}) for ({:?})",
+                    value, cost, referenced_value
+                ),
+                ReplaceLayeredReference(value, cost, referenced_value) => format!(
+                    "Replace Layered Reference({:?}) with cost ({:?}) for ({:?})",
+                    value, cost, referenced_value
+                ),
                 Delete => "Delete".to_string(),
                 DeleteLayered => "Delete Layered".to_string(),
             }
@@ -145,7 +156,9 @@ where
                             )
                         })
                     }
-                    Some(tree) => cost_return_on_error!(&mut cost, tree.apply_sorted(batch, old_tree_cost)),
+                    Some(tree) => {
+                        cost_return_on_error!(&mut cost, tree.apply_sorted(batch, old_tree_cost))
+                    }
                 }
             };
 
@@ -163,9 +176,13 @@ where
     /// Builds a `Tree` from a batch of operations.
     ///
     /// Keys in batch must be sorted and unique.
-    fn build<K: AsRef<[u8]>, C>(batch: &MerkBatch<K>, source: S, old_tree_cost: &C) -> CostContext<Result<Option<Tree>>>
-        where
-            C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+    fn build<K: AsRef<[u8]>, C>(
+        batch: &MerkBatch<K>,
+        source: S,
+        old_tree_cost: &C,
+    ) -> CostContext<Result<Option<Tree>>>
+    where
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
     {
         let mut cost = OperationCost::default();
 
@@ -180,24 +197,31 @@ where
                 let left_batch = &batch[..mid_index];
                 let right_batch = &batch[mid_index + 1..];
 
-                let maybe_tree =
-                    cost_return_on_error!(&mut cost, Self::build(left_batch, source.clone(), old_tree_cost))
-                        .map(|tree| Self::new(tree, source.clone()));
+                let maybe_tree = cost_return_on_error!(
+                    &mut cost,
+                    Self::build(left_batch, source.clone(), old_tree_cost)
+                )
+                .map(|tree| Self::new(tree, source.clone()));
                 let maybe_tree = match maybe_tree {
                     Some(tree) => {
-                        cost_return_on_error!(&mut cost, tree.apply_sorted(right_batch, old_tree_cost)).0
+                        cost_return_on_error!(
+                            &mut cost,
+                            tree.apply_sorted(right_batch, old_tree_cost)
+                        )
+                        .0
                     }
-                    None => {
-                        cost_return_on_error!(&mut cost, Self::build(right_batch, source.clone(), old_tree_cost))
-                            .map(|tree| Self::new(tree, source.clone()))
-                    }
+                    None => cost_return_on_error!(
+                        &mut cost,
+                        Self::build(right_batch, source.clone(), old_tree_cost)
+                    )
+                    .map(|tree| Self::new(tree, source.clone())),
                 };
                 return Ok(maybe_tree.map(|tree| tree.into())).wrap_with_cost(cost);
             }
             Put(value)
             | PutCombinedReference(value, _)
             | PutLayeredReference(value, ..)
-            | ReplaceLayeredReference(value, ..) => value.to_vec()
+            | ReplaceLayeredReference(value, ..) => value.to_vec(),
         };
 
         // TODO: take from batch so we don't have to clone
@@ -212,13 +236,16 @@ where
                 referenced_value.to_owned(),
             )
             .unwrap_add_cost(&mut cost),
-            PutLayeredReference(_, value_cost, referenced_value) | ReplaceLayeredReference(_, value_cost, referenced_value) => Tree::new_with_layered_value_hash(
-                mid_key.as_ref().to_vec(),
-                mid_value,
-                *value_cost,
-                referenced_value.to_owned(),
-            )
-                .unwrap_add_cost(&mut cost),
+            PutLayeredReference(_, value_cost, referenced_value)
+            | ReplaceLayeredReference(_, value_cost, referenced_value) => {
+                Tree::new_with_layered_value_hash(
+                    mid_key.as_ref().to_vec(),
+                    mid_value,
+                    *value_cost,
+                    referenced_value.to_owned(),
+                )
+                .unwrap_add_cost(&mut cost)
+            }
             Delete | DeleteLayered => unreachable!("cannot get here, should return at the top"),
         };
         let mid_walker = Walker::new(mid_tree, PanicSource {});
@@ -240,6 +267,21 @@ where
         .wrap_with_cost(cost)
     }
 
+    fn apply_sorted_without_costs<K: AsRef<[u8]>>(
+        self,
+        batch: &MerkBatch<K>,
+    ) -> CostContext<
+        Result<(
+            Option<Self>,
+            NewKeys,
+            UpdatedKeys,
+            DeletedKeys,
+            UpdatedRootKeyFrom,
+        )>,
+    > {
+        self.apply_sorted(batch, &|_, _| Ok(0))
+    }
+
     /// Applies a batch of operations to an existing tree. This is similar to
     /// `Walker<S>::apply`_to, but requires a populated tree.
     ///
@@ -257,8 +299,8 @@ where
             UpdatedRootKeyFrom,
         )>,
     >
-        where
-            C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+    where
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
     {
         let mut cost = OperationCost::default();
 
@@ -275,8 +317,13 @@ where
                 PutCombinedReference(value, referenced_value) => self
                     .put_value_and_reference_value_hash(value.to_vec(), referenced_value.to_owned())
                     .unwrap_add_cost(&mut cost),
-                PutLayeredReference(value, value_cost, referenced_value) |ReplaceLayeredReference(value, value_cost, referenced_value) => self
-                    .put_value_with_reference_value_hash_and_value_cost(value.to_vec(), referenced_value.to_owned(), *value_cost)
+                PutLayeredReference(value, value_cost, referenced_value)
+                | ReplaceLayeredReference(value, value_cost, referenced_value) => self
+                    .put_value_with_reference_value_hash_and_value_cost(
+                        value.to_vec(),
+                        referenced_value.to_owned(),
+                        *value_cost,
+                    )
                     .unwrap_add_cost(&mut cost),
                 Delete | DeleteLayered => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply
@@ -290,45 +337,44 @@ where
                     let prefixed_key_len = HASH_LENGTH_U32 + key_len;
                     let total_key_len = prefixed_key_len + prefixed_key_len.required_space() as u32;
 
-                    let deletion_cost = match &batch[index].1  {
+                    let deletion_cost = match &batch[index].1 {
                         DeleteLayered => {
                             let value = self.tree().value_ref();
-                            let old_cost = cost_return_on_error_no_add!(&cost, old_tree_cost(&key, value));
-                                Some(
-                            KeyValueStorageCost {
+                            let old_cost =
+                                cost_return_on_error_no_add!(&cost, old_tree_cost(&key, value));
+                            Some(KeyValueStorageCost {
                                 key_storage_cost: StorageCost {
                                     added_bytes: 0,
                                     replaced_bytes: 0,
-                                    removed_bytes: BasicStorageRemoval(total_key_len)
+                                    removed_bytes: BasicStorageRemoval(total_key_len),
                                 },
                                 value_storage_cost: StorageCost {
                                     added_bytes: 0,
                                     replaced_bytes: 0,
-                                    removed_bytes: BasicStorageRemoval(old_cost)
+                                    removed_bytes: BasicStorageRemoval(old_cost),
                                 },
                                 new_node: false,
-                                needs_value_verification: false
+                                needs_value_verification: false,
                             })
                         }
                         Delete => {
                             let value_len = self.tree().inner.kv.value_byte_cost_size();
-                            Some(
-                                KeyValueStorageCost {
-                                    key_storage_cost: StorageCost {
-                                        added_bytes: 0,
-                                        replaced_bytes: 0,
-                                        removed_bytes: BasicStorageRemoval(total_key_len)
-                                    },
-                                    value_storage_cost: StorageCost {
-                                        added_bytes: 0,
-                                        replaced_bytes: 0,
-                                        removed_bytes: BasicStorageRemoval(value_len)
-                                    },
-                                    new_node: false,
-                                    needs_value_verification: false
-                                })
-                        },
-                        _ => {None}
+                            Some(KeyValueStorageCost {
+                                key_storage_cost: StorageCost {
+                                    added_bytes: 0,
+                                    replaced_bytes: 0,
+                                    removed_bytes: BasicStorageRemoval(total_key_len),
+                                },
+                                value_storage_cost: StorageCost {
+                                    added_bytes: 0,
+                                    replaced_bytes: 0,
+                                    removed_bytes: BasicStorageRemoval(value_len),
+                                },
+                                new_node: false,
+                                needs_value_verification: false,
+                            })
+                        }
+                        _ => None,
                     };
 
                     let maybe_tree = cost_return_on_error!(&mut cost, self.remove());
@@ -354,7 +400,12 @@ where
                         _,
                     ) = cost_return_on_error!(
                         &mut cost,
-                        Self::apply_to(maybe_walker, &batch[index + 1..], source.clone(), old_tree_cost)
+                        Self::apply_to(
+                            maybe_walker,
+                            &batch[index + 1..],
+                            source.clone(),
+                            old_tree_cost
+                        )
                     );
                     let maybe_walker = wrap(maybe_tree);
 
@@ -390,7 +441,8 @@ where
             new_keys.insert(key_vec);
         }
 
-        tree.recurse(batch, mid, exclusive, new_keys, updated_keys, old_tree_cost).add_cost(cost)
+        tree.recurse(batch, mid, exclusive, new_keys, updated_keys, old_tree_cost)
+            .add_cost(cost)
     }
 
     /// Recursively applies operations to the tree's children (if there are any
@@ -415,8 +467,8 @@ where
             UpdatedRootKeyFrom,
         )>,
     >
-        where
-            C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+    where
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
     {
         let mut cost = OperationCost::default();
 
@@ -626,25 +678,28 @@ mod test {
     fn simple_insert() {
         let batch = [(b"foo2".to_vec(), Op::Put(b"bar2".to_vec()))];
         let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap();
-        let (maybe_walker, updated_keys, deleted_keys) = Walker::new(tree, PanicSource {})
-            .apply_sorted(&batch)
-            .unwrap()
-            .expect("apply errored");
+        let (maybe_walker, new_keys, updated_keys, deleted_keys, updated_root_key_from) =
+            Walker::new(tree, PanicSource {})
+                .apply_sorted_without_costs(&batch)
+                .unwrap()
+                .expect("apply errored");
         let walker = maybe_walker.expect("should be Some");
         assert_eq!(walker.tree().key(), b"foo");
         assert_eq!(walker.into_inner().child(false).unwrap().key(), b"foo2");
         assert!(updated_keys.is_empty());
         assert!(deleted_keys.is_empty());
+        assert_eq!(new_keys.len(), 2)
     }
 
     #[test]
     fn simple_update() {
         let batch = [(b"foo".to_vec(), Op::Put(b"bar2".to_vec()))];
         let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap();
-        let (maybe_walker, updated_keys, deleted_keys) = Walker::new(tree, PanicSource {})
-            .apply_sorted(&batch)
-            .unwrap()
-            .expect("apply errored");
+        let (maybe_walker, new_keys, updated_keys, deleted_keys, updated_root_key_from) =
+            Walker::new(tree, PanicSource {})
+                .apply_sorted_without_costs(&batch)
+                .unwrap()
+                .expect("apply errored");
         let walker = maybe_walker.expect("should be Some");
         assert_eq!(walker.tree().key(), b"foo");
         assert_eq!(walker.tree().value_as_slice(), b"bar2");
@@ -669,10 +724,11 @@ mod test {
             }),
         )
         .unwrap();
-        let (maybe_walker, updated_keys, deleted_keys) = Walker::new(tree, PanicSource {})
-            .apply_sorted(&batch)
-            .unwrap()
-            .expect("apply errored");
+        let (maybe_walker, new_keys, updated_keys, deleted_keys, updated_root_key_from) =
+            Walker::new(tree, PanicSource {})
+                .apply_sorted_without_costs(&batch)
+                .unwrap()
+                .expect("apply errored");
         let walker = maybe_walker.expect("should be Some");
         assert_eq!(walker.tree().key(), b"foo");
         assert_eq!(walker.tree().value_as_slice(), b"bar");
@@ -680,7 +736,7 @@ mod test {
         assert!(walker.tree().link(false).is_none());
         assert!(updated_keys.is_empty());
         assert_eq!(deleted_keys.len(), 1);
-        assert_eq!(*deleted_keys.front().unwrap(), b"foo2");
+        assert_eq!(deleted_keys.front().unwrap().0.as_slice(), b"foo2");
     }
 
     #[test]
@@ -688,7 +744,7 @@ mod test {
         let batch = [(b"foo2".to_vec(), Op::Delete)];
         let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap();
         Walker::new(tree, PanicSource {})
-            .apply_sorted(&batch)
+            .apply_sorted_without_costs(&batch)
             .unwrap()
             .unwrap();
     }
@@ -697,55 +753,59 @@ mod test {
     fn delete_only_node() {
         let batch = [(b"foo".to_vec(), Op::Delete)];
         let tree = Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap();
-        let (maybe_walker, updated_keys, deleted_keys) = Walker::new(tree, PanicSource {})
-            .apply_sorted(&batch)
-            .unwrap()
-            .expect("apply errored");
+        let (maybe_walker, new_keys, updated_keys, deleted_keys, updated_root_key_from) =
+            Walker::new(tree, PanicSource {})
+                .apply_sorted_without_costs(&batch)
+                .unwrap()
+                .expect("apply errored");
         assert!(maybe_walker.is_none());
         assert!(updated_keys.is_empty());
         assert_eq!(deleted_keys.len(), 1);
-        assert_eq!(deleted_keys.front().unwrap(), b"foo");
+        assert_eq!(deleted_keys.front().unwrap().0.as_slice(), b"foo");
     }
 
     #[test]
     fn delete_deep() {
         let tree = make_tree_seq(50);
         let batch = [del_entry(5)];
-        let (maybe_walker, updated_keys, deleted_keys) = Walker::new(tree, PanicSource {})
-            .apply_sorted(&batch)
-            .unwrap()
-            .expect("apply errored");
+        let (maybe_walker, new_keys, updated_keys, deleted_keys, updated_root_key_from) =
+            Walker::new(tree, PanicSource {})
+                .apply_sorted_without_costs(&batch)
+                .unwrap()
+                .expect("apply errored");
         maybe_walker.expect("should be Some");
         assert!(updated_keys.is_empty());
         assert_eq!(deleted_keys.len(), 1);
-        assert_eq!(*deleted_keys.front().unwrap(), seq_key(5));
+        assert_eq!(deleted_keys.front().unwrap().0.as_slice(), seq_key(5));
     }
 
     #[test]
     fn delete_recursive() {
         let tree = make_tree_seq(50);
         let batch = [del_entry(29), del_entry(34)];
-        let (maybe_walker, updated_keys, mut deleted_keys) = Walker::new(tree, PanicSource {})
-            .apply_sorted(&batch)
-            .unwrap()
-            .expect("apply errored");
+        let (maybe_walker, new_keys, updated_keys, mut deleted_keys, updated_root_key_from) =
+            Walker::new(tree, PanicSource {})
+                .apply_sorted_without_costs(&batch)
+                .unwrap()
+                .expect("apply errored");
         maybe_walker.expect("should be Some");
         assert!(updated_keys.is_empty());
         assert_eq!(deleted_keys.len(), 2);
-        assert_eq!(deleted_keys.pop_front().unwrap(), seq_key(29));
-        assert_eq!(deleted_keys.pop_front().unwrap(), seq_key(34));
+        assert_eq!(deleted_keys.pop_front().unwrap().0.as_slice(), seq_key(29));
+        assert_eq!(deleted_keys.pop_front().unwrap().0.as_slice(), seq_key(34));
     }
 
     #[test]
     fn delete_recursive_2() {
         let tree = make_tree_seq(10);
         let batch = [del_entry(7), del_entry(9)];
-        let (maybe_walker, updated_keys, deleted_keys) = Walker::new(tree, PanicSource {})
-            .apply_sorted(&batch)
-            .unwrap()
-            .expect("apply errored");
+        let (maybe_walker, new_keys, updated_keys, deleted_keys, updated_root_key_from) =
+            Walker::new(tree, PanicSource {})
+                .apply_sorted_without_costs(&batch)
+                .unwrap()
+                .expect("apply errored");
         maybe_walker.expect("should be Some");
-        let mut deleted_keys: Vec<&Vec<u8>> = deleted_keys.iter().collect();
+        let mut deleted_keys: Vec<&Vec<u8>> = deleted_keys.iter().map(|(v, _)| v).collect();
         deleted_keys.sort();
         assert!(updated_keys.is_empty());
         assert_eq!(deleted_keys, vec![&seq_key(7), &seq_key(9)]);
@@ -753,8 +813,8 @@ mod test {
 
     #[test]
     fn apply_empty_none() {
-        let (maybe_tree, updated_keys, deleted_keys) =
-            Walker::<PanicSource>::apply_to::<Vec<u8>>(None, &[], PanicSource {})
+        let (maybe_tree, new_keys, updated_keys, deleted_keys, updated_root_key_from) =
+            Walker::<PanicSource>::apply_to::<Vec<u8>, _>(None, &[], PanicSource {}, &|_, _| Ok(0))
                 .unwrap()
                 .expect("apply_to failed");
         assert!(maybe_tree.is_none());
@@ -765,8 +825,8 @@ mod test {
     #[test]
     fn insert_empty_single() {
         let batch = vec![(vec![0], Op::Put(vec![1]))];
-        let (maybe_tree, updated_keys, deleted_keys) =
-            Walker::<PanicSource>::apply_to(None, &batch, PanicSource {})
+        let (maybe_tree, new_keys, updated_keys, deleted_keys, updated_root_key_from) =
+            Walker::<PanicSource>::apply_to(None, &batch, PanicSource {}, &|_, _| Ok(0))
                 .unwrap()
                 .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");
@@ -780,8 +840,8 @@ mod test {
     #[test]
     fn insert_updated_single() {
         let batch = vec![(vec![0], Op::Put(vec![1]))];
-        let (maybe_tree, updated_keys, deleted_keys) =
-            Walker::<PanicSource>::apply_to(None, &batch, PanicSource {})
+        let (maybe_tree, new_keys, updated_keys, deleted_keys, updated_root_key_from) =
+            Walker::<PanicSource>::apply_to(None, &batch, PanicSource {}, &|_, _| Ok(0))
                 .unwrap()
                 .expect("apply_to failed");
         assert!(updated_keys.is_empty());
@@ -789,8 +849,8 @@ mod test {
 
         let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
         let batch = vec![(vec![0], Op::Put(vec![2])), (vec![1], Op::Put(vec![2]))];
-        let (maybe_tree, updated_keys, deleted_keys) =
-            Walker::<PanicSource>::apply_to(maybe_walker, &batch, PanicSource {})
+        let (maybe_tree, new_keys, updated_keys, deleted_keys, updated_root_key_from) =
+            Walker::<PanicSource>::apply_to(maybe_walker, &batch, PanicSource {}, &|_, _| Ok(0))
                 .unwrap()
                 .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");
@@ -807,8 +867,8 @@ mod test {
             (vec![1], Op::Put(vec![2])),
             (vec![2], Op::Put(vec![3])),
         ];
-        let (maybe_tree, updated_keys, deleted_keys) =
-            Walker::<PanicSource>::apply_to(None, &batch, PanicSource {})
+        let (maybe_tree, new_keys, updated_keys, deleted_keys, updated_root_key_from) =
+            Walker::<PanicSource>::apply_to(None, &batch, PanicSource {}, &|_, _| Ok(0))
                 .unwrap()
                 .expect("apply_to failed");
         assert!(updated_keys.is_empty());
@@ -820,8 +880,8 @@ mod test {
             (vec![1], Op::Put(vec![8])),
             (vec![2], Op::Delete),
         ];
-        let (maybe_tree, updated_keys, deleted_keys) =
-            Walker::<PanicSource>::apply_to(maybe_walker, &batch, PanicSource {})
+        let (maybe_tree, new_keys, updated_keys, deleted_keys, updated_root_key_from) =
+            Walker::<PanicSource>::apply_to(maybe_walker, &batch, PanicSource {}, &|_, _| Ok(0))
                 .unwrap()
                 .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");

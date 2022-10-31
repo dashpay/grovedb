@@ -15,10 +15,9 @@ use crate::{
         tree::{Child, Tree as ProofTree},
         Node, Op,
     },
-    tree::{Link, RefWalker, Tree},
+    tree::{combine_hash, value_hash, Link, RefWalker, Tree},
     CryptoHash,
 };
-use crate::tree::{combine_hash, value_hash};
 
 /// A `Restorer` handles decoding, verifying, and storing chunk proofs to
 /// replicate an entire Merk tree. It expects the chunks to be processed in
@@ -38,7 +37,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// `expected_root_hash`, then each subsequent chunk will be compared
     /// against the hashes stored in the trunk, so that the restore process will
     /// never allow malicious peers to send more than a single invalid chunk.
-    pub fn new(merk: Merk<S>, combining_value: Option<Vec<u8>>, expected_root_hash: CryptoHash) -> Self {
+    pub fn new(
+        merk: Merk<S>,
+        combining_value: Option<Vec<u8>>,
+        expected_root_hash: CryptoHash,
+    ) -> Self {
         Self {
             expected_root_hash,
             combining_value,
@@ -126,7 +129,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let root_hash = if self.combining_value.is_none() {
             trunk.hash().unwrap()
         } else {
-            combine_hash(value_hash(self.combining_value.as_ref().expect("confirmed exists")).value(), &trunk.hash().unwrap()).value
+            combine_hash(
+                value_hash(self.combining_value.as_ref().expect("confirmed exists")).value(),
+                &trunk.hash().unwrap(),
+            )
+            .value
         };
 
         if root_hash != self.expected_root_hash {
@@ -335,7 +342,7 @@ mod tests {
         let mut original = TempMerk::new();
         for batch in batches {
             original
-                .apply::<Vec<_>, Vec<_>>(batch, &[], )
+                .apply::<Vec<_>, Vec<_>>(batch, &[], None)
                 .unwrap()
                 .unwrap();
         }

@@ -1169,61 +1169,61 @@ pub fn execute_proof(
                         break;
                     }
 
-                if !in_range {
-                    // this is the first data we have encountered for this query item
-                    if left_to_right {
-                        // ensure lower bound of query item is proven
-                        match last_push {
-                            // lower bound is proven - we have an exact match
-                            // ignoring the case when the lower bound is unbounded
-                            // as it's not possible the get an exact key match for
-                            // an unbounded value
-                            _ if Some(key.as_slice()) == query_item.lower_bound().0 => {}
+                    if !in_range {
+                        // this is the first data we have encountered for this query item
+                        if left_to_right {
+                            // ensure lower bound of query item is proven
+                            match last_push {
+                                // lower bound is proven - we have an exact match
+                                // ignoring the case when the lower bound is unbounded
+                                // as it's not possible the get an exact key match for
+                                // an unbounded value
+                                _ if Some(key.as_slice()) == query_item.lower_bound().0 => {}
 
-                            // lower bound is proven - this is the leftmost node
-                            // in the tree
-                            None => {}
+                                // lower bound is proven - this is the leftmost node
+                                // in the tree
+                                None => {}
 
-                            // lower bound is proven - the preceding tree node
-                            // is lower than the bound
-                            Some(Node::KV(..)) => {}
-                            Some(Node::KVDigest(..)) => {}
-                            Some(Node::KVRefValueHash(..)) => {}
-                            Some(Node::KVValueHash(..)) => {}
+                                // lower bound is proven - the preceding tree node
+                                // is lower than the bound
+                                Some(Node::KV(..)) => {}
+                                Some(Node::KVDigest(..)) => {}
+                                Some(Node::KVRefValueHash(..)) => {}
+                                Some(Node::KVValueHash(..)) => {}
 
-                            // cannot verify lower bound - we have an abridged
-                            // tree so we cannot tell what the preceding key was
-                            Some(_) => {
-                                bail!("Cannot verify lower bound of queried range");
+                                // cannot verify lower bound - we have an abridged
+                                // tree so we cannot tell what the preceding key was
+                                Some(_) => {
+                                    bail!("Cannot verify lower bound of queried range");
+                                }
+                            }
+                        } else {
+                            // ensure upper bound of query item is proven
+                            match last_push {
+                                // upper bound is proven - we have an exact match
+                                // ignoring the case when the upper bound is unbounded
+                                // as it's not possible the get an exact key match for
+                                // an unbounded value
+                                _ if Some(key.as_slice()) == query_item.upper_bound().0 => {}
+
+                                // lower bound is proven - this is the rightmost node
+                                // in the tree
+                                None => {}
+
+                                // upper bound is proven - the preceding tree node
+                                // is greater than the bound
+                                Some(Node::KV(..)) => {}
+                                Some(Node::KVDigest(..)) => {}
+                                Some(Node::KVRefValueHash(..)) => {}
+                                Some(Node::KVValueHash(..)) => {}
+
+                                // cannot verify upper bound - we have an abridged
+                                // tree so we cannot tell what the previous key was
+                                Some(_) => {
+                                    bail!("Cannot verify upper bound of queried range");
+                                }
                             }
                         }
-                    } else {
-                        // ensure upper bound of query item is proven
-                        match last_push {
-                            // upper bound is proven - we have an exact match
-                            // ignoring the case when the upper bound is unbounded
-                            // as it's not possible the get an exact key match for
-                            // an unbounded value
-                            _ if Some(key.as_slice()) == query_item.upper_bound().0 => {}
-
-                            // lower bound is proven - this is the rightmost node
-                            // in the tree
-                            None => {}
-
-                            // upper bound is proven - the preceding tree node
-                            // is greater than the bound
-                            Some(Node::KV(..)) => {}
-                            Some(Node::KVDigest(..)) => {}
-                            Some(Node::KVRefValueHash(..)) => {}
-                            Some(Node::KVValueHash(..)) => {}
-
-                            // cannot verify upper bound - we have an abridged
-                            // tree so we cannot tell what the previous key was
-                            Some(_) => {
-                                bail!("Cannot verify upper bound of queried range");
-                            }
-                        }
-                    }
                     }
 
                     if left_to_right {
@@ -1298,11 +1298,11 @@ pub fn execute_proof(
                 Ok(())
             };
 
-        if let Node::KV(key, value)= node {
+        if let Node::KV(key, value) = node {
             execute_node(key, Some(value), value_hash(value).unwrap())?;
-        }  else if let Node::KVValueHash(key, value, value_hash) = node {
+        } else if let Node::KVValueHash(key, value, value_hash) = node {
             execute_node(key, Some(value), *value_hash)?;
-        }  else if let Node::KVDigest(key, value_hash) = node {
+        } else if let Node::KVDigest(key, value_hash) = node {
             execute_node(key, None, *value_hash)?;
         } else if let Node::KVRefValueHash(key, value, value_hash) = node {
             execute_node(key, Some(value), *value_hash)?;
@@ -1410,9 +1410,12 @@ mod test {
             .unwrap()
             .attach(true, Some(Tree::new(vec![3], vec![3]).unwrap()))
             .attach(false, Some(Tree::new(vec![7], vec![7]).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .expect("commit failed");
         tree
@@ -1426,9 +1429,12 @@ mod test {
             .attach(true, Some(two_tree))
             .attach(false, Some(four_tree));
         three_tree
-            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-                Ok(NoStorageRemoval)
-            })
+            .commit(
+                &mut NoopCommit {},
+                &|_, _| Ok(0),
+                &mut |_, _, _| Ok((false, None)),
+                &mut |_, _| Ok(NoStorageRemoval),
+            )
             .unwrap()
             .expect("commit failed");
 
@@ -1437,9 +1443,12 @@ mod test {
             .unwrap()
             .attach(true, Some(seven_tree));
         eight_tree
-            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-                Ok(NoStorageRemoval)
-            })
+            .commit(
+                &mut NoopCommit {},
+                &|_, _| Ok(0),
+                &mut |_, _, _| Ok((false, None)),
+                &mut |_, _| Ok(NoStorageRemoval),
+            )
             .unwrap()
             .expect("commit failed");
 
@@ -1448,9 +1457,12 @@ mod test {
             .attach(true, Some(three_tree))
             .attach(false, Some(eight_tree));
         root_tree
-            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-                Ok(NoStorageRemoval)
-            })
+            .commit(
+                &mut NoopCommit {},
+                &|_, _| Ok(0),
+                &mut |_, _, _| Ok((false, None)),
+                &mut |_, _| Ok(NoStorageRemoval),
+            )
             .unwrap()
             .expect("commit failed");
 
@@ -2164,9 +2176,12 @@ mod test {
                         ),
                 ),
             );
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .unwrap();
 
@@ -6106,9 +6121,12 @@ mod test {
     #[test]
     fn verify_ops() {
         let mut tree = Tree::new(vec![5], vec![5]).unwrap();
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .expect("commit failed");
 
@@ -6134,9 +6152,12 @@ mod test {
     #[should_panic(expected = "verify failed")]
     fn verify_ops_mismatched_hash() {
         let mut tree = Tree::new(vec![5], vec![5]).unwrap();
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .expect("commit failed");
 

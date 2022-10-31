@@ -1,9 +1,9 @@
 use std::io::{Read, Write};
 
 use ed::{Decode, Encode, Result, Terminated};
-use crate::{HASH_LENGTH, HASH_LENGTH_U32};
 
 use super::{hash::CryptoHash, Tree};
+use crate::{HASH_LENGTH, HASH_LENGTH_U32};
 
 // TODO: optimize memory footprint
 

@@ -171,12 +171,16 @@ where
         mut self,
         value: Vec<u8>,
         value_hash: CryptoHash,
-        value_fixed_cost: u32
+        value_fixed_cost: u32,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.tree.own(|t| {
-            t.put_value_with_reference_value_hash_and_value_cost(value, value_hash, value_fixed_cost)
-                .unwrap_add_cost(&mut cost)
+            t.put_value_with_reference_value_hash_and_value_cost(
+                value,
+                value_hash,
+                value_fixed_cost,
+            )
+            .unwrap_add_cost(&mut cost)
         });
         self.wrap_with_cost(cost)
     }
@@ -239,9 +243,12 @@ mod test {
                 true,
                 Some(Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap()),
             );
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .expect("commit failed");
 

@@ -395,9 +395,12 @@ mod tests {
     #[test]
     fn one_node_tree_trunk_roundtrip() {
         let mut tree = BaseTree::new(vec![0], vec![]).unwrap();
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .unwrap();
 
@@ -420,9 +423,12 @@ mod tests {
         let mut tree = BaseTree::new(vec![0], vec![])
             .unwrap()
             .attach(false, Some(BaseTree::new(vec![1], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -444,9 +450,12 @@ mod tests {
         let mut tree = BaseTree::new(vec![1], vec![])
             .unwrap()
             .attach(true, Some(BaseTree::new(vec![0], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -469,9 +478,12 @@ mod tests {
             .unwrap()
             .attach(true, Some(BaseTree::new(vec![0], vec![]).unwrap()))
             .attach(false, Some(BaseTree::new(vec![2], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .unwrap();
 
@@ -490,7 +502,7 @@ mod tests {
     fn leaf_chunk_roundtrip() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(0..31);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], )
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
             .unwrap()
             .unwrap();
 
