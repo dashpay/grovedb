@@ -5,10 +5,7 @@ use std::{
 
 use anyhow::Result;
 use integer_encoding::VarInt;
-use costs::{
-    cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostsExt,
-    OperationCost,
-};
+use costs::{cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostsExt, OperationCost, cost_return_on_error_no_add};
 use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
 use costs::storage_cost::StorageCost;
 use Op::*;
@@ -48,7 +45,7 @@ pub enum Op {
     /// costs.
     ReplaceLayeredReference(Vec<u8>, u32, CryptoHash),
     Delete,
-    DeleteLayered(u32),
+    DeleteLayered,
 }
 
 impl fmt::Debug for Op {
@@ -65,7 +62,7 @@ impl fmt::Debug for Op {
                 ReplaceLayeredReference(value, cost, referenced_value) =>
                     format!("Replace Layered Reference({:?}) with cost ({:?}) for ({:?})", value, cost, referenced_value),
                 Delete => "Delete".to_string(),
-                DeleteLayered(cost) => format!("Delete Layered {:?}", cost),
+                DeleteLayered => "Delete Layered".to_string(),
             }
         )
     }
@@ -179,7 +176,7 @@ where
         let mid_index = batch.len() / 2;
         let (mid_key, mid_op) = &batch[mid_index];
         let mid_value = match mid_op {
-            Delete | DeleteLayered (..) => {
+            Delete | DeleteLayered => {
                 let left_batch = &batch[..mid_index];
                 let right_batch = &batch[mid_index + 1..];
 
@@ -222,7 +219,7 @@ where
                 referenced_value.to_owned(),
             )
                 .unwrap_add_cost(&mut cost),
-            Delete | DeleteLayered(..) => unreachable!("cannot get here, should return at the top"),
+            Delete | DeleteLayered => unreachable!("cannot get here, should return at the top"),
         };
         let mid_walker = Walker::new(mid_tree, PanicSource {});
 
@@ -281,7 +278,7 @@ where
                 PutLayeredReference(value, value_cost, referenced_value) |ReplaceLayeredReference(value, value_cost, referenced_value) => self
                     .put_value_with_reference_value_hash_and_value_cost(value.to_vec(), referenced_value.to_owned(), *value_cost)
                     .unwrap_add_cost(&mut cost),
-                Delete | DeleteLayered(..) => {
+                Delete | DeleteLayered => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply
                     let source = self.clone_source();
                     let wrap = |maybe_tree: Option<Tree>| {
@@ -294,10 +291,9 @@ where
                     let total_key_len = prefixed_key_len + prefixed_key_len.required_space() as u32;
 
                     let deletion_cost = match &batch[index].1  {
-                        DeleteLayered(cost) => {
+                        DeleteLayered => {
                             let value = self.tree().value_ref();
-                            let value_len = value.len() as u32;
-                            let old_cost = cost_return_on_error!(&mut cost, old_tree_cost(&key, value));
+                            let old_cost = cost_return_on_error_no_add!(&cost, old_tree_cost(&key, value));
                                 Some(
                             KeyValueStorageCost {
                                 key_storage_cost: StorageCost {

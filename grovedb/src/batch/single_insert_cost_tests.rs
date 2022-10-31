@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::option::Option::None;
 
     use costs::{
@@ -17,6 +18,7 @@ mod tests {
     };
     use integer_encoding::VarInt;
     use intmap::IntMap;
+    use costs::storage_cost::removal::{Identifier, StorageRemovalPerEpochByIdentifier};
 
     use crate::{
         batch::GroveDbOp,
@@ -632,17 +634,22 @@ mod tests {
                     _ => Ok(false),
                 },
                 |flags, removed| {
-                    let mut removed_bytes: IntMap<u32> = IntMap::default();
-                    // we are removing 1 byte from epoch 0
-                    removed_bytes.insert(0, removed);
+                    let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
+                    // we are removing 1 byte from epoch 0 for an identity
+                    let mut removed_bytes_for_identity = IntMap::new();
+                    removed_bytes_for_identity.insert(0, 1);
+                    removed_bytes.insert(Identifier::default(), removed_bytes_for_identity);
                     Ok((SectionedStorageRemoval(removed_bytes)))
                 },
                 Some(&tx),
             )
             .cost;
 
-        let mut removed_bytes: IntMap<u32> = IntMap::default();
-        removed_bytes.insert(0, 1);
+        let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
+        // we are removing 1 byte from epoch 0 for an identity
+        let mut removed_bytes_for_identity = IntMap::new();
+        removed_bytes_for_identity.insert(0, 1);
+        removed_bytes.insert(Identifier::default(), removed_bytes_for_identity);
 
         assert_eq!(
             cost,

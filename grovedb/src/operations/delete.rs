@@ -478,7 +478,7 @@ impl GroveDb {
                             &mut merk_to_delete_tree_from,
                             &key,
                             Some(options.as_merk_options()),
-                            Some(TREE_COST_SIZE)
+                            true,
                         )
                     );
                     let mut merk_cache: HashMap<
@@ -513,7 +513,7 @@ impl GroveDb {
                             &mut subtree_to_delete_from,
                             &key,
                             Some(options.as_merk_options()),
-                            Some(TREE_COST_SIZE)
+                            true,
                         )
                     );
                     let mut merk_cache: HashMap<
@@ -537,7 +537,7 @@ impl GroveDb {
                     &mut subtree_to_delete_from,
                     &key,
                     Some(options.as_merk_options()),
-                    None
+                    false
                 )
             );
             let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
@@ -629,7 +629,7 @@ impl GroveDb {
                         &mut subtree_to_delete_from,
                         &key,
                         Some(options.as_merk_options()),
-                        Some(TREE_COST_SIZE)
+                        true,
                     )
                 );
             }
@@ -640,7 +640,7 @@ impl GroveDb {
                     &mut subtree_to_delete_from,
                     &key,
                     Some(options.as_merk_options()),
-                    None
+                    false,
                 )
             );
         }

@@ -213,11 +213,11 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         merk_options: Option<MerkOptions>,
-        is_layered: Option<u32>,
+        is_layered: bool,
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
-        let op = if let Some(cost) = is_layered {
-            Op::DeleteLayered(cost)
+        let op = if is_layered {
+            Op::DeleteLayered
         } else {
             Op::Delete
         };
@@ -235,7 +235,7 @@ impl Element {
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         let op = if is_layered {
-            Op::DeleteLayered(TREE_COST_SIZE)
+            Op::DeleteLayered
         } else {
             Op::Delete
         };
