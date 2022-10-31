@@ -1,10 +1,18 @@
 //! Storage context implementation with a transaction.
-use costs::{storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostsExt, OperationCost, cost_return_on_error};
+use costs::{
+    cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostsExt,
+    OperationCost,
+};
 use error::Error;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
 
 use super::{batch::PrefixedMultiContextBatchPart, make_prefixed_key, PrefixedRocksDbRawIterator};
-use crate::{Batch, error, error::Error::RocksDBError, RawIterator, rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME}, StorageBatch, StorageContext};
+use crate::{
+    error,
+    error::Error::RocksDBError,
+    rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
+    Batch, RawIterator, StorageBatch, StorageContext,
+};
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
 /// transaction.
@@ -41,10 +49,10 @@ impl<'db> PrefixedRocksDbBatchTransactionContext<'db> {
         while iter.valid().unwrap_add_cost(&mut cost) {
             if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
                 cost_return_on_error!(
-            &mut cost,
-                    //todo: calculate cost
-            self.delete(key, None)
-        );
+                    &mut cost,
+                    // todo: calculate cost
+                    self.delete(key, None)
+                );
             }
             iter.next().unwrap_add_cost(&mut cost);
         }
@@ -142,25 +150,41 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
             .map(Ok)
     }
 
-    fn delete<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
+    fn delete<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         self.batch
             .delete(make_prefixed_key(self.prefix.clone(), key), cost_info)
             .map(Ok)
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
+    fn delete_aux<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         self.batch
             .delete_aux(make_prefixed_key(self.prefix.clone(), key), cost_info)
             .map(Ok)
     }
 
-    fn delete_root<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
+    fn delete_root<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         self.batch
             .delete_root(make_prefixed_key(self.prefix.clone(), key), cost_info)
             .map(Ok)
     }
 
-    fn delete_meta<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
+    fn delete_meta<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         self.batch
             .delete_meta(make_prefixed_key(self.prefix.clone(), key), cost_info)
             .map(Ok)

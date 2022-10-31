@@ -180,7 +180,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .wrap_with_cost(cost)
     }
 
-    fn delete<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
+    fn delete<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
         if let Some(cost_info) = cost_info {
@@ -201,7 +205,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .wrap_with_cost(cost)
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
+    fn delete_aux<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
         if let Some(cost_info) = cost_info {
@@ -222,7 +230,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .wrap_with_cost(cost)
     }
 
-    fn delete_root<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
+    fn delete_root<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
         if let Some(cost_info) = cost_info {
@@ -243,7 +255,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
             .wrap_with_cost(cost)
     }
 
-    fn delete_meta<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
+    fn delete_meta<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
         if let Some(cost_info) = cost_info {
@@ -353,7 +369,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbStorageContext<'db> {
 
     fn commit_batch(&self, mut batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
-
 
         // On unsuccessul batch commit only deletion finalization cost will be returned.
         cost_return_on_error_no_add!(&cost, self.storage.write(batch.batch).map_err(RocksDBError));

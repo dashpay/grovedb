@@ -1,9 +1,9 @@
 use std::{
     borrow::BorrowMut,
     cmp::Ordering,
+    collections::BTreeMap,
     ops::{Add, AddAssign},
 };
-use std::collections::BTreeMap;
 
 use intmap::IntMap;
 
@@ -12,7 +12,7 @@ use crate::storage_cost::removal::StorageRemovedBytes::{
 };
 
 /// An identifier using 32 bytes
-pub type Identifier = [u8;32];
+pub type Identifier = [u8; 32];
 
 /// A BTreeMap mapping identities to the storage they removed by epoch
 pub type StorageRemovalPerEpochByIdentifier = BTreeMap<Identifier, IntMap<u32>>;
@@ -84,20 +84,24 @@ impl Add for StorageRemovedBytes {
                 }
                 SectionedStorageRemoval(rmap) => {
                     rmap.into_iter().for_each(|(identifier, mut int_map_b)| {
-                        let to_insert_int_map = if let Some(mut sint_map_a) = smap.remove(&identifier) {
-                            // other has an int_map with the same identifier
-                            let intersection = sint_map_a.into_iter().map(|(k, v)| {
-                                let combined = if let Some(value_b) = int_map_b.remove(k) {
-                                    v + value_b
-                                } else {
-                                    v
-                                };
-                                (k, combined)
-                            }).collect::<IntMap<u32>>();
-                            intersection.into_iter().chain(int_map_b).collect()
-                        } else {
-                            int_map_b
-                        };
+                        let to_insert_int_map =
+                            if let Some(mut sint_map_a) = smap.remove(&identifier) {
+                                // other has an int_map with the same identifier
+                                let intersection = sint_map_a
+                                    .into_iter()
+                                    .map(|(k, v)| {
+                                        let combined = if let Some(value_b) = int_map_b.remove(k) {
+                                            v + value_b
+                                        } else {
+                                            v
+                                        };
+                                        (k, combined)
+                                    })
+                                    .collect::<IntMap<u32>>();
+                                intersection.into_iter().chain(int_map_b).collect()
+                            } else {
+                                int_map_b
+                            };
                         smap.insert(identifier, to_insert_int_map);
                     });
                     SectionedStorageRemoval(smap)
@@ -152,20 +156,24 @@ impl AddAssign for StorageRemovedBytes {
                 }
                 SectionedStorageRemoval(rmap) => {
                     rmap.into_iter().for_each(|(identifier, mut int_map_b)| {
-                        let to_insert_int_map = if let Some(mut sint_map_a) = smap.remove(&identifier) {
-                            // other has an int_map with the same identifier
-                            let intersection = sint_map_a.into_iter().map(|(k, v)| {
-                                let combined = if let Some(value_b) = int_map_b.remove(k) {
-                                    v + value_b
-                                } else {
-                                    v
-                                };
-                                (k, combined)
-                            }).collect::<IntMap<u32>>();
-                            intersection.into_iter().chain(int_map_b).collect()
-                        } else {
-                            int_map_b
-                        };
+                        let to_insert_int_map =
+                            if let Some(mut sint_map_a) = smap.remove(&identifier) {
+                                // other has an int_map with the same identifier
+                                let intersection = sint_map_a
+                                    .into_iter()
+                                    .map(|(k, v)| {
+                                        let combined = if let Some(value_b) = int_map_b.remove(k) {
+                                            v + value_b
+                                        } else {
+                                            v
+                                        };
+                                        (k, combined)
+                                    })
+                                    .collect::<IntMap<u32>>();
+                                intersection.into_iter().chain(int_map_b).collect()
+                            } else {
+                                int_map_b
+                            };
                         // reinsert the now combined intmap
                         smap.insert(identifier, to_insert_int_map);
                     });
@@ -187,7 +195,9 @@ impl StorageRemovedBytes {
         match self {
             NoStorageRemoval => false,
             BasicStorageRemoval(r) => *r != 0,
-            SectionedStorageRemoval(m) => m.iter().any(|(_, int_map)| int_map.iter().any(|(_, r)| *r != 0)),
+            SectionedStorageRemoval(m) => m
+                .iter()
+                .any(|(_, int_map)| int_map.iter().any(|(_, r)| *r != 0)),
         }
     }
 
@@ -196,7 +206,10 @@ impl StorageRemovedBytes {
         match self {
             NoStorageRemoval => 0,
             BasicStorageRemoval(r) => *r,
-            SectionedStorageRemoval(m) => m.iter().map(|(_, int_map)| int_map.iter().map(|(_, r)| *r).sum::<u32>()).sum(),
+            SectionedStorageRemoval(m) => m
+                .iter()
+                .map(|(_, int_map)| int_map.iter().map(|(_, r)| *r).sum::<u32>())
+                .sum(),
         }
     }
 }

@@ -2,13 +2,13 @@
 use costs::{
     cost_return_on_error_no_add,
     storage_cost::{
-        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
+        key_value_cost::KeyValueStorageCost,
+        removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     },
     CostContext, CostsExt, OperationCost,
 };
 use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
-use costs::storage_cost::removal::StorageRemovedBytes;
 
 use super::make_prefixed_key;
 use crate::{
