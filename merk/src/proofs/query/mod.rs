@@ -802,14 +802,6 @@ impl<'a, S> RefWalker<'a, S>
 where
     S: Fetch + Sized + Clone,
 {
-    /// Creates a `Node::KV` from the key/value pair of the root node.
-    pub(crate) fn to_kv_node(&self) -> Node {
-        Node::KV(
-            self.tree().key().to_vec(),
-            self.tree().value_as_slice().to_vec(),
-        )
-    }
-
     /// Creates a `Node::KVValueHash` from the key/value pair of the root node.
     pub(crate) fn to_kv_value_hash_node(&self) -> Node {
         Node::KVValueHash(
