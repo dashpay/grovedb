@@ -168,27 +168,27 @@ impl Element {
     }
 
     /// Get the size of an element in bytes
-    pub fn byte_size(&self) -> usize {
+    pub fn byte_size(&self) -> u32 {
         match self {
             Element::Item(item, element_flag) => {
                 if let Some(flag) = element_flag {
-                    flag.len() + item.len()
+                    flag.len() as u32 + item.len() as u32
                 } else {
-                    item.len()
+                    item.len() as u32
                 }
             }
             Element::Reference(path_reference, _, element_flag) => {
-                let path_length = path_reference.encoding_length();
+                let path_length = path_reference.encoding_length() as u32;
 
                 if let Some(flag) = element_flag {
-                    flag.len() + path_length
+                    flag.len() as u32 + path_length
                 } else {
                     path_length
                 }
             }
             Element::Tree(_, element_flag) => {
                 if let Some(flag) = element_flag {
-                    flag.len() + 32
+                    flag.len() as u32 + 32
                 } else {
                     32
                 }
@@ -196,8 +196,8 @@ impl Element {
         }
     }
 
-    pub fn required_item_space(len: usize, flag_len: usize) -> usize {
-        len + len.required_space() + flag_len + flag_len.required_space() + 1
+    pub fn required_item_space(len: u32, flag_len: u32) -> u32 {
+        len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1
     }
 
     /// Get the size that the element will occupy on disk
