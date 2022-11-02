@@ -3,21 +3,22 @@ use std::io::{Read, Write};
 use byteorder::{BigEndian, ReadBytesExt};
 use ed::{Decode, Encode, Result, Terminated};
 use integer_encoding::{FixedInt, VarInt};
+use crate::{HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
 
-use super::{hash::Hash, Tree};
+use super::{hash::CryptoHash, Tree};
 use crate::merk::OptionOrMerkType;
 
 // TODO: optimize memory footprint
 
 /// Represents a reference to a child tree node. Links may or may not contain
 /// the child's `Tree` instance (storing its key if not).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Link {
     /// Represents a child tree node which has been pruned from memory, only
     /// retaining a reference to it (its key). The child node can always be
     /// fetched from the backing store by this key when necessary.
     Reference {
-        hash: Hash,
+        hash: CryptoHash,
         child_heights: (u8, u8),
         key: Vec<u8>,
         sum: Option<i64>,
@@ -37,7 +38,7 @@ pub enum Link {
     /// commit, but which has an up-to-date hash. The child's `Tree` instance is
     /// stored in the link.
     Uncommitted {
-        hash: Hash,
+        hash: CryptoHash,
         child_heights: (u8, u8),
         tree: Tree,
         sum: Option<i64>,
@@ -46,7 +47,7 @@ pub enum Link {
     /// Represents a tree node which has not been modified, has an up-to-date
     /// hash, and which is being retained in memory.
     Loaded {
-        hash: Hash,
+        hash: CryptoHash,
         child_heights: (u8, u8),
         tree: Tree,
         sum: Option<i64>,
@@ -124,7 +125,7 @@ impl Link {
     /// of variant `Link::Modified` since we have not yet recomputed the tree's
     /// hash.
     #[inline]
-    pub const fn hash(&self) -> &Hash {
+    pub const fn hash(&self) -> &CryptoHash {
         match self {
             Link::Modified { .. } => panic!("Cannot get hash from modified link"),
             Link::Reference { hash, .. } => hash,
@@ -223,6 +224,18 @@ impl Link {
             } => child_heights,
         }
     }
+
+    // Costs for operations within a single merk
+    #[inline]
+    pub const fn encoded_link_size(not_prefixed_key_len: u32) -> u32 {
+        // Links are optional values that represent the right or left node for a given
+        // 1 byte to represent key_length (this is a u8)
+        // key_length to represent the actual key
+        // 32 bytes for the hash of the node
+        // 1 byte for the left child height
+        // 1 byte for the right child height
+        not_prefixed_key_len + HASH_LENGTH_U32 + 3
+    }
 }
 
 impl Encode for Link {
@@ -292,7 +305,7 @@ impl Encode for Link {
                     //    if above is 1, then
                     //    1 for sum len
                     //    sum_len for sum vale
-                    1 + key.len() + 32 + 2 + 1 + 1 + encoded_sum_value.len()
+                    1 + key.len() + HASH_LENGTH + 2 + 1 + 1 + encoded_sum_value.len()
                 }
             },
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
@@ -300,14 +313,14 @@ impl Encode for Link {
                 None => 1 + tree.key().len() + 32 + 2 + 1,
                 Some(sum_value) => {
                     let encoded_sum_value = sum_value.encode_var_vec();
-                    1 + tree.key().len() + 32 + 2 + 1 + 1 + encoded_sum_value.len()
+                    1 + tree.key().len() + HASH_LENGTH + 2 + 1 + 1 + encoded_sum_value.len()
                 }
             },
             Link::Loaded { tree, sum, .. } => match sum {
                 None => 1 + tree.key().len() + 32 + 2 + 1,
                 Some(sum_value) => {
                     let encoded_sum_value = sum_value.encode_var_vec();
-                    1 + tree.key().len() + 32 + 2 + 1 + 1 + encoded_sum_value.len()
+                    1 + tree.key().len() + HASH_LENGTH + 2 + 1 + 1 + encoded_sum_value.len()
                 }
             },
         })

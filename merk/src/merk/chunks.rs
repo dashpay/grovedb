@@ -41,7 +41,7 @@ where
             trunk
                 .iter()
                 .filter_map(|op| match op {
-                    Op::Push(Node::KV(key, _)) => Some(key.clone()),
+                    Op::Push(Node::KVValueHash(key, ..)) => Some(key.clone()),
                     _ => None,
                 })
                 .collect()
@@ -187,7 +187,7 @@ mod tests {
     fn len_small() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..256);
-        merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
+        merk.apply::<_, Vec<_>>(&batch, &[], ).unwrap().unwrap();
 
         let chunks = merk.chunks().unwrap();
         assert_eq!(chunks.len(), 1);
@@ -198,7 +198,7 @@ mod tests {
     fn len_big() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..10_000);
-        merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
+        merk.apply::<_, Vec<_>>(&batch, &[], ).unwrap().unwrap();
 
         let chunks = merk.chunks().unwrap();
         assert_eq!(chunks.len(), 129);
@@ -209,7 +209,7 @@ mod tests {
     fn generate_and_verify_chunks() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..10_000);
-        merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
+        merk.apply::<_, Vec<_>>(&batch, &[], ).unwrap().unwrap();
 
         let mut chunks = merk.chunks().unwrap().into_iter().map(|x| x.unwrap());
 
@@ -232,13 +232,13 @@ mod tests {
         let tmp_dir = TempDir::new().expect("cannot create tempdir");
         let original_chunks = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-                .expect("cannot open rocksdb storage");
+                .expect("cannot open rocksdb storage_cost");
 
-            let mut merk = Merk::open(storage.get_storage_context(empty()).unwrap())
+            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
                 .unwrap()
                 .unwrap();
             let batch = make_batch_seq(1..10);
-            merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
+            merk.apply::<_, Vec<_>>(&batch, &[], ).unwrap().unwrap();
 
             merk.chunks()
                 .unwrap()
@@ -248,8 +248,8 @@ mod tests {
                 .into_iter()
         };
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
-        let merk = Merk::open(storage.get_storage_context(empty()).unwrap())
+            .expect("cannot open rocksdb storage_cost");
+        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .unwrap();
         let reopen_chunks = merk.chunks().unwrap().into_iter().map(|x| x.unwrap());
@@ -287,7 +287,7 @@ mod tests {
     fn random_access_chunks() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..111);
-        merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
+        merk.apply::<_, Vec<_>>(&batch, &[], ).unwrap().unwrap();
 
         let chunks = merk
             .chunks()
@@ -321,7 +321,7 @@ mod tests {
     fn test_chunk_index_oob() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..42);
-        merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
+        merk.apply::<_, Vec<_>>(&batch, &[], ).unwrap().unwrap();
 
         let mut producer = merk.chunks().unwrap();
         let _chunk = producer.chunk(50000).unwrap();
@@ -429,7 +429,7 @@ mod tests {
     fn test_next_chunk_index_oob() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(1..42);
-        merk.apply::<_, Vec<_>>(&batch, &[]).unwrap().unwrap();
+        merk.apply::<_, Vec<_>>(&batch, &[], ).unwrap().unwrap();
 
         let mut producer = merk.chunks().unwrap();
         let _chunk1 = producer.next_chunk();

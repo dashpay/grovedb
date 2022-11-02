@@ -414,6 +414,7 @@ impl GroveDbWrapper {
                     path_slice,
                     &key,
                     element,
+                    None,
                     using_transaction.then(|| transaction).flatten(),
                 )
                 .unwrap(); // Todo: Costs;
@@ -500,6 +501,7 @@ impl GroveDbWrapper {
                 .put_aux(
                     &key,
                     &value,
+                    None, // todo: support this
                     using_transaction.then(|| transaction).flatten(),
                 )
                 .unwrap(); // Todo: Costs;

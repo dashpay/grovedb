@@ -1,21 +1,35 @@
 #![deny(missing_docs)]
 //! Interface crate to unify how operations' costs are passed and retrieved.
 
+/// Cost Contexts
+pub mod context;
+/// Cost Errors
+pub mod error;
+/// Storage Costs
+pub mod storage_cost;
+
 use std::ops::{Add, AddAssign};
+
+pub use context::{CostContext, CostResult, CostsExt};
+use integer_encoding::VarInt;
+
+use crate::{
+    error::Error,
+    storage_cost::{
+        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes, StorageCost,
+    },
+    StorageRemovedBytes::BasicStorageRemoval,
+};
 
 /// Piece of data representing affected computer resources (approximately).
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct OperationCost {
-    /// How many storage seeks were done.
+    /// How many storage_cost seeks were done.
     pub seek_count: u16,
-    /// How many bytes were written on hard drive.
-    pub storage_written_bytes: u32,
+    /// Storage cost of the operation.
+    pub storage_cost: StorageCost,
     /// How many bytes were loaded from hard drive.
     pub storage_loaded_bytes: u32,
-    /// How many bytes were removed on hard drive.
-    pub storage_freed_bytes: u32,
-    /// How many times hash was called for bytes (paths, keys, values).
-    pub hash_byte_calls: u32,
     /// How many times node hashing was done (for merkelized tree).
     pub hash_node_calls: u16,
 }
@@ -34,7 +48,10 @@ impl OperationCost {
     /// `storage_written_bytes`.
     pub fn with_storage_written_bytes(storage_written_bytes: u32) -> Self {
         OperationCost {
-            storage_written_bytes,
+            storage_cost: StorageCost {
+                added_bytes: storage_written_bytes,
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -52,16 +69,10 @@ impl OperationCost {
     /// `storage_freed_bytes`.
     pub fn with_storage_freed_bytes(storage_freed_bytes: u32) -> Self {
         OperationCost {
-            storage_freed_bytes,
-            ..Default::default()
-        }
-    }
-
-    /// Helper function to build default `OperationCost` with different
-    /// `hash_byte_calls`.
-    pub fn with_hash_byte_calls(hash_byte_calls: u32) -> Self {
-        OperationCost {
-            hash_byte_calls,
+            storage_cost: StorageCost {
+                removed_bytes: BasicStorageRemoval(storage_freed_bytes),
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -74,6 +85,100 @@ impl OperationCost {
             ..Default::default()
         }
     }
+
+    /// worse_or_eq_than means worse for things that would cost resources
+    /// storage_freed_bytes is worse when it is lower instead
+    pub fn worse_or_eq_than(&self, other: &Self) -> bool {
+        self.seek_count >= other.seek_count
+            && self.storage_cost.worse_or_eq_than(&other.storage_cost)
+            && self.storage_loaded_bytes >= other.storage_loaded_bytes
+            && self.hash_node_calls >= other.hash_node_calls
+    }
+
+    /// add storage_cost costs for key and value storages
+    pub fn add_key_value_storage_costs(
+        &mut self,
+        key_len: u32,
+        value_len: u32,
+        children_sizes: Option<(Option<u32>, Option<u32>)>,
+        storage_cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), Error> {
+        let paid_key_len = key_len + key_len.required_space() as u32;
+
+        let doesnt_need_verification = storage_cost_info.as_ref().map(|key_value_storage_cost|  if !key_value_storage_cost.needs_value_verification {
+            Some(key_value_storage_cost.value_storage_cost.added_bytes + key_value_storage_cost.value_storage_cost.replaced_bytes)
+        } else {
+            None
+        }).unwrap_or(None);
+        let final_paid_value_len =
+
+            if let Some(value_cost_len) = doesnt_need_verification {
+                value_cost_len
+            } else {
+                let mut paid_value_len = value_len;
+                // We need to remove the child sizes if they exist
+                if let Some((left_child, right_child)) = children_sizes {
+                    paid_value_len -= 2; // for the child options
+
+                    // We need to remove the costs of the children
+                    if let Some(left_child_len) = left_child {
+                        paid_value_len -= left_child_len;
+                    }
+                    if let Some(right_child_len) = right_child {
+                        paid_value_len -= right_child_len;
+                    }
+
+                    // This is the moment we need to add the required space (after removing
+                    // children) but before adding the parent to child hook
+                    paid_value_len += paid_value_len.required_space() as u32;
+
+                    // We need to add the cost of a parent
+                    // key_len has a hash length already in it from the key prefix
+                    // So we need to remove it and then add a hash length
+                    // For the parent ref + 3 (2 for child sizes, 1 for key_len)
+                    paid_value_len += key_len + 3;
+                } else {
+                    paid_value_len += paid_value_len.required_space() as u32;
+                }
+                paid_value_len
+            };
+
+
+
+        let (key_storage_cost, value_storage_costs) = match storage_cost_info {
+            None => (None, None),
+            Some(s) => {
+                s.key_storage_cost
+                    .verify_key_storage_cost(paid_key_len, s.new_node)?;
+                s.value_storage_cost.verify(final_paid_value_len)?;
+                (Some(s.key_storage_cost), Some(s.value_storage_cost))
+            }
+        };
+
+        self.add_storage_costs(paid_key_len, key_storage_cost);
+        self.add_storage_costs(final_paid_value_len, value_storage_costs);
+        Ok(())
+    }
+
+    /// add_storage_costs adds storage_cost costs for a key or a value
+    fn add_storage_costs(
+        &mut self,
+        len_with_required_space: u32,
+        storage_cost_info: Option<StorageCost>,
+    ) {
+        match storage_cost_info {
+            // There is no storage_cost cost info, just use value len
+            None => {
+                self.storage_cost += StorageCost {
+                    added_bytes: len_with_required_space,
+                    ..Default::default()
+                }
+            }
+            Some(storage_cost) => {
+                self.storage_cost += storage_cost;
+            }
+        }
+    }
 }
 
 impl Add for OperationCost {
@@ -82,10 +187,8 @@ impl Add for OperationCost {
     fn add(self, rhs: Self) -> Self::Output {
         OperationCost {
             seek_count: self.seek_count + rhs.seek_count,
-            storage_written_bytes: self.storage_written_bytes + rhs.storage_written_bytes,
+            storage_cost: self.storage_cost + rhs.storage_cost,
             storage_loaded_bytes: self.storage_loaded_bytes + rhs.storage_loaded_bytes,
-            storage_freed_bytes: self.storage_freed_bytes + rhs.storage_freed_bytes,
-            hash_byte_calls: self.hash_byte_calls + rhs.hash_byte_calls,
             hash_node_calls: self.hash_node_calls + rhs.hash_node_calls,
         }
     }
@@ -94,188 +197,16 @@ impl Add for OperationCost {
 impl AddAssign for OperationCost {
     fn add_assign(&mut self, rhs: Self) {
         self.seek_count += rhs.seek_count;
-        self.storage_written_bytes += rhs.storage_written_bytes;
+        self.storage_cost += rhs.storage_cost;
         self.storage_loaded_bytes += rhs.storage_loaded_bytes;
-        self.storage_freed_bytes += rhs.storage_freed_bytes;
-        self.hash_byte_calls += rhs.hash_byte_calls;
         self.hash_node_calls += rhs.hash_node_calls;
     }
-}
-
-/// Wrapped operation result with associated cost.
-#[must_use]
-#[derive(Debug, Eq, PartialEq)]
-pub struct CostContext<T> {
-    /// Wrapped operation's return value.
-    pub value: T,
-    /// Cost of the operation.
-    pub cost: OperationCost,
-}
-
-/// General combinators for `CostContext`.
-impl<T> CostContext<T> {
-    /// Take wrapped value out adding its cost to provided accumulator.
-    pub fn unwrap_add_cost(self, acc_cost: &mut OperationCost) -> T {
-        *acc_cost += self.cost;
-        self.value
-    }
-
-    /// Take wrapped value out dropping cost data.
-    pub fn unwrap(self) -> T {
-        self.value
-    }
-
-    /// Borrow costs data.
-    pub fn cost(&self) -> &OperationCost {
-        &self.cost
-    }
-
-    /// Borrow wrapped data.
-    pub fn value(&self) -> &T {
-        &self.value
-    }
-
-    /// Applies function to wrapped value keeping cost the same as before.
-    pub fn map<B>(self, f: impl FnOnce(T) -> B) -> CostContext<B> {
-        let cost = self.cost;
-        let value = f(self.value);
-        CostContext { value, cost }
-    }
-
-    /// Applies function to wrapped value adding costs.
-    pub fn flat_map<B>(self, f: impl FnOnce(T) -> CostContext<B>) -> CostContext<B> {
-        let mut cost = self.cost;
-        let value = f(self.value).unwrap_add_cost(&mut cost);
-        CostContext { value, cost }
-    }
-
-    /// Adds previously accumulated cost
-    pub fn add_cost(mut self, cost: OperationCost) -> Self {
-        self.cost += cost;
-        self
-    }
-}
-
-/// Type alias for `Result` wrapped into `CostContext`.
-pub type CostResult<T, E> = CostContext<Result<T, E>>;
-
-/// Combinators to use with `Result` wrapped in `CostContext`.
-impl<T, E> CostResult<T, E> {
-    /// Applies function to wrapped value in case of `Ok` keeping cost the same
-    /// as before.
-    pub fn map_ok<B>(self, f: impl FnOnce(T) -> B) -> CostResult<B, E> {
-        self.map(|result| result.map(f))
-    }
-
-    /// Applies function to wrapped value in case of `Err` keeping cost the same
-    /// as before.
-    pub fn map_err<B>(self, f: impl FnOnce(E) -> B) -> CostResult<T, B> {
-        self.map(|result| result.map_err(f))
-    }
-
-    /// Applies function to wrapped result in case of `Ok` adding costs.
-    pub fn flat_map_ok<B>(self, f: impl FnOnce(T) -> CostResult<B, E>) -> CostResult<B, E> {
-        let mut cost = self.cost;
-        let result = match self.value {
-            Ok(x) => f(x).unwrap_add_cost(&mut cost),
-            Err(e) => Err(e),
-        };
-        CostContext {
-            value: result,
-            cost,
-        }
-    }
-}
-
-impl<T, E> CostResult<Result<T, E>, E> {
-    /// Flattens nested errors inside `CostContext`
-    pub fn flatten(self) -> CostResult<T, E> {
-        self.map(|value| match value {
-            Err(e) => Err(e),
-            Ok(Err(e)) => Err(e),
-            Ok(Ok(v)) => Ok(v),
-        })
-    }
-}
-
-impl<T> CostContext<CostContext<T>> {
-    /// Flattens nested `CostContext`s adding costs.
-    pub fn flatten(self) -> CostContext<T> {
-        let mut cost = OperationCost::default();
-        let inner = self.unwrap_add_cost(&mut cost);
-        inner.add_cost(cost)
-    }
-}
-
-/// Extension trait to add costs context to values.
-pub trait CostsExt {
-    /// Wraps any value into a `CostContext` object with provided costs.
-    fn wrap_with_cost(self, cost: OperationCost) -> CostContext<Self>
-    where
-        Self: Sized,
-    {
-        CostContext { value: self, cost }
-    }
-
-    /// Wraps any value into `CostContext` object with costs computed using the
-    /// value getting wrapped.
-    fn wrap_fn_cost(self, f: impl FnOnce(&Self) -> OperationCost) -> CostContext<Self>
-    where
-        Self: Sized,
-    {
-        CostContext {
-            cost: f(&self),
-            value: self,
-        }
-    }
-}
-
-impl<T> CostsExt for T {}
-
-/// Macro to achieve a kind of what `?` operator does, but with `CostContext` on
-/// top. Main properties are:
-/// 1. Early termination on error;
-/// 2. Because of 1. `Result` is removed from the equation;
-/// 3. `CostContext` if removed too because it is added to external cost
-///    accumulator;
-/// 4. Early termination uses external cost accumulator so previous
-///    costs won't be lost.
-#[macro_export]
-macro_rules! cost_return_on_error {
-    ( &mut $cost:ident, $($body:tt)+ ) => {
-        {
-            use $crate::CostsExt;
-            let result_with_cost = { $($body)+ };
-            let result = result_with_cost.unwrap_add_cost(&mut $cost);
-            match result {
-                Ok(x) => x,
-                Err(e) => return Err(e).wrap_with_cost($cost),
-            }
-        }
-    };
-}
-
-/// Macro to achieve a kind of what `?` operator does, but with `CostContext` on
-/// top. The difference between this macro and `cost_return_on_error` is that it
-/// is intended to use it on `Result` rather than `CostContext<Result<..>>`, so
-/// no costs will be added except previously accumulated.
-#[macro_export]
-macro_rules! cost_return_on_error_no_add {
-    ( &$cost:ident, $($body:tt)+ ) => {
-        {
-            use $crate::CostsExt;
-            let result = { $($body)+ };
-            match result {
-                Ok(x) => x,
-                Err(e) => return Err(e).wrap_with_cost($cost),
-            }
-        }
-    };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::{CostContext, CostResult, CostsExt};
 
     #[test]
     fn test_map() {
@@ -512,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_wrap_fn_cost() {
-        // Imagine this one is loaded from storage.
+        // Imagine this one is loaded from storage_cost.
         let loaded_value = b"ayylmao";
         let costs_ctx = loaded_value.wrap_fn_cost(|x| OperationCost {
             seek_count: 1,

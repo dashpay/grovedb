@@ -1,9 +1,14 @@
 use std::io::{Result, Write};
 
+use bincode::Options;
+use merk::{Merk, VisualizeableMerk};
 use storage::StorageContext;
-use visualize::{Drawer, Visualize};
+use visualize::{visualize_stdout, Drawer, Visualize};
 
-use crate::{subtree::Element, util::storage_context_optional_tx, GroveDb, TransactionArg};
+use crate::{
+    reference_path::ReferencePathType, subtree::Element, util::storage_context_optional_tx,
+    GroveDb, TransactionArg,
+};
 
 impl Visualize for Element {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
@@ -16,7 +21,7 @@ impl Visualize for Element {
                 drawer.write(b"item: ")?;
                 drawer = value.visualize(drawer)?;
             }
-            Element::Reference(_ref, _) => {
+            Element::Reference(_ref, ..) => {
                 drawer.write(b"ref")?;
                 // drawer.write(b"ref: [path: ")?;
                 // let mut path_iter = path.iter();
@@ -29,9 +34,59 @@ impl Visualize for Element {
                 // }
                 // drawer.write(b"]")?;
             }
-            Element::Tree(hash, _) => {
+            Element::Tree(root_key, _) => {
                 drawer.write(b"tree: ")?;
-                drawer = hash.visualize(drawer)?;
+                drawer = root_key.as_deref().visualize(drawer)?;
+            }
+        }
+        Ok(drawer)
+    }
+}
+
+impl Visualize for ReferencePathType {
+    fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
+        match self {
+            ReferencePathType::AbsolutePathReference(path) => {
+                drawer.write(b"absolute path reference: ")?;
+                drawer.write(
+                    path.iter()
+                        .map(|a| hex::encode(a))
+                        .collect::<Vec<String>>()
+                        .join("/")
+                        .as_bytes(),
+                )?;
+            }
+            ReferencePathType::UpstreamRootHeightReference(height, end_path) => {
+                drawer.write(b"upstream root height reference: ")?;
+                drawer.write(format!("[height: {height}").as_bytes())?;
+                drawer.write(
+                    end_path
+                        .iter()
+                        .map(|a| hex::encode(a))
+                        .collect::<Vec<String>>()
+                        .join("/")
+                        .as_bytes(),
+                )?;
+            }
+            ReferencePathType::UpstreamFromElementHeightReference(up, end_path) => {
+                drawer.write(b"upstream from element reference: ")?;
+                drawer.write(format!("[up: {up}").as_bytes())?;
+                drawer.write(
+                    end_path
+                        .iter()
+                        .map(|a| hex::encode(a))
+                        .collect::<Vec<String>>()
+                        .join("/")
+                        .as_bytes(),
+                )?;
+            }
+            ReferencePathType::CousinReference(key) => {
+                drawer.write(b"cousin reference: ")?;
+                drawer = key.visualize(drawer)?;
+            }
+            ReferencePathType::SiblingReference(key) => {
+                drawer.write(b"sibling reference: ")?;
+                drawer = key.visualize(drawer)?;
             }
             Element::SumTree(hash, ..) => {
                 drawer.write(b"sum tree: ")?;
@@ -66,7 +121,8 @@ impl GroveDb {
                     drawer.write(b" ")?;
                     match element {
                         Element::Tree(..) => {
-                            drawer.write(b"tree:")?;
+                            drawer.write(b"Merk root is: ")?;
+                            drawer = element.visualize(drawer)?;
                             drawer.down();
                             let mut inner_path = path.clone();
                             inner_path.push(key);
@@ -116,11 +172,22 @@ impl Visualize for GroveDb {
     }
 }
 
+pub(crate) fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
+    visualize_stdout(&VisualizeableMerk::new(merk, |bytes: &[u8]| {
+        bincode::DefaultOptions::default()
+            .with_varint_encoding()
+            .reject_trailing_bytes()
+            .deserialize::<Element>(bytes)
+            .expect("unable to deserialize Element")
+    }));
+}
+
 #[cfg(test)]
 mod tests {
     use visualize::to_hex;
 
     use super::*;
+    use crate::reference_path::ReferencePathType;
 
     #[test]
     fn test_element_item_str() {
@@ -158,7 +225,10 @@ mod tests {
     fn test_visualize_reference() {
         let p1 = b"ayy".to_vec();
         let p2 = b"lmao".to_vec();
-        let e = Element::new_reference(vec![p1.clone(), p2.clone()]);
+        let e = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+            p1.clone(),
+            p2.clone(),
+        ]));
         let mut result = Vec::new();
         let drawer = Drawer::new(&mut result);
         e.visualize(drawer).expect("visualize IO error");

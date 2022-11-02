@@ -1,4 +1,4 @@
-use grovedb::{Element, PathQuery, Query, SizedQuery};
+use grovedb::{reference_path::ReferencePathType, Element, PathQuery, Query, SizedQuery};
 use neon::{prelude::*, types::buffer::TypedArray};
 
 fn element_to_string(element: Element) -> String {
@@ -28,7 +28,10 @@ pub fn js_object_to_element<'a, C: Context<'a>>(
         "reference" => {
             let js_array: Handle<JsArray> = js_object.get(cx, "value")?;
             let reference = js_array_of_buffers_to_vec(js_array, cx)?;
-            Ok(Element::new_reference(reference))
+            // TODO: Fix bindings
+            Ok(Element::new_reference(
+                ReferencePathType::AbsolutePathReference(reference),
+            ))
         }
         "tree" => {
             let js_buffer: Handle<JsBuffer> = js_object.get(cx, "value")?;
@@ -59,7 +62,8 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
             let js_buffer = JsBuffer::external(cx, item);
             js_buffer.upcast()
         }
-        Element::Reference(reference, _) => nested_vecs_to_js(reference, cx)?,
+        // TODO: Fix bindings
+        Element::Reference(reference, ..) => nested_vecs_to_js(vec![], cx)?,
         Element::Tree(tree, _) | Element::SumTree(tree, ..) => {
             let js_buffer = JsBuffer::external(cx, tree);
             js_buffer.upcast()

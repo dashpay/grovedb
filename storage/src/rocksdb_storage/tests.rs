@@ -16,19 +16,19 @@ mod no_transaction {
         let context_ayyb = storage.get_storage_context(to_path(b"ayyb")).unwrap();
 
         context_ayya
-            .put_aux(b"key1", b"ayyavalue1")
+            .put_aux(b"key1", b"ayyavalue1", None)
             .unwrap()
             .expect("cannot insert into aux cf");
         context_ayya
-            .put_aux(b"key2", b"ayyavalue2")
+            .put_aux(b"key2", b"ayyavalue2", None)
             .unwrap()
             .expect("cannot insert into aux cf");
         context_ayyb
-            .put_aux(b"key1", b"ayybvalue1")
+            .put_aux(b"key1", b"ayybvalue1", None)
             .unwrap()
             .expect("cannot insert into aux cf");
         context_ayyb
-            .put_aux(b"key2", b"ayybvalue2")
+            .put_aux(b"key2", b"ayybvalue2", None)
             .unwrap()
             .expect("cannot insert into aux cf");
 
@@ -79,19 +79,19 @@ mod no_transaction {
         let context_ayyb = storage.get_storage_context(to_path(b"ayyb")).unwrap();
 
         context_ayya
-            .put_root(b"key1", b"ayyavalue1")
+            .put_root(b"key1", b"ayyavalue1", None)
             .unwrap()
             .expect("cannot insert into roots cf");
         context_ayya
-            .put_root(b"key2", b"ayyavalue2")
+            .put_root(b"key2", b"ayyavalue2", None)
             .unwrap()
             .expect("cannot insert into roots cf");
         context_ayyb
-            .put_root(b"key1", b"ayybvalue1")
+            .put_root(b"key1", b"ayybvalue1", None)
             .unwrap()
             .expect("cannot insert into roots cf");
         context_ayyb
-            .put_root(b"key2", b"ayybvalue2")
+            .put_root(b"key2", b"ayybvalue2", None)
             .unwrap()
             .expect("cannot insert into roots cf");
 
@@ -142,19 +142,19 @@ mod no_transaction {
         let context_ayyb = storage.get_storage_context(to_path(b"ayyb")).unwrap();
 
         context_ayya
-            .put_meta(b"key1", b"ayyavalue1")
+            .put_meta(b"key1", b"ayyavalue1", None)
             .unwrap()
             .expect("cannot insert into meta cf");
         context_ayya
-            .put_meta(b"key2", b"ayyavalue2")
+            .put_meta(b"key2", b"ayyavalue2", None)
             .unwrap()
             .expect("cannot insert into meta cf");
         context_ayyb
-            .put_meta(b"key1", b"ayybvalue1")
+            .put_meta(b"key1", b"ayybvalue1", None)
             .unwrap()
             .expect("cannot insert into meta cf");
         context_ayyb
-            .put_meta(b"key2", b"ayybvalue2")
+            .put_meta(b"key2", b"ayybvalue2", None)
             .unwrap()
             .expect("cannot insert into meta cf");
 
@@ -205,21 +205,21 @@ mod no_transaction {
         let context_ayyb = storage.get_storage_context(to_path(b"ayyb")).unwrap();
 
         context_ayya
-            .put(b"key1", b"ayyavalue1")
+            .put(b"key1", b"ayyavalue1", None, None)
             .unwrap()
-            .expect("cannot insert into storage");
+            .expect("cannot insert into storage_cost");
         context_ayya
-            .put(b"key2", b"ayyavalue2")
+            .put(b"key2", b"ayyavalue2", None, None)
             .unwrap()
-            .expect("cannot insert into storage");
+            .expect("cannot insert into storage_cost");
         context_ayyb
-            .put(b"key1", b"ayybvalue1")
+            .put(b"key1", b"ayybvalue1", None, None)
             .unwrap()
-            .expect("cannot insert into storage");
+            .expect("cannot insert into storage_cost");
         context_ayyb
-            .put(b"key2", b"ayybvalue2")
+            .put(b"key2", b"ayybvalue2", None, None)
             .unwrap()
-            .expect("cannot insert into storage");
+            .expect("cannot insert into storage_cost");
 
         assert_eq!(
             context_ayya
@@ -227,19 +227,19 @@ mod no_transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage"),
+                .expect("cannot get from storage_cost"),
             b"ayyavalue1"
         );
 
         context_ayya
             .delete(b"key1")
             .unwrap()
-            .expect("cannot delete from storage");
+            .expect("cannot delete from storage_cost");
 
         assert!(context_ayya
             .get(b"key1")
             .unwrap()
-            .expect("cannot get from storage")
+            .expect("cannot get from storage_cost")
             .is_none());
         assert_eq!(
             context_ayya
@@ -247,7 +247,7 @@ mod no_transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage"),
+                .expect("cannot get from storage_cost"),
             b"ayyavalue2"
         );
         assert_eq!(
@@ -256,7 +256,7 @@ mod no_transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage"),
+                .expect("cannot get from storage_cost"),
             b"ayybvalue1"
         );
     }
@@ -267,28 +267,28 @@ mod no_transaction {
         let context_ayya = storage.get_storage_context(to_path(b"ayya")).unwrap();
 
         context_ayya
-            .put(b"key1", b"ayyavalue1")
+            .put(b"key1", b"ayyavalue1", None, None)
             .unwrap()
-            .expect("cannot insert into storage");
+            .expect("cannot insert into storage_cost");
         context_ayya
-            .put(b"key2", b"ayyavalue2")
+            .put(b"key2", b"ayyavalue2", None, None)
             .unwrap()
-            .expect("cannot insert into storage");
+            .expect("cannot insert into storage_cost");
 
         assert!(context_ayya
             .get(b"key3")
             .unwrap()
-            .expect("cannot get from storage")
+            .expect("cannot get from storage_cost")
             .is_none());
 
         let mut batch = context_ayya.new_batch();
-        batch.delete(b"key1");
-        batch.put(b"key3", b"ayyavalue3");
+        batch.delete(b"key1", );
+        batch.put(b"key3", b"ayyavalue3", None, None);
 
         assert!(context_ayya
             .get(b"key3")
             .unwrap()
-            .expect("cannot get from storage")
+            .expect("cannot get from storage_cost")
             .is_none());
 
         context_ayya
@@ -302,13 +302,13 @@ mod no_transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage"),
+                .expect("cannot get from storage_cost"),
             b"ayyavalue3"
         );
         assert!(context_ayya
             .get(b"key1")
             .unwrap()
-            .expect("cannot get from storage")
+            .expect("cannot get from storage_cost")
             .is_none());
     }
 
@@ -318,19 +318,19 @@ mod no_transaction {
         let context = storage.get_storage_context(to_path(b"someprefix")).unwrap();
 
         context
-            .put(b"key1", b"value1")
+            .put(b"key1", b"value1", None, None)
             .unwrap()
             .expect("expected successful insertion");
         context
-            .put(b"key0", b"value0")
+            .put(b"key0", b"value0", None, None)
             .unwrap()
             .expect("expected successful insertion");
         context
-            .put(b"key3", b"value3")
+            .put(b"key3", b"value3", None, None)
             .unwrap()
             .expect("expected successful insertion");
         context
-            .put(b"key2", b"value2")
+            .put(b"key2", b"value2", None, None)
             .unwrap()
             .expect("expected successful insertion");
 
@@ -340,22 +340,22 @@ mod no_transaction {
             .get_storage_context(to_path(b"anothersomeprefix"))
             .unwrap();
         context_before
-            .put(b"key1", b"value1")
+            .put(b"key1", b"value1", None, None)
             .unwrap()
             .expect("expected successful insertion");
         context_before
-            .put(b"key5", b"value5")
+            .put(b"key5", b"value5", None, None)
             .unwrap()
             .expect("expected successful insertion");
         let context_after = storage
             .get_storage_context(to_path(b"zanothersomeprefix"))
             .unwrap();
         context_after
-            .put(b"key1", b"value1")
+            .put(b"key1", b"value1", None, None)
             .unwrap()
             .expect("expected successful insertion");
         context_after
-            .put(b"key5", b"value5")
+            .put(b"key5", b"value5", None, None)
             .unwrap()
             .expect("expected successful insertion");
 
@@ -380,7 +380,7 @@ mod no_transaction {
         }
         assert!(expected_iter.next().is_none());
 
-        // Test `seek_to_last` on a storage with elements
+        // Test `seek_to_last` on a storage_cost with elements
 
         let mut iter = context.raw_iter();
         iter.seek_to_last();
@@ -391,7 +391,7 @@ mod no_transaction {
         iter.next();
         assert!(!iter.valid().unwrap());
 
-        // Test `seek_to_last` on empty storage
+        // Test `seek_to_last` on empty storage_cost
         let empty_storage = storage.get_storage_context(to_path(b"notexist")).unwrap();
         let mut iter = empty_storage.raw_iter();
         iter.seek_to_last();
@@ -417,19 +417,19 @@ mod transaction {
             .unwrap();
 
         context_ayya
-            .put_aux(b"key1", b"ayyavalue1")
+            .put_aux(b"key1", b"ayyavalue1", None)
             .unwrap()
             .expect("cannot insert into aux cf");
         context_ayya
-            .put_aux(b"key2", b"ayyavalue2")
+            .put_aux(b"key2", b"ayyavalue2", None)
             .unwrap()
             .expect("cannot insert into aux cf");
         context_ayyb
-            .put_aux(b"key1", b"ayybvalue1")
+            .put_aux(b"key1", b"ayybvalue1", None)
             .unwrap()
             .expect("cannot insert into aux cf");
         context_ayyb
-            .put_aux(b"key2", b"ayybvalue2")
+            .put_aux(b"key2", b"ayybvalue2", None)
             .unwrap()
             .expect("cannot insert into aux cf");
 
@@ -503,19 +503,19 @@ mod transaction {
             .unwrap();
 
         context_ayya
-            .put_root(b"key1", b"ayyavalue1")
+            .put_root(b"key1", b"ayyavalue1", None)
             .unwrap()
             .expect("cannot insert into roots cf");
         context_ayya
-            .put_root(b"key2", b"ayyavalue2")
+            .put_root(b"key2", b"ayyavalue2", None)
             .unwrap()
             .expect("cannot insert into roots cf");
         context_ayyb
-            .put_root(b"key1", b"ayybvalue1")
+            .put_root(b"key1", b"ayybvalue1", None)
             .unwrap()
             .expect("cannot insert into roots cf");
         context_ayyb
-            .put_root(b"key2", b"ayybvalue2")
+            .put_root(b"key2", b"ayybvalue2", None)
             .unwrap()
             .expect("cannot insert into roots cf");
 
@@ -584,19 +584,19 @@ mod transaction {
         let context_ayyb = storage.get_storage_context(to_path(b"ayyb")).unwrap();
 
         context_ayya
-            .put_meta(b"key1", b"ayyavalue1")
+            .put_meta(b"key1", b"ayyavalue1", None)
             .unwrap()
             .expect("cannot insert into meta cf");
         context_ayya
-            .put_meta(b"key2", b"ayyavalue2")
+            .put_meta(b"key2", b"ayyavalue2", None)
             .unwrap()
             .expect("cannot insert into meta cf");
         context_ayyb
-            .put_meta(b"key1", b"ayybvalue1")
+            .put_meta(b"key1", b"ayybvalue1", None)
             .unwrap()
             .expect("cannot insert into meta cf");
         context_ayyb
-            .put_meta(b"key2", b"ayybvalue2")
+            .put_meta(b"key2", b"ayybvalue2", None)
             .unwrap()
             .expect("cannot insert into meta cf");
 
@@ -647,21 +647,21 @@ mod transaction {
         let context_ayyb = storage.get_storage_context(to_path(b"ayyb")).unwrap();
 
         context_ayya
-            .put(b"key1", b"ayyavalue1")
+            .put(b"key1", b"ayyavalue1", None, None)
             .unwrap()
-            .expect("cannot insert into storage");
+            .expect("cannot insert into storage_cost");
         context_ayya
-            .put(b"key2", b"ayyavalue2")
+            .put(b"key2", b"ayyavalue2", None, None)
             .unwrap()
-            .expect("cannot insert into storage");
+            .expect("cannot insert into storage_cost");
         context_ayyb
-            .put(b"key1", b"ayybvalue1")
+            .put(b"key1", b"ayybvalue1", None, None)
             .unwrap()
-            .expect("cannot insert into storage");
+            .expect("cannot insert into storage_cost");
         context_ayyb
-            .put(b"key2", b"ayybvalue2")
+            .put(b"key2", b"ayybvalue2", None, None)
             .unwrap()
-            .expect("cannot insert into storage");
+            .expect("cannot insert into storage_cost");
 
         assert_eq!(
             context_ayya
@@ -669,19 +669,19 @@ mod transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage"),
+                .expect("cannot get from storage_cost"),
             b"ayyavalue1"
         );
 
         context_ayya
             .delete(b"key1")
             .unwrap()
-            .expect("cannot delete from storage");
+            .expect("cannot delete from storage_cost");
 
         assert!(context_ayya
             .get(b"key1")
             .unwrap()
-            .expect("cannot get from storage")
+            .expect("cannot get from storage_cost")
             .is_none());
         assert_eq!(
             context_ayya
@@ -689,7 +689,7 @@ mod transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage"),
+                .expect("cannot get from storage_cost"),
             b"ayyavalue2"
         );
         assert_eq!(
@@ -698,7 +698,7 @@ mod transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage"),
+                .expect("cannot get from storage_cost"),
             b"ayybvalue1"
         );
     }
@@ -712,28 +712,28 @@ mod transaction {
             .unwrap();
 
         context_ayya
-            .put(b"key1", b"ayyavalue1")
+            .put(b"key1", b"ayyavalue1", None, None)
             .unwrap()
-            .expect("cannot insert into storage");
+            .expect("cannot insert into storage_cost");
         context_ayya
-            .put(b"key2", b"ayyavalue2")
+            .put(b"key2", b"ayyavalue2", None, None)
             .unwrap()
-            .expect("cannot insert into storage");
+            .expect("cannot insert into storage_cost");
 
         assert!(context_ayya
             .get(b"key3")
             .unwrap()
-            .expect("cannot get from storage")
+            .expect("cannot get from storage_cost")
             .is_none());
 
         let mut batch = context_ayya.new_batch();
-        batch.delete(b"key1");
-        batch.put(b"key3", b"ayyavalue3");
+        batch.delete(b"key1", );
+        batch.put(b"key3", b"ayyavalue3", None, None);
 
         assert!(context_ayya
             .get(b"key1")
             .unwrap()
-            .expect("cannot get from storage")
+            .expect("cannot get from storage_cost")
             .is_some());
 
         context_ayya
@@ -744,7 +744,7 @@ mod transaction {
         assert!(context_ayya
             .get(b"key1")
             .unwrap()
-            .expect("cannot get from storage")
+            .expect("cannot get from storage_cost")
             .is_none());
 
         storage
@@ -759,13 +759,13 @@ mod transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage"),
+                .expect("cannot get from storage_cost"),
             b"ayyavalue3"
         );
         assert!(context_ayya
             .get(b"key1")
             .unwrap()
-            .expect("cannot get from storage")
+            .expect("cannot get from storage_cost")
             .is_none());
     }
 
@@ -775,19 +775,19 @@ mod transaction {
         let context = storage.get_storage_context(to_path(b"someprefix")).unwrap();
 
         context
-            .put(b"key1", b"value1")
+            .put(b"key1", b"value1", None, None)
             .unwrap()
             .expect("expected successful insertion");
         context
-            .put(b"key0", b"value0")
+            .put(b"key0", b"value0", None, None)
             .unwrap()
             .expect("expected successful insertion");
         context
-            .put(b"key3", b"value3")
+            .put(b"key3", b"value3", None, None)
             .unwrap()
             .expect("expected successful insertion");
         context
-            .put(b"key2", b"value2")
+            .put(b"key2", b"value2", None, None)
             .unwrap()
             .expect("expected successful insertion");
 
@@ -797,22 +797,22 @@ mod transaction {
             .get_storage_context(to_path(b"anothersomeprefix"))
             .unwrap();
         context_before
-            .put(b"key1", b"value1")
+            .put(b"key1", b"value1", None, None)
             .unwrap()
             .expect("expected successful insertion");
         context_before
-            .put(b"key5", b"value5")
+            .put(b"key5", b"value5", None, None)
             .unwrap()
             .expect("expected successful insertion");
         let context_after = storage
             .get_storage_context(to_path(b"zanothersomeprefix"))
             .unwrap();
         context_after
-            .put(b"key1", b"value1")
+            .put(b"key1", b"value1", None, None)
             .unwrap()
             .expect("expected successful insertion");
         context_after
-            .put(b"key5", b"value5")
+            .put(b"key5", b"value5", None, None)
             .unwrap()
             .expect("expected successful insertion");
 
@@ -828,7 +828,7 @@ mod transaction {
                 .unwrap()
                 .expect("unable to delete an item");
             context_tx
-                .put(b"key4", b"value4")
+                .put(b"key4", b"value4", None, None)
                 .unwrap()
                 .expect("unable to insert an item");
 
@@ -853,7 +853,7 @@ mod transaction {
             }
             assert!(expected_iter.next().is_none());
 
-            // Test `seek_to_last` on a storage with elements
+            // Test `seek_to_last` on a storage_cost with elements
 
             let mut iter = context_tx.raw_iter();
             iter.seek_to_last();
@@ -905,35 +905,35 @@ mod batch_no_transaction {
             .unwrap();
 
         context_ayya
-            .put_aux(b"key1", b"ayyavalue1")
+            .put_aux(b"key1", b"ayyavalue1", None)
             .unwrap()
             .expect("cannot insert into aux cf");
         context_ayya
-            .put_meta(b"key2", b"ayyavalue2")
+            .put_meta(b"key2", b"ayyavalue2", None)
             .unwrap()
             .expect("cannot insert into meta cf");
         context_ayya
-            .put_root(b"key3", b"ayyavalue3")
+            .put_root(b"key3", b"ayyavalue3", None)
             .unwrap()
             .expect("cannot insert into roots cf");
         context_ayya
-            .put(b"key4", b"ayyavalue4")
+            .put(b"key4", b"ayyavalue4", None, None)
             .unwrap()
             .expect("cannot insert data");
         context_ayyb
-            .put_aux(b"key1", b"ayybvalue1")
+            .put_aux(b"key1", b"ayybvalue1", None)
             .unwrap()
             .expect("cannot insert into aux cf");
         context_ayyb
-            .put_meta(b"key2", b"ayybvalue2")
+            .put_meta(b"key2", b"ayybvalue2", None)
             .unwrap()
             .expect("cannot insert into meta cf");
         context_ayyb
-            .put_root(b"key3", b"ayybvalue3")
+            .put_root(b"key3", b"ayybvalue3", None)
             .unwrap()
             .expect("cannot insert into roots cf");
         context_ayyb
-            .put(b"key4", b"ayybvalue4")
+            .put(b"key4", b"ayybvalue4", None, None)
             .unwrap()
             .expect("cannot insert data");
 
@@ -1042,20 +1042,28 @@ mod batch_no_transaction {
             .unwrap();
 
         context_ayya
-            .put(b"key1", b"ayyavalue1")
+            .put(b"key1", b"ayyavalue1", None, None)
             .unwrap()
             .expect("cannot insert data");
         let mut db_batch_ayya = context_ayya.new_batch();
-        db_batch_ayya.put(b"key2", b"ayyavalue2");
-        db_batch_ayya.put(b"key3", b"ayyavalue3");
+        db_batch_ayya
+            .put(b"key2", b"ayyavalue2", None, None)
+            .expect("should not error");
+        db_batch_ayya
+            .put(b"key3", b"ayyavalue3", None, None)
+            .expect("should not error");
 
         context_ayyb
-            .put(b"key1", b"ayybvalue1")
+            .put(b"key1", b"ayybvalue1", None, None)
             .unwrap()
             .expect("cannot insert data");
         let mut db_batch_ayyb = context_ayyb.new_batch();
-        db_batch_ayyb.put(b"key2", b"ayybvalue2");
-        db_batch_ayyb.put(b"key3", b"ayybvalue3");
+        db_batch_ayyb
+            .put(b"key2", b"ayybvalue2", None, None)
+            .expect("should not error");
+        db_batch_ayyb
+            .put(b"key3", b"ayybvalue3", None, None)
+            .expect("should not error");
 
         // DB batches are not commited yet, so these operations are missing from
         // StorageBatch
@@ -1123,11 +1131,11 @@ mod batch_transaction {
 
         // Data should be visible in transaction...
         context_ayya_tx
-            .put(b"key1", b"ayyavalue1")
+            .put(b"key1", b"ayyavalue1", None, None)
             .unwrap()
             .expect("cannot insert data");
         context_ayyb_tx
-            .put(b"key1", b"ayybvalue1")
+            .put(b"key1", b"ayybvalue1", None, None)
             .unwrap()
             .expect("cannot insert data");
 
@@ -1173,11 +1181,11 @@ mod batch_transaction {
             .get_batch_transactional_storage_context(to_path(b"ayyb"), &batch, &transaction)
             .unwrap();
         context_ayya_batch
-            .put_aux(b"key2", b"ayyavalue2")
+            .put_aux(b"key2", b"ayyavalue2", None)
             .unwrap()
             .expect("cannot put aux data into batch");
         context_ayyb_batch
-            .put_aux(b"key2", b"ayybvalue2")
+            .put_aux(b"key2", b"ayybvalue2", None)
             .unwrap()
             .expect("cannot put aux data into batch");
 
@@ -1257,8 +1265,8 @@ mod batch_transaction {
         let mut db_batch_a = context_ayya.new_batch();
         let mut db_batch_b = context_ayyb.new_batch();
 
-        db_batch_a.put(b"key1", b"value1");
-        db_batch_b.put(b"key2", b"value2");
+        db_batch_a.put(b"key1", b"value1", None, None).unwrap();
+        db_batch_b.put(b"key2", b"value2", None, None).unwrap();
 
         // Until db batches are commited our multi-context batch should be empty
         assert_eq!(batch.len(), 0);

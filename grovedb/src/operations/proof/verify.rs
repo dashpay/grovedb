@@ -1,12 +1,17 @@
-use merk::{proofs::Query, Hash};
+use indexmap::Equivalent;
+use merk::{
+    proofs::Query,
+    tree::{combine_hash, value_hash as value_hash_fn},
+    CryptoHash,
+};
 
 use crate::{
     operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
     Element, Error, GroveDb, PathQuery,
 };
 
-type ProofKeyValue = (Vec<u8>, Vec<u8>);
-type Proof = Vec<(Vec<u8>, Vec<u8>)>;
+type ProofKeyValue = (Vec<u8>, Vec<u8>, CryptoHash);
+type Proof = Vec<(Vec<u8>, Vec<u8>, CryptoHash)>;
 
 impl GroveDb {
     pub fn verify_query_many(
@@ -50,7 +55,9 @@ impl ProofVerifier {
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
         // TODO: get rid of this error once root tree is also of type merk
         if path_slices.is_empty() {
-            return Err(Error::InvalidPath("can't verify proof for empty path"));
+            return Err(Error::InvalidPath(
+                "can't verify proof for empty path".to_owned(),
+            ));
         }
 
         let (proof_type, proof) = proof_reader.read_proof()?;
@@ -110,11 +117,15 @@ impl ProofVerifier {
                     .1
                     .expect("MERK_PROOF always returns a result set");
 
-                for (key, value_bytes) in children {
+                for (key, value_bytes, value_hash) in children {
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
                     match child_element {
-                        Element::Tree(mut expected_root_hash, _) => {
-                            if expected_root_hash == EMPTY_TREE_HASH {
+                        Element::Tree(expected_root_key, _) => {
+                            let mut expected_combined_child_hash = value_hash;
+                            let mut current_value_bytes = value_bytes;
+
+                            // What is the equivalent for an empty tree
+                            if expected_root_key.is_none() {
                                 // child node is empty, move on to next
                                 continue;
                             }
@@ -168,8 +179,9 @@ impl ProofVerifier {
                                         continue;
                                     }
 
-                                    Self::update_root_hash_from_subquery_key_element(
-                                        &mut expected_root_hash,
+                                    Self::update_root_key_from_subquery_key_element(
+                                        &mut expected_combined_child_hash,
+                                        &mut current_value_bytes,
                                         &subquery_key_result_set,
                                     )?;
                                 }
@@ -186,7 +198,14 @@ impl ProofVerifier {
                                 new_path_query,
                             )?;
 
-                            if child_hash != expected_root_hash {
+                            let combined_child_hash = combine_hash(
+                                value_hash_fn(&current_value_bytes).value(),
+                                &child_hash,
+                            )
+                            .value()
+                            .to_owned();
+
+                            if combined_child_hash != expected_combined_child_hash {
                                 return Err(Error::InvalidProof(
                                     "child hash doesn't match the expected hash",
                                 ));
@@ -213,17 +232,22 @@ impl ProofVerifier {
         Ok(last_root_hash)
     }
 
-    /// Deserialize subkey_element and update expected root hash
-    fn update_root_hash_from_subquery_key_element(
-        expected_root_hash: &mut [u8; 32],
+    /// Deserialize subkey_element and update expected root hash and element
+    /// value
+    fn update_root_key_from_subquery_key_element<'a>(
+        expected_child_hash: &mut CryptoHash,
+        current_value_bytes: &mut Vec<u8>,
         subquery_key_result_set: &[ProofKeyValue],
     ) -> Result<(), Error> {
+        // dbg!(&expected_value_hash);
         let elem_value = &subquery_key_result_set[0].1;
         let subquery_key_element = Element::deserialize(elem_value)
             .map_err(|_| Error::CorruptedData("failed to deserialize element".to_string()))?;
         match subquery_key_element {
-            Element::Tree(new_exptected_hash, _) => {
-                *expected_root_hash = new_exptected_hash;
+            // TODO: Add sum trees here
+            Element::Tree(..) => {
+                *expected_child_hash = subquery_key_result_set[0].2;
+                *current_value_bytes = subquery_key_result_set[0].1.to_owned();
             }
             _ => {
                 // the means that the subquery key pointed to a non tree
@@ -244,7 +268,7 @@ impl ProofVerifier {
         proof_reader: &mut ProofReader,
         expected_proof_type: ProofType,
         subquery_key: Option<Vec<u8>>,
-    ) -> Result<(Hash, Option<Proof>), Error> {
+    ) -> Result<(CryptoHash, Option<Proof>), Error> {
         let (proof_type, subkey_proof) = proof_reader.read_proof()?;
 
         if proof_type != expected_proof_type {
@@ -278,7 +302,7 @@ impl ProofVerifier {
     ) -> Result<[u8; 32], Error> {
         let mut root_key_hash = None;
         let mut expected_child_hash = None;
-        let mut last_result_set = vec![];
+        let mut last_result_set: Proof = vec![];
 
         for key in path_slices {
             let merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
@@ -291,8 +315,16 @@ impl ProofVerifier {
 
             if expected_child_hash == None {
                 root_key_hash = Some(proof_result.0);
-            } else if Some(proof_result.0) != expected_child_hash {
-                return Err(Error::InvalidProof("proof invalid: invalid parent"));
+            } else {
+                let combined_hash = combine_hash(
+                    value_hash_fn(last_result_set[0].1.as_slice()).value(),
+                    &proof_result.0,
+                )
+                .value()
+                .to_owned();
+                if Some(combined_hash) != expected_child_hash {
+                    return Err(Error::InvalidProof("proof invalid: invalid parent"));
+                }
             }
 
             last_result_set = proof_result
@@ -305,12 +337,12 @@ impl ProofVerifier {
 
             let elem = Element::deserialize(last_result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(hash, _) | Element::SumTree(hash, ..) => Ok(hash),
+                Element::Tree(..) | Element::SumTree(hash, ..) => Ok(Some(last_result_set[0].2)),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),
             }?;
-            expected_child_hash = Some(child_hash);
+            expected_child_hash = child_hash;
         }
 
         if last_result_set.is_empty() {
@@ -358,14 +390,20 @@ impl ProofVerifier {
 
             let elem = Element::deserialize(result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(hash, _) | Element::SumTree(hash, ..) => Ok(hash),
+                Element::Tree(root_key, ..) | Element::SumTree(hash, ..) => Ok(result_set[0].2),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),
             }?;
 
-            if child_hash != *expected_root_hash {
-                return Err(Error::InvalidProof("Bad path"));
+            let combined_root_hash =
+                combine_hash(value_hash_fn(&result_set[0].1).value(), expected_root_hash)
+                    .value()
+                    .to_owned();
+            if child_hash != combined_root_hash {
+                return Err(Error::InvalidProof(
+                    "Bad path: tree hash does not have expected hash",
+                ));
             }
 
             *expected_root_hash = proof_result.0;
@@ -384,7 +422,7 @@ impl ProofVerifier {
         proof: &[u8],
         query: &Query,
         left_to_right: bool,
-    ) -> Result<(Hash, Option<Proof>), Error> {
+    ) -> Result<(CryptoHash, Option<Proof>), Error> {
         let is_sized_proof = proof_type == ProofType::SizedMerk;
         let mut limit = None;
         let mut offset = None;

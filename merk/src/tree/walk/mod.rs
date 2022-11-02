@@ -7,14 +7,7 @@ pub use fetch::Fetch;
 pub use ref_walker::RefWalker;
 
 use super::{Link, Tree};
-use crate::{
-    merk::{
-        OptionOrMerkType,
-        OptionOrMerkType::{NoneOfType, SomeMerk},
-    },
-    owner::Owner,
-    Hash, TreeFeatureType,
-};
+use crate::{owner::Owner, CryptoHash};
 
 /// Allows traversal of a `Tree`, fetching from the given source when traversing
 /// to a pruned node, detaching children as they are traversed.
@@ -160,15 +153,30 @@ where
     }
 
     /// Similar to `Tree#with_value_and_value_hash`.
-    pub fn put_value_and_value_hash(
+    pub fn put_value_and_reference_value_hash(
         mut self,
         value: Vec<u8>,
-        value_hash: Hash,
+        value_hash: CryptoHash,
+    ) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
+        self.tree.own(|t| {
+            t.put_value_and_reference_value_hash(value, value_hash)
+                .unwrap_add_cost(&mut cost)
+        });
+        self.wrap_with_cost(cost)
+    }
+
+    /// Similar to `Tree#with_value_and_value_hash`.
+    pub fn put_value_with_reference_value_hash_and_value_cost(
+        mut self,
+        value: Vec<u8>,
+        value_hash: CryptoHash,
+        value_fixed_cost: u32,
         feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.tree.own(|t| {
-            t.put_value_and_value_hash(value, value_hash, feature_type)
+            t.put_value_with_reference_value_hash_and_value_cost(value, value_hash, value_fixed_cost, feature_type)
                 .unwrap_add_cost(&mut cost)
         });
         self.wrap_with_cost(cost)
@@ -186,7 +194,9 @@ where
 
 #[cfg(test)]
 mod test {
-    use costs::{CostContext, CostsExt};
+    use costs::{
+        storage_cost::removal::StorageRemovedBytes::NoStorageRemoval, CostContext, CostsExt,
+    };
 
     use super::{super::NoopCommit, *};
     use crate::tree::{Tree, TreeFeatureType::BasicMerk};
@@ -230,9 +240,11 @@ mod test {
                 true,
                 Some(Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap()),
             );
-        tree.commit(&mut NoopCommit {})
-            .unwrap()
-            .expect("commit failed");
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .expect("commit failed");
 
         let source = MockSource {};
         let walker = Walker::new(tree, source);

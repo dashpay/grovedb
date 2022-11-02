@@ -6,7 +6,7 @@ use storage::RawIterator;
 #[cfg(feature = "full")]
 use {
     super::tree::{execute, Tree as ProofTree},
-    crate::tree::Hash,
+    crate::tree::CryptoHash,
     crate::tree::Tree,
 };
 
@@ -130,7 +130,7 @@ where
         }
 
         // add this node's data
-        proof.push(Op::Push(self.to_kv_node()));
+        proof.push(Op::Push(self.to_kv_value_hash_node()));
 
         if has_left_child {
             proof.push(Op::Parent);
@@ -174,9 +174,19 @@ pub(crate) fn get_next_chunk(
         }
 
         let encoded_node = iter.value().unwrap_add_cost(&mut cost).unwrap();
-        Tree::decode_into(&mut node, vec![], encoded_node);
+        cost_return_on_error_no_add!(
+            &cost,
+            Tree::decode_into(&mut node, vec![], encoded_node).map_err(|e| e.into())
+        );
 
-        let kv = Node::KV(key.to_vec(), node.value().to_vec());
+        // TODO: Only use the KVValueHash if needed, saves 32 bytes
+        //  only needed when dealing with references and trees
+        let kv = Node::KVValueHash(
+            key.to_vec(),
+            node.value_ref().to_vec(),
+            node.value_hash().clone(),
+        );
+
         chunk.push(Op::Push(kv));
 
         if node.link(true).is_some() {
@@ -212,10 +222,10 @@ pub(crate) fn get_next_chunk(
 #[allow(dead_code)] // TODO: remove when proofs will be enabled
 pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op>>>(
     ops: I,
-    expected_hash: Hash,
+    expected_hash: CryptoHash,
 ) -> CostContext<Result<ProofTree>> {
     execute(ops, false, |node| match node {
-        Node::KV(..) => Ok(()),
+        Node::KVValueHash(..) | Node::KV(..) => Ok(()),
         _ => bail!("Leaf chunks must contain full subtree"),
     })
     .flat_map_ok(|tree| {
@@ -265,7 +275,7 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
 
         if remaining_depth > 0 {
             match tree.node {
-                Node::KV(..) => {}
+                Node::KVValueHash(..) | Node::KV(..) => {}
                 _ => bail!("Expected trunk inner nodes to contain keys and values"),
             }
             recurse(true, leftmost)?;
@@ -287,7 +297,7 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
     let tree = cost_return_on_error!(
         &mut cost,
         execute(ops, false, |node| {
-            kv_only &= matches!(node, Node::KV(_, _));
+            kv_only &= matches!(node, Node::KVValueHash(..)) || matches!(node, Node::KV(..));
             Ok(())
         })
     );
@@ -310,6 +320,7 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
 mod tests {
     use std::usize;
 
+    use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     use storage::StorageContext;
 
     use super::{super::tree::Tree, *};
@@ -322,9 +333,11 @@ mod tests {
     #[derive(Default)]
     struct NodeCounts {
         hash: usize,
-        kvhash: usize,
+        kv_hash: usize,
         kv: usize,
-        kvdigest: usize,
+        kv_value_hash: usize,
+        kv_digest: usize,
+        kv_ref_value_hash: usize,
     }
 
     fn count_node_types(tree: Tree) -> NodeCounts {
@@ -333,9 +346,11 @@ mod tests {
         tree.visit_nodes(&mut |node| {
             match node {
                 Node::Hash(_) => counts.hash += 1,
-                Node::KVHash(_) => counts.kvhash += 1,
+                Node::KVHash(_) => counts.kv_hash += 1,
                 Node::KV(..) => counts.kv += 1,
-                Node::KVDigest(..) => counts.kvdigest += 1,
+                Node::KVValueHash(..) => counts.kv_value_hash += 1,
+                Node::KVDigest(..) => counts.kv_digest += 1,
+                Node::KVRefValueHash(..) => counts.kv_ref_value_hash += 1,
             };
         });
 
@@ -355,8 +370,8 @@ mod tests {
 
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv, 32);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_value_hash, 32);
+        assert_eq!(counts.kv_hash, 0);
     }
 
     #[test]
@@ -374,14 +389,21 @@ mod tests {
             counts.hash,
             2usize.pow(MIN_TRUNK_HEIGHT as u32) + MIN_TRUNK_HEIGHT - 1
         );
-        assert_eq!(counts.kv, 2usize.pow(MIN_TRUNK_HEIGHT as u32) - 1);
-        assert_eq!(counts.kvhash, MIN_TRUNK_HEIGHT + 1);
+        assert_eq!(
+            counts.kv_value_hash,
+            2usize.pow(MIN_TRUNK_HEIGHT as u32) - 1
+        );
+        assert_eq!(counts.kv_hash, MIN_TRUNK_HEIGHT + 1);
     }
 
     #[test]
     fn one_node_tree_trunk_roundtrip() {
         let mut tree = BaseTree::new(vec![0], vec![], BasicMerk).unwrap();
-        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
@@ -390,8 +412,8 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv, 1);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_value_hash, 1);
+        assert_eq!(counts.kv_hash, 0);
     }
 
     #[test]
@@ -403,7 +425,11 @@ mod tests {
             false,
             Some(BaseTree::new(vec![1], vec![], BasicMerk).unwrap()),
         );
-        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
@@ -411,8 +437,8 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv, 2);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_value_hash, 2);
+        assert_eq!(counts.kv_hash, 0);
     }
 
     #[test]
@@ -424,7 +450,11 @@ mod tests {
             true,
             Some(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()),
         );
-        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
@@ -432,8 +462,8 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv, 2);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_value_hash, 2);
+        assert_eq!(counts.kv_hash, 0);
     }
 
     #[test]
@@ -451,7 +481,11 @@ mod tests {
                 false,
                 Some(BaseTree::new(vec![2], vec![], BasicMerk).unwrap()),
             );
-        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
+        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            Ok(NoStorageRemoval)
+        })
+        .unwrap()
+        .unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
@@ -460,15 +494,15 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv, 3);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_value_hash, 3);
+        assert_eq!(counts.kv_hash, 0);
     }
 
     #[test]
     fn leaf_chunk_roundtrip() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(0..31);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[])
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], )
             .unwrap()
             .unwrap();
 
@@ -485,9 +519,9 @@ mod tests {
             .unwrap()
             .unwrap();
         let counts = count_node_types(chunk);
-        assert_eq!(counts.kv, 31);
+        assert_eq!(counts.kv_value_hash, 31);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_hash, 0);
         drop(iter);
 
         let mut iter = merk.storage.raw_iter();
@@ -508,9 +542,9 @@ mod tests {
         .unwrap()
         .unwrap();
         let counts = count_node_types(chunk);
-        assert_eq!(counts.kv, 15);
+        assert_eq!(counts.kv_value_hash, 15);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_hash, 0);
 
         // right leaf
         let chunk = get_next_chunk(&mut iter, None).unwrap().unwrap();
@@ -525,8 +559,8 @@ mod tests {
         .unwrap()
         .unwrap();
         let counts = count_node_types(chunk);
-        assert_eq!(counts.kv, 15);
+        assert_eq!(counts.kv_value_hash, 15);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kvhash, 0);
+        assert_eq!(counts.kv_hash, 0);
     }
 }

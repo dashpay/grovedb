@@ -3,6 +3,7 @@ mod temp_merk;
 
 use std::{convert::TryInto, ops::Range};
 
+use costs::storage_cost::removal::StorageRemovedBytes;
 pub use crash_merk::CrashMerk;
 use rand::prelude::*;
 pub use temp_merk::TempMerk;
@@ -11,6 +12,7 @@ use crate::{
     merk::{OptionOrMerkType, OptionOrMerkType::SomeMerk, TreeFeatureType::BasicMerk},
     tree::{BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker},
 };
+use crate::tree::kv::KV;
 
 pub fn assert_tree_invariants(tree: &Tree) {
     assert!(tree.balance_factor().abs() < 2);
@@ -42,9 +44,14 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
         .expect("apply failed")
         .0
         .expect("expected tree");
-    tree.commit(&mut NoopCommit {})
-        .unwrap()
-        .expect("commit failed");
+    tree.commit(
+        &mut NoopCommit {},
+        &|key, value| Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(key.len() as u32, value.len() as u32)),
+        &mut |_, _, _| Ok((false, None)),
+        &mut |_, bytes_to_remove| Ok(StorageRemovedBytes::BasicStorageRemoval(bytes_to_remove)),
+    )
+    .unwrap()
+    .expect("commit failed");
     tree
 }
 
@@ -61,9 +68,16 @@ pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) ->
         .expect("apply failed")
         .0
         .map(|mut tree| {
-            tree.commit(&mut NoopCommit {})
-                .unwrap()
-                .expect("commit failed");
+            tree.commit(
+                &mut NoopCommit {},
+                &|key, value| Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(key.len() as u32, value.len() as u32)),
+                &mut |_, _, _| Ok((false, None)),
+                &mut |_, bytes_to_remove| {
+                    Ok(StorageRemovedBytes::BasicStorageRemoval(bytes_to_remove))
+                },
+            )
+            .unwrap()
+            .expect("commit failed");
             println!("{:?}", &tree);
             assert_tree_invariants(&tree);
             tree

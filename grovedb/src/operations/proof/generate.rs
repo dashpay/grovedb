@@ -3,12 +3,14 @@ use costs::{
 };
 use merk::{
     proofs::{encode_into, Node, Op},
+    tree::value_hash,
     KVIterator, Merk, ProofWithoutEncodingResult,
 };
-use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
+use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, StorageContext};
 
 use crate::{
     operations::proof::util::{write_to_vec, ProofType, EMPTY_TREE_HASH},
+    reference_path::path_from_reference_path_type,
     subtree::raw_decode,
     Element, Error, GroveDb, PathQuery, Query,
 };
@@ -35,8 +37,10 @@ impl GroveDb {
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
         // TODO: get rid of this error once root tree is also of type merk
         if path_slices.is_empty() {
-            return Err(Error::InvalidPath("can't generate proof for empty path"))
-                .wrap_with_cost(cost);
+            return Err(Error::InvalidPath(
+                "can't generate proof for empty path".to_owned(),
+            ))
+            .wrap_with_cost(cost);
         }
 
         let subtree_exists = self
@@ -68,6 +72,7 @@ impl GroveDb {
                     cost_return_on_error!(
                         &mut cost,
                         self.generate_and_store_merk_proof(
+                            current_path.iter().copied(),
                             &subtree.expect("confirmed not error above"),
                             &next_key_query,
                             None,
@@ -143,8 +148,8 @@ impl GroveDb {
 
             let element = cost_return_on_error_no_add!(&cost, raw_decode(&value_bytes));
             match element {
-                Element::Tree(tree_hash, _) => {
-                    if tree_hash == EMPTY_TREE_HASH {
+                Element::Tree(root_key, _) => {
+                    if root_key.is_none() {
                         continue;
                     }
 
@@ -154,6 +159,7 @@ impl GroveDb {
                         cost_return_on_error!(
                             &mut cost,
                             self.generate_and_store_merk_proof(
+                                path.iter().copied(),
                                 &subtree,
                                 &query.query.query,
                                 None,
@@ -183,6 +189,7 @@ impl GroveDb {
                             cost_return_on_error!(
                                 &mut cost,
                                 self.generate_and_store_merk_proof(
+                                    new_path.iter().copied(),
                                     &inner_subtree,
                                     &key_as_query,
                                     None,
@@ -242,6 +249,7 @@ impl GroveDb {
             let limit_offset = cost_return_on_error!(
                 &mut cost,
                 self.generate_and_store_merk_proof(
+                    path.iter().copied(),
                     &subtree,
                     &query.query.query,
                     *current_limit,
@@ -279,6 +287,7 @@ impl GroveDb {
             cost_return_on_error!(
                 &mut cost,
                 self.generate_and_store_merk_proof(
+                    path_slice.iter().copied(),
                     &subtree,
                     &query,
                     None,
@@ -294,8 +303,9 @@ impl GroveDb {
 
     /// Generates query proof given a subtree and appends the result to a proof
     /// list
-    fn generate_and_store_merk_proof<'a, S: 'a>(
+    fn generate_and_store_merk_proof<'a, 'p, S: 'a, P>(
         &self,
+        path: P,
         subtree: &'a Merk<S>,
         query: &Query,
         limit: Option<u16>,
@@ -305,6 +315,8 @@ impl GroveDb {
     ) -> CostResult<(Option<u16>, Option<u16>), Error>
     where
         S: StorageContext<'a>,
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let mut cost = OperationCost::default();
 
@@ -315,7 +327,7 @@ impl GroveDb {
             .unwrap()
             .expect("should generate proof");
 
-        cost_return_on_error!(&mut cost, self.replace_references(&mut proof_result));
+        cost_return_on_error!(&mut cost, self.post_process_proof(path, &mut proof_result));
 
         let mut proof_bytes = Vec::with_capacity(128);
         encode_into(proof_result.proof.iter(), &mut proof_bytes);
@@ -328,24 +340,63 @@ impl GroveDb {
         Ok((proof_result.limit, proof_result.offset)).wrap_with_cost(cost)
     }
 
-    /// Replaces references with the base item they point to
-    fn replace_references(
+    /// Converts Items to Node::KV from Node::KVValueHash
+    /// Converts References to Node::KVRefValueHash and sets the value to the
+    /// referenced element
+    fn post_process_proof<'p, P>(
         &self,
+        path: P,
         proof_result: &mut ProofWithoutEncodingResult,
-    ) -> CostResult<(), Error> {
+    ) -> CostResult<(), Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
         let mut cost = OperationCost::default();
+
+        let path_iter = path.into_iter().collect::<Vec<_>>();
 
         for op in proof_result.proof.iter_mut() {
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
-                    Node::KV(_, value) => {
+                    Node::KV(key, value) | Node::KVValueHash(key, value, ..) => {
                         let elem = Element::deserialize(value);
-                        if let Ok(Element::Reference(reference_path, _)) = elem {
-                            let referenced_elem = cost_return_on_error!(
-                                &mut cost,
-                                self.follow_reference(reference_path, None)
-                            );
-                            *value = referenced_elem.serialize().unwrap();
+                        match elem {
+                            Ok(Element::Reference(reference_path, ..)) => {
+                                let mut current_path = path_iter.clone();
+                                let absolute_path = cost_return_on_error!(
+                                    &mut cost,
+                                    path_from_reference_path_type(
+                                        reference_path,
+                                        current_path,
+                                        Some(key.as_slice())
+                                    )
+                                    .wrap_with_cost(OperationCost::default())
+                                );
+
+                                let referenced_elem = cost_return_on_error!(
+                                    &mut cost,
+                                    self.follow_reference(absolute_path, None)
+                                );
+
+                                let serialized_referenced_elem = referenced_elem.serialize();
+                                if serialized_referenced_elem.is_err() {
+                                    return Err(Error::CorruptedData(String::from(
+                                        "unable to serialize element",
+                                    )))
+                                    .wrap_with_cost(cost);
+                                }
+
+                                *node = Node::KVRefValueHash(
+                                    key.to_owned(),
+                                    serialized_referenced_elem.expect("confirmed ok above"),
+                                    value_hash(value).unwrap_add_cost(&mut cost),
+                                )
+                            }
+                            Ok(Element::Item(..)) => {
+                                *node = Node::KV(key.to_owned(), value.to_owned())
+                            }
+                            _ => continue,
                         }
                     }
                     _ => continue,
@@ -362,9 +413,6 @@ impl GroveDb {
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
-        self.db.get_storage_context(path).flat_map(|storage| {
-            Merk::open(storage)
-                .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-        })
+        self.open_non_transactional_merk_at_path(path)
     }
 }

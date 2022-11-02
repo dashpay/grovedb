@@ -27,7 +27,10 @@ impl<'a> StackItem<'a> {
 
     /// Gets a tuple to yield from an `Iter`, `(key, value)`.
     fn to_entry(&self) -> (Vec<u8>, Vec<u8>) {
-        (self.tree.key().to_vec(), self.tree.value().to_vec())
+        (
+            self.tree.key().to_vec(),
+            self.tree.value_as_slice().to_vec(),
+        )
     }
 }
 

@@ -7,7 +7,7 @@ pub use encoding::{encode_into, Decoder};
 pub use query::Query;
 pub use tree::Tree;
 
-use crate::tree::Hash;
+use crate::tree::CryptoHash;
 
 /// A proof operator, executed to verify the data in a Merkle proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,14 +46,21 @@ pub enum Op {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Node {
     /// Represents the hash of a tree node.
-    Hash(Hash),
+    Hash(CryptoHash),
 
     /// Represents the hash of the key/value pair of a tree node.
-    KVHash(Hash),
+    KVHash(CryptoHash),
 
     /// Represents the key/value_hash pair of a tree node
-    KVDigest(Vec<u8>, Hash),
+    KVDigest(Vec<u8>, CryptoHash),
 
     /// Represents the key and value of a tree node.
     KV(Vec<u8>, Vec<u8>),
+
+    /// Represents the key, value and value_hash of a tree node
+    KVValueHash(Vec<u8>, Vec<u8>, CryptoHash),
+
+    /// Represents the key, value of some referenced node and value_hash of
+    /// current tree node
+    KVRefValueHash(Vec<u8>, Vec<u8>, CryptoHash),
 }
