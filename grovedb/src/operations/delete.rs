@@ -266,7 +266,7 @@ impl GroveDb {
                 let batch_deleted_keys = current_batch_operations
                     .iter()
                     .filter_map(|op| match op.op {
-                        Op::Delete => {
+                        Op::Delete | Op::DeleteTree => {
                             // todo: to_path clones (best to figure out how to compare without
                             // cloning)
                             if op.path.to_path() == subtree_merk_path_vec {
@@ -294,7 +294,7 @@ impl GroveDb {
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
                 is_empty &= !current_batch_operations.iter().any(|op| match op.op {
-                    Op::Delete => false,
+                    Op::Delete | Op::DeleteTree => false,
                     // todo: fix for to_path (it clones)
                     _ => op.path.to_path() == subtree_merk_path_vec,
                 });
@@ -309,7 +309,7 @@ impl GroveDb {
                         Ok(None)
                     }
                 } else if is_empty {
-                    Ok(Some(GroveDbOp::delete_run_op(
+                    Ok(Some(GroveDbOp::delete_tree_run_op(
                         path_iter.map(|x| x.to_vec()).collect(),
                         key.to_vec(),
                     )))

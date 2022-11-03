@@ -1375,7 +1375,9 @@ impl GroveDb {
                     let element = cost_return_on_error!(
                         &mut cost,
                         Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                            Error::InvalidPath("could not get key for parent of subtree".to_owned())
+                            Error::InvalidPath(
+                                "could not get key for parent of subtree for batch".to_owned(),
+                            )
                         })
                     );
                     if let Element::Tree(root_key, _) = element {
