@@ -27,6 +27,7 @@ use costs::{
 use integer_encoding::VarInt;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
+    anyhow,
     anyhow::anyhow,
     tree::{kv::KV, value_hash, NULL_HASH},
     worst_case_costs::{add_worst_case_merk_propagate, MerkWorstCaseInput},
@@ -1080,7 +1081,7 @@ impl BatchApplyOptions {
         }
     }
 
-    fn as_delete_options(&self) -> DeleteOptions {
+    fn as_delete_options(&self) -> DeleteOptions where {
         DeleteOptions {
             allow_deleting_non_empty_trees: self.allow_deleting_non_empty_trees,
             deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,

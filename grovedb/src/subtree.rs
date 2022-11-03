@@ -6,8 +6,9 @@ use core::fmt;
 
 use bincode::Options;
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
-    OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+    CostContext, CostResult, CostsExt, OperationCost,
 };
 use integer_encoding::VarInt;
 use merk::{
@@ -223,6 +224,32 @@ impl Element {
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch, &[], merk_options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
         })
+        .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    /// Delete an element from Merk under a key
+    pub fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        merk: &mut Merk<S>,
+        key: K,
+        merk_options: Option<MerkOptions>,
+        is_layered: bool,
+        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> anyhow::Result<StorageRemovedBytes>,
+    ) -> CostResult<(), Error> {
+        // TODO: delete references on this element
+        let op = if is_layered {
+            Op::DeleteLayered
+        } else {
+            Op::Delete
+        };
+        let batch = [(key, op)];
+        merk.apply_with_costs_just_in_time_value_update::<_, Vec<u8>>(
+            &batch,
+            &[],
+            merk_options,
+            &|key, value| Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg),
+            &mut |_costs, _old_value, _value| Ok((false, None)),
+            section_removal_bytes,
+        )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 

@@ -1,9 +1,11 @@
 use std::collections::{BTreeSet, HashMap};
 
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+    CostResult, CostsExt, OperationCost,
 };
-use merk::{Merk, MerkOptions};
+use merk::{anyhow, Merk, MerkOptions};
 use storage::{
     rocksdb_storage::{
         PrefixedRocksDbBatchTransactionContext, PrefixedRocksDbStorageContext,
@@ -17,7 +19,7 @@ use crate::{
     util::{
         merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
     },
-    Element, Error, GroveDb, Transaction, TransactionArg,
+    Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
 #[derive(Clone)]
@@ -43,22 +45,76 @@ impl DeleteOptions {
             base_root_storage_is_free: self.base_root_storage_is_free,
         }
     }
+
+    fn as_advanced_options<SR>(&self) -> DeleteAdvancedOptions<SR>
+    where
+        SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
+    {
+        DeleteAdvancedOptions {
+            allow_deleting_non_empty_trees: self.allow_deleting_non_empty_trees,
+            deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
+            base_root_storage_is_free: self.base_root_storage_is_free,
+            sectional_removal_fn: |element_flags, removed_bytes| {
+                Ok(BasicStorageRemoval(removed_bytes))
+            },
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct DeleteAdvancedOptions<SR>
+where
+    SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
+{
+    pub allow_deleting_non_empty_trees: bool,
+    pub deleting_non_empty_trees_returns_error: bool,
+    pub base_root_storage_is_free: bool,
+    pub sectional_removal_fn: SR,
+}
+
+impl<SR> Default for DeleteAdvancedOptions<SR>
+where
+    SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
+{
+    fn default() -> Self {
+        DeleteAdvancedOptions {
+            allow_deleting_non_empty_trees: false,
+            deleting_non_empty_trees_returns_error: true,
+            base_root_storage_is_free: true,
+            sectional_removal_fn: &|element_flags, removed_bytes| {
+                Ok(BasicStorageRemoval(removed_bytes))
+            },
+        }
+    }
+}
+
+impl<SR> DeleteAdvancedOptions<SR>
+where
+    SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
+{
+    fn as_merk_options(&self) -> MerkOptions {
+        MerkOptions {
+            base_root_storage_is_free: self.base_root_storage_is_free,
+        }
+    }
 }
 
 impl GroveDb {
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.
-    pub fn delete_up_tree_while_empty<'p, P>(
+    pub fn delete_up_tree_while_empty<'p, P, SR>(
         &self,
         path: P,
         key: &'p [u8],
         stop_path_height: Option<u16>,
+        options: &DeleteAdvancedOptions<SR>,
         validate: bool,
         transaction: TransactionArg,
     ) -> CostResult<u16, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+        SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
     {
         let mut cost = OperationCost::default();
         let mut batch_operations: Vec<GroveDbOp> = Vec::new();
@@ -70,6 +126,7 @@ impl GroveDb {
                 path_iter,
                 key,
                 stop_path_height,
+                options,
                 validate,
                 &mut batch_operations,
                 transaction
@@ -96,11 +153,12 @@ impl GroveDb {
             .map_ok(|_| ops_len as u16)
     }
 
-    pub fn delete_operations_for_delete_up_tree_while_empty<'p, P>(
+    pub fn delete_operations_for_delete_up_tree_while_empty<'p, P, SR>(
         &self,
         path: P,
         key: &'p [u8],
         stop_path_height: Option<u16>,
+        options: &DeleteAdvancedOptions<SR>,
         validate: bool,
         mut current_batch_operations: Vec<GroveDbOp>,
         transaction: TransactionArg,
@@ -108,22 +166,25 @@ impl GroveDb {
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+        SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
     {
         self.add_delete_operations_for_delete_up_tree_while_empty(
             path,
             key,
             stop_path_height,
+            options,
             validate,
             &mut current_batch_operations,
             transaction,
         )
     }
 
-    pub fn add_delete_operations_for_delete_up_tree_while_empty<'p, P>(
+    pub fn add_delete_operations_for_delete_up_tree_while_empty<'p, P, SR>(
         &self,
         path: P,
         key: &'p [u8],
         stop_path_height: Option<u16>,
+        options: &DeleteAdvancedOptions<SR>,
         validate: bool,
         current_batch_operations: &mut Vec<GroveDbOp>,
         transaction: TransactionArg,
@@ -131,6 +192,7 @@ impl GroveDb {
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+        SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
     {
         let mut cost = OperationCost::default();
 
@@ -151,11 +213,7 @@ impl GroveDb {
             self.delete_operation_for_delete_internal(
                 path_iter.clone(),
                 key,
-                DeleteOptions {
-                    allow_deleting_non_empty_trees: false,
-                    deleting_non_empty_trees_returns_error: false,
-                    ..Default::default()
-                },
+                options,
                 validate,
                 current_batch_operations,
                 transaction,
@@ -170,6 +228,7 @@ impl GroveDb {
                         path_iter,
                         last,
                         stop_path_height,
+                        options,
                         validate,
                         current_batch_operations,
                         transaction,
@@ -196,7 +255,25 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let options = options.unwrap_or_default();
-        self.delete_internal(path, key, options, transaction)
+        let advanced_options = options.as_advanced_options();
+        self.delete_internal(path, key, &advanced_options, transaction)
+            .map_ok(|_| ())
+    }
+
+    pub fn delete_with_advanced_options<'p, P, SR>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        options: Option<DeleteAdvancedOptions<SR>>,
+        transaction: TransactionArg,
+    ) -> CostResult<(), Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+        SR: FnMut(&mut ElementFlags, u32) -> anyhow::Result<StorageRemovedBytes, Error>,
+    {
+        let options = options.unwrap_or_default();
+        self.delete_internal(path, key, &options, transaction)
             .map_ok(|_| ())
     }
 
@@ -215,14 +292,15 @@ impl GroveDb {
             deleting_non_empty_trees_returns_error: false,
             ..Default::default()
         };
-        self.delete_internal(path, key, options, transaction)
+        let advanced_options = options.as_advanced_options();
+        self.delete_internal(path, key, &advanced_options, transaction)
     }
 
-    pub fn delete_operation_for_delete_internal<'p, P>(
+    pub fn delete_operation_for_delete_internal<'p, P, SR>(
         &self,
         path: P,
         key: &'p [u8],
-        options: DeleteOptions,
+        options: &DeleteAdvancedOptions<SR>,
         validate: bool,
         current_batch_operations: &[GroveDbOp],
         transaction: TransactionArg,
@@ -230,6 +308,7 @@ impl GroveDb {
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+        SR: FnMut(&mut ElementFlags, u32) -> anyhow::Result<StorageRemovedBytes, Error>,
     {
         let mut cost = OperationCost::default();
 
@@ -361,16 +440,17 @@ impl GroveDb {
         }
     }
 
-    fn delete_internal<'p, P>(
+    fn delete_internal<'p, P, SR>(
         &self,
         path: P,
         key: &'p [u8],
-        options: DeleteOptions,
+        options: &DeleteAdvancedOptions<SR>,
         transaction: TransactionArg,
     ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+        SR: FnMut(&mut ElementFlags, u32) -> anyhow::Result<StorageRemovedBytes, Error>,
     {
         if let Some(transaction) = transaction {
             self.delete_internal_on_transaction(path, key, options, transaction)
@@ -379,16 +459,17 @@ impl GroveDb {
         }
     }
 
-    fn delete_internal_on_transaction<'p, P>(
+    fn delete_internal_on_transaction<'p, P, SR>(
         &self,
         path: P,
         key: &'p [u8],
-        options: DeleteOptions,
+        options: &DeleteAdvancedOptions<SR>,
         transaction: &Transaction,
     ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+        SR: FnMut(&mut ElementFlags, u32) -> anyhow::Result<StorageRemovedBytes, Error>,
     {
         let mut cost = OperationCost::default();
 
@@ -473,11 +554,12 @@ impl GroveDb {
                     // We are deleting a tree, a tree uses 3 bytes
                     cost_return_on_error!(
                         &mut cost,
-                        Element::delete(
+                        Element::delete_with_sectioned_removal_bytes(
                             &mut merk_to_delete_tree_from,
                             &key,
                             Some(options.as_merk_options()),
                             true,
+                            &options.sectional_removal_fn
                         )
                     );
                     let mut merk_cache: HashMap<
@@ -508,11 +590,12 @@ impl GroveDb {
                     // We are deleting a tree, a tree uses 3 bytes
                     cost_return_on_error!(
                         &mut cost,
-                        Element::delete(
+                        Element::delete_with_sectioned_removal_bytes(
                             &mut subtree_to_delete_from,
                             &key,
                             Some(options.as_merk_options()),
                             true,
+                            &options.sectional_removal_fn
                         )
                     );
                     let mut merk_cache: HashMap<
@@ -532,11 +615,12 @@ impl GroveDb {
         } else {
             cost_return_on_error!(
                 &mut cost,
-                Element::delete(
+                Element::delete_with_sectioned_removal_bytes(
                     &mut subtree_to_delete_from,
                     &key,
                     Some(options.as_merk_options()),
-                    false
+                    false,
+                    &options.sectional_removal_fn,
                 )
             );
             let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
@@ -554,15 +638,16 @@ impl GroveDb {
         Ok(true).wrap_with_cost(cost)
     }
 
-    fn delete_internal_without_transaction<'p, P>(
+    fn delete_internal_without_transaction<'p, P, SR>(
         &self,
         path: P,
         key: &'p [u8],
-        options: DeleteOptions,
+        options: &DeleteAdvancedOptions<SR>,
     ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+        SR: FnMut(&mut ElementFlags, u32) -> anyhow::Result<StorageRemovedBytes, Error>,
     {
         let mut cost = OperationCost::default();
 
@@ -731,7 +816,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use crate::{
-        operations::delete::DeleteOptions,
+        operations::delete::{DeleteAdvancedOptions, DeleteOptions},
         tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
         Element, Error,
     };
@@ -887,6 +972,7 @@ mod tests {
                 [TEST_LEAF, b"level1-A", b"level2-A"],
                 b"level3-A",
                 Some(0),
+                &DeleteAdvancedOptions::default(),
                 true,
                 Some(&transaction),
             )
@@ -976,6 +1062,7 @@ mod tests {
                 [TEST_LEAF, b"level1-A", b"level2-A"],
                 b"level3-A",
                 Some(0),
+                &DeleteAdvancedOptions::default(),
                 true,
                 None,
             )
