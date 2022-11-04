@@ -27,7 +27,7 @@ impl PartialOrd<Self> for KeyInfo {
                         Some(ord) => Some(ord),
                     }
                 }
-                Ordering::Greater => Some(Ordering::Less),
+                Ordering::Greater => Some(Ordering::Greater),
             },
         }
     }
@@ -35,7 +35,14 @@ impl PartialOrd<Self> for KeyInfo {
 
 impl Ord for KeyInfo {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.as_slice().cmp(other.as_slice())
+        match self.as_slice().cmp(other.as_slice()) {
+            Ordering::Less => Ordering::Less,
+            Ordering::Equal => {
+                let other_len = other.len();
+                self.len().cmp(&other_len)
+            }
+            Ordering::Greater => Ordering::Greater,
+        }
     }
 }
 
