@@ -519,13 +519,7 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-<<<<<<< HEAD
-    /// # store.apply::<_, Vec<_>>(
-    ///     &[(vec![4,5,6], Op::Put(vec![0]), Some(BasicMerk))], &[]
-    /// ).unwrap();
-=======
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &None, &[],).unwrap().expect("");
->>>>>>> feat/change-to-better-roots-3
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]), Some(BasicMerk))], &None, &[],).unwrap().expect("");
     ///
     /// use merk::{Op, TreeFeatureType::BasicMerk};
     ///
@@ -696,15 +690,8 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-<<<<<<< HEAD
-    /// # store.apply::<_, Vec<_>>(
-    ///     &[(vec![4,5,6], Op::Put(vec![0]), Some(BasicMerk))], &[]
-    /// ).unwrap();
-    ///
-    /// use merk::{Op, TreeFeatureType::BasicMerk};
-=======
     /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
-    ///     &[(vec![4,5,6], Op::Put(vec![0]))],
+    ///     &[(vec![4,5,6], Op::Put(vec![0]), Some(BasicMerk)],
     ///     &[],
     ///     None,
     ///     &mut |s, o, v| Ok(false),
@@ -713,7 +700,6 @@ where
     ///
     /// use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     /// use merk::Op;
->>>>>>> feat/change-to-better-roots-3
     ///
     /// let batch = &[
     ///     // puts value [4,5,6] to key[1,2,3]
@@ -974,11 +960,7 @@ where
             }
         }
 
-<<<<<<< HEAD
-        for (key, value, _) in aux {
-=======
         for (key, value, storage_cost) in aux {
->>>>>>> feat/change-to-better-roots-3
             match value {
                 Op::Put(value) => cost_return_on_error_no_add!(
                     &cost,
@@ -1271,11 +1253,7 @@ mod test {
     use tempfile::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};
-<<<<<<< HEAD
     use crate::{test_utils::*, Op, TreeFeatureType::BasicMerk};
-=======
-    use crate::{Op, test_utils::*};
->>>>>>> feat/change-to-better-roots-3
 
     // TODO: Close and then reopen test
 
@@ -1296,18 +1274,12 @@ mod test {
             .unwrap()
             .unwrap();
 
-<<<<<<< HEAD
         merk.apply::<_, Vec<_>>(
             &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk))],
             &[],
         )
         .unwrap()
         .expect("apply failed");
-=======
-        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[], )
-            .unwrap()
-            .expect("apply failed");
->>>>>>> feat/change-to-better-roots-3
 
         let root_hash = merk.root_hash();
         drop(merk);
@@ -1334,18 +1306,12 @@ mod test {
         ));
 
         let mut merk = merk_fee_context.unwrap().unwrap();
-<<<<<<< HEAD
         merk.apply::<_, Vec<_>>(
             &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk))],
             &[],
         )
         .unwrap()
         .expect("apply failed");
-=======
-        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[], )
-            .unwrap()
-            .expect("apply failed");
->>>>>>> feat/change-to-better-roots-3
 
         drop(merk);
 
@@ -1444,12 +1410,8 @@ mod test {
             .expect("apply failed");
 
         let key = batch.first().unwrap().0.clone();
-<<<<<<< HEAD
         // TODO: should be None here
         merk.apply::<_, Vec<_>>(&[(key.clone(), Op::Delete, None)], &[])
-=======
-        merk.apply::<_, Vec<_>>(&[(key.clone(), Op::Delete)], &[], )
->>>>>>> feat/change-to-better-roots-3
             .unwrap()
             .unwrap();
 
@@ -1460,7 +1422,6 @@ mod test {
     #[test]
     fn aux_data() {
         let mut merk = TempMerk::new();
-<<<<<<< HEAD
         // TODO: Should be None here also
         merk.apply::<Vec<_>, _>(
             &[],
@@ -1468,11 +1429,6 @@ mod test {
         )
         .unwrap()
         .expect("apply failed");
-=======
-        merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), None)], )
-            .unwrap()
-            .expect("apply failed");
->>>>>>> feat/change-to-better-roots-3
         let val = merk.get_aux(&[1, 2, 3]).unwrap().unwrap();
         assert_eq!(val, Some(vec![4, 5, 6]));
     }
@@ -1482,15 +1438,10 @@ mod test {
         let mut merk = CrashMerk::open_base().expect("failed to open merk");
 
         merk.apply::<_, Vec<_>>(
-<<<<<<< HEAD
             &[(vec![0], Op::Put(vec![1]), Some(BasicMerk))],
             // TODO: should be none here
             &[(vec![2], Op::Put(vec![3]), Some(BasicMerk))],
-=======
-            &[(vec![0], Op::Put(vec![1]))],
-            &[(vec![2], Op::Put(vec![3]), None)],
             &None,
->>>>>>> feat/change-to-better-roots-3
         )
         .unwrap()
         .expect("apply failed");
@@ -1514,11 +1465,7 @@ mod test {
         assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
 
         // cached
-<<<<<<< HEAD
         merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![]), Some(BasicMerk))], &[])
-=======
-        merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![]))], &[], )
->>>>>>> feat/change-to-better-roots-3
             .unwrap()
             .unwrap();
         assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
