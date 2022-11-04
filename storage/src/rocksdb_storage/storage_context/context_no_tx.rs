@@ -25,7 +25,7 @@ pub struct PrefixedRocksDbStorageContext<'db> {
 }
 
 impl<'db> PrefixedRocksDbStorageContext<'db> {
-    /// Create a new prefixed storage_cost context instance
+    /// Create a new prefixed storage context instance
     pub fn new(storage: &'db Db, prefix: Vec<u8>) -> Self {
         PrefixedRocksDbStorageContext { storage, prefix }
     }

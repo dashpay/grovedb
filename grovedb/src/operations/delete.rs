@@ -443,7 +443,7 @@ impl GroveDb {
                             &mut cost,
                             storage.clear().map_err(|e| {
                                 Error::CorruptedData(format!(
-                                    "unable to cleanup tree from storage_cost: {}",
+                                    "unable to cleanup tree from storage: {}",
                                     e
                                 ))
                             })
@@ -615,7 +615,7 @@ impl GroveDb {
                             &mut cost,
                             inner_subtree_to_delete_from.clear().map_err(|e| {
                                 Error::CorruptedData(format!(
-                                    "unable to cleanup tree from storage_cost: {}",
+                                    "unable to cleanup tree from storage: {}",
                                     e
                                 ))
                             })
@@ -674,7 +674,7 @@ impl GroveDb {
         // new keys to enqueue are taken from raw iterator which returns Vec<u8>;
         // changing that to slice is hard as cursor should be moved for next iteration
         // which requires exclusive (&mut) reference, also there is no guarantee that
-        // slice which points into storage_cost internals will remain valid if raw
+        // slice which points into storage internals will remain valid if raw
         // iterator got altered so why that reference should be exclusive;
 
         let mut queue: Vec<Vec<Vec<u8>>> = vec![path.into_iter().map(|x| x.to_vec()).collect()];
@@ -722,8 +722,6 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use std::option::Option::None;
-
     use costs::{
         storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
         OperationCost,

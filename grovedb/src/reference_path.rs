@@ -195,8 +195,6 @@ impl ReferencePathType {
 
 #[cfg(test)]
 mod tests {
-    use std::option::Option::None;
-
     use merk::proofs::Query;
 
     use crate::{

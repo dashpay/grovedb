@@ -1,9 +1,13 @@
 //! GroveDB batch operations support
 
 pub mod key_info;
+#[cfg(test)]
 mod multi_insert_cost_tests;
+#[cfg(test)]
 mod single_deletion_cost_tests;
+#[cfg(test)]
 mod single_insert_cost_tests;
+#[cfg(test)]
 mod worst_case_cost_tests;
 
 use core::fmt;
@@ -1607,8 +1611,6 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use std::option::Option::None;
-
     use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     use merk::proofs::Query;
 

@@ -1,5 +1,3 @@
-use std::option::Option::None;
-
 use criterion::{criterion_group, criterion_main, Criterion};
 use grovedb::{Element, GroveDb};
 use rand::Rng;

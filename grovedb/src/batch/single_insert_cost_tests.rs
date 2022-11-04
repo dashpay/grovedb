@@ -1,7 +1,4 @@
-#[cfg(test)]
 mod tests {
-    use std::option::Option::None;
-
     use costs::{
         storage_cost::{
             removal::{

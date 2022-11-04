@@ -1,4 +1,4 @@
-//! Prefixed storage_cost batch implementation for RocksDB backend.
+//! Prefixed storage batch implementation for RocksDB backend.
 use costs::{
     cost_return_on_error_no_add,
     storage_cost::{

@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_wrap_fn_cost() {
-        // Imagine this one is loaded from storage_cost.
+        // Imagine this one is loaded from storage.
         let loaded_value = b"ayylmao";
         let costs_ctx = loaded_value.wrap_fn_cost(|x| OperationCost {
             seek_count: 1,
