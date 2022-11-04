@@ -6,7 +6,6 @@ use integer_encoding::{FixedInt, VarInt};
 use crate::{HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
 
 use super::{hash::CryptoHash, Tree};
-use crate::merk::OptionOrMerkType;
 
 // TODO: optimize memory footprint
 

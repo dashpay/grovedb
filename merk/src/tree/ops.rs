@@ -15,7 +15,7 @@ use costs::storage_cost::StorageCost;
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};
-use crate::{CryptoHash, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
+use crate::{CryptoHash, HASH_LENGTH_U32, HASH_LENGTH_U32_X2, TreeFeatureType};
 use crate::tree::kv::KV;
 
 /// Type alias to add more sense to function signatures.
@@ -227,6 +227,7 @@ where
                 mid_value,
                 *value_cost,
                 referenced_value.to_owned(),
+                mid_feature_type.expect("confirmed exists above").to_owned(),
             )
                 .unwrap_add_cost(&mut cost),
             Delete | DeleteLayered(..) => unreachable!("cannot get here, should return at the top"),

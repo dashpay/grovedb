@@ -490,14 +490,14 @@ impl GroveDb {
         Self::get_element_from_subtree(parent_tree, key).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(maybe_root_key, flag);
-                tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash, None)
+                tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash, None, parent_is_sum_tree)
             } else if let Element::SumTree(_, _, flag) = element {
                 let tree = Element::new_sum_tree_with_flags_and_sum_value(
                     root_hash,
                     sum.unwrap_or_default(),
                     flag,
                 );
-                tree.insert_subtree(parent_tree, key.as_ref(), parent_is_sum_tree)
+                tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash, None, parent_is_sum_tree)
             } else {
                 Err(Error::InvalidPath(
                     "can only propagate on tree items".to_owned(),

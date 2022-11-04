@@ -12,9 +12,9 @@ mod walk;
 
 use std::{
     cmp::max,
-    Ordering
     io::{Read, Write},
 };
+use std::cmp::Ordering;
 
 use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
@@ -38,7 +38,7 @@ pub use link::Link;
 pub use ops::{AuxMerkBatch, BatchEntry, MerkBatch, Op, PanicSource};
 pub use walk::{Fetch, RefWalker, Walker};
 
-use crate::tree::hash::value_hash;
+use crate::TreeFeatureType;
 
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
@@ -199,12 +199,14 @@ impl Tree {
         key: Vec<u8>,
         value: Vec<u8>,
         value_hash: CryptoHash,
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         KV::new_with_combined_value_hash(key, value, value_hash).map(|kv| Self {
             inner: Box::new(TreeInner {
                 kv,
                 left: None,
                 right: None,
+                feature_type
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -219,12 +221,14 @@ impl Tree {
         value: Vec<u8>,
         value_cost: u32,
         value_hash: CryptoHash,
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         KV::new_with_layered_value_hash(key, value, value_cost, value_hash).map(|kv| Self {
             inner: Box::new(TreeInner {
                 kv,
                 left: None,
                 right: None,
+                feature_type
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -592,6 +596,7 @@ impl Tree {
             .kv
             .put_value_and_reference_value_hash_then_update(value, value_hash)
             .unwrap_add_cost(&mut cost);
+        self.inner.feature_type = feature_type;
         self.wrap_with_cost(cost)
     }
 
@@ -603,6 +608,7 @@ impl Tree {
         value: Vec<u8>,
         value_hash: CryptoHash,
         value_cost: u32,
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.inner.kv = self

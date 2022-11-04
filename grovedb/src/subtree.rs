@@ -110,7 +110,7 @@ impl Element {
         Element::new_sum_tree(Default::default())
     }
 
-    pub fn empty_sum_tree_with_flags(flags: ElementFlags) -> Self {
+    pub fn empty_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
         Element::new_sum_tree_with_flags(Default::default(), flags)
     }
 
@@ -130,8 +130,6 @@ impl Element {
         Element::SumItem(value.encode_var_vec(), flags)
     }
 
-    pub fn new_reference(reference_path: Vec<Vec<u8>>) -> Self {
-        Element::Reference(reference_path, None)
     pub fn new_reference(reference_path: ReferencePathType) -> Self {
         Element::Reference(reference_path, None, None)
     }
@@ -1014,8 +1012,8 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: K,
-        is_sum_tree: bool,
         options: Option<MerkOptions>,
+        is_sum_tree: bool,
     ) -> CostResult<(), Error> {
         // TODO: Fix this
         let feature_type = match is_sum_tree {
@@ -1159,12 +1157,20 @@ impl Element {
         key: K,
         referenced_value: Hash,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        is_sum_tree: bool,
     ) -> CostResult<(), Error> {
+        // TODO: Fix this
+        let feature_type = match is_sum_tree {
+            false => Some(TreeFeatureType::BasicMerk),
+            // TODO: Remove unwrap
+            true => Some(TreeFeatureType::SummedMerk(self.sum_value().unwrap())),
+        };
+
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
-        let entry = (key, Op::PutCombinedReference(serialized, referenced_value));
+        let entry = (key, Op::PutCombinedReference(serialized, referenced_value), feature_type);
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -1180,7 +1186,15 @@ impl Element {
         key: K,
         subtree_root_hash: Hash,
         options: Option<MerkOptions>,
+        is_sum_tree: bool,
     ) -> CostResult<(), Error> {
+        // TODO: Fix this
+        let feature_type = match is_sum_tree {
+            false => Some(TreeFeatureType::BasicMerk),
+            // TODO: Remove unwrap
+            true => Some(TreeFeatureType::SummedMerk(self.sum_value().unwrap())),
+        };
+
         let cost = TREE_COST_SIZE
             + self.get_flags().as_ref().map_or(0, |flags| {
                 let flags_len = flags.len() as u32;
@@ -1200,6 +1214,7 @@ impl Element {
         let batch_operations = [(
             key,
             Op::PutLayeredReference(serialized, cost, subtree_root_hash),
+            feature_type
         )];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             let element = Element::deserialize(value)?;

@@ -9,7 +9,7 @@ use rand::prelude::*;
 pub use temp_merk::TempMerk;
 
 use crate::{
-    merk::{OptionOrMerkType, OptionOrMerkType::SomeMerk, TreeFeatureType::BasicMerk},
+    merk::{TreeFeatureType::BasicMerk},
     tree::{BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker},
 };
 use crate::tree::kv::KV;
