@@ -14,6 +14,9 @@ use crate::storage_cost::removal::StorageRemovedBytes::{
 /// An identifier using 32 bytes
 pub type Identifier = [u8; 32];
 
+/// Unknown Epoch
+pub const UNKNOWN_EPOCH: u64 = u64::MAX;
+
 /// A BTreeMap mapping identities to the storage they removed by epoch
 pub type StorageRemovalPerEpochByIdentifier = BTreeMap<Identifier, IntMap<u32>>;
 
@@ -51,14 +54,14 @@ impl Add for StorageRemovedBytes {
                     let default = Identifier::default();
                     if map.contains_key(&default) {
                         let mut old_section_map = map.remove(&default).unwrap_or_default();
-                        if let Some(old_value) = old_section_map.remove(u64::MAX) {
-                            old_section_map.insert(u64::MAX, old_value + s);
+                        if let Some(old_value) = old_section_map.remove(UNKNOWN_EPOCH) {
+                            old_section_map.insert(UNKNOWN_EPOCH, old_value + s);
                         } else {
-                            old_section_map.insert(u64::MAX, s);
+                            old_section_map.insert(UNKNOWN_EPOCH, s);
                         }
                     } else {
                         let mut new_map = IntMap::new();
-                        new_map.insert(u64::MAX, s);
+                        new_map.insert(UNKNOWN_EPOCH, s);
                         map.insert(default, new_map);
                     }
                     SectionedStorageRemoval(map)
@@ -70,14 +73,14 @@ impl Add for StorageRemovedBytes {
                     let default = Identifier::default();
                     if smap.contains_key(&default) {
                         let mut old_section_map = smap.remove(&default).unwrap_or_default();
-                        if let Some(old_value) = old_section_map.remove(u64::MAX) {
-                            old_section_map.insert(u64::MAX, old_value + r);
+                        if let Some(old_value) = old_section_map.remove(UNKNOWN_EPOCH) {
+                            old_section_map.insert(UNKNOWN_EPOCH, old_value + r);
                         } else {
-                            old_section_map.insert(u64::MAX, r);
+                            old_section_map.insert(UNKNOWN_EPOCH, r);
                         }
                     } else {
                         let mut new_map = IntMap::new();
-                        new_map.insert(u64::MAX, r);
+                        new_map.insert(UNKNOWN_EPOCH, r);
                         smap.insert(default, new_map);
                     }
                     SectionedStorageRemoval(smap)
@@ -120,15 +123,15 @@ impl AddAssign for StorageRemovedBytes {
                 SectionedStorageRemoval(mut map) => {
                     let default = Identifier::default();
                     if let Some(mut old_int_map) = map.remove(&default) {
-                        if old_int_map.contains_key(u64::MAX) {
-                            let old_value = old_int_map.remove(u64::MAX).unwrap_or_default();
-                            old_int_map.insert(u64::MAX, old_value + *s);
+                        if old_int_map.contains_key(UNKNOWN_EPOCH) {
+                            let old_value = old_int_map.remove(UNKNOWN_EPOCH).unwrap_or_default();
+                            old_int_map.insert(UNKNOWN_EPOCH, old_value + *s);
                         } else {
-                            old_int_map.insert(u64::MAX, *s);
+                            old_int_map.insert(UNKNOWN_EPOCH, *s);
                         }
                     } else {
                         let mut new_map = IntMap::new();
-                        new_map.insert(u64::MAX, *s);
+                        new_map.insert(UNKNOWN_EPOCH, *s);
                         map.insert(default, new_map);
                     }
                     *self = SectionedStorageRemoval(map)
@@ -139,16 +142,16 @@ impl AddAssign for StorageRemovedBytes {
                 BasicStorageRemoval(r) => {
                     let default = Identifier::default();
                     let map_to_insert = if let Some(mut old_int_map) = smap.remove(&default) {
-                        if old_int_map.contains_key(u64::MAX) {
-                            let old_value = old_int_map.remove(u64::MAX).unwrap_or_default();
-                            old_int_map.insert(u64::MAX, old_value + r);
+                        if old_int_map.contains_key(UNKNOWN_EPOCH) {
+                            let old_value = old_int_map.remove(UNKNOWN_EPOCH).unwrap_or_default();
+                            old_int_map.insert(UNKNOWN_EPOCH, old_value + r);
                         } else {
-                            old_int_map.insert(u64::MAX, r);
+                            old_int_map.insert(UNKNOWN_EPOCH, r);
                         }
                         old_int_map
                     } else {
                         let mut new_map = IntMap::new();
-                        new_map.insert(u64::MAX, r);
+                        new_map.insert(UNKNOWN_EPOCH, r);
                         new_map
                     };
                     smap.insert(default, map_to_insert);

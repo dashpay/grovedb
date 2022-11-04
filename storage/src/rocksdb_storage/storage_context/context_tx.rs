@@ -75,17 +75,16 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             seek_count: 1,
             ..Default::default()
         };
-        match cost.add_key_value_storage_costs(
-            key.as_ref().len() as u32,
-            value.len() as u32,
-            children_sizes,
-            cost_info,
-        ) {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(CostError(e)).wrap_with_cost(cost);
-            }
-        };
+        cost_return_on_error_no_add!(
+            &cost,
+            cost.add_key_value_storage_costs(
+                key.as_ref().len() as u32,
+                value.len() as u32,
+                children_sizes,
+                cost_info,
+            )
+            .map_err(CostError)
+        );
         self.transaction
             .put(make_prefixed_key(self.prefix.clone(), &key), value)
             .map_err(RocksDBError)
@@ -102,17 +101,16 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             seek_count: 1,
             ..Default::default()
         };
-        match cost.add_key_value_storage_costs(
-            key.as_ref().len() as u32,
-            value.len() as u32,
-            None,
-            cost_info,
-        ) {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(CostError(e)).wrap_with_cost(cost);
-            }
-        };
+        cost_return_on_error_no_add!(
+            &cost,
+            cost.add_key_value_storage_costs(
+                key.as_ref().len() as u32,
+                value.len() as u32,
+                None,
+                cost_info,
+            )
+            .map_err(CostError)
+        );
         self.transaction
             .put_cf(
                 self.cf_aux(),
@@ -133,17 +131,16 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             seek_count: 1,
             ..Default::default()
         };
-        match cost.add_key_value_storage_costs(
-            key.as_ref().len() as u32,
-            value.len() as u32,
-            None,
-            cost_info,
-        ) {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(CostError(e)).wrap_with_cost(cost);
-            }
-        };
+        cost_return_on_error_no_add!(
+            &cost,
+            cost.add_key_value_storage_costs(
+                key.as_ref().len() as u32,
+                value.len() as u32,
+                None,
+                cost_info,
+            )
+            .map_err(CostError)
+        );
         self.transaction
             .put_cf(
                 self.cf_roots(),
@@ -164,17 +161,16 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             seek_count: 1,
             ..Default::default()
         };
-        match cost.add_key_value_storage_costs(
-            key.as_ref().len() as u32,
-            value.len() as u32,
-            None,
-            cost_info,
-        ) {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(CostError(e)).wrap_with_cost(cost);
-            }
-        };
+        cost_return_on_error_no_add!(
+            &cost,
+            cost.add_key_value_storage_costs(
+                key.as_ref().len() as u32,
+                value.len() as u32,
+                None,
+                cost_info,
+            )
+            .map_err(CostError)
+        );
         self.transaction
             .put_cf(
                 self.cf_meta(),

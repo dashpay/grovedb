@@ -33,6 +33,7 @@ type DeletedKeys = LinkedList<(Vec<u8>, Option<KeyValueStorageCost>)>;
 /// An operation to be applied to a key in the store.
 #[derive(PartialEq, Clone, Eq)]
 pub enum Op {
+    /// Insert or Update an element into the Merk tree
     Put(Vec<u8>),
     /// Combined references include the value in the node hash
     /// because the value is independent of the reference hash
@@ -47,9 +48,13 @@ pub enum Op {
     /// Replacing a layered reference is slightly more efficient
     /// than putting it as the replace will not modify the size
     /// hence there is no need to calculate a difference in
-    /// costs.
+    /// costs
     ReplaceLayeredReference(Vec<u8>, u32, CryptoHash),
+    /// Delete an element from the Merk tree
     Delete,
+    /// Delete a layered element from the Merk tree, currently the
+    /// only layered elements are GroveDB subtrees. A layered
+    /// element uses a different calculation for its costs
     DeleteLayered,
 }
 
