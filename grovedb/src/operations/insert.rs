@@ -76,20 +76,6 @@ impl GroveDb {
 
         let path_iter = path.into_iter();
 
-<<<<<<< HEAD
-        match element {
-            Element::Tree(..) | Element::SumTree(..) => {
-                cost_return_on_error!(
-                    &mut cost,
-                    self.add_subtree(path_iter.clone(), key, element, transaction)
-                );
-                cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
-            }
-            Element::Reference(ref reference_path, _) => {
-                if path_iter.len() == 0 {
-                    return Err(Error::InvalidPath(
-                        "only subtrees are allowed as root tree's leafs",
-=======
         let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
             HashMap::default();
 
@@ -163,6 +149,20 @@ impl GroveDb {
         );
         // if we don't allow a tree override then we should check
 
+        // TODO Move again
+        // match element {
+        //     Element::Tree(..) | Element::SumTree(..) => {
+        //         cost_return_on_error!(
+        //             &mut cost,
+        //             self.add_subtree(path_iter.clone(), key, element, transaction)
+        //         );
+        //         cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
+        //     }
+        //     Element::Reference(ref reference_path, _) => {
+        //         if path_iter.len() == 0 {
+        //             return Err(Error::InvalidPath(
+        //                 "only subtrees are allowed as root tree's leafs",
+
         if options.checks_for_override() {
             let maybe_element_bytes = cost_return_on_error!(
                 &mut cost,
@@ -174,7 +174,6 @@ impl GroveDb {
                 if options.validate_insertion_does_not_override {
                     return Err(Error::OverrideNotAllowed(
                         "insertion not allowed to override",
->>>>>>> feat/change-to-better-roots-3
                     ))
                     .wrap_with_cost(cost);
                 }
@@ -185,7 +184,7 @@ impl GroveDb {
                             Error::CorruptedData(String::from("unable to deserialize element"))
                         })
                     );
-                    if matches!(element, Element::Tree(..)) {
+                    if matches!(element, Element::Tree(..)) || matches!(element, Element::SumTree(..)){
                         return Err(Error::OverrideNotAllowed(
                             "insertion not allowed to override tree",
                         ))
@@ -195,13 +194,9 @@ impl GroveDb {
             }
         }
 
-<<<<<<< HEAD
-                let parent_is_sum_tree = cost_return_on_error!(
-=======
         match element {
             Element::Reference(ref reference_path, ..) => {
                 let reference_path = cost_return_on_error!(
->>>>>>> feat/change-to-better-roots-3
                     &mut cost,
                     path_from_reference_path_type(reference_path.clone(), path_iter, Some(key))
                         .wrap_with_cost(OperationCost::default())
@@ -216,25 +211,6 @@ impl GroveDb {
 
                 let referenced_element_value_hash_opt = cost_return_on_error!(
                     &mut cost,
-<<<<<<< HEAD
-                    self.db,
-                    path_iter.clone(),
-                    transaction,
-                    mut subtree,
-                    {
-                        let serialized =
-                            cost_return_on_error_no_add!(&cost, referenced_element.serialize());
-                        cost_return_on_error!(
-                            &mut cost,
-                            element.insert_reference(
-                                &mut subtree,
-                                key,
-                                serialized,
-                                parent_is_sum_tree
-                            )
-                        );
-                    }
-=======
                     Element::get_value_hash(&subtree_for_reference, referenced_key)
                 );
 
@@ -264,7 +240,6 @@ impl GroveDb {
                         referenced_element_value_hash,
                         Some(options.as_merk_options()),
                     )
->>>>>>> feat/change-to-better-roots-3
                 );
             }
             Element::Tree(ref value, _) => {
@@ -284,30 +259,6 @@ impl GroveDb {
                         )
                     );
                 }
-<<<<<<< HEAD
-                let parent_is_sum_tree = cost_return_on_error!(
-                    &mut cost,
-                    self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
-                );
-
-                if matches!(element, Element::SumItem(..)) && !parent_is_sum_tree {
-                    return Err(Error::InvalidInput("cannot add sum item to non sum tree"))
-                        .wrap_with_cost(cost);
-                }
-
-                merk_optional_tx!(
-                    &mut cost,
-                    self.db,
-                    path_iter.clone(),
-                    transaction,
-                    mut subtree,
-                    {
-                        cost_return_on_error!(
-                            &mut cost,
-                            element.insert(&mut subtree, key, parent_is_sum_tree)
-                        );
-                    }
-=======
             }
             _ => {
                 cost_return_on_error!(
@@ -317,7 +268,6 @@ impl GroveDb {
                         key,
                         Some(options.as_merk_options())
                     )
->>>>>>> feat/change-to-better-roots-3
                 );
             }
         }
@@ -342,108 +292,19 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let mut cost = OperationCost::default();
-<<<<<<< HEAD
-
-        let element_flag = cost_return_on_error_no_add!(
-            &cost,
-            match element {
-                Element::Tree(_, ref flag) | Element::SumTree(_, _, ref flag) => Ok(flag.clone()),
-                _ => Err(Error::CorruptedData("element should be a tree".to_owned())),
-            }
-        );
-        let path_iter = path.into_iter();
-
-        let parent_is_sum_tree = cost_return_on_error!(
-=======
         let path_iter = path.into_iter();
         let mut subtree_to_insert_into: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
->>>>>>> feat/change-to-better-roots-3
             &mut cost,
             self.open_non_transactional_merk_at_path(path_iter.clone())
         );
 
-<<<<<<< HEAD
-        if let Some(tx) = transaction {
-            let parent_storage = self
-                .db
-                .get_transactional_storage_context(path_iter.clone(), tx)
-                .unwrap_add_cost(&mut cost);
-            let mut parent_subtree = cost_return_on_error!(
-                &mut cost,
-                Merk::open(parent_storage)
-                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            let child_storage = self
-                .db
-                .get_transactional_storage_context(path_iter.chain(std::iter::once(key)), tx)
-                .unwrap_add_cost(&mut cost);
-            let child_subtree = cost_return_on_error!(
-                &mut cost,
-                Merk::open(child_storage)
-                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            let element = match element {
-                Element::SumTree(..) => Element::new_sum_tree_with_flags(
-                    child_subtree.root_hash().unwrap_add_cost(&mut cost),
-                    element_flag,
-                ),
-                Element::Tree(..) => Element::new_tree_with_flags(
-                    child_subtree.root_hash().unwrap_add_cost(&mut cost),
-                    element_flag,
-                ),
-                _ => {
-                    return Err(Error::InvalidInput("cannot add non tree as subtree"))
-                        .wrap_with_cost(cost)
-                }
-            };
-            cost_return_on_error!(
-                &mut cost,
-                element.insert(&mut parent_subtree, key, parent_is_sum_tree)
-            );
-        } else {
-            let parent_storage = self
-                .db
-                .get_storage_context(path_iter.clone())
-                .unwrap_add_cost(&mut cost);
-            let mut parent_subtree = cost_return_on_error!(
-=======
         if options.checks_for_override() {
             let maybe_element_bytes = cost_return_on_error!(
->>>>>>> feat/change-to-better-roots-3
                 &mut cost,
                 subtree_to_insert_into
                     .get(key)
                     .map_err(|e| Error::CorruptedData(e.to_string()))
             );
-<<<<<<< HEAD
-            let child_storage = self
-                .db
-                .get_storage_context(path_iter.chain(std::iter::once(key)))
-                .unwrap_add_cost(&mut cost);
-            let child_subtree = cost_return_on_error!(
-                &mut cost,
-                Merk::open(child_storage)
-                    .map_err(|_| crate::Error::CorruptedData("cannot open a subtree".to_owned()))
-            );
-            let element = match element {
-                Element::SumTree(..) => Element::new_sum_tree_with_flags(
-                    child_subtree.root_hash().unwrap_add_cost(&mut cost),
-                    element_flag,
-                ),
-                Element::Tree(..) => Element::new_tree_with_flags(
-                    child_subtree.root_hash().unwrap_add_cost(&mut cost),
-                    element_flag,
-                ),
-                _ => {
-                    return Err(Error::InvalidInput("cannot add non tree as subtree"))
-                        .wrap_with_cost(cost)
-                }
-            };
-            cost_return_on_error!(
-                &mut cost,
-                element.insert(&mut parent_subtree, key, parent_is_sum_tree)
-            );
-=======
             if let Some(element_bytes) = maybe_element_bytes {
                 if options.validate_insertion_does_not_override {
                     return Err(Error::OverrideNotAllowed(
@@ -466,7 +327,6 @@ impl GroveDb {
                     }
                 }
             }
->>>>>>> feat/change-to-better-roots-3
         }
 
         match element {

@@ -345,67 +345,6 @@ impl GroveDb {
         );
 
         while path_iter.len() > 0 {
-<<<<<<< HEAD
-            if let Some(tx) = transaction {
-                let subtree_storage = self
-                    .db
-                    .get_transactional_storage_context(path_iter.clone(), tx)
-                    .unwrap_add_cost(&mut cost);
-                let subtree = cost_return_on_error!(
-                    &mut cost,
-                    Merk::open(subtree_storage)
-                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                );
-                let key = path_iter.next_back().expect("next element is `Some`");
-                let parent_storage = self
-                    .db
-                    .get_transactional_storage_context(path_iter.clone(), tx)
-                    .unwrap_add_cost(&mut cost);
-                let mut parent_tree = cost_return_on_error!(
-                    &mut cost,
-                    Merk::open(parent_storage)
-                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                );
-                cost_return_on_error!(
-                    &mut cost,
-                    Self::update_tree_item_preserve_flag(
-                        &mut parent_tree,
-                        key,
-                        subtree.root_hash().unwrap_add_cost(&mut cost),
-                        subtree.sum(),
-                    )
-                );
-            } else {
-                let subtree_storage = self
-                    .db
-                    .get_storage_context(path_iter.clone())
-                    .unwrap_add_cost(&mut cost);
-                let subtree = cost_return_on_error!(
-                    &mut cost,
-                    Merk::open(subtree_storage)
-                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                );
-                let key = path_iter.next_back().expect("next element is `Some`");
-                let parent_storage = self
-                    .db
-                    .get_storage_context(path_iter.clone())
-                    .unwrap_add_cost(&mut cost);
-                let mut parent_tree = cost_return_on_error!(
-                    &mut cost,
-                    Merk::open(parent_storage)
-                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                );
-                cost_return_on_error!(
-                    &mut cost,
-                    Self::update_tree_item_preserve_flag(
-                        &mut parent_tree,
-                        key,
-                        subtree.root_hash().unwrap_add_cost(&mut cost),
-                        subtree.sum(),
-                    )
-                );
-            }
-=======
             let key = path_iter.next_back().expect("next element is `Some`");
             let mut parent_tree = cost_return_on_error!(
                 &mut cost,
@@ -419,7 +358,7 @@ impl GroveDb {
             let (root_hash, root_key) = child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
-                Self::update_tree_item_preserve_flag(&mut parent_tree, key, root_key, root_hash)
+                Self::update_tree_item_preserve_flag(&mut parent_tree, key, root_key, root_hash, child_tree.sum())
             );
             child_tree = parent_tree;
         }
@@ -466,10 +405,9 @@ impl GroveDb {
             let (root_hash, root_key) = child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
-                Self::update_tree_item_preserve_flag(&mut parent_tree, key, root_key, root_hash)
+                Self::update_tree_item_preserve_flag(&mut parent_tree, key, root_key, root_hash, child_tree.sum())
             );
             child_tree = parent_tree;
->>>>>>> feat/change-to-better-roots-3
         }
         Ok(()).wrap_with_cost(cost)
     }
@@ -512,7 +450,7 @@ impl GroveDb {
             let (root_hash, root_key) = child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
-                Self::update_tree_item_preserve_flag(&mut parent_tree, key, root_key, root_hash)
+                Self::update_tree_item_preserve_flag(&mut parent_tree, key, root_key, root_hash, child_tree.sum())
             );
             child_tree = parent_tree;
         }
@@ -526,13 +464,9 @@ impl GroveDb {
     >(
         parent_tree: &mut Merk<S>,
         key: K,
-<<<<<<< HEAD
-        root_hash: Hash,
-        sum: Option<i64>,
-=======
         maybe_root_key: Option<Vec<u8>>,
         root_tree_hash: Hash,
->>>>>>> feat/change-to-better-roots-3
+        sum: Option<i64>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -555,20 +489,15 @@ impl GroveDb {
 
         Self::get_element_from_subtree(parent_tree, key).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
-<<<<<<< HEAD
-                let tree = Element::new_tree_with_flags(root_hash, flag);
-                tree.insert(parent_tree, key.as_ref(), parent_is_sum_tree)
+                let tree = Element::new_tree_with_flags(maybe_root_key, flag);
+                tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash, None)
             } else if let Element::SumTree(_, _, flag) = element {
                 let tree = Element::new_sum_tree_with_flags_and_sum_value(
                     root_hash,
                     sum.unwrap_or_default(),
                     flag,
                 );
-                tree.insert(parent_tree, key.as_ref(), parent_is_sum_tree)
-=======
-                let tree = Element::new_tree_with_flags(maybe_root_key, flag);
-                tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash, None)
->>>>>>> feat/change-to-better-roots-3
+                tree.insert_subtree(parent_tree, key.as_ref(), parent_is_sum_tree)
             } else {
                 Err(Error::InvalidPath(
                     "can only propagate on tree items".to_owned(),
@@ -611,10 +540,14 @@ impl GroveDb {
 
         Self::get_element_from_subtree(parent_tree, key.as_ref()).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
-<<<<<<< HEAD
-                let tree = Element::new_tree_with_flags(root_hash, flag);
-                // TODO: fix
-                tree.insert_into_batch_operations(key, batch_operations, parent_is_sum_tree)
+                let tree = Element::new_tree_with_flags(maybe_root_key, flag);
+                tree.insert_subtree_into_batch_operations(
+                    key,
+                    root_tree_hash,
+                    true,
+                    batch_operations,
+                    parent_is_sum_tree
+                )
             } else if let Element::SumTree(_, _, flag) = element {
                 // TODO: fix
                 let tree = Element::new_sum_tree_with_flags_and_sum_value(
@@ -623,15 +556,6 @@ impl GroveDb {
                     flag,
                 );
                 tree.insert_into_batch_operations(key, batch_operations, parent_is_sum_tree)
-=======
-                let tree = Element::new_tree_with_flags(maybe_root_key, flag);
-                tree.insert_subtree_into_batch_operations(
-                    key,
-                    root_tree_hash,
-                    true,
-                    batch_operations,
-                )
->>>>>>> feat/change-to-better-roots-3
             } else {
                 Err(Error::InvalidPath(
                     "can only propagate on tree items".to_owned(),
