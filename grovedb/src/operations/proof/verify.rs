@@ -337,7 +337,7 @@ impl ProofVerifier {
 
             let elem = Element::deserialize(last_result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(..) | Element::SumTree(hash, ..) => Ok(Some(last_result_set[0].2)),
+                Element::Tree(..) | Element::SumTree(..) => Ok(Some(last_result_set[0].2)),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),
@@ -390,7 +390,7 @@ impl ProofVerifier {
 
             let elem = Element::deserialize(result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(root_key, ..) | Element::SumTree(hash, ..) => Ok(result_set[0].2),
+                Element::Tree(..) | Element::SumTree(..) => Ok(result_set[0].2),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),

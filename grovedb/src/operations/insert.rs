@@ -237,6 +237,7 @@ impl GroveDb {
                     element.insert_reference(
                         &mut subtree_to_insert_into,
                         key,
+                        false,
                         referenced_element_value_hash,
                         Some(options.as_merk_options()),
                     )

@@ -1389,7 +1389,7 @@ mod test {
         *,
     };
     use crate::{
-        merk::{OptionOrMerkType::SomeMerk, TreeFeatureType::BasicMerk},
+        merk::{TreeFeatureType::BasicMerk},
         proofs::query::QueryItem::RangeAfter,
         test_utils::make_tree_seq,
         tree::{NoopCommit, PanicSource, RefWalker, Tree},
@@ -1411,7 +1411,7 @@ mod test {
             .unwrap()
             .attach(true, Some(Tree::new(vec![3], vec![3], BasicMerk).unwrap()))
             .attach(false, Some(Tree::new(vec![7], vec![7], BasicMerk).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
             Ok(NoStorageRemoval)
         })
         .unwrap()
@@ -1427,7 +1427,7 @@ mod test {
             .attach(true, Some(two_tree))
             .attach(false, Some(four_tree));
         three_tree
-            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            .commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
                 Ok(NoStorageRemoval)
             })
             .unwrap()
@@ -1438,7 +1438,7 @@ mod test {
             .unwrap()
             .attach(true, Some(seven_tree));
         eight_tree
-            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            .commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
                 Ok(NoStorageRemoval)
             })
             .unwrap()
@@ -1449,7 +1449,7 @@ mod test {
             .attach(true, Some(three_tree))
             .attach(false, Some(eight_tree));
         root_tree
-            .commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+            .commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
                 Ok(NoStorageRemoval)
             })
             .unwrap()
@@ -2169,7 +2169,7 @@ mod test {
                         ),
                 ),
             );
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
             Ok(NoStorageRemoval)
         })
         .unwrap()
@@ -6111,7 +6111,7 @@ mod test {
     #[test]
     fn verify_ops() {
         let mut tree = Tree::new(vec![5], vec![5], BasicMerk).unwrap();
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
             Ok(NoStorageRemoval)
         })
         .unwrap()
@@ -6139,7 +6139,7 @@ mod test {
     #[should_panic(expected = "verify failed")]
     fn verify_ops_mismatched_hash() {
         let mut tree = Tree::new(vec![5], vec![5], BasicMerk).unwrap();
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
             Ok(NoStorageRemoval)
         })
         .unwrap()

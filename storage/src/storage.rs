@@ -583,6 +583,7 @@ mod tests {
         };
         let op2 = AbstractBatchOperation::DeleteRoot {
             key: b"key1".to_vec(),
+            cost_info: None,
         };
         assert_eq!(
             format!("{:?}", op1),

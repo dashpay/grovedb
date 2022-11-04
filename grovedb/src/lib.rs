@@ -493,7 +493,7 @@ impl GroveDb {
                 tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash, None, parent_is_sum_tree)
             } else if let Element::SumTree(_, _, flag) = element {
                 let tree = Element::new_sum_tree_with_flags_and_sum_value(
-                    root_hash,
+                    maybe_root_key,
                     sum.unwrap_or_default(),
                     flag,
                 );
@@ -551,7 +551,7 @@ impl GroveDb {
             } else if let Element::SumTree(_, _, flag) = element {
                 // TODO: fix
                 let tree = Element::new_sum_tree_with_flags_and_sum_value(
-                    root_hash,
+                    maybe_root_key,
                     sum.unwrap_or_default(),
                     flag,
                 );

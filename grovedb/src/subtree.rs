@@ -60,7 +60,7 @@ pub enum Element {
     SumItem(Vec<u8>, Option<ElementFlags>),
     /// Same as Element::Tree but underlying Merk sums value of it's summable
     /// nodes
-    SumTree([u8; 32], SumValue, Option<ElementFlags>),
+    SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
     /// A reference to an object by its path
     Reference(ReferencePathType, MaxReferenceHop, Option<ElementFlags>),
     /// A subtree, contains the a prefixed key representing the root of the
@@ -176,20 +176,20 @@ impl Element {
         }
     }
 
-    pub fn new_sum_tree(tree_hash: [u8; 32]) -> Self {
-        Element::SumTree(tree_hash, 0, None)
+    pub fn new_sum_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::SumTree(maybe_root_key, 0, None)
     }
 
-    pub fn new_sum_tree_with_flags(tree_hash: [u8; 32], flags: Option<ElementFlags>) -> Self {
-        Element::SumTree(tree_hash, 0, flags)
+    pub fn new_sum_tree_with_flags(maybe_root_key: Option<Vec<u8>>, flags: Option<ElementFlags>) -> Self {
+        Element::SumTree(maybe_root_key, 0, flags)
     }
 
     pub fn new_sum_tree_with_flags_and_sum_value(
-        tree_hash: [u8; 32],
+        maybe_root_key: Option<Vec<u8>>,
         sum_value: SumValue,
         flags: Option<ElementFlags>,
     ) -> Self {
-        Element::SumTree(tree_hash, sum_value, flags)
+        Element::SumTree(maybe_root_key, sum_value, flags)
     }
 
     /// Decoded the integer value in the SumItem element type, returns 0 for

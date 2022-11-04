@@ -325,7 +325,6 @@ mod tests {
 
     use super::{super::tree::Tree, *};
     use crate::{
-        merk::OptionOrMerkType::SomeMerk,
         test_utils::*,
         tree::{NoopCommit, PanicSource, Tree as BaseTree},
     };
@@ -399,7 +398,7 @@ mod tests {
     #[test]
     fn one_node_tree_trunk_roundtrip() {
         let mut tree = BaseTree::new(vec![0], vec![], BasicMerk).unwrap();
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
             Ok(NoStorageRemoval)
         })
         .unwrap()
@@ -425,7 +424,7 @@ mod tests {
             false,
             Some(BaseTree::new(vec![1], vec![], BasicMerk).unwrap()),
         );
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
             Ok(NoStorageRemoval)
         })
         .unwrap()
@@ -450,7 +449,7 @@ mod tests {
             true,
             Some(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()),
         );
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
             Ok(NoStorageRemoval)
         })
         .unwrap()
@@ -481,7 +480,7 @@ mod tests {
                 false,
                 Some(BaseTree::new(vec![2], vec![], BasicMerk).unwrap()),
             );
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
             Ok(NoStorageRemoval)
         })
         .unwrap()
@@ -502,7 +501,7 @@ mod tests {
     fn leaf_chunk_roundtrip() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(0..31);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], )
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
             .unwrap()
             .unwrap();
 

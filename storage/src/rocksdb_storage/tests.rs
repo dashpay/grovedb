@@ -43,7 +43,7 @@ mod no_transaction {
         );
 
         context_ayya
-            .delete_aux(b"key1")
+            .delete_aux(b"key1", None)
             .unwrap()
             .expect("cannot delete from aux cf");
 
@@ -106,7 +106,7 @@ mod no_transaction {
         );
 
         context_ayya
-            .delete_root(b"key1")
+            .delete_root(b"key1", None)
             .unwrap()
             .expect("cannot delete from roots cf");
 
@@ -169,7 +169,7 @@ mod no_transaction {
         );
 
         context_ayya
-            .delete_meta(b"key1")
+            .delete_meta(b"key1", None)
             .unwrap()
             .expect("cannot delete from meta cf");
 
@@ -232,7 +232,7 @@ mod no_transaction {
         );
 
         context_ayya
-            .delete(b"key1")
+            .delete(b"key1", None)
             .unwrap()
             .expect("cannot delete from storage_cost");
 
@@ -282,8 +282,8 @@ mod no_transaction {
             .is_none());
 
         let mut batch = context_ayya.new_batch();
-        batch.delete(b"key1", );
-        batch.put(b"key3", b"ayyavalue3", None, None);
+        batch.delete(b"key1", None);
+        batch.put(b"key3", b"ayyavalue3", None, None).unwrap();
 
         assert!(context_ayya
             .get(b"key3")
@@ -455,7 +455,7 @@ mod transaction {
         let context_ayya_after_no_tx = storage.get_storage_context(to_path(b"ayya")).unwrap();
 
         context_ayya_after_tx
-            .delete_aux(b"key1")
+            .delete_aux(b"key1", None)
             .unwrap()
             .expect("cannot delete from aux cf");
 
@@ -541,7 +541,7 @@ mod transaction {
         let context_ayya_after_no_tx = storage.get_storage_context(to_path(b"ayya")).unwrap();
 
         context_ayya_after_tx
-            .delete_root(b"key1")
+            .delete_root(b"key1", None)
             .unwrap()
             .expect("cannot delete from roots cf");
 
@@ -611,7 +611,7 @@ mod transaction {
         );
 
         context_ayya
-            .delete_meta(b"key1")
+            .delete_meta(b"key1", None)
             .unwrap()
             .expect("cannot delete from meta cf");
 
@@ -674,7 +674,7 @@ mod transaction {
         );
 
         context_ayya
-            .delete(b"key1")
+            .delete(b"key1", None)
             .unwrap()
             .expect("cannot delete from storage_cost");
 
@@ -727,8 +727,8 @@ mod transaction {
             .is_none());
 
         let mut batch = context_ayya.new_batch();
-        batch.delete(b"key1", );
-        batch.put(b"key3", b"ayyavalue3", None, None);
+        batch.delete(b"key1", None);
+        batch.put(b"key3", b"ayyavalue3", None, None).unwrap();
 
         assert!(context_ayya
             .get(b"key1")
@@ -824,7 +824,7 @@ mod transaction {
                 .unwrap();
 
             context_tx
-                .delete(b"key1")
+                .delete(b"key1", None)
                 .unwrap()
                 .expect("unable to delete an item");
             context_tx

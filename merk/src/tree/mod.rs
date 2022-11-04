@@ -763,7 +763,6 @@ mod test {
     use super::{commit::NoopCommit, hash::NULL_HASH, Tree};
     use crate::{
         merk::{
-            OptionOrMerkType::{NoneOfType, SomeMerk},
             TreeFeatureType::SummedMerk,
         },
         tree::TreeFeatureType::BasicMerk,
@@ -844,7 +843,7 @@ mod test {
         assert!(tree.link(false).is_none());
         assert!(tree.child(false).is_none());
 
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+        tree.commit(&mut NoopCommit {}, &|_,_| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
             Ok(NoStorageRemoval)
         })
         .unwrap()
@@ -866,7 +865,7 @@ mod test {
         let mut tree = Tree::new(vec![0], vec![1], BasicMerk)
             .unwrap()
             .attach(true, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+        tree.commit(&mut NoopCommit {}, &|_,_| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
             Ok(NoStorageRemoval)
         })
         .unwrap()
@@ -931,7 +930,7 @@ mod test {
         let mut tree = Tree::new(vec![0], vec![1], BasicMerk)
             .unwrap()
             .attach(false, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()));
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+        tree.commit(&mut NoopCommit {}, &|_,_| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
             Ok(NoStorageRemoval)
         })
         .unwrap()

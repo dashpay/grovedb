@@ -241,7 +241,7 @@ mod test {
                 true,
                 Some(Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap()),
             );
-        tree.commit(&mut NoopCommit {}, &mut |_, _, _| Ok(false), &mut |_, _| {
+        tree.commit(&mut NoopCommit {}, &|_,_| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
             Ok(NoStorageRemoval)
         })
         .unwrap()
