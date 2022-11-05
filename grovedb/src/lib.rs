@@ -168,7 +168,7 @@ impl GroveDb {
             ..Default::default()
         };
 
-        root_merk_optional_tx!(&mut cost, self.db, transaction, subtree, {
+        root_merk_optional_tx!(&mut cost, self.db, transaction, subtree, false, {
             let root_key = subtree.root_key().unwrap();
             Ok(root_key).wrap_with_cost(cost)
         })
@@ -181,7 +181,7 @@ impl GroveDb {
             ..Default::default()
         };
 
-        root_merk_optional_tx!(&mut cost, self.db, transaction, subtree, {
+        root_merk_optional_tx!(&mut cost, self.db, transaction, subtree, false, {
             let root_hash = subtree.root_hash().unwrap_add_cost(&mut cost);
             Ok(root_hash).wrap_with_cost(cost)
         })

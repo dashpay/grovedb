@@ -259,6 +259,26 @@ impl GroveDb {
                             key,
                             NULL_HASH,
                             Some(options.as_merk_options())
+                            false,
+                        )
+                    );
+                }
+            }
+            Element::SumTree(ref value, _, _) => {
+                if value.is_some() {
+                    return Err(Error::InvalidCodeExecution(
+                        "a tree should be empty at the moment of insertion when not using batches",
+                    ))
+                        .wrap_with_cost(cost);
+                } else {
+                    cost_return_on_error!(
+                        &mut cost,
+                        element.insert_subtree(
+                            &mut subtree_to_insert_into,
+                            key,
+                            NULL_HASH,
+                            Some(options.as_merk_options())
+                            true,
                         )
                     );
                 }

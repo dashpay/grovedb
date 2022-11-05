@@ -179,6 +179,7 @@ macro_rules! root_merk_optional_tx {
         $db:expr,
         $transaction:ident,
         $subtree:ident,
+        $is_sum_tree:ident,
         { $($body:tt)* }
     ) => {
         {
@@ -186,7 +187,7 @@ macro_rules! root_merk_optional_tx {
             storage_context_optional_tx!($db, [], $transaction, storage, {
                 let $subtree = cost_return_on_error!(
                     &mut $cost,
-                    ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), is_sum_tree)
+                    ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), $is_sum_tree)
                         .map(|merk_res|
                              merk_res
                                 .map_err(|_| crate::Error::CorruptedData(
