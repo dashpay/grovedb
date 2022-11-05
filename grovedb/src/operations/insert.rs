@@ -264,12 +264,12 @@ impl GroveDb {
                     );
                 }
             }
-            Element::SumTree(ref value, _, _) => {
+            Element::SumTree(ref value, ..) => {
                 if value.is_some() {
                     return Err(Error::InvalidCodeExecution(
                         "a tree should be empty at the moment of insertion when not using batches",
                     ))
-                        .wrap_with_cost(cost);
+                    .wrap_with_cost(cost);
                 } else {
                     cost_return_on_error!(
                         &mut cost,

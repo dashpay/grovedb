@@ -34,7 +34,7 @@ use merk::{
     anyhow::anyhow,
     tree::{kv::KV, value_hash, NULL_HASH},
     worst_case_costs::{add_worst_case_merk_propagate, MerkWorstCaseInput},
-    CryptoHash, Merk, MerkOptions, MerkType,
+    CryptoHash, Merk, MerkOptions, MerkType, TreeFeatureType,
 };
 use nohash_hasher::IntMap;
 use storage::{
@@ -439,7 +439,7 @@ impl GroveDbOpConsistencyResults {
 
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F> {
-    merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
+    merks: HashMap<Vec<Vec<u8>>, (Merk<S>, bool)>,
     get_merk_fn: F,
 }
 
@@ -479,7 +479,7 @@ trait TreeCache<G, SR> {
 
 impl<'db, S, F> TreeCacheMerkByPath<S, F>
 where
-    F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+    F: FnMut(&[Vec<u8>], bool) -> (CostResult<Merk<S>, Error>, bool),
     S: StorageContext<'db>,
 {
     /// A reference assumes the value hash of the base item it points to.
@@ -652,7 +652,7 @@ impl<'db, S, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F>
 where
     G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
     SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
-    F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+    F: FnMut(&[Vec<u8>], bool) -> (CostResult<Merk<S>, Error>, bool),
     S: StorageContext<'db>,
 {
     fn insert(&mut self, op: &GroveDbOp, is_sum_tree: bool) -> CostResult<(), Error> {
@@ -661,8 +661,9 @@ where
         let mut inserted_path = op.path.to_path();
         inserted_path.push(op.key.get_key_clone());
         if !self.merks.contains_key(&inserted_path) {
-            let merk = cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
-            self.merks.insert(inserted_path, merk);
+            let (merk_wrapped, _) = (self.get_merk_fn)(&inserted_path, false);
+            let merk = cost_return_on_error!(&mut cost, merk_wrapped);
+            self.merks.insert(inserted_path, (merk, is_sum_tree));
         }
 
         Ok(()).wrap_with_cost(cost)
@@ -671,10 +672,10 @@ where
     fn update_base_merk_root_key(&mut self, root_key: Option<Vec<u8>>) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let base_path = vec![];
-        let merk_wrapped = self
+        let (merk_wrapped, is_sum_tree) = self
             .merks
             .remove(&base_path)
-            .map(|x| Ok(x).wrap_with_cost(Default::default()))
+            .map(|(merk, feature_type)| (Ok(merk).wrap_with_cost(Default::default()), feature_type))
             .unwrap_or_else(|| (self.get_merk_fn)(&[], false));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
         merk.set_base_root_key(root_key)
@@ -696,14 +697,14 @@ where
         let p = path.to_path();
         let path = &p;
 
-        let merk_wrapped = self
+        let (merk_wrapped, is_sum_tree) = self
             .merks
             .remove(path)
-            .map(|x| Ok(x).wrap_with_cost(Default::default()))
+            .map(|(merk, feature_type)| (Ok(merk).wrap_with_cost(Default::default()), feature_type))
             .unwrap_or_else(|| (self.get_merk_fn)(path, false));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
 
-        let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
+        let mut batch_operations: Vec<(Vec<u8>, _, Option<TreeFeatureType>)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } => match &element {
@@ -894,10 +895,8 @@ where
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         });
-        (
-            merk.root_hash_and_key().unwrap_add_cost(&mut cost),
-            merk.sum(),
-        )
+        let (root_hash, root_key) = merk.root_hash_and_key().unwrap_add_cost(&mut cost);
+        (root_hash, root_key, merk.sum())
             .wrap_with_cost(cost)
             .map(Ok)
     }
@@ -1173,7 +1172,7 @@ impl GroveDb {
                         }
                     }
                     // execute the ops at this path
-                    let (_root_hash, calculated_root_key) = cost_return_on_error!(
+                    let (_root_hash, calculated_root_key, _sum) = cost_return_on_error!(
                         &mut cost,
                         merk_tree_cache.execute_ops_on_path(
                             &path,
@@ -1246,8 +1245,11 @@ impl GroveDb {
                                                 Op::Insert { element } => {
                                                     if let Element::Tree(root_key, _) = element {
                                                         *root_key = calculated_root_key;
-                                                    } else if let Element::SumTree(hash, sum, _) =
-                                                        element
+                                                    } else if let Element::SumTree(
+                                                        root_key,
+                                                        sum,
+                                                        _,
+                                                    ) = element
                                                     {
                                                         *root_key = calculated_root_key;
                                                         *sum = merk_sum.unwrap_or_default();
@@ -1337,7 +1339,7 @@ impl GroveDb {
                 }
             )
         );
-        self.apply_batch_structure(batch_structure, batch_apply_options)
+        Self::apply_batch_structure(batch_structure, batch_apply_options)
             .add_cost(cost)
     }
 
@@ -1405,7 +1407,10 @@ impl GroveDb {
         tx: &'db Transaction,
         new_merk: bool,
         is_sum_tree: bool,
-    ) -> CostResult<Merk<PrefixedRocksDbBatchTransactionContext<'db>>, Error>
+    ) -> (
+        CostResult<Merk<PrefixedRocksDbBatchTransactionContext<'db>>, Error>,
+        bool,
+    )
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + Clone,
@@ -1420,49 +1425,70 @@ impl GroveDb {
         match path_iter.next_back() {
             Some(key) => {
                 if new_merk {
-                    Ok(Merk::open_empty(storage, MerkType::LayeredMerk)).wrap_with_cost(cost)
+                    (
+                        Ok(Merk::open_empty(storage, MerkType::LayeredMerk)).wrap_with_cost(cost),
+                        is_sum_tree,
+                    )
                 } else {
                     let parent_storage = self
                         .db
                         .get_transactional_storage_context(path_iter.clone(), tx)
                         .unwrap_add_cost(&mut cost);
-                    let element = cost_return_on_error!(
-                        &mut cost,
-                        Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                            Error::InvalidPath(
+                    let element_result =
+                        Element::get_from_storage(&parent_storage, key).unwrap_add_cost(&mut cost);
+                    let element = if element_result.is_err() {
+                        return (
+                            Err(Error::InvalidPath(
                                 "could not get key for parent of subtree for batch".to_owned(),
-                            )
-                        })
-                    );
-                    if let Element::Tree(root_key, _) = element {
-                        Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
-                            .map_err(|_| {
-                                Error::CorruptedData(
-                                    "cannot open a subtree with given root key".to_owned(),
-                                )
-                            })
-                            .add_cost(cost)
+                            ))
+                            .wrap_with_cost(cost),
+                            false,
+                        );
                     } else {
-                        Err(Error::CorruptedPath(
+                        element_result.expect("confirmed not error")
+                    };
+                    if let Element::Tree(root_key, _) = element {
+                        (
+                            Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
+                                .map_err(|_| {
+                                    Error::CorruptedData(
+                                        "cannot open a subtree with given root key".to_owned(),
+                                    )
+                                })
+                                .add_cost(cost),
+                            is_sum_tree,
+                        )
+                    } else {
+                        (Err(Error::CorruptedPath(
                             "cannot open a subtree as parent exists but is not a tree",
                         ))
-                        .wrap_with_cost(OperationCost::default())
+                        .wrap_with_cost(OperationCost::default()), false)
                     }
                 }
             }
             None => {
                 if new_merk {
                     if is_sum_tree {
-                        Ok(Merk::open_empty(storage, MerkType::BaseSumMerk)).wrap_with_cost(cost)
+                        (
+                            Ok(Merk::open_empty(storage, MerkType::BaseSumMerk))
+                                .wrap_with_cost(cost),
+                            is_sum_tree,
+                        )
                     } else {
-                        Ok(Merk::open_empty(storage, MerkType::BaseMerk)).wrap_with_cost(cost)
+                        (
+                            Ok(Merk::open_empty(storage, MerkType::BaseMerk)).wrap_with_cost(cost),
+                            is_sum_tree,
+                        )
                     }
                 } else {
-                    Merk::open_base(storage, is_sum_tree)
-                        .map_err(|_| {
-                            Error::CorruptedData("cannot open a the root subtree".to_owned())
-                        })
-                        .add_cost(cost)
+                    (
+                        Merk::open_base(storage, is_sum_tree)
+                            .map_err(|_| {
+                                Error::CorruptedData("cannot open a the root subtree".to_owned())
+                            })
+                            .add_cost(cost),
+                        is_sum_tree,
+                    )
                 }
             }
         }
@@ -1474,7 +1500,10 @@ impl GroveDb {
         path: &[Vec<u8>],
         new_merk: bool,
         is_sum_tree: bool,
-    ) -> CostResult<Merk<PrefixedRocksDbBatchStorageContext>, Error> {
+    ) -> (
+        CostResult<Merk<PrefixedRocksDbBatchStorageContext>, Error>,
+        bool,
+    ) {
         let mut local_cost = OperationCost::default();
         let storage = self
             .db
@@ -1495,35 +1524,53 @@ impl GroveDb {
                     MerkType::LayeredMerk
                 }
             };
-            Ok(Merk::open_empty(storage, merk_type)).wrap_with_cost(local_cost)
+            (
+                Ok(Merk::open_empty(storage, merk_type)).wrap_with_cost(local_cost),
+                is_sum_tree,
+            )
         } else {
             if let Some((last, base_path)) = path.split_last() {
                 let parent_storage = self
                     .db
                     .get_storage_context(base_path.iter().map(|x| x.as_slice()))
                     .unwrap_add_cost(&mut local_cost);
-                let element = cost_return_on_error!(
-                    &mut local_cost,
-                    Element::get_from_storage(&parent_storage, last)
-                );
-                if let Element::Tree(root_key, _) = element {
-                    Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
-                        .map_err(|_| {
-                            Error::CorruptedData(
-                                "cannot open a subtree with given root key".to_owned(),
-                            )
-                        })
-                        .add_cost(local_cost)
+                let element_result =
+                    Element::get_from_storage(&parent_storage, last).unwrap_add_cost(&mut local_cost);
+                let element = if element_result.is_err() {
+                    return (
+                        Err(Error::InvalidPath(
+                            "could not get key for parent of subtree for batch".to_owned(),
+                        ))
+                            .wrap_with_cost(local_cost),
+                        false,
+                    );
                 } else {
-                    Err(Error::CorruptedData(
+                    element_result.expect("confirmed not error")
+                };
+                if let Element::Tree(root_key, _) = element {
+                    (
+                        Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
+                            .map_err(|_| {
+                                Error::CorruptedData(
+                                    "cannot open a subtree with given root key".to_owned(),
+                                )
+                            })
+                            .add_cost(local_cost),
+                        is_sum_tree,
+                    )
+                } else {
+                    return (Err(Error::CorruptedData(
                         "cannot open a subtree as parent exists but is not a tree".to_owned(),
                     ))
-                    .wrap_with_cost(local_cost)
+                    .wrap_with_cost(local_cost), false)
                 }
             } else {
-                Merk::open_base(storage, is_sum_tree)
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-                    .add_cost(local_cost)
+                (
+                    Merk::open_base(storage, is_sum_tree)
+                        .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                        .add_cost(local_cost),
+                    is_sum_tree,
+                )
             }
         }
     }
@@ -1594,7 +1641,7 @@ impl GroveDb {
                         let path_iter = path.iter().map(|x| x.as_slice());
                         let is_sum_tree = if path.len() == 0 {
                             // the root tree is not a sum tree
-                            true
+                            false
                         } else {
                             self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
                                 .unwrap_add_cost(&mut cost)
@@ -1633,7 +1680,7 @@ impl GroveDb {
                         let path_iter = path.iter().map(|x| x.as_slice());
                         let is_sum_tree = if path.len() == 0 {
                             // the root tree is not a sum tree
-                            true
+                            false
                         } else {
                             self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
                                 .unwrap_add_cost(&mut cost)

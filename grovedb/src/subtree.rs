@@ -172,9 +172,7 @@ impl Element {
             | Element::SumTree(_, _, flags)
             | Element::Item(_, flags)
             | Element::SumItem(_, flags)
-            | Element::Reference(_, _, flags) => {
-                flags
-            }
+            | Element::Reference(_, _, flags) => flags,
         }
     }
 
@@ -216,10 +214,7 @@ impl Element {
             | Element::SumTree(_, _, flags)
             | Element::Item(_, flags)
             | Element::SumItem(_, flags)
-            | Element::Reference(_, _, flags)
-            => {
-                flags
-            }
+            | Element::Reference(_, _, flags) => flags,
         }
     }
 
