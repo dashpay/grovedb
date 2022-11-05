@@ -27,6 +27,7 @@ macro_rules! storage_context_with_parent_optional_tx {
 	$transaction:ident,
 	$storage:ident,
 	$root_key:ident,
+    $is_sum_tree:ident,
 	{ $($body:tt)* }
     ) => {
         {
@@ -52,6 +53,11 @@ macro_rules! storage_context_with_parent_optional_tx {
                     );
                     if let Element::Tree(root_key, _) = element {
                         let $root_key = root_key;
+                        let $is_sum_tree = false;
+                        $($body)*
+                    } else if let Element::SumTree(root_key, _, _) = element {
+                        let $root_key = root_key;
+                        let $is_sum_tree = true;
                         $($body)*
                     } else {
                         return Err(Error::CorruptedData(
@@ -85,6 +91,11 @@ macro_rules! storage_context_with_parent_optional_tx {
                     );
                     if let Element::Tree(root_key, _) = element {
                         let $root_key = root_key;
+                        let $is_sum_tree = false;
+                        $($body)*
+                    } else if let Element::SumTree(root_key, _, _) = element {
+                        let $root_key = root_key;
+                        let $is_sum_tree = true;
                         $($body)*
                     } else {
                         return Err(Error::CorruptedData(
@@ -140,11 +151,12 @@ macro_rules! merk_optional_tx {
 		$transaction,
 		storage,
 		root_key,
+        is_sum_tree,
 		{
                     #[allow(unused_mut)]
                     let mut $subtree = cost_return_on_error!(
 			&mut $cost,
-			::merk::Merk::open_layered_with_root_key(storage, root_key)
+			::merk::Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
                             .map(|merk_res|
 				 merk_res
                                  .map_err(|_| crate::Error::CorruptedData(
@@ -174,7 +186,7 @@ macro_rules! root_merk_optional_tx {
             storage_context_optional_tx!($db, [], $transaction, storage, {
                 let $subtree = cost_return_on_error!(
                     &mut $cost,
-                    ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost))
+                    ::merk::Merk::open_base(storage.unwrap_add_cost(&mut $cost), is_sum_tree)
                         .map(|merk_res|
                              merk_res
                                 .map_err(|_| crate::Error::CorruptedData(

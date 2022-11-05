@@ -56,14 +56,14 @@ pub enum Element {
     /// Vector encoded integer value that can be totaled in a sum tree
     // TODO: Look into enforcing the integer nature during insertion
     SumItem(Vec<u8>, Option<ElementFlags>),
-    /// Same as Element::Tree but underlying Merk sums value of it's summable
-    /// nodes
-    SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
     /// A reference to an object by its path
     Reference(ReferencePathType, MaxReferenceHop, Option<ElementFlags>),
     /// A subtree, contains the a prefixed key representing the root of the
     /// subtree.
     Tree(Option<Vec<u8>>, Option<ElementFlags>),
+    /// Same as Element::Tree but underlying Merk sums value of it's summable
+    /// nodes
+    SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
 }
 
 impl fmt::Debug for Element {
@@ -168,7 +168,11 @@ impl Element {
     /// Grab the optional flag stored in an element
     pub fn get_flags(&self) -> &Option<ElementFlags> {
         match self {
-            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
+            Element::Tree(_, flags)
+            | Element::SumTree(_, _, flags)
+            | Element::Item(_, flags)
+            | Element::SumItem(_, flags)
+            | Element::Reference(_, _, flags) => {
                 flags
             }
         }
@@ -208,7 +212,12 @@ impl Element {
     /// Grab the optional flag stored in an element
     pub fn get_flags_owned(self) -> Option<ElementFlags> {
         match self {
-            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
+            Element::Tree(_, flags)
+            | Element::SumTree(_, _, flags)
+            | Element::Item(_, flags)
+            | Element::SumItem(_, flags)
+            | Element::Reference(_, _, flags)
+            => {
                 flags
             }
         }
@@ -253,7 +262,7 @@ impl Element {
             }
             Element::SumTree(_, _, element_flag) => {
                 if let Some(flag) = element_flag {
-                    flag.len() + 32 + 8
+                    flag.len() as u32 + 32 + 8
                 } else {
                     32 + 8
                 }
@@ -1099,7 +1108,7 @@ impl Element {
         if exists {
             Ok(false).wrap_with_cost(cost)
         } else {
-            cost_return_on_error!(&mut cost, self.insert(merk, key, is_sum_tree, options));
+            cost_return_on_error!(&mut cost, self.insert(merk, key, options, is_sum_tree));
             Ok(true).wrap_with_cost(cost)
         }
     }
@@ -1383,11 +1392,11 @@ mod tests {
     fn test_success_insert() {
         let mut merk = TempMerk::new();
         Element::empty_tree()
-            .insert(&mut merk, b"mykey", false, None)
+            .insert(&mut merk, b"mykey", None, false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"value".to_vec())
-            .insert(&mut merk, b"another-key", false, None)
+            .insert(&mut merk, b"another-key", None, false)
             .unwrap()
             .expect("expected successful insertion 2");
 
@@ -1465,7 +1474,7 @@ mod tests {
             "0400000000000000000000000000000000000000000000000000000000000000000000"
         );
 
-        let empty_sum_tree = Element::new_sum_tree_with_flags([0; 32], Some(vec![5]));
+        let empty_sum_tree = Element::new_sum_tree_with_flags(None, Some(vec![5]));
         let serialized = empty_sum_tree.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 37);
         assert_eq!(
@@ -1675,19 +1684,19 @@ mod tests {
             .expect("cannot open Merk"); // TODO implement costs
 
         Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d", false, None)
+            .insert(&mut merk, b"d", None, false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c", false, None)
+            .insert(&mut merk, b"c", None, false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a", false, None)
+            .insert(&mut merk, b"a", None, false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b", false, None)
+            .insert(&mut merk, b"b", None, false)
             .unwrap()
             .expect("expected successful insertion");
 
@@ -1771,19 +1780,19 @@ mod tests {
             .expect("cannot open Merk");
 
         Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d", false, None)
+            .insert(&mut merk, b"d", None, false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c", false, None)
+            .insert(&mut merk, b"c", None, false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a", false, None)
+            .insert(&mut merk, b"a", None, false)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b", false, None)
+            .insert(&mut merk, b"b", None, false)
             .unwrap()
             .expect("expected successful insertion");
 
