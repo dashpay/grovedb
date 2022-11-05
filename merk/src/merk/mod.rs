@@ -165,7 +165,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
     }
 }
 
-// TODO: Move to seperate file
+// TODO: Move to separate file
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum TreeFeatureType {
     BasicMerk,

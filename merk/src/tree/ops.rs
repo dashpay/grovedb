@@ -882,7 +882,7 @@ mod test {
 
     #[test]
     fn insert_updated_single() {
-        let batch = vec![(vec![0], Op::Put(vec![1]))];
+        let batch = vec![(vec![0], Op::Put(vec![1]), Some(BasicMerk))];
         let (maybe_tree, _new_keys, updated_keys, deleted_keys, _updated_root_key_from) =
             Walker::<PanicSource>::apply_to(None, &batch, PanicSource {}, &|_, _| Ok(0))
                 .unwrap()
@@ -891,7 +891,7 @@ mod test {
         assert!(deleted_keys.is_empty());
 
         let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
-        let batch = vec![(vec![0], Op::Put(vec![2])), (vec![1], Op::Put(vec![2]))];
+        let batch = vec![(vec![0], Op::Put(vec![2]), Some(BasicMerk)), (vec![1], Op::Put(vec![2]), Some(BasicMerk))];
         let (maybe_tree, _new_keys, updated_keys, deleted_keys, _updated_root_key_from) =
             Walker::<PanicSource>::apply_to(maybe_walker, &batch, PanicSource {}, &|_, _| Ok(0))
                 .unwrap()
@@ -906,9 +906,9 @@ mod test {
     #[test]
     fn insert_updated_multiple() {
         let batch = vec![
-            (vec![0], Op::Put(vec![1])),
-            (vec![1], Op::Put(vec![2])),
-            (vec![2], Op::Put(vec![3])),
+            (vec![0], Op::Put(vec![1]), Some(BasicMerk)),
+            (vec![1], Op::Put(vec![2]), Some(BasicMerk)),
+            (vec![2], Op::Put(vec![3]), Some(BasicMerk)),
         ];
         let (maybe_tree, _new_keys, updated_keys, deleted_keys, _updated_root_key_from) =
             Walker::<PanicSource>::apply_to(None, &batch, PanicSource {}, &|_, _| Ok(0))
@@ -919,9 +919,9 @@ mod test {
 
         let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
         let batch = vec![
-            (vec![0], Op::Put(vec![5])),
-            (vec![1], Op::Put(vec![8])),
-            (vec![2], Op::Delete),
+            (vec![0], Op::Put(vec![5]), Some(BasicMerk)),
+            (vec![1], Op::Put(vec![8]), Some(BasicMerk)),
+            (vec![2], Op::Delete, None),
         ];
         let (maybe_tree, _new_keys, updated_keys, deleted_keys, _updated_root_key_from) =
             Walker::<PanicSource>::apply_to(maybe_walker, &batch, PanicSource {}, &|_, _| Ok(0))
