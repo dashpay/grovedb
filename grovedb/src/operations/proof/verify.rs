@@ -1,4 +1,3 @@
-use indexmap::Equivalent;
 use merk::{
     proofs::Query,
     tree::{combine_hash, value_hash as value_hash_fn},

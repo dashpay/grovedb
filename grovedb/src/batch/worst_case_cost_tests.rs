@@ -1,21 +1,10 @@
-#[cfg(test)]
 mod tests {
-    use std::option::Option::None;
-
     use costs::{
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
     };
-    use integer_encoding::VarInt;
-    use merk::proofs::Query;
 
-    use super::*;
-    use crate::{
-        batch::GroveDbOp,
-        reference_path::ReferencePathType,
-        tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
-        Element, GroveDb, PathQuery,
-    };
+    use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element, GroveDb};
 
     #[test]
     fn test_batch_root_one_tree_insert_op_worst_case_costs() {
@@ -44,8 +33,8 @@ mod tests {
             worst_case_cost,
             cost
         );
-        /// because we know the object we are inserting we can know the worst
-        /// case cost if it doesn't already exist
+        // because we know the object we are inserting we can know the worst
+        // case cost if it doesn't already exist
         assert_eq!(
             cost.storage_cost.added_bytes,
             worst_case_cost.storage_cost.added_bytes
@@ -93,8 +82,8 @@ mod tests {
             worst_case_cost,
             cost
         );
-        /// because we know the object we are inserting we can know the worst
-        /// case cost if it doesn't already exist
+        // because we know the object we are inserting we can know the worst
+        // case cost if it doesn't already exist
         assert_eq!(
             cost.storage_cost.added_bytes,
             worst_case_cost.storage_cost.added_bytes
@@ -146,8 +135,8 @@ mod tests {
             worst_case_cost,
             cost
         );
-        /// because we know the object we are inserting we can know the worst
-        /// case cost if it doesn't already exist
+        // because we know the object we are inserting we can know the worst
+        // case cost if it doesn't already exist
         assert_eq!(
             cost.storage_cost.added_bytes,
             worst_case_cost.storage_cost.added_bytes

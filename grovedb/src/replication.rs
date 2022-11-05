@@ -5,7 +5,6 @@ use std::{
 
 use merk::{
     proofs::{Node, Op},
-    tree::{combine_hash, value_hash},
     Merk,
 };
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
@@ -130,7 +129,7 @@ impl<'db> Restorer<'db> {
     /// Create a GroveDb restorer using a backing storage_cost and root hash.
     pub fn new(
         grove_db: &'db GroveDb,
-        root_key: Vec<u8>,
+        _root_key: Vec<u8>,
         root_hash: Hash,
     ) -> Result<Self, RestorerError> {
         Ok(Restorer {
@@ -389,8 +388,6 @@ impl<'db> BufferedRestorer<'db> {
 
 #[cfg(test)]
 mod test {
-    use std::option::Option::None;
-
     use rand::RngCore;
     use tempfile::TempDir;
 

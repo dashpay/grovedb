@@ -1,5 +1,4 @@
 use merk::tree::{combine_hash, kv_digest_to_kv_hash, node_hash, value_hash, NULL_HASH};
-use visualize::visualize_stdout;
 
 use crate::{
     tests::{make_test_grovedb, TEST_LEAF},

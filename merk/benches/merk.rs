@@ -1,5 +1,6 @@
 use std::iter::empty;
 
+use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use merk::{proofs::encode_into as encode_proof_into, test_utils::*, Merk};
 use rand::prelude::*;
@@ -16,9 +17,16 @@ pub fn get(c: &mut Criterion) {
     for i in 0..num_batches {
         let batch = make_batch_rand(batch_size, i);
         unsafe {
-            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
-                .unwrap()
-                .expect("apply failed")
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+                &batch,
+                &[],
+                None,
+                &|_k, _v| Ok(0),
+                &mut |_costs, _old_value, _value| Ok((false, None)),
+                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+            )
+            .unwrap()
+            .expect("apply failed")
         };
         batches.push(batch);
     }
@@ -57,9 +65,16 @@ pub fn insert_1m_2k_seq(c: &mut Criterion) {
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
             unsafe {
-                merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
-                    .unwrap()
-                    .expect("apply failed")
+                merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+                    &batch,
+                    &[],
+                    None,
+                    &|_k, _v| Ok(0),
+                    &mut |_costs, _old_value, _value| Ok((false, None)),
+                    &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                )
+                .unwrap()
+                .expect("apply failed")
             };
             i += 1;
         });
@@ -85,9 +100,16 @@ pub fn insert_1m_2k_rand(c: &mut Criterion) {
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
             unsafe {
-                merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
-                    .unwrap()
-                    .expect("apply failed")
+                merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+                    &batch,
+                    &[],
+                    None,
+                    &|_k, _v| Ok(0),
+                    &mut |_costs, _old_value, _value| Ok((false, None)),
+                    &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                )
+                .unwrap()
+                .expect("apply failed")
             };
             i += 1;
         });
@@ -106,9 +128,16 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
     for i in 0..n_batches {
         let batch = make_batch_seq(((i * batch_size) as u64)..((i + 1) * batch_size) as u64);
         unsafe {
-            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
-                .unwrap()
-                .expect("apply failed")
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+                &batch,
+                &[],
+                None,
+                &|_k, _v| Ok(0),
+                &mut |_costs, _old_value, _value| Ok((false, None)),
+                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+            )
+            .unwrap()
+            .expect("apply failed")
         };
 
         batches.push(batch);
@@ -120,9 +149,16 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
             unsafe {
-                merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
-                    .unwrap()
-                    .expect("apply failed")
+                merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+                    &batch,
+                    &[],
+                    None,
+                    &|_k, _v| Ok(0),
+                    &mut |_costs, _old_value, _value| Ok((false, None)),
+                    &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                )
+                .unwrap()
+                .expect("apply failed")
             };
             i += 1;
         });
@@ -141,9 +177,16 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
         unsafe {
-            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
-                .unwrap()
-                .expect("apply failed")
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+                &batch,
+                &[],
+                None,
+                &|_k, _v| Ok(0),
+                &mut |_costs, _old_value, _value| Ok((false, None)),
+                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+            )
+            .unwrap()
+            .expect("apply failed")
         };
 
         batches.push(batch);
@@ -155,9 +198,16 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
             unsafe {
-                merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
-                    .unwrap()
-                    .expect("apply failed")
+                merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+                    &batch,
+                    &[],
+                    None,
+                    &|_k, _v| Ok(0),
+                    &mut |_costs, _old_value, _value| Ok((false, None)),
+                    &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                )
+                .unwrap()
+                .expect("apply failed")
             };
             i += 1;
         });
@@ -178,9 +228,16 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
         let batch = make_batch_rand(batch_size as u64, i as u64);
         let delete_batch = make_del_batch_rand(batch_size as u64, i as u64);
         unsafe {
-            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
-                .unwrap()
-                .expect("apply failed")
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+                &batch,
+                &[],
+                None,
+                &|_k, _v| Ok(0),
+                &mut |_costs, _old_value, _value| Ok((false, None)),
+                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+            )
+            .unwrap()
+            .expect("apply failed")
         };
 
         batches.push(batch);
@@ -196,16 +253,30 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
         // Merk tree is kept with 1m elements before each bench iteration for more or
         // less same inputs.
         unsafe {
-            merk.apply_unchecked::<_, Vec<u8>>(&insert_batch, &[])
-                .unwrap()
-                .expect("apply failed")
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+                &insert_batch,
+                &[],
+                None,
+                &|_k, _v| Ok(0),
+                &mut |_costs, _old_value, _value| Ok((false, None)),
+                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+            )
+            .unwrap()
+            .expect("apply failed")
         };
 
         b.iter_with_large_drop(|| {
             unsafe {
-                merk.apply_unchecked::<_, Vec<u8>>(&delete_batch, &[])
-                    .unwrap()
-                    .expect("apply failed")
+                merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+                    &delete_batch,
+                    &[],
+                    None,
+                    &|_k, _v| Ok(0),
+                    &mut |_costs, _old_value, _value| Ok((false, None)),
+                    &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                )
+                .unwrap()
+                .expect("apply failed")
             };
             i += 1;
         });
@@ -225,9 +296,16 @@ pub fn prove_1m_2k_rand(c: &mut Criterion) {
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
         unsafe {
-            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
-                .unwrap()
-                .expect("apply failed")
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+                &batch,
+                &[],
+                None,
+                &|_k, _v| Ok(0),
+                &mut |_costs, _old_value, _value| Ok((false, None)),
+                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+            )
+            .unwrap()
+            .expect("apply failed")
         };
         let mut prove_keys = Vec::with_capacity(batch_size);
         for (key, _) in batch.iter() {
@@ -262,9 +340,16 @@ pub fn build_trunk_chunk_1m_2k_rand(c: &mut Criterion) {
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
         unsafe {
-            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
-                .unwrap()
-                .expect("apply failed")
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+                &batch,
+                &[],
+                None,
+                &|_k, _v| Ok(0),
+                &mut |_costs, _old_value, _value| Ok((false, None)),
+                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+            )
+            .unwrap()
+            .expect("apply failed")
         };
     }
 
@@ -292,9 +377,16 @@ pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
         unsafe {
-            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
-                .unwrap()
-                .expect("apply failed")
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+                &batch,
+                &[],
+                None,
+                &|_k, _v| Ok(0),
+                &mut |_costs, _old_value, _value| Ok((false, None)),
+                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+            )
+            .unwrap()
+            .expect("apply failed")
         };
     }
 
@@ -320,9 +412,16 @@ pub fn chunk_iter_1m_1(c: &mut Criterion) {
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
         unsafe {
-            merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
-                .unwrap()
-                .expect("apply failed")
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+                &batch,
+                &[],
+                None,
+                &|_k, _v| Ok(0),
+                &mut |_costs, _old_value, _value| Ok((false, None)),
+                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+            )
+            .unwrap()
+            .expect("apply failed")
         };
     }
 
@@ -350,9 +449,16 @@ pub fn restore_500_1(c: &mut Criterion) {
 
     let batch = make_batch_rand(merk_size as u64, 0 as u64);
     unsafe {
-        merk.apply_unchecked::<_, Vec<u8>>(&batch, &[])
-            .unwrap()
-            .expect("apply failed")
+        merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
+            &batch,
+            &[],
+            None,
+            &|_k, _v| Ok(0),
+            &mut |_costs, _old_value, _value| Ok((false, None)),
+            &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+        )
+        .unwrap()
+        .expect("apply failed")
     };
 
     let root_hash = merk.root_hash().unwrap();
@@ -365,7 +471,7 @@ pub fn restore_500_1(c: &mut Criterion) {
             },
             |data| {
                 let ctx = data.0.get_storage_context(empty()).unwrap();
-                let m = Merk::open(ctx).unwrap().unwrap();
+                let m = Merk::open_standalone(ctx).unwrap().unwrap();
                 let mut restorer = Merk::restore(m, root_hash);
 
                 for chunk in data.1 {

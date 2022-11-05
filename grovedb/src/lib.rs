@@ -157,131 +157,6 @@ impl GroveDb {
         }
     }
 
-    // pub fn open_merk_with_parent_at_path<'p, 'db, P, S>(
-    //     &self,
-    //     path: P,
-    //     tx: TransactionArg,
-    // ) -> CostContext<Result<(Merk<S>, Merk<S>), Error>>
-    // where
-    //     P: IntoIterator<Item = &'p [u8]>,
-    //     <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator +
-    // Clone,     S: StorageContext<'db>,
-    //     <S as StorageContext<'db>>::Error: std::error::Error,
-    // {
-    //     let mut path_iter = path.into_iter();
-    //     if let Some(tx) = tx {
-    //         let mut cost = OperationCost::default();
-    //         let storage = self
-    //             .db
-    //             .get_transactional_storage_context(path_iter.clone(), tx)
-    //             .unwrap_add_cost(&mut cost);
-    //         let key = path_iter.next_back().expect("next element is `Some`");
-    //         let parent_storage = self
-    //             .db
-    //             .get_transactional_storage_context(path_iter.clone(), tx)
-    //             .unwrap_add_cost(&mut cost);
-    //         let parent_key = path_iter.next_back().expect("next element is
-    // `Some`");         let grandparent_storage = self
-    //             .db
-    //             .get_transactional_storage_context(path_iter.clone(), tx)
-    //             .unwrap_add_cost(&mut cost);
-    //         let element = cost_return_on_error!(
-    //             &mut cost,
-    //             Element::get_from_storage(&parent_storage, key).map_err(|_| {
-    //                 Error::CorruptedData("could not get key for parent of
-    // subtree".to_owned())             })
-    //         );
-    //         let parent_element = cost_return_on_error!(
-    //             &mut cost,
-    //             Element::get_from_storage(&grandparent_storage,
-    // parent_key).map_err(|_| {                 Error::CorruptedData("could not
-    // get key for parent of subtree".to_owned())             })
-    //         );
-    //         let merk = cost_return_on_error!(
-    //             &mut cost,
-    //             if let Element::Tree(root_key, _) = element {
-    //                 Merk::open_with_root_key(storage, root_key).map_err(|_| {
-    //                     Error::CorruptedData("cannot open a subtree with given
-    // root key".to_owned())                 })
-    //             } else {
-    //                 Err(Error::CorruptedData(
-    //                     "cannot open a subtree as parent exists but is not a
-    // tree".to_owned(),                 ))
-    //                 .wrap_with_cost(OperationCost::default())
-    //             }
-    //         );
-    //         let parent_merk = cost_return_on_error!(
-    //             &mut cost,
-    //             if let Element::Tree(root_key, _) = parent_element {
-    //                 Merk::open_with_root_key(parent_storage,
-    // root_key).map_err(|_| {                     Error::CorruptedData("cannot
-    // open a subtree with given root key".to_owned())                 })
-    //             } else {
-    //                 Err(Error::CorruptedData(
-    //                     "cannot open a subtree as parent exists but is not a
-    // tree".to_owned(),                 ))
-    //                 .wrap_with_cost(OperationCost::default())
-    //             }
-    //         );
-    //         Ok((merk, parent_merk)).wrap_with_cost(cost)
-    //     } else {
-    //         let mut cost = OperationCost::default();
-    //         let storage = self
-    //             .db
-    //             .get_storage_context(path_iter.clone())
-    //             .unwrap_add_cost(&mut cost);
-    //         let key = path_iter.next_back().expect("next element is `Some`");
-    //         let parent_storage = self
-    //             .db
-    //             .get_storage_context(path_iter.clone())
-    //             .unwrap_add_cost(&mut cost);
-    //         let parent_key = path_iter.next_back().expect("next element is
-    // `Some`");         let grandparent_storage = self
-    //             .db
-    //             .get_storage_context(path_iter.clone())
-    //             .unwrap_add_cost(&mut cost);
-    //         let element = cost_return_on_error!(
-    //             &mut cost,
-    //             Element::get_from_storage(&parent_storage, key).map_err(|_| {
-    //                 Error::CorruptedData("could not get key for parent of
-    // subtree".to_owned())             })
-    //         );
-    //         let parent_element = cost_return_on_error!(
-    //             &mut cost,
-    //             Element::get_from_storage(&grandparent_storage,
-    // parent_key).map_err(|_| {                 Error::CorruptedData("could not
-    // get key for parent of subtree".to_owned())             })
-    //         );
-    //         let merk = cost_return_on_error!(
-    //             &mut cost,
-    //             if let Element::Tree(root_key, _) = element {
-    //                 Merk::open_with_root_key(storage, root_key).map_err(|_| {
-    //                     Error::CorruptedData("cannot open a subtree with given
-    // root key".to_owned())                 })
-    //             } else {
-    //                 Err(Error::CorruptedData(
-    //                     "cannot open a subtree as parent exists but is not a
-    // tree".to_owned(),                 ))
-    //                 .wrap_with_cost(OperationCost::default())
-    //             }
-    //         );
-    //         let parent_merk = cost_return_on_error!(
-    //             &mut cost,
-    //             if let Element::Tree(root_key, _) = parent_element {
-    //                 Merk::open_with_root_key(parent_storage,
-    // root_key).map_err(|_| {                     Error::CorruptedData("cannot
-    // open a subtree with given root key".to_owned())                 })
-    //             } else {
-    //                 Err(Error::CorruptedData(
-    //                     "cannot open a subtree as parent exists but is not a
-    // tree".to_owned(),                 ))
-    //                 .wrap_with_cost(OperationCost::default())
-    //             }
-    //         );
-    //         Ok((merk, parent_merk)).wrap_with_cost(cost)
-    //     }
-    // }
-
     pub fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
         self.db.create_checkpoint(path).map_err(|e| e.into())
     }
@@ -605,7 +480,7 @@ impl GroveDb {
     }
 
     /// Starts database transaction. Please note that you have to start
-    /// underlying storage_cost transaction manually.
+    /// underlying storage transaction manually.
     ///
     /// ## Examples:
     /// ```

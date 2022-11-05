@@ -1,9 +1,13 @@
 //! GroveDB batch operations support
 
 pub mod key_info;
+#[cfg(test)]
 mod multi_insert_cost_tests;
+#[cfg(test)]
 mod single_deletion_cost_tests;
+#[cfg(test)]
 mod single_insert_cost_tests;
+#[cfg(test)]
 mod worst_case_cost_tests;
 
 use core::fmt;
@@ -29,9 +33,7 @@ use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     anyhow::anyhow,
     tree::{kv::KV, value_hash, NULL_HASH},
-    worst_case_costs::{
-        add_worst_case_get_merk_node, add_worst_case_merk_propagate, MerkWorstCaseInput,
-    },
+    worst_case_costs::{add_worst_case_merk_propagate, MerkWorstCaseInput},
     CryptoHash, Merk, MerkOptions, MerkType,
 };
 use nohash_hasher::IntMap;
@@ -89,7 +91,7 @@ impl Op {
                 cost
             }
             Op::Delete | Op::DeleteTree => {
-                let mut cost = OperationCost::default();
+                let cost = OperationCost::default();
                 cost
             }
         }
@@ -178,7 +180,7 @@ impl KeyInfoPath {
     }
 
     pub fn to_path_refs(&self) -> Vec<&[u8]> {
-        self.0.iter().map(|k| k.get_key_ref()).collect()
+        self.0.iter().map(|k| k.as_slice()).collect()
     }
 
     pub fn split_last(&self) -> Option<(&KeyInfo, &[KeyInfo])> {
@@ -712,7 +714,7 @@ where
                             path_from_reference_path_type(
                                 path_reference.clone(),
                                 path_iter,
-                                Some(key_info.get_key_ref())
+                                Some(key_info.as_slice())
                             )
                             .wrap_with_cost(OperationCost::default())
                         );
@@ -936,7 +938,7 @@ impl<G, SR> TreeCache<G, SR> for TreeCacheKnownPaths {
             // Then we have to get the tree
             GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, &base_path);
         }
-        if let Some(root_key) = root_key {
+        if let Some(_root_key) = root_key {
             // todo: add worst case of updating the base root
             // GroveDb::add_worst_case_insert_merk_node()
         } else {
@@ -1153,7 +1155,7 @@ impl GroveDb {
                         }
                     }
                     // execute the ops at this path
-                    let (root_hash, calculated_root_key) = cost_return_on_error!(
+                    let (_root_hash, calculated_root_key) = cost_return_on_error!(
                         &mut cost,
                         merk_tree_cache.execute_ops_on_path(
                             &path,
@@ -1405,7 +1407,9 @@ impl GroveDb {
                     let element = cost_return_on_error!(
                         &mut cost,
                         Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                            Error::InvalidPath("could not get key for parent of subtree".to_owned())
+                            Error::InvalidPath(
+                                "could not get key for parent of subtree for batch".to_owned(),
+                            )
                         })
                     );
                     if let Element::Tree(root_key, _) = element {
@@ -1669,13 +1673,7 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use std::option::Option::None;
-
-    use costs::storage_cost::{
-        removal::StorageRemovedBytes::NoStorageRemoval, transition::OperationStorageTransitionType,
-        StorageCost,
-    };
-    use integer_encoding::VarInt;
+    use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     use merk::proofs::Query;
 
     use super::*;

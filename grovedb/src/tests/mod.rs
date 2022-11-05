@@ -22,7 +22,6 @@ use crate::{
     batch::GroveDbOp,
     query_result_type::QueryResultType::QueryKeyElementPairResultType,
     reference_path::ReferencePathType, tests::common::compare_result_tuples,
-    visualize::visualize_merk_stdout,
 };
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
@@ -597,7 +596,7 @@ fn test_changes_propagated() {
         .unwrap()
         .expect("successful subtree 1 insert");
 
-    let merk = db
+    let _merk = db
         .open_non_transactional_merk_at_path([TEST_LEAF])
         .unwrap()
         .unwrap();
@@ -2577,7 +2576,7 @@ fn test_tree_value_exists_method_tx() {
 #[test]
 fn test_sum_tree_behaves_like_regular_tree() {
     let db = make_test_grovedb();
-    db.insert([TEST_LEAF], b"key", Element::empty_sum_tree(), None)
+    db.insert([TEST_LEAF], b"key", Element::empty_sum_tree(), None, None)
         .unwrap()
         .expect("should insert tree");
 
@@ -2593,6 +2592,7 @@ fn test_sum_tree_behaves_like_regular_tree() {
         b"innerkey",
         Element::new_item(vec![1]),
         None,
+        None,
     )
     .unwrap()
     .expect("should insert item");
@@ -2601,6 +2601,7 @@ fn test_sum_tree_behaves_like_regular_tree() {
         b"innerkey2",
         Element::new_item(vec![3]),
         None,
+        None,
     )
     .unwrap()
     .expect("should insert item");
@@ -2608,6 +2609,7 @@ fn test_sum_tree_behaves_like_regular_tree() {
         [TEST_LEAF, b"key"],
         b"innerkey3",
         Element::empty_tree(),
+        None,
         None,
     )
     .unwrap()
@@ -2696,7 +2698,7 @@ fn test_sum_item_behaves_like_regular_item() {
 #[test]
 fn test_cannot_insert_sum_item_in_regular_tree() {
     let db = make_test_grovedb();
-    db.insert([TEST_LEAF], b"sumkey", Element::empty_tree(), None)
+    db.insert([TEST_LEAF], b"sumkey", Element::empty_tree(), None, None)
         .unwrap()
         .expect("should insert tree");
     assert!(matches!(
@@ -2726,7 +2728,7 @@ macro_rules! open_merk {
 fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
     // All elements in a sum tree must have a summed feature type
     let db = make_test_grovedb();
-    db.insert([TEST_LEAF], b"key", Element::empty_sum_tree(), None)
+    db.insert([TEST_LEAF], b"key", Element::empty_sum_tree(), None, None)
         .unwrap()
         .expect("should insert tree");
     // Add sum items
@@ -2735,6 +2737,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         b"item1",
         Element::new_sum_item(30),
         None,
+        None,
     )
     .unwrap()
     .expect("should insert item");
@@ -2742,6 +2745,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         [TEST_LEAF, b"key"],
         b"item2",
         Element::new_sum_item(10),
+        None,
         None,
     )
     .unwrap()
@@ -2796,7 +2800,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
 
     // Perform the same test on regular trees
     let db = make_test_grovedb();
-    db.insert([TEST_LEAF], b"key", Element::empty_tree(), None)
+    db.insert([TEST_LEAF], b"key", Element::empty_tree(), None, None)
         .unwrap()
         .expect("should insert tree");
     db.insert(
@@ -2837,7 +2841,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
 #[test]
 fn test_sum_tree_feature() {
     let db = make_test_grovedb();
-    db.insert([TEST_LEAF], b"key", Element::empty_tree(), None)
+    db.insert([TEST_LEAF], b"key", Element::empty_tree(), None, None)
         .unwrap()
         .expect("should insert tree");
 
@@ -2847,7 +2851,7 @@ fn test_sum_tree_feature() {
     assert_eq!(merk.sum(), None);
 
     // Add sum tree
-    db.insert([TEST_LEAF], b"key2", Element::empty_sum_tree(), None)
+    db.insert([TEST_LEAF], b"key2", Element::empty_sum_tree(), None, None)
         .unwrap()
         .expect("should insert sum tree");
     let sum_tree = db
@@ -2861,6 +2865,7 @@ fn test_sum_tree_feature() {
         [TEST_LEAF, b"key2"],
         b"item1",
         Element::new_sum_item(30),
+        None,
         None,
     )
     .unwrap()
@@ -2896,6 +2901,7 @@ fn test_sum_tree_feature() {
         [TEST_LEAF, b"key2"],
         b"item4",
         Element::new_item(vec![29]),
+        None,
         None,
     )
     .unwrap()
@@ -2950,7 +2956,7 @@ fn test_sum_tree_propagation() {
     //        Item1
     //        SumItem1
     //        SumItem2
-    db.insert([TEST_LEAF], b"key", Element::empty_sum_tree(), None)
+    db.insert([TEST_LEAF], b"key", Element::empty_sum_tree(), None, None)
         .unwrap()
         .expect("should insert tree");
     db.insert(
@@ -2992,12 +2998,12 @@ fn test_sum_tree_propagation() {
     db.insert(
         [TEST_LEAF, b"key", b"tree2"],
         b"item2",
-        Element::new_reference(vec![
+        Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
             TEST_LEAF.to_vec(),
             b"key".to_vec(),
             b"tree2".to_vec(),
             b"sumitem1".to_vec(),
-        ]),
+        ])),
         None,
         None,
     )

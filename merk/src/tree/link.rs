@@ -3,9 +3,9 @@ use std::io::{Read, Write};
 use byteorder::{BigEndian, ReadBytesExt};
 use ed::{Decode, Encode, Result, Terminated};
 use integer_encoding::{FixedInt, VarInt};
-use crate::{HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
 
 use super::{hash::CryptoHash, Tree};
+use crate::{HASH_LENGTH, HASH_LENGTH_U32};
 
 // TODO: optimize memory footprint
 

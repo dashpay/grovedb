@@ -75,17 +75,16 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             seek_count: 1,
             ..Default::default()
         };
-        match cost.add_key_value_storage_costs(
-            key.as_ref().len() as u32,
-            value.len() as u32,
-            children_sizes,
-            cost_info,
-        ) {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(CostError(e)).wrap_with_cost(cost);
-            }
-        };
+        cost_return_on_error_no_add!(
+            &cost,
+            cost.add_key_value_storage_costs(
+                key.as_ref().len() as u32,
+                value.len() as u32,
+                children_sizes,
+                cost_info,
+            )
+            .map_err(CostError)
+        );
         self.transaction
             .put(make_prefixed_key(self.prefix.clone(), &key), value)
             .map_err(RocksDBError)
@@ -102,17 +101,16 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             seek_count: 1,
             ..Default::default()
         };
-        match cost.add_key_value_storage_costs(
-            key.as_ref().len() as u32,
-            value.len() as u32,
-            None,
-            cost_info,
-        ) {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(CostError(e)).wrap_with_cost(cost);
-            }
-        };
+        cost_return_on_error_no_add!(
+            &cost,
+            cost.add_key_value_storage_costs(
+                key.as_ref().len() as u32,
+                value.len() as u32,
+                None,
+                cost_info,
+            )
+            .map_err(CostError)
+        );
         self.transaction
             .put_cf(
                 self.cf_aux(),
@@ -133,17 +131,16 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             seek_count: 1,
             ..Default::default()
         };
-        match cost.add_key_value_storage_costs(
-            key.as_ref().len() as u32,
-            value.len() as u32,
-            None,
-            cost_info,
-        ) {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(CostError(e)).wrap_with_cost(cost);
-            }
-        };
+        cost_return_on_error_no_add!(
+            &cost,
+            cost.add_key_value_storage_costs(
+                key.as_ref().len() as u32,
+                value.len() as u32,
+                None,
+                cost_info,
+            )
+            .map_err(CostError)
+        );
         self.transaction
             .put_cf(
                 self.cf_roots(),
@@ -164,17 +161,16 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             seek_count: 1,
             ..Default::default()
         };
-        match cost.add_key_value_storage_costs(
-            key.as_ref().len() as u32,
-            value.len() as u32,
-            None,
-            cost_info,
-        ) {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(CostError(e)).wrap_with_cost(cost);
-            }
-        };
+        cost_return_on_error_no_add!(
+            &cost,
+            cost.add_key_value_storage_costs(
+                key.as_ref().len() as u32,
+                value.len() as u32,
+                None,
+                cost_info,
+            )
+            .map_err(CostError)
+        );
         self.transaction
             .put_cf(
                 self.cf_meta(),
@@ -185,7 +181,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .wrap_with_cost(cost)
     }
 
-    fn delete<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
+    fn delete<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
         if let Some(cost_info) = cost_info {
@@ -207,7 +207,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .wrap_with_cost(cost)
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
+    fn delete_aux<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
         if let Some(cost_info) = cost_info {
@@ -228,7 +232,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .wrap_with_cost(cost)
     }
 
-    fn delete_root<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
+    fn delete_root<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
         if let Some(cost_info) = cost_info {
@@ -249,7 +257,11 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .wrap_with_cost(cost)
     }
 
-    fn delete_meta<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>> {
+    fn delete_meta<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         let mut cost = OperationCost::default();
 
         if let Some(cost_info) = cost_info {
@@ -357,8 +369,8 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         }
     }
 
-    fn commit_batch(&self, mut batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
-        let mut cost = OperationCost::default();
+    fn commit_batch(&self, batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
+        let cost = OperationCost::default();
 
         // On unsuccessul batch commit only deletion finalization cost will be returned.
         cost_return_on_error_no_add!(

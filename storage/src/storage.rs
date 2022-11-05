@@ -8,8 +8,6 @@ use costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
     OperationCost,
 };
-use costs::storage_cost::removal::StorageRemovedBytes;
-use costs::storage_cost::StorageCost;
 use visualize::visualize_to_vec;
 
 use crate::worst_case_costs::WorstKeyLength;
@@ -146,16 +144,32 @@ pub trait StorageContext<'db> {
     ) -> CostContext<Result<(), Self::Error>>;
 
     /// Delete entry with `key` from data storage_cost
-    fn delete<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>>;
+    fn delete<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>>;
 
     /// Delete entry with `key` from auxiliary data storage_cost
-    fn delete_aux<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>>;
+    fn delete_aux<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>>;
 
     /// Delete entry with `key` from trees roots storage_cost
-    fn delete_root<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>>;
+    fn delete_root<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>>;
 
     /// Delete entry with `key` from GroveDB metadata storage_cost
-    fn delete_meta<K: AsRef<[u8]>>(&self, key: K, cost_info: Option<KeyValueStorageCost>) -> CostContext<Result<(), Self::Error>>;
+    fn delete_meta<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>>;
 
     /// Get entry by `key` from data storage_cost
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<Option<Vec<u8>>, Self::Error>>;
@@ -174,7 +188,7 @@ pub trait StorageContext<'db> {
     /// Initialize a new batch
     fn new_batch(&self) -> Self::Batch;
 
-    /// Commits changes from batch into storage_cost
+    /// Commits changes from batch into storage
     fn commit_batch(&self, batch: Self::Batch) -> CostContext<Result<(), Self::Error>>;
 
     /// Get raw iterator over storage_cost
@@ -377,7 +391,10 @@ impl StorageBatch {
     pub fn delete(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) -> CostContext<()> {
         let operations = &mut self.operations.borrow_mut().data;
         if operations.get(&key).is_none() {
-            operations.insert(key.clone(), AbstractBatchOperation::Delete { key, cost_info });
+            operations.insert(
+                key.clone(),
+                AbstractBatchOperation::Delete { key, cost_info },
+            );
             ().wrap_with_cost(OperationCost::default())
         } else {
             ().wrap_with_cost(OperationCost::default())
@@ -385,10 +402,17 @@ impl StorageBatch {
     }
 
     /// Add deferred `delete` operation for aux storage_cost
-    pub fn delete_aux(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) -> CostContext<()> {
+    pub fn delete_aux(
+        &self,
+        key: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<()> {
         let operations = &mut self.operations.borrow_mut().aux;
         if operations.get(&key).is_none() {
-            operations.insert(key.clone(), AbstractBatchOperation::DeleteAux { key, cost_info });
+            operations.insert(
+                key.clone(),
+                AbstractBatchOperation::DeleteAux { key, cost_info },
+            );
             ().wrap_with_cost(OperationCost::default())
         } else {
             ().wrap_with_cost(OperationCost::default())
@@ -396,10 +420,17 @@ impl StorageBatch {
     }
 
     /// Add deferred `delete` operation for subtree roots storage_cost
-    pub fn delete_root(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) -> CostContext<()> {
+    pub fn delete_root(
+        &self,
+        key: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<()> {
         let operations = &mut self.operations.borrow_mut().roots;
         if operations.get(&key).is_none() {
-            operations.insert(key.clone(), AbstractBatchOperation::DeleteRoot { key , cost_info });
+            operations.insert(
+                key.clone(),
+                AbstractBatchOperation::DeleteRoot { key, cost_info },
+            );
             ().wrap_with_cost(OperationCost::default())
         } else {
             ().wrap_with_cost(OperationCost::default())
@@ -407,10 +438,17 @@ impl StorageBatch {
     }
 
     /// Add deferred `delete` operation for metadata storage_cost
-    pub fn delete_meta(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) -> CostContext<()> {
+    pub fn delete_meta(
+        &self,
+        key: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<()> {
         let operations = &mut self.operations.borrow_mut().meta;
         if operations.get(&key).is_none() {
-            operations.insert(key.clone(), AbstractBatchOperation::DeleteMeta { key, cost_info });
+            operations.insert(
+                key.clone(),
+                AbstractBatchOperation::DeleteMeta { key, cost_info },
+            );
             ().wrap_with_cost(OperationCost::default())
         } else {
             ().wrap_with_cost(OperationCost::default())
@@ -444,10 +482,16 @@ impl StorageBatch {
                     value,
                     cost_info,
                 } => self.put_meta(key, value, cost_info),
-                AbstractBatchOperation::Delete { key , cost_info} => self.delete(key, cost_info),
-                AbstractBatchOperation::DeleteAux { key , cost_info} => self.delete_aux(key, cost_info),
-                AbstractBatchOperation::DeleteRoot { key , cost_info} => self.delete_root(key, cost_info),
-                AbstractBatchOperation::DeleteMeta { key , cost_info} => self.delete_meta(key, cost_info),
+                AbstractBatchOperation::Delete { key, cost_info } => self.delete(key, cost_info),
+                AbstractBatchOperation::DeleteAux { key, cost_info } => {
+                    self.delete_aux(key, cost_info)
+                }
+                AbstractBatchOperation::DeleteRoot { key, cost_info } => {
+                    self.delete_root(key, cost_info)
+                }
+                AbstractBatchOperation::DeleteMeta { key, cost_info } => {
+                    self.delete_meta(key, cost_info)
+                }
             }
             .unwrap_add_cost(&mut cost)
         }
@@ -528,13 +572,25 @@ pub enum AbstractBatchOperation {
         cost_info: Option<KeyValueStorageCost>,
     },
     /// Deferred delete operation
-    Delete { key: Vec<u8>, cost_info: Option<KeyValueStorageCost>},
+    Delete {
+        key: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    },
     /// Deferred delete operation for aux storage_cost
-    DeleteAux { key: Vec<u8>, cost_info: Option<KeyValueStorageCost>},
+    DeleteAux {
+        key: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    },
     /// Deferred delete operation for roots storage_cost
-    DeleteRoot { key: Vec<u8>, cost_info: Option<KeyValueStorageCost>},
+    DeleteRoot {
+        key: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    },
     /// Deferred delete operation for metadata storage_cost
-    DeleteMeta { key: Vec<u8>, cost_info: Option<KeyValueStorageCost>},
+    DeleteMeta {
+        key: Vec<u8>,
+        cost_info: Option<KeyValueStorageCost>,
+    },
 }
 
 impl std::fmt::Debug for AbstractBatchOperation {
@@ -557,9 +613,9 @@ impl std::fmt::Debug for AbstractBatchOperation {
                     .field("value", &String::from_utf8_lossy(&value_buf));
             }
             AbstractBatchOperation::Delete { key, .. }
-            | AbstractBatchOperation::DeleteAux { key , .. }
-            | AbstractBatchOperation::DeleteMeta { key, ..  }
-            | AbstractBatchOperation::DeleteRoot { key , .. } => {
+            | AbstractBatchOperation::DeleteAux { key, .. }
+            | AbstractBatchOperation::DeleteMeta { key, .. }
+            | AbstractBatchOperation::DeleteRoot { key, .. } => {
                 key_buf.clear();
                 visualize_to_vec(&mut key_buf, key.as_slice());
                 fmt.field("key", &String::from_utf8_lossy(&key_buf));

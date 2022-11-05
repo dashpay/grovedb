@@ -241,9 +241,12 @@ mod test {
                 true,
                 Some(Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap()),
             );
-        tree.commit(&mut NoopCommit {}, &|_,_| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .expect("commit failed");
 

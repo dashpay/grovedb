@@ -1,4 +1,4 @@
-//! Impementation for a storage_cost abstraction over RocksDB.
+//! Implementation for a storage abstraction over RocksDB.
 use std::{ops::AddAssign, path::Path};
 
 use costs::{
@@ -62,7 +62,7 @@ pub struct RocksDbStorage {
 }
 
 impl RocksDbStorage {
-    /// Create RocksDb storage_cost with default parameters using `path`.
+    /// Create RocksDb storage with default parameters using `path`.
     pub fn default_rocksdb_with_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = Db::open_cf_descriptors(
             &DEFAULT_OPTS,
@@ -291,16 +291,17 @@ impl<'db> Storage<'db> for RocksDbStorage {
 
                     if let Some(key_value_removed_bytes) = cost_info {
                         cost.seek_count += 1;
-                        pending_costs.storage_cost.removed_bytes += key_value_removed_bytes.combined_removed_bytes();
+                        pending_costs.storage_cost.removed_bytes +=
+                            key_value_removed_bytes.combined_removed_bytes();
                     } else {
                         cost.seek_count += 2;
                         // lets get the values
                         let value_len = cost_return_on_error_no_add!(
-                        &cost,
-                        self.db.get(&key).map_err(RocksDBError)
-                    )
-                            .map(|x| x.len() as u32)
-                            .unwrap_or(0);
+                            &cost,
+                            self.db.get(&key).map_err(RocksDBError)
+                        )
+                        .map(|x| x.len() as u32)
+                        .unwrap_or(0);
                         cost.storage_loaded_bytes += value_len;
                         let key_len = key.len() as u32;
                         // todo: improve deletion
@@ -312,21 +313,22 @@ impl<'db> Storage<'db> for RocksDbStorage {
                         );
                     }
                 }
-                AbstractBatchOperation::DeleteAux { key , cost_info} => {
+                AbstractBatchOperation::DeleteAux { key, cost_info } => {
                     db_batch.delete_cf(cf_aux(&self.db), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
                         cost.seek_count += 1;
-                        pending_costs.storage_cost.removed_bytes += key_value_removed_bytes.combined_removed_bytes();
+                        pending_costs.storage_cost.removed_bytes +=
+                            key_value_removed_bytes.combined_removed_bytes();
                     } else {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
-                        &cost,
-                        self.db.get_cf(cf_aux(&self.db), &key).map_err(RocksDBError)
-                    )
-                            .map(|x| x.len() as u32)
-                            .unwrap_or(0);
+                            &cost,
+                            self.db.get_cf(cf_aux(&self.db), &key).map_err(RocksDBError)
+                        )
+                        .map(|x| x.len() as u32)
+                        .unwrap_or(0);
                         cost.storage_loaded_bytes += value_len;
 
                         let key_len = key.len() as u32;
@@ -339,23 +341,24 @@ impl<'db> Storage<'db> for RocksDbStorage {
                         );
                     }
                 }
-                AbstractBatchOperation::DeleteRoot { key , cost_info } => {
+                AbstractBatchOperation::DeleteRoot { key, cost_info } => {
                     db_batch.delete_cf(cf_roots(&self.db), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
                         cost.seek_count += 1;
-                        pending_costs.storage_cost.removed_bytes += key_value_removed_bytes.combined_removed_bytes();
+                        pending_costs.storage_cost.removed_bytes +=
+                            key_value_removed_bytes.combined_removed_bytes();
                     } else {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
-                        &cost,
-                        self.db
-                            .get_cf(cf_roots(&self.db), &key)
-                            .map_err(RocksDBError)
-                    )
-                            .map(|x| x.len() as u32)
-                            .unwrap_or(0);
+                            &cost,
+                            self.db
+                                .get_cf(cf_roots(&self.db), &key)
+                                .map_err(RocksDBError)
+                        )
+                        .map(|x| x.len() as u32)
+                        .unwrap_or(0);
                         cost.storage_loaded_bytes += value_len as u32;
 
                         let key_len = key.len() as u32;
@@ -368,23 +371,24 @@ impl<'db> Storage<'db> for RocksDbStorage {
                         );
                     }
                 }
-                AbstractBatchOperation::DeleteMeta { key , cost_info} => {
+                AbstractBatchOperation::DeleteMeta { key, cost_info } => {
                     db_batch.delete_cf(cf_meta(&self.db), &key);
 
                     // TODO: fix not atomic freed size computation
                     if let Some(key_value_removed_bytes) = cost_info {
                         cost.seek_count += 1;
-                        pending_costs.storage_cost.removed_bytes += key_value_removed_bytes.combined_removed_bytes();
+                        pending_costs.storage_cost.removed_bytes +=
+                            key_value_removed_bytes.combined_removed_bytes();
                     } else {
                         cost.seek_count += 2;
                         let value_len = cost_return_on_error_no_add!(
-                        &cost,
-                        self.db
-                            .get_cf(cf_meta(&self.db), &key)
-                            .map_err(RocksDBError)
-                    )
-                            .map(|x| x.len() as u32)
-                            .unwrap_or(0);
+                            &cost,
+                            self.db
+                                .get_cf(cf_meta(&self.db), &key)
+                                .map_err(RocksDBError)
+                        )
+                        .map(|x| x.len() as u32)
+                        .unwrap_or(0);
                         cost.storage_loaded_bytes += value_len;
 
                         let key_len = key.len() as u32;
@@ -396,7 +400,6 @@ impl<'db> Storage<'db> for RocksDbStorage {
                                 + value_len.required_space() as u32,
                         );
                     }
-
                 }
             }
         }

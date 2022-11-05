@@ -3,10 +3,12 @@ use std::io::{Read, Write};
 use costs::{CostContext, CostsExt, OperationCost};
 use ed::{Decode, Encode, Result, Terminated};
 use integer_encoding::VarInt;
-use crate::{HASH_LENGTH_U32, HASH_LENGTH_U32_X2, Link};
 
 use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
-use crate::tree::hash::{combine_hash, kv_digest_to_kv_hash, value_hash};
+use crate::{
+    tree::hash::{combine_hash, kv_digest_to_kv_hash, value_hash},
+    Link, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
+};
 
 // TODO: maybe use something similar to Vec but without capacity field,
 //       (should save 16 bytes per entry). also, maybe a shorter length
@@ -18,6 +20,8 @@ use crate::tree::hash::{combine_hash, kv_digest_to_kv_hash, value_hash};
 pub struct KV {
     pub(super) key: Vec<u8>,
     pub(super) value: Vec<u8>,
+    /// The value defined cost is only used on insert
+    /// Todo: find another way to do this without this attribute.
     pub(crate) value_defined_cost: Option<u32>,
     pub(super) hash: CryptoHash,
     pub(super) value_hash: CryptoHash,
@@ -142,7 +146,9 @@ impl KV {
         let actual_value_hash = value_hash(value.as_slice()).unwrap_add_cost(&mut cost);
         let combined_value_hash =
             combine_hash(&actual_value_hash, &reference_value_hash).unwrap_add_cost(&mut cost);
-        //dbg!("combined_hash for propagation",std::str::from_utf8(value.as_slice()), hex::encode(actual_value_hash),hex::encode(combined_value_hash), hex::encode(reference_value_hash));
+        // dbg!("combined_hash for propagation",std::str::from_utf8(value.as_slice()),
+        // hex::encode(actual_value_hash),hex::encode(combined_value_hash),
+        // hex::encode(reference_value_hash));
         self.value = value;
         self.value_hash = combined_value_hash;
         self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
@@ -159,7 +165,7 @@ impl KV {
         value_cost: u32,
     ) -> CostContext<Self> {
         self.value_defined_cost = Some(value_cost);
-        self.put_value_and_reference_value_hash_then_update(value,reference_value_hash)
+        self.put_value_and_reference_value_hash_then_update(value, reference_value_hash)
     }
 
     /// Returns the key as a slice.
@@ -208,10 +214,17 @@ impl KV {
 
     /// Get the costs for the node, this has the parent to child hooks
     #[inline]
-    pub fn node_byte_cost_size_for_key_and_value_lengths(not_prefixed_key_len: u32, value_len: u32) -> u32 {
-        let node_value_size = value_len + HASH_LENGTH_U32_X2 + (value_len + HASH_LENGTH_U32_X2).required_space() as u32;
+    pub fn node_byte_cost_size_for_key_and_value_lengths(
+        not_prefixed_key_len: u32,
+        value_len: u32,
+    ) -> u32 {
+        let node_value_size = value_len
+            + HASH_LENGTH_U32_X2
+            + (value_len + HASH_LENGTH_U32_X2).required_space() as u32;
         // Hash length is for the key prefix
-        let node_key_size = HASH_LENGTH_U32 + not_prefixed_key_len + (not_prefixed_key_len + HASH_LENGTH_U32).required_space() as u32;
+        let node_key_size = HASH_LENGTH_U32
+            + not_prefixed_key_len
+            + (not_prefixed_key_len + HASH_LENGTH_U32).required_space() as u32;
         // Each node stores the key and value, the value hash and node hash
         let node_size = node_value_size + node_key_size;
         // The node will be a child of another node which stores it's key and hash
@@ -222,13 +235,18 @@ impl KV {
 
     /// Get the costs for the node, this has the parent to child hooks
     #[inline]
-    pub fn layered_node_byte_cost_size_for_key_and_value_lengths(not_prefixed_key_len: u32, value_len: u32) -> u32 {
+    pub fn layered_node_byte_cost_size_for_key_and_value_lengths(
+        not_prefixed_key_len: u32,
+        value_len: u32,
+    ) -> u32 {
         // Each node stores the key and value, and the node hash
         // the value hash on a layered node is not stored directly in the node
         // The required space is set to 2, even though it could be potentially 1
         let node_value_size = value_len + HASH_LENGTH_U32 + 2;
         // Hash length is for the key prefix
-        let node_key_size = HASH_LENGTH_U32 + not_prefixed_key_len + (not_prefixed_key_len + HASH_LENGTH_U32).required_space() as u32;
+        let node_key_size = HASH_LENGTH_U32
+            + not_prefixed_key_len
+            + (not_prefixed_key_len + HASH_LENGTH_U32).required_space() as u32;
 
         let node_size = node_value_size + node_key_size;
         // The node will be a child of another node which stores it's key and hash
@@ -239,14 +257,18 @@ impl KV {
 
     /// Get the costs for the node, this has the parent to child hooks
     #[inline]
-    pub fn layered_value_byte_cost_size_for_key_and_value_lengths(not_prefixed_key_len: u32, value_len: u32) -> u32 {
+    pub fn layered_value_byte_cost_size_for_key_and_value_lengths(
+        not_prefixed_key_len: u32,
+        value_len: u32,
+    ) -> u32 {
         // Each node stores the key and value, and the node hash
         // the value hash on a layered node is not stored directly in the node
         // The required space is set to 2. However in reality it could be 1 or 2.
         // This is because the underlying tree pays for the value cost and it's required
         // length. The value could be a key, and keys can only be 256 bytes.
-        // There is no point to pay for the value_hash because it is already being paid by the parent
-        // to child reference hook of the root of the underlying tree
+        // There is no point to pay for the value_hash because it is already being paid
+        // by the parent to child reference hook of the root of the underlying
+        // tree
         let node_value_size = value_len + HASH_LENGTH_U32 + 2;
         // The node will be a child of another node which stores it's key and hash
         // That will be added during propagation
@@ -278,7 +300,6 @@ impl KV {
     /// node
     #[inline]
     pub(crate) fn layered_value_byte_cost_size(&self, value_cost: u32) -> u32 {
-
         let key_len = self.key.len() as u32;
 
         Self::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_cost)

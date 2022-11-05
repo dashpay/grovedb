@@ -14,7 +14,6 @@ use storage::{
 
 use crate::{
     batch::{key_info::KeyInfo, GroveDbOp, KeyInfoPath, Op},
-    subtree::TREE_COST_SIZE,
     util::{
         merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
     },
@@ -267,7 +266,7 @@ impl GroveDb {
                 let batch_deleted_keys = current_batch_operations
                     .iter()
                     .filter_map(|op| match op.op {
-                        Op::Delete => {
+                        Op::Delete | Op::DeleteTree => {
                             // todo: to_path clones (best to figure out how to compare without
                             // cloning)
                             if op.path.to_path() == subtree_merk_path_vec {
@@ -295,7 +294,7 @@ impl GroveDb {
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
                 is_empty &= !current_batch_operations.iter().any(|op| match op.op {
-                    Op::Delete => false,
+                    Op::Delete | Op::DeleteTree => false,
                     // todo: fix for to_path (it clones)
                     _ => op.path.to_path() == subtree_merk_path_vec,
                 });
@@ -310,7 +309,7 @@ impl GroveDb {
                         Ok(None)
                     }
                 } else if is_empty {
-                    Ok(Some(GroveDbOp::delete_run_op(
+                    Ok(Some(GroveDbOp::delete_tree_run_op(
                         path_iter.map(|x| x.to_vec()).collect(),
                         key.to_vec(),
                     )))
@@ -444,7 +443,7 @@ impl GroveDb {
                             &mut cost,
                             storage.clear().map_err(|e| {
                                 Error::CorruptedData(format!(
-                                    "unable to cleanup tree from storage_cost: {}",
+                                    "unable to cleanup tree from storage: {}",
                                     e
                                 ))
                             })
@@ -478,7 +477,7 @@ impl GroveDb {
                             &mut merk_to_delete_tree_from,
                             &key,
                             Some(options.as_merk_options()),
-                            Some(TREE_COST_SIZE)
+                            true,
                         )
                     );
                     let mut merk_cache: HashMap<
@@ -513,7 +512,7 @@ impl GroveDb {
                             &mut subtree_to_delete_from,
                             &key,
                             Some(options.as_merk_options()),
-                            Some(TREE_COST_SIZE)
+                            true,
                         )
                     );
                     let mut merk_cache: HashMap<
@@ -537,7 +536,7 @@ impl GroveDb {
                     &mut subtree_to_delete_from,
                     &key,
                     Some(options.as_merk_options()),
-                    None
+                    false
                 )
             );
             let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
@@ -616,7 +615,7 @@ impl GroveDb {
                             &mut cost,
                             inner_subtree_to_delete_from.clear().map_err(|e| {
                                 Error::CorruptedData(format!(
-                                    "unable to cleanup tree from storage_cost: {}",
+                                    "unable to cleanup tree from storage: {}",
                                     e
                                 ))
                             })
@@ -629,7 +628,7 @@ impl GroveDb {
                         &mut subtree_to_delete_from,
                         &key,
                         Some(options.as_merk_options()),
-                        Some(TREE_COST_SIZE)
+                        true,
                     )
                 );
             }
@@ -640,7 +639,7 @@ impl GroveDb {
                     &mut subtree_to_delete_from,
                     &key,
                     Some(options.as_merk_options()),
-                    None
+                    false,
                 )
             );
         }
@@ -675,7 +674,7 @@ impl GroveDb {
         // new keys to enqueue are taken from raw iterator which returns Vec<u8>;
         // changing that to slice is hard as cursor should be moved for next iteration
         // which requires exclusive (&mut) reference, also there is no guarantee that
-        // slice which points into storage_cost internals will remain valid if raw
+        // slice which points into storage internals will remain valid if raw
         // iterator got altered so why that reference should be exclusive;
 
         let mut queue: Vec<Vec<Vec<u8>>> = vec![path.into_iter().map(|x| x.to_vec()).collect()];
@@ -723,13 +722,8 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use std::option::Option::None;
-
     use costs::{
-        storage_cost::{
-            removal::StorageRemovedBytes::{BasicStorageRemoval, NoStorageRemoval},
-            StorageCost,
-        },
+        storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
         OperationCost,
     };
     use pretty_assertions::assert_eq;
@@ -742,7 +736,7 @@ mod tests {
 
     #[test]
     fn test_empty_subtree_deletion_without_transaction() {
-        let element = Element::new_item(b"ayy".to_vec());
+        let _element = Element::new_item(b"ayy".to_vec());
         let db = make_test_grovedb();
         // Insert some nested subtrees
         db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
@@ -771,7 +765,7 @@ mod tests {
 
     #[test]
     fn test_empty_subtree_deletion_with_transaction() {
-        let element = Element::new_item(b"ayy".to_vec());
+        let _element = Element::new_item(b"ayy".to_vec());
 
         let db = make_test_grovedb();
         let transaction = db.start_transaction();

@@ -207,19 +207,19 @@ mod no_transaction {
         context_ayya
             .put(b"key1", b"ayyavalue1", None, None)
             .unwrap()
-            .expect("cannot insert into storage_cost");
+            .expect("cannot insert into storage");
         context_ayya
             .put(b"key2", b"ayyavalue2", None, None)
             .unwrap()
-            .expect("cannot insert into storage_cost");
+            .expect("cannot insert into storage");
         context_ayyb
             .put(b"key1", b"ayybvalue1", None, None)
             .unwrap()
-            .expect("cannot insert into storage_cost");
+            .expect("cannot insert into storage");
         context_ayyb
             .put(b"key2", b"ayybvalue2", None, None)
             .unwrap()
-            .expect("cannot insert into storage_cost");
+            .expect("cannot insert into storage");
 
         assert_eq!(
             context_ayya
@@ -227,19 +227,19 @@ mod no_transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage_cost"),
+                .expect("cannot get from storage"),
             b"ayyavalue1"
         );
 
         context_ayya
             .delete(b"key1", None)
             .unwrap()
-            .expect("cannot delete from storage_cost");
+            .expect("cannot delete from storage");
 
         assert!(context_ayya
             .get(b"key1")
             .unwrap()
-            .expect("cannot get from storage_cost")
+            .expect("cannot get from storage")
             .is_none());
         assert_eq!(
             context_ayya
@@ -247,7 +247,7 @@ mod no_transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage_cost"),
+                .expect("cannot get from storage"),
             b"ayyavalue2"
         );
         assert_eq!(
@@ -256,7 +256,7 @@ mod no_transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage_cost"),
+                .expect("cannot get from storage"),
             b"ayybvalue1"
         );
     }
@@ -269,16 +269,16 @@ mod no_transaction {
         context_ayya
             .put(b"key1", b"ayyavalue1", None, None)
             .unwrap()
-            .expect("cannot insert into storage_cost");
+            .expect("cannot insert into storage");
         context_ayya
             .put(b"key2", b"ayyavalue2", None, None)
             .unwrap()
-            .expect("cannot insert into storage_cost");
+            .expect("cannot insert into storage");
 
         assert!(context_ayya
             .get(b"key3")
             .unwrap()
-            .expect("cannot get from storage_cost")
+            .expect("cannot get from storage")
             .is_none());
 
         let mut batch = context_ayya.new_batch();
@@ -288,7 +288,7 @@ mod no_transaction {
         assert!(context_ayya
             .get(b"key3")
             .unwrap()
-            .expect("cannot get from storage_cost")
+            .expect("cannot get from storage")
             .is_none());
 
         context_ayya
@@ -302,13 +302,13 @@ mod no_transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage_cost"),
+                .expect("cannot get from storage"),
             b"ayyavalue3"
         );
         assert!(context_ayya
             .get(b"key1")
             .unwrap()
-            .expect("cannot get from storage_cost")
+            .expect("cannot get from storage")
             .is_none());
     }
 
@@ -649,19 +649,19 @@ mod transaction {
         context_ayya
             .put(b"key1", b"ayyavalue1", None, None)
             .unwrap()
-            .expect("cannot insert into storage_cost");
+            .expect("cannot insert into storage");
         context_ayya
             .put(b"key2", b"ayyavalue2", None, None)
             .unwrap()
-            .expect("cannot insert into storage_cost");
+            .expect("cannot insert into storage");
         context_ayyb
             .put(b"key1", b"ayybvalue1", None, None)
             .unwrap()
-            .expect("cannot insert into storage_cost");
+            .expect("cannot insert into storage");
         context_ayyb
             .put(b"key2", b"ayybvalue2", None, None)
             .unwrap()
-            .expect("cannot insert into storage_cost");
+            .expect("cannot insert into storage");
 
         assert_eq!(
             context_ayya
@@ -669,19 +669,19 @@ mod transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage_cost"),
+                .expect("cannot get from storage"),
             b"ayyavalue1"
         );
 
         context_ayya
             .delete(b"key1", None)
             .unwrap()
-            .expect("cannot delete from storage_cost");
+            .expect("cannot delete from storage");
 
         assert!(context_ayya
             .get(b"key1")
             .unwrap()
-            .expect("cannot get from storage_cost")
+            .expect("cannot get from storage")
             .is_none());
         assert_eq!(
             context_ayya
@@ -689,7 +689,7 @@ mod transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage_cost"),
+                .expect("cannot get from storage"),
             b"ayyavalue2"
         );
         assert_eq!(
@@ -698,7 +698,7 @@ mod transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage_cost"),
+                .expect("cannot get from storage"),
             b"ayybvalue1"
         );
     }
@@ -714,16 +714,16 @@ mod transaction {
         context_ayya
             .put(b"key1", b"ayyavalue1", None, None)
             .unwrap()
-            .expect("cannot insert into storage_cost");
+            .expect("cannot insert into storage");
         context_ayya
             .put(b"key2", b"ayyavalue2", None, None)
             .unwrap()
-            .expect("cannot insert into storage_cost");
+            .expect("cannot insert into storage");
 
         assert!(context_ayya
             .get(b"key3")
             .unwrap()
-            .expect("cannot get from storage_cost")
+            .expect("cannot get from storage")
             .is_none());
 
         let mut batch = context_ayya.new_batch();
@@ -733,7 +733,7 @@ mod transaction {
         assert!(context_ayya
             .get(b"key1")
             .unwrap()
-            .expect("cannot get from storage_cost")
+            .expect("cannot get from storage")
             .is_some());
 
         context_ayya
@@ -744,7 +744,7 @@ mod transaction {
         assert!(context_ayya
             .get(b"key1")
             .unwrap()
-            .expect("cannot get from storage_cost")
+            .expect("cannot get from storage")
             .is_none());
 
         storage
@@ -759,13 +759,13 @@ mod transaction {
                 .unwrap()
                 .ok()
                 .flatten()
-                .expect("cannot get from storage_cost"),
+                .expect("cannot get from storage"),
             b"ayyavalue3"
         );
         assert!(context_ayya
             .get(b"key1")
             .unwrap()
-            .expect("cannot get from storage_cost")
+            .expect("cannot get from storage")
             .is_none());
     }
 

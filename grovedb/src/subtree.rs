@@ -6,19 +6,18 @@ use core::fmt;
 
 use bincode::Options;
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
-    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
 use integer_encoding::VarInt;
 use merk::{
-    anyhow::anyhow,
+    anyhow,
     ed::Decode,
     proofs::{query::QueryItem, Query},
     TreeFeatureType,
     TreeFeatureType::BasicMerk,
     tree::{kv::KV, Tree, TreeInner},
-    BatchEntry, MerkOptions, Op, HASH_LENGTH,
+    BatchEntry, MerkOptions, Op,
 };
 use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
@@ -225,27 +224,27 @@ impl Element {
     }
 
     /// Get the size of an element in bytes
-    pub fn byte_size(&self) -> usize {
+    pub fn byte_size(&self) -> u32 {
         match self {
             Element::Item(item, element_flag) | Element::SumItem(item, element_flag) => {
                 if let Some(flag) = element_flag {
-                    flag.len() + item.len()
+                    flag.len() as u32 + item.len() as u32
                 } else {
-                    item.len()
+                    item.len() as u32
                 }
             }
             Element::Reference(path_reference, _, element_flag) => {
-                let path_length = path_reference.encoding_length();
+                let path_length = path_reference.encoding_length() as u32;
 
                 if let Some(flag) = element_flag {
-                    flag.len() + path_length
+                    flag.len() as u32 + path_length
                 } else {
                     path_length
                 }
             }
             Element::Tree(_, element_flag) => {
                 if let Some(flag) = element_flag {
-                    flag.len() + 32
+                    flag.len() as u32 + 32
                 } else {
                     32
                 }
@@ -260,8 +259,8 @@ impl Element {
         }
     }
 
-    pub fn required_item_space(len: usize, flag_len: usize) -> usize {
-        len + len.required_space() + flag_len + flag_len.required_space() + 1
+    pub fn required_item_space(len: u32, flag_len: u32) -> u32 {
+        len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1
     }
 
     /// Get the size that the element will occupy on disk
@@ -275,17 +274,19 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         merk_options: Option<MerkOptions>,
-        is_layered: Option<u32>,
+        is_layered: bool,
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
-        let op = if let Some(cost) = is_layered {
-            Op::DeleteLayered(cost)
+        let op = if is_layered {
+            Op::DeleteLayered
         } else {
             Op::Delete
         };
         let batch = [(key, op, None)];
-        merk.apply::<_, Vec<u8>>(&batch, &[], merk_options)
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch, &[], merk_options, &|key, value| {
+            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+        })
+        .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     /// Delete an element from Merk under a key to batch operations
@@ -295,7 +296,7 @@ impl Element {
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         let op = if is_layered {
-            Op::DeleteLayered(TREE_COST_SIZE)
+            Op::DeleteLayered
         } else {
             Op::Delete
         };
@@ -1029,23 +1030,29 @@ impl Element {
 
         let batch_operations = [(key, Op::Put(serialized), feature_type)];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            let element = Element::deserialize(value)?;
-            match element {
-                Element::Tree(_, flags) => {
-                    let flags_len = flags.map_or(0, |flags| {
-                        let flags_len = flags.len() as u32;
-                        flags_len + flags_len.required_space() as u32
-                    });
-                    let value_len = TREE_COST_SIZE + flags_len;
-                    let key_len = key.len() as u32;
-                    Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                        key_len, value_len,
-                    ))
-                }
-                _ => Err(anyhow!("only trees are supported for specialized costs")),
-            }
+            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    pub fn tree_costs_for_key_value(key: &Vec<u8>, value: &Vec<u8>) -> Result<u32, Error> {
+        let element = Element::deserialize(value)?;
+        match element {
+            Element::Tree(_, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = TREE_COST_SIZE + flags_len;
+                let key_len = key.len() as u32;
+                Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len,
+                ))
+            }
+            _ => Err(Error::CorruptedCodeExecution(
+                "only trees are supported for specialized costs",
+            )),
+        }
     }
 
     pub fn insert_into_batch_operations<K: AsRef<[u8]>>(
@@ -1148,8 +1155,10 @@ impl Element {
         };
 
         let batch_operations = [(key, Op::PutCombinedReference(serialized, referenced_value), feature_type)];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[], options)
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
+            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+        })
+        .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     pub fn insert_reference_into_batch_operations<K: AsRef<[u8]>>(
@@ -1217,21 +1226,7 @@ impl Element {
             feature_type
         )];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            let element = Element::deserialize(value)?;
-            match element {
-                Element::Tree(_, flags) => {
-                    let flags_len = flags.map_or(0, |flags| {
-                        let flags_len = flags.len() as u32;
-                        flags_len + flags_len.required_space() as u32
-                    });
-                    let value_len = TREE_COST_SIZE + flags_len;
-                    let key_len = key.len() as u32;
-                    Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                        key_len, value_len,
-                    ))
-                }
-                _ => Err(anyhow!("only trees are supported for specialized costs")),
-            }
+            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -1261,8 +1256,7 @@ impl Element {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32
             });
-
-        /// Replacing is more efficient, but should lead to the same costs
+        // Replacing is more efficient, but should lead to the same costs
         let entry = if is_replace {
             (
                 key,
@@ -1364,8 +1358,6 @@ impl<I: RawIterator> ElementsIterator<I> {
 
 #[cfg(test)]
 mod tests {
-    use std::option::Option::None;
-
     use merk::test_utils::TempMerk;
     use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
 

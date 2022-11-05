@@ -16,7 +16,7 @@ pub enum KeyInfo {
 
 impl PartialOrd<Self> for KeyInfo {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match self.get_key_ref().partial_cmp(other.get_key_ref()) {
+        match self.as_slice().partial_cmp(other.as_slice()) {
             None => None,
             Some(ord) => match ord {
                 Ordering::Less => Some(Ordering::Less),
@@ -27,7 +27,7 @@ impl PartialOrd<Self> for KeyInfo {
                         Some(ord) => Some(ord),
                     }
                 }
-                Ordering::Greater => Some(Ordering::Less),
+                Ordering::Greater => Some(Ordering::Greater),
             },
         }
     }
@@ -35,7 +35,14 @@ impl PartialOrd<Self> for KeyInfo {
 
 impl Ord for KeyInfo {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.get_key_ref().cmp(other.get_key_ref())
+        match self.as_slice().cmp(other.as_slice()) {
+            Ordering::Less => Ordering::Less,
+            Ordering::Equal => {
+                let other_len = other.len();
+                self.len().cmp(&other_len)
+            }
+            Ordering::Greater => Ordering::Greater,
+        }
     }
 }
 
@@ -82,13 +89,6 @@ impl KeyInfo {
         match self {
             KnownKey(key) => key.clone(),
             MaxKeySize { unique_id, .. } => unique_id.clone(),
-        }
-    }
-
-    pub fn get_key_ref(&self) -> &[u8] {
-        match self {
-            KnownKey(key) => key.as_slice(),
-            MaxKeySize { unique_id, .. } => unique_id.as_slice(),
         }
     }
 }

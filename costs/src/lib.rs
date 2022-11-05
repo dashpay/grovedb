@@ -105,45 +105,49 @@ impl OperationCost {
     ) -> Result<(), Error> {
         let paid_key_len = key_len + key_len.required_space() as u32;
 
-        let doesnt_need_verification = storage_cost_info.as_ref().map(|key_value_storage_cost|  if !key_value_storage_cost.needs_value_verification {
-            Some(key_value_storage_cost.value_storage_cost.added_bytes + key_value_storage_cost.value_storage_cost.replaced_bytes)
-        } else {
-            None
-        }).unwrap_or(None);
-        let final_paid_value_len =
-
-            if let Some(value_cost_len) = doesnt_need_verification {
-                value_cost_len
-            } else {
-                let mut paid_value_len = value_len;
-                // We need to remove the child sizes if they exist
-                if let Some((left_child, right_child)) = children_sizes {
-                    paid_value_len -= 2; // for the child options
-
-                    // We need to remove the costs of the children
-                    if let Some(left_child_len) = left_child {
-                        paid_value_len -= left_child_len;
-                    }
-                    if let Some(right_child_len) = right_child {
-                        paid_value_len -= right_child_len;
-                    }
-
-                    // This is the moment we need to add the required space (after removing
-                    // children) but before adding the parent to child hook
-                    paid_value_len += paid_value_len.required_space() as u32;
-
-                    // We need to add the cost of a parent
-                    // key_len has a hash length already in it from the key prefix
-                    // So we need to remove it and then add a hash length
-                    // For the parent ref + 3 (2 for child sizes, 1 for key_len)
-                    paid_value_len += key_len + 3;
+        let doesnt_need_verification = storage_cost_info
+            .as_ref()
+            .map(|key_value_storage_cost| {
+                if !key_value_storage_cost.needs_value_verification {
+                    Some(
+                        key_value_storage_cost.value_storage_cost.added_bytes
+                            + key_value_storage_cost.value_storage_cost.replaced_bytes,
+                    )
                 } else {
-                    paid_value_len += paid_value_len.required_space() as u32;
+                    None
                 }
-                paid_value_len
-            };
+            })
+            .unwrap_or(None);
+        let final_paid_value_len = if let Some(value_cost_len) = doesnt_need_verification {
+            value_cost_len
+        } else {
+            let mut paid_value_len = value_len;
+            // We need to remove the child sizes if they exist
+            if let Some((left_child, right_child)) = children_sizes {
+                paid_value_len -= 2; // for the child options
 
+                // We need to remove the costs of the children
+                if let Some(left_child_len) = left_child {
+                    paid_value_len -= left_child_len;
+                }
+                if let Some(right_child_len) = right_child {
+                    paid_value_len -= right_child_len;
+                }
 
+                // This is the moment we need to add the required space (after removing
+                // children) but before adding the parent to child hook
+                paid_value_len += paid_value_len.required_space() as u32;
+
+                // We need to add the cost of a parent
+                // key_len has a hash length already in it from the key prefix
+                // So we need to remove it and then add a hash length
+                // For the parent ref + 3 (2 for child sizes, 1 for key_len)
+                paid_value_len += key_len + 3;
+            } else {
+                paid_value_len += paid_value_len.required_space() as u32;
+            }
+            paid_value_len
+        };
 
         let (key_storage_cost, value_storage_costs) = match storage_cost_info {
             None => (None, None),
@@ -443,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_wrap_fn_cost() {
-        // Imagine this one is loaded from storage_cost.
+        // Imagine this one is loaded from storage.
         let loaded_value = b"ayylmao";
         let costs_ctx = loaded_value.wrap_fn_cost(|x| OperationCost {
             seek_count: 1,

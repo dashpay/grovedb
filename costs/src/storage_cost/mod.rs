@@ -46,15 +46,13 @@ impl AddAssign for StorageCost {
 impl StorageCost {
     /// Verify that the len of the item matches the given storage_cost cost
     pub fn verify(&self, len: u32) -> Result<(), Error> {
-        // from the length we first need to remove 2 bytes for the left and right
-        // optional links we then should add the parent link
-        let size = self.added_bytes + self.replaced_bytes;
-        match size == len {
-            true => Ok(()),
-            false => Err(Error::StorageCostMismatch {
+        if self.added_bytes + self.replaced_bytes == len {
+            Ok(())
+        } else {
+            Err(Error::StorageCostMismatch {
                 expected: self.clone(),
                 actual_total_bytes: len,
-            }),
+            })
         }
     }
 

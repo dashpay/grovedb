@@ -1,5 +1,3 @@
-use std::option::Option::None;
-
 use criterion::{criterion_group, criterion_main, Criterion};
 use grovedb::{Element, GroveDb};
 use rand::Rng;
@@ -20,6 +18,7 @@ pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
         b.iter(|| {
             for k in keys.clone() {
                 db.insert([test_leaf], &k, Element::new_item(k.to_vec()), None, None)
+                    .unwrap()
                     .unwrap();
             }
         })
@@ -46,6 +45,7 @@ pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
                     None,
                     Some(&tx),
                 )
+                .unwrap()
                 .unwrap();
             }
             db.commit_transaction(tx).unwrap().unwrap();
@@ -62,6 +62,7 @@ pub fn root_leaf_insertion_benchmark_without_transaction(c: &mut Criterion) {
         b.iter(|| {
             for k in keys.clone() {
                 db.insert([], &k, Element::empty_tree(), None, None)
+                    .unwrap()
                     .unwrap();
             }
         })
@@ -78,6 +79,7 @@ pub fn root_leaf_insertion_benchmark_with_transaction(c: &mut Criterion) {
             let tx = db.start_transaction();
             for k in keys.clone() {
                 db.insert([], &k, Element::empty_tree(), None, Some(&tx))
+                    .unwrap()
                     .unwrap();
             }
             db.commit_transaction(tx).unwrap().unwrap();

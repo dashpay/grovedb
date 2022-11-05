@@ -365,6 +365,7 @@ impl GroveDbWrapper {
                 .delete(
                     path_slice,
                     &key,
+                    None,
                     using_transaction.then(|| transaction).flatten(),
                 )
                 .unwrap(); // Todo: Costs;
@@ -541,7 +542,7 @@ impl GroveDbWrapper {
 
         db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let result = grove_db
-                .delete_aux(&key, using_transaction.then(|| transaction).flatten())
+                .delete_aux(&key, None, using_transaction.then(|| transaction).flatten())
                 .unwrap(); // Todo: Costs;
 
             channel.send(move |mut task_context| {

@@ -1,30 +1,5 @@
-#[cfg(test)]
 mod tests {
-    use std::option::Option::None;
-
-    use costs::{
-        storage_cost::{
-            removal::{
-                StorageRemovedBytes,
-                StorageRemovedBytes::{
-                    BasicStorageRemoval, NoStorageRemoval, SectionedStorageRemoval,
-                },
-            },
-            transition::OperationStorageTransitionType,
-            StorageCost,
-        },
-        OperationCost,
-    };
-    use integer_encoding::VarInt;
-    use intmap::IntMap;
-
-    use crate::{
-        batch::GroveDbOp,
-        operations::delete::DeleteOptions,
-        reference_path::ReferencePathType,
-        tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
-        Element, PathQuery,
-    };
+    use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element};
 
     #[test]
     fn test_batch_one_deletion_tree_costs_match_non_batch_on_transaction() {
@@ -192,7 +167,7 @@ mod tests {
 
         let db = make_empty_grovedb();
 
-        let insertion_cost = db
+        let _insertion_cost = db
             .insert(vec![], b"key1", Element::empty_tree(), None, None)
             .cost_as_result()
             .expect("expected to insert successfully");
@@ -259,7 +234,7 @@ mod tests {
 
         let db = make_empty_grovedb();
 
-        let insertion_cost = db
+        let _insertion_cost = db
             .insert(
                 vec![],
                 b"key1",
@@ -286,7 +261,7 @@ mod tests {
             .insert(
                 vec![],
                 b"key1",
-                Element::empty_tree_with_flags(Some(b"cat".to_vec())),
+                Element::empty_tree_with_flags(Some(b"dog".to_vec())),
                 None,
                 None,
             )
@@ -351,7 +326,7 @@ mod tests {
             .insert(
                 vec![],
                 b"key1",
-                Element::new_item(b"cat".to_vec()),
+                Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
                 None,
                 None,
             )
@@ -411,7 +386,13 @@ mod tests {
         let db = make_empty_grovedb();
 
         let insertion_cost = db
-            .insert(vec![], b"key1", Element::empty_tree(), None, None)
+            .insert(
+                vec![],
+                b"key1",
+                Element::empty_tree_with_flags(Some(b"dog".to_vec())),
+                None,
+                None,
+            )
             .cost_as_result()
             .expect("expected to insert successfully");
 
@@ -427,8 +408,10 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 37
-        //   1 for the flag option (but no flags)
+        // Value -> 41
+        //   1 for the flag option
+        //   1 for flags size
+        //   3 for flag bytes
         //   1 for the enum type
         //   1 for empty tree value
         // 32 for node hash
@@ -441,7 +424,9 @@ mod tests {
         // Key Length 1
         // Child Heights 2
 
-        // Total 37 + 37 + 39 = 113
+        // Total 37 + 41 + 39 = 117
+
+        assert_eq!(insertion_cost.storage_cost.added_bytes, 117);
 
         assert_eq!(
             insertion_cost.storage_cost.added_bytes,
@@ -453,8 +438,14 @@ mod tests {
 
         let db = make_empty_grovedb();
 
-        let insertion_cost = db
-            .insert(vec![], b"key1", Element::empty_tree(), None, None)
+        let _insertion_cost = db
+            .insert(
+                vec![],
+                b"key1",
+                Element::empty_tree_with_flags(Some(b"dog".to_vec())),
+                None,
+                None,
+            )
             .cost_as_result()
             .expect("expected to insert successfully");
 
@@ -474,7 +465,7 @@ mod tests {
             .insert(
                 vec![],
                 b"key1",
-                Element::new_item(b"cat".to_vec()),
+                Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
                 None,
                 None,
             )
@@ -520,11 +511,11 @@ mod tests {
 
         let db = make_empty_grovedb();
 
-        let insertion_cost = db
+        let _insertion_cost = db
             .insert(
                 vec![],
                 b"key1",
-                Element::new_item(b"cat".to_vec()),
+                Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
                 None,
                 None,
             )

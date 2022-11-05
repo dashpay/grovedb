@@ -1,4 +1,4 @@
-//! Prefixed storage_cost batch implementation for RocksDB backend.
+//! Prefixed storage batch implementation for RocksDB backend.
 use costs::{
     cost_return_on_error_no_add,
     storage_cost::{
@@ -8,7 +8,6 @@ use costs::{
 };
 use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
-use costs::storage_cost::removal::StorageRemovedBytes;
 
 use super::make_prefixed_key;
 use crate::{

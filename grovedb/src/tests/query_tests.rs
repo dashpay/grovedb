@@ -1,13 +1,10 @@
-use merk::{
-    proofs::{query::QueryItem, Query},
-    CryptoHash,
-};
+use merk::proofs::{query::QueryItem, Query};
 use rand::Rng;
 
 use crate::{
     reference_path::ReferencePathType,
     tests::{common::compare_result_sets, make_test_grovedb, TempGroveDb, TEST_LEAF},
-    Element, Error, GroveDb, PathQuery, SizedQuery,
+    Element, GroveDb, PathQuery, SizedQuery,
 };
 
 fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {

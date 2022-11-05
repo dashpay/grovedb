@@ -172,7 +172,7 @@ impl Visualize for GroveDb {
     }
 }
 
-pub(crate) fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
+pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
     visualize_stdout(&VisualizeableMerk::new(merk, |bytes: &[u8]| {
         bincode::DefaultOptions::default()
             .with_varint_encoding()
