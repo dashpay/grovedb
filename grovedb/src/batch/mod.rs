@@ -236,7 +236,7 @@ impl fmt::Debug for GroveDbOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut path_out = Vec::new();
         let mut path_drawer = Drawer::new(&mut path_out);
-        for p in &self.path {
+        for p in &self.path.to_path() {
             path_drawer = p.visualize(path_drawer).unwrap();
             path_drawer.write(b" ").unwrap();
         }
