@@ -437,7 +437,7 @@ impl GroveDbOpConsistencyResults {
 
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F> {
-    merks: HashMap<Vec<Vec<u8>>, (Merk<S>, bool)>,
+    merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
     get_merk_fn: F,
 }
 
@@ -477,7 +477,7 @@ trait TreeCache<G, SR> {
 
 impl<'db, S, F> TreeCacheMerkByPath<S, F>
 where
-    F: FnMut(&[Vec<u8>], bool) -> (CostResult<Merk<S>, Error>, bool),
+    F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
     /// A reference assumes the value hash of the base item it points to.
@@ -650,7 +650,7 @@ impl<'db, S, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F>
 where
     G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
     SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
-    F: FnMut(&[Vec<u8>], bool) -> (CostResult<Merk<S>, Error>, bool),
+    F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
     fn insert(&mut self, op: &GroveDbOp, is_sum_tree: bool) -> CostResult<(), Error> {
@@ -659,8 +659,8 @@ where
         let mut inserted_path = op.path.to_path();
         inserted_path.push(op.key.get_key_clone());
         if !self.merks.contains_key(&inserted_path) {
-            let (merk_wrapped, _) =  cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
-            self.merks.insert(inserted_path, (merk, is_sum_tree));
+            let merk =  cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
+            self.merks.insert(inserted_path, merk);
         }
 
         Ok(()).wrap_with_cost(cost)

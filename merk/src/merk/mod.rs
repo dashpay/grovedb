@@ -521,6 +521,18 @@ where
         })
     }
 
+    /// Returns whether the tree is a sum tree
+    pub fn is_sum_tree(&self) -> bool {
+        match self.merk_type {
+            StandaloneMerk => false,
+            BaseMerk => false,
+            LayeredMerk => false,
+            StandaloneSumMerk => true,
+            BaseSumMerk => true,
+            LayeredSumMerk => true,
+        }
+    }
+
     /// Returns the total sum value in the Merk tree
     pub fn sum(&self) -> Option<i64> {
         self.use_tree(|tree| tree.map_or(None, |tree| tree.sum()))
