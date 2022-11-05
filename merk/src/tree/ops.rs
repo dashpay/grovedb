@@ -16,8 +16,7 @@ use integer_encoding::VarInt;
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};
-use crate::{CryptoHash, HASH_LENGTH_U32, HASH_LENGTH_U32_X2, TreeFeatureType};
-use crate::tree::kv::KV;
+use crate::{tree::kv::KV, CryptoHash, TreeFeatureType, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
 
 /// Type alias to add more sense to function signatures.
 type UpdatedRootKeyFrom = Option<Vec<u8>>;
@@ -342,9 +341,18 @@ where
             // a key matches this node's key, apply op to this node
             match op {
                 // TODO: take vec from batch so we don't need to clone
-                Put(value) => self.put_value(value.to_vec(), feature_type.expect("confirmed is some above")).unwrap_add_cost(&mut cost),
+                Put(value) => self
+                    .put_value(
+                        value.to_vec(),
+                        feature_type.expect("confirmed is some above"),
+                    )
+                    .unwrap_add_cost(&mut cost),
                 PutCombinedReference(value, referenced_value) => self
-                    .put_value_and_reference_value_hash(value.to_vec(), referenced_value.to_owned(), feature_type.expect("confirmed is some above"))
+                    .put_value_and_reference_value_hash(
+                        value.to_vec(),
+                        referenced_value.to_owned(),
+                        feature_type.expect("confirmed is some above"),
+                    )
                     .unwrap_add_cost(&mut cost),
                 PutLayeredReference(value, value_cost, referenced_value)
                 | ReplaceLayeredReference(value, value_cost, referenced_value) => self

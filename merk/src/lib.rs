@@ -35,6 +35,7 @@ pub use tree::{
 // #[cfg(feature = "full")]
 // // pub use crate::merk::{chunks, restore, Merk};
 pub use crate::merk::{
-    KVIterator, Merk, ProofConstructionResult, ProofWithoutEncodingResult, defaults::ROOT_KEY_KEY, TreeFeatureType, MerkType
+    defaults::ROOT_KEY_KEY, KVIterator, Merk, MerkType, ProofConstructionResult,
+    ProofWithoutEncodingResult, TreeFeatureType,
 };
 pub use crate::visualize::VisualizeableMerk;

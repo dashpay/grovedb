@@ -98,11 +98,19 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
         tree.visit_refs(&mut |proof_node| {
             if let Some((mut node, key)) = match &proof_node.node {
-                Node::KV(key, value) => Some((Tree::new(key.clone(), value.clone(), BasicMerk).unwrap(), key)),
+                Node::KV(key, value) => Some((
+                    Tree::new(key.clone(), value.clone(), BasicMerk).unwrap(),
+                    key,
+                )),
                 Node::KVValueHash(key, value, value_hash) => Some((
                     // TODO: Look into replication of feature type
-                    Tree::new_with_value_hash(key.clone(), value.clone(), value_hash.clone(), BasicMerk)
-                        .unwrap(),
+                    Tree::new_with_value_hash(
+                        key.clone(),
+                        value.clone(),
+                        value_hash.clone(),
+                        BasicMerk,
+                    )
+                    .unwrap(),
                     key,
                 )),
                 _ => None,

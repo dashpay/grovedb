@@ -11,10 +11,9 @@ mod ops;
 mod walk;
 
 use std::{
-    cmp::max,
+    cmp::{max, Ordering},
     io::{Read, Write},
 };
-use std::cmp::Ordering;
 
 use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
@@ -212,7 +211,7 @@ impl Tree {
                 kv,
                 left: None,
                 right: None,
-                feature_type
+                feature_type,
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -234,7 +233,7 @@ impl Tree {
                 kv,
                 left: None,
                 right: None,
-                feature_type
+                feature_type,
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -779,12 +778,7 @@ mod test {
     use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
 
     use super::{commit::NoopCommit, hash::NULL_HASH, Tree};
-    use crate::{
-        merk::{
-            TreeFeatureType::SummedMerk,
-        },
-        tree::TreeFeatureType::BasicMerk,
-    };
+    use crate::{merk::TreeFeatureType::SummedMerk, tree::TreeFeatureType::BasicMerk};
 
     #[test]
     fn build_tree() {
@@ -861,9 +855,12 @@ mod test {
         assert!(tree.link(false).is_none());
         assert!(tree.child(false).is_none());
 
-        tree.commit(&mut NoopCommit {}, &|_,_| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .expect("commit failed");
         assert!(tree.link(true).expect("expected link").is_stored());
@@ -883,9 +880,12 @@ mod test {
         let mut tree = Tree::new(vec![0], vec![1], BasicMerk)
             .unwrap()
             .attach(true, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()));
-        tree.commit(&mut NoopCommit {}, &|_,_| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .expect("commit failed");
         assert_eq!(
@@ -948,9 +948,12 @@ mod test {
         let mut tree = Tree::new(vec![0], vec![1], BasicMerk)
             .unwrap()
             .attach(false, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()));
-        tree.commit(&mut NoopCommit {}, &|_,_| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .expect("commit failed");
 
@@ -963,11 +966,14 @@ mod test {
             false,
             Some(Tree::new(vec![2], vec![3], SummedMerk(5)).unwrap()),
         );
-        tree.commit(&mut NoopCommit {}, &|_,_| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
-            .unwrap()
-            .expect("should commit");
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
+        .unwrap()
+        .expect("should commit");
         assert_eq!(Some(8), tree.sum());
     }
 }

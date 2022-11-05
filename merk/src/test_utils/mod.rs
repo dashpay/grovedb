@@ -9,10 +9,9 @@ use rand::prelude::*;
 pub use temp_merk::TempMerk;
 
 use crate::{
-    merk::{TreeFeatureType::BasicMerk},
-    tree::{BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker},
+    merk::TreeFeatureType::BasicMerk,
+    tree::{kv::KV, BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker},
 };
-use crate::tree::kv::KV;
 
 pub fn assert_tree_invariants(tree: &Tree) {
     assert!(tree.balance_factor().abs() < 2);

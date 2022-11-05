@@ -14,8 +14,6 @@ use std::{
 };
 
 use anyhow::{anyhow, Error, Result};
-use ed::{Decode, Encode, Terminated};
-use integer_encoding::VarInt;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
@@ -25,13 +23,23 @@ use costs::{
     },
     CostContext, CostResult, CostsExt, OperationCost,
 };
+use ed::{Decode, Encode, Terminated};
+use integer_encoding::VarInt;
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
 
-use crate::{merk::defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY}, MerkOptions, MerkType::{BaseMerk, LayeredMerk, StandaloneMerk, BaseSumMerk, LayeredSumMerk, StandaloneSumMerk}, proofs::{encode_into, Op as ProofOp, Query, query::QueryItem}, tree::{
-    AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, NULL_HASH, Op, RefWalker, Tree,
-    Walker,
-}, TreeFeatureType::{BasicMerk, SummedMerk}};
-use crate::tree::kv::KV;
+use crate::{
+    merk::defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
+    proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
+    tree::{
+        kv::KV, AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree,
+        Walker, NULL_HASH,
+    },
+    MerkOptions,
+    MerkType::{
+        BaseMerk, BaseSumMerk, LayeredMerk, LayeredSumMerk, StandaloneMerk, StandaloneSumMerk,
+    },
+    TreeFeatureType::{BasicMerk, SummedMerk},
+};
 
 type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
 
@@ -226,13 +234,14 @@ pub enum MerkType {
     BaseMerk,
     /// A LayeredMerk has it's root key storage inside a parent merk
     LayeredMerk,
-    /// A StandaloneSumMerk has it's root key storage on a field and pays for root
-    /// key updates, it also sums elements
+    /// A StandaloneSumMerk has it's root key storage on a field and pays for
+    /// root key updates, it also sums elements
     StandaloneSumMerk,
     /// A BaseSumMerk has it's root key storage on a field but does not pay for
     /// when these keys change, it also sums elements
     BaseSumMerk,
-    /// A LayeredSumMerk has it's root key storage inside a parent merk, it also sums elements
+    /// A LayeredSumMerk has it's root key storage inside a parent merk, it also
+    /// sums elements
     LayeredSumMerk,
 }
 
@@ -243,18 +252,21 @@ impl MerkType {
             _ => false,
         }
     }
+
     pub fn is_base(&self) -> bool {
         match self {
             BaseMerk | BaseSumMerk => true,
             _ => false,
         }
     }
+
     pub fn is_layered(&self) -> bool {
         match self {
             LayeredMerk | LayeredSumMerk => true,
             _ => false,
         }
     }
+
     pub(crate) fn requires_root_storage_update(&self) -> bool {
         match self {
             StandaloneMerk => true,
@@ -307,7 +319,11 @@ where
     }
 
     pub fn open_standalone(storage: S, is_sum_tree: bool) -> CostContext<Result<Self>> {
-        let merk_type = if is_sum_tree { StandaloneSumMerk} else { StandaloneMerk};
+        let merk_type = if is_sum_tree {
+            StandaloneSumMerk
+        } else {
+            StandaloneMerk
+        };
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
@@ -319,7 +335,7 @@ where
     }
 
     pub fn open_base(storage: S, is_sum_tree: bool) -> CostContext<Result<Self>> {
-        let merk_type = if is_sum_tree { BaseSumMerk} else { BaseMerk};
+        let merk_type = if is_sum_tree { BaseSumMerk } else { BaseMerk };
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
@@ -335,7 +351,11 @@ where
         root_key: Option<Vec<u8>>,
         is_sum_tree: bool,
     ) -> CostContext<Result<Self>> {
-        let merk_type = if is_sum_tree { LayeredSumMerk} else { LayeredMerk};
+        let merk_type = if is_sum_tree {
+            LayeredSumMerk
+        } else {
+            LayeredMerk
+        };
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(root_key),
@@ -1324,13 +1344,20 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let test_prefix = [b"ayy"].into_iter().map(|x| x.as_slice());
-        let mut merk = Merk::open_base(storage.get_storage_context(test_prefix.clone()).unwrap(), false)
-            .unwrap()
-            .unwrap();
+        let mut merk = Merk::open_base(
+            storage.get_storage_context(test_prefix.clone()).unwrap(),
+            false,
+        )
+        .unwrap()
+        .unwrap();
 
-        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk))], &[], None)
-            .unwrap()
-            .expect("apply failed");
+        merk.apply::<_, Vec<_>>(
+            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk))],
+            &[],
+            None,
+        )
+        .unwrap()
+        .expect("apply failed");
 
         let root_hash = merk.root_hash();
         drop(merk);
@@ -1346,8 +1373,10 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let test_prefix = [b"ayy"].into_iter().map(|x| x.as_slice());
-        let merk_fee_context =
-            Merk::open_base(storage.get_storage_context(test_prefix.clone()).unwrap(), false);
+        let merk_fee_context = Merk::open_base(
+            storage.get_storage_context(test_prefix.clone()).unwrap(),
+            false,
+        );
 
         // Opening not existing merk should cost only root key seek (except context
         // creation)
@@ -1366,7 +1395,8 @@ mod test {
         .expect("apply failed");
         drop(merk);
 
-        let merk_fee_context = Merk::open_base(storage.get_storage_context(test_prefix).unwrap(), false);
+        let merk_fee_context =
+            Merk::open_base(storage.get_storage_context(test_prefix).unwrap(), false);
 
         // Opening existing merk should cost two seeks. (except context creation)
         assert!(matches!(
@@ -1475,8 +1505,8 @@ mod test {
         let mut merk = TempMerk::new();
         // TODO: Should be None here also
         merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), None)], None)
-        .unwrap()
-        .expect("apply failed");
+            .unwrap()
+            .expect("apply failed");
         let val = merk.get_aux(&[1, 2, 3]).unwrap().unwrap();
         assert_eq!(val, Some(vec![4, 5, 6]));
     }
@@ -1513,9 +1543,13 @@ mod test {
         assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
 
         // cached
-        merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![]), Some(BasicMerk))], &[], None)
-            .unwrap()
-            .unwrap();
+        merk.apply::<_, Vec<_>>(
+            &[(vec![5, 5, 5], Op::Put(vec![]), Some(BasicMerk))],
+            &[],
+            None,
+        )
+        .unwrap()
+        .unwrap();
         assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
 
         // uncached

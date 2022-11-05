@@ -156,8 +156,8 @@ impl GroveDb {
         //             &mut cost,
         //             self.add_subtree(path_iter.clone(), key, element, transaction)
         //         );
-        //         cost_return_on_error!(&mut cost, self.propagate_changes(path_iter, transaction));
-        //     }
+        //         cost_return_on_error!(&mut cost, self.propagate_changes(path_iter,
+        // transaction));     }
         //     Element::Reference(ref reference_path, _) => {
         //         if path_iter.len() == 0 {
         //             return Err(Error::InvalidPath(
@@ -184,7 +184,9 @@ impl GroveDb {
                             Error::CorruptedData(String::from("unable to deserialize element"))
                         })
                     );
-                    if matches!(element, Element::Tree(..)) || matches!(element, Element::SumTree(..)){
+                    if matches!(element, Element::Tree(..))
+                        || matches!(element, Element::SumTree(..))
+                    {
                         return Err(Error::OverrideNotAllowed(
                             "insertion not allowed to override tree",
                         ))

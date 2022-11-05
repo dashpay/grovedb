@@ -398,9 +398,12 @@ mod tests {
     #[test]
     fn one_node_tree_trunk_roundtrip() {
         let mut tree = BaseTree::new(vec![0], vec![], BasicMerk).unwrap();
-        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .unwrap();
 
@@ -424,9 +427,12 @@ mod tests {
             false,
             Some(BaseTree::new(vec![1], vec![], BasicMerk).unwrap()),
         );
-        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -449,9 +455,12 @@ mod tests {
             true,
             Some(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()),
         );
-        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -480,9 +489,12 @@ mod tests {
                 false,
                 Some(BaseTree::new(vec![2], vec![], BasicMerk).unwrap()),
             );
-        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0), &mut |_, _, _| Ok((false, None)), &mut |_, _| {
-            Ok(NoStorageRemoval)
-        })
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _| Ok(NoStorageRemoval),
+        )
         .unwrap()
         .unwrap();
 

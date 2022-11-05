@@ -661,7 +661,7 @@ where
         let mut inserted_path = op.path.to_path();
         inserted_path.push(op.key.get_key_clone());
         if !self.merks.contains_key(&inserted_path) {
-            let merk =  cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
+            let merk = cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
             self.merks.insert(inserted_path, merk);
         }
 
@@ -805,7 +805,11 @@ where
                         )
                     );
                 }
-                Op::ReplaceTreeRootKey { hash, root_key, sum } => {
+                Op::ReplaceTreeRootKey {
+                    hash,
+                    root_key,
+                    sum,
+                } => {
                     cost_return_on_error!(
                         &mut cost,
                         GroveDb::update_tree_item_preserve_flag_into_batch_operations(
@@ -890,7 +894,11 @@ where
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         });
-        (merk.root_hash_and_key().unwrap_add_cost(&mut cost), merk.sum()).wrap_with_cost(cost)
+        (
+            merk.root_hash_and_key().unwrap_add_cost(&mut cost),
+            merk.sum(),
+        )
+            .wrap_with_cost(cost)
             .map(Ok)
     }
 }
@@ -1148,9 +1156,19 @@ impl GroveDb {
                             Op::Insert { .. } | Op::Delete | Op::DeleteTree => {
                                 root_tree_ops.insert(key, op);
                             }
-                            Op::ReplaceTreeRootKey { hash, root_key, sum} => {
-                                root_tree_ops
-                                    .insert(key, Op::ReplaceTreeRootKey { hash, root_key, sum });
+                            Op::ReplaceTreeRootKey {
+                                hash,
+                                root_key,
+                                sum,
+                            } => {
+                                root_tree_ops.insert(
+                                    key,
+                                    Op::ReplaceTreeRootKey {
+                                        hash,
+                                        root_key,
+                                        sum,
+                                    },
+                                );
                             }
                         }
                     }
@@ -1216,7 +1234,11 @@ impl GroveDb {
                                         }
                                         Entry::Occupied(occupied_entry) => {
                                             match occupied_entry.into_mut() {
-                                                Op::ReplaceTreeRootKey { hash, root_key, sum } => {
+                                                Op::ReplaceTreeRootKey {
+                                                    hash,
+                                                    root_key,
+                                                    sum,
+                                                } => {
                                                     *hash = root_hash;
                                                     *root_key = calculated_root_key;
                                                     *sum = merk_sum;
@@ -1225,7 +1247,7 @@ impl GroveDb {
                                                     if let Element::Tree(root_key, _) = element {
                                                         *root_key = calculated_root_key;
                                                     } else if let Element::SumTree(hash, sum, _) =
-                                                    element
+                                                        element
                                                     {
                                                         *root_key = calculated_root_key;
                                                         *sum = merk_sum.unwrap_or_default();
@@ -1569,15 +1591,15 @@ impl GroveDb {
                     update_element_flags_function,
                     split_removal_bytes_function,
                     |path, new_merk| {
-                                            let path_iter = path.iter().map(|x| x.as_slice());
-                    let is_sum_tree = if path.len() == 0 {
-                        // the root tree is not a sum tree
-                        true
-                    } else {
-                        self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
-                            .unwrap_add_cost(&mut cost)
-                            .unwrap_or(false)
-                    };
+                        let path_iter = path.iter().map(|x| x.as_slice());
+                        let is_sum_tree = if path.len() == 0 {
+                            // the root tree is not a sum tree
+                            true
+                        } else {
+                            self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
+                                .unwrap_add_cost(&mut cost)
+                                .unwrap_or(false)
+                        };
                         self.open_batch_transactional_merk_at_path(
                             &storage_batch,
                             path.iter().map(|x| x.as_slice()),
@@ -1607,16 +1629,16 @@ impl GroveDb {
                     split_removal_bytes_function,
                     |path, new_merk| {
                         // TODO: get merk fn should optionally check if sum tree
-                    //  for elements inserted from batch, we have that information
-                    let path_iter = path.iter().map(|x| x.as_slice());
-                    let is_sum_tree = if path.len() == 0 {
-                        // the root tree is not a sum tree
-                        true
-                    } else {
-                        self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
-                            .unwrap_add_cost(&mut cost)
-                            .unwrap_or(false)
-                    };
+                        //  for elements inserted from batch, we have that information
+                        let path_iter = path.iter().map(|x| x.as_slice());
+                        let is_sum_tree = if path.len() == 0 {
+                            // the root tree is not a sum tree
+                            true
+                        } else {
+                            self.check_subtree_exists_invalid_path(path_iter.clone(), transaction)
+                                .unwrap_add_cost(&mut cost)
+                                .unwrap_or(false)
+                        };
                         self.open_batch_merk_at_path(&storage_batch, path, new_merk, is_sum_tree)
                     }
                 )

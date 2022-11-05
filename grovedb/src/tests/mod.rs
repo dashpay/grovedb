@@ -8,19 +8,18 @@ use std::{
 };
 
 use ::visualize::{visualize_stdout, Drawer, Visualize};
+use integer_encoding::{FixedInt, VarInt};
 use merk::{
     tree::{combine_hash, kv_digest_to_kv_hash, node_hash, value_hash, NULL_HASH},
     CryptoHash,
+    TreeFeatureType::{BasicMerk, SummedMerk},
 };
-use integer_encoding::{FixedInt, VarInt};
-use merk::TreeFeatureType::{BasicMerk, SummedMerk};
 use rand::Rng;
 use tempfile::TempDir;
 
 use super::*;
 use crate::{
-    batch::GroveDbOp,
-    query_result_type::QueryResultType::QueryKeyElementPairResultType,
+    batch::GroveDbOp, query_result_type::QueryResultType::QueryKeyElementPairResultType,
     reference_path::ReferencePathType, tests::common::compare_result_tuples,
 };
 
@@ -2180,9 +2179,10 @@ fn test_get_subtree() {
             .db
             .get_storage_context([TEST_LEAF, b"key1", b"key2"])
             .unwrap();
-        let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
-            .unwrap()
-            .expect("cannot open merk");
+        let subtree =
+            Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
+                .unwrap()
+                .expect("cannot open merk");
         let result_element = Element::get(&subtree, b"key3").unwrap().unwrap();
         assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
     }
@@ -2644,9 +2644,15 @@ fn test_sum_tree_behaves_like_regular_tree() {
 #[test]
 fn test_sum_item_behaves_like_regular_item() {
     let db = make_test_grovedb();
-    db.insert([TEST_LEAF], b"sumkey", Element::empty_sum_tree(), None, None)
-        .unwrap()
-        .expect("should insert tree");
+    db.insert(
+        [TEST_LEAF],
+        b"sumkey",
+        Element::empty_sum_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("should insert tree");
     db.insert(
         [TEST_LEAF, b"sumkey"],
         b"k1",
@@ -2665,9 +2671,15 @@ fn test_sum_item_behaves_like_regular_item() {
     )
     .unwrap()
     .expect("should insert tree");
-    db.insert([TEST_LEAF, b"sumkey"], b"k3", Element::empty_tree(), None, None)
-        .unwrap()
-        .expect("should insert tree");
+    db.insert(
+        [TEST_LEAF, b"sumkey"],
+        b"k3",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("should insert tree");
 
     // Test proper item retrieval
     let item = db
