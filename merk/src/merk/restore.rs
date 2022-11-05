@@ -346,7 +346,7 @@ mod tests {
 
         let storage = TempStorage::default();
         let ctx = storage.get_storage_context(empty()).unwrap();
-        let merk = Merk::open_base(ctx).unwrap().unwrap();
+        let merk = Merk::open_base(ctx, false).unwrap().unwrap();
         let mut restorer = Merk::restore(merk, original.root_hash().unwrap());
 
         assert_eq!(restorer.remaining_chunks(), None);

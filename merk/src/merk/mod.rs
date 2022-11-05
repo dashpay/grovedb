@@ -28,7 +28,7 @@ use storage::{self, Batch, error::Error::CostError, RawIterator, StorageContext}
 
 use crate::{
     merk::defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
-    MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
+    MerkType::{BaseMerk, LayeredMerk, StandaloneMerk, BaseSumMerk, LayeredSumMerk, StandaloneSumMerk},
     proofs::{encode_into, Op as ProofOp, Query, query::QueryItem},
     tree::{
         AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, NULL_HASH, Op, RefWalker, Tree,
@@ -232,14 +232,43 @@ pub enum MerkType {
     BaseMerk,
     /// A LayeredMerk has it's root key storage inside a parent merk
     LayeredMerk,
+    /// A StandaloneSumMerk has it's root key storage on a field and pays for root
+    /// key updates, it also sums elements
+    StandaloneSumMerk,
+    /// A BaseSumMerk has it's root key storage on a field but does not pay for
+    /// when these keys change, it also sums elements
+    BaseSumMerk,
+    /// A LayeredSumMerk has it's root key storage inside a parent merk, it also sums elements
+    LayeredSumMerk,
 }
 
 impl MerkType {
+    pub fn is_standalone(&self) -> bool {
+        match self {
+            StandaloneMerk | StandaloneSumMerk => true,
+            _ => false,
+        }
+    }
+    pub fn is_base(&self) -> bool {
+        match self {
+            BaseMerk | BaseSumMerk => true,
+            _ => false,
+        }
+    }
+    pub fn is_layered(&self) -> bool {
+        match self {
+            LayeredMerk | LayeredSumMerk => true,
+            _ => false,
+        }
+    }
     pub(crate) fn requires_root_storage_update(&self) -> bool {
         match self {
             StandaloneMerk => true,
             BaseMerk => true,
             LayeredMerk => false,
+            StandaloneSumMerk => true,
+            BaseSumMerk => true,
+            LayeredSumMerk => false,
         }
     }
 }
@@ -283,23 +312,25 @@ where
         }
     }
 
-    pub fn open_standalone(storage: S) -> CostContext<Result<Self>> {
+    pub fn open_standalone(storage: S, is_sum_tree: bool) -> CostContext<Result<Self>> {
+        let merk_type = if is_sum_tree { StandaloneSumMerk} else { StandaloneMerk};
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
             storage,
-            merk_type: StandaloneMerk,
+            merk_type,
         };
 
         merk.load_base_root().map_ok(|_| merk)
     }
 
-    pub fn open_base(storage: S) -> CostContext<Result<Self>> {
+    pub fn open_base(storage: S, is_sum_tree: bool) -> CostContext<Result<Self>> {
+        let merk_type = if is_sum_tree { BaseSumMerk} else { BaseMerk};
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
             storage,
-            merk_type: BaseMerk,
+            merk_type,
         };
 
         merk.load_base_root().map_ok(|_| merk)
@@ -308,12 +339,14 @@ where
     pub fn open_layered_with_root_key(
         storage: S,
         root_key: Option<Vec<u8>>,
+        is_sum_tree: bool,
     ) -> CostContext<Result<Self>> {
+        let merk_type = if is_sum_tree { LayeredSumMerk} else { LayeredMerk};
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(root_key),
             storage,
-            merk_type: LayeredMerk
+            merk_type,
         };
 
         merk.load_root().map_ok(|_| merk)
@@ -519,7 +552,7 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]), Some(BasicMerk))], None, &[],).unwrap().expect("");
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]), Some(BasicMerk))], None, &[], None).unwrap().expect("");
     ///
     /// use merk::{Op, TreeFeatureType::BasicMerk};
     ///
@@ -906,7 +939,7 @@ where
                     // it was updated from something else
                     // or it is part of new keys
                     if updated_root_key_from.is_some() || new_keys.contains(tree_key) {
-                        let costs = if self.merk_type == StandaloneMerk {
+                        let costs = if self.merk_type.is_standalone() {
                             // if we are a standalone merk we want real costs
                             Some(KeyValueStorageCost::for_updated_root_cost(
                                 updated_root_key_from.as_ref().map(|k| k.len() as u32),
@@ -1276,7 +1309,7 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage_cost");
         let test_prefix = [b"ayy"].into_iter().map(|x| x.as_slice());
-        let mut merk = Merk::open_base(storage.get_storage_context(test_prefix.clone()).unwrap())
+        let mut merk = Merk::open_base(storage.get_storage_context(test_prefix.clone()).unwrap(), false)
             .unwrap()
             .unwrap();
 
@@ -1290,7 +1323,7 @@ mod test {
 
         let root_hash = merk.root_hash();
         drop(merk);
-        let merk = Merk::open_base(storage.get_storage_context(test_prefix).unwrap())
+        let merk = Merk::open_base(storage.get_storage_context(test_prefix).unwrap(), false)
             .unwrap()
             .unwrap();
         assert_eq!(merk.root_hash(), root_hash);
@@ -1303,7 +1336,7 @@ mod test {
             .expect("cannot open rocksdb storage_cost");
         let test_prefix = [b"ayy"].into_iter().map(|x| x.as_slice());
         let merk_fee_context =
-            Merk::open_base(storage.get_storage_context(test_prefix.clone()).unwrap());
+            Merk::open_base(storage.get_storage_context(test_prefix.clone()).unwrap(), false);
 
         // Opening not existing merk should cost only root key seek (except context
         // creation)
@@ -1323,7 +1356,7 @@ mod test {
 
         drop(merk);
 
-        let merk_fee_context = Merk::open_base(storage.get_storage_context(test_prefix).unwrap());
+        let merk_fee_context = Merk::open_base(storage.get_storage_context(test_prefix).unwrap(), false);
 
         // Opening existing merk should cost two seeks. (except context creation)
         assert!(matches!(
@@ -1495,7 +1528,7 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage_cost");
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
@@ -1513,7 +1546,7 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage_cost");
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
@@ -1551,7 +1584,7 @@ mod test {
         let original_nodes = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage_cost");
-            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
                 .unwrap()
                 .expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
@@ -1568,7 +1601,7 @@ mod test {
 
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage_cost");
-        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
         let mut tree = merk.tree.take().unwrap();
@@ -1602,7 +1635,7 @@ mod test {
         let original_nodes = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage_cost");
-            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
                 .unwrap()
                 .expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
@@ -1616,7 +1649,7 @@ mod test {
         };
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage_cost");
-        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
 
@@ -1631,7 +1664,7 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage_cost");
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
 
@@ -1660,7 +1693,7 @@ mod test {
 
         drop(merk);
 
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
 

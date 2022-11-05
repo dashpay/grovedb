@@ -24,7 +24,7 @@ impl CrashMerk {
     pub fn open_base() -> Result<CrashMerk> {
         let storage = Box::leak(Box::new(TempStorage::new()));
         let context = storage.get_storage_context(empty()).unwrap();
-        let merk = Merk::open_base(context).unwrap().unwrap();
+        let merk = Merk::open_base(context, false).unwrap().unwrap();
         Ok(CrashMerk { merk, storage })
     }
 

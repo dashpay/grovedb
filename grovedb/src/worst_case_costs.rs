@@ -248,7 +248,7 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage_cost");
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
@@ -260,7 +260,7 @@ mod test {
         drop(merk);
 
         // Reopen merk: this time, only root node is loaded to memory
-        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
 
@@ -352,7 +352,7 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage_cost");
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
 
@@ -372,7 +372,7 @@ mod test {
         // drop merk, so nothing is stored in memory
         drop(merk);
         // Reopen merk: this time, only root node is loaded to memory
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
 
