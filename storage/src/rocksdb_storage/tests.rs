@@ -283,7 +283,7 @@ mod no_transaction {
 
         let mut batch = context_ayya.new_batch();
         batch.delete(b"key1", None);
-        batch.put(b"key3", b"ayyavalue3", None, None);
+        batch.put(b"key3", b"ayyavalue3", None, None).unwrap();
 
         assert!(context_ayya
             .get(b"key3")
@@ -370,33 +370,33 @@ mod no_transaction {
         // Test iterator goes forward
 
         let mut iter = context.raw_iter();
-        iter.seek_to_first();
+        iter.seek_to_first().unwrap();
         while iter.valid().unwrap() {
             assert_eq!(
                 (iter.key().unwrap().unwrap(), iter.value().unwrap().unwrap()),
                 expected_iter.next().unwrap()
             );
-            iter.next();
+            iter.next().unwrap();
         }
         assert!(expected_iter.next().is_none());
 
         // Test `seek_to_last` on a storage_cost with elements
 
         let mut iter = context.raw_iter();
-        iter.seek_to_last();
+        iter.seek_to_last().unwrap();
         assert_eq!(
             (iter.key().unwrap().unwrap(), iter.value().unwrap().unwrap()),
             expected.last().unwrap().clone(),
         );
-        iter.next();
+        iter.next().unwrap();
         assert!(!iter.valid().unwrap());
 
         // Test `seek_to_last` on empty storage_cost
         let empty_storage = storage.get_storage_context(to_path(b"notexist")).unwrap();
         let mut iter = empty_storage.raw_iter();
-        iter.seek_to_last();
+        iter.seek_to_last().unwrap();
         assert!(!iter.valid().unwrap());
-        iter.next();
+        iter.next().unwrap();
         assert!(!iter.valid().unwrap());
     }
 }
@@ -728,7 +728,7 @@ mod transaction {
 
         let mut batch = context_ayya.new_batch();
         batch.delete(b"key1", None);
-        batch.put(b"key3", b"ayyavalue3", None, None);
+        batch.put(b"key3", b"ayyavalue3", None, None).unwrap();
 
         assert!(context_ayya
             .get(b"key1")
@@ -843,25 +843,25 @@ mod transaction {
             // Test iterator goes forward
 
             let mut iter = context_tx.raw_iter();
-            iter.seek_to_first();
+            iter.seek_to_first().unwrap();
             while iter.valid().unwrap() {
                 assert_eq!(
                     (iter.key().unwrap().unwrap(), iter.value().unwrap().unwrap()),
                     expected_iter.next().unwrap()
                 );
-                iter.next();
+                iter.next().unwrap();
             }
             assert!(expected_iter.next().is_none());
 
             // Test `seek_to_last` on a storage_cost with elements
 
             let mut iter = context_tx.raw_iter();
-            iter.seek_to_last();
+            iter.seek_to_last().unwrap();
             assert_eq!(
                 (iter.key().unwrap().unwrap(), iter.value().unwrap().unwrap()),
                 expected.last().unwrap().clone(),
             );
-            iter.next();
+            iter.next().unwrap();
             assert!(!iter.valid().unwrap());
         }
 
@@ -876,13 +876,13 @@ mod transaction {
             let mut expected_iter = expected.into_iter();
 
             let mut iter = context.raw_iter();
-            iter.seek_to_first();
+            iter.seek_to_first().unwrap();
             while iter.valid().unwrap() {
                 assert_eq!(
                     (iter.key().unwrap().unwrap(), iter.value().unwrap().unwrap()),
                     expected_iter.next().unwrap()
                 );
-                iter.next();
+                iter.next().unwrap();
             }
             assert!(expected_iter.next().is_none());
         }
@@ -1322,11 +1322,11 @@ mod batch_transaction {
         let context_ayyb = storage.get_storage_context(to_path(b"ayyb")).unwrap();
 
         let mut iter = context_ayya.raw_iter();
-        iter.seek_to_first();
+        iter.seek_to_first().unwrap();
         assert!(!iter.valid().unwrap());
 
         let mut iter = context_ayyb.raw_iter();
-        iter.seek_to_first();
+        iter.seek_to_first().unwrap();
         assert!(!iter.valid().unwrap());
 
         storage

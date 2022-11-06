@@ -6,8 +6,7 @@ use core::fmt;
 
 use bincode::Options;
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
-    storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+    cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
     CostContext, CostResult, CostsExt, OperationCost,
 };
 use integer_encoding::VarInt;
@@ -233,7 +232,7 @@ impl Element {
         key: K,
         merk_options: Option<MerkOptions>,
         is_layered: bool,
-        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> anyhow::Result<StorageRemovedBytes>,
+        sectioned_removal: &mut impl FnMut(&Vec<u8>, u32) -> anyhow::Result<StorageRemovedBytes>,
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
         let op = if is_layered {
@@ -248,7 +247,7 @@ impl Element {
             merk_options,
             &|key, value| Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg),
             &mut |_costs, _old_value, _value| Ok((false, None)),
-            section_removal_bytes,
+            sectioned_removal,
         )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }

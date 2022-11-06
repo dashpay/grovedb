@@ -11,7 +11,7 @@ use crate::{
     error,
     error::Error::RocksDBError,
     rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
-    Batch, RawIterator, StorageBatch, StorageContext,
+    RawIterator, StorageBatch, StorageContext,
 };
 
 /// Storage context with a prefix applied to be used in a subtree to be used in

@@ -31,7 +31,6 @@ use costs::{
 use integer_encoding::VarInt;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
-    anyhow,
     anyhow::anyhow,
     tree::{kv::KV, value_hash, NULL_HASH},
     worst_case_costs::{add_worst_case_merk_propagate, MerkWorstCaseInput},
@@ -42,7 +41,6 @@ use storage::{
     rocksdb_storage::{
         PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext, RocksDbStorage,
     },
-    worst_case_costs::WorstKeyLength,
     Storage, StorageBatch, StorageContext,
 };
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
