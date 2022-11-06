@@ -245,7 +245,7 @@ impl GroveDb {
                     )
                 );
             }
-            Element::Tree(ref value, _) => {
+            Element::Tree(ref value, _) | Element::SumTree(ref value, ..) => {
                 if value.is_some() {
                     return Err(Error::InvalidCodeExecution(
                         "a tree should be empty at the moment of insertion when not using batches",
@@ -258,7 +258,7 @@ impl GroveDb {
                             &mut subtree_to_insert_into,
                             key,
                             NULL_HASH,
-                            Some(options.as_merk_options())
+                            Some(options.as_merk_options()),
                             false,
                         )
                     );
@@ -277,8 +277,8 @@ impl GroveDb {
                             &mut subtree_to_insert_into,
                             key,
                             NULL_HASH,
-                            Some(options.as_merk_options())
-                            true,
+                            Some(options.as_merk_options()),
+                            element.is_summed(),
                         )
                     );
                 }
@@ -290,6 +290,7 @@ impl GroveDb {
                         &mut subtree_to_insert_into,
                         key,
                         Some(options.as_merk_options())
+                        element.is_summed(),
                     )
                 );
             }

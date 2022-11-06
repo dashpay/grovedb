@@ -401,7 +401,7 @@ impl GroveDb {
             &mut cost,
             self.open_transactional_merk_at_path(path_iter.clone(), transaction)
         );
-        if let Element::Tree(..) = element {
+        if element.is_tree() {
             let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
 
             let subtree_of_tree_we_are_deleting = cost_return_on_error!(
@@ -462,7 +462,8 @@ impl GroveDb {
                         &mut cost,
                         Merk::open_layered_with_root_key(
                             storage,
-                            subtree_to_delete_from.root_key()
+                            subtree_to_delete_from.root_key(),
+                            element.is_summed(),
                         )
                         .map_err(|_| {
                             Error::CorruptedData(
@@ -477,7 +478,7 @@ impl GroveDb {
                             &mut merk_to_delete_tree_from,
                             &key,
                             Some(options.as_merk_options()),
-                            true,
+                            element.is_summed(),
                         )
                     );
                     let mut merk_cache: HashMap<
@@ -512,7 +513,7 @@ impl GroveDb {
                             &mut subtree_to_delete_from,
                             &key,
                             Some(options.as_merk_options()),
-                            true,
+                            element.is_summed(),
                         )
                     );
                     let mut merk_cache: HashMap<
@@ -536,7 +537,7 @@ impl GroveDb {
                     &mut subtree_to_delete_from,
                     &key,
                     Some(options.as_merk_options()),
-                    false
+                    element.is_summed(),
                 )
             );
             let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =

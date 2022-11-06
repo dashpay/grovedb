@@ -95,6 +95,33 @@ where
 }
 
 impl Element {
+    pub fn is_tree(&self) -> bool {
+        match self {
+            Element::Tree(..) | Element::SumTree(..) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_item(&self) -> bool {
+        match self {
+            Element::Item(..) | Element::SumItem(..) => true,
+            _ => false,
+        }
+    }
+    pub fn is_reference(&self) -> bool {
+        match self {
+            Element::Reference(..) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_summed(&self) -> bool {
+        match self {
+            Element::SumTree(..) | Element::SumItem(..) => true,
+            _ => false,
+        }
+    }
+
     // TODO: improve API to avoid creation of Tree elements with uncertain state
     pub fn empty_tree() -> Self {
         Element::new_tree(Default::default())

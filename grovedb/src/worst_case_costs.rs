@@ -232,6 +232,7 @@ mod test {
     };
     use storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
     use tempfile::TempDir;
+    use merk::TreeFeatureType::BasicMerk;
 
     use crate::{
         batch::{
@@ -366,7 +367,7 @@ mod test {
             b"8".to_vec(),
         ];
         for m in a {
-            merk.apply::<_, Vec<_>>(&[(m, Op::Put(b"a".to_vec()))], &[], None)
+            merk.apply::<_, Vec<_>>(&[(m, Op::Put(b"a".to_vec()), Some(BasicMerk))], &[], None)
                 .unwrap()
                 .unwrap();
         }
@@ -379,7 +380,7 @@ mod test {
             .expect("cannot open merk");
 
         let actual_cost =
-            merk.apply::<_, Vec<_>>(&[(b"9".to_vec(), Op::Put(b"a".to_vec()))], &[], None);
+            merk.apply::<_, Vec<_>>(&[(b"9".to_vec(), Op::Put(b"a".to_vec()), Some(BasicMerk))], &[], None);
 
         assert_eq!(actual_cost.cost, worst_case_cost);
     }

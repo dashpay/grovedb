@@ -86,7 +86,7 @@ impl GroveDb {
                     })
                 );
                 if let Element::Tree(root_key, _) = element {
-                    Merk::open_layered_with_root_key(storage, root_key, false)
+                    Merk::open_layered_with_root_key(storage, root_key, matches!(element, Element::SumTree(..)))
                         .map_err(|_| {
                             Error::CorruptedData(
                                 "cannot open a subtree with given root key".to_owned(),
