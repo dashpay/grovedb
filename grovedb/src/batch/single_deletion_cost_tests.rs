@@ -411,7 +411,28 @@ mod tests {
         tx.rollback().expect("expected to rollback");
         let ops = vec![GroveDbOp::delete_tree_run_op(vec![], b"key1".to_vec())];
         let batch_cost = db
-            .apply_batch(ops, None, Some(&tx))
+            .apply_batch_with_element_flags_update(
+                ops,
+                None,
+                |_, _, _| Ok(false),
+                |_element_flags, removed_key_bytes, removed_value_bytes| {
+                    let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
+                    // we are removing 1 byte from epoch 0 for an identity
+                    let mut removed_bytes_for_identity = IntMap::new();
+                    removed_bytes_for_identity.insert(0, removed_key_bytes);
+                    removed_bytes.insert(Identifier::default(), removed_bytes_for_identity);
+                    let key_sectioned = SectionedStorageRemoval(removed_bytes);
+
+                    let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
+                    // we are removing 1 byte from epoch 0 for an identity
+                    let mut removed_bytes_for_identity = IntMap::new();
+                    removed_bytes_for_identity.insert(0, removed_value_bytes);
+                    removed_bytes.insert(Identifier::default(), removed_bytes_for_identity);
+                    let value_sectioned = SectionedStorageRemoval(removed_bytes);
+                    Ok((key_sectioned, value_sectioned))
+                },
+                Some(&tx),
+            )
             .cost_as_result()
             .expect("expected to delete successfully");
         assert_eq!(non_batch_cost.storage_cost, batch_cost.storage_cost);

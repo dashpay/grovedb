@@ -379,34 +379,42 @@ where
                             let value = self.tree().value_ref();
                             let old_cost =
                                 cost_return_on_error_no_add!(&cost, old_tree_cost(&key, value));
-                            // let sectioned_cost =
+                            let (r_key_cost, r_value_cost) = cost_return_on_error_no_add!(
+                                &cost,
+                                section_removal_bytes(value, total_key_len, old_cost)
+                            );
                             Some(KeyValueStorageCost {
                                 key_storage_cost: StorageCost {
                                     added_bytes: 0,
                                     replaced_bytes: 0,
-                                    removed_bytes: BasicStorageRemoval(total_key_len),
+                                    removed_bytes: r_key_cost,
                                 },
                                 value_storage_cost: StorageCost {
                                     added_bytes: 0,
                                     replaced_bytes: 0,
-                                    removed_bytes: BasicStorageRemoval(old_cost),
+                                    removed_bytes: r_value_cost,
                                 },
                                 new_node: false,
                                 needs_value_verification: false,
                             })
                         }
                         Delete => {
+                            let value = self.tree().value_ref();
                             let value_len = self.tree().inner.kv.value_byte_cost_size();
+                            let (r_key_cost, r_value_cost) = cost_return_on_error_no_add!(
+                                &cost,
+                                section_removal_bytes(value, total_key_len, value_len)
+                            );
                             Some(KeyValueStorageCost {
                                 key_storage_cost: StorageCost {
                                     added_bytes: 0,
                                     replaced_bytes: 0,
-                                    removed_bytes: BasicStorageRemoval(total_key_len),
+                                    removed_bytes: r_key_cost,
                                 },
                                 value_storage_cost: StorageCost {
                                     added_bytes: 0,
                                     replaced_bytes: 0,
-                                    removed_bytes: BasicStorageRemoval(value_len),
+                                    removed_bytes: r_value_cost,
                                 },
                                 new_node: false,
                                 needs_value_verification: false,
