@@ -1,4 +1,12 @@
 mod tests {
+    use std::collections::BTreeMap;
+
+    use costs::storage_cost::removal::{
+        Identifier, StorageRemovalPerEpochByIdentifier,
+        StorageRemovedBytes::SectionedStorageRemoval,
+    };
+    use intmap::IntMap;
+
     use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element};
 
     #[test]
@@ -337,7 +345,28 @@ mod tests {
         let tx = db.start_transaction();
 
         let non_batch_cost = db
-            .delete(vec![], b"key1", None, Some(&tx))
+            .delete_with_sectional_storage_function(
+                vec![],
+                b"key1",
+                None,
+                Some(&tx),
+                &mut |_element_flags, removed_key_bytes, removed_value_bytes| {
+                    let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
+                    // we are removing 1 byte from epoch 0 for an identity
+                    let mut removed_bytes_for_identity = IntMap::new();
+                    removed_bytes_for_identity.insert(0, removed_key_bytes);
+                    removed_bytes.insert(Identifier::default(), removed_bytes_for_identity);
+                    let key_sectioned = SectionedStorageRemoval(removed_bytes);
+
+                    let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
+                    // we are removing 1 byte from epoch 0 for an identity
+                    let mut removed_bytes_for_identity = IntMap::new();
+                    removed_bytes_for_identity.insert(0, removed_value_bytes);
+                    removed_bytes.insert(Identifier::default(), removed_bytes_for_identity);
+                    let value_sectioned = SectionedStorageRemoval(removed_bytes);
+                    Ok((key_sectioned, value_sectioned))
+                },
+            )
             .cost_as_result()
             .expect("expected to delete successfully");
 
@@ -374,6 +403,10 @@ mod tests {
                 .removed_bytes
                 .total_removed_bytes()
         );
+        assert!(matches!(
+            non_batch_cost.storage_cost.removed_bytes,
+            SectionedStorageRemoval(_)
+        ));
 
         tx.rollback().expect("expected to rollback");
         let ops = vec![GroveDbOp::delete_tree_run_op(vec![], b"key1".to_vec())];
@@ -382,6 +415,10 @@ mod tests {
             .cost_as_result()
             .expect("expected to delete successfully");
         assert_eq!(non_batch_cost.storage_cost, batch_cost.storage_cost);
+        assert!(matches!(
+            batch_cost.storage_cost.removed_bytes,
+            SectionedStorageRemoval(_)
+        ));
     }
 
     #[test]

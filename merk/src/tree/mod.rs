@@ -596,7 +596,12 @@ impl Tree {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<(bool, Option<u32>)>,
-        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        )
+            -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     ) -> CostContext<Result<()>> {
         // TODO: make this method less ugly
         // TODO: call write in-order for better performance in writing batch to db?
@@ -800,7 +805,7 @@ mod test {
             &mut NoopCommit {},
             &|_, _| Ok(0),
             &mut |_, _, _| Ok((false, None)),
-            &mut |_, _| Ok(NoStorageRemoval),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
         )
         .unwrap()
         .expect("commit failed");
@@ -825,7 +830,7 @@ mod test {
             &mut NoopCommit {},
             &|_, _| Ok(0),
             &mut |_, _, _| Ok((false, None)),
-            &mut |_, _| Ok(NoStorageRemoval),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
         )
         .unwrap()
         .expect("commit failed");
@@ -893,7 +898,7 @@ mod test {
             &mut NoopCommit {},
             &|_, _| Ok(0),
             &mut |_, _, _| Ok((false, None)),
-            &mut |_, _| Ok(NoStorageRemoval),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
         )
         .unwrap()
         .expect("commit failed");

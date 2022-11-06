@@ -7,7 +7,8 @@ use anyhow::Result;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
-        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
+        key_value_cost::KeyValueStorageCost,
+        removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
     },
     CostContext, CostsExt, OperationCost,
@@ -116,11 +117,12 @@ where
     /// not require a non-empty tree.
     ///
     /// Keys in batch must be sorted and unique.
-    pub fn apply_to<K: AsRef<[u8]>, C>(
+    pub fn apply_to<K: AsRef<[u8]>, C, R>(
         maybe_tree: Option<Self>,
         batch: &MerkBatch<K>,
         source: S,
         old_tree_cost: &C,
+        section_removal_bytes: &mut R,
     ) -> CostContext<
         Result<(
             Option<Tree>,
@@ -132,6 +134,7 @@ where
     >
     where
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     {
         let mut cost = OperationCost::default();
 
@@ -147,22 +150,26 @@ where
             } else {
                 match maybe_tree {
                     None => {
-                        return Self::build(batch, source, old_tree_cost).map_ok(|tree| {
-                            let new_keys: BTreeSet<Vec<u8>> = batch
-                                .iter()
-                                .map(|batch_entry| batch_entry.0.as_ref().to_vec())
-                                .collect();
-                            (
-                                tree,
-                                new_keys,
-                                BTreeSet::default(),
-                                LinkedList::default(),
-                                None,
-                            )
-                        })
+                        return Self::build(batch, source, old_tree_cost, section_removal_bytes)
+                            .map_ok(|tree| {
+                                let new_keys: BTreeSet<Vec<u8>> = batch
+                                    .iter()
+                                    .map(|batch_entry| batch_entry.0.as_ref().to_vec())
+                                    .collect();
+                                (
+                                    tree,
+                                    new_keys,
+                                    BTreeSet::default(),
+                                    LinkedList::default(),
+                                    None,
+                                )
+                            })
                     }
                     Some(tree) => {
-                        cost_return_on_error!(&mut cost, tree.apply_sorted(batch, old_tree_cost))
+                        cost_return_on_error!(
+                            &mut cost,
+                            tree.apply_sorted(batch, old_tree_cost, section_removal_bytes)
+                        )
                     }
                 }
             };
@@ -181,13 +188,15 @@ where
     /// Builds a `Tree` from a batch of operations.
     ///
     /// Keys in batch must be sorted and unique.
-    fn build<K: AsRef<[u8]>, C>(
+    fn build<K: AsRef<[u8]>, C, R>(
         batch: &MerkBatch<K>,
         source: S,
         old_tree_cost: &C,
+        section_removal_bytes: &mut R,
     ) -> CostContext<Result<Option<Tree>>>
     where
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     {
         let mut cost = OperationCost::default();
 
@@ -204,20 +213,30 @@ where
 
                 let maybe_tree = cost_return_on_error!(
                     &mut cost,
-                    Self::build(left_batch, source.clone(), old_tree_cost)
+                    Self::build(
+                        left_batch,
+                        source.clone(),
+                        old_tree_cost,
+                        section_removal_bytes
+                    )
                 )
                 .map(|tree| Self::new(tree, source.clone()));
                 let maybe_tree = match maybe_tree {
                     Some(tree) => {
                         cost_return_on_error!(
                             &mut cost,
-                            tree.apply_sorted(right_batch, old_tree_cost)
+                            tree.apply_sorted(right_batch, old_tree_cost, section_removal_bytes)
                         )
                         .0
                     }
                     None => cost_return_on_error!(
                         &mut cost,
-                        Self::build(right_batch, source.clone(), old_tree_cost)
+                        Self::build(
+                            right_batch,
+                            source.clone(),
+                            old_tree_cost,
+                            section_removal_bytes
+                        )
                     )
                     .map(|tree| Self::new(tree, source.clone())),
                 };
@@ -265,6 +284,7 @@ where
                 BTreeSet::default(),
                 BTreeSet::default(),
                 old_tree_cost,
+                section_removal_bytes,
             )
         )
         .0
@@ -285,17 +305,27 @@ where
             UpdatedRootKeyFrom,
         )>,
     > {
-        self.apply_sorted(batch, &|_, _| Ok(0))
+        self.apply_sorted(
+            batch,
+            &|_, _| Ok(0),
+            &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
+                Ok((
+                    BasicStorageRemoval(key_bytes_to_remove),
+                    BasicStorageRemoval(value_bytes_to_remove),
+                ))
+            },
+        )
     }
 
     /// Applies a batch of operations to an existing tree. This is similar to
     /// `Walker<S>::apply`_to, but requires a populated tree.
     ///
     /// Keys in batch must be sorted and unique.
-    fn apply_sorted<K: AsRef<[u8]>, C>(
+    fn apply_sorted<K: AsRef<[u8]>, C, R>(
         self,
         batch: &MerkBatch<K>,
         old_tree_cost: &C,
+        section_removal_bytes: &mut R,
     ) -> CostContext<
         Result<(
             Option<Self>,
@@ -307,6 +337,7 @@ where
     >
     where
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     {
         let mut cost = OperationCost::default();
 
@@ -348,6 +379,7 @@ where
                             let value = self.tree().value_ref();
                             let old_cost =
                                 cost_return_on_error_no_add!(&cost, old_tree_cost(&key, value));
+                            // let sectioned_cost =
                             Some(KeyValueStorageCost {
                                 key_storage_cost: StorageCost {
                                     added_bytes: 0,
@@ -386,15 +418,16 @@ where
                     let maybe_tree = cost_return_on_error!(&mut cost, self.remove());
 
                     #[rustfmt::skip]
-                    let (
-                        maybe_tree,
-                        mut new_keys,
-                        mut updated_keys,
-                        mut deleted_keys,
-                        _
-                    ) = cost_return_on_error!(
+                    let (maybe_tree, mut new_keys, mut updated_keys, mut deleted_keys, _)
+                        = cost_return_on_error!(
                         &mut cost,
-                        Self::apply_to(maybe_tree, &batch[..index], source.clone(), old_tree_cost)
+                        Self::apply_to(
+                            maybe_tree,
+                            &batch[..index],
+                            source.clone(),
+                            old_tree_cost,
+                            section_removal_bytes
+                        )
                     );
                     let maybe_walker = wrap(maybe_tree);
 
@@ -410,7 +443,8 @@ where
                             maybe_walker,
                             &batch[index + 1..],
                             source.clone(),
-                            old_tree_cost
+                            old_tree_cost,
+                            section_removal_bytes
                         )
                     );
                     let maybe_walker = wrap(maybe_tree);
@@ -447,8 +481,16 @@ where
             new_keys.insert(key_vec);
         }
 
-        tree.recurse(batch, mid, exclusive, new_keys, updated_keys, old_tree_cost)
-            .add_cost(cost)
+        tree.recurse(
+            batch,
+            mid,
+            exclusive,
+            new_keys,
+            updated_keys,
+            old_tree_cost,
+            section_removal_bytes,
+        )
+        .add_cost(cost)
     }
 
     /// Recursively applies operations to the tree's children (if there are any
@@ -456,7 +498,7 @@ where
     ///
     /// This recursion executes serially in the same thread, but in the future
     /// will be dispatched to workers in other threads.
-    fn recurse<K: AsRef<[u8]>, C>(
+    fn recurse<K: AsRef<[u8]>, C, R>(
         self,
         batch: &MerkBatch<K>,
         mid: usize,
@@ -464,6 +506,7 @@ where
         mut new_keys: BTreeSet<Vec<u8>>,
         mut updated_keys: BTreeSet<Vec<u8>>,
         old_tree_cost: &C,
+        section_removal_bytes: &mut R,
     ) -> CostContext<
         Result<(
             Option<Self>,
@@ -475,6 +518,7 @@ where
     >
     where
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     {
         let mut cost = OperationCost::default();
 
@@ -494,7 +538,14 @@ where
             cost_return_on_error!(
                 &mut cost,
                 self.walk(true, |maybe_left| {
-                    Self::apply_to(maybe_left, left_batch, source, old_tree_cost).map_ok(
+                    Self::apply_to(
+                        maybe_left,
+                        left_batch,
+                        source,
+                        old_tree_cost,
+                        section_removal_bytes,
+                    )
+                    .map_ok(
                         |(
                             maybe_left,
                             mut new_keys_left,
@@ -519,7 +570,14 @@ where
             cost_return_on_error!(
                 &mut cost,
                 tree.walk(false, |maybe_right| {
-                    Self::apply_to(maybe_right, right_batch, source, old_tree_cost).map_ok(
+                    Self::apply_to(
+                        maybe_right,
+                        right_batch,
+                        source,
+                        old_tree_cost,
+                        section_removal_bytes,
+                    )
+                    .map_ok(
                         |(
                             maybe_right,
                             mut new_keys_left,
@@ -820,9 +878,20 @@ mod test {
     #[test]
     fn apply_empty_none() {
         let (maybe_tree, _new_keys, updated_keys, deleted_keys, _updated_root_key_from) =
-            Walker::<PanicSource>::apply_to::<Vec<u8>, _>(None, &[], PanicSource {}, &|_, _| Ok(0))
-                .unwrap()
-                .expect("apply_to failed");
+            Walker::<PanicSource>::apply_to::<Vec<u8>, _, _>(
+                None,
+                &[],
+                PanicSource {},
+                &|_, _| Ok(0),
+                &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
+            )
+            .unwrap()
+            .expect("apply_to failed");
         assert!(maybe_tree.is_none());
         assert!(updated_keys.is_empty());
         assert!(deleted_keys.is_empty());
@@ -832,9 +901,20 @@ mod test {
     fn insert_empty_single() {
         let batch = vec![(vec![0], Op::Put(vec![1]))];
         let (maybe_tree, _new_keys, updated_keys, deleted_keys, _updated_root_key_from) =
-            Walker::<PanicSource>::apply_to(None, &batch, PanicSource {}, &|_, _| Ok(0))
-                .unwrap()
-                .expect("apply_to failed");
+            Walker::<PanicSource>::apply_to(
+                None,
+                &batch,
+                PanicSource {},
+                &|_, _| Ok(0),
+                &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
+            )
+            .unwrap()
+            .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");
         assert_eq!(tree.key(), &[0]);
         assert_eq!(tree.value_as_slice(), &[1]);
@@ -847,18 +927,40 @@ mod test {
     fn insert_updated_single() {
         let batch = vec![(vec![0], Op::Put(vec![1]))];
         let (maybe_tree, _new_keys, updated_keys, deleted_keys, _updated_root_key_from) =
-            Walker::<PanicSource>::apply_to(None, &batch, PanicSource {}, &|_, _| Ok(0))
-                .unwrap()
-                .expect("apply_to failed");
+            Walker::<PanicSource>::apply_to(
+                None,
+                &batch,
+                PanicSource {},
+                &|_, _| Ok(0),
+                &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
+            )
+            .unwrap()
+            .expect("apply_to failed");
         assert!(updated_keys.is_empty());
         assert!(deleted_keys.is_empty());
 
         let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
         let batch = vec![(vec![0], Op::Put(vec![2])), (vec![1], Op::Put(vec![2]))];
         let (maybe_tree, _new_keys, updated_keys, deleted_keys, _updated_root_key_from) =
-            Walker::<PanicSource>::apply_to(maybe_walker, &batch, PanicSource {}, &|_, _| Ok(0))
-                .unwrap()
-                .expect("apply_to failed");
+            Walker::<PanicSource>::apply_to(
+                maybe_walker,
+                &batch,
+                PanicSource {},
+                &|_, _| Ok(0),
+                &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
+            )
+            .unwrap()
+            .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");
         assert_eq!(tree.key(), &[0]);
         assert_eq!(tree.value_as_slice(), &[2]);
@@ -874,9 +976,20 @@ mod test {
             (vec![2], Op::Put(vec![3])),
         ];
         let (maybe_tree, _new_keys, updated_keys, deleted_keys, _updated_root_key_from) =
-            Walker::<PanicSource>::apply_to(None, &batch, PanicSource {}, &|_, _| Ok(0))
-                .unwrap()
-                .expect("apply_to failed");
+            Walker::<PanicSource>::apply_to(
+                None,
+                &batch,
+                PanicSource {},
+                &|_, _| Ok(0),
+                &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
+            )
+            .unwrap()
+            .expect("apply_to failed");
         assert!(updated_keys.is_empty());
         assert!(deleted_keys.is_empty());
 
@@ -887,9 +1000,20 @@ mod test {
             (vec![2], Op::Delete),
         ];
         let (maybe_tree, _new_keys, updated_keys, deleted_keys, _updated_root_key_from) =
-            Walker::<PanicSource>::apply_to(maybe_walker, &batch, PanicSource {}, &|_, _| Ok(0))
-                .unwrap()
-                .expect("apply_to failed");
+            Walker::<PanicSource>::apply_to(
+                maybe_walker,
+                &batch,
+                PanicSource {},
+                &|_, _| Ok(0),
+                &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
+            )
+            .unwrap()
+            .expect("apply_to failed");
         let tree = maybe_tree.expect("expected tree");
         assert_eq!(tree.key(), &[1]);
         assert_eq!(tree.value_as_slice(), &[8]);

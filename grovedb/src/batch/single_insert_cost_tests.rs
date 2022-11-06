@@ -436,7 +436,9 @@ mod tests {
                 ops,
                 None,
                 |_cost, _old_flags, _new_flags| Ok(false),
-                |_flags, _removed_bytes| Ok(NoStorageRemoval),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
                 Some(&tx),
             )
             .cost;
@@ -506,7 +508,12 @@ mod tests {
                     }
                     _ => Ok(false),
                 },
-                |_flags, removed| Ok(BasicStorageRemoval(removed)),
+                |_flags, removed_key_bytes, removed_value_bytes| {
+                    Ok((
+                        BasicStorageRemoval(removed_key_bytes),
+                        BasicStorageRemoval(removed_value_bytes),
+                    ))
+                },
                 Some(&tx),
             )
             .cost;
@@ -556,7 +563,12 @@ mod tests {
                 ops,
                 None,
                 |_cost, _old_flags, _new_flags| Ok(false),
-                |_flags, removed_bytes| Ok(BasicStorageRemoval(removed_bytes)),
+                |_flags, removed_key_bytes, removed_value_bytes| {
+                    Ok((
+                        BasicStorageRemoval(removed_key_bytes),
+                        BasicStorageRemoval(removed_value_bytes),
+                    ))
+                },
                 Some(&tx),
             )
             .cost;
@@ -623,13 +635,13 @@ mod tests {
                     OperationStorageTransitionType::OperationUpdateSmallerSize => Ok(true),
                     _ => Ok(false),
                 },
-                |_flags, _removed| {
+                |_flags, _removed_key_bytes, removed_value_bytes| {
                     let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
                     // we are removing 1 byte from epoch 0 for an identity
                     let mut removed_bytes_for_identity = IntMap::new();
-                    removed_bytes_for_identity.insert(0, 1);
+                    removed_bytes_for_identity.insert(0, removed_value_bytes);
                     removed_bytes.insert(Identifier::default(), removed_bytes_for_identity);
-                    Ok(SectionedStorageRemoval(removed_bytes))
+                    Ok((NoStorageRemoval, SectionedStorageRemoval(removed_bytes)))
                 },
                 Some(&tx),
             )
@@ -707,7 +719,9 @@ mod tests {
                     }
                     _ => Ok(false),
                 },
-                |_flags, removed| Ok(BasicStorageRemoval(removed)),
+                |_flags, _removed_key_bytes, removed_value_bytes| {
+                    Ok((NoStorageRemoval, BasicStorageRemoval(removed_value_bytes)))
+                },
                 Some(&tx),
             )
             .cost;

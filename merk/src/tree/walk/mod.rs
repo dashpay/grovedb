@@ -247,7 +247,7 @@ mod test {
             &mut NoopCommit {},
             &|_, _| Ok(0),
             &mut |_, _, _| Ok((false, None)),
-            &mut |_, _| Ok(NoStorageRemoval),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
         )
         .unwrap()
         .expect("commit failed");

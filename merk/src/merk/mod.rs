@@ -483,7 +483,12 @@ where
                 ))
             },
             &mut |_costs, _old_value, _value| Ok((false, None)),
-            &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+            &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                Ok((
+                    BasicStorageRemoval(key_bytes_to_remove),
+                    BasicStorageRemoval(value_bytes_to_remove),
+                ))
+            },
         )
     }
 
@@ -525,7 +530,12 @@ where
             options,
             old_tree_cost,
             &mut |_costs, _old_value, _value| Ok((false, None)),
-            &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+            &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                Ok((
+                    BasicStorageRemoval(key_bytes_to_remove),
+                    BasicStorageRemoval(value_bytes_to_remove),
+                ))
+            },
         )
     }
 
@@ -546,7 +556,7 @@ where
     ///     None,
     ///     &|k, v| Ok(0),
     ///     &mut |s, v, o| Ok((false, None)),
-    ///     &mut |s, o| Ok(NoStorageRemoval)
+    ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval))
     /// ).unwrap().expect("");
     ///
     /// use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
@@ -563,7 +573,7 @@ where
     ///     None,
     ///     &|k, v| Ok(0),
     ///     &mut |s, v, o| Ok((false, None)),
-    ///     &mut |s, o| Ok(NoStorageRemoval)
+    ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval))
     /// ).unwrap().expect("");
     /// ```
     pub fn apply_with_costs_just_in_time_value_update<KB, KA>(
@@ -577,7 +587,12 @@ where
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<(bool, Option<u32>)>,
-        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        )
+            -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     ) -> CostContext<Result<()>>
     where
         KB: AsRef<[u8]>,
@@ -631,7 +646,7 @@ where
     ///     None,
     ///     &|k, v| Ok(0),
     ///     &mut |s, o, v| Ok((false, None)),
-    ///     &mut |s, o| Ok(NoStorageRemoval)
+    ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval))
     /// ).unwrap().expect("");
     ///
     /// use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
@@ -647,7 +662,7 @@ where
     ///     None,
     ///     &|k, v| Ok(0),
     ///     &mut |s, o, v| Ok((false, None)),
-    ///     &mut |s, o| Ok(NoStorageRemoval)
+    ///     &mut |s, k, v| Ok((NoStorageRemoval, NoStorageRemoval))
     /// ).unwrap().expect("");
     /// }
     /// ```
@@ -665,7 +680,7 @@ where
         KA: AsRef<[u8]>,
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
         U: FnMut(&StorageCost, &Vec<u8>, &mut Vec<u8>) -> Result<(bool, Option<u32>)>,
-        R: FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
+        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     {
         let maybe_walker = self
             .tree
@@ -677,7 +692,14 @@ where
             // dbg!(&maybe_walker.as_ref().unwrap().tree());
         }
 
-        Walker::apply_to(maybe_walker, batch, self.source(), old_tree_cost).flat_map_ok(
+        Walker::apply_to(
+            maybe_walker,
+            batch,
+            self.source(),
+            old_tree_cost,
+            section_removal_bytes,
+        )
+        .flat_map_ok(
             |(maybe_tree, new_keys, updated_keys, deleted_keys, updated_root_key_from)| {
                 // we set the new root node of the merk tree
                 self.tree.set(maybe_tree);
@@ -797,7 +819,12 @@ where
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<(bool, Option<u32>)>,
-        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        )
+            -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     ) -> CostResult<(), Error>
     where
         K: AsRef<[u8]>,
@@ -1106,7 +1133,12 @@ impl Commit for MerkCommitter {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<(bool, Option<u32>)>,
-        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        )
+            -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     ) -> Result<()> {
         let tree_size = tree.encoding_length();
         let (mut current_tree_plus_hook_size, mut storage_costs) =
@@ -1145,8 +1177,8 @@ impl Commit for MerkCommitter {
             if let BasicStorageRemoval(removed_bytes) =
                 storage_costs.value_storage_cost.removed_bytes
             {
-                storage_costs.value_storage_cost.removed_bytes =
-                    section_removal_bytes(&old_value, removed_bytes)?;
+                let (_, value_removed_bytes) = section_removal_bytes(&old_value, 0, removed_bytes)?;
+                storage_costs.value_storage_cost.removed_bytes = value_removed_bytes;
             }
         }
 

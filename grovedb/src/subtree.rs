@@ -232,7 +232,12 @@ impl Element {
         key: K,
         merk_options: Option<MerkOptions>,
         is_layered: bool,
-        sectioned_removal: &mut impl FnMut(&Vec<u8>, u32) -> anyhow::Result<StorageRemovedBytes>,
+        sectioned_removal: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        )
+            -> anyhow::Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
         let op = if is_layered {

@@ -70,7 +70,12 @@ impl GroveDb {
             options,
             validate,
             transaction,
-            |_, removed| Ok(BasicStorageRemoval(removed)),
+            |_, removed_key_bytes, removed_value_bytes| {
+                Ok((
+                    BasicStorageRemoval(removed_key_bytes),
+                    (BasicStorageRemoval(removed_value_bytes)),
+                ))
+            },
         )
     }
 
@@ -86,8 +91,12 @@ impl GroveDb {
         transaction: TransactionArg,
         split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
-            u32,
-        ) -> Result<StorageRemovedBytes, Error>,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
     ) -> CostResult<u16, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -239,9 +248,18 @@ impl GroveDb {
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let options = options.unwrap_or_default();
-        self.delete_internal(path, key, &options, transaction, &mut |_, removed| {
-            Ok(BasicStorageRemoval(removed))
-        })
+        self.delete_internal(
+            path,
+            key,
+            &options,
+            transaction,
+            &mut |_, removed_key_bytes, removed_value_bytes| {
+                Ok((
+                    BasicStorageRemoval(removed_key_bytes),
+                    BasicStorageRemoval(removed_value_bytes),
+                ))
+            },
+        )
         .map_ok(|_| ())
     }
 
@@ -253,8 +271,12 @@ impl GroveDb {
         transaction: TransactionArg,
         split_removal_bytes_function: &mut impl FnMut(
             &mut ElementFlags,
-            u32,
-        ) -> Result<StorageRemovedBytes, Error>,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
     ) -> CostResult<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -266,14 +288,20 @@ impl GroveDb {
             key,
             &options,
             transaction,
-            &mut |value, removed_bytes| {
+            &mut |value, removed_key_bytes, removed_value_bytes| {
                 let mut element = Element::deserialize(value.as_slice())?;
                 let maybe_flags = element.get_flags_mut();
                 match maybe_flags {
-                    None => Ok(BasicStorageRemoval(removed_bytes)),
-                    Some(flags) => {
-                        (split_removal_bytes_function)(flags, removed_bytes).map_err(|e| e.into())
-                    }
+                    None => Ok((
+                        BasicStorageRemoval(removed_key_bytes),
+                        BasicStorageRemoval(removed_value_bytes),
+                    )),
+                    Some(flags) => (split_removal_bytes_function)(
+                        flags,
+                        removed_key_bytes,
+                        removed_value_bytes,
+                    )
+                    .map_err(|e| e.into()),
                 }
             },
         )
@@ -294,7 +322,12 @@ impl GroveDb {
             path,
             key,
             transaction,
-            &mut |_, removed| Ok(BasicStorageRemoval(removed)),
+            &mut |_, removed_key_bytes, removed_value_bytes| {
+                Ok((
+                    BasicStorageRemoval(removed_key_bytes),
+                    (BasicStorageRemoval(removed_value_bytes)),
+                ))
+            },
         )
     }
 
@@ -305,8 +338,12 @@ impl GroveDb {
         transaction: TransactionArg,
         split_removal_bytes_function: &mut impl FnMut(
             &mut ElementFlags,
-            u32,
-        ) -> Result<StorageRemovedBytes, Error>,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
     ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -322,14 +359,20 @@ impl GroveDb {
             key,
             &options,
             transaction,
-            &mut |value, removed_bytes| {
+            &mut |value, removed_key_bytes, removed_value_bytes| {
                 let mut element = Element::deserialize(value.as_slice())?;
                 let maybe_flags = element.get_flags_mut();
                 match maybe_flags {
-                    None => Ok(BasicStorageRemoval(removed_bytes)),
-                    Some(flags) => {
-                        (split_removal_bytes_function)(flags, removed_bytes).map_err(|e| e.into())
-                    }
+                    None => Ok((
+                        BasicStorageRemoval(removed_key_bytes),
+                        BasicStorageRemoval(removed_value_bytes),
+                    )),
+                    Some(flags) => (split_removal_bytes_function)(
+                        flags,
+                        removed_key_bytes,
+                        removed_value_bytes,
+                    )
+                    .map_err(|e| e.into()),
                 }
             },
         )
@@ -484,7 +527,12 @@ impl GroveDb {
         key: &'p [u8],
         options: &DeleteOptions,
         transaction: TransactionArg,
-        sectioned_removal: &mut impl FnMut(&Vec<u8>, u32) -> anyhow::Result<StorageRemovedBytes>,
+        sectioned_removal: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        )
+            -> anyhow::Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -503,7 +551,12 @@ impl GroveDb {
         key: &'p [u8],
         options: &DeleteOptions,
         transaction: &Transaction,
-        sectioned_removal: &mut impl FnMut(&Vec<u8>, u32) -> anyhow::Result<StorageRemovedBytes>,
+        sectioned_removal: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        )
+            -> anyhow::Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -681,7 +734,12 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         options: &DeleteOptions,
-        sectioned_removal: &mut impl FnMut(&Vec<u8>, u32) -> anyhow::Result<StorageRemovedBytes>,
+        sectioned_removal: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        )
+            -> anyhow::Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
