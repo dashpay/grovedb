@@ -422,8 +422,6 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use std::option::Option::None;
-
     use costs::{
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,

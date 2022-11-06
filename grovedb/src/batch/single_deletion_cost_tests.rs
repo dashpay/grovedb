@@ -1,7 +1,4 @@
-#[cfg(test)]
 mod tests {
-    use std::option::Option::None;
-
     use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element};
 
     #[test]

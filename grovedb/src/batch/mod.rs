@@ -1,9 +1,13 @@
 //! GroveDB batch operations support
 
 pub mod key_info;
+#[cfg(test)]
 mod multi_insert_cost_tests;
+#[cfg(test)]
 mod single_deletion_cost_tests;
+#[cfg(test)]
 mod single_insert_cost_tests;
+#[cfg(test)]
 mod worst_case_cost_tests;
 
 use core::fmt;
@@ -176,7 +180,7 @@ impl KeyInfoPath {
     }
 
     pub fn to_path_refs(&self) -> Vec<&[u8]> {
-        self.0.iter().map(|k| k.get_key_ref()).collect()
+        self.0.iter().map(|k| k.as_slice()).collect()
     }
 
     pub fn split_last(&self) -> Option<(&KeyInfo, &[KeyInfo])> {
@@ -703,7 +707,7 @@ where
                             path_from_reference_path_type(
                                 path_reference.clone(),
                                 path_iter,
-                                Some(key_info.get_key_ref())
+                                Some(key_info.as_slice())
                             )
                             .wrap_with_cost(OperationCost::default())
                         );
@@ -1608,8 +1612,6 @@ impl GroveDb {
 
 #[cfg(test)]
 mod tests {
-    use std::option::Option::None;
-
     use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     use merk::proofs::Query;
 

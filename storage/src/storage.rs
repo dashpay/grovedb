@@ -188,7 +188,7 @@ pub trait StorageContext<'db> {
     /// Initialize a new batch
     fn new_batch(&self) -> Self::Batch;
 
-    /// Commits changes from batch into storage_cost
+    /// Commits changes from batch into storage
     fn commit_batch(&self, batch: Self::Batch) -> CostContext<Result<(), Self::Error>>;
 
     /// Get raw iterator over storage_cost

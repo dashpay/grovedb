@@ -1266,8 +1266,6 @@ impl<I: RawIterator> ElementsIterator<I> {
 
 #[cfg(test)]
 mod tests {
-    use std::option::Option::None;
-
     use merk::test_utils::TempMerk;
     use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
 

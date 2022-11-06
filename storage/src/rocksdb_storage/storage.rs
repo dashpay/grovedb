@@ -1,4 +1,4 @@
-//! Impementation for a storage_cost abstraction over RocksDB.
+//! Implementation for a storage abstraction over RocksDB.
 use std::{ops::AddAssign, path::Path};
 
 use costs::{
@@ -62,7 +62,7 @@ pub struct RocksDbStorage {
 }
 
 impl RocksDbStorage {
-    /// Create RocksDb storage_cost with default parameters using `path`.
+    /// Create RocksDb storage with default parameters using `path`.
     pub fn default_rocksdb_with_path<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = Db::open_cf_descriptors(
             &DEFAULT_OPTS,

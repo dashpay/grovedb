@@ -37,7 +37,7 @@ pub fn add_worst_case_get_merk_node(
     max_element_size: u32,
 ) {
     // Worst case scenario, the element is not already in memory.
-    // One direct seek has to be performed to read the node from storage_cost.
+    // One direct seek has to be performed to read the node from storage.
     cost.seek_count += 1;
 
     // To write a node to disk, the left link, right link and kv nodes are encoded.

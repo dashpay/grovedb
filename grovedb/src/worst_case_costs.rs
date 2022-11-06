@@ -79,7 +79,7 @@ impl GroveDb {
         // root)
         let max_number_of_walks = max_tree_height - 1;
 
-        // for each walk, we have to seek and load from storage_cost (equivalent to a
+        // for each walk, we have to seek and load from storage (equivalent to a
         // get)
         for _ in 0..max_number_of_walks {
             add_worst_case_get_merk_node(cost, key.len() as u32, max_element_size)
@@ -247,7 +247,7 @@ mod test {
         // Open a merk and insert 10 elements.
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage_cost");
+            .expect("cannot open rocksdb storage");
         let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");
@@ -353,7 +353,7 @@ mod test {
         // Open a merk and insert setup elements
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage_cost");
+            .expect("cannot open rocksdb storage");
         let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
             .unwrap()
             .expect("cannot open merk");

@@ -388,8 +388,6 @@ impl<'db> BufferedRestorer<'db> {
 
 #[cfg(test)]
 mod test {
-    use std::option::Option::None;
-
     use rand::RngCore;
     use tempfile::TempDir;
 

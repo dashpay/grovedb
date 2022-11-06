@@ -20,6 +20,8 @@ use crate::{
 pub struct KV {
     pub(super) key: Vec<u8>,
     pub(super) value: Vec<u8>,
+    /// The value defined cost is only used on insert
+    /// Todo: find another way to do this without this attribute.
     pub(crate) value_defined_cost: Option<u32>,
     pub(super) hash: CryptoHash,
     pub(super) value_hash: CryptoHash,
