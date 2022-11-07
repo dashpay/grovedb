@@ -5,8 +5,7 @@ use std::{
 };
 
 use costs::{
-    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
-    OperationCost,
+    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, OperationCost,
 };
 use visualize::visualize_to_vec;
 

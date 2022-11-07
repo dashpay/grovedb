@@ -15,7 +15,7 @@ mod tests {
     use integer_encoding::VarInt;
     use intmap::IntMap;
 
-    use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element, GroveDb};
+    use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element};
 
     #[test]
     fn test_batch_one_insert_costs_match_non_batch() {

@@ -23,7 +23,12 @@ pub fn get(c: &mut Criterion) {
                 None,
                 &|_k, _v| Ok(0),
                 &mut |_costs, _old_value, _value| Ok((false, None)),
-                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
             )
             .unwrap()
             .expect("apply failed")
@@ -71,7 +76,12 @@ pub fn insert_1m_2k_seq(c: &mut Criterion) {
                     None,
                     &|_k, _v| Ok(0),
                     &mut |_costs, _old_value, _value| Ok((false, None)),
-                    &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                    &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                        Ok((
+                            BasicStorageRemoval(key_bytes_to_remove),
+                            BasicStorageRemoval(value_bytes_to_remove),
+                        ))
+                    },
                 )
                 .unwrap()
                 .expect("apply failed")
@@ -106,7 +116,12 @@ pub fn insert_1m_2k_rand(c: &mut Criterion) {
                     None,
                     &|_k, _v| Ok(0),
                     &mut |_costs, _old_value, _value| Ok((false, None)),
-                    &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                    &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                        Ok((
+                            BasicStorageRemoval(key_bytes_to_remove),
+                            BasicStorageRemoval(value_bytes_to_remove),
+                        ))
+                    },
                 )
                 .unwrap()
                 .expect("apply failed")
@@ -134,7 +149,12 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
                 None,
                 &|_k, _v| Ok(0),
                 &mut |_costs, _old_value, _value| Ok((false, None)),
-                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
             )
             .unwrap()
             .expect("apply failed")
@@ -155,7 +175,12 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
                     None,
                     &|_k, _v| Ok(0),
                     &mut |_costs, _old_value, _value| Ok((false, None)),
-                    &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                    &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                        Ok((
+                            BasicStorageRemoval(key_bytes_to_remove),
+                            BasicStorageRemoval(value_bytes_to_remove),
+                        ))
+                    },
                 )
                 .unwrap()
                 .expect("apply failed")
@@ -183,7 +208,12 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
                 None,
                 &|_k, _v| Ok(0),
                 &mut |_costs, _old_value, _value| Ok((false, None)),
-                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
             )
             .unwrap()
             .expect("apply failed")
@@ -204,7 +234,12 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
                     None,
                     &|_k, _v| Ok(0),
                     &mut |_costs, _old_value, _value| Ok((false, None)),
-                    &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                    &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                        Ok((
+                            BasicStorageRemoval(key_bytes_to_remove),
+                            BasicStorageRemoval(value_bytes_to_remove),
+                        ))
+                    },
                 )
                 .unwrap()
                 .expect("apply failed")
@@ -234,7 +269,12 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
                 None,
                 &|_k, _v| Ok(0),
                 &mut |_costs, _old_value, _value| Ok((false, None)),
-                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
             )
             .unwrap()
             .expect("apply failed")
@@ -259,7 +299,12 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
                 None,
                 &|_k, _v| Ok(0),
                 &mut |_costs, _old_value, _value| Ok((false, None)),
-                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
             )
             .unwrap()
             .expect("apply failed")
@@ -273,7 +318,12 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
                     None,
                     &|_k, _v| Ok(0),
                     &mut |_costs, _old_value, _value| Ok((false, None)),
-                    &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                    &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                        Ok((
+                            BasicStorageRemoval(key_bytes_to_remove),
+                            BasicStorageRemoval(value_bytes_to_remove),
+                        ))
+                    },
                 )
                 .unwrap()
                 .expect("apply failed")
@@ -302,7 +352,12 @@ pub fn prove_1m_2k_rand(c: &mut Criterion) {
                 None,
                 &|_k, _v| Ok(0),
                 &mut |_costs, _old_value, _value| Ok((false, None)),
-                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
             )
             .unwrap()
             .expect("apply failed")
@@ -346,7 +401,12 @@ pub fn build_trunk_chunk_1m_2k_rand(c: &mut Criterion) {
                 None,
                 &|_k, _v| Ok(0),
                 &mut |_costs, _old_value, _value| Ok((false, None)),
-                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
             )
             .unwrap()
             .expect("apply failed")
@@ -383,7 +443,12 @@ pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
                 None,
                 &|_k, _v| Ok(0),
                 &mut |_costs, _old_value, _value| Ok((false, None)),
-                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
             )
             .unwrap()
             .expect("apply failed")
@@ -418,7 +483,12 @@ pub fn chunk_iter_1m_1(c: &mut Criterion) {
                 None,
                 &|_k, _v| Ok(0),
                 &mut |_costs, _old_value, _value| Ok((false, None)),
-                &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+                &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                    Ok((
+                        BasicStorageRemoval(key_bytes_to_remove),
+                        BasicStorageRemoval(value_bytes_to_remove),
+                    ))
+                },
             )
             .unwrap()
             .expect("apply failed")
@@ -455,7 +525,12 @@ pub fn restore_500_1(c: &mut Criterion) {
             None,
             &|_k, _v| Ok(0),
             &mut |_costs, _old_value, _value| Ok((false, None)),
-            &mut |_a, bytes_to_remove| Ok(BasicStorageRemoval(bytes_to_remove)),
+            &mut |_a, key_bytes_to_remove, value_bytes_to_remove| {
+                Ok((
+                    BasicStorageRemoval(key_bytes_to_remove),
+                    BasicStorageRemoval(value_bytes_to_remove),
+                ))
+            },
         )
         .unwrap()
         .expect("apply failed")

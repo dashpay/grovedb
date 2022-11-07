@@ -363,9 +363,6 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             cf_aux: self.cf_aux(),
             cf_roots: self.cf_roots(),
             cost_acc: Default::default(),
-            delete_keys_for_costs: Default::default(),
-            delete_keys_for_costs_aux: Default::default(),
-            delete_keys_for_costs_roots: Default::default(),
         }
     }
 
