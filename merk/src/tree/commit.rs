@@ -17,7 +17,12 @@ pub trait Commit {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<(bool, Option<u32>)>,
-        section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        )
+            -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     ) -> Result<()>;
 
     /// Called once per node after writing a node and its children. The returned
@@ -42,7 +47,12 @@ impl Commit for NoopCommit {
             &Vec<u8>,
             &mut Vec<u8>,
         ) -> Result<(bool, Option<u32>)>,
-        _section_removal_bytes: &mut impl FnMut(&Vec<u8>, u32) -> Result<StorageRemovedBytes>,
+        _section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        )
+            -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     ) -> Result<()> {
         Ok(())
     }

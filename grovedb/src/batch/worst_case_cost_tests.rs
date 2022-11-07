@@ -21,7 +21,9 @@ mod tests {
             worst_case_ops,
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
-            |_flags, _removed_bytes| Ok(NoStorageRemoval),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
         )
         .cost_as_result()
         .expect("expected to get worst case costs");
@@ -70,7 +72,9 @@ mod tests {
             worst_case_ops,
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
-            |_flags, _removed_bytes| Ok(NoStorageRemoval),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
         )
         .cost_as_result()
         .expect("expected to get worst case costs");
@@ -123,7 +127,9 @@ mod tests {
             worst_case_ops,
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
-            |_flags, _removed_bytes| Ok(NoStorageRemoval),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
         )
         .cost_as_result()
         .expect("expected to get worst case costs");
@@ -176,7 +182,9 @@ mod tests {
             worst_case_ops,
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
-            |_flags, _removed_bytes| Ok(NoStorageRemoval),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
         )
         .cost_as_result()
         .expect("expected to get worst case costs");
@@ -229,7 +237,9 @@ mod tests {
             worst_case_ops,
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
-            |_flags, _removed_bytes| Ok(NoStorageRemoval),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
         );
         assert!(worst_case_cost_result.value.is_ok());
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;

@@ -73,6 +73,11 @@ impl StorageCost {
             && self.added_bytes >= other.added_bytes
             && self.removed_bytes <= other.removed_bytes
     }
+
+    /// are the replaced bytes or removed bytes different than 0?
+    pub fn has_storage_change(&self) -> bool {
+        self.added_bytes != 0 || self.removed_bytes.total_removed_bytes() != 0
+    }
 }
 
 impl Default for StorageCost {

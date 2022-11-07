@@ -22,7 +22,7 @@ use crate::{
 };
 
 /// Piece of data representing affected computer resources (approximately).
-#[derive(Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default, Eq, PartialEq, Clone)]
 pub struct OperationCost {
     /// How many storage_cost seeks were done.
     pub seek_count: u16,

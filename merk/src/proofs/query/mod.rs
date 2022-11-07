@@ -802,6 +802,7 @@ impl<'a, S> RefWalker<'a, S>
 where
     S: Fetch + Sized + Clone,
 {
+    #[allow(dead_code)]
     /// Creates a `Node::KV` from the key/value pair of the root node.
     pub(crate) fn to_kv_node(&self) -> Node {
         Node::KV(
@@ -1414,7 +1415,7 @@ mod test {
             &mut NoopCommit {},
             &|_, _| Ok(0),
             &mut |_, _, _| Ok((false, None)),
-            &mut |_, _| Ok(NoStorageRemoval),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
         )
         .unwrap()
         .expect("commit failed");
@@ -1433,7 +1434,7 @@ mod test {
                 &mut NoopCommit {},
                 &|_, _| Ok(0),
                 &mut |_, _, _| Ok((false, None)),
-                &mut |_, _| Ok(NoStorageRemoval),
+                &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
             )
             .unwrap()
             .expect("commit failed");
@@ -1447,7 +1448,7 @@ mod test {
                 &mut NoopCommit {},
                 &|_, _| Ok(0),
                 &mut |_, _, _| Ok((false, None)),
-                &mut |_, _| Ok(NoStorageRemoval),
+                &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
             )
             .unwrap()
             .expect("commit failed");
@@ -1461,7 +1462,7 @@ mod test {
                 &mut NoopCommit {},
                 &|_, _| Ok(0),
                 &mut |_, _, _| Ok((false, None)),
-                &mut |_, _| Ok(NoStorageRemoval),
+                &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
             )
             .unwrap()
             .expect("commit failed");
@@ -2180,7 +2181,7 @@ mod test {
             &mut NoopCommit {},
             &|_, _| Ok(0),
             &mut |_, _, _| Ok((false, None)),
-            &mut |_, _| Ok(NoStorageRemoval),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
         )
         .unwrap()
         .unwrap();
@@ -6125,7 +6126,7 @@ mod test {
             &mut NoopCommit {},
             &|_, _| Ok(0),
             &mut |_, _, _| Ok((false, None)),
-            &mut |_, _| Ok(NoStorageRemoval),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
         )
         .unwrap()
         .expect("commit failed");
@@ -6156,7 +6157,7 @@ mod test {
             &mut NoopCommit {},
             &|_, _| Ok(0),
             &mut |_, _, _| Ok((false, None)),
-            &mut |_, _| Ok(NoStorageRemoval),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
         )
         .unwrap()
         .expect("commit failed");

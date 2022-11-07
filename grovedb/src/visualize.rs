@@ -164,6 +164,7 @@ impl Visualize for GroveDb {
     }
 }
 
+#[allow(dead_code)]
 pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
     visualize_stdout(&VisualizeableMerk::new(merk, |bytes: &[u8]| {
         bincode::DefaultOptions::default()

@@ -41,7 +41,6 @@ use storage::{
     rocksdb_storage::{
         PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext, RocksDbStorage,
     },
-    worst_case_costs::WorstKeyLength,
     Storage, StorageBatch, StorageContext,
 };
 use visualize::{DebugByteVectors, DebugBytes, Drawer, Visualize};
@@ -643,7 +642,11 @@ where
 impl<'db, S, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F>
 where
     G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
-    SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
+    SR: FnMut(
+        &mut ElementFlags,
+        u32,
+        u32,
+    ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
@@ -864,13 +867,17 @@ where
                         }
                     }
                 },
-                &mut |value, removed_bytes| {
+                &mut |value, removed_key_bytes, removed_value_bytes| {
                     let mut element = Element::deserialize(value.as_slice())?;
                     let maybe_flags = element.get_flags_mut();
                     match maybe_flags {
-                        None => Ok(BasicStorageRemoval(removed_bytes)),
+                        None => Ok((
+                            BasicStorageRemoval(removed_key_bytes),
+                            BasicStorageRemoval(removed_value_bytes),
+                        )),
                         Some(flags) => {
-                            (split_removal_bytes)(flags, removed_bytes).map_err(|e| e.into())
+                            (split_removal_bytes)(flags, removed_key_bytes, removed_value_bytes)
+                                .map_err(|e| e.into())
                         }
                     }
                 },
@@ -980,7 +987,11 @@ impl<C, F, SR> BatchStructure<C, F, SR>
 where
     C: TreeCache<F, SR>,
     F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
-    SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
+    SR: FnMut(
+        &mut ElementFlags,
+        u32,
+        u32,
+    ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
 {
     fn from_ops(
         ops: Vec<GroveDbOp>,
@@ -1084,7 +1095,7 @@ impl BatchApplyOptions {
         }
     }
 
-    fn as_delete_options(&self) -> DeleteOptions {
+    fn as_delete_options(&self) -> DeleteOptions where {
         DeleteOptions {
             allow_deleting_non_empty_trees: self.allow_deleting_non_empty_trees,
             deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
@@ -1107,7 +1118,11 @@ impl GroveDb {
     ) -> CostResult<(), Error>
     where
         F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
-        SR: FnMut(&mut ElementFlags, u32) -> Result<StorageRemovedBytes, Error>,
+        SR: FnMut(
+            &mut ElementFlags,
+            u32,
+            u32,
+        ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let mut cost = OperationCost::default();
         let BatchStructure {
@@ -1273,8 +1288,12 @@ impl GroveDb {
         ) -> Result<bool, Error>,
         split_removed_bytes_function: impl FnMut(
             &mut ElementFlags,
-            u32,
-        ) -> Result<StorageRemovedBytes, Error>,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -1344,7 +1363,12 @@ impl GroveDb {
             ops,
             batch_apply_options,
             |_cost, _old_flags, _new_flags| Ok(false),
-            |_flags, removed_bytes| Ok(BasicStorageRemoval(removed_bytes)),
+            |_flags, key_bytes_to_remove, value_bytes_to_remove| {
+                Ok((
+                    BasicStorageRemoval(key_bytes_to_remove),
+                    BasicStorageRemoval(value_bytes_to_remove),
+                ))
+            },
             transaction,
         )
     }
@@ -1477,8 +1501,12 @@ impl GroveDb {
         ) -> Result<bool, Error>,
         split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
-            u32,
-        ) -> Result<StorageRemovedBytes, Error>,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
         transaction: TransactionArg,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -1582,8 +1610,12 @@ impl GroveDb {
         ) -> Result<bool, Error>,
         split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
-            u32,
-        ) -> Result<StorageRemovedBytes, Error>,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -1897,7 +1929,9 @@ mod tests {
             ops,
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
-            |_flags, _removed_bytes| Ok(NoStorageRemoval),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
             Some(&tx),
         )
         .unwrap()
@@ -1970,7 +2004,9 @@ mod tests {
             ops,
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
-            |_flags, _removed_bytes| Ok(NoStorageRemoval),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
             Some(&tx),
         )
         .unwrap()
@@ -2043,7 +2079,9 @@ mod tests {
                 assert!((cost.added_bytes > 0) ^ (cost.replaced_bytes > 0));
                 Ok(false)
             },
-            |_flags, _removed_bytes| Ok(NoStorageRemoval),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
             Some(&tx),
         )
         .unwrap()

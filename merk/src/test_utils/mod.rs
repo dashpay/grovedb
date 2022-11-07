@@ -3,7 +3,7 @@ mod temp_merk;
 
 use std::{convert::TryInto, ops::Range};
 
-use costs::storage_cost::removal::StorageRemovedBytes;
+use costs::storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval};
 pub use crash_merk::CrashMerk;
 use rand::prelude::*;
 pub use temp_merk::TempMerk;
@@ -35,17 +35,27 @@ pub fn assert_tree_invariants(tree: &Tree) {
 
 pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     let walker = Walker::<PanicSource>::new(tree, PanicSource {});
-    let mut tree =
-        Walker::<PanicSource>::apply_to(Some(walker), batch, PanicSource {}, &|key, value| {
+    let mut tree = Walker::<PanicSource>::apply_to(
+        Some(walker),
+        batch,
+        PanicSource {},
+        &|key, value| {
             Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                 key.len() as u32,
                 value.len() as u32,
             ))
-        })
-        .unwrap()
-        .expect("apply failed")
-        .0
-        .expect("expected tree");
+        },
+        &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
+            Ok((
+                BasicStorageRemoval(key_bytes_to_remove),
+                BasicStorageRemoval(value_bytes_to_remove),
+            ))
+        },
+    )
+    .unwrap()
+    .expect("apply failed")
+    .0
+    .expect("expected tree");
     tree.commit(
         &mut NoopCommit {},
         &|key, value| {
@@ -55,7 +65,12 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
             ))
         },
         &mut |_, _, _| Ok((false, None)),
-        &mut |_, bytes_to_remove| Ok(StorageRemovedBytes::BasicStorageRemoval(bytes_to_remove)),
+        &mut |_, key_bytes_to_remove, value_bytes_to_remove| {
+            Ok((
+                BasicStorageRemoval(key_bytes_to_remove),
+                BasicStorageRemoval(value_bytes_to_remove),
+            ))
+        },
     )
     .unwrap()
     .expect("commit failed");
@@ -70,12 +85,23 @@ pub fn apply_memonly(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
 
 pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) -> Option<Tree> {
     let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
-    Walker::<PanicSource>::apply_to(maybe_walker, batch, PanicSource {}, &|key, value| {
-        Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-            key.len() as u32,
-            value.len() as u32,
-        ))
-    })
+    Walker::<PanicSource>::apply_to(
+        maybe_walker,
+        batch,
+        PanicSource {},
+        &|key, value| {
+            Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                key.len() as u32,
+                value.len() as u32,
+            ))
+        },
+        &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
+            Ok((
+                BasicStorageRemoval(key_bytes_to_remove),
+                BasicStorageRemoval(value_bytes_to_remove),
+            ))
+        },
+    )
     .unwrap()
     .expect("apply failed")
     .0
@@ -89,7 +115,12 @@ pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) ->
                 ))
             },
             &mut |_, _, _| Ok((false, None)),
-            &mut |_, bytes_to_remove| Ok(StorageRemovedBytes::BasicStorageRemoval(bytes_to_remove)),
+            &mut |_, key_bytes_to_remove, value_bytes_to_remove| {
+                Ok((
+                    BasicStorageRemoval(key_bytes_to_remove),
+                    BasicStorageRemoval(value_bytes_to_remove),
+                ))
+            },
         )
         .unwrap()
         .expect("commit failed");
