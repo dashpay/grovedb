@@ -1,4 +1,5 @@
 use costs::OperationCost;
+use integer_encoding::VarInt;
 use merk::{
     tree::Tree,
     worst_case_costs::{
@@ -13,6 +14,7 @@ use storage::{worst_case_costs::WorstKeyLength, Storage};
 use super::GroveDb;
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
+    subtree::TREE_COST_SIZE,
     Element,
 };
 
@@ -166,7 +168,14 @@ impl GroveDb {
     ) {
         let key_len = key.len() as u32;
         match value {
-            Element::Tree(..) => add_worst_case_merk_insert_layered(cost, key_len, 3),
+            Element::Tree(_, flags) => {
+                let flags_len = flags.as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = TREE_COST_SIZE + flags_len;
+                add_worst_case_merk_insert_layered(cost, key_len, value_len)
+            }
             _ => add_worst_case_merk_insert(cost, key_len, value.serialized_size() as u32),
         };
         if let Some(input) = propagate_if_input {
