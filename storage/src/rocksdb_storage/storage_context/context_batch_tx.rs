@@ -1,11 +1,17 @@
 //! Storage context implementation with a transaction.
-use costs::{CostContext, CostsExt, OperationCost};
-use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, Error};
+use costs::{
+    cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostsExt,
+    OperationCost,
+};
+use error::Error;
+use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
 
 use super::{batch::PrefixedMultiContextBatchPart, make_prefixed_key, PrefixedRocksDbRawIterator};
 use crate::{
+    error,
+    error::Error::RocksDBError,
     rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
-    StorageBatch, StorageContext,
+    RawIterator, StorageBatch, StorageContext,
 };
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
@@ -31,6 +37,26 @@ impl<'db> PrefixedRocksDbBatchTransactionContext<'db> {
             prefix,
             batch,
         }
+    }
+
+    /// Clears all the data in the tree at the storage level
+    pub fn clear(&mut self) -> CostContext<Result<(), Error>> {
+        let mut cost = OperationCost::default();
+
+        let mut iter = self.raw_iter();
+        iter.seek_to_first().unwrap_add_cost(&mut cost);
+
+        while iter.valid().unwrap_add_cost(&mut cost) {
+            if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
+                cost_return_on_error!(
+                    &mut cost,
+                    // todo: calculate cost
+                    self.delete(key, None)
+                );
+            }
+            iter.next().unwrap_add_cost(&mut cost);
+        }
+        Ok(()).wrap_with_cost(cost)
     }
 }
 
@@ -62,69 +88,109 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
     type Error = Error;
     type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Tx<'db>>>;
 
-    fn put<K: AsRef<[u8]>>(&self, key: K, value: &[u8]) -> CostContext<Result<(), Self::Error>> {
-        self.batch
-            .put(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
-            .map(Ok)
+    fn put<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        value: &[u8],
+        children_sizes: Option<(Option<u32>, Option<u32>)>,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
+        self.batch.put(
+            make_prefixed_key(self.prefix.clone(), key),
+            value.to_vec(),
+            children_sizes,
+            cost_info,
+        );
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
     fn put_aux<K: AsRef<[u8]>>(
         &self,
         key: K,
         value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
-        self.batch
-            .put_aux(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
-            .map(Ok)
+        self.batch.put_aux(
+            make_prefixed_key(self.prefix.clone(), key),
+            value.to_vec(),
+            cost_info,
+        );
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
     fn put_root<K: AsRef<[u8]>>(
         &self,
         key: K,
         value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
-        self.batch
-            .put_root(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
-            .map(Ok)
+        self.batch.put_root(
+            make_prefixed_key(self.prefix.clone(), key),
+            value.to_vec(),
+            cost_info,
+        );
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
     fn put_meta<K: AsRef<[u8]>>(
         &self,
         key: K,
         value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
+        self.batch.put_meta(
+            make_prefixed_key(self.prefix.clone(), key),
+            value.to_vec(),
+            cost_info,
+        );
+        Ok(()).wrap_with_cost(OperationCost::default())
+    }
+
+    fn delete<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
         self.batch
-            .put_meta(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
-            .map(Ok)
+            .delete(make_prefixed_key(self.prefix.clone(), key), cost_info);
+
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
-    fn delete<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>> {
+    fn delete_aux<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         self.batch
-            .delete(make_prefixed_key(self.prefix.clone(), key))
-            .map(Ok)
+            .delete_aux(make_prefixed_key(self.prefix.clone(), key), cost_info);
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>> {
+    fn delete_root<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         self.batch
-            .delete_aux(make_prefixed_key(self.prefix.clone(), key))
-            .map(Ok)
+            .delete_root(make_prefixed_key(self.prefix.clone(), key), cost_info);
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
-    fn delete_root<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>> {
+    fn delete_meta<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostContext<Result<(), Self::Error>> {
         self.batch
-            .delete_root(make_prefixed_key(self.prefix.clone(), key))
-            .map(Ok)
-    }
-
-    fn delete_meta<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<(), Self::Error>> {
-        self.batch
-            .delete_meta(make_prefixed_key(self.prefix.clone(), key))
-            .map(Ok)
+            .delete_meta(make_prefixed_key(self.prefix.clone(), key), cost_info);
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
         self.transaction
             .get(make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
                 storage_loaded_bytes: value
@@ -141,6 +207,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
     fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
         self.transaction
             .get_cf(self.cf_aux(), make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
                 storage_loaded_bytes: value
@@ -160,6 +227,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
     ) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
         self.transaction
             .get_cf(self.cf_roots(), make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
                 storage_loaded_bytes: value
@@ -179,6 +247,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
     ) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
         self.transaction
             .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
+            .map_err(RocksDBError)
             .wrap_fn_cost(|value| OperationCost {
                 seek_count: 1,
                 storage_loaded_bytes: value
@@ -201,7 +270,8 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
     }
 
     fn commit_batch(&self, batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
-        self.batch.merge(batch.batch).map(Ok)
+        self.batch.merge(batch.batch);
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
     fn raw_iter(&self) -> Self::RawIterator {

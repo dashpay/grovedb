@@ -1,9 +1,20 @@
 //! Prefixed storage batch implementation for RocksDB backend.
-use costs::{cost_return_on_error_no_add, CostContext, CostsExt, OperationCost};
+use costs::{
+    cost_return_on_error_no_add,
+    storage_cost::{
+        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
+    },
+    CostContext, CostsExt, OperationCost,
+};
+use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
 use super::make_prefixed_key;
-use crate::{rocksdb_storage::storage::Db, Batch, StorageBatch};
+use crate::{
+    error::{Error, Error::RocksDBError},
+    rocksdb_storage::storage::Db,
+    Batch, StorageBatch,
+};
 
 /// Wrapper to RocksDB batch.
 /// All calls go to RocksDB batch, but wrapper handles prefixes and column
@@ -33,34 +44,43 @@ impl<'db> PrefixedRocksDbBatch<'db> {
     pub(crate) fn finalize_deletion_costs(
         &mut self,
         db: &'db Db,
-    ) -> CostContext<Result<(), rocksdb::Error>> {
+    ) -> CostContext<Result<(), Error>> {
         // Comutation of deletion cost has it's own... cost.
         let mut cost = OperationCost::default();
 
         for key in self.delete_keys_for_costs.iter() {
-            let value = cost_return_on_error_no_add!(&cost, db.get(key));
+            let value = cost_return_on_error_no_add!(&cost, db.get(key).map_err(RocksDBError));
             cost.seek_count += 1;
             if let Some(v) = value {
                 cost.storage_loaded_bytes += v.len() as u32;
-                self.cost_acc.storage_freed_bytes += v.len() as u32;
+                // todo: improve deletion costs
+                self.cost_acc.storage_cost.removed_bytes += BasicStorageRemoval(v.len() as u32);
             }
         }
 
         for key in self.delete_keys_for_costs_aux.iter() {
-            let value = cost_return_on_error_no_add!(&cost, db.get_cf(self.cf_aux, key));
+            let value = cost_return_on_error_no_add!(
+                &cost,
+                db.get_cf(self.cf_aux, key).map_err(RocksDBError)
+            );
             cost.seek_count += 1;
             if let Some(v) = value {
                 cost.storage_loaded_bytes += v.len() as u32;
-                self.cost_acc.storage_freed_bytes += v.len() as u32;
+                // todo: improve deletion costs
+                self.cost_acc.storage_cost.removed_bytes += BasicStorageRemoval(v.len() as u32);
             }
         }
 
         for key in self.delete_keys_for_costs_roots.iter() {
-            let value = cost_return_on_error_no_add!(&cost, db.get_cf(self.cf_roots, key));
+            let value = cost_return_on_error_no_add!(
+                &cost,
+                db.get_cf(self.cf_roots, key).map_err(RocksDBError)
+            );
             cost.seek_count += 1;
             if let Some(v) = value {
                 cost.storage_loaded_bytes += v.len() as u32;
-                self.cost_acc.storage_freed_bytes += v.len() as u32;
+                // todo: improve deletion costs
+                self.cost_acc.storage_cost.removed_bytes += BasicStorageRemoval(v.len() as u32);
             }
         }
 
@@ -68,8 +88,8 @@ impl<'db> PrefixedRocksDbBatch<'db> {
     }
 }
 
-/// Batch with no backing storage (it's not a RocksDB batch, but our own way to
-/// represent a set of operations) that eventually will be merged into
+/// Batch with no backing storage_cost (it's not a RocksDB batch, but our own
+/// way to represent a set of operations) that eventually will be merged into
 /// multi-context batch.
 pub struct PrefixedMultiContextBatchPart {
     pub(crate) prefix: Vec<u8>,
@@ -77,99 +97,196 @@ pub struct PrefixedMultiContextBatchPart {
     pub(crate) acc_cost: OperationCost,
 }
 
-/// Implementation of a batch ouside a transaction
+/// Implementation of a batch outside a transaction
 impl<'db> Batch for PrefixedRocksDbBatch<'db> {
-    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
+    fn put<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        children_sizes: Option<(Option<u32>, Option<u32>)>,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), costs::error::Error> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
+        // Update the key_storage_cost based on the prefixed key
+        let updated_cost_info = cost_info.map(|mut key_value_storage_cost| {
+            if key_value_storage_cost.new_node {
+                // key is new, storage_cost needs to be created for it
+                key_value_storage_cost.key_storage_cost.added_bytes +=
+                    (prefixed_key.len() + prefixed_key.len().required_space()) as u32;
+            }
+            key_value_storage_cost
+        });
+
         self.cost_acc.seek_count += 1;
-        self.cost_acc.storage_written_bytes += prefixed_key.len() as u32 + value.len() as u32;
+        self.cost_acc.add_key_value_storage_costs(
+            prefixed_key.len() as u32,
+            value.len() as u32,
+            children_sizes,
+            updated_cost_info,
+        )?;
 
         self.batch.put(prefixed_key, value);
+        Ok(())
     }
 
-    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
+    fn put_aux<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), costs::error::Error> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
-        self.cost_acc.storage_written_bytes += prefixed_key.len() as u32 + value.len() as u32;
+        self.cost_acc.add_key_value_storage_costs(
+            prefixed_key.len() as u32,
+            value.len() as u32,
+            None,
+            cost_info,
+        )?;
 
         self.batch.put_cf(self.cf_aux, prefixed_key, value);
+        Ok(())
     }
 
-    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
+    fn put_root<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), costs::error::Error> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
-        self.cost_acc.storage_written_bytes += prefixed_key.len() as u32 + value.len() as u32;
+        // put root only pays if cost info is set
+        if cost_info.is_some() {
+            self.cost_acc.add_key_value_storage_costs(
+                prefixed_key.len() as u32,
+                value.len() as u32,
+                None,
+                cost_info,
+            )?;
+        }
 
         self.batch.put_cf(self.cf_roots, prefixed_key, value);
+        Ok(())
     }
 
-    fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
+    fn delete<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
+
+        if let Some(removed_bytes) = cost_info {
+            self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
+        }
+
         self.delete_keys_for_costs.push(prefixed_key.clone());
 
         self.batch.delete(prefixed_key);
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) {
+    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
+
+        if let Some(removed_bytes) = cost_info {
+            self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
+        }
+
         self.delete_keys_for_costs_aux.push(prefixed_key.clone());
 
         self.batch.delete_cf(self.cf_aux, prefixed_key);
     }
 
-    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) {
+    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
 
         self.cost_acc.seek_count += 1;
+
+        if let Some(removed_bytes) = cost_info {
+            self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
+        }
+
         self.delete_keys_for_costs_roots.push(prefixed_key.clone());
 
         self.batch.delete_cf(self.cf_roots, prefixed_key);
     }
 }
 
-/// Implementation of a rocksdb batch ouside a transaction for multi-context
+/// Implementation of a rocksdb batch outside a transaction for multi-context
 /// batch.
 impl Batch for PrefixedMultiContextBatchPart {
-    fn put<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
-        self.batch
-            .put(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
-            .unwrap_add_cost(&mut self.acc_cost);
+    fn put<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        children_sizes: Option<(Option<u32>, Option<u32>)>,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), costs::error::Error> {
+        let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
+
+        // Update the key_storage_cost based on the prefixed key
+        let updated_cost_info = cost_info.map(|mut key_value_storage_cost| {
+            if key_value_storage_cost.new_node {
+                // key is new, storage_cost needs to be created for it
+                key_value_storage_cost.key_storage_cost.added_bytes +=
+                    (prefixed_key.len() + prefixed_key.len().required_space()) as u32;
+            }
+            key_value_storage_cost
+        });
+
+        self.batch.put(
+            prefixed_key,
+            value.to_vec(),
+            children_sizes,
+            updated_cost_info,
+        );
+        Ok(())
     }
 
-    fn put_aux<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
-        self.batch
-            .put_aux(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
-            .unwrap_add_cost(&mut self.acc_cost);
+    fn put_aux<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), costs::error::Error> {
+        self.batch.put_aux(
+            make_prefixed_key(self.prefix.clone(), key),
+            value.to_vec(),
+            cost_info,
+        );
+        Ok(())
     }
 
-    fn put_root<K: AsRef<[u8]>>(&mut self, key: K, value: &[u8]) {
-        self.batch
-            .put_root(make_prefixed_key(self.prefix.clone(), key), value.to_vec())
-            .unwrap_add_cost(&mut self.acc_cost);
+    fn put_root<K: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> Result<(), costs::error::Error> {
+        self.batch.put_root(
+            make_prefixed_key(self.prefix.clone(), key),
+            value.to_vec(),
+            cost_info,
+        );
+        Ok(())
     }
 
-    fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
+    fn delete<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         self.batch
-            .delete(make_prefixed_key(self.prefix.clone(), key))
-            .unwrap_add_cost(&mut self.acc_cost);
+            .delete(make_prefixed_key(self.prefix.clone(), key), cost_info);
     }
 
-    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K) {
+    fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         self.batch
-            .delete_aux(make_prefixed_key(self.prefix.clone(), key))
-            .unwrap_add_cost(&mut self.acc_cost);
+            .delete_aux(make_prefixed_key(self.prefix.clone(), key), cost_info);
     }
 
-    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K) {
+    fn delete_root<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         self.batch
-            .delete_root(make_prefixed_key(self.prefix.clone(), key))
-            .unwrap_add_cost(&mut self.acc_cost);
+            .delete_root(make_prefixed_key(self.prefix.clone(), key), cost_info);
     }
 }

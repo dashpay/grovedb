@@ -3,15 +3,22 @@ use std::collections::HashSet;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use storage::StorageContext;
+use merk::Merk;
+use storage::{
+    rocksdb_storage::{
+        PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext, RocksDbStorage,
+    },
+    StorageContext,
+};
 
 use crate::{
+    batch::{key_info::KeyInfo, KeyInfoPath},
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::{
         path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
     },
-    util::{merk_optional_tx, storage_context_optional_tx},
-    Element, Error, GroveDb, PathQuery, TransactionArg,
+    util::storage_context_optional_tx,
+    Element, Error, GroveDb, PathQuery, Transaction, TransactionArg,
 };
 
 /// Limit of possible indirections
@@ -104,30 +111,64 @@ impl GroveDb {
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
+        if let Some(transaction) = transaction {
+            self.get_raw_on_transaction(path, key, transaction)
+        } else {
+            self.get_raw_without_transaction(path, key)
+        }
+    }
+
+    /// Get tree item without following references
+    pub fn get_raw_on_transaction<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        transaction: &Transaction,
+    ) -> CostResult<Element, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
         let mut cost = OperationCost::default();
 
-        let path_iter = path.into_iter();
-        if path_iter.len() == 0 {
-            cost_return_on_error!(
-                &mut cost,
-                self.check_subtree_exists_path_not_found([key], transaction)
-            );
-            merk_optional_tx!(&mut cost, self.db, [key], transaction, subtree, {
-                subtree
-                    .root_hash()
-                    .map(Element::new_tree)
-                    .map(Ok)
-                    .add_cost(cost)
-            })
-        } else {
-            cost_return_on_error!(
-                &mut cost,
-                self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
-            );
-            merk_optional_tx!(&mut cost, self.db, path_iter, transaction, subtree, {
-                Element::get(&subtree, key).add_cost(cost)
-            })
-        }
+        let merk_to_get_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(path.into_iter(), transaction)
+                .map_err(|e| match e {
+                    Error::InvalidPath(s) => {
+                        Error::PathNotFound(s)
+                    }
+                    _ => e,
+                })
+        );
+
+        Element::get(&merk_to_get_from, key).add_cost(cost)
+    }
+
+    /// Get tree item without following references
+    pub fn get_raw_without_transaction<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+    ) -> CostResult<Element, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+
+        let merk_to_get_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+            &mut cost,
+            self.open_non_transactional_merk_at_path(path.into_iter())
+                .map_err(|e| match e {
+                    Error::InvalidPath(s) => {
+                        Error::PathNotFound(s)
+                    }
+                    _ => e,
+                })
+        );
+
+        Element::get(&merk_to_get_from, key).add_cost(cost)
     }
 
     /// Does tree element exist without following references
@@ -318,15 +359,27 @@ where {
 
         let mut parent_iter = path_iter;
         let parent_key = parent_iter.next_back().expect("path is not empty");
-        merk_optional_tx!(&mut cost, self.db, parent_iter, transaction, parent, {
-            match Element::get(&parent, parent_key).unwrap_add_cost(&mut cost) {
-                Ok(Element::Tree(..)) => {}
-                Ok(_) | Err(Error::PathKeyNotFound(_)) => return Err(error).wrap_with_cost(cost),
-                Err(e) => return Err(e).wrap_with_cost(cost),
-            }
-        });
+        let element = if let Some(transaction) = transaction {
+            let merk_to_get_from: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
+                &mut cost,
+                self.open_transactional_merk_at_path(parent_iter, transaction)
+            );
 
-        Ok(()).wrap_with_cost(cost)
+            Element::get(&merk_to_get_from, parent_key)
+        } else {
+            let merk_to_get_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
+                &mut cost,
+                self.open_non_transactional_merk_at_path(parent_iter)
+            );
+
+            Element::get(&merk_to_get_from, parent_key)
+        }
+        .unwrap_add_cost(&mut cost);
+        match element {
+            Ok(Element::Tree(..)) => Ok(()).wrap_with_cost(cost),
+            Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error).wrap_with_cost(cost),
+            Err(e) => Err(e).wrap_with_cost(cost),
+        }
     }
 
     pub fn check_subtree_exists_path_not_found<'p, P>(
@@ -338,10 +391,14 @@ where {
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
+        let path_iter = path.into_iter();
         self.check_subtree_exists(
-            path,
+            path_iter.clone(),
             transaction,
-            Error::PathNotFound("subtree doesn't exist"),
+            Error::PathNotFound(format!(
+                "subtree doesn't exist at path {:?}",
+                path_iter.map(|k| hex::encode(k)).collect::<Vec<String>>()
+            )),
         )
     }
 
@@ -357,23 +414,54 @@ where {
         self.check_subtree_exists(
             path,
             transaction,
-            Error::InvalidPath("subtree doesn't exist"),
+            Error::InvalidPath("subtree doesn't exist".to_owned()),
         )
     }
 
-    /// Does tree element exist without following references
-    pub fn worst_case_for_has_raw<'p, P>(&self, path: P, key: &'p [u8]) -> CostResult<bool, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
+    pub fn worst_case_for_has_raw(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        max_element_size: u32,
+    ) -> OperationCost {
         let mut cost = OperationCost::default();
+        GroveDb::add_worst_case_has_raw_cost::<RocksDbStorage>(
+            &mut cost,
+            path,
+            key,
+            max_element_size,
+        );
+        cost
+    }
 
-        // First we get the merk tree
-        Self::add_worst_case_get_merk(&mut cost, path);
-        Self::add_worst_case_merk_has_element(&mut cost, key);
+    pub fn worst_case_for_get_raw(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        max_element_size: u32,
+    ) -> OperationCost {
+        let mut cost = OperationCost::default();
+        GroveDb::add_worst_case_get_raw_cost::<RocksDbStorage>(
+            &mut cost,
+            path,
+            key,
+            max_element_size,
+        );
+        cost
+    }
 
-        // In the worst case, there will not be an error, but the item will not be found
-        Ok(false).wrap_with_cost(cost)
+    pub fn worst_case_for_get(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        max_element_size: u32,
+        max_references_sizes: Vec<u32>,
+    ) -> OperationCost {
+        let mut cost = OperationCost::default();
+        GroveDb::add_worst_case_get_cost::<RocksDbStorage>(
+            &mut cost,
+            path,
+            key,
+            max_element_size,
+            max_references_sizes,
+        );
+        cost
     }
 }

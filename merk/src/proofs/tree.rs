@@ -5,7 +5,7 @@ use costs::{
 
 use super::{Node, Op};
 use crate::tree::{
-    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, Hash, NULL_HASH,
+    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, NULL_HASH,
 };
 
 /// Contains a tree's child node and its hash. The hash can always be assumed to
@@ -13,7 +13,7 @@ use crate::tree::{
 #[derive(Debug)]
 pub struct Child {
     pub tree: Box<Tree>,
-    pub hash: Hash,
+    pub hash: CryptoHash,
 }
 
 /// A binary tree data structure used to represent a select subset of a tree
@@ -47,8 +47,8 @@ impl PartialEq for Tree {
 
 impl Tree {
     /// Gets or computes the hash for this tree node.
-    pub fn hash(&self) -> CostContext<Hash> {
-        fn compute_hash(tree: &Tree, kv_hash: Hash) -> CostContext<Hash> {
+    pub fn hash(&self) -> CostContext<CryptoHash> {
+        fn compute_hash(tree: &Tree, kv_hash: CryptoHash) -> CostContext<CryptoHash> {
             node_hash(&kv_hash, &tree.child_hash(true), &tree.child_hash(false))
         }
 
@@ -100,16 +100,17 @@ impl Tree {
 
     /// Does an in-order traversal over references to all the nodes in the tree,
     /// calling `visit_node` for each.
-    pub fn visit_refs<F: FnMut(&Self)>(&self, visit_node: &mut F) {
+    pub fn visit_refs<F: FnMut(&Self) -> Result<()>>(&self, visit_node: &mut F) -> Result<()> {
         if let Some(child) = &self.left {
-            child.tree.visit_refs(visit_node);
+            child.tree.visit_refs(visit_node)?;
         }
 
-        visit_node(self);
+        visit_node(self)?;
 
         if let Some(child) = &self.right {
-            child.tree.visit_refs(visit_node);
+            child.tree.visit_refs(visit_node)?;
         }
+        Ok(())
     }
 
     /// Returns an immutable reference to the child on the given side, if any.
@@ -155,7 +156,7 @@ impl Tree {
     /// given side, if any. If there is no child, returns the null hash
     /// (zero-filled).
     #[inline]
-    const fn child_hash(&self, left: bool) -> Hash {
+    const fn child_hash(&self, left: bool) -> CryptoHash {
         match self.child(left) {
             Some(c) => c.hash,
             _ => NULL_HASH,
@@ -375,7 +376,7 @@ where
                 | Node::KVValueHash(key, ..)
                 | Node::KVRefValueHash(key, ..) = &node
                 {
-                    // keys should always increase
+                    // keys should always decrease
                     if let Some(last_key) = &maybe_last_key {
                         if key >= last_key {
                             return Err(anyhow!("Incorrect key ordering")).wrap_with_cost(cost);

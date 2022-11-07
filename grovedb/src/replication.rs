@@ -7,10 +7,7 @@ use merk::{
     proofs::{Node, Op},
     Merk,
 };
-use storage::{
-    rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
-    Storage, StorageContext,
-};
+use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
 
 use crate::{Element, Error, GroveDb, Hash};
 
@@ -19,29 +16,29 @@ const OPS_PER_CHUNK: usize = 128;
 impl GroveDb {
     /// Creates a chunk producer to replicate GroveDb.
     pub fn chunks(&self) -> SubtreeChunkProducer {
-        SubtreeChunkProducer::new(&self.db)
+        SubtreeChunkProducer::new(&self)
     }
 }
 
 /// Subtree chunks producer.
 pub struct SubtreeChunkProducer<'db> {
-    storage: &'db RocksDbStorage,
+    grove_db: &'db GroveDb,
     cache: Option<SubtreeChunkProducerCache<'db>>,
 }
 
 struct SubtreeChunkProducerCache<'db> {
     current_merk_path: Vec<Vec<u8>>,
     current_merk: Merk<PrefixedRocksDbStorageContext<'db>>,
-    // This needed to be an `Option` becase it requres a reference on Merk but it's within the same
-    // struct and during struct init a referenced Merk would be moved inside a struct, using
-    // `Option` this init happens in two steps.
+    // This needed to be an `Option` because it requires a reference on Merk but it's within the
+    // same struct and during struct init a referenced Merk would be moved inside a struct,
+    // using `Option` this init happens in two steps.
     current_chunk_producer: Option<merk::ChunkProducer<'db, PrefixedRocksDbStorageContext<'db>>>,
 }
 
 impl<'db> SubtreeChunkProducer<'db> {
-    fn new(storage: &'db RocksDbStorage) -> Self {
+    fn new(storage: &'db GroveDb) -> Self {
         SubtreeChunkProducer {
-            storage,
+            grove_db: storage,
             cache: None,
         }
     }
@@ -57,7 +54,7 @@ impl<'db> SubtreeChunkProducer<'db> {
     pub fn get_chunk<'p, P>(&mut self, path: P, index: usize) -> Result<Vec<Op>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: Clone,
+        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
     {
         let path_iter = path.into_iter();
 
@@ -71,12 +68,12 @@ impl<'db> SubtreeChunkProducer<'db> {
         }
 
         if self.cache.is_none() {
-            let ctx = self.storage.get_storage_context(path_iter.clone()).unwrap();
-            let current_merk = Merk::open(ctx)
-                .unwrap()
-                .map_err(|e| Error::CorruptedData(e.to_string()))?;
+            let current_merk = self
+                .grove_db
+                .open_non_transactional_merk_at_path(path_iter.clone())
+                .unwrap()?;
 
-            if current_merk.root_hash().unwrap() == [0; 32] {
+            if current_merk.root_key().is_none() {
                 return Ok(Vec::new());
             }
 
@@ -103,7 +100,7 @@ impl<'db> SubtreeChunkProducer<'db> {
     }
 }
 
-// TODO: make generic over storage context
+// TODO: make generic over storage_cost context
 type MerkRestorer<'db> = merk::Restorer<PrefixedRocksDbStorageContext<'db>>;
 
 type Path = Vec<Vec<u8>>;
@@ -113,8 +110,8 @@ pub struct Restorer<'db> {
     current_merk_restorer: Option<MerkRestorer<'db>>,
     current_merk_chunk_index: usize,
     current_merk_path: Path,
-    queue: VecDeque<(Path, Hash)>,
-    storage: &'db RocksDbStorage,
+    queue: VecDeque<(Path, Vec<u8>, Hash)>,
+    grove_db: &'db GroveDb,
 }
 
 /// Indicates what next piece of information `Restorer` expects or wraps a
@@ -129,19 +126,24 @@ pub enum RestorerResponse {
 pub struct RestorerError(String);
 
 impl<'db> Restorer<'db> {
-    /// Create a GroveDb restorer using a backing storage and root hash.
-    pub fn new(storage: &'db RocksDbStorage, root_hash: Hash) -> Result<Self, RestorerError> {
+    /// Create a GroveDb restorer using a backing storage_cost and root hash.
+    pub fn new(
+        grove_db: &'db GroveDb,
+        _root_key: Vec<u8>,
+        root_hash: Hash,
+    ) -> Result<Self, RestorerError> {
         Ok(Restorer {
             current_merk_restorer: Some(MerkRestorer::new(
-                Merk::open(storage.get_storage_context(empty()).unwrap())
+                Merk::open_base(grove_db.db.get_storage_context(empty()).unwrap())
                     .unwrap()
                     .map_err(|e| RestorerError(e.to_string()))?,
+                None,
                 root_hash,
             )),
             current_merk_chunk_index: 0,
             current_merk_path: vec![],
             queue: VecDeque::new(),
-            storage,
+            grove_db,
         })
     }
 
@@ -160,21 +162,21 @@ impl<'db> Restorer<'db> {
         for op in chunk_ops {
             ops.push(op);
             match ops.last().expect("just inserted") {
-                Op::Push(Node::KV(key, bytes))
-                | Op::PushInverted(Node::KV(key, bytes))
-                | Op::Push(Node::KVValueHash(key, bytes, _))
-                | Op::PushInverted(Node::KVValueHash(key, bytes, _)) => {
-                    if let Element::Tree(hash, _) =
-                        Element::deserialize(bytes).map_err(|e| RestorerError(e.to_string()))?
+                Op::Push(Node::KVValueHash(key, value_bytes, value_hash))
+                | Op::PushInverted(Node::KVValueHash(key, value_bytes, value_hash)) => {
+                    if let Element::Tree(root_key, _) = Element::deserialize(value_bytes)
+                        .map_err(|e| RestorerError(e.to_string()))?
                     {
-                        if hash == [0; 32] || self.current_merk_path.last() == Some(key) {
+                        if root_key.is_none() || self.current_merk_path.last() == Some(key) {
                             // We add only subtrees of the current subtree to queue, skipping
                             // itself; Also skipping empty Merks.
                             continue;
                         }
                         let mut path = self.current_merk_path.clone();
                         path.push(key.clone());
-                        self.queue.push_back((path, hash));
+                        // The value hash is the root tree hash
+                        self.queue
+                            .push_back((path, value_bytes.to_owned(), value_hash.clone()));
                     }
                 }
                 _ => {}
@@ -199,16 +201,16 @@ impl<'db> Restorer<'db> {
                 .expect("restorer exists at this point")
                 .finalize()
                 .map_err(|e| RestorerError(e.to_string()))?;
-            if let Some((next_path, expected_hash)) = self.queue.pop_front() {
+            if let Some((next_path, combining_value, expected_hash)) = self.queue.pop_front() {
                 // Process next subtree.
-                self.current_merk_restorer = Some(MerkRestorer::new(
-                    Merk::open(
-                        self.storage
-                            .get_storage_context(next_path.iter().map(|x| x.as_slice()))
-                            .unwrap(),
-                    )
+                let merk: Merk<PrefixedRocksDbStorageContext> = self
+                    .grove_db
+                    .open_non_transactional_merk_at_path(next_path.iter().map(|a| a.as_ref()))
                     .unwrap()
-                    .map_err(|e| RestorerError(e.to_string()))?,
+                    .map_err(|e| RestorerError(e.to_string()))?;
+                self.current_merk_restorer = Some(MerkRestorer::new(
+                    merk,
+                    Some(combining_value),
                     expected_hash,
                 ));
                 self.current_merk_chunk_index = 0;
@@ -278,7 +280,8 @@ impl<'db> SiblingsChunkProducer<'db> {
 
         let parent_ctx = self
             .chunk_producer
-            .storage
+            .grove_db
+            .db
             .get_storage_context(parent_path.clone())
             .unwrap();
         let mut siblings_iter = Element::iterator(parent_ctx.raw_iter()).unwrap();
@@ -323,7 +326,7 @@ impl<'db> SiblingsChunkProducer<'db> {
     ) -> Result<(), Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: Clone,
+        <P as IntoIterator>::IntoIter: Clone + DoubleEndedIterator,
     {
         let path_iter = subtree_path.into_iter();
 
@@ -386,7 +389,6 @@ impl<'db> BufferedRestorer<'db> {
 #[cfg(test)]
 mod test {
     use rand::RngCore;
-    use storage::rocksdb_storage::test_utils::TempStorage;
     use tempfile::TempDir;
 
     use super::*;
@@ -400,12 +402,12 @@ mod test {
         let replica_tempdir = TempDir::new().unwrap();
 
         {
-            let replica_storage =
-                RocksDbStorage::default_rocksdb_with_path(replica_tempdir.path()).unwrap();
+            let replica_db = GroveDb::open(replica_tempdir.path()).unwrap();
             let mut chunk_producer = original_db.chunks();
 
             let mut restorer = Restorer::new(
-                &replica_storage,
+                &replica_db,
+                original_db.root_key(None).unwrap().unwrap(),
                 original_db.root_hash(None).unwrap().unwrap(),
             )
             .expect("cannot create restorer");
@@ -432,13 +434,13 @@ mod test {
         let replica_tempdir = TempDir::new().unwrap();
 
         {
-            let replica_storage =
-                RocksDbStorage::default_rocksdb_with_path(replica_tempdir.path()).unwrap();
+            let replica_grove_db = GroveDb::open(replica_tempdir.path()).unwrap();
             let mut chunk_producer = SiblingsChunkProducer::new(original_db.chunks());
 
             let mut restorer = BufferedRestorer::new(
                 Restorer::new(
-                    &replica_storage,
+                    &replica_grove_db,
+                    original_db.root_key(None).unwrap().unwrap(),
                     original_db.root_hash(None).unwrap().unwrap(),
                 )
                 .expect("cannot create restorer"),
@@ -512,11 +514,13 @@ mod test {
     #[test]
     fn replicate_wrong_root_hash() {
         let db = make_test_grovedb();
+        let good_key = db.root_key(None).unwrap().unwrap();
         let mut bad_hash = db.root_hash(None).unwrap().unwrap();
         bad_hash[0] = bad_hash[0].wrapping_add(1);
 
-        let temp_storage = TempStorage::default();
-        let mut restorer = Restorer::new(&temp_storage, bad_hash).unwrap();
+        let tmp_dir = TempDir::new().unwrap();
+        let restored_db = GroveDb::open(tmp_dir.path()).unwrap();
+        let mut restorer = Restorer::new(&restored_db, good_key, bad_hash).unwrap();
         let mut chunks = db.chunks();
         assert!(restorer
             .process_chunk(chunks.get_chunk([], 0).unwrap())
@@ -531,6 +535,7 @@ mod test {
             b"key1",
             Element::new_item(b"ayya".to_vec()),
             None,
+            None,
         )
         .unwrap()
         .expect("cannot insert an element");
@@ -539,14 +544,17 @@ mod test {
             b"key1",
             Element::new_item(b"ayyb".to_vec()),
             None,
+            None,
         )
         .unwrap()
         .expect("cannot insert an element");
 
+        let expected_key = db.root_key(None).unwrap().unwrap();
         let expected_hash = db.root_hash(None).unwrap().unwrap();
 
-        let temp_storage = TempStorage::default();
-        let mut restorer = Restorer::new(&temp_storage, expected_hash).unwrap();
+        let tmp_dir = TempDir::new().unwrap();
+        let restored_db = GroveDb::open(tmp_dir.path()).unwrap();
+        let mut restorer = Restorer::new(&restored_db, expected_key, expected_hash).unwrap();
         let mut chunks = db.chunks();
 
         let next_op = restorer
@@ -574,6 +582,7 @@ mod test {
             b"key1",
             Element::new_item(b"ayya".to_vec()),
             None,
+            None,
         )
         .unwrap()
         .expect("cannot insert an element");
@@ -582,16 +591,24 @@ mod test {
             b"key2",
             Element::new_reference(ReferencePathType::SiblingReference(b"key1".to_vec())),
             None,
+            None,
         )
         .unwrap()
         .expect("should insert reference");
-        db.insert([ANOTHER_TEST_LEAF], b"key2", Element::empty_tree(), None)
-            .unwrap()
-            .expect("cannot insert an element");
+        db.insert(
+            [ANOTHER_TEST_LEAF],
+            b"key2",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
         db.insert(
             [ANOTHER_TEST_LEAF, b"key2"],
             b"key3",
             Element::empty_tree(),
+            None,
             None,
         )
         .unwrap()
@@ -600,6 +617,7 @@ mod test {
             [ANOTHER_TEST_LEAF, b"key2", b"key3"],
             b"key4",
             Element::new_item(b"ayyb".to_vec()),
+            None,
             None,
         )
         .unwrap()
@@ -633,7 +651,7 @@ mod test {
         for _ in 0..SUBTREES_FOR_EACH {
             let mut bytes = [0; 8];
             rng.fill_bytes(&mut bytes);
-            db.insert([], &bytes, Element::empty_tree(), None)
+            db.insert([], &bytes, Element::empty_tree(), None, None)
                 .unwrap()
                 .unwrap();
             subtrees.push_front(vec![bytes.clone()]);
@@ -648,7 +666,7 @@ mod test {
                     let mut bytes = [0; 8];
                     rng.fill_bytes(&mut bytes);
 
-                    batch.push(GroveDbOp::insert(
+                    batch.push(GroveDbOp::insert_run_op(
                         path.iter().map(|x| x.to_vec()).collect(),
                         bytes.to_vec(),
                         Element::empty_tree(),
@@ -667,7 +685,7 @@ mod test {
                 rng.fill_bytes(&mut bytes);
                 rng.fill_bytes(&mut bytes_val);
 
-                batch.push(GroveDbOp::insert(
+                batch.push(GroveDbOp::insert_run_op(
                     path.iter().map(|x| x.to_vec()).collect(),
                     bytes.to_vec(),
                     Element::new_item(bytes_val),
@@ -693,6 +711,7 @@ mod test {
             b"key1",
             Element::new_item(b"ayya".to_vec()),
             None,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -700,6 +719,7 @@ mod test {
             [ANOTHER_TEST_LEAF],
             b"key2",
             Element::new_item(b"ayyb".to_vec()),
+            None,
             None,
         )
         .unwrap()
@@ -711,11 +731,14 @@ mod test {
         db.create_checkpoint(&checkpoint_dir).unwrap();
 
         // Alter the db to make difference between current state and checkpoint
-        db.delete([TEST_LEAF], b"key1", None).unwrap().unwrap();
+        db.delete([TEST_LEAF], b"key1", None, None)
+            .unwrap()
+            .unwrap();
         db.insert(
             [TEST_LEAF],
             b"key3",
             Element::new_item(b"ayyd".to_vec()),
+            None,
             None,
         )
         .unwrap()
@@ -724,6 +747,7 @@ mod test {
             [ANOTHER_TEST_LEAF],
             b"key2",
             Element::new_item(b"ayyc".to_vec()),
+            None,
             None,
         )
         .unwrap()

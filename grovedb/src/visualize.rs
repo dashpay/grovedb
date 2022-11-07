@@ -1,7 +1,9 @@
 use std::io::{Result, Write};
 
+use bincode::Options;
+use merk::{Merk, VisualizeableMerk};
 use storage::StorageContext;
-use visualize::{Drawer, Visualize};
+use visualize::{visualize_stdout, Drawer, Visualize};
 
 use crate::{
     reference_path::ReferencePathType, subtree::Element, util::storage_context_optional_tx,
@@ -28,9 +30,9 @@ impl Visualize for Element {
                 // }
                 // drawer.write(b"]")?;
             }
-            Element::Tree(hash, _) => {
+            Element::Tree(root_key, _) => {
                 drawer.write(b"tree: ")?;
-                drawer = hash.visualize(drawer)?;
+                drawer = root_key.as_deref().visualize(drawer)?;
             }
         }
         Ok(drawer)
@@ -111,7 +113,8 @@ impl GroveDb {
                     drawer.write(b" ")?;
                     match element {
                         Element::Tree(..) => {
-                            drawer.write(b"tree:")?;
+                            drawer.write(b"Merk root is: ")?;
+                            drawer = element.visualize(drawer)?;
                             drawer.down();
                             let mut inner_path = path.clone();
                             inner_path.push(key);
@@ -159,6 +162,17 @@ impl Visualize for GroveDb {
     fn visualize<W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>> {
         self.visualize_start(drawer, None)
     }
+}
+
+#[allow(dead_code)]
+pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
+    visualize_stdout(&VisualizeableMerk::new(merk, |bytes: &[u8]| {
+        bincode::DefaultOptions::default()
+            .with_varint_encoding()
+            .reject_trailing_bytes()
+            .deserialize::<Element>(bytes)
+            .expect("unable to deserialize Element")
+    }));
 }
 
 #[cfg(test)]

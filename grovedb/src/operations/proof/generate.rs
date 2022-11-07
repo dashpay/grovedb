@@ -6,7 +6,7 @@ use merk::{
     tree::value_hash,
     KVIterator, Merk, ProofWithoutEncodingResult,
 };
-use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
+use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, StorageContext};
 
 use crate::{
     operations::proof::util::{write_to_vec, ProofType, EMPTY_TREE_HASH},
@@ -37,8 +37,10 @@ impl GroveDb {
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
         // TODO: get rid of this error once root tree is also of type merk
         if path_slices.is_empty() {
-            return Err(Error::InvalidPath("can't generate proof for empty path"))
-                .wrap_with_cost(cost);
+            return Err(Error::InvalidPath(
+                "can't generate proof for empty path".to_owned(),
+            ))
+            .wrap_with_cost(cost);
         }
 
         let subtree_exists = self
@@ -146,8 +148,8 @@ impl GroveDb {
 
             let element = cost_return_on_error_no_add!(&cost, raw_decode(&value_bytes));
             match element {
-                Element::Tree(tree_hash, _) => {
-                    if tree_hash == EMPTY_TREE_HASH {
+                Element::Tree(root_key, _) => {
+                    if root_key.is_none() {
                         continue;
                     }
 
@@ -325,7 +327,7 @@ impl GroveDb {
             .unwrap()
             .expect("should generate proof");
 
-        cost_return_on_error!(&mut cost, self.replace_references(path, &mut proof_result));
+        cost_return_on_error!(&mut cost, self.post_process_proof(path, &mut proof_result));
 
         let mut proof_bytes = Vec::with_capacity(128);
         encode_into(proof_result.proof.iter(), &mut proof_bytes);
@@ -338,8 +340,10 @@ impl GroveDb {
         Ok((proof_result.limit, proof_result.offset)).wrap_with_cost(cost)
     }
 
-    /// Replaces references with the base item they point to
-    fn replace_references<'p, P>(
+    /// Converts Items to Node::KV from Node::KVValueHash
+    /// Converts References to Node::KVRefValueHash and sets the value to the
+    /// referenced element
+    fn post_process_proof<'p, P>(
         &self,
         path: P,
         proof_result: &mut ProofWithoutEncodingResult,
@@ -357,36 +361,42 @@ impl GroveDb {
                 Op::Push(node) | Op::PushInverted(node) => match node {
                     Node::KV(key, value) | Node::KVValueHash(key, value, ..) => {
                         let elem = Element::deserialize(value);
-                        if let Ok(Element::Reference(reference_path, ..)) = elem {
-                            let mut current_path = path_iter.clone();
-                            let absolute_path = cost_return_on_error!(
-                                &mut cost,
-                                path_from_reference_path_type(
-                                    reference_path,
-                                    current_path,
-                                    Some(key.as_slice())
+                        match elem {
+                            Ok(Element::Reference(reference_path, ..)) => {
+                                let current_path = path_iter.clone();
+                                let absolute_path = cost_return_on_error!(
+                                    &mut cost,
+                                    path_from_reference_path_type(
+                                        reference_path,
+                                        current_path,
+                                        Some(key.as_slice())
+                                    )
+                                    .wrap_with_cost(OperationCost::default())
+                                );
+
+                                let referenced_elem = cost_return_on_error!(
+                                    &mut cost,
+                                    self.follow_reference(absolute_path, None)
+                                );
+
+                                let serialized_referenced_elem = referenced_elem.serialize();
+                                if serialized_referenced_elem.is_err() {
+                                    return Err(Error::CorruptedData(String::from(
+                                        "unable to serialize element",
+                                    )))
+                                    .wrap_with_cost(cost);
+                                }
+
+                                *node = Node::KVRefValueHash(
+                                    key.to_owned(),
+                                    serialized_referenced_elem.expect("confirmed ok above"),
+                                    value_hash(value).unwrap_add_cost(&mut cost),
                                 )
-                                .wrap_with_cost(OperationCost::default())
-                            );
-
-                            let referenced_elem = cost_return_on_error!(
-                                &mut cost,
-                                self.follow_reference(absolute_path, None)
-                            );
-
-                            let serialized_referenced_elem = referenced_elem.serialize();
-                            if serialized_referenced_elem.is_err() {
-                                return Err(Error::CorruptedData(String::from(
-                                    "unable to serialize element",
-                                )))
-                                .wrap_with_cost(cost);
                             }
-
-                            *node = Node::KVRefValueHash(
-                                key.to_owned(),
-                                serialized_referenced_elem.expect("confirmed ok above"),
-                                value_hash(value).unwrap_add_cost(&mut cost),
-                            )
+                            Ok(Element::Item(..)) => {
+                                *node = Node::KV(key.to_owned(), value.to_owned())
+                            }
+                            _ => continue,
                         }
                     }
                     _ => continue,
@@ -403,9 +413,6 @@ impl GroveDb {
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
-        self.db.get_storage_context(path).flat_map(|storage| {
-            Merk::open(storage)
-                .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
-        })
+        self.open_non_transactional_merk_at_path(path)
     }
 }

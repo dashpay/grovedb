@@ -3,15 +3,19 @@ use integer_encoding::*;
 
 /// The length of a `Hash` (in bytes).
 pub const HASH_LENGTH: usize = 32;
+pub const HASH_LENGTH_U32: u32 = 32;
+pub const HASH_LENGTH_U32_X2: u32 = 64;
+pub const HASH_BLOCK_SIZE: usize = 64;
+pub const HASH_BLOCK_SIZE_U32: u32 = 64;
 
 /// A zero-filled `Hash`.
-pub const NULL_HASH: Hash = [0; HASH_LENGTH];
+pub const NULL_HASH: CryptoHash = [0; HASH_LENGTH];
 
 /// A cryptographic hash digest.
-pub type Hash = [u8; HASH_LENGTH];
+pub type CryptoHash = [u8; HASH_LENGTH];
 
 /// Hashes a value
-pub fn value_hash(value: &[u8]) -> CostContext<Hash> {
+pub fn value_hash(value: &[u8]) -> CostContext<CryptoHash> {
     // TODO: make generic to allow other hashers
     let mut hasher = blake3::Hasher::new();
 
@@ -19,11 +23,13 @@ pub fn value_hash(value: &[u8]) -> CostContext<Hash> {
     hasher.update(val_length.as_slice());
     hasher.update(value);
 
+    let hashes = 1 + (hasher.count() - 1) / 64;
+
     let res = hasher.finalize();
-    let mut hash: Hash = Default::default();
+    let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
     hash.wrap_with_cost(OperationCost {
-        hash_node_calls: 1,
+        hash_node_calls: hashes as u16,
         ..Default::default()
     })
 }
@@ -31,7 +37,7 @@ pub fn value_hash(value: &[u8]) -> CostContext<Hash> {
 /// Hashes a key/value pair.
 ///
 /// The result is Hash(key_len, key, Hash(value_len, value))
-pub fn kv_hash(key: &[u8], value: &[u8]) -> CostContext<Hash> {
+pub fn kv_hash(key: &[u8], value: &[u8]) -> CostContext<CryptoHash> {
     let mut cost = OperationCost::default();
 
     // TODO: make generic to allow other hashers
@@ -44,16 +50,18 @@ pub fn kv_hash(key: &[u8], value: &[u8]) -> CostContext<Hash> {
     let value_hash = value_hash(value);
     hasher.update(value_hash.unwrap_add_cost(&mut cost).as_slice());
 
+    let hashes = 1 + (hasher.count() - 1) / 64;
+
     let res = hasher.finalize();
-    let mut hash: Hash = Default::default();
+    let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
 
-    cost.hash_node_calls += 1;
+    cost.hash_node_calls += hashes as u16;
     hash.wrap_with_cost(cost)
 }
 
 /// Computes the kv hash given a kv digest
-pub fn kv_digest_to_kv_hash(key: &[u8], value_hash: &Hash) -> CostContext<Hash> {
+pub fn kv_digest_to_kv_hash(key: &[u8], value_hash: &CryptoHash) -> CostContext<CryptoHash> {
     let mut hasher = blake3::Hasher::new();
 
     let key_length = key.len().encode_var_vec();
@@ -62,44 +70,52 @@ pub fn kv_digest_to_kv_hash(key: &[u8], value_hash: &Hash) -> CostContext<Hash> 
 
     hasher.update(value_hash.as_slice());
 
+    let hashes = 1 + (hasher.count() - 1) / 64;
+
     let res = hasher.finalize();
-    let mut hash: Hash = Default::default();
+    let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
     hash.wrap_with_cost(OperationCost {
-        hash_node_calls: 1,
+        hash_node_calls: hashes as u16,
         ..Default::default()
     })
 }
 
 /// Hashes a node based on the hash of its key/value pair, the hash of its left
 /// child (if any), and the hash of its right child (if any).
-pub fn node_hash(kv: &Hash, left: &Hash, right: &Hash) -> CostContext<Hash> {
+pub fn node_hash(
+    kv: &CryptoHash,
+    left: &CryptoHash,
+    right: &CryptoHash,
+) -> CostContext<CryptoHash> {
     // TODO: make generic to allow other hashers
     let mut hasher = blake3::Hasher::new();
     hasher.update(kv);
     hasher.update(left);
     hasher.update(right);
 
+    let hashes = 1 + (hasher.count() - 1) / 64;
+
     let res = hasher.finalize();
-    let mut hash: Hash = Default::default();
+    let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
     hash.wrap_with_cost(OperationCost {
-        hash_node_calls: 1,
+        hash_node_calls: hashes as u16,
         ..Default::default()
     })
 }
 
 /// Combines two hash values into one
-pub fn combine_hash(hash_one: &Hash, hash_two: &Hash) -> CostContext<Hash> {
+pub fn combine_hash(hash_one: &CryptoHash, hash_two: &CryptoHash) -> CostContext<CryptoHash> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(hash_one);
     hasher.update(hash_two);
 
     let res = hasher.finalize();
-    let mut hash: Hash = Default::default();
+    let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
     hash.wrap_with_cost(OperationCost {
-        hash_node_calls: 1,
+        hash_node_calls: 1, // as this will fit on exactly 1 block
         ..Default::default()
     })
 }

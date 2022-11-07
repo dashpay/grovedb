@@ -6,10 +6,11 @@ use ed::{Decode, Encode};
 use storage::StorageContext;
 
 use super::Tree;
+use crate::tree::TreeInner;
 
 impl Tree {
-    pub fn decode_raw(bytes: &[u8]) -> Result<Self, Error> {
-        Decode::decode(bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
+    pub fn decode_raw(bytes: &[u8], key: Vec<u8>) -> Result<Self, Error> {
+        Tree::decode(key, bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
     }
 
     pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> CostContext<Result<Option<Self>, Error>>
@@ -23,16 +24,12 @@ impl Tree {
 
         let tree_opt = cost_return_on_error_no_add!(
             &cost,
-            tree_bytes.map(|x| Tree::decode_raw(&x)).transpose()
+            tree_bytes
+                .map(|x| Tree::decode_raw(&x, key.as_ref().to_vec()))
+                .transpose()
         );
 
-        Ok(if let Some(mut tree) = tree_opt {
-            tree.set_key(key.as_ref().to_vec());
-            Some(tree)
-        } else {
-            None
-        })
-        .wrap_with_cost(cost)
+        Ok(tree_opt).wrap_with_cost(cost)
     }
 }
 
@@ -40,33 +37,44 @@ impl Tree {
     #[inline]
     pub fn encode(&self) -> Vec<u8> {
         // operation is infallible so it's ok to unwrap
-        Encode::encode(self).unwrap()
+        Encode::encode(&self.inner).unwrap()
     }
 
     #[inline]
     pub fn encode_into(&self, dest: &mut Vec<u8>) {
         // operation is infallible so it's ok to unwrap
-        Encode::encode_into(self, dest).unwrap()
+        Encode::encode_into(&self.inner, dest).unwrap()
     }
 
     #[inline]
     pub fn encoding_length(&self) -> usize {
         // operation is infallible so it's ok to unwrap
-        Encode::encoding_length(self).unwrap()
+        Encode::encoding_length(&self.inner).unwrap()
+    }
+
+    #[inline]
+    pub fn value_encoding_length_with_parent_to_child_reference(&self) -> u32 {
+        // in the case of a grovedb tree the value cost is fixed
+        if let Some(value_cost) = self.inner.kv.value_defined_cost {
+            self.inner.kv.layered_value_byte_cost_size(value_cost)
+        } else {
+            self.inner.kv.value_byte_cost_size()
+        }
     }
 
     #[inline]
     pub fn decode_into(&mut self, key: Vec<u8>, input: &[u8]) -> ed::Result<()> {
-        Decode::decode_into(self, input)?;
-        self.inner.kv.key = key;
+        let mut tree_inner: TreeInner = Decode::decode(input)?;
+        tree_inner.kv.key = key;
+        self.inner = Box::new(tree_inner);
         Ok(())
     }
 
     #[inline]
     pub fn decode(key: Vec<u8>, input: &[u8]) -> ed::Result<Self> {
-        let mut tree: Tree = Decode::decode(input)?;
-        tree.inner.kv.key = key;
-        Ok(tree)
+        let mut tree_inner: TreeInner = Decode::decode(input)?;
+        tree_inner.kv.key = key;
+        Ok(Tree::new_with_tree_inner(tree_inner))
     }
 }
 
@@ -78,6 +86,10 @@ mod tests {
     fn encode_leaf_tree() {
         let tree = Tree::from_fields(vec![0], vec![1], [55; 32], None, None).unwrap();
         assert_eq!(tree.encoding_length(), 67);
+        assert_eq!(
+            tree.value_encoding_length_with_parent_to_child_reference(),
+            102
+        );
         assert_eq!(
             tree.encode(),
             vec![
@@ -175,7 +187,15 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(tree.encoding_length(), 103);
+        assert_eq!(
+            tree.encoding_length(), /* this does not have the key encoded, just value and
+                                     * left/right */
+            103
+        );
+        assert_eq!(
+            tree.value_encoding_length_with_parent_to_child_reference(),
+            102 // This is 1 less, because the right "Option" byte was not paid for
+        );
         assert_eq!(
             tree.encode(),
             vec![
@@ -199,7 +219,7 @@ mod tests {
         ];
         let tree = Tree::decode(vec![0], bytes.as_slice()).expect("should decode correctly");
         assert_eq!(tree.key(), &[0]);
-        assert_eq!(tree.value(), &[1]);
+        assert_eq!(tree.value_as_slice(), &[1]);
     }
 
     #[test]
@@ -213,7 +233,7 @@ mod tests {
         ];
         let tree = Tree::decode(vec![0], bytes.as_slice()).expect("should decode correctly");
         assert_eq!(tree.key(), &[0]);
-        assert_eq!(tree.value(), &[1]);
+        assert_eq!(tree.value_as_slice(), &[1]);
         if let Some(Link::Reference {
             key,
             child_heights,

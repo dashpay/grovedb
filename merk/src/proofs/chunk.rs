@@ -6,7 +6,7 @@ use storage::RawIterator;
 #[cfg(feature = "full")]
 use {
     super::tree::{execute, Tree as ProofTree},
-    crate::tree::Hash,
+    crate::tree::CryptoHash,
     crate::tree::Tree,
 };
 
@@ -171,15 +171,19 @@ pub(crate) fn get_next_chunk(
         }
 
         let encoded_node = iter.value().unwrap_add_cost(&mut cost).unwrap();
-        Tree::decode_into(&mut node, vec![], encoded_node);
+        cost_return_on_error_no_add!(
+            &cost,
+            Tree::decode_into(&mut node, vec![], encoded_node).map_err(|e| e.into())
+        );
 
         // TODO: Only use the KVValueHash if needed, saves 32 bytes
         //  only needed when dealing with references and trees
         let kv = Node::KVValueHash(
             key.to_vec(),
-            node.value().to_vec(),
+            node.value_ref().to_vec(),
             node.value_hash().clone(),
         );
+
         chunk.push(Op::Push(kv));
 
         if node.link(true).is_some() {
@@ -215,7 +219,7 @@ pub(crate) fn get_next_chunk(
 #[allow(dead_code)] // TODO: remove when proofs will be enabled
 pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op>>>(
     ops: I,
-    expected_hash: Hash,
+    expected_hash: CryptoHash,
 ) -> CostContext<Result<ProofTree>> {
     execute(ops, false, |node| match node {
         Node::KVValueHash(..) | Node::KV(..) => Ok(()),
@@ -313,6 +317,7 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
 mod tests {
     use std::usize;
 
+    use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     use storage::StorageContext;
 
     use super::{super::tree::Tree, *};
@@ -380,14 +385,24 @@ mod tests {
             counts.hash,
             2usize.pow(MIN_TRUNK_HEIGHT as u32) + MIN_TRUNK_HEIGHT - 1
         );
-        assert_eq!(counts.kv_value_hash, 2usize.pow(MIN_TRUNK_HEIGHT as u32) - 1);
+        assert_eq!(
+            counts.kv_value_hash,
+            2usize.pow(MIN_TRUNK_HEIGHT as u32) - 1
+        );
         assert_eq!(counts.kv_hash, MIN_TRUNK_HEIGHT + 1);
     }
 
     #[test]
     fn one_node_tree_trunk_roundtrip() {
         let mut tree = BaseTree::new(vec![0], vec![]).unwrap();
-        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
+        )
+        .unwrap()
+        .unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
@@ -408,7 +423,14 @@ mod tests {
         let mut tree = BaseTree::new(vec![0], vec![])
             .unwrap()
             .attach(false, Some(BaseTree::new(vec![1], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
+        )
+        .unwrap()
+        .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
@@ -428,7 +450,14 @@ mod tests {
         let mut tree = BaseTree::new(vec![1], vec![])
             .unwrap()
             .attach(true, Some(BaseTree::new(vec![0], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
+        )
+        .unwrap()
+        .unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
@@ -449,7 +478,14 @@ mod tests {
             .unwrap()
             .attach(true, Some(BaseTree::new(vec![0], vec![]).unwrap()))
             .attach(false, Some(BaseTree::new(vec![2], vec![]).unwrap()));
-        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
+        )
+        .unwrap()
+        .unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
@@ -466,7 +502,7 @@ mod tests {
     fn leaf_chunk_roundtrip() {
         let mut merk = TempMerk::new();
         let batch = make_batch_seq(0..31);
-        merk.apply::<_, Vec<_>>(batch.as_slice(), &[])
+        merk.apply::<_, Vec<_>>(batch.as_slice(), &[], None)
             .unwrap()
             .unwrap();
 

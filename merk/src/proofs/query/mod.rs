@@ -17,7 +17,10 @@ use storage::RawIterator;
 use {super::Op, std::collections::LinkedList};
 
 use super::{tree::execute, Decoder, Node};
-use crate::tree::{Fetch, Hash as MerkHash, Link, RefWalker};
+use crate::{
+    tree::{value_hash, CryptoHash as MerkHash, Fetch, Link, RefWalker},
+    CryptoHash,
+};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct SubqueryBranch {
@@ -799,16 +802,20 @@ impl<'a, S> RefWalker<'a, S>
 where
     S: Fetch + Sized + Clone,
 {
+    #[allow(dead_code)]
     /// Creates a `Node::KV` from the key/value pair of the root node.
     pub(crate) fn to_kv_node(&self) -> Node {
-        Node::KV(self.tree().key().to_vec(), self.tree().value().to_vec())
+        Node::KV(
+            self.tree().key().to_vec(),
+            self.tree().value_as_slice().to_vec(),
+        )
     }
 
     /// Creates a `Node::KVValueHash` from the key/value pair of the root node.
     pub(crate) fn to_kv_value_hash_node(&self) -> Node {
         Node::KVValueHash(
             self.tree().key().to_vec(),
-            self.tree().value().to_vec(),
+            self.tree().value_ref().to_vec(),
             self.tree().value_hash().clone(),
         )
     }
@@ -1006,9 +1013,9 @@ where
                         Op::PushInverted(self.to_kvdigest_node())
                     }
                 } else if left_to_right {
-                    Op::Push(self.to_kv_node())
+                    Op::Push(self.to_kv_value_hash_node())
                 } else {
-                    Op::PushInverted(self.to_kv_node())
+                    Op::PushInverted(self.to_kv_value_hash_node())
                 }
             }
             Err(_) => {
@@ -1135,165 +1142,171 @@ pub fn execute_proof(
     let ops = Decoder::new(bytes);
 
     let root_wrapped = execute(ops, true, |node| {
-        let mut execute_node = |key: &Vec<u8>, value: Option<&Vec<u8>>| -> Result<_> {
-            while let Some(item) = query.peek() {
-                // get next item in query
-                let query_item = *item;
-                let (lower_bound, start_non_inclusive) = query_item.lower_bound();
-                let (upper_bound, end_inclusive) = query_item.upper_bound();
+        let mut execute_node =
+            |key: &Vec<u8>, value: Option<&Vec<u8>>, value_hash: CryptoHash| -> Result<_> {
+                while let Some(item) = query.peek() {
+                    // get next item in query
+                    let query_item = *item;
+                    let (lower_bound, start_non_inclusive) = query_item.lower_bound();
+                    let (upper_bound, end_inclusive) = query_item.upper_bound();
 
-                let terminate = if left_to_right {
-                    // we have not reached next queried part of tree
-                    // or we intersect with the query_item but at the start which is non inclusive;
-                    // continue to the next push
-                    *query_item > key.as_slice()
-                        || (start_non_inclusive
-                            && lower_bound.is_some()
-                            && lower_bound.unwrap() == key.as_slice())
-                } else {
-                    // we intersect with the query_item but at the end which is non inclusive;
-                    // continue to the next push
-                    *query_item < key.as_slice()
-                        || (!end_inclusive
-                            && upper_bound.is_some()
-                            && upper_bound.unwrap() == key.as_slice())
-                };
-                if terminate {
-                    break;
-                }
-
-                if !in_range {
-                    // this is the first data we have encountered for this query item
-                    if left_to_right {
-                        // ensure lower bound of query item is proven
-                        match last_push {
-                            // lower bound is proven - we have an exact match
-                            // ignoring the case when the lower bound is unbounded
-                            // as it's not possible the get an exact key match for
-                            // an unbounded value
-                            _ if Some(key.as_slice()) == query_item.lower_bound().0 => {}
-
-                            // lower bound is proven - this is the leftmost node
-                            // in the tree
-                            None => {}
-
-                            // lower bound is proven - the preceding tree node
-                            // is lower than the bound
-                            Some(Node::KV(..)) => {}
-                            Some(Node::KVDigest(..)) => {}
-                            Some(Node::KVRefValueHash(..)) => {}
-
-                            // cannot verify lower bound - we have an abridged
-                            // tree so we cannot tell what the preceding key was
-                            Some(_) => {
-                                bail!("Cannot verify lower bound of queried range");
-                            }
-                        }
+                    let terminate = if left_to_right {
+                        // we have not reached next queried part of tree
+                        // or we intersect with the query_item but at the start which is non
+                        // inclusive; continue to the next push
+                        *query_item > key.as_slice()
+                            || (start_non_inclusive
+                                && lower_bound.is_some()
+                                && lower_bound.unwrap() == key.as_slice())
                     } else {
-                        // ensure upper bound of query item is proven
-                        match last_push {
-                            // upper bound is proven - we have an exact match
-                            // ignoring the case when the upper bound is unbounded
-                            // as it's not possible the get an exact key match for
-                            // an unbounded value
-                            _ if Some(key.as_slice()) == query_item.upper_bound().0 => {}
+                        // we intersect with the query_item but at the end which is non inclusive;
+                        // continue to the next push
+                        *query_item < key.as_slice()
+                            || (!end_inclusive
+                                && upper_bound.is_some()
+                                && upper_bound.unwrap() == key.as_slice())
+                    };
+                    if terminate {
+                        break;
+                    }
 
-                            // lower bound is proven - this is the rightmost node
-                            // in the tree
-                            None => {}
+                    if !in_range {
+                        // this is the first data we have encountered for this query item
+                        if left_to_right {
+                            // ensure lower bound of query item is proven
+                            match last_push {
+                                // lower bound is proven - we have an exact match
+                                // ignoring the case when the lower bound is unbounded
+                                // as it's not possible the get an exact key match for
+                                // an unbounded value
+                                _ if Some(key.as_slice()) == query_item.lower_bound().0 => {}
 
-                            // upper bound is proven - the preceding tree node
-                            // is greater than the bound
-                            Some(Node::KV(..)) => {}
-                            Some(Node::KVDigest(..)) => {}
-                            Some(Node::KVRefValueHash(..)) => {}
+                                // lower bound is proven - this is the leftmost node
+                                // in the tree
+                                None => {}
 
-                            // cannot verify upper bound - we have an abridged
-                            // tree so we cannot tell what the previous key was
-                            Some(_) => {
-                                bail!("Cannot verify upper bound of queried range");
+                                // lower bound is proven - the preceding tree node
+                                // is lower than the bound
+                                Some(Node::KV(..)) => {}
+                                Some(Node::KVDigest(..)) => {}
+                                Some(Node::KVRefValueHash(..)) => {}
+                                Some(Node::KVValueHash(..)) => {}
+
+                                // cannot verify lower bound - we have an abridged
+                                // tree so we cannot tell what the preceding key was
+                                Some(_) => {
+                                    bail!("Cannot verify lower bound of queried range");
+                                }
+                            }
+                        } else {
+                            // ensure upper bound of query item is proven
+                            match last_push {
+                                // upper bound is proven - we have an exact match
+                                // ignoring the case when the upper bound is unbounded
+                                // as it's not possible the get an exact key match for
+                                // an unbounded value
+                                _ if Some(key.as_slice()) == query_item.upper_bound().0 => {}
+
+                                // lower bound is proven - this is the rightmost node
+                                // in the tree
+                                None => {}
+
+                                // upper bound is proven - the preceding tree node
+                                // is greater than the bound
+                                Some(Node::KV(..)) => {}
+                                Some(Node::KVDigest(..)) => {}
+                                Some(Node::KVRefValueHash(..)) => {}
+                                Some(Node::KVValueHash(..)) => {}
+
+                                // cannot verify upper bound - we have an abridged
+                                // tree so we cannot tell what the previous key was
+                                Some(_) => {
+                                    bail!("Cannot verify upper bound of queried range");
+                                }
                             }
                         }
                     }
-                }
 
-                if left_to_right {
-                    if query_item.upper_bound().0 != None
-                        && Some(key.as_slice()) >= query_item.upper_bound().0
+                    if left_to_right {
+                        if query_item.upper_bound().0 != None
+                            && Some(key.as_slice()) >= query_item.upper_bound().0
+                        {
+                            // at or past upper bound of range (or this was an exact
+                            // match on a single-key queryitem), advance to next query
+                            // item
+                            query.next();
+                            in_range = false;
+                        } else {
+                            // have not reached upper bound, we expect more values
+                            // to be proven in the range (and all pushes should be
+                            // unabridged until we reach end of range)
+                            in_range = true;
+                        }
+                    } else if query_item.lower_bound().0 != None
+                        && Some(key.as_slice()) <= query_item.lower_bound().0
                     {
-                        // at or past upper bound of range (or this was an exact
+                        // at or before lower bound of range (or this was an exact
                         // match on a single-key queryitem), advance to next query
                         // item
                         query.next();
                         in_range = false;
                     } else {
-                        // have not reached upper bound, we expect more values
+                        // have not reached lower bound, we expect more values
                         // to be proven in the range (and all pushes should be
                         // unabridged until we reach end of range)
                         in_range = true;
                     }
-                } else if query_item.lower_bound().0 != None
-                    && Some(key.as_slice()) <= query_item.lower_bound().0
-                {
-                    // at or before lower bound of range (or this was an exact
-                    // match on a single-key queryitem), advance to next query
-                    // item
-                    query.next();
-                    in_range = false;
-                } else {
-                    // have not reached lower bound, we expect more values
-                    // to be proven in the range (and all pushes should be
-                    // unabridged until we reach end of range)
-                    in_range = true;
-                }
 
-                // this push matches the queried item
-                if query_item.contains(key) {
-                    // if there are still offset slots, and node is of type kvdigest
-                    // reduce the offset counter
-                    // also, verify that a kv node was not pushed before offset is exhausted
-                    if let Some(offset) = current_offset {
-                        if offset > 0 && value == None {
-                            current_offset = Some(offset - 1);
-                            break;
-                        } else if offset > 0 && value != None {
-                            // inserting a kv node before exhausting offset
-                            bail!("Proof returns data before offset is exhausted");
-                        }
-                    }
-
-                    // offset is equal to zero or none
-                    if let Some(val) = value {
-                        if let Some(limit) = current_limit {
-                            if limit == 0 {
-                                bail!("Proof returns more data than limit");
-                            } else {
-                                current_limit = Some(limit - 1);
-                                if current_limit == Some(0) {
-                                    in_range = false;
-                                }
+                    // this push matches the queried item
+                    if query_item.contains(key) {
+                        // if there are still offset slots, and node is of type kvdigest
+                        // reduce the offset counter
+                        // also, verify that a kv node was not pushed before offset is exhausted
+                        if let Some(offset) = current_offset {
+                            if offset > 0 && value == None {
+                                current_offset = Some(offset - 1);
+                                break;
+                            } else if offset > 0 && value != None {
+                                // inserting a kv node before exhausting offset
+                                bail!("Proof returns data before offset is exhausted");
                             }
                         }
-                        // add data to output
-                        output.push((key.clone(), val.clone()));
 
-                        // continue to next push
-                        break;
-                    } else {
-                        bail!("Proof is missing data for query");
+                        // offset is equal to zero or none
+                        if let Some(val) = value {
+                            if let Some(limit) = current_limit {
+                                if limit == 0 {
+                                    bail!("Proof returns more data than limit");
+                                } else {
+                                    current_limit = Some(limit - 1);
+                                    if current_limit == Some(0) {
+                                        in_range = false;
+                                    }
+                                }
+                            }
+                            // add data to output
+                            output.push((key.clone(), val.clone(), value_hash));
+
+                            // continue to next push
+                            break;
+                        } else {
+                            bail!("Proof is missing data for query");
+                        }
                     }
+                    {}
+                    // continue to next queried item
                 }
-                // continue to next queried item
-            }
-            Ok(())
-        };
+                Ok(())
+            };
 
         if let Node::KV(key, value) = node {
-            execute_node(key, Some(value))?;
-        } else if let Node::KVDigest(key, _) = node {
-            execute_node(key, None)?;
-        } else if let Node::KVRefValueHash(key, value, _) = node {
-            execute_node(key, Some(value))?;
+            execute_node(key, Some(value), value_hash(value).unwrap())?;
+        } else if let Node::KVValueHash(key, value, value_hash) = node {
+            execute_node(key, Some(value), *value_hash)?;
+        } else if let Node::KVDigest(key, value_hash) = node {
+            execute_node(key, None, *value_hash)?;
+        } else if let Node::KVRefValueHash(key, value, value_hash) = node {
+            execute_node(key, Some(value), *value_hash)?;
         } else if in_range {
             // we encountered a queried range but the proof was abridged (saw a
             // non-KV push), we are missing some part of the range
@@ -1317,6 +1330,7 @@ pub fn execute_proof(
                 Some(Node::KV(..)) => {}
                 Some(Node::KVDigest(..)) => {}
                 Some(Node::KVRefValueHash(..)) => {}
+                Some(Node::KVValueHash(..)) => {}
 
                 // proof contains abridged data so we cannot verify absence of
                 // remaining query items
@@ -1338,7 +1352,7 @@ pub fn execute_proof(
 
 #[derive(PartialEq, Eq, Debug)]
 pub struct ProofVerificationResult {
-    pub result_set: Vec<(Vec<u8>, Vec<u8>)>,
+    pub result_set: Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,
     pub limit: Option<u16>,
     pub offset: Option<u16>,
 }
@@ -1369,6 +1383,8 @@ pub fn verify_query(
 #[allow(deprecated)]
 #[cfg(test)]
 mod test {
+    use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
+
     use super::{
         super::{encoding::encode_into, *},
         *,
@@ -1379,14 +1395,30 @@ mod test {
         tree::{NoopCommit, PanicSource, RefWalker, Tree},
     };
 
+    fn compare_result_tuples(
+        result_set: Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,
+        expected_result_set: Vec<(Vec<u8>, Vec<u8>)>,
+    ) {
+        assert_eq!(expected_result_set.len(), result_set.len());
+        for i in 0..expected_result_set.len() {
+            assert_eq!(expected_result_set[i].0, result_set[i].0);
+            assert_eq!(expected_result_set[i].1, result_set[i].1);
+        }
+    }
+
     fn make_3_node_tree() -> Tree {
         let mut tree = Tree::new(vec![5], vec![5])
             .unwrap()
             .attach(true, Some(Tree::new(vec![3], vec![3]).unwrap()))
             .attach(false, Some(Tree::new(vec![7], vec![7]).unwrap()));
-        tree.commit(&mut NoopCommit {})
-            .unwrap()
-            .expect("commit failed");
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
+        )
+        .unwrap()
+        .expect("commit failed");
         tree
     }
 
@@ -1398,7 +1430,12 @@ mod test {
             .attach(true, Some(two_tree))
             .attach(false, Some(four_tree));
         three_tree
-            .commit(&mut NoopCommit {})
+            .commit(
+                &mut NoopCommit {},
+                &|_, _| Ok(0),
+                &mut |_, _, _| Ok((false, None)),
+                &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
+            )
             .unwrap()
             .expect("commit failed");
 
@@ -1407,7 +1444,12 @@ mod test {
             .unwrap()
             .attach(true, Some(seven_tree));
         eight_tree
-            .commit(&mut NoopCommit {})
+            .commit(
+                &mut NoopCommit {},
+                &|_, _| Ok(0),
+                &mut |_, _, _| Ok((false, None)),
+                &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
+            )
             .unwrap()
             .expect("commit failed");
 
@@ -1416,7 +1458,12 @@ mod test {
             .attach(true, Some(three_tree))
             .attach(false, Some(eight_tree));
         root_tree
-            .commit(&mut NoopCommit {})
+            .commit(
+                &mut NoopCommit {},
+                &|_, _| Ok(0),
+                &mut |_, _, _| Ok((false, None)),
+                &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
+            )
             .unwrap()
             .expect("commit failed");
 
@@ -1458,7 +1505,7 @@ mod test {
             .expect("verify failed");
 
         let mut values = std::collections::HashMap::new();
-        for (key, value) in result.result_set {
+        for (key, value, _) in result.result_set {
             assert!(values.insert(key, value).is_none());
         }
 
@@ -1719,7 +1766,17 @@ mod test {
                 82, 205, 81, 207, 60, 90, 166, 78, 184, 53, 134, 79, 66, 255
             ])))
         );
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![5],
+                vec![5],
+                [
+                    116, 30, 0, 135, 25, 118, 86, 14, 12, 107, 215, 214, 133, 122, 48, 45, 180, 21,
+                    158, 223, 88, 148, 181, 149, 189, 65, 121, 19, 81, 118, 11, 106
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
             iter.next(),
@@ -1748,7 +1805,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
     }
 
     #[test]
@@ -1763,7 +1820,17 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![3],
+                vec![3],
+                [
+                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
+                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
+                ]
+            )))
+        );
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVHash([
@@ -1799,7 +1866,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![3], vec![3])]);
+        compare_result_tuples(res.result_set, vec![(vec![3], vec![3])]);
     }
 
     #[test]
@@ -1814,7 +1881,17 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![3],
+                vec![3],
+                [
+                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
+                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
+                ]
+            )))
+        );
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVHash([
@@ -1823,7 +1900,17 @@ mod test {
             ])))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![7],
+                vec![7],
+                [
+                    63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
+                    51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Child));
         assert!(iter.next().is_none());
         assert_eq!(absence, (false, false));
@@ -1844,10 +1931,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![3], vec![3]), (vec![7], vec![7]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![3], vec![3]), (vec![7], vec![7])]);
     }
 
     #[test]
@@ -1866,10 +1950,40 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![3],
+                vec![3],
+                [
+                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
+                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
+                ]
+            )))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![5],
+                vec![5],
+                [
+                    116, 30, 0, 135, 25, 118, 86, 14, 12, 107, 215, 214, 133, 122, 48, 45, 180, 21,
+                    158, 223, 88, 148, 181, 149, 189, 65, 121, 19, 81, 118, 11, 106
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![7],
+                vec![7],
+                [
+                    63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
+                    51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Child));
         assert!(iter.next().is_none());
         assert_eq!(absence, (false, false));
@@ -1890,9 +2004,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![3], vec![3]), (vec![5], vec![5]), (vec![7], vec![7]),]
+            vec![(vec![3], vec![3]), (vec![5], vec![5]), (vec![7], vec![7])],
         );
     }
 
@@ -1953,7 +2067,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
     }
 
     #[test]
@@ -2016,7 +2130,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
     }
 
     #[test]
@@ -2063,7 +2177,14 @@ mod test {
                         ),
                 ),
             );
-        tree.commit(&mut NoopCommit {}).unwrap().unwrap();
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
+        )
+        .unwrap()
+        .unwrap();
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 
@@ -2079,11 +2200,51 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![1], vec![1]))));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![2], vec![2]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![1],
+                vec![1],
+                [
+                    32, 34, 236, 157, 87, 27, 167, 116, 207, 158, 131, 208, 25, 73, 98, 245, 209,
+                    227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199, 149, 144, 21
+                ]
+            )))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![2],
+                vec![2],
+                [
+                    183, 215, 112, 4, 15, 120, 14, 157, 239, 246, 188, 3, 138, 190, 166, 110, 16,
+                    139, 136, 208, 152, 209, 109, 36, 205, 116, 134, 235, 103, 16, 96, 178
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![3],
+                vec![3],
+                [
+                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
+                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
+                ]
+            )))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![4],
+                vec![4],
+                [
+                    198, 129, 51, 156, 134, 199, 7, 21, 172, 89, 146, 71, 4, 16, 82, 205, 89, 51,
+                    227, 215, 139, 195, 237, 202, 159, 191, 209, 172, 156, 38, 239, 192
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(iter.next(), Some(&Op::Child));
         assert_eq!(
@@ -2110,11 +2271,18 @@ mod test {
         assert_eq!(
             bytes,
             vec![
-                3, 1, 1, 0, 1, 1, 3, 1, 2, 0, 1, 2, 16, 3, 1, 3, 0, 1, 3, 3, 1, 4, 0, 1, 4, 16, 17,
-                2, 61, 233, 169, 61, 231, 15, 78, 53, 219, 99, 131, 45, 44, 165, 68, 87, 7, 52,
-                238, 68, 142, 211, 110, 161, 111, 220, 108, 11, 17, 31, 88, 197, 16, 1, 12, 156,
-                232, 212, 220, 65, 226, 32, 91, 101, 248, 64, 225, 206, 63, 12, 153, 191, 183, 10,
-                233, 251, 249, 76, 184, 200, 88, 57, 219, 2, 250, 113, 17
+                4, 1, 1, 0, 1, 1, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158, 131, 208, 25, 73,
+                98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199, 149, 144, 21,
+                4, 1, 2, 0, 1, 2, 183, 215, 112, 4, 15, 120, 14, 157, 239, 246, 188, 3, 138, 190,
+                166, 110, 16, 139, 136, 208, 152, 209, 109, 36, 205, 116, 134, 235, 103, 16, 96,
+                178, 16, 4, 1, 3, 0, 1, 3, 210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81,
+                192, 139, 153, 104, 205, 4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169,
+                129, 231, 144, 4, 1, 4, 0, 1, 4, 198, 129, 51, 156, 134, 199, 7, 21, 172, 89, 146,
+                71, 4, 16, 82, 205, 89, 51, 227, 215, 139, 195, 237, 202, 159, 191, 209, 172, 156,
+                38, 239, 192, 16, 17, 2, 61, 233, 169, 61, 231, 15, 78, 53, 219, 99, 131, 45, 44,
+                165, 68, 87, 7, 52, 238, 68, 142, 211, 110, 161, 111, 220, 108, 11, 17, 31, 88,
+                197, 16, 1, 12, 156, 232, 212, 220, 65, 226, 32, 91, 101, 248, 64, 225, 206, 63,
+                12, 153, 191, 183, 10, 233, 251, 249, 76, 184, 200, 88, 57, 219, 2, 250, 113, 17
             ]
         );
 
@@ -2134,14 +2302,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![1], vec![1]),
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
-            ]
+            ],
         );
     }
 
@@ -2261,17 +2429,25 @@ mod test {
         );
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KV(
+            Some(&Op::Push(Node::KVValueHash(
                 vec![0, 0, 0, 0, 0, 0, 0, 5],
-                vec![123; 60]
+                vec![123; 60],
+                [
+                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
+                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
+                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KV(
+            Some(&Op::Push(Node::KVValueHash(
                 vec![0, 0, 0, 0, 0, 0, 0, 6],
-                vec![123; 60]
+                vec![123; 60],
+                [
+                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
+                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
+                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Child));
@@ -2314,12 +2490,12 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
-            ]
+            ],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -2352,9 +2528,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])]
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
         );
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
@@ -2387,7 +2563,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(0));
 
@@ -2419,7 +2595,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(198));
 
@@ -2451,12 +2627,12 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
-                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60])
-            ]
+                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
+            ],
         );
     }
 
@@ -2498,25 +2674,37 @@ mod test {
         );
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KV(
+            Some(&Op::Push(Node::KVValueHash(
                 vec![0, 0, 0, 0, 0, 0, 0, 5],
-                vec![123; 60]
+                vec![123; 60],
+                [
+                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
+                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
+                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KV(
+            Some(&Op::Push(Node::KVValueHash(
                 vec![0, 0, 0, 0, 0, 0, 0, 6],
-                vec![123; 60]
+                vec![123; 60],
+                [
+                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
+                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
+                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Child));
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KV(
+            Some(&Op::Push(Node::KVValueHash(
                 vec![0, 0, 0, 0, 0, 0, 0, 7],
-                vec![123; 60]
+                vec![123; 60],
+                [
+                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
+                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
+                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
@@ -2548,13 +2736,13 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60]),
-            ]
+            ],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -2587,9 +2775,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])]
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
         );
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
@@ -2622,9 +2810,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60])]
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60])],
         );
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
@@ -2657,7 +2845,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(197));
 
@@ -2690,13 +2878,13 @@ mod test {
         .unwrap()
         .unwrap();
 
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 7], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
-                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60])
-            ]
+                (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
+            ],
         );
 
         let mut tree = make_tree_seq(10);
@@ -2727,9 +2915,9 @@ mod test {
         .unwrap()
         .unwrap();
 
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60])]
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60])],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, Some(0));
@@ -2754,10 +2942,40 @@ mod test {
                 145, 156, 208, 152, 255, 209, 24, 140, 222, 204, 193, 211, 26, 118, 58
             ])))
         );
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![5],
+                vec![5],
+                [
+                    116, 30, 0, 135, 25, 118, 86, 14, 12, 107, 215, 214, 133, 122, 48, 45, 180, 21,
+                    158, 223, 88, 148, 181, 149, 189, 65, 121, 19, 81, 118, 11, 106
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![8], vec![8]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![7],
+                vec![7],
+                [
+                    63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
+                    51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
+                ]
+            )))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![8],
+                vec![8],
+                [
+                    205, 24, 196, 78, 21, 130, 132, 58, 44, 29, 21, 175, 68, 254, 158, 189, 49,
+                    158, 250, 151, 137, 22, 160, 107, 216, 238, 129, 230, 199, 251, 197, 51
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(iter.next(), Some(&Op::Child));
         assert!(iter.next().is_none());
@@ -2779,9 +2997,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])]
+            vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -2821,7 +3039,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -2864,10 +3082,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![5], vec![5]), (vec![7], vec![7]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -2906,9 +3121,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])]
+            vec![(vec![5], vec![5]), (vec![7], vec![7]), (vec![8], vec![8])],
         );
         assert_eq!(res.limit, Some(97));
         assert_eq!(res.offset, None);
@@ -2939,7 +3154,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![7], vec![7])]);
+        compare_result_tuples(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -2969,7 +3184,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![8], vec![8])]);
+        compare_result_tuples(res.result_set, vec![(vec![8], vec![8])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -2999,7 +3214,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(197));
 
@@ -3031,9 +3246,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5])]
+            vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5])],
         );
 
         let mut tree = make_6_node_tree();
@@ -3063,7 +3278,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![7], vec![7]), (vec![5], vec![5])]);
+        compare_result_tuples(res.result_set, vec![(vec![7], vec![7]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
     }
@@ -3080,12 +3295,52 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![2], vec![2]))));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![2],
+                vec![2],
+                [
+                    183, 215, 112, 4, 15, 120, 14, 157, 239, 246, 188, 3, 138, 190, 166, 110, 16,
+                    139, 136, 208, 152, 209, 109, 36, 205, 116, 134, 235, 103, 16, 96, 178
+                ]
+            )))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![3],
+                vec![3],
+                [
+                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
+                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![4],
+                vec![4],
+                [
+                    198, 129, 51, 156, 134, 199, 7, 21, 172, 89, 146, 71, 4, 16, 82, 205, 89, 51,
+                    227, 215, 139, 195, 237, 202, 159, 191, 209, 172, 156, 38, 239, 192
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Child));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![5],
+                vec![5],
+                [
+                    116, 30, 0, 135, 25, 118, 86, 14, 12, 107, 215, 214, 133, 122, 48, 45, 180, 21,
+                    158, 223, 88, 148, 181, 149, 189, 65, 121, 19, 81, 118, 11, 106
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
             iter.next(),
@@ -3125,14 +3380,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
-            ]
+            ],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -3172,7 +3427,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![2], vec![2])]);
+        compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -3211,10 +3466,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![2], vec![2]), (vec![3], vec![3]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -3253,14 +3505,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
-                (vec![5], vec![5])
-            ]
+                (vec![5], vec![5]),
+            ],
         );
         assert_eq!(res.limit, Some(96));
         assert_eq!(res.offset, None);
@@ -3291,7 +3543,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![3], vec![3])]);
+        compare_result_tuples(res.result_set, vec![(vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -3321,7 +3573,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -3351,7 +3603,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(196));
 
@@ -3383,14 +3635,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![5], vec![5]),
                 (vec![4], vec![4]),
                 (vec![3], vec![3]),
                 (vec![2], vec![2]),
-            ]
+            ],
         );
 
         let mut tree = make_6_node_tree();
@@ -3420,10 +3672,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![5], vec![5]), (vec![4], vec![4]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
     }
@@ -3440,12 +3689,52 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![2], vec![2]))));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![2],
+                vec![2],
+                [
+                    183, 215, 112, 4, 15, 120, 14, 157, 239, 246, 188, 3, 138, 190, 166, 110, 16,
+                    139, 136, 208, 152, 209, 109, 36, 205, 116, 134, 235, 103, 16, 96, 178
+                ]
+            )))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![3],
+                vec![3],
+                [
+                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
+                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![4],
+                vec![4],
+                [
+                    198, 129, 51, 156, 134, 199, 7, 21, 172, 89, 146, 71, 4, 16, 82, 205, 89, 51,
+                    227, 215, 139, 195, 237, 202, 159, 191, 209, 172, 156, 38, 239, 192
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Child));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![5],
+                vec![5],
+                [
+                    116, 30, 0, 135, 25, 118, 86, 14, 12, 107, 215, 214, 133, 122, 48, 45, 180, 21,
+                    158, 223, 88, 148, 181, 149, 189, 65, 121, 19, 81, 118, 11, 106
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
             iter.next(),
@@ -3485,14 +3774,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
-            ]
+            ],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -3532,7 +3821,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![2], vec![2])]);
+        compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -3571,10 +3860,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![2], vec![2]), (vec![3], vec![3]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -3613,14 +3899,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
                 (vec![3], vec![3]),
                 (vec![4], vec![4]),
-                (vec![5], vec![5])
-            ]
+                (vec![5], vec![5]),
+            ],
         );
         assert_eq!(res.limit, Some(96));
         assert_eq!(res.offset, None);
@@ -3651,7 +3937,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![3], vec![3])]);
+        compare_result_tuples(res.result_set, vec![(vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -3681,7 +3967,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -3711,7 +3997,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(196));
 
@@ -3743,14 +4029,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![5], vec![5]),
                 (vec![4], vec![4]),
                 (vec![3], vec![3]),
                 (vec![2], vec![2]),
-            ]
+            ],
         );
 
         let mut tree = make_6_node_tree();
@@ -3780,7 +4066,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4]),]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
     }
@@ -3815,12 +4101,52 @@ mod test {
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![4],
+                vec![4],
+                [
+                    198, 129, 51, 156, 134, 199, 7, 21, 172, 89, 146, 71, 4, 16, 82, 205, 89, 51,
+                    227, 215, 139, 195, 237, 202, 159, 191, 209, 172, 156, 38, 239, 192
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Child));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![5],
+                vec![5],
+                [
+                    116, 30, 0, 135, 25, 118, 86, 14, 12, 107, 215, 214, 133, 122, 48, 45, 180, 21,
+                    158, 223, 88, 148, 181, 149, 189, 65, 121, 19, 81, 118, 11, 106
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![8], vec![8]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![7],
+                vec![7],
+                [
+                    63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
+                    51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
+                ]
+            )))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![8],
+                vec![8],
+                [
+                    205, 24, 196, 78, 21, 130, 132, 58, 44, 29, 21, 175, 68, 254, 158, 189, 49,
+                    158, 250, 151, 137, 22, 160, 107, 216, 238, 129, 230, 199, 251, 197, 51
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(iter.next(), Some(&Op::Child));
         assert!(iter.next().is_none());
@@ -3842,14 +4168,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
                 (vec![7], vec![7]),
                 (vec![8], vec![8]),
-            ]
+            ],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -3889,7 +4215,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -3928,10 +4254,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -3970,14 +4293,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
                 (vec![7], vec![7]),
-                (vec![8], vec![8])
-            ]
+                (vec![8], vec![8]),
+            ],
         );
         assert_eq!(res.limit, Some(96));
         assert_eq!(res.offset, None);
@@ -4008,7 +4331,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -4038,7 +4361,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![7], vec![7])]);
+        compare_result_tuples(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -4068,7 +4391,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(196));
 
@@ -4100,14 +4423,14 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![8], vec![8]),
                 (vec![7], vec![7]),
                 (vec![5], vec![5]),
                 (vec![4], vec![4]),
-            ]
+            ],
         );
 
         let mut tree = make_6_node_tree();
@@ -4137,9 +4460,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5]),]
+            vec![(vec![8], vec![8]), (vec![7], vec![7]), (vec![5], vec![5])],
         );
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
@@ -4175,9 +4498,29 @@ mod test {
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![4],
+                vec![4],
+                [
+                    198, 129, 51, 156, 134, 199, 7, 21, 172, 89, 146, 71, 4, 16, 82, 205, 89, 51,
+                    227, 215, 139, 195, 237, 202, 159, 191, 209, 172, 156, 38, 239, 192
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Child));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![5],
+                vec![5],
+                [
+                    116, 30, 0, 135, 25, 118, 86, 14, 12, 107, 215, 214, 133, 122, 48, 45, 180, 21,
+                    158, 223, 88, 148, 181, 149, 189, 65, 121, 19, 81, 118, 11, 106
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
             iter.next(),
@@ -4217,10 +4560,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
 
@@ -4259,7 +4599,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -4298,10 +4638,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -4340,10 +4677,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(98));
         assert_eq!(res.offset, None);
 
@@ -4373,7 +4707,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -4403,7 +4737,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(0));
 
@@ -4433,7 +4767,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(198));
 
@@ -4465,10 +4799,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![5], vec![5]), (vec![4], vec![4]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![4], vec![4])]);
 
         let mut tree = make_6_node_tree();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -4497,7 +4828,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(299));
         assert_eq!(res.offset, Some(0));
     }
@@ -4532,11 +4863,41 @@ mod test {
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![4],
+                vec![4],
+                [
+                    198, 129, 51, 156, 134, 199, 7, 21, 172, 89, 146, 71, 4, 16, 82, 205, 89, 51,
+                    227, 215, 139, 195, 237, 202, 159, 191, 209, 172, 156, 38, 239, 192
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Child));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![5],
+                vec![5],
+                [
+                    116, 30, 0, 135, 25, 118, 86, 14, 12, 107, 215, 214, 133, 122, 48, 45, 180, 21,
+                    158, 223, 88, 148, 181, 149, 189, 65, 121, 19, 81, 118, 11, 106
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![7],
+                vec![7],
+                [
+                    63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
+                    51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
+                ]
+            )))
+        );
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVHash([
@@ -4565,9 +4926,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])]
+            vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -4607,7 +4968,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -4646,10 +5007,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -4688,9 +5046,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])]
+            vec![(vec![4], vec![4]), (vec![5], vec![5]), (vec![7], vec![7])],
         );
         assert_eq!(res.limit, Some(97));
         assert_eq!(res.offset, None);
@@ -4721,7 +5079,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![5], vec![5])]);
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -4751,7 +5109,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![7], vec![7])]);
+        compare_result_tuples(res.result_set, vec![(vec![7], vec![7])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -4781,7 +5139,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(197));
 
@@ -4813,9 +5171,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![7], vec![7]), (vec![5], vec![5]), (vec![4], vec![4])]
+            vec![(vec![7], vec![7]), (vec![5], vec![5]), (vec![4], vec![4])],
         );
     }
 
@@ -4831,15 +5189,75 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![2], vec![2]))));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![3], vec![3]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![2],
+                vec![2],
+                [
+                    183, 215, 112, 4, 15, 120, 14, 157, 239, 246, 188, 3, 138, 190, 166, 110, 16,
+                    139, 136, 208, 152, 209, 109, 36, 205, 116, 134, 235, 103, 16, 96, 178
+                ]
+            )))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![3],
+                vec![3],
+                [
+                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
+                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![4],
+                vec![4],
+                [
+                    198, 129, 51, 156, 134, 199, 7, 21, 172, 89, 146, 71, 4, 16, 82, 205, 89, 51,
+                    227, 215, 139, 195, 237, 202, 159, 191, 209, 172, 156, 38, 239, 192
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Child));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![5], vec![5]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![5],
+                vec![5],
+                [
+                    116, 30, 0, 135, 25, 118, 86, 14, 12, 107, 215, 214, 133, 122, 48, 45, 180, 21,
+                    158, 223, 88, 148, 181, 149, 189, 65, 121, 19, 81, 118, 11, 106
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![7], vec![7]))));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![8], vec![8]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![7],
+                vec![7],
+                [
+                    63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
+                    51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
+                ]
+            )))
+        );
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![8],
+                vec![8],
+                [
+                    205, 24, 196, 78, 21, 130, 132, 58, 44, 29, 21, 175, 68, 254, 158, 189, 49,
+                    158, 250, 151, 137, 22, 160, 107, 216, 238, 129, 230, 199, 251, 197, 51
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(iter.next(), Some(&Op::Child));
 
@@ -4862,7 +5280,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
@@ -4871,7 +5289,7 @@ mod test {
                 (vec![5], vec![5]),
                 (vec![7], vec![7]),
                 (vec![8], vec![8]),
-            ]
+            ],
         );
         assert_eq!(res.limit, None);
         assert_eq!(res.offset, None);
@@ -4911,7 +5329,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![2], vec![2])]);
+        compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -4950,10 +5368,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![2], vec![2]), (vec![3], vec![3]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
 
@@ -4992,7 +5407,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![2], vec![2]),
@@ -5000,8 +5415,8 @@ mod test {
                 (vec![4], vec![4]),
                 (vec![5], vec![5]),
                 (vec![7], vec![7]),
-                (vec![8], vec![8])
-            ]
+                (vec![8], vec![8]),
+            ],
         );
         assert_eq!(res.limit, Some(94));
         assert_eq!(res.offset, None);
@@ -5032,9 +5447,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![3], vec![3]), (vec![4], vec![4]), (vec![5], vec![5]),]
+            vec![(vec![3], vec![3]), (vec![4], vec![4]), (vec![5], vec![5])],
         );
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
@@ -5065,10 +5480,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![4], vec![4]), (vec![5], vec![5]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4]), (vec![5], vec![5])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
 
@@ -5098,7 +5510,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![]);
+        compare_result_tuples(res.result_set, vec![]);
         assert_eq!(res.limit, Some(1));
         assert_eq!(res.offset, Some(194));
 
@@ -5130,7 +5542,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![8], vec![8]),
@@ -5139,7 +5551,7 @@ mod test {
                 (vec![4], vec![4]),
                 (vec![3], vec![3]),
                 (vec![2], vec![2]),
-            ]
+            ],
         );
 
         let mut tree = make_6_node_tree();
@@ -5169,10 +5581,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            res.result_set,
-            vec![(vec![5], vec![5]), (vec![4], vec![4]),]
-        );
+        compare_result_tuples(res.result_set, vec![(vec![5], vec![5]), (vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
     }
@@ -5193,7 +5602,17 @@ mod test {
         assert_eq!(offset, None);
 
         let mut iter = proof.iter();
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![2], vec![2]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![2],
+                vec![2],
+                [
+                    183, 215, 112, 4, 15, 120, 14, 157, 239, 246, 188, 3, 138, 190, 166, 110, 16,
+                    139, 136, 208, 152, 209, 109, 36, 205, 116, 134, 235, 103, 16, 96, 178
+                ]
+            )))
+        );
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVHash([
@@ -5244,7 +5663,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![2], vec![2])]);
+        compare_result_tuples(res.result_set, vec![(vec![2], vec![2])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, None);
     }
@@ -5282,7 +5701,17 @@ mod test {
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
-        assert_eq!(iter.next(), Some(&Op::Push(Node::KV(vec![4], vec![4]))));
+        assert_eq!(
+            iter.next(),
+            Some(&Op::Push(Node::KVValueHash(
+                vec![4],
+                vec![4],
+                [
+                    198, 129, 51, 156, 134, 199, 7, 21, 172, 89, 146, 71, 4, 16, 82, 205, 89, 51,
+                    227, 215, 139, 195, 237, 202, 159, 191, 209, 172, 156, 38, 239, 192
+                ]
+            )))
+        );
         assert_eq!(iter.next(), Some(&Op::Child));
         assert_eq!(
             iter.next(),
@@ -5318,7 +5747,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(res.result_set, vec![(vec![4], vec![4])]);
+        compare_result_tuples(res.result_set, vec![(vec![4], vec![4])]);
         assert_eq!(res.limit, Some(0));
         assert_eq!(res.offset, Some(0));
     }
@@ -5337,25 +5766,60 @@ mod test {
         let mut iter = proof.iter();
         assert_eq!(
             iter.next(),
-            Some(&Op::PushInverted(Node::KV(vec![8], vec![8])))
+            Some(&Op::PushInverted(Node::KVValueHash(
+                vec![8],
+                vec![8],
+                [
+                    205, 24, 196, 78, 21, 130, 132, 58, 44, 29, 21, 175, 68, 254, 158, 189, 49,
+                    158, 250, 151, 137, 22, 160, 107, 216, 238, 129, 230, 199, 251, 197, 51
+                ]
+            )))
         );
         assert_eq!(
             iter.next(),
-            Some(&Op::PushInverted(Node::KV(vec![7], vec![7])))
+            Some(&Op::PushInverted(Node::KVValueHash(
+                vec![7],
+                vec![7],
+                [
+                    63, 193, 78, 215, 236, 222, 32, 58, 144, 66, 94, 225, 145, 233, 219, 89, 102,
+                    51, 109, 115, 127, 3, 152, 236, 147, 183, 100, 81, 123, 109, 244, 0
+                ]
+            )))
         );
         assert_eq!(iter.next(), Some(&Op::ChildInverted));
         assert_eq!(
             iter.next(),
-            Some(&Op::PushInverted(Node::KV(vec![5], vec![5])))
+            Some(&Op::PushInverted(Node::KVValueHash(
+                vec![5],
+                vec![5],
+                [
+                    116, 30, 0, 135, 25, 118, 86, 14, 12, 107, 215, 214, 133, 122, 48, 45, 180, 21,
+                    158, 223, 88, 148, 181, 149, 189, 65, 121, 19, 81, 118, 11, 106
+                ]
+            )))
         );
         assert_eq!(iter.next(), Some(&Op::ParentInverted));
         assert_eq!(
             iter.next(),
-            Some(&Op::PushInverted(Node::KV(vec![4], vec![4])))
+            Some(&Op::PushInverted(Node::KVValueHash(
+                vec![4],
+                vec![4],
+                [
+                    198, 129, 51, 156, 134, 199, 7, 21, 172, 89, 146, 71, 4, 16, 82, 205, 89, 51,
+                    227, 215, 139, 195, 237, 202, 159, 191, 209, 172, 156, 38, 239, 192
+                ]
+            )))
         );
         assert_eq!(
             iter.next(),
-            Some(&Op::PushInverted(Node::KV(vec![3], vec![3])))
+            Some(&Op::PushInverted(Node::KVValueHash(
+                vec![3],
+                vec![3],
+                [
+                    210, 173, 26, 11, 185, 253, 244, 69, 11, 216, 113, 81, 192, 139, 153, 104, 205,
+                    4, 107, 218, 102, 84, 170, 189, 186, 36, 48, 176, 169, 129, 231, 144
+                ]
+            )))
         );
         assert_eq!(iter.next(), Some(&Op::ParentInverted));
         assert_eq!(
@@ -5387,7 +5851,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![8], vec![8]),
@@ -5395,7 +5859,7 @@ mod test {
                 (vec![5], vec![5]),
                 (vec![4], vec![4]),
                 (vec![3], vec![3]),
-            ]
+            ],
         );
     }
 
@@ -5437,17 +5901,25 @@ mod test {
         );
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KV(
+            Some(&Op::Push(Node::KVValueHash(
                 vec![0, 0, 0, 0, 0, 0, 0, 5],
-                vec![123; 60]
+                vec![123; 60],
+                [
+                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
+                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
+                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KV(
+            Some(&Op::Push(Node::KVValueHash(
                 vec![0, 0, 0, 0, 0, 0, 0, 6],
-                vec![123; 60]
+                vec![123; 60],
+                [
+                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
+                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
+                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Child));
@@ -5490,12 +5962,12 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
             vec![
                 (vec![0, 0, 0, 0, 0, 0, 0, 5], vec![123; 60]),
                 (vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),
-            ]
+            ],
         );
     }
 
@@ -5549,9 +6021,13 @@ mod test {
         assert_eq!(iter.next(), Some(&Op::Parent));
         assert_eq!(
             iter.next(),
-            Some(&Op::Push(Node::KV(
+            Some(&Op::Push(Node::KVValueHash(
                 vec![0, 0, 0, 0, 0, 0, 0, 6],
-                vec![123; 60]
+                vec![123; 60],
+                [
+                    18, 20, 146, 3, 255, 218, 128, 82, 50, 175, 125, 255, 248, 14, 221, 175, 220,
+                    56, 190, 183, 81, 241, 201, 175, 242, 210, 209, 100, 99, 235, 119, 243
+                ]
             )))
         );
         assert_eq!(iter.next(), Some(&Op::Child));
@@ -5594,9 +6070,9 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
+        compare_result_tuples(
             res.result_set,
-            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60]),]
+            vec![(vec![0, 0, 0, 0, 0, 0, 0, 6], vec![123; 60])],
         );
     }
 
@@ -5646,9 +6122,14 @@ mod test {
     #[test]
     fn verify_ops() {
         let mut tree = Tree::new(vec![5], vec![5]).unwrap();
-        tree.commit(&mut NoopCommit {})
-            .unwrap()
-            .expect("commit failed");
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
+        )
+        .unwrap()
+        .expect("commit failed");
 
         let root_hash = tree.hash().unwrap();
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
@@ -5672,9 +6153,14 @@ mod test {
     #[should_panic(expected = "verify failed")]
     fn verify_ops_mismatched_hash() {
         let mut tree = Tree::new(vec![5], vec![5]).unwrap();
-        tree.commit(&mut NoopCommit {})
-            .unwrap()
-            .expect("commit failed");
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
+        )
+        .unwrap()
+        .expect("commit failed");
 
         let mut walker = RefWalker::new(&mut tree, PanicSource {});
 

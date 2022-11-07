@@ -17,7 +17,7 @@ impl TempStorage {
     pub fn new() -> Self {
         let dir = TempDir::new().expect("cannot create tempir");
         let storage = RocksDbStorage::default_rocksdb_with_path(dir.path())
-            .expect("cannot open RocksDB storage");
+            .expect("cannot open rocksdb storage");
         TempStorage {
             dir: Cell::new(dir),
             storage,

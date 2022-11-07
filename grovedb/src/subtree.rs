@@ -6,14 +6,16 @@ use core::fmt;
 
 use bincode::Options;
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
-    OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
+    CostContext, CostResult, CostsExt, OperationCost,
 };
 use integer_encoding::VarInt;
 use merk::{
+    anyhow,
+    ed::Decode,
     proofs::{query::QueryItem, Query},
-    tree::Tree,
-    BatchEntry, Op, HASH_LENGTH,
+    tree::{kv::KV, Tree, TreeInner},
+    BatchEntry, MerkOptions, Op,
 };
 use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
@@ -25,16 +27,21 @@ use crate::{
         QueryResultType::QueryElementResultType,
     },
     reference_path::{path_from_reference_path_type, ReferencePathType},
-    util::{merk_optional_tx, storage_context_optional_tx},
+    util::{
+        merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
+    },
     Error, Hash, Merk, PathQuery, SizedQuery, TransactionArg,
 };
 
 /// Optional meta-data to be stored per element
-pub type ElementFlags = Option<Vec<u8>>;
+pub type ElementFlags = Vec<u8>;
 
 /// Optional single byte to represent the maximum number of reference hop to
 /// base element
 pub type MaxReferenceHop = Option<u8>;
+
+/// The cost of a tree
+pub const TREE_COST_SIZE: u32 = 3;
 
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
@@ -42,13 +49,12 @@ pub type MaxReferenceHop = Option<u8>;
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Element {
     /// An ordinary value
-    Item(Vec<u8>, ElementFlags),
+    Item(Vec<u8>, Option<ElementFlags>),
     /// A reference to an object by its path
-    Reference(ReferencePathType, MaxReferenceHop, ElementFlags),
-    /// A subtree, contains a root hash of the underlying Merk.
-    /// Hash is stored to make Merk become different when its subtrees have
-    /// changed, otherwise changes won't be reflected in parent trees.
-    Tree([u8; 32], ElementFlags),
+    Reference(ReferencePathType, MaxReferenceHop, Option<ElementFlags>),
+    /// A subtree, contains the a prefixed key representing the root of the
+    /// subtree.
+    Tree(Option<Vec<u8>>, Option<ElementFlags>),
 }
 
 impl fmt::Debug for Element {
@@ -85,7 +91,7 @@ impl Element {
         Element::new_tree(Default::default())
     }
 
-    pub fn empty_tree_with_flags(flags: ElementFlags) -> Self {
+    pub fn empty_tree_with_flags(flags: Option<ElementFlags>) -> Self {
         Element::new_tree_with_flags(Default::default(), flags)
     }
 
@@ -93,7 +99,7 @@ impl Element {
         Element::Item(item_value, None)
     }
 
-    pub fn new_item_with_flags(item_value: Vec<u8>, flags: ElementFlags) -> Self {
+    pub fn new_item_with_flags(item_value: Vec<u8>, flags: Option<ElementFlags>) -> Self {
         Element::Item(item_value, flags)
     }
 
@@ -103,7 +109,7 @@ impl Element {
 
     pub fn new_reference_with_flags(
         reference_path: ReferencePathType,
-        flags: ElementFlags,
+        flags: Option<ElementFlags>,
     ) -> Self {
         Element::Reference(reference_path, None, flags)
     }
@@ -118,21 +124,42 @@ impl Element {
     pub fn new_reference_with_max_hops_and_flags(
         reference_path: ReferencePathType,
         max_reference_hop: MaxReferenceHop,
-        flags: ElementFlags,
+        flags: Option<ElementFlags>,
     ) -> Self {
         Element::Reference(reference_path, max_reference_hop, flags)
     }
 
-    pub fn new_tree(tree_hash: [u8; 32]) -> Self {
-        Element::Tree(tree_hash, None)
+    pub fn new_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::Tree(maybe_root_key, None)
     }
 
-    pub fn new_tree_with_flags(tree_hash: [u8; 32], flags: ElementFlags) -> Self {
-        Element::Tree(tree_hash, flags)
+    pub fn new_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::Tree(maybe_root_key, flags)
     }
 
     /// Grab the optional flag stored in an element
-    pub fn get_flags(&self) -> &ElementFlags {
+    pub fn get_flags(&self) -> &Option<ElementFlags> {
+        match self {
+            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
+                flags
+            }
+        }
+    }
+
+    /// Grab the optional flag stored in an element
+    pub fn get_flags_owned(self) -> Option<ElementFlags> {
+        match self {
+            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
+                flags
+            }
+        }
+    }
+
+    /// Grab the optional flag stored in an element as mutable
+    pub fn get_flags_mut(&mut self) -> &mut Option<ElementFlags> {
         match self {
             Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
                 flags
@@ -141,27 +168,27 @@ impl Element {
     }
 
     /// Get the size of an element in bytes
-    pub fn byte_size(&self) -> usize {
+    pub fn byte_size(&self) -> u32 {
         match self {
             Element::Item(item, element_flag) => {
                 if let Some(flag) = element_flag {
-                    flag.len() + item.len()
+                    flag.len() as u32 + item.len() as u32
                 } else {
-                    item.len()
+                    item.len() as u32
                 }
             }
             Element::Reference(path_reference, _, element_flag) => {
-                let path_length = path_reference.encoding_length();
+                let path_length = path_reference.encoding_length() as u32;
 
                 if let Some(flag) = element_flag {
-                    flag.len() + path_length
+                    flag.len() as u32 + path_length
                 } else {
                     path_length
                 }
             }
             Element::Tree(_, element_flag) => {
                 if let Some(flag) = element_flag {
-                    flag.len() + 32
+                    flag.len() as u32 + 32
                 } else {
                     32
                 }
@@ -169,83 +196,79 @@ impl Element {
         }
     }
 
-    pub fn required_item_space(len: usize, flag_len: usize) -> usize {
-        len + len.required_space() + flag_len + flag_len.required_space() + 1
-    }
-
-    /// Get the size of the serialization of an element in bytes
-    pub fn serialized_byte_size(&self) -> usize {
-        match self {
-            Element::Item(item, element_flag) => {
-                let item_len = item.len();
-                let flag_len = if let Some(flag) = element_flag {
-                    flag.len() + 1
-                } else {
-                    0
-                };
-                Self::required_item_space(item_len, flag_len)
-            }
-            Element::Reference(path_reference, _, element_flag) => {
-                let flag_len = if let Some(flag) = element_flag {
-                    flag.len() + 1
-                } else {
-                    0
-                };
-
-                path_reference.serialized_size()
-                    + path_reference.encoding_length().required_space()
-                    + flag_len
-                    + flag_len.required_space()
-                    + 1
-                    + 1 // + 1 for enum and +1 for max reference hop
-            }
-            Element::Tree(_, element_flag) => {
-                let flag_len = if let Some(flag) = element_flag {
-                    flag.len() + 1
-                } else {
-                    0
-                };
-                32 + flag_len + flag_len.required_space() + 1 // + 1 for enum
-            }
-        }
+    pub fn required_item_space(len: u32, flag_len: u32) -> u32 {
+        len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1
     }
 
     /// Get the size that the element will occupy on disk
-    pub fn node_byte_size(&self, key_len: usize) -> usize {
-        // todo v23: this is just an approximation for now
-        let serialized_value_size = self.serialized_byte_size();
-        Self::calculate_node_byte_size(serialized_value_size, key_len)
-    }
-
-    /// Get the size that the element will occupy on disk
-    pub fn calculate_node_byte_size(serialized_value_size: usize, key_len: usize) -> usize {
-        let node_value_size = serialized_value_size + serialized_value_size.required_space();
-        let node_key_size = key_len + key_len.required_space();
-        // Each node stores the key and value, the value hash and the key_value hash
-        let node_size = node_value_size + node_key_size + HASH_LENGTH + HASH_LENGTH;
-        // The node will be a child of another node which stores it's key and hash
-        let parent_additions = node_key_size + HASH_LENGTH;
-        let child_sizes = 2_usize;
-        node_size + parent_additions + child_sizes
+    pub fn node_byte_size(&self, key_len: u32) -> u32 {
+        let serialized_value_size = self.serialized_size() as u32; // this includes the flags
+        KV::node_byte_cost_size_for_key_and_value_lengths(key_len, serialized_value_size)
     }
 
     /// Delete an element from Merk under a key
     pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
         key: K,
+        merk_options: Option<MerkOptions>,
+        is_layered: bool,
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
-        let batch = [(key, Op::Delete)];
-        merk.apply::<_, Vec<u8>>(&batch, &[])
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        let op = if is_layered {
+            Op::DeleteLayered
+        } else {
+            Op::Delete
+        };
+        let batch = [(key, op)];
+        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch, &[], merk_options, &|key, value| {
+            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+        })
+        .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    /// Delete an element from Merk under a key
+    pub fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        merk: &mut Merk<S>,
+        key: K,
+        merk_options: Option<MerkOptions>,
+        is_layered: bool,
+        sectioned_removal: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        )
+            -> anyhow::Result<(StorageRemovedBytes, StorageRemovedBytes)>,
+    ) -> CostResult<(), Error> {
+        // TODO: delete references on this element
+        let op = if is_layered {
+            Op::DeleteLayered
+        } else {
+            Op::Delete
+        };
+        let batch = [(key, op)];
+        merk.apply_with_costs_just_in_time_value_update::<_, Vec<u8>>(
+            &batch,
+            &[],
+            merk_options,
+            &|key, value| Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg),
+            &mut |_costs, _old_value, _value| Ok((false, None)),
+            sectioned_removal,
+        )
+        .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     /// Delete an element from Merk under a key to batch operations
     pub fn delete_into_batch_operations<K: AsRef<[u8]>>(
         key: K,
+        is_layered: bool,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
-        let entry = (key, Op::Delete);
+        let op = if is_layered {
+            Op::DeleteLayered
+        } else {
+            Op::Delete
+        };
+        let entry = (key, op);
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -266,9 +289,47 @@ impl Element {
         let value = cost_return_on_error_no_add!(
             &cost,
             value_opt.ok_or_else(|| {
-                Error::PathKeyNotFound(format!("key not found in Merk: {}", hex::encode(key)))
+                Error::PathKeyNotFound(format!(
+                    "key not found in Merk for get: {}",
+                    hex::encode(key)
+                ))
             })
         );
+        let element = cost_return_on_error_no_add!(
+            &cost,
+            Self::deserialize(value.as_slice())
+                .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
+        );
+        Ok(element).wrap_with_cost(cost)
+    }
+
+    /// Get an element directly from storage under a key
+    /// Merk does not need to be loaded
+    pub fn get_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        storage: &S,
+        key: K,
+    ) -> CostResult<Element, Error> {
+        let mut cost = OperationCost::default();
+        let node_value_opt = cost_return_on_error!(
+            &mut cost,
+            storage
+                .get(key.as_ref())
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+        );
+        let node_value = cost_return_on_error_no_add!(
+            &cost,
+            node_value_opt.ok_or_else(|| {
+                Error::PathKeyNotFound(format!(
+                    "key not found in Merk for get from storage: {}",
+                    hex::encode(key)
+                ))
+            })
+        );
+        let tree_inner: TreeInner = cost_return_on_error_no_add!(
+            &cost,
+            Decode::decode(node_value.as_slice()).map_err(|e| Error::CorruptedData(e.to_string()))
+        );
+        let value = tree_inner.value_as_owned();
         let element = cost_return_on_error_no_add!(
             &cost,
             Self::deserialize(value.as_slice())
@@ -366,7 +427,7 @@ impl Element {
                 _ => {
                     // Element is a reference and is not absolute.
                     // build the stored path for this reference
-                    let mut current_path = path.clone().to_vec();
+                    let current_path = path.clone().to_vec();
                     let absolute_path = path_from_reference_path_type(
                         reference_path_type.clone(),
                         current_path,
@@ -588,7 +649,8 @@ impl Element {
                     } else {
                         return Err(Error::InvalidPath(
                             "you must provide a subquery or a subquery_key when interacting with \
-                             a Tree of trees",
+                             a Tree of trees"
+                                .to_owned(),
                         ))
                         .wrap_with_cost(cost);
                     }
@@ -919,6 +981,7 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: K,
+        options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
@@ -926,8 +989,30 @@ impl Element {
         };
 
         let batch_operations = [(key, Op::Put(serialized))];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[])
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
+            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+        })
+        .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    pub fn tree_costs_for_key_value(key: &Vec<u8>, value: &Vec<u8>) -> Result<u32, Error> {
+        let element = Element::deserialize(value)?;
+        match element {
+            Element::Tree(_, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = TREE_COST_SIZE + flags_len;
+                let key_len = key.len() as u32;
+                Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len,
+                ))
+            }
+            _ => Err(Error::CorruptedCodeExecution(
+                "only trees are supported for specialized costs",
+            )),
+        }
     }
 
     pub fn insert_into_batch_operations<K: AsRef<[u8]>>(
@@ -954,6 +1039,7 @@ impl Element {
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
+        options: Option<MerkOptions>,
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
         let exists =
@@ -961,7 +1047,7 @@ impl Element {
         if exists {
             Ok(false).wrap_with_cost(cost)
         } else {
-            cost_return_on_error!(&mut cost, self.insert(merk, key));
+            cost_return_on_error!(&mut cost, self.insert(merk, key, options));
             Ok(true).wrap_with_cost(cost)
         }
     }
@@ -1002,15 +1088,18 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         referenced_value: Hash,
+        options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let batch_operations = [(key, Op::PutReference(serialized, referenced_value))];
-        merk.apply::<_, Vec<u8>>(&batch_operations, &[])
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        let batch_operations = [(key, Op::PutCombinedReference(serialized, referenced_value))];
+        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
+            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+        })
+        .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     pub fn insert_reference_into_batch_operations<K: AsRef<[u8]>>(
@@ -1023,7 +1112,77 @@ impl Element {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
-        let entry = (key, Op::PutReference(serialized, referenced_value));
+        let entry = (key, Op::PutCombinedReference(serialized, referenced_value));
+        batch_operations.push(entry);
+        Ok(()).wrap_with_cost(Default::default())
+    }
+
+    /// Insert a tree element in Merk under a key; path should be resolved
+    /// and proper Merk should be loaded by this moment
+    /// If transaction is not passed, the batch will be written immediately.
+    /// If transaction is passed, the operation will be committed on the
+    /// transaction commit.
+    pub fn insert_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        subtree_root_hash: Hash,
+        options: Option<MerkOptions>,
+    ) -> CostResult<(), Error> {
+        let cost = TREE_COST_SIZE
+            + self.get_flags().as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
+        let serialized = match self.serialize() {
+            Ok(s) => s,
+            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+        };
+
+        // dbg!(
+        //     "putting subtree {} {}",
+        //     std::str::from_utf8(key.as_ref()),
+        //     hex::encode(subtree_root_hash)
+        // );
+
+        let batch_operations = [(
+            key,
+            Op::PutLayeredReference(serialized, cost, subtree_root_hash),
+        )];
+        merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
+            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+        })
+        .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    pub fn insert_subtree_into_batch_operations<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        subtree_root_hash: Hash,
+        is_replace: bool,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+    ) -> CostResult<(), Error> {
+        let serialized = match self.serialize() {
+            Ok(s) => s,
+            Err(e) => return Err(e).wrap_with_cost(Default::default()),
+        };
+        let cost = TREE_COST_SIZE
+            + self.get_flags().as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
+        // Replacing is more efficient, but should lead to the same costs
+        let entry = if is_replace {
+            (
+                key,
+                Op::ReplaceLayeredReference(serialized, cost, subtree_root_hash),
+            )
+        } else {
+            (
+                key,
+                Op::PutLayeredReference(serialized, cost, subtree_root_hash),
+            )
+        };
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -1034,6 +1193,14 @@ impl Element {
             .reject_trailing_bytes()
             .serialize(self)
             .map_err(|_| Error::CorruptedData(String::from("unable to serialize element")))
+    }
+
+    pub fn serialized_size(&self) -> usize {
+        bincode::DefaultOptions::default()
+            .with_varint_encoding()
+            .reject_trailing_bytes()
+            .serialized_size(self)
+            .unwrap() as usize // this should not be able to error
     }
 
     pub fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
@@ -1056,8 +1223,8 @@ pub struct ElementsIterator<I: RawIterator> {
 }
 
 pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
-    let tree = Tree::decode_raw(bytes).map_err(|e| Error::CorruptedData(e.to_string()))?;
-    let element: Element = Element::deserialize(tree.value())?;
+    let tree = Tree::decode_raw(bytes, vec![]).map_err(|e| Error::CorruptedData(e.to_string()))?;
+    let element: Element = Element::deserialize(tree.value_as_slice())?;
     Ok(element)
 }
 
@@ -1104,7 +1271,7 @@ impl<I: RawIterator> ElementsIterator<I> {
 #[cfg(test)]
 mod tests {
     use merk::test_utils::TempMerk;
-    use storage::Storage;
+    use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
 
     use super::*;
     use crate::{
@@ -1118,11 +1285,11 @@ mod tests {
     fn test_success_insert() {
         let mut merk = TempMerk::new();
         Element::empty_tree()
-            .insert(&mut merk, b"mykey")
+            .insert(&mut merk, b"mykey", None)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"value".to_vec())
-            .insert(&mut merk, b"another-key")
+            .insert(&mut merk, b"another-key", None)
             .unwrap()
             .expect("expected successful insertion 2");
 
@@ -1138,26 +1305,21 @@ mod tests {
     fn test_serialization() {
         let empty_tree = Element::empty_tree();
         let serialized = empty_tree.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 34);
-        assert_eq!(serialized.len(), empty_tree.serialized_byte_size());
+        assert_eq!(serialized.len(), 3);
+        assert_eq!(serialized.len(), empty_tree.serialized_size());
         // The tree is fixed length 32 bytes, so it's enum 2 then 32 bytes of zeroes
-        assert_eq!(
-            hex::encode(serialized),
-            "02000000000000000000000000000000000000000000000000000000000000000000"
-        );
+        assert_eq!(hex::encode(serialized), "020000");
 
-        let empty_tree = Element::new_tree_with_flags([0; 32], Some(vec![5]));
+        let empty_tree = Element::new_tree_with_flags(None, Some(vec![5]));
         let serialized = empty_tree.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 36);
-        assert_eq!(
-            hex::encode(serialized),
-            "020000000000000000000000000000000000000000000000000000000000000000010105"
-        );
+        assert_eq!(serialized.len(), 5);
+        assert_eq!(serialized.len(), empty_tree.serialized_size());
+        assert_eq!(hex::encode(serialized), "0200010105");
 
         let item = Element::new_item(hex::decode("abcdef").expect("expected to decode"));
         let serialized = item.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 6);
-        assert_eq!(serialized.len(), item.serialized_byte_size());
+        assert_eq!(serialized.len(), item.serialized_size());
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "0003abcdef00");
 
@@ -1167,7 +1329,7 @@ mod tests {
         );
         let serialized = item.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 8);
-        assert_eq!(serialized.len(), item.serialized_byte_size());
+        assert_eq!(serialized.len(), item.serialized_size());
         assert_eq!(hex::encode(serialized), "0003abcdef010101");
 
         let reference = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
@@ -1177,7 +1339,7 @@ mod tests {
         ]));
         let serialized = reference.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 12);
-        assert_eq!(serialized.len(), reference.serialized_byte_size());
+        assert_eq!(serialized.len(), reference.serialized_size());
         // The item is variable length 2 bytes, so it's enum 1 then 1 byte for length,
         // then 1 byte for 0, then 1 byte 02 for abcd, then 1 byte '1' for 05
         assert_eq!(hex::encode(serialized), "010003010002abcd01050000");
@@ -1192,7 +1354,7 @@ mod tests {
         );
         let serialized = reference.serialize().expect("expected to serialize");
         assert_eq!(serialized.len(), 16);
-        assert_eq!(serialized.len(), reference.serialized_byte_size());
+        assert_eq!(serialized.len(), reference.serialized_size());
         assert_eq!(hex::encode(serialized), "010003010002abcd0105000103010203");
     }
 
@@ -1200,35 +1362,50 @@ mod tests {
     fn test_get_query() {
         let db = make_test_grovedb();
 
-        let storage = &db.db;
-        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
-        let mut merk = Merk::open(storage_context)
-            .unwrap()
-            .expect("cannot open Merk"); // TODO implement costs
-
-        Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
-            .unwrap()
-            .expect("expected successful insertion");
+        db.insert(
+            [TEST_LEAF],
+            b"d",
+            Element::new_item(b"ayyd".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"c",
+            Element::new_item(b"ayyc".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"a",
+            Element::new_item(b"ayya".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"b",
+            Element::new_item(b"ayyb".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
 
         // Test queries by key
         let mut query = Query::new();
         query.insert_key(b"c".to_vec());
         query.insert_key(b"a".to_vec());
+
         assert_eq!(
-            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
                 .unwrap()
                 .expect("expected successful get_query"),
             vec![
@@ -1242,7 +1419,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
                 .unwrap()
                 .expect("expected successful get_query"),
             vec![
@@ -1257,7 +1434,7 @@ mod tests {
         query.insert_range_inclusive(b"b".to_vec()..=b"d".to_vec());
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
                 .unwrap()
                 .expect("expected successful get_query"),
             vec![
@@ -1273,7 +1450,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"d".to_vec());
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(
-            Element::get_query_values(&storage, &[TEST_LEAF], &query, None)
+            Element::get_query_values(&db.db, &[TEST_LEAF], &query, None)
                 .unwrap()
                 .expect("expected successful get_query"),
             vec![
@@ -1288,28 +1465,42 @@ mod tests {
     fn test_get_query_with_path() {
         let db = make_test_grovedb();
 
-        let storage = &db.db;
-        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
-        let mut merk = Merk::open(storage_context)
-            .unwrap()
-            .expect("cannot open Merk"); // TODO implement costs
-
-        Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
-            .unwrap()
-            .expect("expected successful insertion");
+        db.insert(
+            [TEST_LEAF],
+            b"d",
+            Element::new_item(b"ayyd".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"c",
+            Element::new_item(b"ayyc".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"a",
+            Element::new_item(b"ayya".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"b",
+            Element::new_item(b"ayyb".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
 
         // Test queries by key
         let mut query = Query::new();
@@ -1317,7 +1508,7 @@ mod tests {
         query.insert_key(b"a".to_vec());
         assert_eq!(
             Element::get_query(
-                &storage,
+                &db.db,
                 &[TEST_LEAF],
                 &query,
                 QueryPathKeyElementTrioResultType,
@@ -1346,25 +1537,25 @@ mod tests {
         let db = make_test_grovedb();
 
         let storage = &db.db;
-        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
-        let mut merk = Merk::open(storage_context)
+        let mut merk = db
+            .open_non_transactional_merk_at_path([TEST_LEAF])
             .unwrap()
             .expect("cannot open Merk"); // TODO implement costs
 
         Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
+            .insert(&mut merk, b"d", None)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
+            .insert(&mut merk, b"c", None)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
+            .insert(&mut merk, b"a", None)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
+            .insert(&mut merk, b"b", None)
             .unwrap()
             .expect("expected successful insertion");
 
@@ -1442,25 +1633,25 @@ mod tests {
         let db = make_test_grovedb();
 
         let storage = &db.db;
-        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
-        let mut merk = Merk::open(storage_context)
+        let mut merk: Merk<PrefixedRocksDbStorageContext> = db
+            .open_non_transactional_merk_at_path([TEST_LEAF])
             .unwrap()
             .expect("cannot open Merk");
 
         Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
+            .insert(&mut merk, b"d", None)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
+            .insert(&mut merk, b"c", None)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
+            .insert(&mut merk, b"a", None)
             .unwrap()
             .expect("expected successful insertion");
         Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
+            .insert(&mut merk, b"b", None)
             .unwrap()
             .expect("expected successful insertion");
 
@@ -1539,28 +1730,42 @@ mod tests {
     fn test_get_limit_query() {
         let db = make_test_grovedb();
 
-        let storage = &db.db;
-        let storage_context = storage.get_storage_context([TEST_LEAF]).unwrap();
-        let mut merk = Merk::open(storage_context)
-            .unwrap()
-            .expect("cannot open Merk");
-
-        Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d")
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c")
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a")
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b")
-            .unwrap()
-            .expect("expected successful insertion");
+        db.insert(
+            [TEST_LEAF],
+            b"d",
+            Element::new_item(b"ayyd".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"c",
+            Element::new_item(b"ayyc".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"a",
+            Element::new_item(b"ayya".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF],
+            b"b",
+            Element::new_item(b"ayyb".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert element");
 
         // Test queries by key
         let mut query = Query::new_with_direction(true);
@@ -1570,7 +1775,7 @@ mod tests {
         // since these are just keys a backwards query will keep same order
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &backwards_query,
             QueryKeyElementPairResultType,
@@ -1595,7 +1800,7 @@ mod tests {
         // since these are just keys a backwards query will keep same order
         let backwards_query = SizedQuery::new(query.clone(), None, None);
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &backwards_query,
             QueryKeyElementPairResultType,
@@ -1615,7 +1820,7 @@ mod tests {
         // The limit will mean we will only get back 1 item
         let limit_query = SizedQuery::new(query.clone(), Some(1), None);
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &limit_query,
             QueryKeyElementPairResultType,
@@ -1635,7 +1840,7 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"c".to_vec());
         let limit_query = SizedQuery::new(query.clone(), Some(2), None);
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &limit_query,
             QueryKeyElementPairResultType,
@@ -1654,7 +1859,7 @@ mod tests {
 
         let limit_offset_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &limit_offset_query,
             QueryKeyElementPairResultType,
@@ -1678,7 +1883,7 @@ mod tests {
 
         let limit_offset_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &limit_offset_backwards_query,
             QueryKeyElementPairResultType,
@@ -1701,7 +1906,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         let limit_full_query = SizedQuery::new(query.clone(), Some(5), Some(0));
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &limit_full_query,
             QueryKeyElementPairResultType,
@@ -1725,7 +1930,7 @@ mod tests {
 
         let limit_offset_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &limit_offset_backwards_query,
             QueryKeyElementPairResultType,
@@ -1749,7 +1954,7 @@ mod tests {
         query.insert_range(b"b".to_vec()..b"c".to_vec());
         let limit_backwards_query = SizedQuery::new(query.clone(), Some(2), Some(1));
         let (elements, skipped) = Element::get_sized_query(
-            &storage,
+            &db.db,
             &[TEST_LEAF],
             &limit_backwards_query,
             QueryKeyElementPairResultType,
