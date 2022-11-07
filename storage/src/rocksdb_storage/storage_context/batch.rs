@@ -238,14 +238,12 @@ impl Batch for PrefixedMultiContextBatchPart {
             key_value_storage_cost
         });
 
-        self.batch
-            .put(
-                prefixed_key,
-                value.to_vec(),
-                children_sizes,
-                updated_cost_info,
-            )
-            .unwrap_add_cost(&mut self.acc_cost);
+        self.batch.put(
+            prefixed_key,
+            value.to_vec(),
+            children_sizes,
+            updated_cost_info,
+        );
         Ok(())
     }
 
@@ -255,13 +253,11 @@ impl Batch for PrefixedMultiContextBatchPart {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
-        self.batch
-            .put_aux(
-                make_prefixed_key(self.prefix.clone(), key),
-                value.to_vec(),
-                cost_info,
-            )
-            .unwrap_add_cost(&mut self.acc_cost);
+        self.batch.put_aux(
+            make_prefixed_key(self.prefix.clone(), key),
+            value.to_vec(),
+            cost_info,
+        );
         Ok(())
     }
 
@@ -271,31 +267,26 @@ impl Batch for PrefixedMultiContextBatchPart {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
-        self.batch
-            .put_root(
-                make_prefixed_key(self.prefix.clone(), key),
-                value.to_vec(),
-                cost_info,
-            )
-            .unwrap_add_cost(&mut self.acc_cost);
+        self.batch.put_root(
+            make_prefixed_key(self.prefix.clone(), key),
+            value.to_vec(),
+            cost_info,
+        );
         Ok(())
     }
 
     fn delete<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         self.batch
-            .delete(make_prefixed_key(self.prefix.clone(), key), cost_info)
-            .unwrap_add_cost(&mut self.acc_cost);
+            .delete(make_prefixed_key(self.prefix.clone(), key), cost_info);
     }
 
     fn delete_aux<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         self.batch
-            .delete_aux(make_prefixed_key(self.prefix.clone(), key), cost_info)
-            .unwrap_add_cost(&mut self.acc_cost);
+            .delete_aux(make_prefixed_key(self.prefix.clone(), key), cost_info);
     }
 
     fn delete_root<K: AsRef<[u8]>>(&mut self, key: K, cost_info: Option<KeyValueStorageCost>) {
         self.batch
-            .delete_root(make_prefixed_key(self.prefix.clone(), key), cost_info)
-            .unwrap_add_cost(&mut self.acc_cost);
+            .delete_root(make_prefixed_key(self.prefix.clone(), key), cost_info);
     }
 }

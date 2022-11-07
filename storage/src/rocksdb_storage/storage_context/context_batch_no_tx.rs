@@ -66,14 +66,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
         children_sizes: Option<(Option<u32>, Option<u32>)>,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
-        self.batch
-            .put(
-                make_prefixed_key(self.prefix.clone(), key),
-                value.to_vec(),
-                children_sizes,
-                cost_info,
-            )
-            .map(Ok)
+        self.batch.put(
+            make_prefixed_key(self.prefix.clone(), key),
+            value.to_vec(),
+            children_sizes,
+            cost_info,
+        );
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
     fn put_aux<K: AsRef<[u8]>>(
@@ -82,13 +81,12 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
-        self.batch
-            .put_aux(
-                make_prefixed_key(self.prefix.clone(), key),
-                value.to_vec(),
-                cost_info,
-            )
-            .map(Ok)
+        self.batch.put_aux(
+            make_prefixed_key(self.prefix.clone(), key),
+            value.to_vec(),
+            cost_info,
+        );
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
     fn put_root<K: AsRef<[u8]>>(
@@ -97,13 +95,12 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
-        self.batch
-            .put_root(
-                make_prefixed_key(self.prefix.clone(), key),
-                value.to_vec(),
-                cost_info,
-            )
-            .map(Ok)
+        self.batch.put_root(
+            make_prefixed_key(self.prefix.clone(), key),
+            value.to_vec(),
+            cost_info,
+        );
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
     fn put_meta<K: AsRef<[u8]>>(
@@ -112,13 +109,12 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
-        self.batch
-            .put_meta(
-                make_prefixed_key(self.prefix.clone(), key),
-                value.to_vec(),
-                cost_info,
-            )
-            .map(Ok)
+        self.batch.put_meta(
+            make_prefixed_key(self.prefix.clone(), key),
+            value.to_vec(),
+            cost_info,
+        );
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
     fn delete<K: AsRef<[u8]>>(
@@ -127,8 +123,8 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
         self.batch
-            .delete(make_prefixed_key(self.prefix.clone(), key), cost_info)
-            .map(Ok)
+            .delete(make_prefixed_key(self.prefix.clone(), key), cost_info);
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
     fn delete_aux<K: AsRef<[u8]>>(
@@ -137,8 +133,8 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
         self.batch
-            .delete_aux(make_prefixed_key(self.prefix.clone(), key), cost_info)
-            .map(Ok)
+            .delete_aux(make_prefixed_key(self.prefix.clone(), key), cost_info);
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
     fn delete_root<K: AsRef<[u8]>>(
@@ -147,8 +143,8 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
         self.batch
-            .delete_root(make_prefixed_key(self.prefix.clone(), key), cost_info)
-            .map(Ok)
+            .delete_root(make_prefixed_key(self.prefix.clone(), key), cost_info);
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
     fn delete_meta<K: AsRef<[u8]>>(
@@ -157,8 +153,8 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostContext<Result<(), Self::Error>> {
         self.batch
-            .delete_meta(make_prefixed_key(self.prefix.clone(), key), cost_info)
-            .map(Ok)
+            .delete_meta(make_prefixed_key(self.prefix.clone(), key), cost_info);
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
@@ -244,7 +240,8 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
     }
 
     fn commit_batch(&self, batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
-        self.batch.merge(batch.batch).map(Ok)
+        self.batch.merge(batch.batch);
+        Ok(()).wrap_with_cost(OperationCost::default())
     }
 
     fn raw_iter(&self) -> Self::RawIterator {

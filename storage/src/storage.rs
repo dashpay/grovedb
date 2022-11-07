@@ -316,7 +316,7 @@ impl StorageBatch {
         value: Vec<u8>,
         children_sizes: Option<(Option<u32>, Option<u32>)>,
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<()> {
+    ) {
         self.operations.borrow_mut().data.insert(
             key.clone(),
             AbstractBatchOperation::Put {
@@ -326,17 +326,10 @@ impl StorageBatch {
                 cost_info,
             },
         );
-
-        ().wrap_with_cost(OperationCost::default())
     }
 
     /// Add deferred `put` operation for aux storage_cost
-    pub fn put_aux(
-        &self,
-        key: Vec<u8>,
-        value: Vec<u8>,
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<()> {
+    pub fn put_aux(&self, key: Vec<u8>, value: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         self.operations.borrow_mut().aux.insert(
             key.clone(),
             AbstractBatchOperation::PutAux {
@@ -345,17 +338,10 @@ impl StorageBatch {
                 cost_info,
             },
         );
-
-        ().wrap_with_cost(OperationCost::default())
     }
 
     /// Add deferred `put` operation for subtree roots storage_cost
-    pub fn put_root(
-        &self,
-        key: Vec<u8>,
-        value: Vec<u8>,
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<()> {
+    pub fn put_root(&self, key: Vec<u8>, value: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         self.operations.borrow_mut().roots.insert(
             key.clone(),
             AbstractBatchOperation::PutRoot {
@@ -364,17 +350,10 @@ impl StorageBatch {
                 cost_info,
             },
         );
-
-        ().wrap_with_cost(OperationCost::default())
     }
 
     /// Add deferred `put` operation for metadata storage_cost
-    pub fn put_meta(
-        &self,
-        key: Vec<u8>,
-        value: Vec<u8>,
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<()> {
+    pub fn put_meta(&self, key: Vec<u8>, value: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         self.operations.borrow_mut().meta.insert(
             key.clone(),
             AbstractBatchOperation::PutMeta {
@@ -383,82 +362,54 @@ impl StorageBatch {
                 cost_info,
             },
         );
-
-        ().wrap_with_cost(OperationCost::default())
     }
 
     /// Add deferred `delete` operation
-    pub fn delete(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) -> CostContext<()> {
+    pub fn delete(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         let operations = &mut self.operations.borrow_mut().data;
         if operations.get(&key).is_none() {
             operations.insert(
                 key.clone(),
                 AbstractBatchOperation::Delete { key, cost_info },
             );
-            ().wrap_with_cost(OperationCost::default())
-        } else {
-            ().wrap_with_cost(OperationCost::default())
         }
     }
 
     /// Add deferred `delete` operation for aux storage_cost
-    pub fn delete_aux(
-        &self,
-        key: Vec<u8>,
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<()> {
+    pub fn delete_aux(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         let operations = &mut self.operations.borrow_mut().aux;
         if operations.get(&key).is_none() {
             operations.insert(
                 key.clone(),
                 AbstractBatchOperation::DeleteAux { key, cost_info },
             );
-            ().wrap_with_cost(OperationCost::default())
-        } else {
-            ().wrap_with_cost(OperationCost::default())
         }
     }
 
     /// Add deferred `delete` operation for subtree roots storage_cost
-    pub fn delete_root(
-        &self,
-        key: Vec<u8>,
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<()> {
+    pub fn delete_root(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         let operations = &mut self.operations.borrow_mut().roots;
         if operations.get(&key).is_none() {
             operations.insert(
                 key.clone(),
                 AbstractBatchOperation::DeleteRoot { key, cost_info },
             );
-            ().wrap_with_cost(OperationCost::default())
-        } else {
-            ().wrap_with_cost(OperationCost::default())
         }
     }
 
     /// Add deferred `delete` operation for metadata storage_cost
-    pub fn delete_meta(
-        &self,
-        key: Vec<u8>,
-        cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<()> {
+    pub fn delete_meta(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         let operations = &mut self.operations.borrow_mut().meta;
         if operations.get(&key).is_none() {
             operations.insert(
                 key.clone(),
                 AbstractBatchOperation::DeleteMeta { key, cost_info },
             );
-            ().wrap_with_cost(OperationCost::default())
-        } else {
-            ().wrap_with_cost(OperationCost::default())
         }
     }
 
     /// Merge batch into this one
-    pub fn merge(&self, other: StorageBatch) -> CostContext<()> {
-        let mut cost = OperationCost::default();
-
+    pub fn merge(&self, other: StorageBatch) {
         for op in other.into_iter() {
             match op {
                 AbstractBatchOperation::Put {
@@ -493,9 +444,7 @@ impl StorageBatch {
                     self.delete_meta(key, cost_info)
                 }
             }
-            .unwrap_add_cost(&mut cost)
         }
-        ().wrap_with_cost(cost)
     }
 }
 
