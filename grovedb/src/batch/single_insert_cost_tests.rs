@@ -732,7 +732,7 @@ mod tests {
                 seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 3,
-                    replaced_bytes: 155, // todo: verify this
+                    replaced_bytes: 186, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 302, // todo: verify this
