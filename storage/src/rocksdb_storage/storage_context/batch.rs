@@ -1,18 +1,14 @@
 //! Prefixed storage batch implementation for RocksDB backend.
 use costs::{
-    cost_return_on_error_no_add,
     storage_cost::{
-        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
-    },
-    CostContext, CostsExt, OperationCost,
+        key_value_cost::KeyValueStorageCost,
+    }, OperationCost,
 };
 use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
 use super::make_prefixed_key;
 use crate::{
-    error::{Error, Error::RocksDBError},
-    rocksdb_storage::storage::Db,
     Batch, StorageBatch,
 };
 
