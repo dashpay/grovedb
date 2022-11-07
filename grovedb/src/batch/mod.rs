@@ -842,34 +842,28 @@ where
                     match maybe_new_flags {
                         None => Ok((false, None)),
                         Some(new_flags) => {
-                            let flags_changed = (flags_update)(
-                                storage_costs,
-                                maybe_old_flags,
-                                new_flags,
-                            )
-                            .map_err(|e| match e {
-                                Error::JustInTimeElementFlagsClientError(_) => e,
-                                _ => Error::ClientReturnedNonClientError("non client error"),
-                            })?;
-                            let tree_value_cost =
-                                if flags_changed || storage_costs.has_storage_change() {
-                                    let flags_len = new_flags.len() as u32;
-                                    new_value.clone_from(&new_element.serialize()?);
-                                    // we need to give back the value defined cost in the case that
-                                    // the new element is a tree
-                                    match new_element {
-                                        Element::Tree(..) => {
-                                            let tree_value_cost = TREE_COST_SIZE
-                                                + flags_len
-                                                + flags_len.required_space() as u32;
-                                            Some(tree_value_cost)
-                                        }
-                                        _ => None,
+                            let changed = (flags_update)(storage_costs, maybe_old_flags, new_flags)
+                                .map_err(|e| match e {
+                                    Error::JustInTimeElementFlagsClientError(_) => e,
+                                    _ => Error::ClientReturnedNonClientError("non client error"),
+                                })?;
+                            if changed {
+                                let flags_len = new_flags.len() as u32;
+                                new_value.clone_from(&new_element.serialize()?);
+                                // we need to give back the value defined cost in the case that the
+                                // new element is a tree
+                                match new_element {
+                                    Element::Tree(..) => {
+                                        let tree_value_cost = TREE_COST_SIZE
+                                            + flags_len
+                                            + flags_len.required_space() as u32;
+                                        Ok((true, Some(tree_value_cost)))
                                     }
-                                } else {
-                                    None
-                                };
-                            Ok((flags_changed, tree_value_cost))
+                                    _ => Ok((true, None)),
+                                }
+                            } else {
+                                Ok((false, None))
+                            }
                         }
                     }
                 },

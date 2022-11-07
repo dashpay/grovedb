@@ -1154,7 +1154,9 @@ impl Commit for MerkCommitter {
                     &old_value,
                     tree.value_mut_ref(),
                 )?;
-                if flags_changed || storage_costs.value_storage_cost.has_storage_change() {
+                if !flags_changed {
+                    break;
+                } else {
                     tree.inner.kv.value_defined_cost = value_defined_cost;
                     let after_update_tree_plus_hook_size =
                         tree.value_encoding_length_with_parent_to_child_reference() as u32;
@@ -1165,9 +1167,6 @@ impl Commit for MerkCommitter {
                         tree.kv_with_parent_hook_size_and_storage_cost(old_tree_cost)?;
                     current_tree_plus_hook_size = new_size_and_storage_costs.0;
                     storage_costs = new_size_and_storage_costs.1;
-                }
-                if !flags_changed {
-                    break;
                 }
                 if i > MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES {
                     return Err(anyhow!("updated value based on costs too many times"));
