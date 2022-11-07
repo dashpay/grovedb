@@ -3,7 +3,7 @@ mod temp_merk;
 
 use std::{convert::TryInto, ops::Range};
 
-use costs::storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval};
+use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
 pub use crash_merk::CrashMerk;
 use rand::prelude::*;
 pub use temp_merk::TempMerk;

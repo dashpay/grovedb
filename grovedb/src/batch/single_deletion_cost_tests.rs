@@ -1,5 +1,4 @@
 mod tests {
-    use std::collections::BTreeMap;
 
     use costs::storage_cost::removal::{
         Identifier, StorageRemovalPerEpochByIdentifier,

@@ -1,20 +1,10 @@
 //! Prefixed storage batch implementation for RocksDB backend.
-use costs::{
-    cost_return_on_error_no_add,
-    storage_cost::{
-        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
-    },
-    CostContext, CostsExt, OperationCost,
-};
+use costs::{storage_cost::key_value_cost::KeyValueStorageCost, OperationCost};
 use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
 use super::make_prefixed_key;
-use crate::{
-    error::{Error, Error::RocksDBError},
-    rocksdb_storage::storage::Db,
-    Batch, StorageBatch,
-};
+use crate::{Batch, StorageBatch};
 
 /// Wrapper to RocksDB batch.
 /// All calls go to RocksDB batch, but wrapper handles prefixes and column
@@ -29,63 +19,6 @@ pub struct PrefixedRocksDbBatch<'db> {
     /// what it will do, we collect costs at the moment we append something to
     /// the batch.
     pub(crate) cost_acc: OperationCost,
-    /// ... However, computation of deletion costs is still hacky as we need to
-    /// do additional `get` which possibly could fail, but batch append should
-    /// not fail, we defer these `get`s to commit stage. Hopefully all
-    /// operations will return costs (or written data numbers) naturally in the
-    /// future.
-    pub(crate) delete_keys_for_costs: Vec<Vec<u8>>,
-    pub(crate) delete_keys_for_costs_aux: Vec<Vec<u8>>,
-    pub(crate) delete_keys_for_costs_roots: Vec<Vec<u8>>,
-}
-
-impl<'db> PrefixedRocksDbBatch<'db> {
-    /// Populate costs accumulator with deferred deletion costs.
-    pub(crate) fn finalize_deletion_costs(
-        &mut self,
-        db: &'db Db,
-    ) -> CostContext<Result<(), Error>> {
-        // Comutation of deletion cost has it's own... cost.
-        let mut cost = OperationCost::default();
-
-        for key in self.delete_keys_for_costs.iter() {
-            let value = cost_return_on_error_no_add!(&cost, db.get(key).map_err(RocksDBError));
-            cost.seek_count += 1;
-            if let Some(v) = value {
-                cost.storage_loaded_bytes += v.len() as u32;
-                // todo: improve deletion costs
-                self.cost_acc.storage_cost.removed_bytes += BasicStorageRemoval(v.len() as u32);
-            }
-        }
-
-        for key in self.delete_keys_for_costs_aux.iter() {
-            let value = cost_return_on_error_no_add!(
-                &cost,
-                db.get_cf(self.cf_aux, key).map_err(RocksDBError)
-            );
-            cost.seek_count += 1;
-            if let Some(v) = value {
-                cost.storage_loaded_bytes += v.len() as u32;
-                // todo: improve deletion costs
-                self.cost_acc.storage_cost.removed_bytes += BasicStorageRemoval(v.len() as u32);
-            }
-        }
-
-        for key in self.delete_keys_for_costs_roots.iter() {
-            let value = cost_return_on_error_no_add!(
-                &cost,
-                db.get_cf(self.cf_roots, key).map_err(RocksDBError)
-            );
-            cost.seek_count += 1;
-            if let Some(v) = value {
-                cost.storage_loaded_bytes += v.len() as u32;
-                // todo: improve deletion costs
-                self.cost_acc.storage_cost.removed_bytes += BasicStorageRemoval(v.len() as u32);
-            }
-        }
-
-        Ok(()).wrap_with_cost(cost)
-    }
 }
 
 /// Batch with no backing storage_cost (it's not a RocksDB batch, but our own
@@ -94,7 +27,6 @@ impl<'db> PrefixedRocksDbBatch<'db> {
 pub struct PrefixedMultiContextBatchPart {
     pub(crate) prefix: Vec<u8>,
     pub(crate) batch: StorageBatch,
-    pub(crate) acc_cost: OperationCost,
 }
 
 /// Implementation of a batch outside a transaction
@@ -182,8 +114,6 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
             self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
         }
 
-        self.delete_keys_for_costs.push(prefixed_key.clone());
-
         self.batch.delete(prefixed_key);
     }
 
@@ -196,8 +126,6 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
             self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
         }
 
-        self.delete_keys_for_costs_aux.push(prefixed_key.clone());
-
         self.batch.delete_cf(self.cf_aux, prefixed_key);
     }
 
@@ -209,8 +137,6 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         if let Some(removed_bytes) = cost_info {
             self.cost_acc.storage_cost.removed_bytes += removed_bytes.combined_removed_bytes();
         }
-
-        self.delete_keys_for_costs_roots.push(prefixed_key.clone());
 
         self.batch.delete_cf(self.cf_roots, prefixed_key);
     }

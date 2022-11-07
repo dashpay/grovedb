@@ -58,6 +58,57 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_root_one_tree_with_flags_insert_op_worst_case_costs() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let ops = vec![GroveDbOp::insert_run_op(
+            vec![],
+            b"key1".to_vec(),
+            Element::empty_tree_with_flags(Some(b"cat".to_vec())),
+        )];
+        let worst_case_ops = ops.iter().map(|op| op.to_worst_case_clone()).collect();
+        let worst_case_cost = GroveDb::worst_case_operations_for_batch(
+            worst_case_ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+        )
+        .cost_as_result()
+        .expect("expected to get worst case costs");
+
+        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        assert!(
+            worst_case_cost.worse_or_eq_than(&cost),
+            "not worse {:?} \n than {:?}",
+            worst_case_cost,
+            cost
+        );
+        // because we know the object we are inserting we can know the worst
+        // case cost if it doesn't already exist
+        assert_eq!(
+            cost.storage_cost.added_bytes,
+            worst_case_cost.storage_cost.added_bytes
+        );
+
+        assert_eq!(
+            worst_case_cost,
+            OperationCost {
+                seek_count: 6, // todo: why is this 6
+                storage_cost: StorageCost {
+                    added_bytes: 117,
+                    replaced_bytes: 18432, // todo: verify
+                    removed_bytes: NoStorageRemoval,
+                },
+                storage_loaded_bytes: 23040,
+                hash_node_calls: 18, // todo: verify why
+            }
+        );
+    }
+
+    #[test]
     fn test_batch_root_one_item_insert_op_worst_case_costs() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
