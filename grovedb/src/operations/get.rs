@@ -72,6 +72,9 @@ impl GroveDb {
                     &mut cost,
                     self.get_raw(path_slice.iter().map(|x| x.as_slice()), key, transaction)
                         .map_err(|e| match e {
+                            Error::PathParentLayerNotFound(p) => {
+                                Error::CorruptedReferencePathParentLayerNotFound(p)
+                            }
                             Error::PathKeyNotFound(p) => {
                                 Error::CorruptedReferencePathKeyNotFound(p)
                             }

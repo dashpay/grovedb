@@ -22,6 +22,10 @@ pub enum Error {
     // The path not found could represent a valid query, just where the path isn't there
     #[error("path not found: {0}")]
     PathNotFound(String),
+    // The path not found could represent a valid query, just where the parent path merk isn't
+    // there
+    #[error("path parent layer not found: {0}")]
+    PathParentLayerNotFound(String),
 
     // The path's item by key referenced was not found
     #[error("corrupted referenced path key not found: {0}")]
@@ -29,6 +33,9 @@ pub enum Error {
     // The path referenced was not found
     #[error("corrupted referenced path not found: {0}")]
     CorruptedReferencePathNotFound(String),
+    // The path's parent merk wasn't found
+    #[error("corrupted referenced path key not found: {0}")]
+    CorruptedReferencePathParentLayerNotFound(String),
 
     // The invalid path represents a logical error from the client library
     #[error("invalid path: {0}")]
