@@ -42,7 +42,7 @@ macro_rules! storage_context_with_parent_optional_tx {
                     let element = cost_return_on_error!(
                         &mut $cost,
                         Element::get_from_storage(&parent_storage, last).map_err(|e| {
-                            Error::CorruptedData(
+                            Error::PathParentLayerNotFound(
                                 format!(
 				    "could not get key for parent of subtree optional on tx: {}",
 				    e
@@ -75,7 +75,7 @@ macro_rules! storage_context_with_parent_optional_tx {
                     let element = cost_return_on_error!(
                         &mut $cost,
 			Element::get_from_storage(&parent_storage, last).map_err(|e| {
-                            Error::CorruptedData(
+                            Error::PathParentLayerNotFound(
                                 format!(
 				    "could not get key for parent of subtree optional no tx: {}",
 				    e
