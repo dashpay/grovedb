@@ -138,8 +138,8 @@ impl GroveDb {
             &mut cost,
             self.open_transactional_merk_at_path(path.into_iter(), transaction)
                 .map_err(|e| match e {
-                    Error::InvalidPath(s) => {
-                        Error::PathNotFound(s)
+                    Error::InvalidParentLayerPath(s) => {
+                        Error::PathParentLayerNotFound(s)
                     }
                     _ => e,
                 })
@@ -164,8 +164,8 @@ impl GroveDb {
             &mut cost,
             self.open_non_transactional_merk_at_path(path.into_iter())
                 .map_err(|e| match e {
-                    Error::InvalidPath(s) => {
-                        Error::PathNotFound(s)
+                    Error::InvalidParentLayerPath(s) => {
+                        Error::PathParentLayerNotFound(s)
                     }
                     _ => e,
                 })

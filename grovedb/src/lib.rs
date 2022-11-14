@@ -82,7 +82,9 @@ impl GroveDb {
                 let element = cost_return_on_error!(
                     &mut cost,
                     Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                        Error::InvalidPath("could not get key for parent of subtree".to_owned())
+                        Error::InvalidParentLayerPath(
+                            "could not get key for parent of subtree".to_owned(),
+                        )
                     })
                 );
                 if let Element::Tree(root_key, _) = element {
@@ -129,7 +131,7 @@ impl GroveDb {
                 let element = cost_return_on_error!(
                     &mut cost,
                     Element::get_from_storage(&parent_storage, key).map_err(|e| {
-                        Error::InvalidPath(format!(
+                        Error::InvalidParentLayerPath(format!(
                             "could not get key for parent {:?} of subtree: {}",
                             DebugByteVectors(path_iter.clone().map(|x| x.to_vec()).collect()),
                             e
