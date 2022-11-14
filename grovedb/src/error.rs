@@ -37,6 +37,9 @@ pub enum Error {
     #[error("corrupted referenced path key not found: {0}")]
     CorruptedReferencePathParentLayerNotFound(String),
 
+    // The invalid parent layer path represents a logical error from the client library
+    #[error("invalid parent layer path: {0}")]
+    InvalidParentLayerPath(String),
     // The invalid path represents a logical error from the client library
     #[error("invalid path: {0}")]
     InvalidPath(String),
