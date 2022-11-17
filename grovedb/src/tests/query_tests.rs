@@ -1288,3 +1288,154 @@ fn test_get_range_query_with_limit_and_offset() {
     assert_eq!(result_set.len(), 5);
     compare_result_sets(&elements, &result_set);
 }
+
+#[test]
+// TODO: Change this tests name
+fn test_change_name() {
+    let db = make_test_grovedb();
+    db.insert([TEST_LEAF], b"\0", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"\0"],
+        b"p1",
+        Element::new_item(b"a b".to_vec()),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"\0"],
+        b"p2",
+        Element::new_item(b"b c".to_vec()),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"\0"],
+        b"p3",
+        Element::new_item(b"c d".to_vec()),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+
+    db.insert([TEST_LEAF], b"firstName", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"firstName"],
+        b"a",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"firstName"],
+        b"b",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"firstName"],
+        b"c",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+
+    db.insert(
+        [TEST_LEAF, b"firstName", b"a"],
+        b"\0",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"firstName", b"b"],
+        b"\0",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"firstName", b"c"],
+        b"\0",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+
+    db.insert(
+        [TEST_LEAF, b"firstName", b"a", b"\0"],
+        b"r1",
+        Element::new_reference(ReferencePathType::UpstreamRootHeightReference(
+            1,
+            vec![b"\0".to_vec(), b"p1".to_vec()],
+        )),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"firstName", b"b", b"\0"],
+        b"r2",
+        Element::new_reference(ReferencePathType::UpstreamRootHeightReference(
+            1,
+            vec![b"\0".to_vec(), b"p2".to_vec()],
+        )),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"firstName", b"c", b"\0"],
+        b"r3",
+        Element::new_reference(ReferencePathType::UpstreamRootHeightReference(
+            1,
+            vec![b"\0".to_vec(), b"p3".to_vec()],
+        )),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+
+    let path = vec![TEST_LEAF.to_vec(), b"firstName".to_vec()];
+    let mut query = Query::new();
+    query.insert_all();
+    query.set_subquery_key(b"\0".to_vec());
+    let mut subquery = Query::new();
+    subquery.insert_all();
+    query.set_subquery(subquery);
+    let path_query = PathQuery::new_unsized(path, query.clone());
+
+    // dbg!(path_query);
+
+    let proof = db
+        .prove_query(&path_query)
+        .unwrap()
+        .expect("expected successful proving");
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    dbg!(result_set.len());
+}
