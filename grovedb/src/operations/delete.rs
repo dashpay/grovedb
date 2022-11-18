@@ -936,7 +936,7 @@ mod tests {
         assert!(matches!(
             db.get([TEST_LEAF, b"key1", b"key2"], b"key3", None)
                 .unwrap(),
-            Err(Error::PathNotFound(_))
+            Err(Error::PathParentLayerNotFound(_))
         ));
         // assert_eq!(db.subtrees.len().unwrap(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF
         // TEST_LEAF.key4 stay
@@ -979,7 +979,7 @@ mod tests {
         assert!(matches!(
             db.get([TEST_LEAF, b"key1", b"key2"], b"key3", Some(&transaction))
                 .unwrap(),
-            Err(Error::PathNotFound(_))
+            Err(Error::PathParentLayerNotFound(_))
         ));
         transaction.commit().expect("cannot commit transaction");
         assert!(matches!(
@@ -1083,7 +1083,7 @@ mod tests {
                 Some(&transaction)
             )
             .unwrap(),
-            Err(Error::PathNotFound(_))
+            Err(Error::PathParentLayerNotFound(_))
         ));
 
         assert!(matches!(
@@ -1169,7 +1169,7 @@ mod tests {
         assert!(matches!(
             db.get([TEST_LEAF, b"level1-A", b"level2-A"], b"level3-A", None,)
                 .unwrap(),
-            Err(Error::PathNotFound(_))
+            Err(Error::PathParentLayerNotFound(_))
         ));
 
         assert!(matches!(
@@ -1245,7 +1245,7 @@ mod tests {
         assert!(matches!(
             db.get([TEST_LEAF, b"key1", b"key2"], b"key3", Some(&transaction))
                 .unwrap(),
-            Err(Error::PathNotFound(_))
+            Err(Error::PathParentLayerNotFound(_))
         ));
         transaction.commit().expect("cannot commit transaction");
         assert!(matches!(
@@ -1300,7 +1300,7 @@ mod tests {
         assert!(matches!(
             db.get([TEST_LEAF, b"key1", b"key2"], b"key3", None)
                 .unwrap(),
-            Err(Error::PathNotFound(_))
+            Err(Error::PathParentLayerNotFound(_))
         ));
         assert!(matches!(
             db.get([TEST_LEAF], b"key1", None).unwrap(),
