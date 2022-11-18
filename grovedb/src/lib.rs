@@ -98,11 +98,11 @@ impl GroveDb {
 
         let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
-        while let Some((key, value)) = element_iterator.next().unwrap() {
-            let element = raw_decode(&value).unwrap();
+        while let Some((key, element_value)) = element_iterator.next().unwrap() {
+            let element = raw_decode(&element_value).unwrap();
             match element {
                 Element::Tree(..) => {
-                    let (v2, element_value_hash) = merk
+                    let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(&key)
                         .unwrap()
                         .unwrap()
@@ -116,7 +116,7 @@ impl GroveDb {
                         .expect("should exist");
                     let root_hash = inner_merk.root_hash().unwrap(); // need the value hash of the
 
-                    let actual_value_hash = value_hash(&v2).unwrap();
+                    let actual_value_hash = value_hash(&kv_value).unwrap();
                     let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
 
                     if combined_value_hash != element_value_hash {
@@ -127,9 +127,7 @@ impl GroveDb {
                     }
                     issues.extend(self.verify_merk_and_submerks(inner_merk, new_path));
                 }
-                _ => {
-                    // dbg!(element);
-                }
+                _ => {}
             }
         }
         issues
