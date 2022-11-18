@@ -16,13 +16,18 @@ mod worst_case_costs;
 
 use std::{collections::HashMap, option::Option::None, path::Path};
 
-use ::visualize::DebugByteVectors;
+use ::visualize::{visualize_stdout, DebugByteVectors};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
+use itertools::all;
 pub use merk::proofs::{query::QueryItem, Query};
-use merk::{self, BatchEntry, Merk};
+use merk::{
+    self,
+    tree::{combine_hash, value_hash},
+    BatchEntry, CryptoHash, KVIterator, Merk,
+};
 pub use query::{PathQuery, SizedQuery};
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
 pub use storage::{
@@ -39,7 +44,10 @@ use storage::{
 pub use subtree::{Element, ElementFlags};
 
 pub use crate::error::Error;
-use crate::util::root_merk_optional_tx;
+use crate::{
+    subtree::raw_decode,
+    util::{merk_optional_tx, root_merk_optional_tx, storage_context_optional_tx},
+};
 
 // todo: remove this
 const MAX_ELEMENTS_NUMBER: u32 = 42069;
@@ -53,6 +61,56 @@ pub type Transaction<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
 pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
 
 impl GroveDb {
+    pub fn print(&self) {
+        visualize_stdout(&self)
+    }
+
+    pub fn verify_grovedb(&self) {
+        let root_merk = self
+            .open_non_transactional_merk_at_path([])
+            .unwrap()
+            .expect("should exist");
+        self.verify_merk(root_merk, vec![]);
+    }
+
+    pub fn verify_merk(&self, merk: Merk<PrefixedRocksDbStorageContext>, path: Vec<Vec<u8>>) {
+        let mut all_query = Query::new();
+        all_query.insert_all();
+
+        let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
+        while let Some((key, value)) = element_iterator.next().unwrap() {
+            let element = raw_decode(&value).unwrap();
+            match element {
+                Element::Tree(..) => {
+                    let (v2, element_value_hash) = merk
+                        .get_value_and_value_hash(&key)
+                        .unwrap()
+                        .unwrap()
+                        .unwrap();
+                    let mut new_path = path.clone();
+                    new_path.push(key.to_vec());
+
+                    let inner_merk = self
+                        .open_non_transactional_merk_at_path(new_path.iter().map(|x| x.as_slice()))
+                        .unwrap()
+                        .expect("should exist");
+                    let root_hash = inner_merk.root_hash().unwrap(); // need the value hash of the
+
+                    let actual_value_hash = value_hash(&v2).unwrap();
+                    let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
+
+                    dbg!(&key);
+                    assert_eq!(combined_value_hash, element_value_hash);
+                    dbg!("same");
+                    self.verify_merk(inner_merk, new_path);
+                }
+                _ => {
+                    dbg!(element);
+                }
+            }
+        }
+    }
+
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = RocksDbStorage::default_rocksdb_with_path(path)?;
         Ok(GroveDb { db })

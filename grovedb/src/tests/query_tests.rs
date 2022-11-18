@@ -1,6 +1,7 @@
 use merk::proofs::{query::QueryItem, Query};
 use rand::Rng;
 use tempfile::TempDir;
+use visualize::{visualize_stdout, Visualize};
 
 use crate::{
     reference_path::ReferencePathType,
@@ -1295,11 +1296,24 @@ fn test_get_range_query_with_limit_and_offset() {
 fn test_change_name() {
     let tmp_dir = TempDir::new().unwrap();
     let mut db = GroveDb::open(tmp_dir.path()).unwrap();
-    db.insert([], b"tree1", Element::empty_tree(), None, None)
+    let tree_name_slice: &[u8] = &[
+        2, 17, 40, 46, 227, 17, 179, 211, 98, 50, 130, 107, 246, 26, 147, 45, 234, 189, 245, 77,
+        252, 86, 99, 107, 197, 226, 188, 54, 239, 64, 17, 37,
+    ];
+    db.insert([], &[1], Element::empty_tree(), None, None)
         .unwrap()
         .expect("successful subtree insert");
     db.insert(
-        [b"tree1".as_slice()],
+        [vec![1].as_slice()],
+        tree_name_slice,
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [&[1], tree_name_slice],
         b"\0",
         Element::new_item(vec![0]),
         None,
@@ -1308,8 +1322,8 @@ fn test_change_name() {
     .unwrap()
     .expect("successful item insert");
     db.insert(
-        [b"tree1".as_slice()],
-        b"1",
+        [&[1], tree_name_slice],
+        &[1],
         Element::empty_tree(),
         None,
         None,
@@ -1319,7 +1333,7 @@ fn test_change_name() {
 
     // Insert person tree
     db.insert(
-        [b"tree1".as_slice(), b"1".as_slice()],
+        [&[1], tree_name_slice, &[1]],
         b"person",
         Element::empty_tree(),
         None,
@@ -1328,8 +1342,8 @@ fn test_change_name() {
     .unwrap()
     .expect("successful subtree insert");
     db.insert(
-        [b"tree1".as_slice(), b"1".as_slice(), b"person".as_slice()],
-        b"\0",
+        [&[1], tree_name_slice, &[1], b"person".as_slice()],
+        b"firstName",
         Element::empty_tree(),
         None,
         None,
@@ -1337,8 +1351,8 @@ fn test_change_name() {
     .unwrap()
     .expect("successful subtree insert");
     db.insert(
-        [b"tree1".as_slice(), b"1".as_slice(), b"person".as_slice()],
-        b"firstName",
+        [&[1], tree_name_slice, &[1], b"person".as_slice()],
+        b"\0",
         Element::empty_tree(),
         None,
         None,
@@ -1348,8 +1362,9 @@ fn test_change_name() {
 
     db.insert(
         [
-            b"tree1".as_slice(),
-            b"1".as_slice(),
+            &[1],
+            tree_name_slice,
+            &[1],
             b"person".as_slice(),
             b"\0".as_slice(),
         ],
@@ -1362,8 +1377,9 @@ fn test_change_name() {
     .expect("successful subtree insert");
     db.insert(
         [
-            b"tree1".as_slice(),
-            b"1",
+            &[1],
+            tree_name_slice,
+            &[1],
             b"person".as_slice(),
             b"firstName".as_slice(),
         ],
@@ -1376,8 +1392,9 @@ fn test_change_name() {
     .expect("successful subtree insert");
     db.insert(
         [
-            b"tree1".as_slice(),
-            b"1".as_slice(),
+            &[1],
+            tree_name_slice,
+            &[1],
             b"person".as_slice(),
             b"firstName".as_slice(),
             b"cammi".as_slice(),
@@ -1391,8 +1408,9 @@ fn test_change_name() {
     .expect("successful subtree insert");
     db.insert(
         [
-            b"tree1".as_slice(),
-            b"1".as_slice(),
+            &[1],
+            tree_name_slice,
+            &[1],
             b"person".as_slice(),
             b"firstName".as_slice(),
             b"cammi".as_slice(),
@@ -1400,7 +1418,7 @@ fn test_change_name() {
         ],
         b"person_ref_id",
         Element::new_reference(ReferencePathType::UpstreamRootHeightReference(
-            3,
+            4,
             vec![b"\0".to_vec(), b"person_id_1".to_vec()],
         )),
         None,
@@ -1410,8 +1428,9 @@ fn test_change_name() {
     .expect("successful subtree insert");
 
     let path = vec![
-        b"tree1".to_vec(),
-        b"1".to_vec(),
+        vec![1],
+        tree_name_slice.to_vec(),
+        vec![1],
         b"person".to_vec(),
         b"firstName".to_vec(),
     ];
@@ -1421,7 +1440,14 @@ fn test_change_name() {
     let mut subquery = Query::new();
     subquery.insert_all();
     query.set_subquery(subquery);
-    let path_query = PathQuery::new_unsized(path, query.clone());
+    let path_query = PathQuery::new(
+        path,
+        SizedQuery {
+            query: query.clone(),
+            limit: Some(100),
+            offset: Some(0),
+        },
+    );
 
     dbg!(&path_query);
 
@@ -1432,4 +1458,7 @@ fn test_change_name() {
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     dbg!(result_set.len());
+
+    visualize_stdout(&db);
+    db.verify_grovedb();
 }
