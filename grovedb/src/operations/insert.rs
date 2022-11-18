@@ -571,7 +571,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert!(matches!(result, Err(Error::InvalidPath(_))));
+        assert!(matches!(result, Err(Error::InvalidParentLayerPath(_))));
     }
 
     #[test]
