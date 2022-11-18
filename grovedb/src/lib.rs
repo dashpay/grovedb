@@ -65,18 +65,23 @@ impl GroveDb {
         visualize_stdout(&self)
     }
 
-    pub fn verify_grovedb(&self) {
+    pub fn verify_grovedb(&self) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash)> {
         let root_merk = self
             .open_non_transactional_merk_at_path([])
             .unwrap()
             .expect("should exist");
-        self.verify_merk(root_merk, vec![]);
+        self.verify_merk_and_submerks(root_merk, vec![])
     }
 
-    pub fn verify_merk(&self, merk: Merk<PrefixedRocksDbStorageContext>, path: Vec<Vec<u8>>) {
+    pub fn verify_merk_and_submerks(
+        &self,
+        merk: Merk<PrefixedRocksDbStorageContext>,
+        path: Vec<Vec<u8>>,
+    ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash)> {
         let mut all_query = Query::new();
         all_query.insert_all();
 
+        let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
         while let Some((key, value)) = element_iterator.next().unwrap() {
             let element = raw_decode(&value).unwrap();
@@ -99,16 +104,20 @@ impl GroveDb {
                     let actual_value_hash = value_hash(&v2).unwrap();
                     let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
 
-                    dbg!(&key);
-                    assert_eq!(combined_value_hash, element_value_hash);
-                    dbg!("same");
-                    self.verify_merk(inner_merk, new_path);
+                    // dbg!(&key);
+                    // assert_eq!(combined_value_hash, element_value_hash);
+                    // dbg!("same");
+                    if combined_value_hash != element_value_hash {
+                        issues.insert(new_path.clone(), (combined_value_hash, element_value_hash));
+                    }
+                    issues.extend(self.verify_merk_and_submerks(inner_merk, new_path));
                 }
                 _ => {
-                    dbg!(element);
+                    // dbg!(element);
                 }
             }
         }
+        issues
     }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
