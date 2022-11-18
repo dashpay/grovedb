@@ -16,13 +16,18 @@ mod worst_case_costs;
 
 use std::{collections::HashMap, option::Option::None, path::Path};
 
-use ::visualize::DebugByteVectors;
+use ::visualize::{visualize_stdout, DebugByteVectors};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
+use itertools::all;
 pub use merk::proofs::{query::QueryItem, Query};
-use merk::{self, BatchEntry, Merk};
+use merk::{
+    self,
+    tree::{combine_hash, value_hash},
+    BatchEntry, CryptoHash, KVIterator, Merk,
+};
 pub use query::{PathQuery, SizedQuery};
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
 pub use storage::{
@@ -39,7 +44,10 @@ use storage::{
 pub use subtree::{Element, ElementFlags};
 
 pub use crate::error::Error;
-use crate::util::root_merk_optional_tx;
+use crate::{
+    subtree::raw_decode,
+    util::{merk_optional_tx, root_merk_optional_tx, storage_context_optional_tx},
+};
 
 // todo: remove this
 const MAX_ELEMENTS_NUMBER: u32 = 42069;
@@ -487,5 +495,79 @@ impl GroveDb {
     /// [`GroveDb::start_transaction`]
     pub fn rollback_transaction(&self, transaction: &Transaction) -> Result<(), Error> {
         Ok(self.db.rollback_transaction(transaction)?)
+    }
+
+    /// Method to visualize hash mismatch after verification
+    pub fn visualize_verify_grovedb(&self) -> HashMap<String, (String, String, String)> {
+        self.verify_grovedb()
+            .iter()
+            .map(|(path, (root_hash, expected, actual))| {
+                (
+                    path.iter()
+                        .map(|a| hex::encode(a))
+                        .collect::<Vec<String>>()
+                        .join("/"),
+                    (
+                        hex::encode(root_hash),
+                        hex::encode(expected),
+                        hex::encode(actual),
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    /// Method to check that the value_hash of Element::Tree nodes are computed correctly.
+    pub fn verify_grovedb(&self) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
+        let root_merk = self
+            .open_non_transactional_merk_at_path([])
+            .unwrap()
+            .expect("should exist");
+        self.verify_merk_and_submerks(root_merk, vec![])
+    }
+
+    fn verify_merk_and_submerks(
+        &self,
+        merk: Merk<PrefixedRocksDbStorageContext>,
+        path: Vec<Vec<u8>>,
+    ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
+        let mut all_query = Query::new();
+        all_query.insert_all();
+
+        let mut issues = HashMap::new();
+        let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
+        while let Some((key, element_value)) = element_iterator.next().unwrap() {
+            let element = raw_decode(&element_value).unwrap();
+            match element {
+                Element::Tree(..) => {
+                    let (kv_value, element_value_hash) = merk
+                        .get_value_and_value_hash(&key)
+                        .unwrap()
+                        .unwrap()
+                        .unwrap();
+                    let mut new_path = path.clone();
+                    new_path.push(key.to_vec());
+
+                    let inner_merk = self
+                        .open_non_transactional_merk_at_path(new_path.iter().map(|x| x.as_slice()))
+                        .unwrap()
+                        .expect("should exist");
+                    let root_hash = inner_merk.root_hash().unwrap();
+
+                    let actual_value_hash = value_hash(&kv_value).unwrap();
+                    let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
+
+                    if combined_value_hash != element_value_hash {
+                        issues.insert(
+                            new_path.clone(),
+                            (root_hash, combined_value_hash, element_value_hash),
+                        );
+                    }
+                    issues.extend(self.verify_merk_and_submerks(inner_merk, new_path));
+                }
+                _ => {}
+            }
+        }
+        issues
     }
 }

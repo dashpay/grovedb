@@ -62,6 +62,11 @@ pub enum Op {
     Insert {
         element: Element,
     },
+    InsertTreeWithRootHash {
+        hash: [u8; 32],
+        root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    },
     Delete,
     DeleteTree,
 }
@@ -76,6 +81,11 @@ impl Op {
             Op::ReplaceTreeRootKey { .. } => {
                 let mut cost = OperationCost::default();
                 GroveDb::add_worst_case_merk_replace_tree(&mut cost, key, propagate_if_input);
+                cost
+            }
+            Op::InsertTreeWithRootHash { flags, .. } => {
+                let mut cost = OperationCost::default();
+                GroveDb::add_worst_case_merk_insert_tree(&mut cost, key, flags, propagate_if_input);
                 cost
             }
             Op::Insert { element } => {
@@ -248,6 +258,7 @@ impl fmt::Debug for GroveDbOp {
             Op::Delete => "Delete",
             Op::DeleteTree => "Delete Tree",
             Op::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key",
+            Op::InsertTreeWithRootHash { .. } => "Insert Tree Hash and Root Key",
         };
 
         f.debug_struct("GroveDbOp")
@@ -500,7 +511,7 @@ where
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
             // the path is being modified, inserted or deleted in the batch of operations
             match op {
-                Op::ReplaceTreeRootKey { .. } => {
+                Op::ReplaceTreeRootKey { .. } | Op::InsertTreeWithRootHash { .. } => {
                     return Err(Error::InvalidBatchOperation(
                         "references can not point to trees being updated",
                     ))
@@ -808,6 +819,22 @@ where
                         )
                     );
                 }
+                Op::InsertTreeWithRootHash {
+                    hash,
+                    root_key,
+                    flags,
+                } => {
+                    let element = Element::new_tree_with_flags(root_key, flags);
+                    cost_return_on_error!(
+                        &mut cost,
+                        element.insert_subtree_into_batch_operations(
+                            key_info.get_key_clone(),
+                            hash,
+                            false,
+                            &mut batch_operations
+                        )
+                    );
+                }
             }
         }
         cost_return_on_error!(&mut cost, unsafe {
@@ -1020,9 +1047,11 @@ where
                     Ok(())
                 }
                 Op::Delete | Op::DeleteTree => Ok(()),
-                Op::ReplaceTreeRootKey { .. } => Err(Error::InvalidBatchOperation(
-                    "replace tree hash is an internal operation only",
-                )),
+                Op::ReplaceTreeRootKey { .. } | Op::InsertTreeWithRootHash { .. } => {
+                    Err(Error::InvalidBatchOperation(
+                        "replace and insert tree hash are internal operations only",
+                    ))
+                }
             };
             if op_result.is_err() {
                 return Err(op_result.err().unwrap()).wrap_with_cost(op_cost);
@@ -1141,24 +1170,12 @@ impl GroveDb {
         while let Some(ops_at_level) = ops_by_level_paths.remove(&current_level) {
             for (path, ops_at_path) in ops_at_level.into_iter() {
                 if current_level == 0 {
-                    let mut root_tree_ops: BTreeMap<KeyInfo, Op> = BTreeMap::new();
-                    for (key, op) in ops_at_path.into_iter() {
-                        match op {
-                            Op::Insert { .. } | Op::Delete | Op::DeleteTree => {
-                                root_tree_ops.insert(key, op);
-                            }
-                            Op::ReplaceTreeRootKey { hash, root_key } => {
-                                root_tree_ops
-                                    .insert(key, Op::ReplaceTreeRootKey { hash, root_key });
-                            }
-                        }
-                    }
                     // execute the ops at this path
                     let (_root_hash, calculated_root_key) = cost_return_on_error!(
                         &mut cost,
                         merk_tree_cache.execute_ops_on_path(
                             &path,
-                            root_tree_ops,
+                            ops_at_path,
                             &ops_by_qualified_paths,
                             &batch_apply_options,
                             &mut flags_update,
@@ -1213,14 +1230,26 @@ impl GroveDb {
                                             });
                                         }
                                         Entry::Occupied(occupied_entry) => {
-                                            match occupied_entry.into_mut() {
+                                            let mutable_occupied_entry = occupied_entry.into_mut();
+                                            match mutable_occupied_entry {
                                                 Op::ReplaceTreeRootKey { hash, root_key } => {
                                                     *hash = root_hash;
                                                     *root_key = calculated_root_key;
                                                 }
+                                                Op::InsertTreeWithRootHash { .. } => {
+                                                    return Err(Error::CorruptedCodeExecution(
+                                                        "we can not do this operation twice",
+                                                    ))
+                                                    .wrap_with_cost(cost);
+                                                }
                                                 Op::Insert { element } => {
-                                                    if let Element::Tree(root_key, _) = element {
-                                                        *root_key = calculated_root_key
+                                                    if let Element::Tree(_, flags) = element {
+                                                        *mutable_occupied_entry =
+                                                            Op::InsertTreeWithRootHash {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                            };
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "insertion of element under a non tree",

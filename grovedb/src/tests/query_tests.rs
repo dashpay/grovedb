@@ -1,7 +1,10 @@
 use merk::proofs::{query::QueryItem, Query};
 use rand::Rng;
+use tempfile::TempDir;
+use visualize::{visualize_stdout, Visualize};
 
 use crate::{
+    batch::GroveDbOp,
     reference_path::ReferencePathType,
     tests::{common::compare_result_sets, make_test_grovedb, TempGroveDb, TEST_LEAF},
     Element, GroveDb, PathQuery, SizedQuery,
@@ -1287,4 +1290,154 @@ fn test_get_range_query_with_limit_and_offset() {
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 5);
     compare_result_sets(&elements, &result_set);
+}
+
+#[test]
+fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
+    let tmp_dir = TempDir::new().unwrap();
+    let mut db = GroveDb::open(tmp_dir.path()).unwrap();
+    let tree_name_slice: &[u8] = &[
+        2, 17, 40, 46, 227, 17, 179, 211, 98, 50, 130, 107, 246, 26, 147, 45, 234, 189, 245, 77,
+        252, 86, 99, 107, 197, 226, 188, 54, 239, 64, 17, 37,
+    ];
+
+    let batch = vec![GroveDbOp::insert_run_op(
+        vec![],
+        vec![1],
+        Element::empty_tree(),
+    )];
+    db.apply_batch(batch, None, None)
+        .unwrap()
+        .expect("should apply batch");
+
+    let batch = vec![
+        GroveDbOp::insert_run_op(
+            vec![vec![1]],
+            tree_name_slice.to_vec(),
+            Element::empty_tree(),
+        ),
+        GroveDbOp::insert_run_op(
+            vec![vec![1], tree_name_slice.to_vec()],
+            b"\0".to_vec(),
+            Element::empty_tree(),
+        ),
+        GroveDbOp::insert_run_op(
+            vec![vec![1], tree_name_slice.to_vec()],
+            vec![1],
+            Element::empty_tree(),
+        ),
+        GroveDbOp::insert_run_op(
+            vec![vec![1], tree_name_slice.to_vec(), vec![1]],
+            b"person".to_vec(),
+            Element::empty_tree(),
+        ),
+        GroveDbOp::insert_run_op(
+            vec![
+                vec![1],
+                tree_name_slice.to_vec(),
+                vec![1],
+                b"person".to_vec(),
+            ],
+            b"\0".to_vec(),
+            Element::empty_tree(),
+        ),
+        GroveDbOp::insert_run_op(
+            vec![
+                vec![1],
+                tree_name_slice.to_vec(),
+                vec![1],
+                b"person".to_vec(),
+            ],
+            b"firstName".to_vec(),
+            Element::empty_tree(),
+        ),
+    ];
+    db.apply_batch(batch, None, None)
+        .unwrap()
+        .expect("should apply batch");
+
+    let batch = vec![
+        GroveDbOp::insert_run_op(
+            vec![
+                vec![1],
+                tree_name_slice.to_vec(),
+                vec![1],
+                b"person".to_vec(),
+                b"\0".to_vec(),
+            ],
+            b"person_id_1".to_vec(),
+            Element::new_item(vec![50]),
+        ),
+        GroveDbOp::insert_run_op(
+            vec![
+                vec![1],
+                tree_name_slice.to_vec(),
+                vec![1],
+                b"person".to_vec(),
+                b"firstName".to_vec(),
+            ],
+            b"cammi".to_vec(),
+            Element::empty_tree(),
+        ),
+        GroveDbOp::insert_run_op(
+            vec![
+                vec![1],
+                tree_name_slice.to_vec(),
+                vec![1],
+                b"person".to_vec(),
+                b"firstName".to_vec(),
+                b"cammi".to_vec(),
+            ],
+            b"\0".to_vec(),
+            Element::empty_tree(),
+        ),
+        GroveDbOp::insert_run_op(
+            vec![
+                vec![1],
+                tree_name_slice.to_vec(),
+                vec![1],
+                b"person".to_vec(),
+                b"firstName".to_vec(),
+                b"cammi".to_vec(),
+                b"\0".to_vec(),
+            ],
+            b"person_ref_id".to_vec(),
+            Element::new_reference(ReferencePathType::UpstreamRootHeightReference(
+                4,
+                vec![b"\0".to_vec(), b"person_id_1".to_vec()],
+            )),
+        ),
+    ];
+    db.apply_batch(batch, None, None)
+        .unwrap()
+        .expect("should apply batch");
+
+    let path = vec![
+        vec![1],
+        tree_name_slice.to_vec(),
+        vec![1],
+        b"person".to_vec(),
+        b"firstName".to_vec(),
+    ];
+    let mut query = Query::new();
+    query.insert_all();
+    query.set_subquery_key(b"\0".to_vec());
+    let mut subquery = Query::new();
+    subquery.insert_all();
+    query.set_subquery(subquery);
+    let path_query = PathQuery::new(
+        path,
+        SizedQuery {
+            query: query.clone(),
+            limit: Some(100),
+            offset: Some(0),
+        },
+    );
+
+    let proof = db
+        .prove_query(&path_query)
+        .unwrap()
+        .expect("expected successful proving");
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
 }
