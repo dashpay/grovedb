@@ -1139,12 +1139,6 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        // dbg!(
-        //     "putting subtree {} {}",
-        //     std::str::from_utf8(key.as_ref()),
-        //     hex::encode(subtree_root_hash)
-        // );
-
         let batch_operations = [(
             key,
             Op::PutLayeredReference(serialized, cost, subtree_root_hash),

@@ -911,13 +911,6 @@ where
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         });
-        dbg!(
-            path.iter()
-                .map(|a| hex::encode(a))
-                .collect::<Vec<String>>()
-                .join("/"),
-            hex::encode(merk.root_hash_and_key().value.0)
-        );
         merk.root_hash_and_key().add_cost(cost).map(Ok)
     }
 }
@@ -1345,7 +1338,6 @@ impl GroveDb {
                 }
             )
         );
-        dbg!(&batch_structure);
         Self::apply_batch_structure(batch_structure, batch_apply_options).add_cost(cost)
     }
 

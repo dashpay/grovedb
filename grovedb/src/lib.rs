@@ -61,10 +61,6 @@ pub type Transaction<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
 pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
 
 impl GroveDb {
-    pub fn print(&self) {
-        visualize_stdout(&self)
-    }
-
     pub fn visualize_verify_grovedb(&self) -> HashMap<String, (String, String, String)> {
         self.verify_grovedb()
             .iter()
@@ -123,9 +119,6 @@ impl GroveDb {
                     let actual_value_hash = value_hash(&v2).unwrap();
                     let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
 
-                    // dbg!(&key);
-                    // assert_eq!(combined_value_hash, element_value_hash);
-                    // dbg!("same");
                     if combined_value_hash != element_value_hash {
                         issues.insert(
                             new_path.clone(),

@@ -238,7 +238,6 @@ impl ProofVerifier {
         current_value_bytes: &mut Vec<u8>,
         subquery_key_result_set: &[ProofKeyValue],
     ) -> Result<(), Error> {
-        // dbg!(&expected_value_hash);
         let elem_value = &subquery_key_result_set[0].1;
         let subquery_key_element = Element::deserialize(elem_value)
             .map_err(|_| Error::CorruptedData("failed to deserialize element".to_string()))?;
