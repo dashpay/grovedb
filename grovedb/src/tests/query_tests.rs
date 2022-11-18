@@ -1450,15 +1450,12 @@ fn test_change_name() {
         },
     );
 
-    dbg!(&path_query);
-
     let proof = db
         .prove_query(&path_query)
         .unwrap()
         .expect("expected successful proving");
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
-    dbg!(result_set.len());
 
     visualize_stdout(&db);
     db.verify_grovedb();
@@ -1585,6 +1582,8 @@ fn test_change_name_with_batch() {
         .unwrap()
         .expect("should apply batch");
 
+    dbg!(db.visualize_verify_grovedb());
+
     let path = vec![
         vec![1],
         tree_name_slice.to_vec(),
@@ -1607,7 +1606,7 @@ fn test_change_name_with_batch() {
         },
     );
 
-    dbg!(&path_query);
+    // dbg!(&path_query);
 
     let proof = db
         .prove_query(&path_query)
@@ -1615,8 +1614,7 @@ fn test_change_name_with_batch() {
         .expect("expected successful proving");
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
-    dbg!(result_set.len());
+    // dbg!(result_set.len());
 
     visualize_stdout(&db);
-    db.verify_grovedb();
 }

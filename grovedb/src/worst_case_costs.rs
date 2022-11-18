@@ -15,7 +15,7 @@ use super::GroveDb;
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     subtree::TREE_COST_SIZE,
-    Element,
+    Element, ElementFlags,
 };
 
 impl GroveDb {
@@ -154,6 +154,25 @@ impl GroveDb {
     ) {
         let key_len = key.len() as u32;
         add_worst_case_merk_replace_layered(cost, key_len, 3);
+        if let Some(input) = propagate_if_input {
+            add_worst_case_merk_propagate(cost, input);
+        }
+    }
+
+    /// Add worst case for insertion into merk
+    pub(crate) fn add_worst_case_merk_insert_tree(
+        cost: &mut OperationCost,
+        key: &KeyInfo,
+        flags: &Option<ElementFlags>,
+        propagate_if_input: Option<MerkWorstCaseInput>,
+    ) {
+        let key_len = key.len() as u32;
+        let flags_len = flags.as_ref().map_or(0, |flags| {
+            let flags_len = flags.len() as u32;
+            flags_len + flags_len.required_space() as u32
+        });
+        let value_len = TREE_COST_SIZE + flags_len;
+        add_worst_case_merk_insert_layered(cost, key_len, value_len);
         if let Some(input) = propagate_if_input {
             add_worst_case_merk_propagate(cost, input);
         }

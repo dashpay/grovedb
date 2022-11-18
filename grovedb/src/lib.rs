@@ -65,7 +65,26 @@ impl GroveDb {
         visualize_stdout(&self)
     }
 
-    pub fn verify_grovedb(&self) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash)> {
+    pub fn visualize_verify_grovedb(&self) -> HashMap<String, (String, String, String)> {
+        self.verify_grovedb()
+            .iter()
+            .map(|(path, (root_hash, expected, actual))| {
+                (
+                    path.iter()
+                        .map(|a| hex::encode(a))
+                        .collect::<Vec<String>>()
+                        .join("/"),
+                    (
+                        hex::encode(root_hash),
+                        hex::encode(expected),
+                        hex::encode(actual),
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    pub fn verify_grovedb(&self) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         let root_merk = self
             .open_non_transactional_merk_at_path([])
             .unwrap()
@@ -77,7 +96,7 @@ impl GroveDb {
         &self,
         merk: Merk<PrefixedRocksDbStorageContext>,
         path: Vec<Vec<u8>>,
-    ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash)> {
+    ) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         let mut all_query = Query::new();
         all_query.insert_all();
 
@@ -108,7 +127,10 @@ impl GroveDb {
                     // assert_eq!(combined_value_hash, element_value_hash);
                     // dbg!("same");
                     if combined_value_hash != element_value_hash {
-                        issues.insert(new_path.clone(), (combined_value_hash, element_value_hash));
+                        issues.insert(
+                            new_path.clone(),
+                            (root_hash, combined_value_hash, element_value_hash),
+                        );
                     }
                     issues.extend(self.verify_merk_and_submerks(inner_merk, new_path));
                 }
