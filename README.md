@@ -112,15 +112,15 @@ A path is needed to define the starting context for the query.
 The ```sized_query``` determines how the result set would be restricted. It holds optional limits and offset values. 
 The ```limit``` determines the maximum size of the result set and the ```offset``` specifies the number of elements to skip before adding to the result set. 
 
-##### Query
+#### Query
 The ```query``` object is a recursive structure - it specifies how to select nodes from the current subtree and has the option to recursively apply another query to the result set obtained from the previous query. 
 
-##### Items
+#### Items
 The ```items``` are a collection of query items that decide which nodes to select from the current context (this builds a result set).  
 
 Before describing ```default_subquery_branch``` and ```conditional_subquery_branches```, we need to define their building blocks, subquery branches:
 
-##### Subquery Branches
+#### Subquery Branches
 ```
     subquery_key: Optional<Key>
     subquery_value: Optional<Query>
@@ -138,10 +138,10 @@ Then, the subquery value is applied to this new context, and the result is retur
 
 The subquery branch is used on a single node but can be applied to the result set of a previous query with the use of **default_subquery_branch** and **conditional_subquery_branches**:
 
-##### default_subquery_branch
+#### default_subquery_branch
 If this exists, the specified subquery branch is applied to every node in the result set of the previous query.
 
-##### conditional_subquery_branch
+#### conditional_subquery_branch
 Rather than applying a subquery branch to every node in the result set, you might want to apply it to a subset of the result set.  In such cases, we make use of a conditional subquery.  
   
 The conditional subquery holds a map QueryItem to SubqueryBranch.  
