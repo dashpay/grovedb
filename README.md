@@ -3,9 +3,10 @@
 
 GroveDB is a database system designed specifically for efficient secondary index queries, proofs, speed, and reliability. It was built for use within [Dash Platform](https://dashplatform.readme.io/docs/introduction-what-is-dash-platform), but can be easily integrated into other applications for similar use.  
    
+## Motivation
+
 Secondary indices are crucial to any database management system. All previous solutions had certain tradeoffs depending on the problem they were trying to solve. 
 
-## Motivation
 Consider an authenticated data structure, like a Merkle tree built on a database of restaurants for example. Each restaurant has certain attributes, such as price and type:
 
 ```
