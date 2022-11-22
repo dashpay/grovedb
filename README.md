@@ -1,7 +1,7 @@
 # GroveDB
 *Hierarchical Authenticated Data Structure with Efficient Secondary Index Queries*
 
-GroveDB is a database system designed specifically for efficient secondary index queries with proofs, as well as speed and reliability. It was built for use within [Dash Platform](https://dashplatform.readme.io/docs/introduction-what-is-dash-platform), but can be easily integrated into other applications for similar use.  
+GroveDB is a database system designed specifically for efficient secondary index queries, proofs, speed, and reliability. It was built for use within [Dash Platform](https://dashplatform.readme.io/docs/introduction-what-is-dash-platform), but can be easily integrated into other applications for similar use.  
    
 Secondary indices are crucial to any database management system. All previous solutions had certain tradeoffs depending on the problem they were trying to solve. 
 
