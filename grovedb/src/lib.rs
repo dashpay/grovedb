@@ -12,21 +12,21 @@ pub mod subtree;
 mod tests;
 mod util;
 mod visualize;
-mod worst_case_costs;
+mod estimated_costs;
 
 use std::{collections::HashMap, option::Option::None, path::Path};
 
-use ::visualize::{visualize_stdout, DebugByteVectors};
+use ::visualize::{DebugByteVectors, visualize_stdout};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
 use itertools::all;
-pub use merk::proofs::{query::QueryItem, Query};
+pub use merk::proofs::{Query, query::QueryItem};
 use merk::{
     self,
-    tree::{combine_hash, value_hash},
-    BatchEntry, CryptoHash, KVIterator, Merk,
+    BatchEntry,
+    CryptoHash, KVIterator, Merk, tree::{combine_hash, value_hash},
 };
 pub use query::{PathQuery, SizedQuery};
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};

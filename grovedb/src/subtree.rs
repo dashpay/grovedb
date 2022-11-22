@@ -18,6 +18,7 @@ use merk::{
     BatchEntry, MerkOptions, Op,
 };
 use serde::{Deserialize, Serialize};
+use merk::estimated_costs::LAYER_COST_SIZE;
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 use visualize::visualize_to_vec;
 
@@ -41,7 +42,7 @@ pub type ElementFlags = Vec<u8>;
 pub type MaxReferenceHop = Option<u8>;
 
 /// The cost of a tree
-pub const TREE_COST_SIZE: u32 = 3;
+pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
 
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because

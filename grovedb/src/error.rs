@@ -88,4 +88,8 @@ pub enum Error {
     // Support errors
     #[error("not supported: {0}")]
     NotSupported(&'static str),
+
+    // Merk errors
+    #[error("merk error: {0}")]
+    MerkError(merk::error::Error),
 }

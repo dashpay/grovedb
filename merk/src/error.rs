@@ -1,3 +1,6 @@
-pub use failure::Error;
-
-pub type Result<T> = std::result::Result<T, Error>;
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    // Input data errors
+    #[error("overflow error {0}")]
+    Overflow(&'static str),
+}
