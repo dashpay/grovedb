@@ -5,10 +5,10 @@ mod tests {
     };
 
     use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element, GroveDb};
-    use crate::batch::estimated_costs::EstimatedCostsType::WorstCaseCostsType;
+    use crate::batch::estimated_costs::EstimatedCostsType::AverageCaseCostsType;
 
     #[test]
-    fn test_batch_root_one_tree_insert_op_worst_case_costs() {
+    fn test_batch_root_one_tree_insert_op_average_case_costs() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -17,8 +17,8 @@ mod tests {
             b"key1".to_vec(),
             Element::empty_tree(),
         )];
-        let worst_case_cost = GroveDb::estimated_case_operations_for_batch(
-            WorstCaseCostsType,
+        let average_case_cost = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType,
             ops.clone(),
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
@@ -26,25 +26,25 @@ mod tests {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
         )
-        .cost_as_result()
-        .expect("expected to get worst case costs");
+            .cost_as_result()
+            .expect("expected to get average case costs");
 
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(
-            worst_case_cost.worse_or_eq_than(&cost),
+            average_case_cost.worse_or_eq_than(&cost),
             "not worse {:?} \n than {:?}",
-            worst_case_cost,
+            average_case_cost,
             cost
         );
-        // because we know the object we are inserting we can know the worst
+        // because we know the object we are inserting we can know the average
         // case cost if it doesn't already exist
         assert_eq!(
             cost.storage_cost.added_bytes,
-            worst_case_cost.storage_cost.added_bytes
+            average_case_cost.storage_cost.added_bytes
         );
 
         assert_eq!(
-            worst_case_cost,
+            average_case_cost,
             OperationCost {
                 seek_count: 6, // todo: why is this 6
                 storage_cost: StorageCost {
@@ -59,7 +59,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_tree_with_flags_insert_op_worst_case_costs() {
+    fn test_batch_root_one_tree_with_flags_insert_op_average_case_costs() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -68,34 +68,34 @@ mod tests {
             b"key1".to_vec(),
             Element::empty_tree_with_flags(Some(b"cat".to_vec())),
         )];
-        let worst_case_cost = GroveDb::estimated_case_operations_for_batch(
-            WorstCaseCostsType,
-            ops.clone(),
+        let average_case_cost = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType,
+            ops,
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
         )
-        .cost_as_result()
-        .expect("expected to get worst case costs");
+            .cost_as_result()
+            .expect("expected to get average case costs");
 
-        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops.clone(), None, Some(&tx)).cost;
         assert!(
-            worst_case_cost.worse_or_eq_than(&cost),
+            average_case_cost.worse_or_eq_than(&cost),
             "not worse {:?} \n than {:?}",
-            worst_case_cost,
+            average_case_cost,
             cost
         );
-        // because we know the object we are inserting we can know the worst
+        // because we know the object we are inserting we can know the average
         // case cost if it doesn't already exist
         assert_eq!(
             cost.storage_cost.added_bytes,
-            worst_case_cost.storage_cost.added_bytes
+            average_case_cost.storage_cost.added_bytes
         );
 
         assert_eq!(
-            worst_case_cost,
+            average_case_cost,
             OperationCost {
                 seek_count: 6, // todo: why is this 6
                 storage_cost: StorageCost {
@@ -110,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_item_insert_op_worst_case_costs() {
+    fn test_batch_root_one_item_insert_op_average_case_costs() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -119,8 +119,8 @@ mod tests {
             b"key1".to_vec(),
             Element::new_item(b"cat".to_vec()),
         )];
-        let worst_case_cost = GroveDb::estimated_case_operations_for_batch(
-            WorstCaseCostsType,
+        let average_case_cost = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType,
             ops.clone(),
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
@@ -128,25 +128,25 @@ mod tests {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
         )
-        .cost_as_result()
-        .expect("expected to get worst case costs");
+            .cost_as_result()
+            .expect("expected to get average case costs");
 
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(
-            worst_case_cost.worse_or_eq_than(&cost),
+            average_case_cost.worse_or_eq_than(&cost),
             "not worse {:?} \n than {:?}",
-            worst_case_cost,
+            average_case_cost,
             cost
         );
-        // because we know the object we are inserting we can know the worst
+        // because we know the object we are inserting we can know the average
         // case cost if it doesn't already exist
         assert_eq!(
             cost.storage_cost.added_bytes,
-            worst_case_cost.storage_cost.added_bytes
+            average_case_cost.storage_cost.added_bytes
         );
 
         assert_eq!(
-            worst_case_cost,
+            average_case_cost,
             OperationCost {
                 seek_count: 4, // todo: why is this 6
                 storage_cost: StorageCost {
@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_tree_insert_op_under_element_worst_case_costs() {
+    fn test_batch_root_one_tree_insert_op_under_element_average_case_costs() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -174,8 +174,8 @@ mod tests {
             b"key1".to_vec(),
             Element::empty_tree(),
         )];
-        let worst_case_cost = GroveDb::estimated_case_operations_for_batch(
-            WorstCaseCostsType,
+        let average_case_cost = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType,
             ops.clone(),
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
@@ -183,25 +183,25 @@ mod tests {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
         )
-        .cost_as_result()
-        .expect("expected to get worst case costs");
+            .cost_as_result()
+            .expect("expected to get average case costs");
 
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(
-            worst_case_cost.worse_or_eq_than(&cost),
+            average_case_cost.worse_or_eq_than(&cost),
             "not worse {:?} \n than {:?}",
-            worst_case_cost,
+            average_case_cost,
             cost
         );
-        // because we know the object we are inserting we can know the worst
+        // because we know the object we are inserting we can know the average
         // case cost if it doesn't already exist
         assert_eq!(
             cost.storage_cost.added_bytes,
-            worst_case_cost.storage_cost.added_bytes
+            average_case_cost.storage_cost.added_bytes
         );
 
         assert_eq!(
-            worst_case_cost,
+            average_case_cost,
             OperationCost {
                 seek_count: 6, // todo: why is this 6
                 storage_cost: StorageCost {
@@ -216,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_root_one_tree_insert_op_in_sub_tree_worst_case_costs() {
+    fn test_batch_root_one_tree_insert_op_in_sub_tree_average_case_costs() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -229,8 +229,8 @@ mod tests {
             b"key1".to_vec(),
             Element::empty_tree(),
         )];
-        let worst_case_cost = GroveDb::estimated_case_operations_for_batch(
-            WorstCaseCostsType,
+        let average_case_cost = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType,
             ops.clone(),
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
@@ -238,25 +238,25 @@ mod tests {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
         )
-        .cost_as_result()
-        .expect("expected to get worst case costs");
+            .cost_as_result()
+            .expect("expected to get average case costs");
 
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(
-            worst_case_cost.worse_or_eq_than(&cost),
+            average_case_cost.worse_or_eq_than(&cost),
             "not worse {:?} \n than {:?}",
-            worst_case_cost,
+            average_case_cost,
             cost
         );
-        // /// because we know the object we are inserting we can know the worst
+        // /// because we know the object we are inserting we can know the average
         // /// case cost if it doesn't already exist
         // assert_eq!(
         //     cost.storage_cost.added_bytes,
-        //     worst_case_cost.storage_cost.added_bytes
+        //     average_case_cost.storage_cost.added_bytes
         // );
 
         assert_eq!(
-            worst_case_cost,
+            average_case_cost,
             OperationCost {
                 seek_count: 8, // todo: why is this 8
                 storage_cost: StorageCost {
@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_worst_case_costs() {
+    fn test_batch_average_case_costs() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
 
@@ -284,8 +284,8 @@ mod tests {
             b"key1".to_vec(),
             Element::empty_tree(),
         )];
-        let worst_case_cost_result = GroveDb::estimated_case_operations_for_batch(
-            WorstCaseCostsType,
+        let average_case_cost_result = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType,
             ops.clone(),
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
@@ -293,11 +293,11 @@ mod tests {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
         );
-        assert!(worst_case_cost_result.value.is_ok());
+        assert!(average_case_cost_result.value.is_ok());
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         // at the moment we just check the added bytes are the same
         assert_eq!(
-            worst_case_cost_result.cost.storage_cost.added_bytes,
+            average_case_cost_result.cost.storage_cost.added_bytes,
             cost.storage_cost.added_bytes
         );
     }

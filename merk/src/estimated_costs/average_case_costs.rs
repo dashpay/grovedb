@@ -1,9 +1,8 @@
-use integer_encoding::VarInt;
 use costs::OperationCost;
 
 use crate::{
     tree::{kv::KV, Link, Tree},
-    HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
+    HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH,
 };
 use crate::error::Error;
 use crate::estimated_costs::LAYER_COST_SIZE;
@@ -12,6 +11,8 @@ pub type AverageKeySize = u8;
 pub type AverageValueSize = u32;
 pub type AverageFlagsSize = u32;
 pub type Weight = u8;
+
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TreeTypeInput {
     AllSubtrees(AverageKeySize, Option<AverageFlagsSize>),
     AllItems(AverageKeySize, AverageValueSize, Option<AverageFlagsSize>),
@@ -23,6 +24,7 @@ pub enum TreeTypeInput {
     },
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum MerkAverageCaseInput {
     ApproximateMaxElements(u32, TreeTypeInput),
     EstimatedLevel(u32, TreeTypeInput),
@@ -156,7 +158,7 @@ pub fn add_average_case_merk_propagate(cost: &mut OperationCost, input: MerkAver
 
                 let total_updates_cost = tree_node_updates_cost.checked_add(item_node_updates_cost)
                     .and_then(|c| c.checked_add(reference_node_updates_cost)).ok_or(Error::Overflow("overflow for mixed item adding parts"))?;
-                let total_replaced_bytes = (total_updates_cost / weighted_nodes_updated);
+                let total_replaced_bytes = total_updates_cost / weighted_nodes_updated;
                 if total_replaced_bytes > u32::MAX as u64 {
                     return Err(Error::Overflow("overflow for total replaced bytes more than u32 max"))
                 }

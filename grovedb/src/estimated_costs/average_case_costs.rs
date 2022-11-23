@@ -1,4 +1,4 @@
-use costs::OperationCost;
+use costs::{CostResult, CostsExt, OperationCost};
 use integer_encoding::VarInt;
 use merk::{
     tree::Tree,
@@ -36,44 +36,50 @@ impl GroveDb {
     }
 
     /// Add worst case for insertion into merk
-    pub(crate) fn add_average_case_merk_replace_tree(
-        cost: &mut OperationCost,
+    pub(crate) fn average_case_merk_replace_tree(
         key: &KeyInfo,
         propagate_if_input: Option<MerkAverageCaseInput>,
-    ) {
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
         let key_len = key.len() as u32;
-        add_average_case_merk_replace_layered(cost, key_len, 3);
+        add_average_case_merk_replace_layered(&mut cost, key_len, 3);
         if let Some(input) = propagate_if_input {
-            add_average_case_merk_propagate(cost, input);
-        }
+            add_average_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
+        } else {
+            Ok(())
+        }.wrap_with_cost(cost)
     }
 
     /// Add worst case for insertion into merk
-    pub(crate) fn add_average_case_merk_insert_tree(
-        cost: &mut OperationCost,
+    pub(crate) fn average_case_merk_insert_tree(
         key: &KeyInfo,
         flags: &Option<ElementFlags>,
         propagate_if_input: Option<MerkAverageCaseInput>,
-    ) {
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
         let key_len = key.len() as u32;
         let flags_len = flags.as_ref().map_or(0, |flags| {
             let flags_len = flags.len() as u32;
             flags_len + flags_len.required_space() as u32
         });
         let value_len = TREE_COST_SIZE + flags_len;
-        add_average_case_merk_insert_layered(cost, key_len, value_len);
+        add_average_case_merk_insert_layered(&mut cost, key_len, value_len);
         if let Some(input) = propagate_if_input {
-            add_average_case_merk_propagate(cost, input);
-        }
+            add_average_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
+        } else {
+            Ok(())
+        }.wrap_with_cost(cost)
     }
 
     /// Add worst case for insertion into merk
-    pub(crate) fn add_average_case_merk_insert_element(
-        cost: &mut OperationCost,
+    /// This only propagates on 1 level
+    /// As higher level propagation is done in batching
+    pub(crate) fn average_case_merk_insert_element(
         key: &KeyInfo,
         value: &Element,
-        propagate_for_levels: Option<Vec<MerkAverageCaseInput>>,
-    ) -> Result<(), Error> {
+        propagate_for_level: Option<MerkAverageCaseInput>,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
         let key_len = key.len() as u32;
         match value {
             Element::Tree(_, flags) => {
@@ -82,24 +88,23 @@ impl GroveDb {
                     flags_len + flags_len.required_space() as u32
                 });
                 let value_len = TREE_COST_SIZE + flags_len;
-                add_average_case_merk_insert_layered(cost, key_len, value_len)
+                add_average_case_merk_insert_layered(&mut cost, key_len, value_len)
             }
-            _ => add_average_case_merk_insert(cost, key_len, value.serialized_size() as u32),
+            _ => add_average_case_merk_insert(&mut cost, key_len, value.serialized_size() as u32),
         };
-        if let Some(levels) = propagate_for_levels {
-            for level in levels {
-                add_average_case_merk_propagate(cost, level).map_err(Error::MerkError)?;
-            }
-        }
-        Ok(())
+        if let Some(level) = propagate_for_level {
+            add_average_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)
+        } else {
+            Ok(())
+        }.wrap_with_cost(cost)
     }
 
-    pub fn add_average_case_delete_cost(
-        _cost: &mut OperationCost,
-        _max_element_size: u32,
-        _max_key_size: u32,
-    ) {
-        // does nothing for now
+    pub fn average_case_delete_cost(
+        key: &KeyInfo,
+        estimated_element_size: u32,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        Ok(()).wrap_with_cost(cost)
     }
 
     pub fn add_average_case_has_raw_cost<'db, S: Storage<'db>>(
@@ -148,14 +153,14 @@ mod test {
 
     use costs::OperationCost;
     use merk::{
-        test_utils::make_batch_seq, estimated_costs::average_case_costs::add_average_case_get_merk_node, Link, Merk, Op,
+        test_utils::make_batch_seq, estimated_costs::average_case_costs::add_average_case_get_merk_node, Merk,
     };
     use storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
     use tempfile::TempDir;
 
     use crate::{
         batch::{
-            key_info::KeyInfo::{KnownKey, MaxKeySize},
+            key_info::KeyInfo::{KnownKey},
             KeyInfoPath,
         },
         tests::TEST_LEAF,

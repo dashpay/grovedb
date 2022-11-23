@@ -469,7 +469,7 @@ impl GroveDb {
                         Ok(None)
                     }
                 } else if is_empty {
-                    Ok(Some(GroveDbOp::delete_tree_run_op(
+                    Ok(Some(GroveDbOp::delete_tree_op(
                         path_iter.map(|x| x.to_vec()).collect(),
                         key.to_vec(),
                     )))
@@ -480,7 +480,7 @@ impl GroveDb {
                 };
                 result.wrap_with_cost(cost)
             } else {
-                Ok(Some(GroveDbOp::delete_run_op(
+                Ok(Some(GroveDbOp::delete_op(
                     path_iter.map(|x| x.to_vec()).collect(),
                     key.to_vec(),
                 )))

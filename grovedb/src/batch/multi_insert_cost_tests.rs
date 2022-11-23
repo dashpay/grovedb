@@ -27,8 +27,8 @@ mod tests {
         let non_batch_cost = non_batch_cost_1.add(non_batch_cost_2);
         tx.rollback().expect("expected to rollback");
         let ops = vec![
-            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert_run_op(vec![], b"key2".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_op(vec![], b"key2".to_vec(), Element::empty_tree()),
         ];
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert_eq!(
@@ -68,13 +68,13 @@ mod tests {
         let non_batch_cost = non_batch_cost_1.add(non_batch_cost_2).add(non_batch_cost_3);
         tx.rollback().expect("expected to rollback");
         let ops = vec![
-            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert_run_op(
+            GroveDbOp::insert_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_op(
                 vec![],
                 b"key2".to_vec(),
                 Element::new_item_with_flags(b"pizza".to_vec(), Some([0, 1].to_vec())),
             ),
-            GroveDbOp::insert_run_op(
+            GroveDbOp::insert_op(
                 vec![],
                 b"key3".to_vec(),
                 Element::new_reference(SiblingReference(b"key2".to_vec())),
@@ -133,18 +133,18 @@ mod tests {
             .add(non_batch_cost_4);
         tx.rollback().expect("expected to rollback");
         let ops = vec![
-            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert_run_op(
+            GroveDbOp::insert_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
                 Element::new_item_with_flags(b"pizza".to_vec(), Some([0, 1].to_vec())),
             ),
-            GroveDbOp::insert_run_op(
+            GroveDbOp::insert_op(
                 vec![b"key1".to_vec()],
                 b"key3".to_vec(),
                 Element::empty_tree(),
             ),
-            GroveDbOp::insert_run_op(
+            GroveDbOp::insert_op(
                 vec![b"key1".to_vec(), b"key3".to_vec()],
                 b"key4".to_vec(),
                 Element::new_reference(UpstreamFromElementHeightReference(
@@ -171,8 +171,8 @@ mod tests {
         let tx = db.start_transaction();
 
         let ops = vec![
-            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert_run_op(vec![], b"key2".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_op(vec![], b"key2".to_vec(), Element::empty_tree()),
         ];
         let cost_result = db.apply_batch(ops, None, Some(&tx));
         cost_result.value.expect("expected to execute batch");
@@ -220,8 +220,8 @@ mod tests {
         let tx = db.start_transaction();
 
         let ops = vec![
-            GroveDbOp::insert_run_op(vec![], b"key1".to_vec(), Element::empty_tree()),
-            GroveDbOp::insert_run_op(
+            GroveDbOp::insert_op(vec![], b"key1".to_vec(), Element::empty_tree()),
+            GroveDbOp::insert_op(
                 vec![b"key1".to_vec()],
                 b"key2".to_vec(),
                 Element::empty_tree(),

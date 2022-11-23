@@ -85,6 +85,9 @@ pub enum Error {
     #[error("override not allowed error: {0}")]
     OverrideNotAllowed(&'static str),
 
+    #[error("path not found in cache for estimated costs: {0}")]
+    PathNotFoundInCacheForEstimatedCosts(String),
+
     // Support errors
     #[error("not supported: {0}")]
     NotSupported(&'static str),

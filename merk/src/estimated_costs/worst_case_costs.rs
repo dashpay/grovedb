@@ -5,6 +5,7 @@ use crate::{
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
 };
 
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum MerkWorstCaseInput {
     MaxElementsNumber(u32),
     NumberOfLevels(u32),

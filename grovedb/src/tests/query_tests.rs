@@ -1,7 +1,6 @@
 use merk::proofs::{query::QueryItem, Query};
 use rand::Rng;
 use tempfile::TempDir;
-use visualize::{visualize_stdout, Visualize};
 
 use crate::{
     batch::GroveDbOp,
@@ -1301,7 +1300,7 @@ fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
         252, 86, 99, 107, 197, 226, 188, 54, 239, 64, 17, 37,
     ];
 
-    let batch = vec![GroveDbOp::insert_run_op(
+    let batch = vec![GroveDbOp::insert_op(
         vec![],
         vec![1],
         Element::empty_tree(),
@@ -1311,27 +1310,27 @@ fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
         .expect("should apply batch");
 
     let batch = vec![
-        GroveDbOp::insert_run_op(
+        GroveDbOp::insert_op(
             vec![vec![1]],
             tree_name_slice.to_vec(),
             Element::empty_tree(),
         ),
-        GroveDbOp::insert_run_op(
+        GroveDbOp::insert_op(
             vec![vec![1], tree_name_slice.to_vec()],
             b"\0".to_vec(),
             Element::empty_tree(),
         ),
-        GroveDbOp::insert_run_op(
+        GroveDbOp::insert_op(
             vec![vec![1], tree_name_slice.to_vec()],
             vec![1],
             Element::empty_tree(),
         ),
-        GroveDbOp::insert_run_op(
+        GroveDbOp::insert_op(
             vec![vec![1], tree_name_slice.to_vec(), vec![1]],
             b"person".to_vec(),
             Element::empty_tree(),
         ),
-        GroveDbOp::insert_run_op(
+        GroveDbOp::insert_op(
             vec![
                 vec![1],
                 tree_name_slice.to_vec(),
@@ -1341,7 +1340,7 @@ fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
             b"\0".to_vec(),
             Element::empty_tree(),
         ),
-        GroveDbOp::insert_run_op(
+        GroveDbOp::insert_op(
             vec![
                 vec![1],
                 tree_name_slice.to_vec(),
@@ -1357,7 +1356,7 @@ fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
         .expect("should apply batch");
 
     let batch = vec![
-        GroveDbOp::insert_run_op(
+        GroveDbOp::insert_op(
             vec![
                 vec![1],
                 tree_name_slice.to_vec(),
@@ -1368,7 +1367,7 @@ fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
             b"person_id_1".to_vec(),
             Element::new_item(vec![50]),
         ),
-        GroveDbOp::insert_run_op(
+        GroveDbOp::insert_op(
             vec![
                 vec![1],
                 tree_name_slice.to_vec(),
@@ -1379,7 +1378,7 @@ fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
             b"cammi".to_vec(),
             Element::empty_tree(),
         ),
-        GroveDbOp::insert_run_op(
+        GroveDbOp::insert_op(
             vec![
                 vec![1],
                 tree_name_slice.to_vec(),
@@ -1391,7 +1390,7 @@ fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
             b"\0".to_vec(),
             Element::empty_tree(),
         ),
-        GroveDbOp::insert_run_op(
+        GroveDbOp::insert_op(
             vec![
                 vec![1],
                 tree_name_slice.to_vec(),

@@ -16,12 +16,11 @@ mod estimated_costs;
 
 use std::{collections::HashMap, option::Option::None, path::Path};
 
-use ::visualize::{DebugByteVectors, visualize_stdout};
+use ::visualize::{DebugByteVectors};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
-use itertools::all;
 pub use merk::proofs::{Query, query::QueryItem};
 use merk::{
     self,
@@ -46,7 +45,7 @@ pub use subtree::{Element, ElementFlags};
 pub use crate::error::Error;
 use crate::{
     subtree::raw_decode,
-    util::{merk_optional_tx, root_merk_optional_tx, storage_context_optional_tx},
+    util::{root_merk_optional_tx, storage_context_optional_tx},
 };
 
 // todo: remove this
