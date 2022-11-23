@@ -13,12 +13,12 @@ use integer_encoding::VarInt;
 use merk::{
     anyhow,
     ed::Decode,
+    estimated_costs::LAYER_COST_SIZE,
     proofs::{query::QueryItem, Query},
     tree::{kv::KV, Tree, TreeInner},
     BatchEntry, MerkOptions, Op,
 };
 use serde::{Deserialize, Serialize};
-use merk::estimated_costs::LAYER_COST_SIZE;
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 use visualize::visualize_to_vec;
 

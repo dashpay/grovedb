@@ -1,15 +1,24 @@
-use std::collections::{BTreeMap, HashMap};
-use std::fmt;
-use itertools::Itertools;
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt,
+};
+
 use costs::{CostResult, CostsExt, OperationCost};
-use merk::CryptoHash;
-use merk::estimated_costs::worst_case_costs::{add_worst_case_merk_propagate, MerkWorstCaseInput};
+use itertools::Itertools;
+use merk::{
+    estimated_costs::worst_case_costs::{add_worst_case_merk_propagate, MerkWorstCaseInput},
+    CryptoHash,
+};
 use storage::rocksdb_storage::RocksDbStorage;
-use crate::batch::{BatchApplyOptions, GroveDbOp, KeyInfoPath, Op, TreeCache};
-use crate::{Error, GroveDb, MAX_ELEMENTS_NUMBER};
-use crate::batch::key_info::KeyInfo;
-use crate::batch::mode::BatchRunMode;
-use crate::batch::mode::BatchRunMode::WorstCaseMode;
+
+use crate::{
+    batch::{
+        key_info::KeyInfo,
+        mode::{BatchRunMode, BatchRunMode::WorstCaseMode},
+        BatchApplyOptions, GroveDbOp, KeyInfoPath, Op, TreeCache,
+    },
+    Error, GroveDb, MAX_ELEMENTS_NUMBER,
+};
 
 /// Cache for subtree paths for worst case scenario costs.
 #[derive(Default)]
@@ -17,13 +26,11 @@ pub(super) struct WorstCaseTreeCacheKnownPaths {
     paths: HashMap<KeyInfoPath, MerkWorstCaseInput>,
 }
 
-
 impl fmt::Debug for WorstCaseTreeCacheKnownPaths {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheKnownPaths").finish()
     }
 }
-
 
 impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
@@ -32,8 +39,13 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         if !self.paths.contains_key(&inserted_path) {
             return Err(Error::PathNotFoundInCacheForEstimatedCosts(format!(
                 "inserting into worst case costs path: {}",
-                inserted_path.0.iter().map(|k| hex::encode(k.get_key())).join("/")
-            ))).wrap_with_cost(OperationCost::default())
+                inserted_path
+                    .0
+                    .iter()
+                    .map(|k| hex::encode(k.get_key()))
+                    .join("/")
+            )))
+            .wrap_with_cost(OperationCost::default());
         }
         let mut worst_case_cost = OperationCost::default();
         GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut worst_case_cost, &op.path);

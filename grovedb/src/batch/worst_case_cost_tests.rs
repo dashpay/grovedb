@@ -4,8 +4,11 @@ mod tests {
         OperationCost,
     };
 
-    use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element, GroveDb};
-    use crate::batch::estimated_costs::EstimatedCostsType::WorstCaseCostsType;
+    use crate::{
+        batch::{estimated_costs::EstimatedCostsType::WorstCaseCostsType, GroveDbOp},
+        tests::make_empty_grovedb,
+        Element, GroveDb,
+    };
 
     #[test]
     fn test_batch_root_one_tree_insert_op_worst_case_costs() {

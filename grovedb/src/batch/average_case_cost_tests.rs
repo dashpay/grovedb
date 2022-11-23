@@ -4,8 +4,11 @@ mod tests {
         OperationCost,
     };
 
-    use crate::{batch::GroveDbOp, tests::make_empty_grovedb, Element, GroveDb};
-    use crate::batch::estimated_costs::EstimatedCostsType::AverageCaseCostsType;
+    use crate::{
+        batch::{estimated_costs::EstimatedCostsType::AverageCaseCostsType, GroveDbOp},
+        tests::make_empty_grovedb,
+        Element, GroveDb,
+    };
 
     #[test]
     fn test_batch_root_one_tree_insert_op_average_case_costs() {
@@ -26,8 +29,8 @@ mod tests {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
         )
-            .cost_as_result()
-            .expect("expected to get average case costs");
+        .cost_as_result()
+        .expect("expected to get average case costs");
 
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(
@@ -77,8 +80,8 @@ mod tests {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
         )
-            .cost_as_result()
-            .expect("expected to get average case costs");
+        .cost_as_result()
+        .expect("expected to get average case costs");
 
         let cost = db.apply_batch(ops.clone(), None, Some(&tx)).cost;
         assert!(
@@ -128,8 +131,8 @@ mod tests {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
         )
-            .cost_as_result()
-            .expect("expected to get average case costs");
+        .cost_as_result()
+        .expect("expected to get average case costs");
 
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(
@@ -183,8 +186,8 @@ mod tests {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
         )
-            .cost_as_result()
-            .expect("expected to get average case costs");
+        .cost_as_result()
+        .expect("expected to get average case costs");
 
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(
@@ -238,8 +241,8 @@ mod tests {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
         )
-            .cost_as_result()
-            .expect("expected to get average case costs");
+        .cost_as_result()
+        .expect("expected to get average case costs");
 
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(

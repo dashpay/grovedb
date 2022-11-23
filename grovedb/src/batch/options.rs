@@ -1,6 +1,6 @@
 use merk::MerkOptions;
-use crate::operations::delete::DeleteOptions;
-use crate::operations::insert::InsertOptions;
+
+use crate::operations::{delete::DeleteOptions, insert::InsertOptions};
 
 #[derive(Debug, Clone)]
 pub struct BatchApplyOptions {

@@ -1,6 +1,9 @@
 use std::collections::HashMap;
-use merk::estimated_costs::average_case_costs::MerkAverageCaseInput;
-use merk::estimated_costs::worst_case_costs::MerkWorstCaseInput;
+
+use merk::estimated_costs::{
+    average_case_costs::MerkAverageCaseInput, worst_case_costs::MerkWorstCaseInput,
+};
+
 use crate::batch::KeyInfoPath;
 
 /// Batch Running Mode

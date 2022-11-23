@@ -1,22 +1,22 @@
 //! GroveDB batch operations support
 
+#[cfg(test)]
+mod average_case_cost_tests;
+mod average_case_costs;
+mod batch_structure;
+mod estimated_costs;
 pub mod key_info;
+mod mode;
 #[cfg(test)]
 mod multi_insert_cost_tests;
+mod options;
 #[cfg(test)]
 mod single_deletion_cost_tests;
 #[cfg(test)]
 mod single_insert_cost_tests;
 #[cfg(test)]
 mod worst_case_cost_tests;
-#[cfg(test)]
-mod average_case_cost_tests;
 mod worst_case_costs;
-mod average_case_costs;
-mod estimated_costs;
-mod batch_structure;
-mod options;
-mod mode;
 
 use core::fmt;
 use std::{
@@ -30,42 +30,42 @@ use std::{
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
-    CostResult,
-    CostsExt, OperationCost, storage_cost::{
+    storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
     },
+    CostResult, CostsExt, OperationCost,
 };
 use integer_encoding::VarInt;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     anyhow::anyhow,
-    CryptoHash,
-    Merk, MerkType, tree::{kv::KV, NULL_HASH, value_hash},
-};
-use merk::estimated_costs::average_case_costs::MerkAverageCaseInput;
-use merk::estimated_costs::worst_case_costs::MerkWorstCaseInput;
-use storage::{
-    rocksdb_storage::{
-        PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext,
+    estimated_costs::{
+        average_case_costs::MerkAverageCaseInput, worst_case_costs::MerkWorstCaseInput,
     },
+    tree::{kv::KV, value_hash, NULL_HASH},
+    CryptoHash, Merk, MerkType,
+};
+use storage::{
+    rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
 use visualize::{Drawer, Visualize};
 
 use crate::{
-    Element,
-    ElementFlags,
-    Error,
-    GroveDb, operations::{get::MAX_REFERENCE_HOPS}, reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type}, subtree::TREE_COST_SIZE, Transaction, TransactionArg,
+    batch::{
+        average_case_costs::AverageCaseTreeCacheKnownPaths,
+        batch_structure::BatchStructure,
+        estimated_costs::EstimatedCostsType,
+        mode::{BatchRunMode, BatchRunMode::ExecuteMode},
+        options::BatchApplyOptions,
+        worst_case_costs::WorstCaseTreeCacheKnownPaths,
+    },
+    operations::get::MAX_REFERENCE_HOPS,
+    reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
+    subtree::TREE_COST_SIZE,
+    Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
-use crate::batch::estimated_costs::EstimatedCostsType;
-use crate::batch::worst_case_costs::WorstCaseTreeCacheKnownPaths;
-use crate::batch::average_case_costs::AverageCaseTreeCacheKnownPaths;
-use crate::batch::batch_structure::BatchStructure;
-use crate::batch::mode::BatchRunMode;
-use crate::batch::mode::BatchRunMode::ExecuteMode;
-use crate::batch::options::BatchApplyOptions;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -132,15 +132,9 @@ impl Op {
                 GroveDb::average_case_merk_insert_tree(key, flags, propagate_if_input)
             }
             Op::Insert { element } => {
-                GroveDb::average_case_merk_insert_element(
-                    key,
-                    &element,
-                    propagate_if_input,
-                )
+                GroveDb::average_case_merk_insert_element(key, &element, propagate_if_input)
             }
-            Op::Delete | Op::DeleteTree => {
-                GroveDb::average_case_delete_cost(key)
-            }
+            Op::Delete | Op::DeleteTree => GroveDb::average_case_delete_cost(key),
         }
     }
 }
@@ -1446,35 +1440,36 @@ impl GroveDb {
         match estimated_costs_type {
             EstimatedCostsType::AverageCaseCostsType => {
                 let batch_structure = cost_return_on_error!(
-            &mut cost,
+                    &mut cost,
                     BatchStructure::from_ops(
-                ops,
-                update_element_flags_function,
-                split_removal_bytes_function,
-                AverageCaseTreeCacheKnownPaths::default()
-            ));
+                        ops,
+                        update_element_flags_function,
+                        split_removal_bytes_function,
+                        AverageCaseTreeCacheKnownPaths::default()
+                    )
+                );
                 cost_return_on_error!(
-            &mut cost,
-            Self::apply_batch_structure(batch_structure, batch_apply_options)
-        );
-                }
+                    &mut cost,
+                    Self::apply_batch_structure(batch_structure, batch_apply_options)
+                );
+            }
 
             EstimatedCostsType::WorstCaseCostsType => {
                 let batch_structure = cost_return_on_error!(
-            &mut cost,
+                    &mut cost,
                     BatchStructure::from_ops(
-                ops,
-                update_element_flags_function,
-                split_removal_bytes_function,
-                WorstCaseTreeCacheKnownPaths::default()
-            ));
+                        ops,
+                        update_element_flags_function,
+                        split_removal_bytes_function,
+                        WorstCaseTreeCacheKnownPaths::default()
+                    )
+                );
                 cost_return_on_error!(
-            &mut cost,
-            Self::apply_batch_structure(batch_structure, batch_apply_options)
-        );
+                    &mut cost,
+                    Self::apply_batch_structure(batch_structure, batch_apply_options)
+                );
             }
         }
-
 
         Ok(()).wrap_with_cost(cost)
     }
@@ -1487,9 +1482,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        PathQuery,
         reference_path::ReferencePathType,
-        tests::{ANOTHER_TEST_LEAF, make_empty_grovedb, make_test_grovedb, TEST_LEAF},
+        tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
+        PathQuery,
     };
 
     #[test]

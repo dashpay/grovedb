@@ -1,13 +1,17 @@
-use std::collections::BTreeMap;
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
+
+use costs::{
+    cost_return_on_error,
+    storage_cost::{removal::StorageRemovedBytes, StorageCost},
+    CostResult, CostsExt, OperationCost,
+};
 use nohash_hasher::IntMap;
-use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
-use costs::storage_cost::removal::StorageRemovedBytes;
-use costs::storage_cost::StorageCost;
-use visualize::{DebugBytes, DebugByteVectors};
-use crate::batch::key_info::KeyInfo;
-use crate::batch::{GroveDbOp, KeyInfoPath, Op, TreeCache};
-use crate::{Element, ElementFlags, Error};
+use visualize::{DebugByteVectors, DebugBytes};
+
+use crate::{
+    batch::{key_info::KeyInfo, GroveDbOp, KeyInfoPath, Op, TreeCache},
+    Element, ElementFlags, Error,
+};
 
 ///                          LEVEL           PATH                   KEY      OP
 type OpsByLevelPath = IntMap<u32, BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>>>;
@@ -18,7 +22,8 @@ pub(super) struct BatchStructure<C, F, SR> {
     /// This is for references
     ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, Op>,
     /// Merk trees
-    /// Very important: the type of run mode we are in is contained in this cache
+    /// Very important: the type of run mode we are in is contained in this
+    /// cache
     merk_tree_cache: C,
     /// Flags modification function
     flags_update: F,
@@ -54,14 +59,14 @@ impl<F, SR, S: fmt::Debug> fmt::Debug for BatchStructure<S, F, SR> {
 }
 
 impl<C, F, SR> BatchStructure<C, F, SR>
-    where
-        C: TreeCache<F, SR>,
-        F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
-        SR: FnMut(
-            &mut ElementFlags,
-            u32,
-            u32,
-        ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+where
+    C: TreeCache<F, SR>,
+    F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+    SR: FnMut(
+        &mut ElementFlags,
+        u32,
+        u32,
+    ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
 {
     pub(super) fn from_ops(
         ops: Vec<GroveDbOp>,
@@ -130,6 +135,6 @@ impl<C, F, SR> BatchStructure<C, F, SR>
             split_removal_bytes: split_remove_bytes_function,
             last_level: current_last_level,
         })
-            .wrap_with_cost(cost)
+        .wrap_with_cost(cost)
     }
 }

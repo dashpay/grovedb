@@ -1300,11 +1300,7 @@ fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
         252, 86, 99, 107, 197, 226, 188, 54, 239, 64, 17, 37,
     ];
 
-    let batch = vec![GroveDbOp::insert_op(
-        vec![],
-        vec![1],
-        Element::empty_tree(),
-    )];
+    let batch = vec![GroveDbOp::insert_op(vec![], vec![1], Element::empty_tree())];
     db.apply_batch(batch, None, None)
         .unwrap()
         .expect("should apply batch");

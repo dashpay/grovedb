@@ -2,6 +2,7 @@ extern crate core;
 
 pub mod batch;
 pub mod error;
+mod estimated_costs;
 pub mod operations;
 mod query;
 pub mod query_result_type;
@@ -12,20 +13,19 @@ pub mod subtree;
 mod tests;
 mod util;
 mod visualize;
-mod estimated_costs;
 
 use std::{collections::HashMap, option::Option::None, path::Path};
 
-use ::visualize::{DebugByteVectors};
+use ::visualize::DebugByteVectors;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
-pub use merk::proofs::{Query, query::QueryItem};
+pub use merk::proofs::{query::QueryItem, Query};
 use merk::{
     self,
-    BatchEntry,
-    CryptoHash, KVIterator, Merk, tree::{combine_hash, value_hash},
+    tree::{combine_hash, value_hash},
+    BatchEntry, CryptoHash, KVIterator, Merk,
 };
 pub use query::{PathQuery, SizedQuery};
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
@@ -516,7 +516,8 @@ impl GroveDb {
             .collect()
     }
 
-    /// Method to check that the value_hash of Element::Tree nodes are computed correctly.
+    /// Method to check that the value_hash of Element::Tree nodes are computed
+    /// correctly.
     pub fn verify_grovedb(&self) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         let root_merk = self
             .open_non_transactional_merk_at_path([])

@@ -1,5 +1,4 @@
-use crate::HASH_LENGTH_U32;
-use crate::tree::kv::KV;
+use crate::{tree::kv::KV, HASH_LENGTH_U32};
 
 pub mod average_case_costs;
 pub mod worst_case_costs;

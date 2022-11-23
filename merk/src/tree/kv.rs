@@ -276,8 +276,8 @@ impl KV {
         node_value_size + parent_to_child_cost
     }
 
-    /// Get the costs for the value with known value_len and non prefixed key len sizes,
-    /// this has the parent to child hooks
+    /// Get the costs for the value with known value_len and non prefixed key
+    /// len sizes, this has the parent to child hooks
     #[inline]
     pub(crate) fn value_byte_cost_size_for_key_and_value_lengths(
         not_prefixed_key_len: u32,
@@ -293,8 +293,8 @@ impl KV {
         value_len + value_len.required_space() as u32 + parent_to_child_reference_len
     }
 
-    /// Get the costs for the value with known raw value_len and non prefixed key len sizes,
-    /// this has the parent to child hooks
+    /// Get the costs for the value with known raw value_len and non prefixed
+    /// key len sizes, this has the parent to child hooks
     #[inline]
     pub(crate) fn value_byte_cost_size_for_key_and_raw_value_lengths(
         not_prefixed_key_len: u32,

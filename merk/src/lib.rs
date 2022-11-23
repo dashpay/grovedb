@@ -16,11 +16,11 @@ pub mod test_utils;
 /// The core tree data structure.
 pub mod tree;
 
-mod visualize;
-/// Estimated costs
-pub mod estimated_costs;
 /// Errors
 pub mod error;
+/// Estimated costs
+pub mod estimated_costs;
+mod visualize;
 
 pub use anyhow;
 pub use ed;
@@ -28,8 +28,8 @@ pub use ed;
 pub use proofs::query::verify_query;
 pub use proofs::query::{execute_proof, verify};
 pub use tree::{
-    BatchEntry, CryptoHash, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2, Link,
-    MerkBatch, Op, PanicSource,
+    BatchEntry, CryptoHash, Link, MerkBatch, Op, PanicSource, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32,
+    HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
 };
 
 // #[cfg(feature = "full")]

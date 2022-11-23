@@ -1,21 +1,20 @@
 use costs::{CostResult, CostsExt, OperationCost};
 use integer_encoding::VarInt;
 use merk::{
-    tree::Tree,
     estimated_costs::average_case_costs::{
         add_average_case_get_merk_node, add_average_case_merk_insert,
         add_average_case_merk_insert_layered, add_average_case_merk_propagate,
         add_average_case_merk_replace_layered, MerkAverageCaseInput,
     },
+    tree::Tree,
     HASH_LENGTH,
 };
 use storage::{worst_case_costs::WorstKeyLength, Storage};
 
-use crate::{Error, GroveDb};
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     subtree::TREE_COST_SIZE,
-    Element, ElementFlags,
+    Element, ElementFlags, Error, GroveDb,
 };
 
 impl GroveDb {
@@ -47,7 +46,8 @@ impl GroveDb {
             add_average_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
         } else {
             Ok(())
-        }.wrap_with_cost(cost)
+        }
+        .wrap_with_cost(cost)
     }
 
     /// Add worst case for insertion into merk
@@ -68,7 +68,8 @@ impl GroveDb {
             add_average_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
         } else {
             Ok(())
-        }.wrap_with_cost(cost)
+        }
+        .wrap_with_cost(cost)
     }
 
     /// Add worst case for insertion into merk
@@ -96,7 +97,8 @@ impl GroveDb {
             add_average_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)
         } else {
             Ok(())
-        }.wrap_with_cost(cost)
+        }
+        .wrap_with_cost(cost)
     }
 
     pub fn average_case_delete_cost(
@@ -113,7 +115,8 @@ impl GroveDb {
         key: &KeyInfo,
         estimated_element_size: u32,
     ) {
-        let value_size = Tree::average_case_encoded_tree_size(key.len() as u32, estimated_element_size);
+        let value_size =
+            Tree::average_case_encoded_tree_size(key.len() as u32, estimated_element_size);
         cost.seek_count += 1;
         cost.storage_loaded_bytes += value_size;
         *cost += S::get_storage_context_cost(path.as_vec());
@@ -153,16 +156,14 @@ mod test {
 
     use costs::OperationCost;
     use merk::{
-        test_utils::make_batch_seq, estimated_costs::average_case_costs::add_average_case_get_merk_node, Merk,
+        estimated_costs::average_case_costs::add_average_case_get_merk_node,
+        test_utils::make_batch_seq, Merk,
     };
     use storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
     use tempfile::TempDir;
 
     use crate::{
-        batch::{
-            key_info::KeyInfo::{KnownKey},
-            KeyInfoPath,
-        },
+        batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
         tests::TEST_LEAF,
         Element, GroveDb,
     };

@@ -1,21 +1,20 @@
 use costs::OperationCost;
 use integer_encoding::VarInt;
 use merk::{
-    tree::Tree,
     estimated_costs::worst_case_costs::{
         add_worst_case_get_merk_node, add_worst_case_merk_insert,
         add_worst_case_merk_insert_layered, add_worst_case_merk_propagate,
         add_worst_case_merk_replace_layered, MerkWorstCaseInput,
     },
+    tree::Tree,
     HASH_LENGTH,
 };
 use storage::{worst_case_costs::WorstKeyLength, Storage};
 
-use crate::GroveDb;
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     subtree::TREE_COST_SIZE,
-    Element, ElementFlags,
+    Element, ElementFlags, GroveDb,
 };
 
 impl GroveDb {
@@ -256,7 +255,8 @@ mod test {
 
     use costs::OperationCost;
     use merk::{
-        test_utils::make_batch_seq, estimated_costs::worst_case_costs::add_worst_case_get_merk_node, Link, Merk, Op,
+        estimated_costs::worst_case_costs::add_worst_case_get_merk_node,
+        test_utils::make_batch_seq, Link, Merk, Op,
     };
     use storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
     use tempfile::TempDir;
