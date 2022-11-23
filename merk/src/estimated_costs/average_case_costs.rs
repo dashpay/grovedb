@@ -107,12 +107,12 @@ pub fn add_average_case_merk_root_hash(cost: &mut OperationCost) {
     cost.hash_node_calls += node_hash_update_count();
 }
 
-pub fn add_average_case_merk_propagate(cost: &mut OperationCost, input: MerkAverageCaseInput) -> Result<(), Error> {
+pub fn add_average_case_merk_propagate(cost: &mut OperationCost, input: &MerkAverageCaseInput) -> Result<(), Error> {
     let mut nodes_updated = 0;
     // Propagation requires to recompute and write hashes up to the root
     let (levels, average_typed_size) = match input {
         MerkAverageCaseInput::ApproximateMaxElements(n, s) => (((n + 1) as f32).log2().ceil() as u32, s),
-        MerkAverageCaseInput::EstimatedLevel(n, s) => (n, s),
+        MerkAverageCaseInput::EstimatedLevel(n, s) => (*n, s),
     };
     nodes_updated += levels;
     // In AVL tree on average 1 rotation will happen.
@@ -123,13 +123,13 @@ pub fn add_average_case_merk_propagate(cost: &mut OperationCost, input: MerkAver
         TreeTypeInput::AllSubtrees(average_key_size, average_flags_size) => {
             let flags_len = average_flags_size.unwrap_or(0);
             let value_len = LAYER_COST_SIZE + flags_len;
-            nodes_updated * KV::layered_value_byte_cost_size_for_key_and_value_lengths(average_key_size as u32, value_len)
+            nodes_updated * KV::layered_value_byte_cost_size_for_key_and_value_lengths(*average_key_size as u32, value_len)
         }
         TreeTypeInput::AllItems(average_key_size, average_item_size, average_flags_size)
         | TreeTypeInput::AllReference(average_key_size, average_item_size, average_flags_size) => {
             let flags_len = average_flags_size.unwrap_or(0);
             let average_value_len = average_item_size + flags_len;
-            nodes_updated * KV::value_byte_cost_size_for_key_and_raw_value_lengths(average_key_size as u32, average_value_len)
+            nodes_updated * KV::value_byte_cost_size_for_key_and_raw_value_lengths(*average_key_size as u32, average_value_len)
         }
         TreeTypeInput::Mix { subtree_size, items_size, references_size } => {
             let total_weight = subtree_size.unwrap_or_default().2 as u32 + items_size.unwrap_or_default().3 as u32 + items_size.unwrap_or_default().3 as u32;

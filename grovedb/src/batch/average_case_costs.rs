@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use itertools::Itertools;
-use costs::{CostResult, CostsExt, OperationCost};
+use costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
 use merk::CryptoHash;
 use merk::estimated_costs::average_case_costs::{add_average_case_merk_propagate, MerkAverageCaseInput};
 use storage::rocksdb_storage::RocksDbStorage;
@@ -55,17 +55,27 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error> {
         let mut cost = OperationCost::default();
 
-        if let Some(input) = self.paths.get(path) {
-            // Then we have to get the tree
-            GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(&mut cost, path);
-        }
+        let input =
+            cost_return_on_error_no_add!(
+                &cost,
+            self.paths.get(path).ok_or(Error::PathNotFoundInCacheForEstimatedCosts(format!(
+            "inserting into average case costs path: {}",
+            inserted_path.0.iter().map(|k| hex::encode(k.get_key())).join("/")
+        ))
+                    ));
+
+        // Then we have to get the tree
+        GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(&mut cost, path);
         for (key, op) in ops_at_path_by_key.into_iter() {
-            cost += op.average_case_cost(&key, None)?;
+            cost_return_on_error!(
+                &mut cost,
+                op.average_case_cost(&key, None)
+            );
         }
 
         add_average_case_merk_propagate(
             &mut cost,
-            MerkAverageCaseInput::MaxElementsNumber(MAX_ELEMENTS_NUMBER),
+            input,
         )?;
         Ok(([0u8; 32], None)).wrap_with_cost(cost)
     }
@@ -74,7 +84,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         let mut cost = OperationCost::default();
 
         let base_path = KeyInfoPath(vec![]);
-        if let Some(input) = self.paths.get(path) {
+        if let Some(input) = self.paths.get(&base_path) {
             // Then we have to get the tree
             GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(&mut cost, &base_path);
         }
