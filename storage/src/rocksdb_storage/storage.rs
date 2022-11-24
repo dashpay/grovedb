@@ -423,10 +423,14 @@ impl<'db> Storage<'db> for RocksDbStorage {
     }
 
     fn get_storage_context_cost<L: WorstKeyLength>(path: &Vec<L>) -> OperationCost {
-        let body_size = Self::worst_case_body_size(path);
-        // the block size of blake3 is 64
-        let blocks_num = blake_block_count(body_size) as u16;
-        OperationCost::with_hash_node_calls(blocks_num)
+        if path.is_empty() {
+            OperationCost::default()
+        } else {
+            let body_size = Self::worst_case_body_size(path);
+            // the block size of blake3 is 64
+            let blocks_num = blake_block_count(body_size) as u16;
+            OperationCost::with_hash_node_calls(blocks_num)
+        }
     }
 
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Self::Error> {

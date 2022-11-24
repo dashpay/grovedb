@@ -112,7 +112,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
 
     fn update_base_merk_root_key(&mut self, root_key: Option<Vec<u8>>) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-
+        cost.seek_count += 1;
         let base_path = KeyInfoPath(vec![]);
         if let Some(estimated_layer_info) = self.paths.get(&base_path) {
             // Then we have to get the tree
@@ -211,14 +211,14 @@ mod tests {
         assert_eq!(
             average_case_cost,
             OperationCost {
-                seek_count: 2,
+                seek_count: 3,
                 storage_cost: StorageCost {
                     added_bytes: 113,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 6,
+                hash_node_calls: 5,
             }
         );
     }
@@ -268,14 +268,14 @@ mod tests {
         assert_eq!(
             average_case_cost,
             OperationCost {
-                seek_count: 2,
+                seek_count: 3,
                 storage_cost: StorageCost {
                     added_bytes: 117,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 6,
+                hash_node_calls: 5,
             }
         );
     }
@@ -321,14 +321,14 @@ mod tests {
         assert_eq!(
             average_case_cost,
             OperationCost {
-                seek_count: 2,
+                seek_count: 3,
                 storage_cost: StorageCost {
                     added_bytes: 147,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 6,
+                hash_node_calls: 5,
             }
         );
     }

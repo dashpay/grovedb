@@ -294,6 +294,7 @@ pub fn add_average_case_merk_propagate(
         // we can get about 1 rotation, if there are more than 2 levels
         nodes_updated += 1;
     }
+    cost.seek_count += nodes_updated as u16;
 
     cost.storage_cost.replaced_bytes += match average_typed_size {
         EstimatedLayerSizes::AllSubtrees(average_key_size, average_flags_size) => {
