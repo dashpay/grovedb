@@ -1385,6 +1385,7 @@ impl GroveDb {
                     update_element_flags_function,
                     split_removal_bytes_function,
                     |path, new_merk| {
+                        dbg!(&path);
                         self.open_batch_transactional_merk_at_path(
                             &storage_batch,
                             path.iter().map(|x| x.as_slice()),

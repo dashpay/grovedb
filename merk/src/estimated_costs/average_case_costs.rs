@@ -400,9 +400,9 @@ pub fn add_average_case_merk_propagate(
             let value_len = LAYER_COST_SIZE + flags_len;
             nodes_updated
                 * KV::layered_node_byte_cost_size_for_key_and_value_lengths(
-                *average_key_size as u32,
-                value_len,
-            )
+                    *average_key_size as u32,
+                    value_len,
+                )
         }
         EstimatedLayerSizes::AllItems(average_key_size, average_item_size, average_flags_size)
         | EstimatedLayerSizes::AllReference(
@@ -414,9 +414,9 @@ pub fn add_average_case_merk_propagate(
             let average_value_len = average_item_size + flags_len;
             nodes_updated
                 * KV::node_byte_cost_size_for_key_and_value_lengths(
-                *average_key_size as u32,
-                average_value_len,
-            )
+                    *average_key_size as u32,
+                    average_value_len,
+                )
         }
         EstimatedLayerSizes::Mix {
             subtree_size,

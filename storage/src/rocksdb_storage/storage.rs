@@ -82,7 +82,7 @@ impl RocksDbStorage {
         Ok(RocksDbStorage { db })
     }
 
-    fn build_prefix_body<'a, P>(path: P) -> Vec<u8>
+    fn build_prefix_body<'a, P>(path: P) -> (Vec<u8>, usize)
     where
         P: IntoIterator<Item = &'a [u8]>,
     {
@@ -99,7 +99,7 @@ impl RocksDbStorage {
 
         res.extend(segments_count.to_ne_bytes());
         res.extend(lengthes);
-        res
+        (res, segments_count)
     }
 
     fn worst_case_body_size<L: WorstKeyLength>(path: &Vec<L>) -> usize {
@@ -112,13 +112,17 @@ impl RocksDbStorage {
     where
         P: IntoIterator<Item = &'a [u8]>,
     {
-        let body = Self::build_prefix_body(path);
-        let blocks_count = blake_block_count(body.len());
+        let (body, segments_count) = Self::build_prefix_body(path);
+        if segments_count == 0 {
+            [0; 32].to_vec().wrap_with_cost(OperationCost::default())
+        } else {
+            let blocks_count = blake_block_count(body.len());
 
-        blake3::hash(&body)
-            .as_bytes()
-            .to_vec()
-            .wrap_with_cost(OperationCost::with_hash_node_calls(blocks_count as u16))
+            blake3::hash(&body)
+                .as_bytes()
+                .to_vec()
+                .wrap_with_cost(OperationCost::with_hash_node_calls(blocks_count as u16))
+        }
     }
 }
 

@@ -457,14 +457,14 @@ mod tests {
         assert_eq!(
             average_case_cost,
             OperationCost {
-                seek_count: 8, // todo: why is this 8
+                seek_count: 6,
                 storage_cost: StorageCost {
                     added_bytes: 113,
-                    replaced_bytes: 223, // todo: verify
+                    replaced_bytes: 73,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 340,
-                hash_node_calls: 14, // todo: verify why
+                storage_loaded_bytes: 139,
+                hash_node_calls: 12,
             }
         );
     }

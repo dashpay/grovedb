@@ -74,7 +74,6 @@ mod tests {
         // Hash node calls
         // 2 for the node hash
         // 1 for the value hash
-        // 1 for combine hash
         // 1 kv_digest_to_kv_hash
 
         // Seek Count
@@ -92,7 +91,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 5,
+                hash_node_calls: 4,
             }
         );
     }
@@ -144,7 +143,6 @@ mod tests {
         // Hash node calls
         // 2 for the node hash
         // 1 for the value hash
-        // 1 for combine hash
         // 1 kv_digest_to_kv_hash
 
         // Seek Count
@@ -161,7 +159,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 5,
+                hash_node_calls: 4,
             }
         );
     }
@@ -228,10 +226,9 @@ mod tests {
 
         // 71 + 36 = 107 (key is not replaced)
 
-        // Hash node calls 7
+        // Hash node calls 6
         // 2 for the node hash
         // 1 for the value hash
-        // 1 for the combine hash
         // 1 for the kv_digest_to_kv_hash
         // 2 for the node hash above
 
@@ -251,7 +248,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 73, // todo: verify and explain
-                hash_node_calls: 7,
+                hash_node_calls: 6,
             }
         );
     }
@@ -306,7 +303,6 @@ mod tests {
         // Hash node calls 7
         // 2 for the node hash
         // 1 for the value hash
-        // 1 for the combine hash
         // 1 for the kv_digest_to_kv_hash
         // 2 for the node hash above
 
@@ -326,7 +322,85 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 70, // todo: verify and explain
-                hash_node_calls: 7,
+                hash_node_calls: 6,
+            }
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_insert_tree_under_parent_tree_in_different_merk_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"0", Element::empty_tree(), None, Some(&tx))
+            .unwrap()
+            .expect("successful root tree leaf insert");
+
+        let ops = vec![GroveDbOp::insert_op(
+            vec![b"0".to_vec()],
+            b"key1".to_vec(),
+            Element::empty_tree(),
+        )];
+        let cost_result = db.apply_batch(ops, None, Some(&tx));
+        cost_result.value.expect("expected to execute batch");
+        let cost = cost_result.cost;
+        // Explanation for 113 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 37
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type
+        //   1 for empty tree value
+        // 32 for node hash
+        // 0 for value hash
+        // 2 byte for the value_size (required space for 98 + up to 256 for child key)
+
+        // Parent Hook -> 39
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+
+        // Total 37 + 37 + 39 = 113
+
+        // Replaced bytes
+
+        // 37 + 36 = 73 (key is not replaced)
+
+        //// Hash node calls 10
+        // 1 to get the lowest merk
+        //
+        // 1 to get the middle merk
+        // 2 for the node hash
+        // 1 for the value hash
+        // 1 for the kv_digest_to_kv_hash
+
+        // On the layer above the root key did change
+        // meaning we get another 4 hashes 2 + 1 + 1
+
+        //// Seek Count explanation
+
+        // 1 to get merk at lower level
+        // 1 to insert new item
+        // 1 to get root merk
+        // 1 to load root tree
+        // 1 to replace parent tree
+        // 1 to update root
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 6,
+                storage_cost: StorageCost {
+                    added_bytes: 113,
+                    replaced_bytes: 73,
+                    removed_bytes: NoStorageRemoval,
+                },
+                storage_loaded_bytes: 139, // todo: verify and explain
+                hash_node_calls: 10,
             }
         );
     }
@@ -371,7 +445,6 @@ mod tests {
         // Hash node calls
         // 2 for the node hash
         // 1 for the value hash
-        // 1 for combine hash
         // 1 kv_digest_to_kv_hash
 
         // Seek Count
@@ -388,7 +461,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 5,
+                hash_node_calls: 4,
             }
         );
     }
@@ -433,7 +506,6 @@ mod tests {
         // Hash node calls
         // 2 for the node hash
         // 2 for the value hash
-        // 1 for combine hash
         // 1 kv_digest_to_kv_hash
 
         // Seek Count
@@ -450,7 +522,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 6,
+                hash_node_calls: 5,
             }
         );
     }
@@ -506,7 +578,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 229, // todo: verify this
-                hash_node_calls: 12,       // todo: verify this
+                hash_node_calls: 10,       // todo: verify this
             }
         );
     }
@@ -585,7 +657,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 230, // todo: verify this
-                hash_node_calls: 12,       // todo: verify this
+                hash_node_calls: 10,       // todo: verify this
             }
         );
     }
@@ -640,7 +712,7 @@ mod tests {
                     removed_bytes: BasicStorageRemoval(1)
                 },
                 storage_loaded_bytes: 229, // todo: verify this
-                hash_node_calls: 12,       // todo: verify this
+                hash_node_calls: 10,       // todo: verify this
             }
         );
     }
@@ -720,7 +792,7 @@ mod tests {
                     removed_bytes: SectionedStorageRemoval(removed_bytes)
                 },
                 storage_loaded_bytes: 230, // todo: verify this
-                hash_node_calls: 12,       // todo: verify this
+                hash_node_calls: 10,       // todo: verify this
             }
         );
     }
@@ -793,7 +865,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 224, // todo: verify this
-                hash_node_calls: 14,       // todo: verify this
+                hash_node_calls: 12,       // todo: verify this
             }
         );
     }
