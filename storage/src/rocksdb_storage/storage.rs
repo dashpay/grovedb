@@ -27,7 +27,11 @@ use crate::{
 const BLAKE_BLOCK_LEN: usize = 64;
 
 fn blake_block_count(len: usize) -> usize {
-    (BLAKE_BLOCK_LEN + len - 1) / BLAKE_BLOCK_LEN
+    if len == 0 {
+        1
+    } else {
+        1 + (len - 1) / BLAKE_BLOCK_LEN
+    }
 }
 
 /// Name of column family used to store auxiliary data

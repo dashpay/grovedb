@@ -196,11 +196,11 @@ mod tests {
                 seek_count: 6, // todo: why is this 6
                 storage_cost: StorageCost {
                     added_bytes: 113,
-                    replaced_bytes: 18432, // todo: verify
+                    replaced_bytes: 76, // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 23040,
-                hash_node_calls: 18, // todo: verify why
+                storage_loaded_bytes: 0,
+                hash_node_calls: 8, // todo: verify why
             }
         );
     }
@@ -219,6 +219,10 @@ mod tests {
         paths.insert(
             KeyInfoPath(vec![]),
             EstimatedLevel(0, AllSubtrees(4, Some(3))),
+        );
+        paths.insert(
+            KeyInfoPath(vec![KeyInfo::KnownKey(b"key1".to_vec())]),
+            EstimatedLevel(0, AllSubtrees(4, None)),
         );
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
@@ -252,11 +256,11 @@ mod tests {
                 seek_count: 6, // todo: why is this 6
                 storage_cost: StorageCost {
                     added_bytes: 117,
-                    replaced_bytes: 18432, // todo: verify
+                    replaced_bytes: 79, // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 23040,
-                hash_node_calls: 18, // todo: verify why
+                storage_loaded_bytes: 0,
+                hash_node_calls: 8, // todo: verify why
             }
         );
     }
@@ -305,11 +309,11 @@ mod tests {
                 seek_count: 4, // todo: why is this 6
                 storage_cost: StorageCost {
                     added_bytes: 147,
-                    replaced_bytes: 18432, // log(max_elements) * 32 = 640 // todo: verify
+                    replaced_bytes: 107, // log(max_elements) * 32 = 640 // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 23040,
-                hash_node_calls: 18, // todo: verify why
+                storage_loaded_bytes: 0,
+                hash_node_calls: 7, // todo: verify why
             }
         );
     }
@@ -329,7 +333,12 @@ mod tests {
             Element::empty_tree(),
         )];
         let mut paths = HashMap::new();
-        paths.insert(KeyInfoPath(vec![]), EstimatedLevel(1, AllSubtrees(2, None)));
+        paths.insert(KeyInfoPath(vec![]), EstimatedLevel(1, AllSubtrees(4, None)));
+        paths.insert(
+            KeyInfoPath(vec![KeyInfo::KnownKey(b"key1".to_vec())]),
+            EstimatedLevel(0, AllSubtrees(2, None)),
+        );
+
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
@@ -391,6 +400,13 @@ mod tests {
             KeyInfoPath(vec![KeyInfo::KnownKey(b"0".to_vec())]),
             EstimatedLevel(0, AllSubtrees(4, None)),
         );
+        paths.insert(
+            KeyInfoPath(vec![
+                KeyInfo::KnownKey(b"0".to_vec()),
+                KeyInfo::KnownKey(b"key1".to_vec()),
+            ]),
+            EstimatedLevel(0, AllSubtrees(4, None)),
+        );
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
@@ -423,11 +439,11 @@ mod tests {
                 seek_count: 8, // todo: why is this 8
                 storage_cost: StorageCost {
                     added_bytes: 113,
-                    replaced_bytes: 36937, // todo: verify
+                    replaced_bytes: 223, // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 46420,
-                hash_node_calls: 38, // todo: verify why
+                storage_loaded_bytes: 340,
+                hash_node_calls: 14, // todo: verify why
             }
         );
     }
