@@ -1,10 +1,13 @@
-use costs::{CostResult, CostsExt, OperationCost};
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 use integer_encoding::VarInt;
 use merk::{
     estimated_costs::average_case_costs::{
-        add_average_case_get_merk_node, add_average_case_merk_insert,
+        add_average_case_get_merk_node, add_average_case_merk_delete,
+        add_average_case_merk_delete_layered, add_average_case_merk_insert,
         add_average_case_merk_insert_layered, add_average_case_merk_propagate,
-        add_average_case_merk_replace_layered, MerkAverageCaseInput,
+        add_average_case_merk_replace_layered, EstimatedLayerInformation, EstimatedLayerSizes,
     },
     tree::Tree,
     HASH_LENGTH,
@@ -37,13 +40,24 @@ impl GroveDb {
     /// Add worst case for insertion into merk
     pub(crate) fn average_case_merk_replace_tree(
         key: &KeyInfo,
-        propagate_if_input: Option<MerkAverageCaseInput>,
+        estimated_layer_information: &EstimatedLayerInformation,
+        propagate: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let key_len = key.len() as u32;
-        add_average_case_merk_replace_layered(&mut cost, key_len, 3);
-        if let Some(input) = propagate_if_input {
-            add_average_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
+        let flags_size = cost_return_on_error_no_add!(
+            &cost,
+            estimated_layer_information
+                .sizes()
+                .layered_flags_size()
+                .map_err(Error::MerkError)
+        )
+        .unwrap_or_default();
+        let layer_extra_size = TREE_COST_SIZE + flags_size + flags_size.required_space() as u32;
+        add_average_case_merk_replace_layered(&mut cost, key_len, layer_extra_size);
+        if propagate {
+            add_average_case_merk_propagate(&mut cost, estimated_layer_information)
+                .map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -54,7 +68,7 @@ impl GroveDb {
     pub(crate) fn average_case_merk_insert_tree(
         key: &KeyInfo,
         flags: &Option<ElementFlags>,
-        propagate_if_input: Option<MerkAverageCaseInput>,
+        propagate_if_input: Option<&EstimatedLayerInformation>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let key_len = key.len() as u32;
@@ -73,12 +87,39 @@ impl GroveDb {
     }
 
     /// Add worst case for insertion into merk
+    pub(crate) fn average_case_merk_delete_tree(
+        key: &KeyInfo,
+        estimated_layer_information: &EstimatedLayerInformation,
+        propagate: bool,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        let key_len = key.len() as u32;
+        let flags_size = cost_return_on_error_no_add!(
+            &cost,
+            estimated_layer_information
+                .sizes()
+                .layered_flags_size()
+                .map_err(Error::MerkError)
+        )
+        .unwrap_or_default();
+        let layer_extra_size = TREE_COST_SIZE + flags_size + flags_size.required_space() as u32;
+        add_average_case_merk_delete_layered(&mut cost, key_len, layer_extra_size);
+        if propagate {
+            add_average_case_merk_propagate(&mut cost, estimated_layer_information)
+                .map_err(Error::MerkError)
+        } else {
+            Ok(())
+        }
+        .wrap_with_cost(cost)
+    }
+
+    /// Add worst case for insertion into merk
     /// This only propagates on 1 level
     /// As higher level propagation is done in batching
     pub(crate) fn average_case_merk_insert_element(
         key: &KeyInfo,
         value: &Element,
-        propagate_for_level: Option<MerkAverageCaseInput>,
+        propagate_for_level: Option<&EstimatedLayerInformation>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let key_len = key.len() as u32;
@@ -101,12 +142,28 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    pub fn average_case_delete_cost(
+    pub(crate) fn average_case_merk_delete_element(
         key: &KeyInfo,
-        estimated_element_size: u32,
+        estimated_layer_information: &EstimatedLayerInformation,
+        propagate: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-        Ok(()).wrap_with_cost(cost)
+        let key_len = key.len() as u32;
+        let estimated_layer_sizes = estimated_layer_information.sizes();
+        let value_size = cost_return_on_error_no_add!(
+            &cost,
+            estimated_layer_sizes
+                .non_layered_value_with_flags_size()
+                .map_err(Error::MerkError)
+        );
+        add_average_case_merk_delete(&mut cost, key_len, value_size);
+        if propagate {
+            add_average_case_merk_propagate(&mut cost, estimated_layer_information)
+                .map_err(Error::MerkError)
+        } else {
+            Ok(())
+        }
+        .wrap_with_cost(cost)
     }
 
     pub fn add_average_case_has_raw_cost<'db, S: Storage<'db>>(

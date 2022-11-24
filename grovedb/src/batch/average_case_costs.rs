@@ -8,7 +8,9 @@ use costs::{
 };
 use itertools::Itertools;
 use merk::{
-    estimated_costs::average_case_costs::{add_average_case_merk_propagate, MerkAverageCaseInput},
+    estimated_costs::average_case_costs::{
+        add_average_case_merk_propagate, average_case_merk_propagate, EstimatedLayerInformation,
+    },
     CryptoHash,
 };
 use storage::rocksdb_storage::RocksDbStorage;
@@ -25,7 +27,7 @@ use crate::{
 /// Cache for subtree paths for average case scenario costs.
 #[derive(Default)]
 pub(super) struct AverageCaseTreeCacheKnownPaths {
-    paths: HashMap<KeyInfoPath, MerkAverageCaseInput>,
+    paths: HashMap<KeyInfoPath, EstimatedLayerInformation>,
 }
 
 impl fmt::Debug for AverageCaseTreeCacheKnownPaths {
@@ -44,7 +46,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                 inserted_path
                     .0
                     .iter()
-                    .map(|k| hex::encode(k.get_key()))
+                    .map(|k| hex::encode(k.as_slice()))
                     .join("/")
             )))
             .wrap_with_cost(OperationCost::default());
@@ -72,27 +74,29 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error> {
         let mut cost = OperationCost::default();
 
-        let input = cost_return_on_error_no_add!(
+        let layer_element_estimates = cost_return_on_error_no_add!(
             &cost,
             self.paths
                 .get(path)
                 .ok_or(Error::PathNotFoundInCacheForEstimatedCosts(format!(
                     "inserting into average case costs path: {}",
-                    inserted_path
-                        .0
-                        .iter()
-                        .map(|k| hex::encode(k.get_key()))
-                        .join("/")
+                    path.0.iter().map(|k| hex::encode(k.as_slice())).join("/")
                 )))
         );
 
         // Then we have to get the tree
         GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(&mut cost, path);
         for (key, op) in ops_at_path_by_key.into_iter() {
-            cost_return_on_error!(&mut cost, op.average_case_cost(&key, None));
+            cost_return_on_error!(
+                &mut cost,
+                op.average_case_cost(&key, layer_element_estimates, false)
+            );
         }
 
-        add_average_case_merk_propagate(&mut cost, input)?;
+        cost_return_on_error!(
+            &mut cost,
+            average_case_merk_propagate(layer_element_estimates).map_err(Error::MerkError)
+        );
         Ok(([0u8; 32], None)).wrap_with_cost(cost)
     }
 

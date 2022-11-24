@@ -18,19 +18,19 @@ type OpsByLevelPath = IntMap<u32, BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>>>;
 
 pub(super) struct BatchStructure<C, F, SR> {
     /// Operations by level path
-    ops_by_level_paths: OpsByLevelPath,
+    pub(super) ops_by_level_paths: OpsByLevelPath,
     /// This is for references
-    ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, Op>,
+    pub(super) ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, Op>,
     /// Merk trees
     /// Very important: the type of run mode we are in is contained in this
     /// cache
-    merk_tree_cache: C,
+    pub(super) merk_tree_cache: C,
     /// Flags modification function
-    flags_update: F,
+    pub(super) flags_update: F,
     ///
-    split_removal_bytes: SR,
+    pub(super) split_removal_bytes: SR,
     /// Last level
-    last_level: u32,
+    pub(super) last_level: u32,
 }
 
 impl<F, SR, S: fmt::Debug> fmt::Debug for BatchStructure<S, F, SR> {

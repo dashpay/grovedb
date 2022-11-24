@@ -41,7 +41,7 @@ use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     anyhow::anyhow,
     estimated_costs::{
-        average_case_costs::MerkAverageCaseInput, worst_case_costs::MerkWorstCaseInput,
+        average_case_costs::EstimatedLayerInformation, worst_case_costs::MerkWorstCaseInput,
     },
     tree::{kv::KV, value_hash, NULL_HASH},
     CryptoHash, Merk, MerkType,
@@ -122,19 +122,32 @@ impl Op {
     fn average_case_cost(
         &self,
         key: &KeyInfo,
-        propagate_if_input: Option<MerkAverageCaseInput>,
+        layer_element_estimates: &EstimatedLayerInformation,
+        propagate: bool,
     ) -> CostResult<(), Error> {
+        let propagate_if_input = || {
+            if propagate {
+                Some(layer_element_estimates)
+            } else {
+                None
+            }
+        };
         match self {
             Op::ReplaceTreeRootKey { .. } => {
-                GroveDb::average_case_merk_replace_tree(key, propagate_if_input)
+                GroveDb::average_case_merk_replace_tree(key, layer_element_estimates, propagate)
             }
             Op::InsertTreeWithRootHash { flags, .. } => {
-                GroveDb::average_case_merk_insert_tree(key, flags, propagate_if_input)
+                GroveDb::average_case_merk_insert_tree(key, flags, propagate_if_input())
             }
             Op::Insert { element } => {
-                GroveDb::average_case_merk_insert_element(key, &element, propagate_if_input)
+                GroveDb::average_case_merk_insert_element(key, &element, propagate_if_input())
             }
-            Op::Delete | Op::DeleteTree => GroveDb::average_case_delete_cost(key),
+            Op::Delete => {
+                GroveDb::average_case_merk_delete_element(key, layer_element_estimates, propagate)
+            }
+            Op::DeleteTree => {
+                GroveDb::average_case_merk_delete_tree(key, layer_element_estimates, propagate)
+            }
         }
     }
 }

@@ -42,7 +42,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
                 inserted_path
                     .0
                     .iter()
-                    .map(|k| hex::encode(k.get_key()))
+                    .map(|k| hex::encode(k.as_slice()))
                     .join("/")
             )))
             .wrap_with_cost(OperationCost::default());

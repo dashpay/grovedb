@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use merk::estimated_costs::{
-    average_case_costs::MerkAverageCaseInput, worst_case_costs::MerkWorstCaseInput,
+    average_case_costs::EstimatedLayerInformation, worst_case_costs::MerkWorstCaseInput,
 };
 
 use crate::batch::KeyInfoPath;
@@ -10,6 +10,6 @@ use crate::batch::KeyInfoPath;
 #[derive(Clone, PartialEq)]
 pub enum BatchRunMode {
     ExecuteMode,
-    AverageCaseMode(HashMap<KeyInfoPath, MerkAverageCaseInput>),
+    AverageCaseMode(HashMap<KeyInfoPath, EstimatedLayerInformation>),
     WorstCaseMode(HashMap<KeyInfoPath, MerkWorstCaseInput>),
 }

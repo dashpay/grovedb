@@ -73,7 +73,7 @@ mod tests {
         )];
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType,
-            ops,
+            ops.clone(),
             None,
             |_cost, _old_flags, _new_flags| Ok(false),
             |_flags, _removed_key_bytes, _removed_value_bytes| {
@@ -83,7 +83,7 @@ mod tests {
         .cost_as_result()
         .expect("expected to get average case costs");
 
-        let cost = db.apply_batch(ops.clone(), None, Some(&tx)).cost;
+        let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(
             average_case_cost.worse_or_eq_than(&cost),
             "not worse {:?} \n than {:?}",
