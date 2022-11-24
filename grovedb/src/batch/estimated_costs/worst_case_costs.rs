@@ -22,7 +22,7 @@ use crate::{
 
 /// Cache for subtree paths for worst case scenario costs.
 #[derive(Default)]
-pub(super) struct WorstCaseTreeCacheKnownPaths {
+pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
     paths: HashMap<KeyInfoPath, MerkWorstCaseInput>,
 }
 

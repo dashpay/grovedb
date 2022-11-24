@@ -1,6 +1,5 @@
 //! GroveDB batch operations support
 
-mod average_case_costs;
 mod batch_structure;
 mod estimated_costs;
 pub mod key_info;
@@ -12,7 +11,6 @@ mod options;
 mod single_deletion_cost_tests;
 #[cfg(test)]
 mod single_insert_cost_tests;
-mod worst_case_costs;
 
 use core::fmt;
 use std::{
@@ -26,21 +24,23 @@ use std::{
 
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
-    storage_cost::{
+    CostResult,
+    CostsExt, OperationCost, storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
     },
-    CostResult, CostsExt, OperationCost,
 };
 use integer_encoding::VarInt;
+use estimated_costs::average_case_costs::AverageCaseTreeCacheKnownPaths;
+use estimated_costs::worst_case_costs::WorstCaseTreeCacheKnownPaths;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     anyhow::anyhow,
+    CryptoHash,
     estimated_costs::{
         average_case_costs::EstimatedLayerInformation, worst_case_costs::MerkWorstCaseInput,
     },
-    tree::{kv::KV, value_hash, NULL_HASH},
-    CryptoHash, Merk, MerkType,
+    Merk, MerkType, tree::{kv::KV, NULL_HASH, value_hash},
 };
 use storage::{
     rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
@@ -50,17 +50,15 @@ use visualize::{Drawer, Visualize};
 
 use crate::{
     batch::{
-        average_case_costs::AverageCaseTreeCacheKnownPaths,
         batch_structure::BatchStructure,
         estimated_costs::EstimatedCostsType,
         mode::{BatchRunMode, BatchRunMode::ExecuteMode},
         options::BatchApplyOptions,
-        worst_case_costs::WorstCaseTreeCacheKnownPaths,
     },
-    operations::get::MAX_REFERENCE_HOPS,
-    reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
-    subtree::TREE_COST_SIZE,
-    Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
+    Element,
+    ElementFlags,
+    Error,
+    GroveDb, operations::get::MAX_REFERENCE_HOPS, reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type}, subtree::TREE_COST_SIZE, Transaction, TransactionArg,
 };
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -1493,9 +1491,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        reference_path::ReferencePathType,
-        tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
         PathQuery,
+        reference_path::ReferencePathType,
+        tests::{ANOTHER_TEST_LEAF, make_empty_grovedb, make_test_grovedb, TEST_LEAF},
     };
 
     #[test]

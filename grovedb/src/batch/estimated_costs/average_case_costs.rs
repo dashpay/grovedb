@@ -26,12 +26,12 @@ use crate::{
 
 /// Cache for subtree paths for average case scenario costs.
 #[derive(Default)]
-pub(super) struct AverageCaseTreeCacheKnownPaths {
+pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
     paths: HashMap<KeyInfoPath, EstimatedLayerInformation>,
 }
 
 impl AverageCaseTreeCacheKnownPaths {
-    pub(super) fn new_with_estimated_layer_information(
+    pub(in crate::batch) fn new_with_estimated_layer_information(
         paths: HashMap<KeyInfoPath, EstimatedLayerInformation>,
     ) -> Self {
         AverageCaseTreeCacheKnownPaths { paths }
