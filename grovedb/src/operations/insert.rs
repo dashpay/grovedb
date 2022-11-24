@@ -859,7 +859,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 142, // todo: verify this
-                hash_node_calls: 8,       // todo: verify this
+                hash_node_calls: 8,        // todo: verify this
             }
         );
     }
