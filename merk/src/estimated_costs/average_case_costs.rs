@@ -296,12 +296,14 @@ pub fn add_average_case_merk_propagate(
     }
     cost.seek_count += nodes_updated as u16;
 
+    cost.hash_node_calls += (nodes_updated as u16) * 2;
+
     cost.storage_cost.replaced_bytes += match average_typed_size {
         EstimatedLayerSizes::AllSubtrees(average_key_size, average_flags_size) => {
             let flags_len = average_flags_size.unwrap_or(0);
             let value_len = LAYER_COST_SIZE + flags_len;
             nodes_updated
-                * KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                * KV::value_byte_cost_size_for_key_and_raw_value_lengths(
                     *average_key_size as u32,
                     value_len,
                 )
@@ -338,7 +340,7 @@ pub fn add_average_case_merk_propagate(
                     .map(|(average_key_size, average_flags_size, weight)| {
                         let flags_len = average_flags_size.unwrap_or(0);
                         let value_len = LAYER_COST_SIZE + flags_len;
-                        let cost = KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                        let cost = KV::value_byte_cost_size_for_key_and_raw_value_lengths(
                             average_key_size as u32,
                             value_len,
                         );
@@ -392,9 +394,101 @@ pub fn add_average_case_merk_propagate(
             }
         }
     };
-    // cost.storage_loaded_bytes += nodes_updated * (MERK_BIGGEST_VALUE_SIZE +
-    // MERK_BIGGEST_KEY_SIZE); // Same number of hash recomputations for
-    // propagation cost.hash_node_calls += (nodes_updated as u16) *
-    // node_hash_update_count();
+    cost.storage_loaded_bytes += match average_typed_size {
+        EstimatedLayerSizes::AllSubtrees(average_key_size, average_flags_size) => {
+            let flags_len = average_flags_size.unwrap_or(0);
+            let value_len = LAYER_COST_SIZE + flags_len;
+            nodes_updated
+                * KV::layered_node_byte_cost_size_for_key_and_value_lengths(
+                *average_key_size as u32,
+                value_len,
+            )
+        }
+        EstimatedLayerSizes::AllItems(average_key_size, average_item_size, average_flags_size)
+        | EstimatedLayerSizes::AllReference(
+            average_key_size,
+            average_item_size,
+            average_flags_size,
+        ) => {
+            let flags_len = average_flags_size.unwrap_or(0);
+            let average_value_len = average_item_size + flags_len;
+            nodes_updated
+                * KV::node_byte_cost_size_for_key_and_value_lengths(
+                *average_key_size as u32,
+                average_value_len,
+            )
+        }
+        EstimatedLayerSizes::Mix {
+            subtree_size,
+            items_size,
+            references_size,
+        } => {
+            let total_weight = subtree_size.unwrap_or_default().2 as u32
+                + items_size.unwrap_or_default().3 as u32
+                + items_size.unwrap_or_default().3 as u32;
+            if total_weight == 0 {
+                0
+            } else {
+                let weighted_nodes_updated = (nodes_updated as u64)
+                    .checked_mul(total_weight as u64)
+                    .ok_or(Error::Overflow("overflow for weights average cost"))?;
+                let tree_node_updates_cost = subtree_size
+                    .map(|(average_key_size, average_flags_size, weight)| {
+                        let flags_len = average_flags_size.unwrap_or(0);
+                        let value_len = LAYER_COST_SIZE + flags_len;
+                        let cost = KV::layered_node_byte_cost_size_for_key_and_value_lengths(
+                            average_key_size as u32,
+                            value_len,
+                        );
+                        (weight as u64)
+                            .checked_mul(cost as u64)
+                            .ok_or(Error::Overflow("overflow for mixed tree nodes updates"))
+                    })
+                    .unwrap_or(Ok(0))?;
+                let item_node_updates_cost = items_size
+                    .map(
+                        |(average_key_size, average_value_size, average_flags_size, weight)| {
+                            let flags_len = average_flags_size.unwrap_or(0);
+                            let value_len = average_value_size + flags_len;
+                            let cost = KV::node_byte_cost_size_for_key_and_value_lengths(
+                                average_key_size as u32,
+                                value_len,
+                            );
+                            (weight as u64)
+                                .checked_mul(cost as u64)
+                                .ok_or(Error::Overflow("overflow for mixed item nodes updates"))
+                        },
+                    )
+                    .unwrap_or(Ok(0))?;
+                let reference_node_updates_cost = references_size
+                    .map(
+                        |(average_key_size, average_value_size, average_flags_size, weight)| {
+                            let flags_len = average_flags_size.unwrap_or(0);
+                            let value_len = average_value_size + flags_len;
+                            let cost = KV::node_byte_cost_size_for_key_and_value_lengths(
+                                average_key_size as u32,
+                                value_len,
+                            );
+                            (weight as u64)
+                                .checked_mul(cost as u64)
+                                .ok_or(Error::Overflow("overflow for mixed item nodes updates"))
+                        },
+                    )
+                    .unwrap_or(Ok(0))?;
+
+                let total_updates_cost = tree_node_updates_cost
+                    .checked_add(item_node_updates_cost)
+                    .and_then(|c| c.checked_add(reference_node_updates_cost))
+                    .ok_or(Error::Overflow("overflow for mixed item adding parts"))?;
+                let total_loaded_bytes = total_updates_cost / weighted_nodes_updated;
+                if total_loaded_bytes > u32::MAX as u64 {
+                    return Err(Error::Overflow(
+                        "overflow for total replaced bytes more than u32 max",
+                    ));
+                }
+                total_loaded_bytes as u32
+            }
+        }
+    };
     Ok(())
 }
