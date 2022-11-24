@@ -464,7 +464,8 @@ mod tests {
         )];
         let mut paths = HashMap::new();
         paths.insert(KeyInfoPath(vec![]), EstimatedLevel(1, AllSubtrees(4, None)));
-        let average_case_cost_result = GroveDb::estimated_case_operations_for_batch(
+        paths.insert(KeyInfoPath(vec![KeyInfo::KnownKey(b"key1".to_vec())]), EstimatedLevel(0, AllSubtrees(4, None)));
+        let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
             None,
@@ -472,12 +473,11 @@ mod tests {
             |_flags, _removed_key_bytes, _removed_value_bytes| {
                 Ok((NoStorageRemoval, NoStorageRemoval))
             },
-        );
-        assert!(average_case_cost_result.value.is_ok());
+        ).cost_as_result().expect("expected to estimate costs");
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         // at the moment we just check the added bytes are the same
         assert_eq!(
-            average_case_cost_result.cost.storage_cost.added_bytes,
+            average_case_cost.storage_cost.added_bytes,
             cost.storage_cost.added_bytes
         );
     }
