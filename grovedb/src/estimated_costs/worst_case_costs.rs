@@ -23,7 +23,10 @@ impl GroveDb {
         cost: &mut OperationCost,
         path: &KeyInfoPath,
     ) {
-        cost.seek_count += 2; // seek in meta for root key + loading that root key
+        if !path.is_empty() {
+            cost.seek_count += 2; // seek in meta for root key + loading that
+                                  // root key
+        }
         match path.last() {
             None => {}
             Some(key) => {

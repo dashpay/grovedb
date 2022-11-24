@@ -245,6 +245,10 @@ impl KeyInfoPath {
         &self.0
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub fn len(&self) -> u32 {
         self.0.len() as u32
     }

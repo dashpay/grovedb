@@ -107,21 +107,36 @@ impl EstimatedLayerSizes {
     }
 }
 
+pub type ApproximateElementCount = u32;
+pub type EstimatedLevelNumber = u32;
+pub type EstimatedToBeEmpty = bool;
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum EstimatedLayerInformation {
-    ApproximateMaxElements(u32, EstimatedLayerSizes),
-    EstimatedLevel(u32, EstimatedLayerSizes),
+    ApproximateElements(ApproximateElementCount, EstimatedLayerSizes),
+    EstimatedLevel(
+        EstimatedLevelNumber,
+        EstimatedToBeEmpty,
+        EstimatedLayerSizes,
+    ),
 }
 
 impl EstimatedLayerInformation {
     pub fn sizes(&self) -> &EstimatedLayerSizes {
         match self {
-            EstimatedLayerInformation::ApproximateMaxElements(_, estimated_layer_info) => {
+            EstimatedLayerInformation::ApproximateElements(_, estimated_layer_info) => {
                 estimated_layer_info
             }
-            EstimatedLayerInformation::EstimatedLevel(_, estimated_layer_info) => {
+            EstimatedLayerInformation::EstimatedLevel(_, _, estimated_layer_info) => {
                 estimated_layer_info
             }
+        }
+    }
+
+    pub fn estimated_to_be_empty(&self) -> bool {
+        match self {
+            EstimatedLayerInformation::ApproximateElements(count, _) => *count == 0,
+            EstimatedLayerInformation::EstimatedLevel(_, empty, _) => *empty,
         }
     }
 }
@@ -167,6 +182,7 @@ pub fn add_average_case_merk_has_value(
 
 /// Add worst case for insertion into merk
 pub fn add_average_case_merk_insert(cost: &mut OperationCost, key_len: u32, value_len: u32) {
+    cost.seek_count += 1;
     cost.storage_cost.added_bytes +=
         KV::node_byte_cost_size_for_key_and_value_lengths(key_len, value_len);
     // .. and hash computation for the inserted element itself
@@ -187,6 +203,7 @@ pub fn add_average_case_merk_replace_layered(
     key_len: u32,
     value_len: u32,
 ) {
+    cost.seek_count += 1;
     cost.storage_cost.replaced_bytes =
         KV::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_len);
 
@@ -207,6 +224,7 @@ pub fn add_average_case_merk_insert_layered(
     key_len: u32,
     value_len: u32,
 ) {
+    cost.seek_count += 1;
     cost.storage_cost.added_bytes +=
         KV::layered_node_byte_cost_size_for_key_and_value_lengths(key_len, value_len);
     // .. and hash computation for the inserted element itself
@@ -228,12 +246,14 @@ pub fn add_average_case_merk_delete_layered(
     value_len: u32,
 ) {
     // todo: verify this
+    cost.seek_count += 1;
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
 }
 
 /// Add average case for deletion from merk
 pub fn add_average_case_merk_delete(cost: &mut OperationCost, key_len: u32, value_len: u32) {
     // todo: verify this
+    cost.seek_count += 1;
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
 }
 
@@ -263,15 +283,17 @@ pub fn add_average_case_merk_propagate(
     let mut nodes_updated = 0;
     // Propagation requires to recompute and write hashes up to the root
     let (levels, average_typed_size) = match input {
-        EstimatedLayerInformation::ApproximateMaxElements(n, s) => {
+        EstimatedLayerInformation::ApproximateElements(n, s) => {
             (((n + 1) as f32).log2().ceil() as u32, s)
         }
-        EstimatedLayerInformation::EstimatedLevel(n, s) => (*n, s),
+        EstimatedLayerInformation::EstimatedLevel(n, _, s) => (*n, s),
     };
     nodes_updated += levels;
-    // In AVL tree on average 1 rotation will happen.
-    // todo: verify this statement
-    nodes_updated += 1;
+
+    if levels > 1 {
+        // we can get about 1 rotation, if there are more than 2 levels
+        nodes_updated += 1;
+    }
 
     cost.storage_cost.replaced_bytes += match average_typed_size {
         EstimatedLayerSizes::AllSubtrees(average_key_size, average_flags_size) => {

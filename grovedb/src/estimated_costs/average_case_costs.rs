@@ -25,8 +25,13 @@ impl GroveDb {
     pub fn add_average_case_get_merk_at_path<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
+        merk_should_be_empty: bool,
     ) {
-        cost.seek_count += 2; // seek in meta for root key + loading that root key
+        cost.seek_count += 1;
+        // If the merk is not empty we load the tree
+        if !merk_should_be_empty {
+            cost.seek_count += 1;
+        }
         match path.last() {
             None => {}
             Some(key) => {
@@ -185,9 +190,7 @@ impl GroveDb {
         key: &KeyInfo,
         max_element_size: u32,
     ) {
-        // todo: verify, we need to run a test to see if has raw has any better
-        // performance than get raw
-        Self::add_average_case_get_merk_at_path::<S>(cost, path);
+        cost.seek_count += 1;
         add_average_case_get_merk_node(cost, key.len() as u32, max_element_size);
     }
 
