@@ -74,17 +74,25 @@ mod tests {
         // Hash node calls
         // 2 for the node hash
         // 1 for the value hash
+        // 1 for combine hash
+        // 1 kv_digest_to_kv_hash
+
+        // Seek Count
+        // 1 to load from root tree
+        // 1 to insert
+        // 1 to update root tree
+
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 2, // 1 to get tree, 1 to insert
+                seek_count: 3,
                 storage_cost: StorageCost {
                     added_bytes: 113,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 6,
+                hash_node_calls: 5,
             }
         );
     }
@@ -136,17 +144,24 @@ mod tests {
         // Hash node calls
         // 2 for the node hash
         // 1 for the value hash
+        // 1 for combine hash
+        // 1 kv_digest_to_kv_hash
+
+        // Seek Count
+        // 1 to load from root tree
+        // 1 to insert
+        // 1 to update root tree
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 2, // 1 to get tree, 1 to insert
+                seek_count: 3,
                 storage_cost: StorageCost {
                     added_bytes: 141,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 6,
+                hash_node_calls: 5,
             }
         );
     }
@@ -213,20 +228,30 @@ mod tests {
 
         // 71 + 36 = 107 (key is not replaced)
 
-        // Hash node calls
+        // Hash node calls 7
         // 2 for the node hash
         // 1 for the value hash
+        // 1 for the combine hash
+        // 1 for the kv_digest_to_kv_hash
+        // 2 for the node hash above
+
+        // Seek Count explanation
+        // 1 to get root merk
+        // 1 to load root tree
+        // 1 to insert new item
+        // 1 to replace parent tree
+        // 1 to update root
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 4, // todo: verify and explain
+                seek_count: 5,
                 storage_cost: StorageCost {
                     added_bytes: 113,
                     replaced_bytes: 107,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 146, // todo: verify and explain
-                hash_node_calls: 8,        // todo: verify and explain
+                storage_loaded_bytes: 73, // todo: verify and explain
+                hash_node_calls: 7,
             }
         );
     }
@@ -278,20 +303,30 @@ mod tests {
         // size) this means 31 extra bytes.
         // In reality though we really are replacing 104 bytes. TBD what to do.
 
-        // Hash node calls
+        // Hash node calls 7
         // 2 for the node hash
         // 1 for the value hash
+        // 1 for the combine hash
+        // 1 for the kv_digest_to_kv_hash
+        // 2 for the node hash above
+
+        // Seek Count explanation
+        // 1 to get root merk
+        // 1 to load root tree
+        // 1 to insert new item
+        // 1 to replace parent tree
+        // 1 to update root
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 4, // todo: verify and explain
+                seek_count: 5,
                 storage_cost: StorageCost {
                     added_bytes: 113,
                     replaced_bytes: 104, // todo: this should actually be 73
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 140, // todo: verify and explain
-                hash_node_calls: 8,        // todo: verify and explain
+                storage_loaded_bytes: 70, // todo: verify and explain
+                hash_node_calls: 7,
             }
         );
     }
@@ -336,17 +371,24 @@ mod tests {
         // Hash node calls
         // 2 for the node hash
         // 1 for the value hash
+        // 1 for combine hash
+        // 1 kv_digest_to_kv_hash
+
+        // Seek Count
+        // 1 to load from root tree
+        // 1 to insert
+        // 1 to update root tree
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 2, // 1 to insert, 1 for root tree.
+                seek_count: 3,
                 storage_cost: StorageCost {
                     added_bytes: 204,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 6,
+                hash_node_calls: 5,
             }
         );
     }
@@ -390,18 +432,25 @@ mod tests {
 
         // Hash node calls
         // 2 for the node hash
-        // 1 for the value hash
+        // 2 for the value hash
+        // 1 for combine hash
+        // 1 kv_digest_to_kv_hash
+
+        // Seek Count
+        // 1 to load from root tree
+        // 1 to insert
+        // 1 to update root tree
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 2, // 1 to insert, 1 for insert to root tree
+                seek_count: 3,
                 storage_cost: StorageCost {
                     added_bytes: 206,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 7, // todo: explain this
+                hash_node_calls: 6,
             }
         );
     }
@@ -443,17 +492,21 @@ mod tests {
             )
             .cost;
 
+        // Hash node calls
+
+        // Seek Count
+
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 6, // todo: verify this
+                seek_count: 7, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 2,
                     replaced_bytes: 191, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 307, // todo: verify this
-                hash_node_calls: 13,       // todo: verify this
+                storage_loaded_bytes: 229, // todo: verify this
+                hash_node_calls: 12,       // todo: verify this
             }
         );
     }
@@ -518,17 +571,21 @@ mod tests {
             )
             .cost;
 
+        // Hash node calls
+
+        // Seek Count
+
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 6, // todo: verify this
+                seek_count: 7, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 4,
                     replaced_bytes: 192, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 308, // todo: verify this
-                hash_node_calls: 13,       // todo: verify this
+                storage_loaded_bytes: 230, // todo: verify this
+                hash_node_calls: 12,       // todo: verify this
             }
         );
     }
@@ -576,14 +633,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 6, // todo: verify this
+                seek_count: 7, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 190, // todo: verify this
                     removed_bytes: BasicStorageRemoval(1)
                 },
-                storage_loaded_bytes: 307, // todo: verify this
-                hash_node_calls: 13,       // todo: verify this
+                storage_loaded_bytes: 229, // todo: verify this
+                hash_node_calls: 12,       // todo: verify this
             }
         );
     }
@@ -656,14 +713,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 6, // todo: verify this
+                seek_count: 7, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 191, // todo: verify this
                     removed_bytes: SectionedStorageRemoval(removed_bytes)
                 },
-                storage_loaded_bytes: 308, // todo: verify this
-                hash_node_calls: 13,       // todo: verify this
+                storage_loaded_bytes: 230, // todo: verify this
+                hash_node_calls: 12,       // todo: verify this
             }
         );
     }
@@ -729,14 +786,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 6, // todo: verify this
+                seek_count: 7, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 3,
                     replaced_bytes: 155, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 302, // todo: verify this
-                hash_node_calls: 15,       // todo: verify this
+                storage_loaded_bytes: 224, // todo: verify this
+                hash_node_calls: 14,       // todo: verify this
             }
         );
     }

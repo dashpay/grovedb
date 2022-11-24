@@ -928,7 +928,10 @@ where
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         });
-        merk.root_hash_and_key().add_cost(cost).map(Ok)
+        let r = merk.root_hash_and_key().add_cost(cost).map(Ok);
+        // We need to reinsert the merk
+        self.merks.insert(path.clone(), merk);
+        r
     }
 
     fn get_batch_run_mode(&self) -> BatchRunMode {

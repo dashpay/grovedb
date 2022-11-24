@@ -202,14 +202,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 2, // todo: this seems too little
+                seek_count: 4,
                 storage_cost: StorageCost {
                     added_bytes: 226,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 10,
+                hash_node_calls: 9,
             }
         );
     }
@@ -255,14 +255,14 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 2, // todo: this seems too little
+                seek_count: 4,
                 storage_cost: StorageCost {
                     added_bytes: 226,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 10,
+                hash_node_calls: 9,
             }
         );
     }

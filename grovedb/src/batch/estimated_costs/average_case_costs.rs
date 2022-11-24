@@ -350,11 +350,7 @@ mod tests {
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
-            EstimatedLevel(1, false, AllSubtrees(4, None)),
-        );
-        paths.insert(
-            KeyInfoPath(vec![KeyInfo::KnownKey(b"key1".to_vec())]),
-            EstimatedLevel(0, true, AllSubtrees(2, None)),
+            EstimatedLevel(1, false, AllSubtrees(1, None)),
         );
 
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
@@ -378,18 +374,33 @@ mod tests {
         );
         // because we know the object we are inserting we can know the average
         // case cost if it doesn't already exist
-        assert_eq!(
-            cost.storage_cost.added_bytes,
-            average_case_cost.storage_cost.added_bytes
-        );
+        assert_eq!(cost, average_case_cost);
+
+        // Seek Count explanation
+        // 1 to get root merk
+        // 1 to load root tree
+        // 1 to get previous element
+        // 1 to insert
+
+        // Replaced parent Value -> 76
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type
+        //   1 for an empty option
+        // 32 for node hash
+        // 32 for value hash
+        // 1 byte for the value_size (required space for 75)
+
+        // Loaded
+        // For root key 1 byte
+        // For root tree item 69 bytes
 
         assert_eq!(
             average_case_cost,
             OperationCost {
-                seek_count: 6, // todo: why is this 6
+                seek_count: 4, // todo: why is this 6
                 storage_cost: StorageCost {
                     added_bytes: 113,
-                    replaced_bytes: 18432, // todo: verify
+                    replaced_bytes: 76, // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 23040,
