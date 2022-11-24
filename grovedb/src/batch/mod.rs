@@ -1,7 +1,5 @@
 //! GroveDB batch operations support
 
-#[cfg(test)]
-mod average_case_cost_tests;
 mod average_case_costs;
 mod batch_structure;
 mod estimated_costs;
@@ -14,8 +12,6 @@ mod options;
 mod single_deletion_cost_tests;
 #[cfg(test)]
 mod single_insert_cost_tests;
-#[cfg(test)]
-mod worst_case_cost_tests;
 mod worst_case_costs;
 
 use core::fmt;
@@ -1451,14 +1447,16 @@ impl GroveDb {
         }
 
         match estimated_costs_type {
-            EstimatedCostsType::AverageCaseCostsType => {
+            EstimatedCostsType::AverageCaseCostsType(estimated_layer_information) => {
                 let batch_structure = cost_return_on_error!(
                     &mut cost,
                     BatchStructure::from_ops(
                         ops,
                         update_element_flags_function,
                         split_removal_bytes_function,
-                        AverageCaseTreeCacheKnownPaths::default()
+                        AverageCaseTreeCacheKnownPaths::new_with_estimated_layer_information(
+                            estimated_layer_information
+                        )
                     )
                 );
                 cost_return_on_error!(
