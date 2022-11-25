@@ -157,11 +157,6 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
                 self.cached_merks.insert(base_path);
             }
         }
-        if let Some(_root_key) = root_key {
-            // todo: add worst case of updating the base root
-            // GroveDb::add_worst_case_insert_merk_node()
-        } else {
-        }
         Ok(()).wrap_with_cost(cost)
     }
 }

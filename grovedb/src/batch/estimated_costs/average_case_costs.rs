@@ -161,11 +161,6 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                 self.cached_merks.insert(base_path);
             }
         }
-        if let Some(_root_key) = root_key {
-            // todo: add average case of updating the base root
-            // GroveDb::add_average_case_insert_merk_node()
-        } else {
-        }
         Ok(()).wrap_with_cost(cost)
     }
 }
