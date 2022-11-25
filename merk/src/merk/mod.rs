@@ -9,8 +9,11 @@ use std::{
     collections::{BTreeSet, LinkedList},
     fmt,
 };
+use std::io::{Read, Write};
 
 use anyhow::{anyhow, Error, Result};
+use ed::{Decode, Encode, Terminated};
+use integer_encoding::VarInt;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
@@ -33,6 +36,7 @@ use crate::{
         Walker, NULL_HASH,
     },
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
+    TreeFeatureType::{BasicMerk, SummedMerk}
 };
 
 type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
@@ -155,6 +159,65 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
             }
         } else {
             None.wrap_with_cost(cost)
+        }
+    }
+}
+
+// TODO: Move to seperate file
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum TreeFeatureType {
+    BasicMerk,
+    SummedMerk(i64),
+}
+
+impl Terminated for TreeFeatureType {}
+
+impl Encode for TreeFeatureType {
+    #[inline]
+    fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
+        match self {
+            TreeFeatureType::BasicMerk => {
+                dest.write_all(&[0])?;
+                Ok(())
+            }
+            TreeFeatureType::SummedMerk(sum) => {
+                dest.write_all(&[1])?;
+                let encoded_sum = sum.encode_var_vec();
+                dest.write_all(&[encoded_sum.len() as u8]);
+                dest.write_all(&encoded_sum);
+                Ok(())
+            }
+        }
+    }
+
+    #[inline]
+    fn encoding_length(&self) -> ed::Result<usize> {
+        match self {
+            TreeFeatureType::BasicMerk => Ok(1),
+            TreeFeatureType::SummedMerk(sum) => {
+                let encoded_sum = sum.encode_var_vec();
+                Ok(1 + 1 + encoded_sum.len())
+            }
+        }
+    }
+}
+
+impl Decode for TreeFeatureType {
+    #[inline]
+    fn decode<R: Read>(mut input: R) -> ed::Result<Self> {
+        let mut feature_type: [u8; 1] = [13];
+        input.read_exact(&mut feature_type)?;
+        match feature_type {
+            [0] => Ok(BasicMerk),
+            [1] => {
+                let mut length: [u8; 1] = [0];
+                input.read_exact(&mut length)?;
+                let mut encoded_sum: Vec<u8> = vec![0; length[0] as usize];
+                input.read_exact(&mut encoded_sum)?;
+                let sum = i64::decode_var(&encoded_sum).ok_or(ed::Error::UnexpectedByte(55))?;
+                Ok(SummedMerk(sum.0))
+            }
+            _ => Err(ed::Error::UnexpectedByte(55)),
         }
     }
 }
@@ -425,6 +488,11 @@ where
         })
     }
 
+    /// Returns the total sum value in the Merk tree
+    pub fn sum(&self) -> Option<i64> {
+        self.use_tree(|tree| tree.map_or(None, |tree| tree.sum()))
+    }
+
     /// Returns the root non-prefixed key of the tree. If the tree is empty,
     /// None.
     pub fn root_key(&self) -> Option<Vec<u8>> {
@@ -600,7 +668,7 @@ where
     {
         // ensure keys in batch are sorted and unique
         let mut maybe_prev_key: Option<&KB> = None;
-        for (key, _) in batch.iter() {
+        for (key, ..) in batch.iter() {
             if let Some(prev_key) = maybe_prev_key {
                 match prev_key.as_ref().cmp(key.as_ref()) {
                     Ordering::Greater => {
@@ -1218,7 +1286,7 @@ mod test {
     use tempfile::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};
-    use crate::{test_utils::*, Op};
+    use crate::{test_utils::*, Op, TreeFeatureType::BasicMerk, TreeFeatureType};
 
     // TODO: Close and then reopen test
 
@@ -1239,7 +1307,7 @@ mod test {
             .unwrap()
             .unwrap();
 
-        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[], None)
+        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(TreeFeatureType::BasicMerk))], &[], None)
             .unwrap()
             .expect("apply failed");
 
@@ -1268,7 +1336,7 @@ mod test {
         ));
 
         let mut merk = merk_fee_context.unwrap().unwrap();
-        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[], None)
+        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk))], &[], None)
             .unwrap()
             .expect("apply failed");
 
@@ -1331,7 +1399,7 @@ mod test {
 
         assert!(!result);
 
-        let batch_entry = (key, Op::Put(vec![123; 60]));
+        let batch_entry = (key, Op::Put(vec![123; 60]), Some(BasicMerk));
 
         let batch = vec![batch_entry];
 
@@ -1369,7 +1437,7 @@ mod test {
             .expect("apply failed");
 
         let key = batch.first().unwrap().0.clone();
-        merk.apply::<_, Vec<_>>(&[(key.clone(), Op::Delete)], &[], None)
+        merk.apply::<_, Vec<_>>(&[(key.clone(), Op::Delete, None)], &[], None)
             .unwrap()
             .unwrap();
 
@@ -1392,7 +1460,7 @@ mod test {
         let mut merk = CrashMerk::open_base().expect("failed to open merk");
 
         merk.apply::<_, Vec<_>>(
-            &[(vec![0], Op::Put(vec![1]))],
+            &[(vec![0], Op::Put(vec![1]), Some(BasicMerk))],
             &[(vec![2], Op::Put(vec![3]), None)],
             None,
         )
@@ -1418,7 +1486,7 @@ mod test {
         assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
 
         // cached
-        merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![]))], &[], None)
+        merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![]), Some(BasicMerk))], &[], None)
             .unwrap()
             .unwrap();
         assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
@@ -1426,9 +1494,9 @@ mod test {
         // uncached
         merk.apply::<_, Vec<_>>(
             &[
-                (vec![0, 0, 0], Op::Put(vec![])),
-                (vec![1, 1, 1], Op::Put(vec![])),
-                (vec![2, 2, 2], Op::Put(vec![])),
+                (vec![0, 0, 0], Op::Put(vec![]), Some(BasicMerk)),
+                (vec![1, 1, 1], Op::Put(vec![]), Some(BasicMerk)),
+                (vec![2, 2, 2], Op::Put(vec![]), Some(BasicMerk)),
             ],
             &[],
             None,
@@ -1583,10 +1651,10 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
 
-        merk.apply::<_, Vec<_>>(&[(b"9".to_vec(), Op::Put(b"a".to_vec()))], &[], None)
+        merk.apply::<_, Vec<_>>(&[(b"9".to_vec(), Op::Put(b"a".to_vec()), Some(BasicMerk))], &[], None)
             .unwrap()
             .expect("should insert successfully");
-        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"a".to_vec()))], &[], None)
+        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"a".to_vec()), Some(BasicMerk))], &[], None)
             .unwrap()
             .expect("should insert successfully");
 
@@ -1597,7 +1665,7 @@ mod test {
         assert_eq!(result, Some(b"a".to_vec()));
 
         // Update the node
-        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"b".to_vec()))], &[], None)
+        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"b".to_vec()), Some(BasicMerk))], &[], None)
             .unwrap()
             .expect("should insert successfully");
         let result = merk
@@ -1613,7 +1681,7 @@ mod test {
             .expect("cannot open merk");
 
         // Update the node after dropping merk
-        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"c".to_vec()))], &[], None)
+        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"c".to_vec()), Some(BasicMerk))], &[], None)
             .unwrap()
             .expect("should insert successfully");
         let result = merk

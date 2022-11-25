@@ -7,7 +7,7 @@ pub use fetch::Fetch;
 pub use ref_walker::RefWalker;
 
 use super::{Link, Tree};
-use crate::{owner::Owner, CryptoHash};
+use crate::{owner::Owner, CryptoHash, merk::TreeFeatureType};
 
 /// Allows traversal of a `Tree`, fetching from the given source when traversing
 /// to a pruned node, detaching children as they are traversed.
@@ -145,10 +145,10 @@ where
     }
 
     /// Similar to `Tree#with_value`.
-    pub fn put_value(mut self, value: Vec<u8>) -> CostContext<Self> {
+    pub fn put_value(mut self, value: Vec<u8>, feature_type: TreeFeatureType) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.tree
-            .own(|t| t.put_value(value).unwrap_add_cost(&mut cost));
+            .own(|t| t.put_value(value, feature_type).unwrap_add_cost(&mut cost));
         self.wrap_with_cost(cost)
     }
 
@@ -157,10 +157,11 @@ where
         mut self,
         value: Vec<u8>,
         value_hash: CryptoHash,
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.tree.own(|t| {
-            t.put_value_and_reference_value_hash(value, value_hash)
+            t.put_value_and_reference_value_hash(value, value_hash, feature_type)
                 .unwrap_add_cost(&mut cost)
         });
         self.wrap_with_cost(cost)
@@ -172,6 +173,7 @@ where
         value: Vec<u8>,
         value_hash: CryptoHash,
         value_fixed_cost: u32,
+        feature_type: TreeFeatureType
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.tree.own(|t| {
@@ -179,6 +181,7 @@ where
                 value,
                 value_hash,
                 value_fixed_cost,
+                feature_type
             )
             .unwrap_add_cost(&mut cost)
         });
@@ -202,24 +205,24 @@ mod test {
     };
 
     use super::{super::NoopCommit, *};
-    use crate::tree::Tree;
+    use crate::tree::{Tree, TreeFeatureType::BasicMerk};
 
     #[derive(Clone)]
     struct MockSource {}
 
     impl Fetch for MockSource {
         fn fetch(&self, link: &Link) -> CostContext<Result<Tree>> {
-            Tree::new(link.key().to_vec(), b"foo".to_vec()).map(Ok)
+            Tree::new(link.key().to_vec(), b"foo".to_vec(), BasicMerk).map(Ok)
         }
     }
 
     #[test]
     fn walk_modified() {
-        let tree = Tree::new(b"test".to_vec(), b"abc".to_vec())
+        let tree = Tree::new(b"test".to_vec(), b"abc".to_vec(), BasicMerk)
             .unwrap()
             .attach(
                 true,
-                Some(Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap()),
+                Some(Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap()),
             );
 
         let source = MockSource {};
@@ -237,11 +240,11 @@ mod test {
 
     #[test]
     fn walk_stored() {
-        let mut tree = Tree::new(b"test".to_vec(), b"abc".to_vec())
+        let mut tree = Tree::new(b"test".to_vec(), b"abc".to_vec(), BasicMerk)
             .unwrap()
             .attach(
                 true,
-                Some(Tree::new(b"foo".to_vec(), b"bar".to_vec()).unwrap()),
+                Some(Tree::new(b"foo".to_vec(), b"bar".to_vec(), BasicMerk).unwrap()),
             );
         tree.commit(
             &mut NoopCommit {},
@@ -275,8 +278,10 @@ mod test {
                 hash: Default::default(),
                 key: b"foo".to_vec(),
                 child_heights: (0, 0),
+                sum: None
             }),
             None,
+            BasicMerk
         )
         .unwrap();
 
@@ -295,7 +300,7 @@ mod test {
 
     #[test]
     fn walk_none() {
-        let tree = Tree::new(b"test".to_vec(), b"abc".to_vec()).unwrap();
+        let tree = Tree::new(b"test".to_vec(), b"abc".to_vec(), BasicMerk).unwrap();
 
         let source = MockSource {};
         let walker = Walker::new(tree, source);

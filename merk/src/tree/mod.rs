@@ -33,6 +33,8 @@ use kv::KV;
 pub use link::Link;
 pub use ops::{AuxMerkBatch, BatchEntry, MerkBatch, Op, PanicSource};
 pub use walk::{Fetch, RefWalker, Walker};
+use crate::merk::TreeFeatureType::{BasicMerk, SummedMerk};
+use crate::TreeFeatureType;
 
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
@@ -42,6 +44,7 @@ pub use walk::{Fetch, RefWalker, Walker};
 pub struct TreeInner {
     pub(crate) left: Option<Link>,
     pub(crate) right: Option<Link>,
+    feature_type: TreeFeatureType,
     pub(crate) kv: KV,
 }
 
@@ -85,12 +88,13 @@ impl Tree {
     /// Creates a new `Tree` with the given key and value, and no children.
     ///
     /// Hashes the key/value pair and initializes the `kv_hash` field.
-    pub fn new(key: Vec<u8>, value: Vec<u8>) -> CostContext<Self> {
+    pub fn new(key: Vec<u8>, value: Vec<u8>, feature_type: TreeFeatureType) -> CostContext<Self> {
         KV::new(key, value).map(|kv| Self {
             inner: Box::new(TreeInner {
                 kv,
                 left: None,
                 right: None,
+                feature_type
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -176,12 +180,14 @@ impl Tree {
         key: Vec<u8>,
         value: Vec<u8>,
         value_hash: CryptoHash,
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         KV::new_with_value_hash(key, value, value_hash).map(|kv| Self {
             inner: Box::new(TreeInner {
                 kv,
                 left: None,
                 right: None,
+                feature_type,
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -195,12 +201,14 @@ impl Tree {
         key: Vec<u8>,
         value: Vec<u8>,
         value_hash: CryptoHash,
+        feature_type: TreeFeatureType
     ) -> CostContext<Self> {
         KV::new_with_combined_value_hash(key, value, value_hash).map(|kv| Self {
             inner: Box::new(TreeInner {
                 kv,
                 left: None,
                 right: None,
+                feature_type
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -215,12 +223,14 @@ impl Tree {
         value: Vec<u8>,
         value_cost: u32,
         value_hash: CryptoHash,
+        feature_type: TreeFeatureType
     ) -> CostContext<Self> {
         KV::new_with_layered_value_hash(key, value, value_cost, value_hash).map(|kv| Self {
             inner: Box::new(TreeInner {
                 kv,
                 left: None,
                 right: None,
+                feature_type
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -235,12 +245,14 @@ impl Tree {
         kv_hash: CryptoHash,
         left: Option<Link>,
         right: Option<Link>,
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         value_hash(value.as_slice()).map(|vh| Self {
             inner: Box::new(TreeInner {
                 kv: KV::from_fields(key, value, kv_hash, vh),
                 left,
                 right,
+                feature_type
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -251,6 +263,12 @@ impl Tree {
     #[inline]
     pub fn key(&self) -> &[u8] {
         self.inner.kv.key()
+    }
+
+    /// Returns the root node's feature type
+    #[inline]
+    pub fn feature_type(&self) -> TreeFeatureType {
+        self.inner.feature_type
     }
 
     /// Returns the root node's key as a slice.
@@ -361,6 +379,16 @@ impl Tree {
         }
     }
 
+    /// Returns the sum of the root node's child on the given side, if any. If
+    /// there is no child, returns 0.
+    #[inline]
+    pub fn child_sum(&self, left: bool) -> i64 {
+        match self.link(left) {
+            Some(link) => link.sum().unwrap_or_default(),
+            _ => 0,
+        }
+    }
+
     /// Computes and returns the hash of the root node.
     #[inline]
     pub fn hash(&self) -> CostContext<CryptoHash> {
@@ -370,6 +398,19 @@ impl Tree {
             self.child_hash(true),
             self.child_hash(false),
         )
+    }
+
+    /// Computes and returns the hash of the root node.
+    #[inline]
+    pub fn sum(&self) -> Option<i64> {
+        // TODO: potentially consider all basic merk values as 0, simplifies
+        //  the insertion process.
+        match self.inner.feature_type {
+            TreeFeatureType::BasicMerk => None,
+            TreeFeatureType::SummedMerk(value) => {
+                Some(value + self.child_sum(true) + self.child_sum(false))
+            }
+        }
     }
 
     /// Returns the number of pending writes for the child on the given side, if
@@ -531,13 +572,14 @@ impl Tree {
     /// Replaces the root node's value with the given value and returns the
     /// modified `Tree`.
     #[inline]
-    pub fn put_value(mut self, value: Vec<u8>) -> CostContext<Self> {
+    pub fn put_value(mut self, value: Vec<u8>, feature_type: TreeFeatureType) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.inner.kv = self
             .inner
             .kv
             .put_value_then_update(value)
             .unwrap_add_cost(&mut cost);
+        self.inner.feature_type = feature_type;
         self.wrap_with_cost(cost)
     }
 
@@ -548,6 +590,7 @@ impl Tree {
         mut self,
         value: Vec<u8>,
         value_hash: CryptoHash,
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.inner.kv = self
@@ -555,6 +598,7 @@ impl Tree {
             .kv
             .put_value_and_reference_value_hash_then_update(value, value_hash)
             .unwrap_add_cost(&mut cost);
+        self.inner.feature_type = feature_type;
         self.wrap_with_cost(cost)
     }
 
@@ -566,6 +610,7 @@ impl Tree {
         value: Vec<u8>,
         value_hash: CryptoHash,
         value_cost: u32,
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.inner.kv = self
@@ -575,6 +620,7 @@ impl Tree {
                 value, value_hash, value_cost,
             )
             .unwrap_add_cost(&mut cost);
+        self.inner.feature_type = feature_type;
         self.wrap_with_cost(cost)
     }
 
@@ -627,10 +673,12 @@ impl Tree {
                         section_removal_bytes
                     )
                 );
+                let sum = tree.sum();
                 self.inner.left = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
                     tree,
                     child_heights,
+                    sum,
                 });
             } else {
                 unreachable!()
@@ -655,10 +703,12 @@ impl Tree {
                         section_removal_bytes
                     )
                 );
+                let sum = tree.sum();
                 self.inner.right = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
                     tree,
                     child_heights,
+                    sum,
                 });
             } else {
                 unreachable!()
@@ -694,12 +744,13 @@ impl Tree {
     pub fn load<S: Fetch>(&mut self, left: bool, source: &S) -> CostContext<Result<()>> {
         // TODO: return Err instead of panic?
         let link = self.link(left).expect("Expected link");
-        let (child_heights, hash) = match link {
+        let (child_heights, hash, sum) = match link {
             Link::Reference {
                 child_heights,
                 hash,
+                sum,
                 ..
-            } => (child_heights, hash),
+            } => (child_heights, hash, sum),
             _ => panic!("Expected Some(Link::Reference)"),
         };
 
@@ -710,6 +761,7 @@ impl Tree {
             tree,
             hash: *hash,
             child_heights: *child_heights,
+            sum: *sum,
         });
         Ok(()).wrap_with_cost(cost)
     }
@@ -726,12 +778,13 @@ pub const fn side_to_str(left: bool) -> &'static str {
 #[cfg(test)]
 mod test {
     use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
-
+    use crate::{tree::TreeFeatureType::BasicMerk};
+    use crate::TreeFeatureType::SummedMerk;
     use super::{commit::NoopCommit, hash::NULL_HASH, Tree};
 
     #[test]
     fn build_tree() {
-        let tree = Tree::new(vec![1], vec![101]).unwrap();
+        let tree = Tree::new(vec![1], vec![101], BasicMerk).unwrap();
         assert_eq!(tree.key(), &[1]);
         assert_eq!(tree.value_as_slice(), &[101]);
         assert!(tree.child(true).is_none());
@@ -741,12 +794,12 @@ mod test {
         assert!(tree.child(true).is_none());
         assert!(tree.child(false).is_none());
 
-        let tree = tree.attach(true, Some(Tree::new(vec![2], vec![102]).unwrap()));
+        let tree = tree.attach(true, Some(Tree::new(vec![2], vec![102], BasicMerk).unwrap()));
         assert_eq!(tree.key(), &[1]);
         assert_eq!(tree.child(true).unwrap().key(), &[2]);
         assert!(tree.child(false).is_none());
 
-        let tree = Tree::new(vec![3], vec![103])
+        let tree = Tree::new(vec![3], vec![103], BasicMerk)
             .unwrap()
             .attach(false, Some(tree));
         assert_eq!(tree.key(), &[3]);
@@ -757,18 +810,18 @@ mod test {
     #[should_panic]
     #[test]
     fn attach_existing() {
-        Tree::new(vec![0], vec![1])
+        Tree::new(vec![0], vec![1], BasicMerk)
             .unwrap()
-            .attach(true, Some(Tree::new(vec![2], vec![3]).unwrap()))
-            .attach(true, Some(Tree::new(vec![4], vec![5]).unwrap()));
+            .attach(true, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()))
+            .attach(true, Some(Tree::new(vec![4], vec![5], BasicMerk).unwrap()));
     }
 
     #[test]
     fn modify() {
-        let tree = Tree::new(vec![0], vec![1])
+        let tree = Tree::new(vec![0], vec![1], BasicMerk)
             .unwrap()
-            .attach(true, Some(Tree::new(vec![2], vec![3]).unwrap()))
-            .attach(false, Some(Tree::new(vec![4], vec![5]).unwrap()));
+            .attach(true, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()))
+            .attach(false, Some(Tree::new(vec![4], vec![5], BasicMerk).unwrap()));
 
         let tree = tree.walk(true, |left_opt| {
             assert_eq!(left_opt.as_ref().unwrap().key(), &[2]);
@@ -779,7 +832,7 @@ mod test {
 
         let tree = tree.walk(true, |left_opt| {
             assert!(left_opt.is_none());
-            Some(Tree::new(vec![2], vec![3]).unwrap())
+            Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap())
         });
         assert_eq!(tree.link(true).unwrap().key(), &[2]);
 
@@ -793,9 +846,9 @@ mod test {
 
     #[test]
     fn child_and_link() {
-        let mut tree = Tree::new(vec![0], vec![1])
+        let mut tree = Tree::new(vec![0], vec![1], BasicMerk)
             .unwrap()
-            .attach(true, Some(Tree::new(vec![2], vec![3]).unwrap()));
+            .attach(true, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()));
         assert!(tree.link(true).expect("expected link").is_modified());
         assert!(tree.child(true).is_some());
         assert!(tree.link(false).is_none());
@@ -823,9 +876,9 @@ mod test {
 
     #[test]
     fn child_hash() {
-        let mut tree = Tree::new(vec![0], vec![1])
+        let mut tree = Tree::new(vec![0], vec![1], BasicMerk)
             .unwrap()
-            .attach(true, Some(Tree::new(vec![2], vec![3]).unwrap()));
+            .attach(true, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()));
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),
@@ -846,7 +899,7 @@ mod test {
 
     #[test]
     fn hash() {
-        let tree = Tree::new(vec![0], vec![1]).unwrap();
+        let tree = Tree::new(vec![0], vec![1], BasicMerk).unwrap();
         assert_eq!(
             tree.hash().unwrap(),
             [
@@ -858,24 +911,24 @@ mod test {
 
     #[test]
     fn child_pending_writes() {
-        let tree = Tree::new(vec![0], vec![1]).unwrap();
+        let tree = Tree::new(vec![0], vec![1], BasicMerk).unwrap();
         assert_eq!(tree.child_pending_writes(true), 0);
         assert_eq!(tree.child_pending_writes(false), 0);
 
-        let tree = tree.attach(true, Some(Tree::new(vec![2], vec![3]).unwrap()));
+        let tree = tree.attach(true, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()));
         assert_eq!(tree.child_pending_writes(true), 1);
         assert_eq!(tree.child_pending_writes(false), 0);
     }
 
     #[test]
     fn height_and_balance() {
-        let tree = Tree::new(vec![0], vec![1]).unwrap();
+        let tree = Tree::new(vec![0], vec![1], BasicMerk).unwrap();
         assert_eq!(tree.height(), 1);
         assert_eq!(tree.child_height(true), 0);
         assert_eq!(tree.child_height(false), 0);
         assert_eq!(tree.balance_factor(), 0);
 
-        let tree = tree.attach(true, Some(Tree::new(vec![2], vec![3]).unwrap()));
+        let tree = tree.attach(true, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()));
         assert_eq!(tree.height(), 2);
         assert_eq!(tree.child_height(true), 1);
         assert_eq!(tree.child_height(false), 0);
@@ -891,9 +944,9 @@ mod test {
 
     #[test]
     fn commit() {
-        let mut tree = Tree::new(vec![0], vec![1])
+        let mut tree = Tree::new(vec![0], vec![1], BasicMerk)
             .unwrap()
-            .attach(false, Some(Tree::new(vec![2], vec![3]).unwrap()));
+            .attach(false, Some(Tree::new(vec![2], vec![3], BasicMerk).unwrap()));
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),
@@ -904,5 +957,23 @@ mod test {
         .expect("commit failed");
 
         assert!(tree.link(false).expect("expected link").is_stored());
+    }
+
+    #[test]
+    fn sum_tree() {
+        let mut tree = Tree::new(vec![0], vec![1], SummedMerk(3)).unwrap().attach(
+            false,
+            Some(Tree::new(vec![2], vec![3], SummedMerk(5)).unwrap()),
+        );
+        tree.commit(
+            &mut NoopCommit {},
+            &|_, _| Ok(0),
+            &mut |_, _, _| Ok((false, None)),
+            &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
+        )
+            .unwrap()
+            .expect("commit failed");
+
+        assert_eq!(Some(8), tree.sum());
     }
 }
