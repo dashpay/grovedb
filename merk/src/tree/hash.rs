@@ -94,13 +94,14 @@ pub fn node_hash(
     hasher.update(left);
     hasher.update(right);
 
-    let hashes = 1 + (hasher.count() - 1) / 64;
+    // hashes will always be 2
+    let hashes = 2; // 1 + (hasher.count() - 1) / 64;
 
     let res = hasher.finalize();
     let mut hash: CryptoHash = Default::default();
     hash.copy_from_slice(res.as_bytes());
     hash.wrap_with_cost(OperationCost {
-        hash_node_calls: hashes as u16,
+        hash_node_calls: hashes,
         ..Default::default()
     })
 }

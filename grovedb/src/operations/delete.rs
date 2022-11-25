@@ -469,7 +469,7 @@ impl GroveDb {
                         Ok(None)
                     }
                 } else if is_empty {
-                    Ok(Some(GroveDbOp::delete_tree_run_op(
+                    Ok(Some(GroveDbOp::delete_tree_op(
                         path_iter.map(|x| x.to_vec()).collect(),
                         key.to_vec(),
                     )))
@@ -480,7 +480,7 @@ impl GroveDb {
                 };
                 result.wrap_with_cost(cost)
             } else {
-                Ok(Some(GroveDbOp::delete_run_op(
+                Ok(Some(GroveDbOp::delete_op(
                     path_iter.map(|x| x.to_vec()).collect(),
                     key.to_vec(),
                 )))
@@ -880,26 +880,6 @@ impl GroveDb {
             })
         }
         Ok(result).wrap_with_cost(cost)
-    }
-
-    pub fn worst_case_deletion_cost<'p, P>(
-        &self,
-        _path: P,
-        key: &'p [u8],
-        max_element_size: u32,
-    ) -> OperationCost
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
-    {
-        let mut cost = OperationCost::default();
-        GroveDb::add_worst_case_delete_cost(
-            &mut cost,
-            // path,
-            key.len() as u32,
-            max_element_size,
-        );
-        cost
     }
 }
 
@@ -1380,7 +1360,7 @@ mod tests {
                     removed_bytes: BasicStorageRemoval(147)
                 },
                 storage_loaded_bytes: 152, // todo: verify this
-                hash_node_calls: 2,        // todo: verify this
+                hash_node_calls: 0,
             }
         );
     }

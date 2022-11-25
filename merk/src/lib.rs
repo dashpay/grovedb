@@ -16,8 +16,11 @@ pub mod test_utils;
 /// The core tree data structure.
 pub mod tree;
 
+/// Errors
+pub mod error;
+/// Estimated costs
+pub mod estimated_costs;
 mod visualize;
-pub mod worst_case_costs;
 
 pub use anyhow;
 pub use ed;

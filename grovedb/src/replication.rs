@@ -666,7 +666,7 @@ mod test {
                     let mut bytes = [0; 8];
                     rng.fill_bytes(&mut bytes);
 
-                    batch.push(GroveDbOp::insert_run_op(
+                    batch.push(GroveDbOp::insert_op(
                         path.iter().map(|x| x.to_vec()).collect(),
                         bytes.to_vec(),
                         Element::empty_tree(),
@@ -685,7 +685,7 @@ mod test {
                 rng.fill_bytes(&mut bytes);
                 rng.fill_bytes(&mut bytes_val);
 
-                batch.push(GroveDbOp::insert_run_op(
+                batch.push(GroveDbOp::insert_op(
                     path.iter().map(|x| x.to_vec()).collect(),
                     bytes.to_vec(),
                     Element::new_item(bytes_val),

@@ -13,6 +13,7 @@ use integer_encoding::VarInt;
 use merk::{
     anyhow,
     ed::Decode,
+    estimated_costs::LAYER_COST_SIZE,
     proofs::{query::QueryItem, Query},
     tree::{kv::KV, Tree, TreeInner},
     BatchEntry, MerkOptions, Op,
@@ -41,7 +42,7 @@ pub type ElementFlags = Vec<u8>;
 pub type MaxReferenceHop = Option<u8>;
 
 /// The cost of a tree
-pub const TREE_COST_SIZE: u32 = 3;
+pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
 
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
