@@ -613,7 +613,7 @@ mod tests {
         // Total 37 + 71 + 39 = 147
 
         // Hash node calls
-        // 1 for the node hash
+        // 1 for the kv_digest_to_kv_hash hash
         // 1 for the value hash
         assert_eq!(
             cost,
@@ -625,7 +625,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 3,
+                hash_node_calls: 2,
             }
         );
     }
@@ -671,7 +671,7 @@ mod tests {
         // Total 37 + 75 + 39 = 151
 
         // Hash node calls
-        // 1 for the node hash
+        // 1 for the kv_digest_to_kv_hash hash
         // 1 for the value hash
         assert_eq!(
             cost,
@@ -683,7 +683,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 3,
+                hash_node_calls: 2,
             }
         );
     }
@@ -779,8 +779,10 @@ mod tests {
         // Total 37 + 41 + 39 = 149
 
         // Hash node calls
-        // 1 for the node hash
+        // 1 for the kv_digest_to_kv_hash hash
         // 1 for the value hash
+        // 1 for the combine hash
+        // The node hash is not being called, as the root hash isn't cached
         assert_eq!(
             cost,
             OperationCost {
@@ -791,7 +793,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 2, // todo: verify this
+                hash_node_calls: 3,
             }
         );
     }
@@ -905,6 +907,11 @@ mod tests {
         // Child Heights 2
 
         // Total 37 + 78 + 39 = 154
+
+        // Hash node calls
+        // 1 for the kv_digest_to_kv_hash hash
+        // 1 for the value hash
+        // The node hash is not being called, as the root hash isn't cached
         assert_eq!(
             cost,
             OperationCost {
@@ -915,7 +922,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 3, // todo: verify this
+                hash_node_calls: 2,
             }
         );
     }
@@ -977,6 +984,18 @@ mod tests {
         // 32 for node hash
         // 32 for value hash
         // 1 byte for the value_size (required space for 75)
+
+        // Hash node calls
+        // 1 for getting the merk
+        // 1 for the kv_digest_to_kv_hash hash
+        // 1 for the value hash
+        // 2 for the node hash
+
+        // on the level above
+        // 1 for the kv_digest_to_kv_hash hash
+        // 1 for the value hash
+        // 1 for the combine hash
+
         assert_eq!(
             cost,
             OperationCost {
@@ -987,7 +1006,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 142, // todo: verify this
-                hash_node_calls: 10,       // todo: verify this
+                hash_node_calls: 8,
             }
         );
     }
@@ -1055,6 +1074,18 @@ mod tests {
         // 32 for node hash
         // 32 for value hash
         // 1 byte for the value_size (required space for 75)
+
+        // Hash node calls
+        // 1 for getting the merk
+        // 1 for the kv_digest_to_kv_hash hash
+        // 1 for the value hash
+        // 2 for the node hash
+
+        // on the level above
+        // 1 for the kv_digest_to_kv_hash hash
+        // 1 for the value hash
+        // 1 for the combine hash
+
         assert_eq!(
             cost,
             OperationCost {
@@ -1065,7 +1096,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 150, // todo: verify this
-                hash_node_calls: 10,       // todo: verify this
+                hash_node_calls: 8,
             }
         );
     }
@@ -1114,9 +1145,10 @@ mod tests {
 
         // 71 + 39 = 110
 
-        // hash node calls
-        // 1 for value hash
-        // 1 for node hash
+        // Hash node calls
+        // 1 for the kv_digest_to_kv_hash hash
+        // 1 for the value hash
+
         assert_eq!(
             cost,
             OperationCost {
@@ -1127,7 +1159,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 76,
-                hash_node_calls: 3,
+                hash_node_calls: 2,
             }
         );
     }
@@ -1169,7 +1201,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 224,
-                hash_node_calls: 10, // todo: verify this
+                hash_node_calls: 8,
             }
         );
     }
@@ -1211,7 +1243,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 225,
-                hash_node_calls: 10, // todo: verify this
+                hash_node_calls: 8,
             }
         );
     }
@@ -1283,7 +1315,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 221,
-                hash_node_calls: 11, // todo: verify this
+                hash_node_calls: 9, // todo: verify this
             }
         );
     }

@@ -1380,7 +1380,7 @@ mod tests {
                     removed_bytes: BasicStorageRemoval(147)
                 },
                 storage_loaded_bytes: 152, // todo: verify this
-                hash_node_calls: 2,        // todo: verify this
+                hash_node_calls: 0,
             }
         );
     }

@@ -57,8 +57,9 @@ impl GroveDb {
                 .layered_flags_size()
                 .map_err(Error::MerkError)
         )
+        .map(|f| f + f.required_space() as u32)
         .unwrap_or_default();
-        let layer_extra_size = TREE_COST_SIZE + flags_size + flags_size.required_space() as u32;
+        let layer_extra_size = TREE_COST_SIZE + flags_size;
         add_average_case_merk_replace_layered(&mut cost, key_len, layer_extra_size);
         if propagate {
             add_average_case_merk_propagate(&mut cost, estimated_layer_information)
@@ -106,8 +107,9 @@ impl GroveDb {
                 .layered_flags_size()
                 .map_err(Error::MerkError)
         )
+        .map(|f| f + f.required_space() as u32)
         .unwrap_or_default();
-        let layer_extra_size = TREE_COST_SIZE + flags_size + flags_size.required_space() as u32;
+        let layer_extra_size = TREE_COST_SIZE + flags_size;
         add_average_case_merk_delete_layered(&mut cost, key_len, layer_extra_size);
         if propagate {
             add_average_case_merk_propagate(&mut cost, estimated_layer_information)

@@ -55,6 +55,8 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         inserted_path.push(op.key.clone());
         // There is no need to pay for getting a merk, because we know the merk to be
         // empty at this point.
+        // There is however a hash call that creates the prefix
+        average_case_cost.hash_node_calls += 1;
         self.cached_merks.insert(inserted_path);
         Ok(()).wrap_with_cost(average_case_cost)
     }
@@ -190,14 +192,8 @@ mod tests {
 
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
         assert!(
-            average_case_cost.worse_or_eq_than(&cost),
-            "not worse {:?} \n than {:?}",
-            average_case_cost,
-            cost
-        );
-        assert!(
             average_case_cost.eq(&cost),
-            "not eq {:?} \n to {:?}",
+            "average cost not eq {:?} \n to cost {:?}",
             average_case_cost,
             cost
         );
@@ -207,6 +203,13 @@ mod tests {
             cost.storage_cost.added_bytes,
             average_case_cost.storage_cost.added_bytes
         );
+
+        // Hash node calls
+        // 1 for the tree insert
+        // 2 for the node hash
+        // 1 for the value hash
+        // 1 for the combine hash
+        // 1 kv_digest_to_kv_hash
 
         assert_eq!(
             average_case_cost,
@@ -218,7 +221,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 5,
+                hash_node_calls: 6,
             }
         );
     }
@@ -275,7 +278,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 5,
+                hash_node_calls: 6,
             }
         );
     }
@@ -308,15 +311,18 @@ mod tests {
         .expect("expected to get average case costs");
 
         let cost = db.apply_batch(ops, None, Some(&tx)).cost;
-        assert!(
-            average_case_cost.worse_or_eq_than(&cost),
-            "not worse {:?} \n than {:?}",
-            average_case_cost,
-            cost
-        );
         // because we know the object we are inserting we can know the average
         // case cost if it doesn't already exist
-        assert_eq!(cost, average_case_cost);
+        assert_eq!(
+            cost, average_case_cost,
+            "cost not same {:?} \n as average case {:?}",
+            cost, average_case_cost
+        );
+
+        // 4 Hash calls
+        // 1 value hash
+        // 1 kv_digest_to_kv_hash
+        // 2 node hash
 
         assert_eq!(
             average_case_cost,
@@ -372,11 +378,12 @@ mod tests {
         assert_eq!(cost.hash_node_calls, average_case_cost.hash_node_calls);
         assert_eq!(cost.seek_count, average_case_cost.seek_count);
 
-        // Seek Count explanation
+        // Seek Count explanation (this isn't 100% sure - needs to be verified)
         // 1 to get root merk
         // 1 to load root tree
         // 1 to get previous element
         // 1 to insert
+        // 1 to insert node above
 
         // Replaced parent Value -> 76
         //   1 for the flag option (but no flags)
@@ -393,14 +400,14 @@ mod tests {
         assert_eq!(
             average_case_cost,
             OperationCost {
-                seek_count: 5, // todo: why is this 6
+                seek_count: 5, // todo: why is this 5
                 storage_cost: StorageCost {
                     added_bytes: 113,
                     replaced_bytes: 104,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 107,
-                hash_node_calls: 7, // todo: verify why
+                hash_node_calls: 8,
             }
         );
     }
@@ -422,7 +429,7 @@ mod tests {
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
-            EstimatedLevel(0, true, AllSubtrees(1, None)),
+            EstimatedLevel(0, false, AllSubtrees(1, None)),
         );
         paths.insert(
             KeyInfoPath(vec![KeyInfo::KnownKey(b"0".to_vec())]),
@@ -447,12 +454,22 @@ mod tests {
             average_case_cost,
             cost
         );
-        // /// because we know the object we are inserting we can know the average
-        // /// case cost if it doesn't already exist
-        // assert_eq!(
-        //     cost.storage_cost.added_bytes,
-        //     average_case_cost.storage_cost.added_bytes
-        // );
+        assert_eq!(
+            average_case_cost.storage_cost, cost.storage_cost,
+            "average case storage not eq {:?} \n to cost {:?}",
+            average_case_cost.storage_cost, cost.storage_cost
+        );
+        assert_eq!(average_case_cost.hash_node_calls, cost.hash_node_calls);
+        assert_eq!(average_case_cost.seek_count, cost.seek_count);
+
+        //// Seek Count explanation
+
+        // 1 to insert new item
+        // 1 to get merk at lower level
+        // 1 to get root merk
+        // 1 to load root tree
+        // 1 to replace parent tree
+        // 1 to update root
 
         assert_eq!(
             average_case_cost,
@@ -463,7 +480,7 @@ mod tests {
                     replaced_bytes: 73,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 139,
+                storage_loaded_bytes: 170,
                 hash_node_calls: 12,
             }
         );

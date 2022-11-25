@@ -188,8 +188,6 @@ pub fn add_average_case_merk_insert(cost: &mut OperationCost, key_len: u32, valu
     // .. and hash computation for the inserted element itself
     // first lets add the value hash
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
-    // then let's add the combine hash
-    cost.hash_node_calls += 1;
     // then let's add the kv_digest_to_kv_hash hash call
     let hashed_size = key_len.encode_var_vec().len() as u32 + key_len + HASH_LENGTH_U32;
     cost.hash_node_calls += 1 + ((hashed_size - 1) / HASH_BLOCK_SIZE_U32) as u16;
