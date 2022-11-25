@@ -199,6 +199,10 @@ mod tests {
         // Child Heights 2
 
         // Total (37 + 37 + 39) * 2 = 226
+
+        // Hashes
+        // 2 trees
+        // 2 * 5 hashes per node
         assert_eq!(
             cost,
             OperationCost {
@@ -209,7 +213,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 9,
+                hash_node_calls: 12,
             }
         );
     }
@@ -252,6 +256,12 @@ mod tests {
         // Child Heights 2
 
         // Total (37 + 37 + 39) * 2 = 226
+
+        // Hashes
+        // 2 trees
+        // 2 node hash
+        // 1 combine hash
+        // 1
         assert_eq!(
             cost,
             OperationCost {
@@ -262,7 +272,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 9,
+                hash_node_calls: 12,
             }
         );
     }

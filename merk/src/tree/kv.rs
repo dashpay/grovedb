@@ -81,7 +81,7 @@ impl KV {
             value_defined_cost: None,
             hash,
             value_hash: combined_value_hash,
-        })
+        }).add_cost(cost)
     }
 
     pub fn new_with_layered_value_hash(
@@ -101,7 +101,7 @@ impl KV {
             value_defined_cost: Some(value_cost),
             hash,
             value_hash: combined_value_hash,
-        })
+        }).add_cost(cost)
     }
 
     /// Creates a new `KV` with the given key, value, and hash. The hash is not

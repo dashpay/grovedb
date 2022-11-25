@@ -72,8 +72,10 @@ mod tests {
         // Total 37 + 37 + 39 = 113
 
         // Hash node calls
+        // 1 for the tree insert
         // 2 for the node hash
         // 1 for the value hash
+        // 1 for the combine hash
         // 1 kv_digest_to_kv_hash
 
         // Seek Count
@@ -91,7 +93,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 0,
-                hash_node_calls: 4,
+                hash_node_calls: 6,
             }
         );
     }
@@ -226,10 +228,12 @@ mod tests {
 
         // 71 + 36 = 107 (key is not replaced)
 
-        // Hash node calls 6
+        // Hash node calls 8
+        // 1 for the inserted tree hash
         // 2 for the node hash
         // 1 for the value hash
         // 1 for the kv_digest_to_kv_hash
+        // 1 for the combine hash
         // 2 for the node hash above
 
         // Seek Count explanation
@@ -248,7 +252,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 73, // todo: verify and explain
-                hash_node_calls: 6,
+                hash_node_calls: 8,
             }
         );
     }
@@ -300,10 +304,12 @@ mod tests {
         // size) this means 31 extra bytes.
         // In reality though we really are replacing 104 bytes. TBD what to do.
 
-        // Hash node calls 7
+        // Hash node calls 8
+        // 1 to get tree hash
         // 2 for the node hash
         // 1 for the value hash
         // 1 for the kv_digest_to_kv_hash
+        // 1 for the combine hash
         // 2 for the node hash above
 
         // Seek Count explanation
@@ -322,7 +328,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 70, // todo: verify and explain
-                hash_node_calls: 6,
+                hash_node_calls: 8,
             }
         );
     }
@@ -377,10 +383,11 @@ mod tests {
         // 1 to get the middle merk
         // 2 for the node hash
         // 1 for the value hash
+        // 1 for the combine hash
         // 1 for the kv_digest_to_kv_hash
 
         // On the layer above the root key did change
-        // meaning we get another 4 hashes 2 + 1 + 1
+        // meaning we get another 5 hashes 2 + 1 + 1 + 1
 
         //// Seek Count explanation
 
@@ -400,7 +407,7 @@ mod tests {
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 139, // todo: verify and explain
-                hash_node_calls: 10,
+                hash_node_calls: 12,
             }
         );
     }
