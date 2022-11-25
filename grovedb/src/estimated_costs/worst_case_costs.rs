@@ -1,11 +1,11 @@
-use costs::{cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
+use costs::{CostResult, CostsExt, OperationCost};
 use integer_encoding::VarInt;
 use merk::{
     estimated_costs::{
         add_cost_case_merk_insert, add_cost_case_merk_insert_layered,
         worst_case_costs::{
             add_worst_case_get_merk_node, add_worst_case_merk_delete,
-            add_worst_case_merk_delete_layered, add_worst_case_merk_insert,
+            add_worst_case_merk_delete_layered,
             add_worst_case_merk_propagate, add_worst_case_merk_replace_layered,
             WorstCaseLayerInformation, MERK_BIGGEST_VALUE_SIZE,
         },
@@ -162,7 +162,7 @@ impl GroveDb {
 
     pub fn add_worst_case_get_raw_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
-        path: &KeyInfoPath,
+        _path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
     ) {
@@ -193,14 +193,14 @@ mod test {
     use costs::OperationCost;
     use merk::{
         estimated_costs::worst_case_costs::add_worst_case_get_merk_node,
-        test_utils::make_batch_seq, Link, Merk, Op,
+        test_utils::make_batch_seq, Merk,
     };
     use storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
     use tempfile::TempDir;
 
     use crate::{
         batch::{
-            key_info::KeyInfo::{KnownKey, MaxKeySize},
+            key_info::KeyInfo::{KnownKey},
             KeyInfoPath,
         },
         tests::TEST_LEAF,

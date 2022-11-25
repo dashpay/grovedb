@@ -1,5 +1,5 @@
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+    cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use integer_encoding::VarInt;
 use merk::{
@@ -8,7 +8,7 @@ use merk::{
         average_case_costs::{
             add_average_case_get_merk_node, add_average_case_merk_delete,
             add_average_case_merk_delete_layered, add_average_case_merk_propagate,
-            add_average_case_merk_replace_layered, EstimatedLayerInformation, EstimatedLayerSizes,
+            add_average_case_merk_replace_layered, EstimatedLayerInformation,
         },
     },
     tree::Tree,
@@ -190,7 +190,7 @@ impl GroveDb {
 
     pub fn add_average_case_get_raw_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
-        path: &KeyInfoPath,
+        _path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
     ) {

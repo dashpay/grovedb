@@ -9,7 +9,7 @@ use costs::{
 use itertools::Itertools;
 use merk::{
     estimated_costs::average_case_costs::{
-        add_average_case_merk_propagate, average_case_merk_propagate, EstimatedLayerInformation,
+        average_case_merk_propagate, EstimatedLayerInformation,
     },
     CryptoHash,
 };
@@ -21,7 +21,7 @@ use crate::{
         mode::{BatchRunMode, BatchRunMode::AverageCaseMode},
         BatchApplyOptions, GroveDbOp, KeyInfoPath, Op, TreeCache,
     },
-    Error, GroveDb, MAX_ELEMENTS_NUMBER,
+    Error, GroveDb,
 };
 
 impl Op {
@@ -103,10 +103,10 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         &mut self,
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
-        ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
-        batch_apply_options: &BatchApplyOptions,
-        flags_update: &mut G,
-        split_removal_bytes: &mut SR,
+        _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
+        _batch_apply_options: &BatchApplyOptions,
+        _flags_update: &mut G,
+        _split_removal_bytes: &mut SR,
     ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error> {
         let mut cost = OperationCost::default();
 
@@ -146,7 +146,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         Ok(([0u8; 32], None)).wrap_with_cost(cost)
     }
 
-    fn update_base_merk_root_key(&mut self, root_key: Option<Vec<u8>>) -> CostResult<(), Error> {
+    fn update_base_merk_root_key(&mut self, _root_key: Option<Vec<u8>>) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         cost.seek_count += 1;
         let base_path = KeyInfoPath(vec![]);
@@ -174,7 +174,6 @@ mod tests {
         OperationCost,
     };
     use merk::estimated_costs::average_case_costs::{
-        EstimatedLayerInformation,
         EstimatedLayerInformation::{ApproximateElements, EstimatedLevel},
         EstimatedLayerSizes::{AllItems, AllSubtrees},
     };

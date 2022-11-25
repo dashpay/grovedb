@@ -9,7 +9,7 @@ use costs::{
 use itertools::Itertools;
 use merk::{
     estimated_costs::worst_case_costs::{
-        add_worst_case_merk_propagate, worst_case_merk_propagate, WorstCaseLayerInformation,
+        worst_case_merk_propagate, WorstCaseLayerInformation,
     },
     CryptoHash,
 };
@@ -21,7 +21,7 @@ use crate::{
         mode::{BatchRunMode, BatchRunMode::WorstCaseMode},
         BatchApplyOptions, GroveDbOp, KeyInfoPath, Op, TreeCache,
     },
-    Error, GroveDb, MAX_ELEMENTS_NUMBER,
+    Error, GroveDb,
 };
 
 impl Op {
@@ -109,10 +109,10 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         &mut self,
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
-        ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
-        batch_apply_options: &BatchApplyOptions,
-        flags_update: &mut G,
-        split_removal_bytes: &mut SR,
+        _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
+        _batch_apply_options: &BatchApplyOptions,
+        _flags_update: &mut G,
+        _split_removal_bytes: &mut SR,
     ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error> {
         let mut cost = OperationCost::default();
 
@@ -146,11 +146,11 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         Ok(([0u8; 32], None)).wrap_with_cost(cost)
     }
 
-    fn update_base_merk_root_key(&mut self, root_key: Option<Vec<u8>>) -> CostResult<(), Error> {
+    fn update_base_merk_root_key(&mut self, _root_key: Option<Vec<u8>>) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         cost.seek_count += 1;
         let base_path = KeyInfoPath(vec![]);
-        if let Some(estimated_layer_info) = self.paths.get(&base_path) {
+        if let Some(_estimated_layer_info) = self.paths.get(&base_path) {
             // Then we have to get the tree
             if self.cached_merks.get(&base_path).is_none() {
                 GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, &base_path);

@@ -1294,7 +1294,7 @@ fn test_get_range_query_with_limit_and_offset() {
 #[test]
 fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
     let tmp_dir = TempDir::new().unwrap();
-    let mut db = GroveDb::open(tmp_dir.path()).unwrap();
+    let db = GroveDb::open(tmp_dir.path()).unwrap();
     let tree_name_slice: &[u8] = &[
         2, 17, 40, 46, 227, 17, 179, 211, 98, 50, 130, 107, 246, 26, 147, 45, 234, 189, 245, 77,
         252, 86, 99, 107, 197, 226, 188, 54, 239, 64, 17, 37,
@@ -1433,6 +1433,6 @@ fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
         .prove_query(&path_query)
         .unwrap()
         .expect("expected successful proving");
-    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    let (hash, _result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
 }

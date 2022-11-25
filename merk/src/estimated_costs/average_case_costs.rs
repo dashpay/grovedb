@@ -5,7 +5,7 @@ use crate::{
     error::Error,
     estimated_costs::LAYER_COST_SIZE,
     tree::{kv::KV, Link, Tree},
-    HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
+    HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
 };
 
 pub type AverageKeySize = u8;
@@ -41,8 +41,8 @@ impl EstimatedLayerSizes {
             EstimatedLayerSizes::AllSubtrees(_, flags_size) => Ok(flags_size),
             EstimatedLayerSizes::Mix {
                 subtree_size,
-                items_size,
-                references_size,
+                items_size: _,
+                references_size: _,
             } => {
                 if let Some((_, flags_size, _)) = subtree_size {
                     Ok(flags_size)
@@ -65,7 +65,7 @@ impl EstimatedLayerSizes {
                 Ok(*average_value_size + flags_size.unwrap_or_default())
             }
             EstimatedLayerSizes::Mix {
-                subtree_size,
+                subtree_size: _,
                 items_size,
                 references_size,
             } => {
@@ -204,7 +204,7 @@ pub fn add_average_case_merk_replace_layered(
 /// Add average case for deletion from merk
 pub fn add_average_case_merk_delete_layered(
     cost: &mut OperationCost,
-    key_len: u32,
+    _key_len: u32,
     value_len: u32,
 ) {
     // todo: verify this
@@ -213,7 +213,7 @@ pub fn add_average_case_merk_delete_layered(
 }
 
 /// Add average case for deletion from merk
-pub fn add_average_case_merk_delete(cost: &mut OperationCost, key_len: u32, value_len: u32) {
+pub fn add_average_case_merk_delete(cost: &mut OperationCost, _key_len: u32, value_len: u32) {
     // todo: verify this
     cost.seek_count += 1;
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;

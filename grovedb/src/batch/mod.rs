@@ -38,9 +38,6 @@ use integer_encoding::VarInt;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     anyhow::anyhow,
-    estimated_costs::{
-        average_case_costs::EstimatedLayerInformation, worst_case_costs::WorstCaseLayerInformation,
-    },
     tree::{kv::KV, value_hash, NULL_HASH},
     CryptoHash, Merk, MerkType,
 };

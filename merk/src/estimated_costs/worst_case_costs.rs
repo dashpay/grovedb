@@ -77,14 +77,14 @@ pub fn add_worst_case_merk_replace_layered(cost: &mut OperationCost, key_len: u3
 }
 
 /// Add average case for deletion from merk
-pub fn add_worst_case_merk_delete_layered(cost: &mut OperationCost, key_len: u32, value_len: u32) {
+pub fn add_worst_case_merk_delete_layered(cost: &mut OperationCost, _key_len: u32, value_len: u32) {
     // todo: verify this
     cost.seek_count += 1;
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
 }
 
 /// Add average case for deletion from merk
-pub fn add_worst_case_merk_delete(cost: &mut OperationCost, key_len: u32, value_len: u32) {
+pub fn add_worst_case_merk_delete(cost: &mut OperationCost, _key_len: u32, value_len: u32) {
     // todo: verify this
     cost.seek_count += 1;
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
