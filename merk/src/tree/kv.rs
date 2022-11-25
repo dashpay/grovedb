@@ -75,13 +75,15 @@ impl KV {
         let combined_value_hash =
             combine_hash(&actual_value_hash, &supplied_value_hash).unwrap_add_cost(&mut cost);
 
-        kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash).map(|hash| Self {
-            key,
-            value,
-            value_defined_cost: None,
-            hash,
-            value_hash: combined_value_hash,
-        }).add_cost(cost)
+        kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash)
+            .map(|hash| Self {
+                key,
+                value,
+                value_defined_cost: None,
+                hash,
+                value_hash: combined_value_hash,
+            })
+            .add_cost(cost)
     }
 
     pub fn new_with_layered_value_hash(
@@ -95,13 +97,15 @@ impl KV {
         let combined_value_hash =
             combine_hash(&actual_value_hash, &supplied_value_hash).unwrap_add_cost(&mut cost);
 
-        kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash).map(|hash| Self {
-            key,
-            value,
-            value_defined_cost: Some(value_cost),
-            hash,
-            value_hash: combined_value_hash,
-        }).add_cost(cost)
+        kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash)
+            .map(|hash| Self {
+                key,
+                value,
+                value_defined_cost: Some(value_cost),
+                hash,
+                value_hash: combined_value_hash,
+            })
+            .add_cost(cost)
     }
 
     /// Creates a new `KV` with the given key, value, and hash. The hash is not
