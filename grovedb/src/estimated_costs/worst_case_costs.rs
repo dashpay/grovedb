@@ -5,9 +5,9 @@ use merk::{
         add_cost_case_merk_insert, add_cost_case_merk_insert_layered,
         worst_case_costs::{
             add_worst_case_get_merk_node, add_worst_case_merk_delete,
-            add_worst_case_merk_delete_layered,
-            add_worst_case_merk_propagate, add_worst_case_merk_replace_layered,
-            WorstCaseLayerInformation, MERK_BIGGEST_VALUE_SIZE,
+            add_worst_case_merk_delete_layered, add_worst_case_merk_propagate,
+            add_worst_case_merk_replace_layered, WorstCaseLayerInformation,
+            MERK_BIGGEST_VALUE_SIZE,
         },
     },
     tree::Tree,
@@ -199,10 +199,7 @@ mod test {
     use tempfile::TempDir;
 
     use crate::{
-        batch::{
-            key_info::KeyInfo::{KnownKey},
-            KeyInfoPath,
-        },
+        batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
         tests::TEST_LEAF,
         Element, GroveDb,
     };

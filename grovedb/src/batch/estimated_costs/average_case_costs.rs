@@ -8,9 +8,7 @@ use costs::{
 };
 use itertools::Itertools;
 use merk::{
-    estimated_costs::average_case_costs::{
-        average_case_merk_propagate, EstimatedLayerInformation,
-    },
+    estimated_costs::average_case_costs::{average_case_merk_propagate, EstimatedLayerInformation},
     CryptoHash,
 };
 use storage::rocksdb_storage::RocksDbStorage;

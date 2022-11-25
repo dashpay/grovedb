@@ -8,9 +8,7 @@ use costs::{
 };
 use itertools::Itertools;
 use merk::{
-    estimated_costs::worst_case_costs::{
-        worst_case_merk_propagate, WorstCaseLayerInformation,
-    },
+    estimated_costs::worst_case_costs::{worst_case_merk_propagate, WorstCaseLayerInformation},
     CryptoHash,
 };
 use storage::rocksdb_storage::RocksDbStorage;

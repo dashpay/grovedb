@@ -1,6 +1,4 @@
-use costs::{
-    cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
-};
+use costs::{cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
 use integer_encoding::VarInt;
 use merk::{
     estimated_costs::{

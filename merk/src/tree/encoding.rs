@@ -6,7 +6,7 @@ use ed::{Decode, Encode};
 use storage::StorageContext;
 
 use super::Tree;
-use crate::{tree::TreeInner};
+use crate::tree::TreeInner;
 
 impl Tree {
     pub fn decode_raw(bytes: &[u8], key: Vec<u8>) -> Result<Self, Error> {
