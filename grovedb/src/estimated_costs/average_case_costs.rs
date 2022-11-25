@@ -3,11 +3,13 @@ use costs::{
 };
 use integer_encoding::VarInt;
 use merk::{
-    estimated_costs::average_case_costs::{
-        add_average_case_get_merk_node, add_average_case_merk_delete,
-        add_average_case_merk_delete_layered, add_average_case_merk_insert,
-        add_average_case_merk_insert_layered, add_average_case_merk_propagate,
-        add_average_case_merk_replace_layered, EstimatedLayerInformation, EstimatedLayerSizes,
+    estimated_costs::{
+        add_cost_case_merk_insert, add_cost_case_merk_insert_layered,
+        average_case_costs::{
+            add_average_case_get_merk_node, add_average_case_merk_delete,
+            add_average_case_merk_delete_layered, add_average_case_merk_propagate,
+            add_average_case_merk_replace_layered, EstimatedLayerInformation, EstimatedLayerSizes,
+        },
     },
     tree::Tree,
     HASH_LENGTH,
@@ -21,7 +23,7 @@ use crate::{
 };
 
 impl GroveDb {
-    /// Add worst case for getting a merk tree
+    /// Add average case for getting a merk tree
     pub fn add_average_case_get_merk_at_path<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
@@ -42,7 +44,7 @@ impl GroveDb {
         *cost += S::get_storage_context_cost(path.as_vec());
     }
 
-    /// Add worst case for insertion into merk
+    /// Add average case for insertion into merk
     pub(crate) fn average_case_merk_replace_tree(
         key: &KeyInfo,
         estimated_layer_information: &EstimatedLayerInformation,
@@ -70,7 +72,7 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    /// Add worst case for insertion into merk
+    /// Add average case for insertion into merk
     pub(crate) fn average_case_merk_insert_tree(
         key: &KeyInfo,
         flags: &Option<ElementFlags>,
@@ -83,7 +85,7 @@ impl GroveDb {
             flags_len + flags_len.required_space() as u32
         });
         let value_len = TREE_COST_SIZE + flags_len;
-        add_average_case_merk_insert_layered(&mut cost, key_len, value_len);
+        add_cost_case_merk_insert_layered(&mut cost, key_len, value_len);
         if let Some(input) = propagate_if_input {
             add_average_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
         } else {
@@ -92,7 +94,7 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    /// Add worst case for insertion into merk
+    /// Add average case for insertion into merk
     pub(crate) fn average_case_merk_delete_tree(
         key: &KeyInfo,
         estimated_layer_information: &EstimatedLayerInformation,
@@ -120,7 +122,7 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    /// Add worst case for insertion into merk
+    /// Add average case for insertion into merk
     /// This only propagates on 1 level
     /// As higher level propagation is done in batching
     pub(crate) fn average_case_merk_insert_element(
@@ -137,9 +139,9 @@ impl GroveDb {
                     flags_len + flags_len.required_space() as u32
                 });
                 let value_len = TREE_COST_SIZE + flags_len;
-                add_average_case_merk_insert_layered(&mut cost, key_len, value_len)
+                add_cost_case_merk_insert_layered(&mut cost, key_len, value_len)
             }
-            _ => add_average_case_merk_insert(&mut cost, key_len, value.serialized_size() as u32),
+            _ => add_cost_case_merk_insert(&mut cost, key_len, value.serialized_size() as u32),
         };
         if let Some(level) = propagate_for_level {
             add_average_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)
@@ -252,14 +254,14 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
 
-        // To simulate worst case, we need to pick a node that:
+        // To simulate average case, we need to pick a node that:
         // 1. Is not in memory
         // 2. Left link exists
         // 3. Right link exists
         // Based on merk's avl rotation algorithm node is key 8 satisfies this
         let node_result = merk.get(&8_u64.to_be_bytes());
 
-        // By tweaking the max element size, we can adapt the worst case function to
+        // By tweaking the max element size, we can adapt the average case function to
         // this scenario. make_batch_seq creates values that are 60 bytes in size
         // (this will be the max_element_size)
         let mut cost = OperationCost::default();
@@ -280,7 +282,7 @@ mod test {
 
         // In this tree, we insert 3 items with keys [1, 2, 3]
         // after tree rotation, 2 will be at the top hence would have both left and
-        // right links this will serve as our worst case candidate.
+        // right links this will serve as our average case candidate.
         let elem = Element::new_item(b"value".to_vec());
         db.insert([TEST_LEAF], &[1], elem.clone(), None, None)
             .unwrap()

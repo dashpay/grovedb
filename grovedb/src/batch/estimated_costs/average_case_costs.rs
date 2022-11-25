@@ -24,6 +24,40 @@ use crate::{
     Error, GroveDb, MAX_ELEMENTS_NUMBER,
 };
 
+impl Op {
+    fn average_case_cost(
+        &self,
+        key: &KeyInfo,
+        layer_element_estimates: &EstimatedLayerInformation,
+        propagate: bool,
+    ) -> CostResult<(), Error> {
+        let propagate_if_input = || {
+            if propagate {
+                Some(layer_element_estimates)
+            } else {
+                None
+            }
+        };
+        match self {
+            Op::ReplaceTreeRootKey { .. } => {
+                GroveDb::average_case_merk_replace_tree(key, layer_element_estimates, propagate)
+            }
+            Op::InsertTreeWithRootHash { flags, .. } => {
+                GroveDb::average_case_merk_insert_tree(key, flags, propagate_if_input())
+            }
+            Op::Insert { element } => {
+                GroveDb::average_case_merk_insert_element(key, &element, propagate_if_input())
+            }
+            Op::Delete => {
+                GroveDb::average_case_merk_delete_element(key, layer_element_estimates, propagate)
+            }
+            Op::DeleteTree => {
+                GroveDb::average_case_merk_delete_tree(key, layer_element_estimates, propagate)
+            }
+        }
+    }
+}
+
 /// Cache for subtree paths for average case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
@@ -174,10 +208,6 @@ mod tests {
             KeyInfoPath(vec![]),
             ApproximateElements(0, AllSubtrees(4, None)),
         );
-        // paths.insert(
-        //     KeyInfoPath(vec![KeyInfo::KnownKey(b"key1".to_vec())]),
-        //     ApproximateElements(0, AllSubtrees(4, None)),
-        // );
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),

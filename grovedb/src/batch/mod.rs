@@ -39,7 +39,7 @@ use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     anyhow::anyhow,
     estimated_costs::{
-        average_case_costs::EstimatedLayerInformation, worst_case_costs::MerkWorstCaseInput,
+        average_case_costs::EstimatedLayerInformation, worst_case_costs::WorstCaseLayerInformation,
     },
     tree::{kv::KV, value_hash, NULL_HASH},
     CryptoHash, Merk, MerkType,
@@ -79,73 +79,6 @@ pub enum Op {
     },
     Delete,
     DeleteTree,
-}
-
-impl Op {
-    fn worst_case_cost(
-        &self,
-        key: &KeyInfo,
-        propagate_if_input: Option<MerkWorstCaseInput>,
-    ) -> OperationCost {
-        match self {
-            Op::ReplaceTreeRootKey { .. } => {
-                let mut cost = OperationCost::default();
-                GroveDb::add_worst_case_merk_replace_tree(&mut cost, key, propagate_if_input);
-                cost
-            }
-            Op::InsertTreeWithRootHash { flags, .. } => {
-                let mut cost = OperationCost::default();
-                GroveDb::add_worst_case_merk_insert_tree(&mut cost, key, flags, propagate_if_input);
-                cost
-            }
-            Op::Insert { element } => {
-                let mut cost = OperationCost::default();
-                GroveDb::add_worst_case_merk_insert_element(
-                    &mut cost,
-                    key,
-                    &element,
-                    propagate_if_input,
-                );
-                cost
-            }
-            Op::Delete | Op::DeleteTree => {
-                let cost = OperationCost::default();
-                cost
-            }
-        }
-    }
-
-    fn average_case_cost(
-        &self,
-        key: &KeyInfo,
-        layer_element_estimates: &EstimatedLayerInformation,
-        propagate: bool,
-    ) -> CostResult<(), Error> {
-        let propagate_if_input = || {
-            if propagate {
-                Some(layer_element_estimates)
-            } else {
-                None
-            }
-        };
-        match self {
-            Op::ReplaceTreeRootKey { .. } => {
-                GroveDb::average_case_merk_replace_tree(key, layer_element_estimates, propagate)
-            }
-            Op::InsertTreeWithRootHash { flags, .. } => {
-                GroveDb::average_case_merk_insert_tree(key, flags, propagate_if_input())
-            }
-            Op::Insert { element } => {
-                GroveDb::average_case_merk_insert_element(key, &element, propagate_if_input())
-            }
-            Op::Delete => {
-                GroveDb::average_case_merk_delete_element(key, layer_element_estimates, propagate)
-            }
-            Op::DeleteTree => {
-                GroveDb::average_case_merk_delete_tree(key, layer_element_estimates, propagate)
-            }
-        }
-    }
 }
 
 impl PartialOrd for Op {
@@ -1472,14 +1405,16 @@ impl GroveDb {
                 );
             }
 
-            EstimatedCostsType::WorstCaseCostsType => {
+            EstimatedCostsType::WorstCaseCostsType(worst_case_layer_information) => {
                 let batch_structure = cost_return_on_error!(
                     &mut cost,
                     BatchStructure::from_ops(
                         ops,
                         update_element_flags_function,
                         split_removal_bytes_function,
-                        WorstCaseTreeCacheKnownPaths::default()
+                        WorstCaseTreeCacheKnownPaths::new_with_worst_case_layer_information(
+                            worst_case_layer_information
+                        )
                     )
                 );
                 cost_return_on_error!(
