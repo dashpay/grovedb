@@ -1,7 +1,7 @@
 //! GroveDB batch operations support
 
 mod batch_structure;
-mod estimated_costs;
+pub mod estimated_costs;
 pub mod key_info;
 mod mode;
 #[cfg(test)]
@@ -41,6 +41,7 @@ use merk::{
     tree::{kv::KV, value_hash, NULL_HASH},
     CryptoHash, Merk, MerkType,
 };
+pub use options::BatchApplyOptions;
 use storage::{
     rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
     Storage, StorageBatch, StorageContext,
@@ -52,7 +53,6 @@ use crate::{
         batch_structure::BatchStructure,
         estimated_costs::EstimatedCostsType,
         mode::{BatchRunMode, BatchRunMode::ExecuteMode},
-        options::BatchApplyOptions,
     },
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
