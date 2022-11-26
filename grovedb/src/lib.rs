@@ -21,11 +21,16 @@ use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
-pub use merk::proofs::{query::QueryItem, Query};
 use merk::{
     self,
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
+};
+pub use merk::{
+    estimated_costs::{
+        average_case_costs::EstimatedLayerInformation, worst_case_costs::WorstCaseLayerInformation,
+    },
+    proofs::{query::QueryItem, Query},
 };
 pub use query::{PathQuery, SizedQuery};
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
