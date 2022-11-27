@@ -113,6 +113,7 @@ pub type EstimatedToBeEmpty = bool;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum EstimatedLayerInformation {
+    PotentiallyAtMaxElements(EstimatedLayerSizes),
     ApproximateElements(ApproximateElementCount, EstimatedLayerSizes),
     EstimatedLevel(
         EstimatedLevelNumber,
@@ -130,12 +131,16 @@ impl EstimatedLayerInformation {
             EstimatedLayerInformation::EstimatedLevel(_, _, estimated_layer_info) => {
                 estimated_layer_info
             }
+            EstimatedLayerInformation::PotentiallyAtMaxElements(estimated_layer_info) => {
+                estimated_layer_info
+            }
         }
     }
 
     pub fn estimated_to_be_empty(&self) -> bool {
         match self {
             EstimatedLayerInformation::ApproximateElements(count, _) => *count == 0,
+            EstimatedLayerInformation::PotentiallyAtMaxElements(_) => false,
             EstimatedLayerInformation::EstimatedLevel(_, empty, _) => *empty,
         }
     }
@@ -246,8 +251,13 @@ pub fn add_average_case_merk_propagate(
     // Propagation requires to recompute and write hashes up to the root
     let (levels, average_typed_size) = match input {
         EstimatedLayerInformation::ApproximateElements(n, s) => {
-            (((n + 1) as f32).log2().ceil() as u32, s)
+            if *n == u32::MAX {
+                (32, s)
+            } else {
+                (((n + 1) as f32).log2().ceil() as u32, s)
+            }
         }
+        EstimatedLayerInformation::PotentiallyAtMaxElements(s) => (32, s),
         EstimatedLayerInformation::EstimatedLevel(n, _, s) => (*n, s),
     };
     nodes_updated += levels;
