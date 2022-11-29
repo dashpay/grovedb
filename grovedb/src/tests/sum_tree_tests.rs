@@ -280,3 +280,130 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
     ));
     assert_eq!(merk.sum(), None);
 }
+
+#[test]
+fn test_sum_tree_feature() {
+    let db = make_test_grovedb();
+    db.insert([TEST_LEAF], b"key", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("should insert tree");
+
+    // Sum should be non for non sum tree
+    // TODO: change interface to retrieve element directly
+    let merk = db
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"])
+        .unwrap()
+        .expect("should open tree");
+    assert_eq!(merk.sum(), None);
+
+    // Add sum tree
+    db.insert([TEST_LEAF], b"key2", Element::empty_sum_tree(), None, None)
+        .unwrap()
+        .expect("should insert sum tree");
+    let sum_tree = db
+        .get([TEST_LEAF], b"key2", None)
+        .unwrap()
+        .expect("should retrieve tree");
+    assert_eq!(sum_tree.sum_value(), Some(0));
+
+    // Add sum items to the sum tree
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"item1",
+        Element::new_sum_item(30),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+    // TODO: change interface to retrieve element directly
+    let merk = db
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"])
+        .unwrap()
+        .expect("should open tree");
+    assert_eq!(merk.sum(), Some(30));
+
+    // Add more sum items
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"item2",
+        Element::new_sum_item(-10),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"item3",
+        Element::new_sum_item(50),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+    let merk = db
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"])
+        .unwrap()
+        .expect("should open tree");
+    assert_eq!(merk.sum(), Some(70)); // 30 - 10 + 50 = 70
+
+    // Add non sum items, result should remain the same
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"item4",
+        Element::new_item(vec![29]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+    let merk = db
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"])
+        .unwrap()
+        .expect("should open tree");
+    assert_eq!(merk.sum(), Some(70));
+
+    // Update existing sum items
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"item2",
+        Element::new_sum_item(10),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"item3",
+        Element::new_sum_item(-100),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+    let merk = db
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"])
+        .unwrap()
+        .expect("should open tree");
+    assert_eq!(merk.sum(), Some(-60)); // 30 + 10 - 100 = -60
+
+    // Use a large value
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"item4",
+        Element::new_sum_item(10000000),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("should insert item");
+    let merk = db
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"])
+        .unwrap()
+        .expect("should open tree");
+    assert_eq!(merk.sum(), Some(9999940)); // 30 + 10 - 100 + 10000000
+
+    // TODO: Test out overflows
+}
