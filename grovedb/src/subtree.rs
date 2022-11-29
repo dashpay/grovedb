@@ -170,7 +170,10 @@ impl Element {
         Element::SumTree(maybe_root_key, 0, None)
     }
 
-    pub fn new_sum_tree_with_flags(maybe_root_key: Option<Vec<u8>>, flags: Option<ElementFlags>) -> Self {
+    pub fn new_sum_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
         Element::SumTree(maybe_root_key, 0, flags)
     }
 
@@ -191,6 +194,13 @@ impl Element {
             }
             Element::SumTree(_, sum_value, _) => Some(*sum_value),
             _ => Some(0),
+        }
+    }
+
+    pub fn is_sum_tree(&self) -> bool {
+        match self {
+            Element::SumTree(..) => true,
+            _ => false,
         }
     }
 
