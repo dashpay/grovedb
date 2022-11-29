@@ -2099,7 +2099,7 @@ fn test_root_subtree_has_root_key() {
     let root_merk = Merk::open_base(storage, false)
         .unwrap()
         .expect("expected to get root merk");
-    let (_, root_key) = root_merk.root_hash_and_key().unwrap();
+    let (_, root_key, _) = root_merk.root_hash_key_and_sum().unwrap();
     assert!(root_key.is_some())
 }
 

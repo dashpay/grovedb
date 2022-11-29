@@ -4,6 +4,7 @@ use merk::{
 };
 
 use crate::{
+    batch::GroveDbOp,
     reference_path::ReferencePathType,
     tests::{make_test_grovedb, TEST_LEAF},
     Element, Error, GroveDb, PathQuery,
@@ -549,4 +550,140 @@ fn test_sum_tree_propagation() {
             .expect("node should exist"),
         Some(SummedMerk(0))
     ));
+}
+
+#[test]
+fn test_sum_tree_with_batches() {
+    let db = make_test_grovedb();
+    let ops = vec![
+        GroveDbOp::insert_op(
+            vec![TEST_LEAF.to_vec()],
+            b"key1".to_vec(),
+            Element::empty_sum_tree(),
+        ),
+        GroveDbOp::insert_op(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+            b"a".to_vec(),
+            Element::new_item(vec![214]),
+        ),
+        GroveDbOp::insert_op(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+            b"b".to_vec(),
+            Element::new_sum_item(10),
+        ),
+    ];
+    db.apply_batch(ops, None, None)
+        .unwrap()
+        .expect("should apply batch");
+
+    let sum_tree = db
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"])
+        .unwrap()
+        .expect("should open tree");
+
+    assert!(matches!(
+        sum_tree
+            .get_feature_type(b"a")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(0))
+    ));
+    assert!(matches!(
+        sum_tree
+            .get_feature_type(b"b")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(10))
+    ));
+
+    // Create new batch to use existing tree
+    let ops = vec![GroveDbOp::insert_op(
+        vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+        b"c".to_vec(),
+        Element::new_sum_item(10),
+    )];
+    db.apply_batch(ops, None, None)
+        .unwrap()
+        .expect("should apply batch");
+    let sum_tree = db
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"])
+        .unwrap()
+        .expect("should open tree");
+    assert!(matches!(
+        sum_tree
+            .get_feature_type(b"c")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(10))
+    ));
+    assert_eq!(sum_tree.sum(), Some(20));
+
+    // Test propagation
+    // Add a new sum tree with it's own sum items, should affect sum of original
+    // tree
+    let ops = vec![
+        GroveDbOp::insert_op(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+            b"d".to_vec(),
+            Element::empty_sum_tree(),
+        ),
+        GroveDbOp::insert_op(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"d".to_vec()],
+            b"first".to_vec(),
+            Element::new_sum_item(4),
+        ),
+        GroveDbOp::insert_op(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"d".to_vec()],
+            b"second".to_vec(),
+            Element::new_item(vec![4]),
+        ),
+        GroveDbOp::insert_op(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec()],
+            b"e".to_vec(),
+            Element::empty_sum_tree(),
+        ),
+        GroveDbOp::insert_op(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"e".to_vec()],
+            b"first".to_vec(),
+            Element::new_sum_item(12),
+        ),
+        GroveDbOp::insert_op(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"e".to_vec()],
+            b"second".to_vec(),
+            Element::new_item(vec![4]),
+        ),
+        GroveDbOp::insert_op(
+            vec![TEST_LEAF.to_vec(), b"key1".to_vec(), b"e".to_vec()],
+            b"third".to_vec(),
+            Element::empty_sum_tree(),
+        ),
+        GroveDbOp::insert_op(
+            vec![
+                TEST_LEAF.to_vec(),
+                b"key1".to_vec(),
+                b"e".to_vec(),
+                b"third".to_vec(),
+            ],
+            b"a".to_vec(),
+            Element::new_sum_item(5),
+        ),
+        GroveDbOp::insert_op(
+            vec![
+                TEST_LEAF.to_vec(),
+                b"key1".to_vec(),
+                b"e".to_vec(),
+                b"third".to_vec(),
+            ],
+            b"b".to_vec(),
+            Element::new_item(vec![5]),
+        ),
+    ];
+    db.apply_batch(ops, None, None)
+        .unwrap()
+        .expect("should apply batch");
+    let sum_tree = db
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"])
+        .unwrap()
+        .expect("should open tree");
+    assert_eq!(sum_tree.sum(), Some(41));
 }

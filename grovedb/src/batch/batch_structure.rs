@@ -90,16 +90,18 @@ where
             let op_result = match &op.op {
                 Op::Insert { element } => {
                     if let Element::Tree(..) = element {
-                        cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op));
+                        cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op, false));
+                    } else if let Element::SumTree(..) = element {
+                        cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op, true));
                     }
                     Ok(())
                 }
                 Op::Delete | Op::DeleteTree => Ok(()),
-                Op::ReplaceTreeRootKey { .. } | Op::InsertTreeWithRootHash { .. } => {
-                    Err(Error::InvalidBatchOperation(
-                        "replace and insert tree hash are internal operations only",
-                    ))
-                }
+                Op::ReplaceTreeRootKey { .. }
+                | Op::InsertTreeWithRootHash { .. }
+                | Op::InsertSumTreeWithRootHashAndSum { .. } => Err(Error::InvalidBatchOperation(
+                    "replace and insert tree hash are internal operations only",
+                )),
             };
             if op_result.is_err() {
                 return Err(op_result.err().unwrap()).wrap_with_cost(op_cost);

@@ -25,6 +25,7 @@ use merk::{
     self,
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
+    TreeFeatureType::BasicMerk,
 };
 pub use merk::{
     estimated_costs::{
@@ -138,6 +139,7 @@ impl GroveDb {
             .unwrap_add_cost(&mut cost);
         match path_iter.next_back() {
             Some(key) => {
+                dbg!(std::str::from_utf8(key));
                 let parent_storage = self
                     .db
                     .get_storage_context(path_iter.clone())
@@ -152,6 +154,7 @@ impl GroveDb {
                         ))
                     })
                 );
+                dbg!(&element);
                 let is_sum_tree = element.is_sum_tree();
                 if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
                     Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
@@ -247,7 +250,9 @@ impl GroveDb {
                     false
                 )
             );
-            let (root_hash, root_key) = child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
+            let (root_hash, root_key, sum) = child_tree
+                .root_hash_key_and_sum()
+                .unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
                 Self::update_tree_item_preserve_flag(
@@ -255,7 +260,7 @@ impl GroveDb {
                     key,
                     root_key,
                     root_hash,
-                    child_tree.sum()
+                    sum
                 )
             );
             child_tree = parent_tree;
@@ -300,7 +305,9 @@ impl GroveDb {
                 &mut cost,
                 self.open_transactional_merk_at_path(path_iter.clone(), transaction)
             );
-            let (root_hash, root_key) = child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
+            let (root_hash, root_key, sum) = child_tree
+                .root_hash_key_and_sum()
+                .unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
                 Self::update_tree_item_preserve_flag(
@@ -308,7 +315,7 @@ impl GroveDb {
                     key,
                     root_key,
                     root_hash,
-                    child_tree.sum()
+                    sum
                 )
             );
             child_tree = parent_tree;
@@ -351,7 +358,9 @@ impl GroveDb {
                 &mut cost,
                 self.open_non_transactional_merk_at_path(path_iter.clone())
             );
-            let (root_hash, root_key) = child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
+            let (root_hash, root_key, sum) = child_tree
+                .root_hash_key_and_sum()
+                .unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
                 Self::update_tree_item_preserve_flag(
@@ -359,7 +368,7 @@ impl GroveDb {
                     key,
                     root_key,
                     root_hash,
-                    child_tree.sum()
+                    sum
                 )
             );
             child_tree = parent_tree;
@@ -407,6 +416,7 @@ impl GroveDb {
         key: K,
         maybe_root_key: Option<Vec<u8>>,
         root_tree_hash: Hash,
+        sum: Option<i64>,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         Self::get_element_from_subtree(parent_tree, key.as_ref()).flat_map_ok(|element| {
@@ -417,6 +427,20 @@ impl GroveDb {
                     root_tree_hash,
                     true,
                     batch_operations,
+                    tree.get_feature_type(parent_tree.is_sum_tree),
+                )
+            } else if let Element::SumTree(.., flag) = element {
+                let tree = Element::new_sum_tree_with_flags_and_sum_value(
+                    maybe_root_key,
+                    sum.unwrap_or_default(),
+                    flag,
+                );
+                tree.insert_subtree_into_batch_operations(
+                    key,
+                    root_tree_hash,
+                    true,
+                    batch_operations,
+                    tree.get_feature_type(parent_tree.is_sum_tree),
                 )
             } else {
                 Err(Error::InvalidPath(

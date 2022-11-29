@@ -82,6 +82,28 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
+    /// Add worst case for sum tree insertion into merk
+    pub(crate) fn worst_case_merk_insert_sum_tree(
+        key: &KeyInfo,
+        flags: &Option<ElementFlags>,
+        propagate_if_input: Option<&WorstCaseLayerInformation>,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        let key_len = key.len() as u32;
+        let flags_len = flags.as_ref().map_or(0, |flags| {
+            let flags_len = flags.len() as u32;
+            flags_len + flags_len.required_space() as u32
+        });
+        let value_len = TREE_COST_SIZE + flags_len + 8;
+        add_cost_case_merk_insert_layered(&mut cost, key_len, value_len);
+        if let Some(input) = propagate_if_input {
+            add_worst_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
+        } else {
+            Ok(())
+        }
+        .wrap_with_cost(cost)
+    }
+
     /// Add worst case for insertion into merk
     pub(crate) fn worst_case_merk_delete_tree(
         key: &KeyInfo,

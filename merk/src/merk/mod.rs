@@ -513,11 +513,14 @@ where
     }
 
     /// Returns the root hash and non-prefixed key of the tree.
-    pub fn root_hash_and_key(&self) -> CostContext<(CryptoHash, Option<Vec<u8>>)> {
+    pub fn root_hash_key_and_sum(&self) -> CostContext<(CryptoHash, Option<Vec<u8>>, Option<i64>)> {
         self.use_tree(|tree| {
             tree.map_or(
-                (NULL_HASH, None).wrap_with_cost(Default::default()),
-                |tree| tree.hash().map(|hash| (hash, Some(tree.key().to_vec()))),
+                (NULL_HASH, None, None).wrap_with_cost(Default::default()),
+                |tree| {
+                    tree.hash()
+                        .map(|hash| (hash, Some(tree.key().to_vec()), tree.sum()))
+                },
             )
         })
     }

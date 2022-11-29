@@ -428,6 +428,7 @@ impl Element {
             Self::deserialize(value.as_slice())
                 .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
         );
+        dbg!(&element);
         Ok(element).wrap_with_cost(cost)
     }
 
@@ -1132,14 +1133,14 @@ impl Element {
         &self,
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: Option<TreeFeatureType>,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        // TODO: use correct feature type
-        let entry = (key, Op::Put(serialized), Some(BasicMerk));
+        let entry = (key, Op::Put(serialized), feature_type);
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -1175,6 +1176,7 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: Option<TreeFeatureType>,
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
         let exists = cost_return_on_error!(
@@ -1186,7 +1188,7 @@ impl Element {
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.insert_into_batch_operations(key, batch_operations)
+                self.insert_into_batch_operations(key, batch_operations, feature_type)
             );
             Ok(true).wrap_with_cost(cost)
         }
@@ -1225,17 +1227,17 @@ impl Element {
         key: K,
         referenced_value: Hash,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: Option<TreeFeatureType>,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        // TODO: use correct feature type
         let entry = (
             key,
             Op::PutCombinedReference(serialized, referenced_value),
-            Some(BasicMerk),
+            feature_type,
         );
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
@@ -1280,6 +1282,7 @@ impl Element {
         subtree_root_hash: Hash,
         is_replace: bool,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: Option<TreeFeatureType>,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
@@ -1292,18 +1295,17 @@ impl Element {
             });
 
         // Replacing is more efficient, but should lead to the same costs
-        // TODO: use correct feature type
         let entry = if is_replace {
             (
                 key,
                 Op::ReplaceLayeredReference(serialized, cost, subtree_root_hash),
-                Some(BasicMerk),
+                feature_type,
             )
         } else {
             (
                 key,
                 Op::PutLayeredReference(serialized, cost, subtree_root_hash),
-                Some(BasicMerk),
+                feature_type,
             )
         };
         batch_operations.push(entry);
