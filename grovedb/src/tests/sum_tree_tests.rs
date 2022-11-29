@@ -472,11 +472,11 @@ fn test_sum_tree_propagation() {
     .unwrap()
     .expect("should insert item");
 
-    // let sum_tree = db
-    //     .get([TEST_LEAF], b"key", None)
-    //     .unwrap()
-    //     .expect("should fetch tree");
-    // assert_eq!(sum_tree.sum_value(), Some(15));
+    let sum_tree = db
+        .get([TEST_LEAF], b"key", None)
+        .unwrap()
+        .expect("should fetch tree");
+    assert_eq!(sum_tree.sum_value(), Some(15));
 
     // Assert node feature types
     let test_leaf_merk = db
@@ -491,19 +491,19 @@ fn test_sum_tree_propagation() {
         Some(BasicMerk)
     ));
 
-    // let parent_sum_tree = db
-    //     .open_non_transactional_merk_at_path([TEST_LEAF, b"key"])
-    //     .unwrap()
-    //     .expect("should open tree");
-    // assert!(matches!(
-    //     parent_sum_tree
-    //         .get_feature_type(b"tree2")
-    //         .unwrap()
-    //         .expect("node should exist"),
-    //     Some(SummedMerk(15)) /* 15 because the child sum tree has one sum item of
-    // value 5 and
-    //                           * another of value 10 */
-    // ));
+    let parent_sum_tree = db
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"])
+        .unwrap()
+        .expect("should open tree");
+    assert!(matches!(
+        parent_sum_tree
+            .get_feature_type(b"tree2")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(15)) /* 15 because the child sum tree has one sum item of
+                              * value 5 and
+                              * another of value 10 */
+    ));
 
     let child_sum_tree = db
         .open_non_transactional_merk_at_path([TEST_LEAF, b"key", b"tree2"])

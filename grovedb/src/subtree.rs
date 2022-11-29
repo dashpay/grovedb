@@ -1086,7 +1086,6 @@ impl Element {
                 .wrap_with_cost(Default::default());
         }
 
-        // TODO: use correct feature type
         let batch_operations = [(
             key,
             Op::Put(serialized),
@@ -1210,7 +1209,6 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        // TODO: use correct feature type
         let batch_operations = [(
             key,
             Op::PutCombinedReference(serialized, referenced_value),
@@ -1265,7 +1263,6 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        // TODO: use correct feature type
         let batch_operations = [(
             key,
             Op::PutLayeredReference(serialized, cost, subtree_root_hash),
