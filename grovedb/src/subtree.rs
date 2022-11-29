@@ -211,12 +211,21 @@ impl Element {
         }
     }
 
-    pub fn get_feature_type(&self, parent_is_sum_tree: bool) -> Option<TreeFeatureType> {
+    pub fn get_feature_type(
+        &self,
+        parent_is_sum_tree: bool,
+    ) -> Result<Option<TreeFeatureType>, Error> {
         match parent_is_sum_tree {
-            // TODO: remove unwrap, failing here means that data in a sum item cannot be converted
-            // to i64
-            true => Some(SummedMerk(self.sum_value().unwrap())),
-            false => Some(BasicMerk),
+            true => {
+                let sum_value = self.sum_value();
+                match sum_value {
+                    Some(sum) => Ok(Some(SummedMerk(sum))),
+                    None => Err(Error::CorruptedData(String::from(
+                        "cannot decode sum item to i64",
+                    ))),
+                }
+            }
+            false => Ok(Some(BasicMerk)),
         }
     }
 
@@ -1086,11 +1095,14 @@ impl Element {
                 .wrap_with_cost(Default::default());
         }
 
-        let batch_operations = [(
-            key,
-            Op::Put(serialized),
-            self.get_feature_type(merk.is_sum_tree),
-        )];
+        let mut cost = OperationCost::default();
+        let merk_feature_type = cost_return_on_error!(
+            &mut cost,
+            self.get_feature_type(merk.is_sum_tree)
+                .wrap_with_cost(OperationCost::default())
+        );
+
+        let batch_operations = [(key, Op::Put(serialized), merk_feature_type)];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
         })
@@ -1210,10 +1222,17 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
+        let mut cost = OperationCost::default();
+        let merk_feature_type = cost_return_on_error!(
+            &mut cost,
+            self.get_feature_type(merk.is_sum_tree)
+                .wrap_with_cost(OperationCost::default())
+        );
+
         let batch_operations = [(
             key,
             Op::PutCombinedReference(serialized, referenced_value),
-            self.get_feature_type(merk.is_sum_tree),
+            merk_feature_type,
         )];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
@@ -1254,20 +1273,27 @@ impl Element {
         subtree_root_hash: Hash,
         options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
-        let cost = TREE_COST_SIZE
-            + self.get_flags().as_ref().map_or(0, |flags| {
-                let flags_len = flags.len() as u32;
-                flags_len + flags_len.required_space() as u32
-            });
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
+        let mut cost = OperationCost::default();
+        let merk_feature_type = cost_return_on_error!(
+            &mut cost,
+            self.get_feature_type(merk.is_sum_tree)
+                .wrap_with_cost(OperationCost::default())
+        );
+
+        let cost = TREE_COST_SIZE
+            + self.get_flags().as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
         let batch_operations = [(
             key,
             Op::PutLayeredReference(serialized, cost, subtree_root_hash),
-            self.get_feature_type(merk.is_sum_tree),
+            merk_feature_type,
         )];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)

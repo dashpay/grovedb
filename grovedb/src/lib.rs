@@ -417,15 +417,21 @@ impl GroveDb {
         sum: Option<i64>,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
         Self::get_element_from_subtree(parent_tree, key.as_ref()).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(maybe_root_key, flag);
+                let merk_feature_type = cost_return_on_error!(
+                    &mut cost,
+                    tree.get_feature_type(parent_tree.is_sum_tree)
+                        .wrap_with_cost(OperationCost::default())
+                );
                 tree.insert_subtree_into_batch_operations(
                     key,
                     root_tree_hash,
                     true,
                     batch_operations,
-                    tree.get_feature_type(parent_tree.is_sum_tree),
+                    merk_feature_type,
                 )
             } else if let Element::SumTree(.., flag) = element {
                 let tree = Element::new_sum_tree_with_flags_and_sum_value(
@@ -433,12 +439,17 @@ impl GroveDb {
                     sum.unwrap_or_default(),
                     flag,
                 );
+                let merk_feature_type = cost_return_on_error!(
+                    &mut cost,
+                    tree.get_feature_type(parent_tree.is_sum_tree)
+                        .wrap_with_cost(OperationCost::default())
+                );
                 tree.insert_subtree_into_batch_operations(
                     key,
                     root_tree_hash,
                     true,
                     batch_operations,
-                    tree.get_feature_type(parent_tree.is_sum_tree),
+                    merk_feature_type,
                 )
             } else {
                 Err(Error::InvalidPath(
