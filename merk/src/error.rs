@@ -1,3 +1,9 @@
-pub use failure::Error;
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    // Input data errors
+    #[error("overflow error {0}")]
+    Overflow(&'static str),
 
-pub type Result<T> = std::result::Result<T, Error>;
+    #[error("wrong estimated costs element type for level error {0}")]
+    WrongEstimatedCostsElementTypeForLevel(&'static str),
+}
