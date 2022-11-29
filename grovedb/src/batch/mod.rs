@@ -30,12 +30,7 @@ use costs::{
 };
 use integer_encoding::VarInt;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
-use merk::{
-    anyhow::anyhow,
-    tree::{kv::KV, value_hash, NULL_HASH},
-    worst_case_costs::{add_worst_case_merk_propagate, MerkWorstCaseInput},
-    CryptoHash, Merk, MerkOptions, MerkType,
-};
+use merk::{anyhow::anyhow, tree::{kv::KV, value_hash, NULL_HASH}, worst_case_costs::{add_worst_case_merk_propagate, MerkWorstCaseInput}, CryptoHash, Merk, MerkOptions, MerkType, BatchEntry, TreeFeatureType};
 use nohash_hasher::IntMap;
 use storage::{
     rocksdb_storage::{
@@ -709,7 +704,7 @@ where
             .unwrap_or_else(|| (self.get_merk_fn)(path, false));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
 
-        let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
+        let mut batch_operations: Vec<(Vec<u8>, _, Option<TreeFeatureType>)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } => match &element {
