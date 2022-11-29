@@ -1,4 +1,7 @@
 use merk::proofs::Query;
+use merk::TreeFeatureType::{
+   SummedMerk, BasicMerk
+};
 
 use crate::{
     tests::{make_test_grovedb, TEST_LEAF},
@@ -156,4 +159,118 @@ fn test_cannot_insert_sum_item_in_regular_tree() {
         .unwrap(),
         Err(Error::InvalidInput("cannot add sum item to non sum tree"))
     ));
+}
+
+#[test]
+fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
+    // All elements in a sum tree must have a summed feature type
+    let db = make_test_grovedb();
+    db.insert([TEST_LEAF], b"key", Element::empty_sum_tree(), None, None)
+        .unwrap()
+        .expect("should insert tree");
+    // Add sum items
+    db.insert(
+        [TEST_LEAF, b"key"],
+        b"item1",
+        Element::new_sum_item(30),
+        None,
+        None
+    )
+        .unwrap()
+        .expect("should insert item");
+    db.insert(
+        [TEST_LEAF, b"key"],
+        b"item2",
+        Element::new_sum_item(10),
+        None,
+        None,
+    )
+        .unwrap()
+        .expect("should insert item");
+    // Add regular items
+    db.insert(
+        [TEST_LEAF, b"key"],
+        b"item3",
+        Element::new_item(vec![10]),
+        None,
+        None,
+    )
+        .unwrap()
+        .expect("should insert item");
+    db.insert(
+        [TEST_LEAF, b"key"],
+        b"item4",
+        Element::new_item(vec![15]),
+        None,
+        None,
+    )
+        .unwrap()
+        .expect("should insert item");
+
+    // Open merk and check all elements in it
+    let merk = db.open_non_transactional_merk_at_path([TEST_LEAF, b"key"]).unwrap().expect("should open tree");
+    assert!(matches!(
+        merk.get_feature_type(b"item1")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(30))
+    ));
+    assert!(matches!(
+        merk.get_feature_type(b"item2")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(10))
+    ));
+    assert!(matches!(
+        merk.get_feature_type(b"item3")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(0))
+    ));
+    assert!(matches!(
+        merk.get_feature_type(b"item4")
+            .unwrap()
+            .expect("node should exist"),
+        Some(SummedMerk(0))
+    ));
+    assert_eq!(merk.sum(), Some(40));
+
+    // Perform the same test on regular trees
+    let db = make_test_grovedb();
+    db.insert([TEST_LEAF], b"key", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("should insert tree");
+    db.insert(
+        [TEST_LEAF, b"key"],
+        b"item1",
+        Element::new_item(vec![30]),
+        None,
+        None,
+    )
+        .unwrap()
+        .expect("should insert item");
+    db.insert(
+        [TEST_LEAF, b"key"],
+        b"item2",
+        Element::new_item(vec![10]),
+        None,
+        None,
+    )
+        .unwrap()
+        .expect("should insert item");
+
+    let merk = db.open_non_transactional_merk_at_path([TEST_LEAF, b"key"]).unwrap().expect("should open tree");
+    assert!(matches!(
+        merk.get_feature_type(b"item1")
+            .unwrap()
+            .expect("node should exist"),
+        Some(BasicMerk)
+    ));
+    assert!(matches!(
+        merk.get_feature_type(b"item2")
+            .unwrap()
+            .expect("node should exist"),
+        Some(BasicMerk)
+    ));
+    assert_eq!(merk.sum(), None);
 }

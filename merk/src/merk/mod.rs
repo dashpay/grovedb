@@ -374,6 +374,13 @@ where
         })
     }
 
+    /// Returns the feature type for the node at the given key.
+    pub fn get_feature_type(&self, key: &[u8]) -> CostContext<Result<Option<TreeFeatureType>>> {
+        self.get_node_fn(key, |node| {
+            node.feature_type().wrap_with_cost(Default::default())
+        })
+    }
+
     /// Gets a hash of a node by a given key, `None` is returned in case
     /// when node not found by the key.
     pub fn get_hash(&self, key: &[u8]) -> CostContext<Result<Option<CryptoHash>>> {
