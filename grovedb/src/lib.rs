@@ -100,9 +100,9 @@ impl GroveDb {
                         )
                     })
                 );
-                // TODO: add block for sum tree
-                if let Element::Tree(root_key, _) = element {
-                    Merk::open_layered_with_root_key(storage, root_key, false)
+                let is_sum_tree = element.is_sum_tree();
+                if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
+                    Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
                         .map_err(|_| {
                             Error::CorruptedData(
                                 "cannot open a subtree with given root key".to_owned(),
@@ -152,9 +152,9 @@ impl GroveDb {
                         ))
                     })
                 );
-                // TODO: add block for sum tree
-                if let Element::Tree(root_key, _) = element {
-                    Merk::open_layered_with_root_key(storage, root_key, false)
+                let is_sum_tree = element.is_sum_tree();
+                if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
+                    Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
                         .map_err(|_| {
                             Error::CorruptedData(
                                 "cannot open a subtree with given root key".to_owned(),
@@ -362,6 +362,10 @@ impl GroveDb {
         Self::get_element_from_subtree(parent_tree, key).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(maybe_root_key, flag);
+                tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash, None)
+            } else if let Element::SumTree(.., flag) = element {
+                // TODO: propagate the sum value
+                let tree = Element::new_sum_tree_with_flags(maybe_root_key, flag);
                 tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash, None)
             } else {
                 Err(Error::InvalidPath(

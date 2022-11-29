@@ -148,7 +148,7 @@ impl GroveDb {
 
             let element = cost_return_on_error_no_add!(&cost, raw_decode(&value_bytes));
             match element {
-                Element::Tree(root_key, _) => {
+                Element::Tree(root_key, _) | Element::SumTree(root_key, ..) => {
                     if root_key.is_none() {
                         continue;
                     }

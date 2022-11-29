@@ -198,7 +198,7 @@ impl Element {
     }
 
     pub fn is_sum_tree(&self) -> bool {
-        match self {
+        match &self {
             Element::SumTree(..) => true,
             _ => false,
         }
@@ -1082,6 +1082,17 @@ impl Element {
                     flags_len + flags_len.required_space() as u32
                 });
                 let value_len = TREE_COST_SIZE + flags_len;
+                let key_len = key.len() as u32;
+                Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len,
+                ))
+            }
+            Element::SumTree(_, sum_value, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = TREE_COST_SIZE + flags_len + 8;
                 let key_len = key.len() as u32;
                 Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len, value_len,

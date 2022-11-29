@@ -1,5 +1,6 @@
 pub mod common;
 mod query_tests;
+mod sum_tree_tests;
 mod tree_hashes_tests;
 
 use std::{
