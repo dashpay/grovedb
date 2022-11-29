@@ -16,9 +16,9 @@ use merk::{
     proofs::{query::QueryItem, Query},
     tree::{kv::KV, Tree, TreeInner},
     BatchEntry, MerkOptions, Op,
+    TreeFeatureType::BasicMerk,
 };
 use serde::{Deserialize, Serialize};
-use merk::TreeFeatureType::BasicMerk;
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 use visualize::visualize_to_vec;
 
@@ -1106,7 +1106,11 @@ impl Element {
         };
 
         // TODO: use correct feature type
-        let batch_operations = [(key, Op::PutCombinedReference(serialized, referenced_value), Some(BasicMerk))];
+        let batch_operations = [(
+            key,
+            Op::PutCombinedReference(serialized, referenced_value),
+            Some(BasicMerk),
+        )];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
         })
@@ -1125,7 +1129,11 @@ impl Element {
         };
 
         // TODO: use correct feature type
-        let entry = (key, Op::PutCombinedReference(serialized, referenced_value), Some(BasicMerk));
+        let entry = (
+            key,
+            Op::PutCombinedReference(serialized, referenced_value),
+            Some(BasicMerk),
+        );
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -1156,7 +1164,7 @@ impl Element {
         let batch_operations = [(
             key,
             Op::PutLayeredReference(serialized, cost, subtree_root_hash),
-            Some(BasicMerk)
+            Some(BasicMerk),
         )];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
@@ -1187,13 +1195,13 @@ impl Element {
             (
                 key,
                 Op::ReplaceLayeredReference(serialized, cost, subtree_root_hash),
-                Some(BasicMerk)
+                Some(BasicMerk),
             )
         } else {
             (
                 key,
                 Op::PutLayeredReference(serialized, cost, subtree_root_hash),
-                Some(BasicMerk)
+                Some(BasicMerk),
             )
         };
         batch_operations.push(entry);

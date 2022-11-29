@@ -257,10 +257,10 @@ mod test {
     use costs::OperationCost;
     use merk::{
         test_utils::make_batch_seq, worst_case_costs::add_worst_case_get_merk_node, Link, Merk, Op,
+        TreeFeatureType::BasicMerk,
     };
     use storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage};
     use tempfile::TempDir;
-    use merk::TreeFeatureType::BasicMerk;
 
     use crate::{
         batch::{
@@ -407,8 +407,11 @@ mod test {
             .unwrap()
             .expect("cannot open merk");
 
-        let actual_cost =
-            merk.apply::<_, Vec<_>>(&[(b"9".to_vec(), Op::Put(b"a".to_vec()), Some(BasicMerk))], &[], None);
+        let actual_cost = merk.apply::<_, Vec<_>>(
+            &[(b"9".to_vec(), Op::Put(b"a".to_vec()), Some(BasicMerk))],
+            &[],
+            None,
+        );
 
         assert_eq!(actual_cost.cost, worst_case_cost);
     }

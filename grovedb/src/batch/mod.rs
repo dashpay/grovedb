@@ -30,7 +30,12 @@ use costs::{
 };
 use integer_encoding::VarInt;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
-use merk::{anyhow::anyhow, tree::{kv::KV, value_hash, NULL_HASH}, worst_case_costs::{add_worst_case_merk_propagate, MerkWorstCaseInput}, CryptoHash, Merk, MerkOptions, MerkType, BatchEntry, TreeFeatureType};
+use merk::{
+    anyhow::anyhow,
+    tree::{kv::KV, value_hash, NULL_HASH},
+    worst_case_costs::{add_worst_case_merk_propagate, MerkWorstCaseInput},
+    BatchEntry, CryptoHash, Merk, MerkOptions, MerkType, TreeFeatureType,
+};
 use nohash_hasher::IntMap;
 use storage::{
     rocksdb_storage::{

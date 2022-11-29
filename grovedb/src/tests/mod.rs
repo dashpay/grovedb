@@ -2172,9 +2172,10 @@ fn test_get_subtree() {
             .db
             .get_storage_context([TEST_LEAF, b"key1", b"key2"])
             .unwrap();
-        let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
-            .unwrap()
-            .expect("cannot open merk");
+        let subtree =
+            Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
+                .unwrap()
+                .expect("cannot open merk");
         let result_element = Element::get(&subtree, b"key3").unwrap().unwrap();
         assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
     }
