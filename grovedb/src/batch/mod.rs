@@ -676,6 +676,7 @@ where
             match op {
                 Op::Insert { element } => match &element {
                     Element::Reference(path_reference, element_max_reference_hop, _) => {
+                        let merk_feature_type = element.get_feature_type(is_sum_tree);
                         let path_iter = path.iter().map(|x| x.as_slice());
                         let path_reference = cost_return_on_error!(
                             &mut cost,
@@ -708,11 +709,12 @@ where
                                 key_info.get_key_clone(),
                                 referenced_element_value_hash,
                                 &mut batch_operations,
-                                element.get_feature_type(is_sum_tree)
+                                merk_feature_type
                             )
                         );
                     }
                     Element::Tree(..) | Element::SumTree(..) => {
+                        let merk_feature_type = element.get_feature_type(is_sum_tree);
                         cost_return_on_error!(
                             &mut cost,
                             element.insert_subtree_into_batch_operations(
@@ -720,11 +722,12 @@ where
                                 NULL_HASH,
                                 false,
                                 &mut batch_operations,
-                                element.get_feature_type(is_sum_tree)
+                                merk_feature_type
                             )
                         );
                     }
                     Element::Item(..) | Element::SumItem(..) => {
+                        let merk_feature_type = element.get_feature_type(is_sum_tree);
                         if batch_apply_options.validate_insertion_does_not_override {
                             let inserted = cost_return_on_error!(
                                 &mut cost,
@@ -747,7 +750,7 @@ where
                                 element.insert_into_batch_operations(
                                     key_info.get_key(),
                                     &mut batch_operations,
-                                    element.get_feature_type(is_sum_tree)
+                                    merk_feature_type
                                 )
                             );
                         }
@@ -796,6 +799,7 @@ where
                     flags,
                 } => {
                     let element = Element::new_sum_tree_with_flags(root_key, flags);
+                    let merk_feature_type = element.get_feature_type(is_sum_tree);
 
                     cost_return_on_error!(
                         &mut cost,
@@ -804,7 +808,7 @@ where
                             hash,
                             false,
                             &mut batch_operations,
-                            element.get_feature_type(is_sum_tree)
+                            merk_feature_type
                         )
                     );
                 }
@@ -819,6 +823,7 @@ where
                         sum.unwrap_or_default(),
                         flags,
                     );
+                    let merk_feature_type = element.get_feature_type(is_sum_tree);
                     cost_return_on_error!(
                         &mut cost,
                         element.insert_subtree_into_batch_operations(
@@ -826,7 +831,7 @@ where
                             hash,
                             false,
                             &mut batch_operations,
-                            element.get_feature_type(is_sum_tree)
+                            merk_feature_type
                         )
                     );
                 }
