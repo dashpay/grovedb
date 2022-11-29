@@ -139,7 +139,6 @@ impl GroveDb {
             .unwrap_add_cost(&mut cost);
         match path_iter.next_back() {
             Some(key) => {
-                dbg!(std::str::from_utf8(key));
                 let parent_storage = self
                     .db
                     .get_storage_context(path_iter.clone())
@@ -154,7 +153,6 @@ impl GroveDb {
                         ))
                     })
                 );
-                dbg!(&element);
                 let is_sum_tree = element.is_sum_tree();
                 if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
                     Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)

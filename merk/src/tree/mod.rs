@@ -488,7 +488,6 @@ impl Tree {
         }
         *slot = Link::maybe_from_modified_tree(maybe_child);
 
-        // dbg!(&self);
         self
     }
 

@@ -428,7 +428,6 @@ impl Element {
             Self::deserialize(value.as_slice())
                 .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
         );
-        dbg!(&element);
         Ok(element).wrap_with_cost(cost)
     }
 
