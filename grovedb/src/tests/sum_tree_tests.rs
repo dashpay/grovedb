@@ -418,6 +418,7 @@ fn test_sum_tree_propagation() {
     //        Item1
     //        SumItem1
     //        SumItem2
+    //      SumItem3
     db.insert([TEST_LEAF], b"key", Element::empty_sum_tree(), None, None)
         .unwrap()
         .expect("should insert tree");
@@ -425,6 +426,15 @@ fn test_sum_tree_propagation() {
         [TEST_LEAF, b"key"],
         b"tree2",
         Element::empty_sum_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("should insert tree");
+    db.insert(
+        [TEST_LEAF, b"key"],
+        b"sumitem3",
+        Element::new_sum_item(20),
         None,
         None,
     )
@@ -476,7 +486,7 @@ fn test_sum_tree_propagation() {
         .get([TEST_LEAF], b"key", None)
         .unwrap()
         .expect("should fetch tree");
-    assert_eq!(sum_tree.sum_value(), Some(15));
+    assert_eq!(sum_tree.sum_value(), Some(35));
 
     // Assert node feature types
     let test_leaf_merk = db
@@ -530,6 +540,7 @@ fn test_sum_tree_propagation() {
             .expect("node should exist"),
         Some(SummedMerk(10))
     ));
+
     // TODO: should references take the sum of the referenced element??
     assert!(matches!(
         child_sum_tree
