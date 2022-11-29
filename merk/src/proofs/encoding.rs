@@ -895,7 +895,7 @@ mod test {
         let op = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(
             op,
-            Op::Push(Node::KVRefValueHash(vec![1, 2, 3], vec![4, 5, 6], [0; 32]))
+            Op::PushInverted(Node::KVRefValueHash(vec![1, 2, 3], vec![4, 5, 6], [0; 32]))
         );
     }
 

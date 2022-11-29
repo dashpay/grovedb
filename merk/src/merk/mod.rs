@@ -535,14 +535,15 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]), BasicMerk)], &[], None)
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]), Some(BasicMerk))], &[], None)
     ///         .unwrap().expect("");
     ///
     /// use merk::Op;
+    /// use merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)), // puts value [4,5,6] to key[1,2,3]
+    ///     (vec![4, 5, 6], Op::Delete, None),             // deletes key [4,5,6]
     /// ];
     /// store.apply::<_, Vec<_>>(batch, &[], None).unwrap().expect("");
     /// ```
@@ -590,10 +591,11 @@ where
     ///         .unwrap().expect("");
     ///
     /// use merk::Op;
+    /// use merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)), // puts value [4,5,6] to key[1,2,3]
+    ///     (vec![4, 5, 6], Op::Delete, None),             // deletes key [4,5,6]
     /// ];
     /// store.apply::<_, Vec<_>>(batch, &[], None).unwrap().expect("");
     /// ```
@@ -635,7 +637,7 @@ where
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
     /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
-    ///     &[(vec![4,5,6], Op::Put(vec![0]))],
+    ///     &[(vec![4,5,6], Op::Put(vec![0]), Some(BasicMerk))],
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
@@ -645,10 +647,11 @@ where
     ///
     /// use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     /// use merk::Op;
+    /// use merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)), // puts value [4,5,6] to key[1,2,3]
+    ///     (vec![4, 5, 6], Op::Delete, None),             // deletes key [4,5,6]
     /// ];
     ///
     /// store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
@@ -725,7 +728,7 @@ where
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
     /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
-    ///     &[(vec![4,5,6], Op::Put(vec![0]))],
+    ///     &[(vec![4,5,6], Op::Put(vec![0]), Some(BasicMerk))],
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
@@ -735,10 +738,11 @@ where
     ///
     /// use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     /// use merk::Op;
+    /// use merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key [1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)), // puts value [4,5,6] to key [1,2,3]
+    ///     (vec![4, 5, 6], Op::Delete, None),             // deletes key [4,5,6]
     /// ];
     ///     unsafe { store.apply_unchecked::<_, Vec<_>, _, _, _>(    /// /// ///
     ///     batch,
