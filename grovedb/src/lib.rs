@@ -250,7 +250,13 @@ impl GroveDb {
             let (root_hash, root_key) = child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
-                Self::update_tree_item_preserve_flag(&mut parent_tree, key, root_key, root_hash)
+                Self::update_tree_item_preserve_flag(
+                    &mut parent_tree,
+                    key,
+                    root_key,
+                    root_hash,
+                    child_tree.sum()
+                )
             );
             child_tree = parent_tree;
         }
@@ -297,7 +303,13 @@ impl GroveDb {
             let (root_hash, root_key) = child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
-                Self::update_tree_item_preserve_flag(&mut parent_tree, key, root_key, root_hash)
+                Self::update_tree_item_preserve_flag(
+                    &mut parent_tree,
+                    key,
+                    root_key,
+                    root_hash,
+                    child_tree.sum()
+                )
             );
             child_tree = parent_tree;
         }
@@ -342,7 +354,13 @@ impl GroveDb {
             let (root_hash, root_key) = child_tree.root_hash_and_key().unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
-                Self::update_tree_item_preserve_flag(&mut parent_tree, key, root_key, root_hash)
+                Self::update_tree_item_preserve_flag(
+                    &mut parent_tree,
+                    key,
+                    root_key,
+                    root_hash,
+                    child_tree.sum()
+                )
             );
             child_tree = parent_tree;
         }
@@ -358,14 +376,18 @@ impl GroveDb {
         key: K,
         maybe_root_key: Option<Vec<u8>>,
         root_tree_hash: Hash,
+        sum: Option<i64>,
     ) -> CostResult<(), Error> {
         Self::get_element_from_subtree(parent_tree, key).flat_map_ok(|element| {
             if let Element::Tree(_, flag) = element {
                 let tree = Element::new_tree_with_flags(maybe_root_key, flag);
                 tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash, None)
             } else if let Element::SumTree(.., flag) = element {
-                // TODO: propagate the sum value
-                let tree = Element::new_sum_tree_with_flags(maybe_root_key, flag);
+                let tree = Element::new_sum_tree_with_flags_and_sum_value(
+                    maybe_root_key,
+                    sum.unwrap_or_default(),
+                    flag,
+                );
                 tree.insert_subtree(parent_tree, key.as_ref(), root_tree_hash, None)
             } else {
                 Err(Error::InvalidPath(

@@ -1214,7 +1214,7 @@ impl Element {
         let batch_operations = [(
             key,
             Op::PutCombinedReference(serialized, referenced_value),
-            Some(BasicMerk),
+            self.get_feature_type(merk.is_sum_tree),
         )];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
@@ -1269,7 +1269,7 @@ impl Element {
         let batch_operations = [(
             key,
             Op::PutLayeredReference(serialized, cost, subtree_root_hash),
-            Some(BasicMerk),
+            self.get_feature_type(merk.is_sum_tree),
         )];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
