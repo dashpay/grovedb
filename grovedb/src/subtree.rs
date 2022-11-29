@@ -10,9 +10,16 @@ use costs::{
     CostContext, CostResult, CostsExt, OperationCost,
 };
 use integer_encoding::VarInt;
-use merk::{anyhow, ed::Decode, estimated_costs::LAYER_COST_SIZE, proofs::{query::QueryItem, Query}, tree::{kv::KV, Tree, TreeInner}, BatchEntry, MerkOptions, Op, TreeFeatureType::BasicMerk, TreeFeatureType};
+use merk::{
+    anyhow,
+    ed::Decode,
+    estimated_costs::LAYER_COST_SIZE,
+    proofs::{query::QueryItem, Query},
+    tree::{kv::KV, Tree, TreeInner},
+    BatchEntry, MerkOptions, Op, TreeFeatureType,
+    TreeFeatureType::{BasicMerk, SummedMerk},
+};
 use serde::{Deserialize, Serialize};
-use merk::TreeFeatureType::SummedMerk;
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 use visualize::visualize_to_vec;
 
@@ -206,9 +213,10 @@ impl Element {
 
     pub fn get_feature_type(&self, parent_is_sum_tree: bool) -> Option<TreeFeatureType> {
         match parent_is_sum_tree {
-            // TODO: remove unwrap, failing here means that data in a sum item cannot be converted to i64
+            // TODO: remove unwrap, failing here means that data in a sum item cannot be converted
+            // to i64
             true => Some(SummedMerk(self.sum_value().unwrap())),
-            false => Some(BasicMerk)
+            false => Some(BasicMerk),
         }
     }
 
@@ -1079,7 +1087,11 @@ impl Element {
         }
 
         // TODO: use correct feature type
-        let batch_operations = [(key, Op::Put(serialized), self.get_feature_type(merk.is_sum_tree))];
+        let batch_operations = [(
+            key,
+            Op::Put(serialized),
+            self.get_feature_type(merk.is_sum_tree),
+        )];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
         })

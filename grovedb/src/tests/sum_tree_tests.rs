@@ -1,6 +1,6 @@
-use merk::proofs::Query;
-use merk::TreeFeatureType::{
-   SummedMerk, BasicMerk
+use merk::{
+    proofs::Query,
+    TreeFeatureType::{BasicMerk, SummedMerk},
 };
 
 use crate::{
@@ -174,10 +174,10 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         b"item1",
         Element::new_sum_item(30),
         None,
-        None
+        None,
     )
-        .unwrap()
-        .expect("should insert item");
+    .unwrap()
+    .expect("should insert item");
     db.insert(
         [TEST_LEAF, b"key"],
         b"item2",
@@ -185,8 +185,8 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         None,
         None,
     )
-        .unwrap()
-        .expect("should insert item");
+    .unwrap()
+    .expect("should insert item");
     // Add regular items
     db.insert(
         [TEST_LEAF, b"key"],
@@ -195,8 +195,8 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         None,
         None,
     )
-        .unwrap()
-        .expect("should insert item");
+    .unwrap()
+    .expect("should insert item");
     db.insert(
         [TEST_LEAF, b"key"],
         b"item4",
@@ -204,11 +204,14 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         None,
         None,
     )
-        .unwrap()
-        .expect("should insert item");
+    .unwrap()
+    .expect("should insert item");
 
     // Open merk and check all elements in it
-    let merk = db.open_non_transactional_merk_at_path([TEST_LEAF, b"key"]).unwrap().expect("should open tree");
+    let merk = db
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"])
+        .unwrap()
+        .expect("should open tree");
     assert!(matches!(
         merk.get_feature_type(b"item1")
             .unwrap()
@@ -247,8 +250,8 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         None,
         None,
     )
-        .unwrap()
-        .expect("should insert item");
+    .unwrap()
+    .expect("should insert item");
     db.insert(
         [TEST_LEAF, b"key"],
         b"item2",
@@ -256,10 +259,13 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         None,
         None,
     )
-        .unwrap()
-        .expect("should insert item");
+    .unwrap()
+    .expect("should insert item");
 
-    let merk = db.open_non_transactional_merk_at_path([TEST_LEAF, b"key"]).unwrap().expect("should open tree");
+    let merk = db
+        .open_non_transactional_merk_at_path([TEST_LEAF, b"key"])
+        .unwrap()
+        .expect("should open tree");
     assert!(matches!(
         merk.get_feature_type(b"item1")
             .unwrap()
