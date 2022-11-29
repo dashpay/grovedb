@@ -364,7 +364,7 @@ where
             let (_, op, feature_type) = &batch[index];
 
             // feature type has to be some if operation is not delete
-            if op != &Op::Delete && feature_type.is_none() {
+            if op != &Op::Delete && op != &Op::DeleteLayered && feature_type.is_none() {
                 return Err(anyhow!("feature type must be some for put operations"))
                     .wrap_with_cost(cost);
             }
