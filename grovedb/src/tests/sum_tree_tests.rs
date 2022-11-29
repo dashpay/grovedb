@@ -2,7 +2,7 @@ use merk::proofs::Query;
 
 use crate::{
     tests::{make_test_grovedb, TEST_LEAF},
-    Element, GroveDb, PathQuery,
+    Element, Error, GroveDb, PathQuery,
 };
 
 #[test]
@@ -137,4 +137,23 @@ fn test_sum_item_behaves_like_regular_item() {
         Element::deserialize(&result_set[0].1).expect("should deserialize element");
     assert_eq!(element_from_proof, Element::new_sum_item(5));
     assert_eq!(element_from_proof.sum_value(), Some(5));
+}
+
+#[test]
+fn test_cannot_insert_sum_item_in_regular_tree() {
+    let db = make_test_grovedb();
+    db.insert([TEST_LEAF], b"sumkey", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("should insert tree");
+    assert!(matches!(
+        db.insert(
+            [TEST_LEAF, b"sumkey"],
+            b"k1",
+            Element::new_sum_item(5),
+            None,
+            None,
+        )
+        .unwrap(),
+        Err(Error::InvalidInput("cannot add sum item to non sum tree"))
+    ));
 }

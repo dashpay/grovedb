@@ -204,6 +204,13 @@ impl Element {
         }
     }
 
+    pub fn is_sum_item(&self) -> bool {
+        match &self {
+            Element::SumItem(..) => true,
+            _ => false,
+        }
+    }
+
     /// Grab the optional flag stored in an element
     pub fn get_flags(&self) -> &Option<ElementFlags> {
         match self {
@@ -1064,6 +1071,11 @@ impl Element {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
+
+        if !merk.is_sum_tree && self.is_sum_item() {
+            return Err(Error::InvalidInput("cannot add sum item to non sum tree"))
+                .wrap_with_cost(Default::default());
+        }
 
         // TODO: use correct feature type
         let batch_operations = [(key, Op::Put(serialized), Some(BasicMerk))];
