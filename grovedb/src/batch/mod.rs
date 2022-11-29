@@ -1423,7 +1423,8 @@ impl GroveDb {
         match path_iter.next_back() {
             Some(key) => {
                 if new_merk {
-                    Ok(Merk::open_empty(storage, MerkType::LayeredMerk)).wrap_with_cost(cost)
+                    // TODO: can this be a sum tree
+                    Ok(Merk::open_empty(storage, MerkType::LayeredMerk, false)).wrap_with_cost(cost)
                 } else {
                     let parent_storage = self
                         .db
@@ -1437,8 +1438,9 @@ impl GroveDb {
                             )
                         })
                     );
+                    // TODO: Add sum tree here
                     if let Element::Tree(root_key, _) = element {
-                        Merk::open_layered_with_root_key(storage, root_key)
+                        Merk::open_layered_with_root_key(storage, root_key, false)
                             .map_err(|_| {
                                 Error::CorruptedData(
                                     "cannot open a subtree with given root key".to_owned(),
@@ -1455,9 +1457,9 @@ impl GroveDb {
             }
             None => {
                 if new_merk {
-                    Ok(Merk::open_empty(storage, MerkType::BaseMerk)).wrap_with_cost(cost)
+                    Ok(Merk::open_empty(storage, MerkType::BaseMerk, false)).wrap_with_cost(cost)
                 } else {
-                    Merk::open_base(storage)
+                    Merk::open_base(storage, false)
                         .map_err(|_| {
                             Error::CorruptedData("cannot open a the root subtree".to_owned())
                         })
@@ -1485,7 +1487,8 @@ impl GroveDb {
             } else {
                 MerkType::LayeredMerk
             };
-            Ok(Merk::open_empty(storage, merk_type)).wrap_with_cost(local_cost)
+            // TODO: can this be a sum tree
+            Ok(Merk::open_empty(storage, merk_type, false)).wrap_with_cost(local_cost)
         } else {
             if let Some((last, base_path)) = path.split_last() {
                 let parent_storage = self
@@ -1496,8 +1499,9 @@ impl GroveDb {
                     &mut local_cost,
                     Element::get_from_storage(&parent_storage, last)
                 );
+                // TODO: Add sum tree here
                 if let Element::Tree(root_key, _) = element {
-                    Merk::open_layered_with_root_key(storage, root_key)
+                    Merk::open_layered_with_root_key(storage, root_key, false)
                         .map_err(|_| {
                             Error::CorruptedData(
                                 "cannot open a subtree with given root key".to_owned(),
@@ -1511,7 +1515,7 @@ impl GroveDb {
                     .wrap_with_cost(local_cost)
                 }
             } else {
-                Merk::open_base(storage)
+                Merk::open_base(storage, false)
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
                     .add_cost(local_cost)
             }

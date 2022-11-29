@@ -24,7 +24,7 @@ impl CrashMerk {
     pub fn open_base() -> Result<CrashMerk> {
         let storage = Box::leak(Box::new(TempStorage::new()));
         let context = storage.get_storage_context(empty()).unwrap();
-        let merk = Merk::open_base(context).unwrap().unwrap();
+        let merk = Merk::open_base(context, false).unwrap().unwrap();
         Ok(CrashMerk { merk, storage })
     }
 
@@ -64,9 +64,13 @@ mod tests {
     #[ignore] // currently this still works because we enabled the WAL
     fn crash() {
         let mut merk = CrashMerk::open_base().expect("failed to open merk");
-        merk.apply::<_, Vec<u8>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk))], &[], None)
-            .unwrap()
-            .expect("apply failed");
+        merk.apply::<_, Vec<u8>>(
+            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk))],
+            &[],
+            None,
+        )
+        .unwrap()
+        .expect("apply failed");
 
         merk.crash();
 

@@ -95,8 +95,9 @@ impl GroveDb {
                         )
                     })
                 );
+                // TODO: add block for sum tree
                 if let Element::Tree(root_key, _) = element {
-                    Merk::open_layered_with_root_key(storage, root_key)
+                    Merk::open_layered_with_root_key(storage, root_key, false)
                         .map_err(|_| {
                             Error::CorruptedData(
                                 "cannot open a subtree with given root key".to_owned(),
@@ -110,7 +111,7 @@ impl GroveDb {
                     .wrap_with_cost(cost)
                 }
             }
-            None => Merk::open_base(storage)
+            None => Merk::open_base(storage, false)
                 .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
                 .add_cost(cost),
         }
@@ -146,8 +147,9 @@ impl GroveDb {
                         ))
                     })
                 );
+                // TODO: add block for sum tree
                 if let Element::Tree(root_key, _) = element {
-                    Merk::open_layered_with_root_key(storage, root_key)
+                    Merk::open_layered_with_root_key(storage, root_key, false)
                         .map_err(|_| {
                             Error::CorruptedData(
                                 "cannot open a subtree with given root key".to_owned(),
@@ -161,7 +163,7 @@ impl GroveDb {
                     .wrap_with_cost(cost)
                 }
             }
-            None => Merk::open_base(storage)
+            None => Merk::open_base(storage, false)
                 .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
                 .add_cost(cost),
         }
@@ -517,7 +519,8 @@ impl GroveDb {
             .collect()
     }
 
-    /// Method to check that the value_hash of Element::Tree nodes are computed correctly.
+    /// Method to check that the value_hash of Element::Tree nodes are computed
+    /// correctly.
     pub fn verify_grovedb(&self) -> HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)> {
         let root_merk = self
             .open_non_transactional_merk_at_path([])

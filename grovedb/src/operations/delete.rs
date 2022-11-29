@@ -634,7 +634,8 @@ impl GroveDb {
                         &mut cost,
                         Merk::open_layered_with_root_key(
                             storage,
-                            subtree_to_delete_from.root_key()
+                            subtree_to_delete_from.root_key(),
+                            false
                         )
                         .map_err(|_| {
                             Error::CorruptedData(

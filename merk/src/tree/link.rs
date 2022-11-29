@@ -305,9 +305,9 @@ impl Encode for Link {
                     //    sum_len for sum vale
                     1 + key.len() + 32 + 2 + 1 + 1 + encoded_sum_value.len()
                 }
-            }
+            },
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
-            Link::Uncommitted { tree, sum, .. } | Link::Loaded {tree, sum, ..} => match sum {
+            Link::Uncommitted { tree, sum, .. } | Link::Loaded { tree, sum, .. } => match sum {
                 None => 1 + tree.key().len() + 32 + 2 + 1,
                 Some(sum_value) => {
                     let encoded_sum_value = sum_value.encode_var_vec();

@@ -33,8 +33,11 @@ use kv::KV;
 pub use link::Link;
 pub use ops::{AuxMerkBatch, BatchEntry, MerkBatch, Op, PanicSource};
 pub use walk::{Fetch, RefWalker, Walker};
-use crate::merk::TreeFeatureType::{BasicMerk, SummedMerk};
-use crate::TreeFeatureType;
+
+use crate::{
+    merk::TreeFeatureType::{BasicMerk, SummedMerk},
+    TreeFeatureType,
+};
 
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
@@ -94,7 +97,7 @@ impl Tree {
                 kv,
                 left: None,
                 right: None,
-                feature_type
+                feature_type,
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -201,14 +204,14 @@ impl Tree {
         key: Vec<u8>,
         value: Vec<u8>,
         value_hash: CryptoHash,
-        feature_type: TreeFeatureType
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         KV::new_with_combined_value_hash(key, value, value_hash).map(|kv| Self {
             inner: Box::new(TreeInner {
                 kv,
                 left: None,
                 right: None,
-                feature_type
+                feature_type,
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -223,14 +226,14 @@ impl Tree {
         value: Vec<u8>,
         value_cost: u32,
         value_hash: CryptoHash,
-        feature_type: TreeFeatureType
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         KV::new_with_layered_value_hash(key, value, value_cost, value_hash).map(|kv| Self {
             inner: Box::new(TreeInner {
                 kv,
                 left: None,
                 right: None,
-                feature_type
+                feature_type,
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -252,7 +255,7 @@ impl Tree {
                 kv: KV::from_fields(key, value, kv_hash, vh),
                 left,
                 right,
-                feature_type
+                feature_type,
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -403,8 +406,6 @@ impl Tree {
     /// Computes and returns the hash of the root node.
     #[inline]
     pub fn sum(&self) -> Option<i64> {
-        // TODO: potentially consider all basic merk values as 0, simplifies
-        //  the insertion process.
         match self.inner.feature_type {
             TreeFeatureType::BasicMerk => None,
             TreeFeatureType::SummedMerk(value) => {
@@ -778,9 +779,9 @@ pub const fn side_to_str(left: bool) -> &'static str {
 #[cfg(test)]
 mod test {
     use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
-    use crate::{tree::TreeFeatureType::BasicMerk};
-    use crate::TreeFeatureType::SummedMerk;
+
     use super::{commit::NoopCommit, hash::NULL_HASH, Tree};
+    use crate::{tree::TreeFeatureType::BasicMerk, TreeFeatureType::SummedMerk};
 
     #[test]
     fn build_tree() {
@@ -794,7 +795,10 @@ mod test {
         assert!(tree.child(true).is_none());
         assert!(tree.child(false).is_none());
 
-        let tree = tree.attach(true, Some(Tree::new(vec![2], vec![102], BasicMerk).unwrap()));
+        let tree = tree.attach(
+            true,
+            Some(Tree::new(vec![2], vec![102], BasicMerk).unwrap()),
+        );
         assert_eq!(tree.key(), &[1]);
         assert_eq!(tree.child(true).unwrap().key(), &[2]);
         assert!(tree.child(false).is_none());
@@ -971,8 +975,8 @@ mod test {
             &mut |_, _, _| Ok((false, None)),
             &mut |_, _, _| Ok((NoStorageRemoval, NoStorageRemoval)),
         )
-            .unwrap()
-            .expect("commit failed");
+        .unwrap()
+        .expect("commit failed");
 
         assert_eq!(Some(8), tree.sum());
     }

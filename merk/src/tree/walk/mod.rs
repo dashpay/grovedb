@@ -7,7 +7,7 @@ pub use fetch::Fetch;
 pub use ref_walker::RefWalker;
 
 use super::{Link, Tree};
-use crate::{owner::Owner, CryptoHash, merk::TreeFeatureType};
+use crate::{merk::TreeFeatureType, owner::Owner, CryptoHash};
 
 /// Allows traversal of a `Tree`, fetching from the given source when traversing
 /// to a pruned node, detaching children as they are traversed.
@@ -173,7 +173,7 @@ where
         value: Vec<u8>,
         value_hash: CryptoHash,
         value_fixed_cost: u32,
-        feature_type: TreeFeatureType
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         self.tree.own(|t| {
@@ -181,7 +181,7 @@ where
                 value,
                 value_hash,
                 value_fixed_cost,
-                feature_type
+                feature_type,
             )
             .unwrap_add_cost(&mut cost)
         });
@@ -278,10 +278,10 @@ mod test {
                 hash: Default::default(),
                 key: b"foo".to_vec(),
                 child_heights: (0, 0),
-                sum: None
+                sum: None,
             }),
             None,
-            BasicMerk
+            BasicMerk,
         )
         .unwrap();
 

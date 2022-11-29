@@ -11,8 +11,10 @@ use {
 };
 
 use super::{Node, Op};
-use crate::tree::{Fetch, RefWalker};
-use crate::merk::TreeFeatureType::BasicMerk;
+use crate::{
+    merk::TreeFeatureType::BasicMerk,
+    tree::{Fetch, RefWalker},
+};
 
 /// The minimum number of layers the trunk will be guaranteed to have before
 /// splitting into multiple chunks. If the tree's height is less than double
@@ -179,7 +181,8 @@ pub(crate) fn get_next_chunk(
 
         // TODO: Only use the KVValueHash if needed, saves 32 bytes
         //  only needed when dealing with references and trees
-        // TODO: Are we losing the tree feature type information at this point, add test.
+        // TODO: Are we losing the tree feature type information at this point, add
+        // test.
         let kv = Node::KVValueHash(
             key.to_vec(),
             node.value_ref().to_vec(),
@@ -422,9 +425,10 @@ mod tests {
         // 0
         //  \
         //   1
-        let mut tree = BaseTree::new(vec![0], vec![], BasicMerk)
-            .unwrap()
-            .attach(false, Some(BaseTree::new(vec![1], vec![], BasicMerk).unwrap()));
+        let mut tree = BaseTree::new(vec![0], vec![], BasicMerk).unwrap().attach(
+            false,
+            Some(BaseTree::new(vec![1], vec![], BasicMerk).unwrap()),
+        );
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),
@@ -449,9 +453,10 @@ mod tests {
         //   1
         //  /
         // 0
-        let mut tree = BaseTree::new(vec![1], vec![], BasicMerk)
-            .unwrap()
-            .attach(true, Some(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()));
+        let mut tree = BaseTree::new(vec![1], vec![], BasicMerk).unwrap().attach(
+            true,
+            Some(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()),
+        );
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),
@@ -478,8 +483,14 @@ mod tests {
         // 0   2
         let mut tree = BaseTree::new(vec![1], vec![], BasicMerk)
             .unwrap()
-            .attach(true, Some(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()))
-            .attach(false, Some(BaseTree::new(vec![2], vec![], BasicMerk).unwrap()));
+            .attach(
+                true,
+                Some(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()),
+            )
+            .attach(
+                false,
+                Some(BaseTree::new(vec![2], vec![], BasicMerk).unwrap()),
+            );
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),

@@ -1393,8 +1393,8 @@ mod test {
         proofs::query::QueryItem::RangeAfter,
         test_utils::make_tree_seq,
         tree::{NoopCommit, PanicSource, RefWalker, Tree},
+        TreeFeatureType::BasicMerk,
     };
-    use crate::TreeFeatureType::BasicMerk;
 
     fn compare_result_tuples(
         result_set: Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,
@@ -2146,11 +2146,10 @@ mod test {
                         .attach(true, Some(Tree::new(vec![1], vec![1], BasicMerk).unwrap()))
                         .attach(
                             false,
-                            Some(
-                                Tree::new(vec![4], vec![4], BasicMerk)
-                                    .unwrap()
-                                    .attach(true, Some(Tree::new(vec![3], vec![3], BasicMerk).unwrap())),
-                            ),
+                            Some(Tree::new(vec![4], vec![4], BasicMerk).unwrap().attach(
+                                true,
+                                Some(Tree::new(vec![3], vec![3], BasicMerk).unwrap()),
+                            )),
                         ),
                 ),
             )
@@ -2164,17 +2163,22 @@ mod test {
                             Some(
                                 Tree::new(vec![7], vec![7], BasicMerk)
                                     .unwrap()
-                                    .attach(true, Some(Tree::new(vec![6], vec![6], BasicMerk).unwrap()))
-                                    .attach(false, Some(Tree::new(vec![8], vec![8], BasicMerk).unwrap())),
+                                    .attach(
+                                        true,
+                                        Some(Tree::new(vec![6], vec![6], BasicMerk).unwrap()),
+                                    )
+                                    .attach(
+                                        false,
+                                        Some(Tree::new(vec![8], vec![8], BasicMerk).unwrap()),
+                                    ),
                             ),
                         )
                         .attach(
                             false,
-                            Some(
-                                Tree::new(vec![11], vec![11], BasicMerk)
-                                    .unwrap()
-                                    .attach(true, Some(Tree::new(vec![10], vec![10], BasicMerk).unwrap())),
-                            ),
+                            Some(Tree::new(vec![11], vec![11], BasicMerk).unwrap().attach(
+                                true,
+                                Some(Tree::new(vec![10], vec![10], BasicMerk).unwrap()),
+                            )),
                         ),
                 ),
             );

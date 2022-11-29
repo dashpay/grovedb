@@ -80,8 +80,8 @@ impl Tree {
 
 #[cfg(test)]
 mod tests {
-    use crate::TreeFeatureType::{BasicMerk, SummedMerk};
     use super::{super::Link, *};
+    use crate::TreeFeatureType::{BasicMerk, SummedMerk};
 
     #[test]
     fn encode_leaf_tree() {

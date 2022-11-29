@@ -98,10 +98,18 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
         tree.visit_refs(&mut |proof_node| {
             if let Some((mut node, key)) = match &proof_node.node {
-                Node::KV(key, value) => Some((Tree::new(key.clone(), value.clone(), BasicMerk).unwrap(), key)),
+                Node::KV(key, value) => Some((
+                    Tree::new(key.clone(), value.clone(), BasicMerk).unwrap(),
+                    key,
+                )),
                 Node::KVValueHash(key, value, value_hash) => Some((
-                    Tree::new_with_value_hash(key.clone(), value.clone(), value_hash.clone(), BasicMerk)
-                        .unwrap(),
+                    Tree::new_with_value_hash(
+                        key.clone(),
+                        value.clone(),
+                        value_hash.clone(),
+                        BasicMerk,
+                    )
+                    .unwrap(),
                     key,
                 )),
                 _ => None,
@@ -351,7 +359,7 @@ mod tests {
 
         let storage = TempStorage::default();
         let ctx = storage.get_storage_context(empty()).unwrap();
-        let merk = Merk::open_base(ctx).unwrap().unwrap();
+        let merk = Merk::open_base(ctx, false).unwrap().unwrap();
         let mut restorer = Merk::restore(merk, original.root_hash().unwrap());
 
         assert_eq!(restorer.remaining_chunks(), None);
@@ -384,7 +392,10 @@ mod tests {
     #[test]
     fn restore_2_left_heavy() {
         restore_test(
-            &[&[(vec![0], Op::Put(vec![]), Some(BasicMerk))], &[(vec![1], Op::Put(vec![]), Some(BasicMerk))]],
+            &[
+                &[(vec![0], Op::Put(vec![]), Some(BasicMerk))],
+                &[(vec![1], Op::Put(vec![]), Some(BasicMerk))],
+            ],
             2,
         );
     }
@@ -392,7 +403,10 @@ mod tests {
     #[test]
     fn restore_2_right_heavy() {
         restore_test(
-            &[&[(vec![1], Op::Put(vec![]), Some(BasicMerk))], &[(vec![0], Op::Put(vec![]), Some(BasicMerk))]],
+            &[
+                &[(vec![1], Op::Put(vec![]), Some(BasicMerk))],
+                &[(vec![0], Op::Put(vec![]), Some(BasicMerk))],
+            ],
             2,
         );
     }

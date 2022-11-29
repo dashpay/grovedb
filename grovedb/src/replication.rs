@@ -134,7 +134,7 @@ impl<'db> Restorer<'db> {
     ) -> Result<Self, RestorerError> {
         Ok(Restorer {
             current_merk_restorer: Some(MerkRestorer::new(
-                Merk::open_base(grove_db.db.get_storage_context(empty()).unwrap())
+                Merk::open_base(grove_db.db.get_storage_context(empty()).unwrap(), false)
                     .unwrap()
                     .map_err(|e| RestorerError(e.to_string()))?,
                 None,

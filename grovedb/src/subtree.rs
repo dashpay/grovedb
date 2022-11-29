@@ -43,6 +43,9 @@ pub type MaxReferenceHop = Option<u8>;
 /// The cost of a tree
 pub const TREE_COST_SIZE: u32 = 3;
 
+/// int 64 sum value
+pub type SumValue = i64;
+
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
@@ -55,6 +58,10 @@ pub enum Element {
     /// A subtree, contains the a prefixed key representing the root of the
     /// subtree.
     Tree(Option<Vec<u8>>, Option<ElementFlags>),
+    // /// Vector encoded integer value that can be totaled in a sum tree
+    // SumItem(Vec<u8>, ElementFlags),
+    // /// Same as Element::Tree but underlying Merk sums value of it's summable nodes
+    // SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
 }
 
 impl fmt::Debug for Element {

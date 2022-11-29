@@ -8,8 +8,10 @@ pub use crash_merk::CrashMerk;
 use rand::prelude::*;
 pub use temp_merk::TempMerk;
 
-use crate::tree::{kv::KV, BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker};
-use crate::merk::TreeFeatureType::BasicMerk;
+use crate::{
+    merk::TreeFeatureType::BasicMerk,
+    tree::{kv::KV, BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker},
+};
 
 pub fn assert_tree_invariants(tree: &Tree) {
     assert!(tree.balance_factor().abs() < 2);
