@@ -636,6 +636,108 @@ mod test {
     }
 
     #[test]
+    fn replicate_nested_grovedb_with_sum_trees() {
+        let db = make_test_grovedb();
+        db.insert(
+            [TEST_LEAF],
+            b"key1",
+            Element::new_item(b"ayya".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+        db.insert(
+            [TEST_LEAF],
+            b"key2",
+            Element::new_reference(ReferencePathType::SiblingReference(b"key1".to_vec())),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert reference");
+        db.insert(
+            [ANOTHER_TEST_LEAF],
+            b"key2",
+            Element::empty_sum_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+        db.insert(
+            [ANOTHER_TEST_LEAF, b"key2"],
+            b"key3",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+        db.insert(
+            [ANOTHER_TEST_LEAF, b"key2", b"key3"],
+            b"key4",
+            Element::new_item(b"ayyb".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+
+        let to_compare = [
+            [TEST_LEAF].as_ref(),
+            [TEST_LEAF, b"key1"].as_ref(),
+            [TEST_LEAF, b"key2"].as_ref(),
+            [ANOTHER_TEST_LEAF].as_ref(),
+            [ANOTHER_TEST_LEAF, b"key2"].as_ref(),
+            [ANOTHER_TEST_LEAF, b"key2", b"key3"].as_ref(),
+            [ANOTHER_TEST_LEAF, b"key2", b"key3", b"key4"].as_ref(),
+        ];
+        test_replication(&db, to_compare.into_iter());
+    }
+
+    // TODO: Highlights a bug in replication
+    // #[test]
+    // fn replicate_grovedb_with_sum_tree() {
+    // let db = make_test_grovedb();
+    // db.insert(
+    // [TEST_LEAF],
+    // b"key1",
+    // Element::empty_tree(),
+    // None,
+    // None,
+    // )
+    // .unwrap()
+    // .expect("cannot insert an element");
+    // db.insert(
+    // [TEST_LEAF, b"key1"],
+    // b"key2",
+    // Element::new_item(vec![4]),
+    // None,
+    // None,
+    // )
+    // .unwrap()
+    // .expect("cannot insert an element");
+    // db.insert(
+    // [TEST_LEAF, b"key1"],
+    // b"key3",
+    // Element::new_item(vec![10]),
+    // None,
+    // None,
+    // )
+    // .unwrap()
+    // .expect("cannot insert an element");
+    //
+    // let to_compare = [
+    // [TEST_LEAF].as_ref(),
+    // [ANOTHER_TEST_LEAF].as_ref(),
+    // [TEST_LEAF, b"key1"].as_ref(),
+    // [TEST_LEAF, b"key1", b"key2"].as_ref(),
+    // ];
+    // test_replication(&db, to_compare.into_iter());
+    // }
+
+    #[test]
     fn replicate_a_big_one() {
         const HEIGHT: usize = 3;
         const SUBTREES_FOR_EACH: usize = 3;
