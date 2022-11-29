@@ -36,11 +36,7 @@ use estimated_costs::{
 };
 use integer_encoding::VarInt;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
-use merk::{
-    anyhow::anyhow,
-    tree::{kv::KV, value_hash, NULL_HASH},
-    CryptoHash, Merk, MerkType,
-};
+use merk::{anyhow::anyhow, tree::{kv::KV, value_hash, NULL_HASH}, CryptoHash, Merk, MerkType, TreeFeatureType};
 pub use options::BatchApplyOptions;
 use storage::{
     rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
@@ -656,7 +652,7 @@ where
             .unwrap_or_else(|| (self.get_merk_fn)(path, false));
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
 
-        let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
+        let mut batch_operations: Vec<(Vec<u8>, _, Option<TreeFeatureType>)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } => match &element {
@@ -1153,7 +1149,8 @@ impl GroveDb {
         match path_iter.next_back() {
             Some(key) => {
                 if new_merk {
-                    Ok(Merk::open_empty(storage, MerkType::LayeredMerk)).wrap_with_cost(cost)
+                    // TODO: can this be a sum tree
+                    Ok(Merk::open_empty(storage, MerkType::LayeredMerk, false)).wrap_with_cost(cost)
                 } else {
                     let parent_storage = self
                         .db
@@ -1167,8 +1164,9 @@ impl GroveDb {
                             )
                         })
                     );
+                    // TODO: add block for sum tree element
                     if let Element::Tree(root_key, _) = element {
-                        Merk::open_layered_with_root_key(storage, root_key)
+                        Merk::open_layered_with_root_key(storage, root_key, false)
                             .map_err(|_| {
                                 Error::CorruptedData(
                                     "cannot open a subtree with given root key".to_owned(),
@@ -1185,9 +1183,9 @@ impl GroveDb {
             }
             None => {
                 if new_merk {
-                    Ok(Merk::open_empty(storage, MerkType::BaseMerk)).wrap_with_cost(cost)
+                    Ok(Merk::open_empty(storage, MerkType::BaseMerk, false)).wrap_with_cost(cost)
                 } else {
-                    Merk::open_base(storage)
+                    Merk::open_base(storage, false)
                         .map_err(|_| {
                             Error::CorruptedData("cannot open a the root subtree".to_owned())
                         })
@@ -1215,7 +1213,7 @@ impl GroveDb {
             } else {
                 MerkType::LayeredMerk
             };
-            Ok(Merk::open_empty(storage, merk_type)).wrap_with_cost(local_cost)
+            Ok(Merk::open_empty(storage, merk_type, false)).wrap_with_cost(local_cost)
         } else {
             if let Some((last, base_path)) = path.split_last() {
                 let parent_storage = self
@@ -1227,7 +1225,7 @@ impl GroveDb {
                     Element::get_from_storage(&parent_storage, last)
                 );
                 if let Element::Tree(root_key, _) = element {
-                    Merk::open_layered_with_root_key(storage, root_key)
+                    Merk::open_layered_with_root_key(storage, root_key, false)
                         .map_err(|_| {
                             Error::CorruptedData(
                                 "cannot open a subtree with given root key".to_owned(),
@@ -1241,7 +1239,7 @@ impl GroveDb {
                     .wrap_with_cost(local_cost)
                 }
             } else {
-                Merk::open_base(storage)
+                Merk::open_base(storage, false)
                     .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
                     .add_cost(local_cost)
             }
