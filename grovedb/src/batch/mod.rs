@@ -36,7 +36,11 @@ use estimated_costs::{
 };
 use integer_encoding::VarInt;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
-use merk::{anyhow::anyhow, tree::{kv::KV, value_hash, NULL_HASH}, CryptoHash, Merk, MerkType, TreeFeatureType};
+use merk::{
+    anyhow::anyhow,
+    tree::{kv::KV, value_hash, NULL_HASH},
+    CryptoHash, Merk, MerkType, TreeFeatureType,
+};
 pub use options::BatchApplyOptions;
 use storage::{
     rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
@@ -217,6 +221,8 @@ impl fmt::Debug for GroveDbOp {
                 Element::Item(..) => "Insert Item",
                 Element::Reference(..) => "Insert Ref",
                 Element::Tree(..) => "Insert Tree",
+                Element::SumTree(..) => "Insert Sum Tree",
+                Element::SumItem(..) => "Insert Sum Item",
             },
             Op::Delete => "Delete",
             Op::DeleteTree => "Delete Tree",
@@ -461,7 +467,7 @@ where
                     .wrap_with_cost(cost);
                 }
                 Op::Insert { element } => match element {
-                    Element::Item(..) => {
+                    Element::Item(..) | Element::SumItem(..) => {
                         let serialized = cost_return_on_error_no_add!(&cost, element.serialize());
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
@@ -477,7 +483,7 @@ where
                             recursions_allowed - 1,
                         )
                     }
-                    Element::Tree(..) => {
+                    Element::Tree(..) | Element::SumTree(..) => {
                         return Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
                         ))
@@ -565,7 +571,7 @@ where
                 );
 
                 match element {
-                    Element::Item(..) => {
+                    Element::Item(..) | Element::SumItem(..) => {
                         let serialized = cost_return_on_error_no_add!(&cost, element.serialize());
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
@@ -581,7 +587,7 @@ where
                             recursions_allowed - 1,
                         )
                     }
-                    Element::Tree(..) => {
+                    Element::Tree(..) | Element::SumTree(..) => {
                         return Err(Error::InvalidBatchOperation(
                             "references can not point to trees being updated",
                         ))
@@ -692,7 +698,7 @@ where
                             )
                         );
                     }
-                    Element::Tree(..) => {
+                    Element::Tree(..) | Element::SumTree(..) => {
                         cost_return_on_error!(
                             &mut cost,
                             element.insert_subtree_into_batch_operations(
@@ -703,7 +709,7 @@ where
                             )
                         );
                     }
-                    Element::Item(..) => {
+                    Element::Item(..) | Element::SumItem(..) => {
                         if batch_apply_options.validate_insertion_does_not_override {
                             let inserted = cost_return_on_error!(
                                 &mut cost,

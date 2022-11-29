@@ -17,6 +17,10 @@ impl Visualize for Element {
                 drawer.write(b"item: ")?;
                 drawer = value.visualize(drawer)?;
             }
+            Element::SumItem(value, _) => {
+                drawer.write(b"sum_item: ")?;
+                drawer = value.visualize(drawer)?;
+            }
             Element::Reference(_ref, ..) => {
                 drawer.write(b"ref")?;
                 // drawer.write(b"ref: [path: ")?;
@@ -32,6 +36,10 @@ impl Visualize for Element {
             }
             Element::Tree(root_key, _) => {
                 drawer.write(b"tree: ")?;
+                drawer = root_key.as_deref().visualize(drawer)?;
+            }
+            Element::SumTree(root_key, ..) => {
+                drawer.write(b"sum_tree: ")?;
                 drawer = root_key.as_deref().visualize(drawer)?;
             }
         }

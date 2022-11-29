@@ -60,10 +60,11 @@ pub enum Element {
     /// A subtree, contains the a prefixed key representing the root of the
     /// subtree.
     Tree(Option<Vec<u8>>, Option<ElementFlags>),
-    // /// Vector encoded integer value that can be totaled in a sum tree
-    // SumItem(Vec<u8>, ElementFlags),
-    // /// Same as Element::Tree but underlying Merk sums value of it's summable nodes
-    // SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
+    /// Vector encoded integer value that can be totaled in a sum tree
+    SumItem(Vec<u8>, Option<ElementFlags>),
+    /// Same as Element::Tree but underlying Merk sums value of it's summable
+    /// nodes
+    SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
 }
 
 impl fmt::Debug for Element {
@@ -152,34 +153,40 @@ impl Element {
     /// Grab the optional flag stored in an element
     pub fn get_flags(&self) -> &Option<ElementFlags> {
         match self {
-            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
-                flags
-            }
+            Element::Tree(_, flags)
+            | Element::Item(_, flags)
+            | Element::Reference(_, _, flags)
+            | Element::SumTree(.., flags)
+            | Element::SumItem(_, flags) => flags,
         }
     }
 
     /// Grab the optional flag stored in an element
     pub fn get_flags_owned(self) -> Option<ElementFlags> {
         match self {
-            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
-                flags
-            }
+            Element::Tree(_, flags)
+            | Element::Item(_, flags)
+            | Element::Reference(_, _, flags)
+            | Element::SumTree(.., flags)
+            | Element::SumItem(_, flags) => flags,
         }
     }
 
     /// Grab the optional flag stored in an element as mutable
     pub fn get_flags_mut(&mut self) -> &mut Option<ElementFlags> {
         match self {
-            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
-                flags
-            }
+            Element::Tree(_, flags)
+            | Element::Item(_, flags)
+            | Element::Reference(_, _, flags)
+            | Element::SumTree(.., flags)
+            | Element::SumItem(_, flags) => flags,
         }
     }
 
     /// Get the size of an element in bytes
     pub fn byte_size(&self) -> u32 {
         match self {
-            Element::Item(item, element_flag) => {
+            Element::Item(item, element_flag) | Element::SumItem(item, element_flag) => {
                 if let Some(flag) = element_flag {
                     flag.len() as u32 + item.len() as u32
                 } else {
@@ -200,6 +207,13 @@ impl Element {
                     flag.len() as u32 + 32
                 } else {
                     32
+                }
+            }
+            Element::SumTree(_, _, element_flag) => {
+                if let Some(flag) = element_flag {
+                    flag.len() as u32 + 32 + 8
+                } else {
+                    32 + 8
                 }
             }
         }
