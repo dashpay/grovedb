@@ -130,7 +130,7 @@ where
         }
 
         // add this node's data
-        proof.push(Op::Push(self.to_kv_value_hash_node()));
+        proof.push(Op::Push(self.to_kv_value_hash_feature_type_node()));
 
         if has_left_child {
             proof.push(Op::Parent);
