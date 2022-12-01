@@ -174,7 +174,8 @@ impl Tree {
         match self.node {
             Node::KV(ref key, _)
             | Node::KVValueHash(ref key, ..)
-            | Node::KVRefValueHash(ref key, ..) => key,
+            | Node::KVRefValueHash(ref key, ..)
+            | Node::KVValueHashFeatureType(ref key, ..) => key,
             _ => panic!("Expected node to be type KV"),
         }
     }

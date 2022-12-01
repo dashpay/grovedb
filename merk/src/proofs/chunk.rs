@@ -181,12 +181,11 @@ pub(crate) fn get_next_chunk(
 
         // TODO: Only use the KVValueHash if needed, saves 32 bytes
         //  only needed when dealing with references and trees
-        // TODO: Are we losing the tree feature type information at this point, add
-        // test.
-        let kv = Node::KVValueHash(
+        let kv = Node::KVValueHashFeatureType(
             key.to_vec(),
             node.value_ref().to_vec(),
             node.value_hash().clone(),
+            node.feature_type(),
         );
 
         chunk.push(Op::Push(kv));
@@ -227,7 +226,7 @@ pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op>>>(
     expected_hash: CryptoHash,
 ) -> CostContext<Result<ProofTree>> {
     execute(ops, false, |node| match node {
-        Node::KVValueHash(..) | Node::KV(..) => Ok(()),
+        Node::KVValueHash(..) | Node::KV(..) | Node::KVValueHashFeatureType(..) => Ok(()),
         _ => bail!("Leaf chunks must contain full subtree"),
     })
     .flat_map_ok(|tree| {
@@ -277,7 +276,7 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
 
         if remaining_depth > 0 {
             match tree.node {
-                Node::KVValueHash(..) | Node::KV(..) => {}
+                Node::KVValueHash(..) | Node::KV(..) | Node::KVValueHashFeatureType(..) => {}
                 _ => bail!("Expected trunk inner nodes to contain keys and values"),
             }
             recurse(true, leftmost)?;
@@ -299,7 +298,9 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
     let tree = cost_return_on_error!(
         &mut cost,
         execute(ops, false, |node| {
-            kv_only &= matches!(node, Node::KVValueHash(..)) || matches!(node, Node::KV(..));
+            kv_only &= matches!(node, Node::KVValueHash(..))
+                || matches!(node, Node::KV(..))
+                || matches!(node, Node::KVValueHashFeatureType(..));
             Ok(())
         })
     );
@@ -339,7 +340,7 @@ mod tests {
         kv_value_hash: usize,
         kv_digest: usize,
         kv_ref_value_hash: usize,
-        kv_ref_value_hash_feature_type: usize,
+        kv_value_hash_feature_type: usize,
     }
 
     fn count_node_types(tree: Tree) -> NodeCounts {
@@ -353,7 +354,7 @@ mod tests {
                 Node::KVValueHash(..) => counts.kv_value_hash += 1,
                 Node::KVDigest(..) => counts.kv_digest += 1,
                 Node::KVRefValueHash(..) => counts.kv_ref_value_hash += 1,
-                Node::KVValueHashFeatureType(..) => counts.kv_ref_value_hash_feature_type += 1,
+                Node::KVValueHashFeatureType(..) => counts.kv_value_hash_feature_type += 1,
             };
         });
 
@@ -534,7 +535,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let counts = count_node_types(chunk);
-        assert_eq!(counts.kv_value_hash, 31);
+        assert_eq!(counts.kv_value_hash_feature_type, 31);
         assert_eq!(counts.hash, 0);
         assert_eq!(counts.kv_hash, 0);
         drop(iter);
@@ -557,7 +558,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let counts = count_node_types(chunk);
-        assert_eq!(counts.kv_value_hash, 15);
+        assert_eq!(counts.kv_value_hash_feature_type, 15);
         assert_eq!(counts.hash, 0);
         assert_eq!(counts.kv_hash, 0);
 
@@ -574,7 +575,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let counts = count_node_types(chunk);
-        assert_eq!(counts.kv_value_hash, 15);
+        assert_eq!(counts.kv_value_hash_feature_type, 15);
         assert_eq!(counts.hash, 0);
         assert_eq!(counts.kv_hash, 0);
     }

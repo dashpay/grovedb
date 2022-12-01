@@ -112,6 +112,16 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     .unwrap(),
                     key,
                 )),
+                Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => Some((
+                    Tree::new_with_value_hash(
+                        key.clone(),
+                        value.clone(),
+                        value_hash.clone(),
+                        feature_type.clone(),
+                    )
+                    .unwrap(),
+                    key,
+                )),
                 _ => None,
             } {
                 // TODO: encode tree node without cloning key/value
@@ -318,7 +328,9 @@ impl ProofTree {
 impl Child {
     fn as_link(&self) -> Link {
         let key = match &self.tree.node {
-            Node::KV(key, _) | Node::KVValueHash(key, ..) => key.as_slice(),
+            Node::KV(key, _)
+            | Node::KVValueHash(key, ..)
+            | Node::KVValueHashFeatureType(key, ..) => key.as_slice(),
             // for the connection between the trunk and leaf chunks, we don't
             // have the child key so we must first write in an empty one. once
             // the leaf gets verified, we can write in this key to its parent
