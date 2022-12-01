@@ -164,7 +164,7 @@ impl<'db> Restorer<'db> {
             match ops.last().expect("just inserted") {
                 Op::Push(Node::KVValueHash(key, value_bytes, value_hash))
                 | Op::PushInverted(Node::KVValueHash(key, value_bytes, value_hash)) => {
-                    if let Element::Tree(root_key, _) = Element::deserialize(value_bytes)
+                    if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = Element::deserialize(value_bytes)
                         .map_err(|e| RestorerError(e.to_string()))?
                     {
                         if root_key.is_none() || self.current_merk_path.last() == Some(key) {
@@ -291,7 +291,7 @@ impl<'db> SiblingsChunkProducer<'db> {
         }
 
         while let Some(element) = siblings_iter.next().unwrap()? {
-            if let (key, Element::Tree(..)) = element {
+            if let (key, Element::Tree(..)) | (key, Element::SumTree(..)) = element {
                 siblings_keys.push_back(key);
             }
         }
@@ -647,8 +647,7 @@ mod test {
         )
         .unwrap()
         .expect("cannot insert an element");
-        db.insert(
-            [TEST_LEAF],
+        db.insert( [TEST_LEAF],
             b"key2",
             Element::new_reference(ReferencePathType::SiblingReference(b"key1".to_vec())),
             None,
@@ -665,6 +664,15 @@ mod test {
         )
         .unwrap()
         .expect("cannot insert an element");
+        db.insert(
+            [ANOTHER_TEST_LEAF, b"key2"],
+            b"sumitem",
+            Element::new_sum_item(15),
+            None,
+            None,
+        )
+            .unwrap()
+            .expect("cannot insert an element");
         db.insert(
             [ANOTHER_TEST_LEAF, b"key2"],
             b"key3",
@@ -690,6 +698,7 @@ mod test {
             [TEST_LEAF, b"key2"].as_ref(),
             [ANOTHER_TEST_LEAF].as_ref(),
             [ANOTHER_TEST_LEAF, b"key2"].as_ref(),
+            [ANOTHER_TEST_LEAF, b"key2", b"sumitem"].as_ref(),
             [ANOTHER_TEST_LEAF, b"key2", b"key3"].as_ref(),
             [ANOTHER_TEST_LEAF, b"key2", b"key3", b"key4"].as_ref(),
         ];
