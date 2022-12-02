@@ -35,6 +35,7 @@ use estimated_costs::{
     worst_case_costs::WorstCaseTreeCacheKnownPaths,
 };
 use integer_encoding::VarInt;
+use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     anyhow::anyhow,
@@ -1170,9 +1171,10 @@ impl GroveDb {
                     let element = cost_return_on_error!(
                         &mut cost,
                         Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                            Error::InvalidPath(
-                                "could not get key for parent of subtree for batch".to_owned(),
-                            )
+                            Error::InvalidPath(format!(
+                                "could not get key for parent of subtree for batch at path {}",
+                                path_iter.map(hex::encode).join("/")
+                            ))
                         })
                     );
                     if let Element::Tree(root_key, _) = element {
