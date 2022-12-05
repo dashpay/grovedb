@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use anyhow::{anyhow, bail, Result};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
@@ -355,7 +357,7 @@ where
             }
             Op::Push(node) => {
                 if let Node::KV(key, _)
-                | Node::KVValueHash(key, ..)
+                | Node::KVValueHashFeatureType(key, ..)
                 | Node::KVRefValueHash(key, ..) = &node
                 {
                     // keys should always increase
@@ -375,7 +377,7 @@ where
             }
             Op::PushInverted(node) => {
                 if let Node::KV(key, _)
-                | Node::KVValueHash(key, ..)
+                | Node::KVValueHashFeatureType(key, ..)
                 | Node::KVRefValueHash(key, ..) = &node
                 {
                     // keys should always decrease
