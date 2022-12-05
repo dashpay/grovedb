@@ -820,7 +820,8 @@ where
         )
     }
 
-    /// Creates a `Node::KVValueHashFeatureType` from the key/value pair of the root node
+    /// Creates a `Node::KVValueHashFeatureType` from the key/value pair of the
+    /// root node
     pub(crate) fn to_kv_value_hash_feature_type_node(&self) -> Node {
         Node::KVValueHashFeatureType(
             self.tree().key().to_vec(),

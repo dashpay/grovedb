@@ -5,7 +5,7 @@ use std::{
 
 use merk::{
     proofs::{Node, Op},
-    Merk,
+    Merk, TreeFeatureType,
 };
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
 
@@ -110,7 +110,7 @@ pub struct Restorer<'db> {
     current_merk_restorer: Option<MerkRestorer<'db>>,
     current_merk_chunk_index: usize,
     current_merk_path: Path,
-    queue: VecDeque<(Path, Vec<u8>, Hash)>,
+    queue: VecDeque<(Path, Vec<u8>, Hash, TreeFeatureType)>,
     grove_db: &'db GroveDb,
 }
 
@@ -162,10 +162,21 @@ impl<'db> Restorer<'db> {
         for op in chunk_ops {
             ops.push(op);
             match ops.last().expect("just inserted") {
-                Op::Push(Node::KVValueHash(key, value_bytes, value_hash))
-                | Op::PushInverted(Node::KVValueHash(key, value_bytes, value_hash)) => {
-                    if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = Element::deserialize(value_bytes)
-                        .map_err(|e| RestorerError(e.to_string()))?
+                Op::Push(Node::KVValueHashFeatureType(
+                    key,
+                    value_bytes,
+                    value_hash,
+                    feature_type,
+                ))
+                | Op::PushInverted(Node::KVValueHashFeatureType(
+                    key,
+                    value_bytes,
+                    value_hash,
+                    feature_type,
+                )) => {
+                    if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) =
+                        Element::deserialize(value_bytes)
+                            .map_err(|e| RestorerError(e.to_string()))?
                     {
                         if root_key.is_none() || self.current_merk_path.last() == Some(key) {
                             // We add only subtrees of the current subtree to queue, skipping
@@ -175,8 +186,12 @@ impl<'db> Restorer<'db> {
                         let mut path = self.current_merk_path.clone();
                         path.push(key.clone());
                         // The value hash is the root tree hash
-                        self.queue
-                            .push_back((path, value_bytes.to_owned(), value_hash.clone()));
+                        self.queue.push_back((
+                            path,
+                            value_bytes.to_owned(),
+                            value_hash.clone(),
+                            feature_type.clone(),
+                        ));
                     }
                 }
                 _ => {}
@@ -201,9 +216,9 @@ impl<'db> Restorer<'db> {
                 .expect("restorer exists at this point")
                 .finalize()
                 .map_err(|e| RestorerError(e.to_string()))?;
-            if let Some((next_path, combining_value, expected_hash)) = self.queue.pop_front() {
+            if let Some((next_path, combining_value, expected_hash, _)) = self.queue.pop_front() {
                 // Process next subtree.
-                let merk: Merk<PrefixedRocksDbStorageContext> = self
+                let mut merk: Merk<PrefixedRocksDbStorageContext> = self
                     .grove_db
                     .open_non_transactional_merk_at_path(next_path.iter().map(|a| a.as_ref()))
                     .unwrap()
@@ -647,7 +662,8 @@ mod test {
         )
         .unwrap()
         .expect("cannot insert an element");
-        db.insert( [TEST_LEAF],
+        db.insert(
+            [TEST_LEAF],
             b"key2",
             Element::new_reference(ReferencePathType::SiblingReference(b"key1".to_vec())),
             None,
@@ -671,8 +687,8 @@ mod test {
             None,
             None,
         )
-            .unwrap()
-            .expect("cannot insert an element");
+        .unwrap()
+        .expect("cannot insert an element");
         db.insert(
             [ANOTHER_TEST_LEAF, b"key2"],
             b"key3",

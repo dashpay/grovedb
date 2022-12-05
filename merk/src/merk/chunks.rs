@@ -41,7 +41,7 @@ where
             trunk
                 .iter()
                 .filter_map(|op| match op {
-                    Op::Push(Node::KVValueHash(key, ..)) => Some(key.clone()),
+                    Op::Push(Node::KVValueHashFeatureType(key, ..)) => Some(key.clone()),
                     _ => None,
                 })
                 .collect()

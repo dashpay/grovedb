@@ -542,8 +542,10 @@ where
     /// use merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)), // puts value [4,5,6] to key[1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete, None),             // deletes key [4,5,6]
+    ///     // puts value [4,5,6] to key[1,2,3]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)),
+    ///     // deletes key [4,5,6]
+    ///     (vec![4, 5, 6], Op::Delete, None),
     /// ];
     /// store.apply::<_, Vec<_>>(batch, &[], None).unwrap().expect("");
     /// ```
@@ -594,8 +596,10 @@ where
     /// use merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)), // puts value [4,5,6] to key[1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete, None),             // deletes key [4,5,6]
+    ///     // puts value [4,5,6] to key[1,2,3]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)),
+    ///     // deletes key [4,5,6]
+    ///     (vec![4, 5, 6], Op::Delete, None),
     /// ];
     /// store.apply::<_, Vec<_>>(batch, &[], None).unwrap().expect("");
     /// ```
@@ -650,8 +654,10 @@ where
     /// use merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)), // puts value [4,5,6] to key[1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete, None),             // deletes key [4,5,6]
+    ///     // puts value [4,5,6] to key[1,2,3]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)),
+    ///     // deletes key [4,5,6]
+    ///     (vec![4, 5, 6], Op::Delete, None),
     /// ];
     ///
     /// store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
@@ -741,8 +747,10 @@ where
     /// use merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)), // puts value [4,5,6] to key [1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete, None),             // deletes key [4,5,6]
+    ///     // puts value [4,5,6] to key [1,2,3]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)),
+    ///     // deletes key [4,5,6]
+    ///     (vec![4, 5, 6], Op::Delete, None),
     /// ];
     ///     unsafe { store.apply_unchecked::<_, Vec<_>, _, _, _>(    /// /// ///
     ///     batch,

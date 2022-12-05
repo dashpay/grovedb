@@ -374,7 +374,7 @@ mod tests {
 
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv_value_hash, 32);
+        assert_eq!(counts.kv_value_hash_feature_type, 32);
         assert_eq!(counts.kv_hash, 0);
     }
 
@@ -394,7 +394,7 @@ mod tests {
             2usize.pow(MIN_TRUNK_HEIGHT as u32) + MIN_TRUNK_HEIGHT - 1
         );
         assert_eq!(
-            counts.kv_value_hash,
+            counts.kv_value_hash_feature_type,
             2usize.pow(MIN_TRUNK_HEIGHT as u32) - 1
         );
         assert_eq!(counts.kv_hash, MIN_TRUNK_HEIGHT + 1);
@@ -419,7 +419,7 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv_value_hash, 1);
+        assert_eq!(counts.kv_value_hash_feature_type, 1);
         assert_eq!(counts.kv_hash, 0);
     }
 
@@ -447,7 +447,7 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv_value_hash, 2);
+        assert_eq!(counts.kv_value_hash_feature_type, 2);
         assert_eq!(counts.kv_hash, 0);
     }
 
@@ -475,7 +475,7 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv_value_hash, 2);
+        assert_eq!(counts.kv_value_hash_feature_type, 2);
         assert_eq!(counts.kv_hash, 0);
     }
 
@@ -510,7 +510,7 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv_value_hash, 3);
+        assert_eq!(counts.kv_value_hash_feature_type, 3);
         assert_eq!(counts.kv_hash, 0);
     }
 
