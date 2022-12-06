@@ -77,16 +77,20 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
     fn key(&self) -> CostContext<Option<&[u8]>> {
         let mut cost = OperationCost::default();
 
-        let value = if self.valid().unwrap_add_cost(&mut cost) {
-            self.raw_iterator.key().map(|k| {
+        let value = self
+            .raw_iterator
+            .key()
+            .map(|k| {
                 // Even if we truncate prefix, loaded cost should be maximum for the whole
                 // function
                 cost.storage_loaded_bytes += k.len() as u32;
-                k.split_at(self.prefix.len()).1
+                if k.starts_with(&self.prefix) {
+                    Some(k.split_at(self.prefix.len()).1)
+                } else {
+                    None
+                }
             })
-        } else {
-            None
-        };
+            .flatten();
 
         value.wrap_with_cost(cost)
     }
@@ -168,16 +172,20 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
     fn key(&self) -> CostContext<Option<&[u8]>> {
         let mut cost = OperationCost::default();
 
-        let value = if self.valid().unwrap_add_cost(&mut cost) {
-            self.raw_iterator.key().map(|k| {
+        let value = self
+            .raw_iterator
+            .key()
+            .map(|k| {
                 // Even if we truncate prefix, loaded cost should be maximum for the whole
                 // function
                 cost.storage_loaded_bytes += k.len() as u32;
-                k.split_at(self.prefix.len()).1
+                if k.starts_with(&self.prefix) {
+                    Some(k.split_at(self.prefix.len()).1)
+                } else {
+                    None
+                }
             })
-        } else {
-            None
-        };
+            .flatten();
 
         value.wrap_with_cost(cost)
     }

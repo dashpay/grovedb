@@ -2,6 +2,7 @@ use costs::{CostResult, CostsExt, OperationCost};
 
 use crate::{
     error::Error,
+    merk::defaults::MAX_PREFIXED_KEY_SIZE,
     tree::{kv::KV, Link, Tree},
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
 };
@@ -146,4 +147,12 @@ pub fn add_worst_case_merk_propagate(
     cost.seek_count += nodes_updated as u16;
     cost.hash_node_calls += (nodes_updated as u16) * 2;
     Ok(())
+}
+
+pub fn add_worst_case_cost_for_is_empty_tree_except(
+    cost: &mut OperationCost,
+    except_keys_count: u16,
+) {
+    cost.seek_count += except_keys_count + 1;
+    cost.storage_loaded_bytes += MAX_PREFIXED_KEY_SIZE * (except_keys_count as u32 + 1);
 }

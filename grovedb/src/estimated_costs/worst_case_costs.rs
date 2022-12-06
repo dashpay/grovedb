@@ -160,6 +160,15 @@ impl GroveDb {
         *cost += S::get_storage_context_cost(path.as_vec());
     }
 
+    pub fn add_worst_case_get_raw_tree_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        _path: &KeyInfoPath,
+        key: &KeyInfo,
+    ) {
+        cost.seek_count += 1;
+        add_worst_case_get_merk_node(cost, key.len() as u32, TREE_COST_SIZE);
+    }
+
     pub fn add_worst_case_get_raw_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
