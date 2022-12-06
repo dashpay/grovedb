@@ -514,7 +514,6 @@ impl GroveDb {
         S: Storage<'db>,
         P,
     >(
-        &self,
         path: &KeyInfoPath,
         key: &KeyInfo,
         stop_path_height: Option<u16>,
