@@ -5,12 +5,21 @@ use costs::{
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
-use merk::{anyhow, Merk, MerkOptions};
+use intmap::IntMap;
+use merk::{
+    anyhow,
+    estimated_costs::{
+        worst_case_costs::add_worst_case_cost_for_is_empty_tree_except, LAYER_COST_SIZE,
+    },
+    tree::kv::KV,
+    Merk, MerkOptions,
+};
 use storage::{
     rocksdb_storage::{
         PrefixedRocksDbBatchTransactionContext, PrefixedRocksDbStorageContext,
         PrefixedRocksDbTransactionContext,
     },
+    worst_case_costs::WorstKeyLength,
     Storage, StorageBatch, StorageContext,
 };
 
@@ -114,6 +123,7 @@ impl GroveDb {
                 stop_path_height,
                 options,
                 validate,
+                false,
                 &mut batch_operations,
                 transaction,
             )
@@ -152,6 +162,7 @@ impl GroveDb {
         stop_path_height: Option<u16>,
         options: &DeleteOptions,
         validate: bool,
+        is_known_to_be_subtree: bool,
         mut current_batch_operations: Vec<GroveDbOp>,
         transaction: TransactionArg,
     ) -> CostResult<Option<Vec<GroveDbOp>>, Error>
@@ -165,6 +176,7 @@ impl GroveDb {
             stop_path_height,
             options,
             validate,
+            is_known_to_be_subtree,
             &mut current_batch_operations,
             transaction,
         )
@@ -177,6 +189,7 @@ impl GroveDb {
         stop_path_height: Option<u16>,
         options: &DeleteOptions,
         validate: bool,
+        is_known_to_be_subtree: bool,
         current_batch_operations: &mut Vec<GroveDbOp>,
         transaction: TransactionArg,
     ) -> CostResult<Option<Vec<GroveDbOp>>, Error>
@@ -205,6 +218,7 @@ impl GroveDb {
                 key,
                 options,
                 validate,
+                is_known_to_be_subtree,
                 current_batch_operations,
                 transaction,
             )
@@ -223,6 +237,7 @@ impl GroveDb {
                         stop_path_height,
                         &new_options,
                         validate,
+                        true,
                         current_batch_operations,
                         transaction,
                     )
@@ -384,6 +399,7 @@ impl GroveDb {
         key: &'p [u8],
         options: &DeleteOptions,
         validate: bool,
+        mut is_known_to_be_subtree: bool,
         current_batch_operations: &[GroveDbOp],
         transaction: TransactionArg,
     ) -> CostResult<Option<GroveDbOp>, Error>
@@ -407,12 +423,15 @@ impl GroveDb {
                     self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
                 );
             }
-            let element = cost_return_on_error!(
-                &mut cost,
-                self.get_raw(path_iter.clone(), key.as_ref(), transaction)
-            );
+            if !is_known_to_be_subtree {
+                let element = cost_return_on_error!(
+                    &mut cost,
+                    self.get_raw(path_iter.clone(), key.as_ref(), transaction)
+                );
+                is_known_to_be_subtree = matches!(element, Element::Tree(..));
+            }
 
-            if let Element::Tree(..) = element {
+            if is_known_to_be_subtree {
                 let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
                 let subtree_merk_path_vec = subtree_merk_path
                     .clone()
@@ -489,36 +508,108 @@ impl GroveDb {
         }
     }
 
-    pub fn worst_case_delete_operation_for_delete_internal<'p, 'db, S: Storage<'db>, P>(
+    pub fn worst_case_delete_operations_for_delete_up_tree_while_empty<
+        'p,
+        'db,
+        S: Storage<'db>,
+        P,
+    >(
         &self,
         path: &KeyInfoPath,
         key: &KeyInfo,
+        stop_path_height: Option<u16>,
         validate: bool,
+        intermediate_flag_sizes: IntMap<u32>,
         max_element_size: u32,
-    ) -> CostResult<Option<GroveDbOp>, Error>
+    ) -> CostResult<Vec<GroveDbOp>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let mut cost = OperationCost::default();
 
-        if path.len() == 0 {
+        let stop_path_height = stop_path_height.unwrap_or_default();
+
+        if (path.len() as u16) < stop_path_height {
             // Attempt to delete a root tree leaf
-            Err(Error::InvalidPath(
-                "root tree leaves currently cannot be deleted".to_owned(),
+            Err(Error::InvalidParameter(
+                "path length need to be greater or equal to stop path height",
             ))
             .wrap_with_cost(cost)
         } else {
-            if validate {
-                GroveDb::add_worst_case_get_merk_at_path::<S>(&mut cost, path);
+            let mut used_path = path.0.as_slice();
+            let mut ops = vec![];
+            let path_len = path.len() as u16;
+            for height in (stop_path_height..(path_len as u16)).rev() {
+                let (
+                    path_at_level,
+                    key_at_level,
+                    check_if_tree,
+                    except_keys_count,
+                    max_element_size,
+                ) = cost_return_on_error_no_add!(
+                    &cost,
+                    if height == path_len {
+                        Ok((used_path, key, true, 0, max_element_size))
+                    } else {
+                        let (last_key, smaller_path) = used_path.split_last().unwrap();
+                        used_path = smaller_path;
+                        if let Some(flags_size_at_level) =
+                            intermediate_flag_sizes.get(height as u64)
+                        {
+                            let value_len = LAYER_COST_SIZE + flags_size_at_level;
+                            let max_tree_size =
+                                KV::layered_node_byte_cost_size_for_key_and_value_lengths(
+                                    last_key.len() as u32,
+                                    value_len,
+                                );
+                            Ok((used_path, last_key, false, 1, max_tree_size))
+                        } else {
+                            Err(Error::InvalidParameter("intermediate flag size missing"))
+                        }
+                    }
+                );
+                let op = cost_return_on_error!(
+                    &mut cost,
+                    Self::worst_case_delete_operation_for_delete_internal::<S, P>(
+                        &KeyInfoPath::from_vec(path_at_level.to_vec()),
+                        key_at_level,
+                        validate,
+                        check_if_tree,
+                        except_keys_count,
+                        max_element_size
+                    )
+                );
+                ops.push(op);
             }
-            GroveDb::add_worst_case_get_raw_cost::<S>(&mut cost, path, key, max_element_size);
-            Ok(Some(GroveDbOp::delete_worst_case_op(
-                path.clone(),
-                key.clone(),
-            )))
-            .wrap_with_cost(cost)
+            Ok(ops).wrap_with_cost(cost)
         }
+    }
+
+    pub fn worst_case_delete_operation_for_delete_internal<'p, 'db, S: Storage<'db>, P>(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        validate: bool,
+        check_if_tree: bool,
+        except_keys_count: u16,
+        max_element_size: u32,
+    ) -> CostResult<GroveDbOp, Error>
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+
+        if validate {
+            GroveDb::add_worst_case_get_merk_at_path::<S>(&mut cost, path);
+        }
+        if check_if_tree {
+            GroveDb::add_worst_case_get_raw_cost::<S>(&mut cost, path, key, max_element_size);
+        }
+        // in the worst case this is a tree
+        add_worst_case_cost_for_is_empty_tree_except(&mut cost, except_keys_count);
+
+        Ok(GroveDbOp::delete_worst_case_op(path.clone(), key.clone())).wrap_with_cost(cost)
     }
 
     fn delete_internal<'p, P>(

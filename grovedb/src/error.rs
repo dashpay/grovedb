@@ -52,6 +52,8 @@ pub enum Error {
     InvalidQuery(&'static str),
     #[error("missing parameter: {0}")]
     MissingParameter(&'static str),
+    #[error("invalid parameter: {0}")]
+    InvalidParameter(&'static str),
     // Irrecoverable errors
     #[error("storage_cost error: {0}")]
     StorageError(#[from] storage::error::Error),
