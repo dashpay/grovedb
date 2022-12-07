@@ -190,24 +190,24 @@ impl GroveDb {
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
-        max_element_size: u32,
+        estimated_element_size: u32,
     ) {
         cost.seek_count += 1;
-        add_average_case_get_merk_node(cost, key.len() as u32, max_element_size);
+        add_average_case_get_merk_node(cost, key.len() as u32, estimated_element_size);
     }
 
     pub fn add_average_case_get_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
-        max_element_size: u32,
-        max_references_sizes: Vec<u32>,
+        estimated_element_size: u32,
+        estimated_references_sizes: Vec<u32>,
     ) {
         // todo: verify
         let value_size: u32 =
-            Tree::average_case_encoded_tree_size(key.len() as u32, max_element_size);
-        cost.seek_count += 1 + max_references_sizes.len() as u16;
-        cost.storage_loaded_bytes += value_size + max_references_sizes.iter().sum::<u32>();
+            Tree::average_case_encoded_tree_size(key.len() as u32, estimated_element_size);
+        cost.seek_count += 1 + estimated_references_sizes.len() as u16;
+        cost.storage_loaded_bytes += value_size + estimated_references_sizes.iter().sum::<u32>();
         *cost += S::get_storage_context_cost(path.as_vec());
     }
 }

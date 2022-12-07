@@ -467,4 +467,51 @@ where {
         );
         cost
     }
+
+    pub fn average_case_for_has_raw(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        estimated_element_size: u32,
+    ) -> OperationCost {
+        let mut cost = OperationCost::default();
+        GroveDb::add_average_case_has_raw_cost::<RocksDbStorage>(
+            &mut cost,
+            path,
+            key,
+            estimated_element_size,
+        );
+        cost
+    }
+
+    pub fn average_case_for_get_raw(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        estimated_element_size: u32,
+    ) -> OperationCost {
+        let mut cost = OperationCost::default();
+        GroveDb::add_average_case_get_raw_cost::<RocksDbStorage>(
+            &mut cost,
+            path,
+            key,
+            estimated_element_size,
+        );
+        cost
+    }
+
+    pub fn average_case_for_get(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        estimated_element_size: u32,
+        estimated_references_sizes: Vec<u32>,
+    ) -> OperationCost {
+        let mut cost = OperationCost::default();
+        GroveDb::add_average_case_get_cost::<RocksDbStorage>(
+            &mut cost,
+            path,
+            key,
+            estimated_element_size,
+            estimated_references_sizes,
+        );
+        cost
+    }
 }
