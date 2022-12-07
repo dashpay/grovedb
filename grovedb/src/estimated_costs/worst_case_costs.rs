@@ -61,7 +61,7 @@ impl GroveDb {
     }
 
     /// Add worst case for insertion into merk
-    pub(crate) fn worst_case_merk_insert_tree(
+    pub fn worst_case_merk_insert_tree(
         key: &KeyInfo,
         flags: &Option<ElementFlags>,
         propagate_if_input: Option<&WorstCaseLayerInformation>,
@@ -83,7 +83,7 @@ impl GroveDb {
     }
 
     /// Add worst case for insertion into merk
-    pub(crate) fn worst_case_merk_delete_tree(
+    pub fn worst_case_merk_delete_tree(
         key: &KeyInfo,
         worst_case_layer_information: &WorstCaseLayerInformation,
         propagate: bool,
@@ -104,7 +104,7 @@ impl GroveDb {
     /// Add worst case for insertion into merk
     /// This only propagates on 1 level
     /// As higher level propagation is done in batching
-    pub(crate) fn worst_case_merk_insert_element(
+    pub fn worst_case_merk_insert_element(
         key: &KeyInfo,
         value: &Element,
         propagate_for_level: Option<&WorstCaseLayerInformation>,
@@ -130,7 +130,7 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    pub(crate) fn worst_case_merk_delete_element(
+    pub fn worst_case_merk_delete_element(
         key: &KeyInfo,
         worst_case_layer_information: &WorstCaseLayerInformation,
         propagate: bool,

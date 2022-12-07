@@ -71,7 +71,7 @@ impl GroveDb {
     }
 
     /// Add average case for insertion into merk
-    pub(crate) fn average_case_merk_insert_tree(
+    pub fn average_case_merk_insert_tree(
         key: &KeyInfo,
         flags: &Option<ElementFlags>,
         propagate_if_input: Option<&EstimatedLayerInformation>,
@@ -93,7 +93,7 @@ impl GroveDb {
     }
 
     /// Add average case for insertion into merk
-    pub(crate) fn average_case_merk_delete_tree(
+    pub fn average_case_merk_delete_tree(
         key: &KeyInfo,
         estimated_layer_information: &EstimatedLayerInformation,
         propagate: bool,
@@ -123,7 +123,7 @@ impl GroveDb {
     /// Add average case for insertion into merk
     /// This only propagates on 1 level
     /// As higher level propagation is done in batching
-    pub(crate) fn average_case_merk_insert_element(
+    pub fn average_case_merk_insert_element(
         key: &KeyInfo,
         value: &Element,
         propagate_for_level: Option<&EstimatedLayerInformation>,
@@ -149,7 +149,7 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    pub(crate) fn average_case_merk_delete_element(
+    pub fn average_case_merk_delete_element(
         key: &KeyInfo,
         estimated_layer_information: &EstimatedLayerInformation,
         propagate: bool,
