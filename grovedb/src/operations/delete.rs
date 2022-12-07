@@ -608,7 +608,7 @@ impl GroveDb {
         // in the worst case this is a tree
         add_worst_case_cost_for_is_empty_tree_except(&mut cost, except_keys_count);
 
-        Ok(GroveDbOp::delete_worst_case_op(path.clone(), key.clone())).wrap_with_cost(cost)
+        Ok(GroveDbOp::delete_estimated_op(path.clone(), key.clone())).wrap_with_cost(cost)
     }
 
     fn delete_internal<'p, P>(

@@ -247,7 +247,7 @@ impl fmt::Debug for GroveDbOp {
 
 impl GroveDbOp {
     pub fn insert_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
-        let path = KeyInfoPath(path.into_iter().map(|k| KnownKey(k)).collect());
+        let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
             key: KnownKey(key),
@@ -255,8 +255,16 @@ impl GroveDbOp {
         }
     }
 
+    pub fn insert_estimated_op(path: KeyInfoPath, key: KeyInfo, element: Element) -> Self {
+        Self {
+            path,
+            key,
+            op: Op::Insert { element },
+        }
+    }
+
     pub fn delete_op(path: Vec<Vec<u8>>, key: Vec<u8>) -> Self {
-        let path = KeyInfoPath(path.into_iter().map(|k| KnownKey(k)).collect());
+        let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
             key: KnownKey(key),
@@ -265,7 +273,7 @@ impl GroveDbOp {
     }
 
     pub fn delete_tree_op(path: Vec<Vec<u8>>, key: Vec<u8>) -> Self {
-        let path = KeyInfoPath(path.into_iter().map(|k| KnownKey(k)).collect());
+        let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
             key: KnownKey(key),
@@ -273,7 +281,7 @@ impl GroveDbOp {
         }
     }
 
-    pub fn delete_worst_case_op(path: KeyInfoPath, key: KeyInfo) -> Self {
+    pub fn delete_estimated_op(path: KeyInfoPath, key: KeyInfo) -> Self {
         Self {
             path,
             key,
@@ -281,7 +289,7 @@ impl GroveDbOp {
         }
     }
 
-    pub fn delete_worst_case_tree_op(path: KeyInfoPath, key: KeyInfo) -> Self {
+    pub fn delete_estimated_tree_op(path: KeyInfoPath, key: KeyInfo) -> Self {
         Self {
             path,
             key,
