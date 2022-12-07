@@ -508,23 +508,14 @@ impl GroveDb {
         }
     }
 
-    pub fn worst_case_delete_operations_for_delete_up_tree_while_empty<
-        'p,
-        'db,
-        S: Storage<'db>,
-        P,
-    >(
+    pub fn worst_case_delete_operations_for_delete_up_tree_while_empty<'db, S: Storage<'db>>(
         path: &KeyInfoPath,
         key: &KeyInfo,
         stop_path_height: Option<u16>,
         validate: bool,
         intermediate_flag_sizes: IntMap<u32>,
         max_element_size: u32,
-    ) -> CostResult<Vec<GroveDbOp>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<Vec<GroveDbOp>, Error> {
         let mut cost = OperationCost::default();
 
         let stop_path_height = stop_path_height.unwrap_or_default();
@@ -570,7 +561,7 @@ impl GroveDb {
                 );
                 let op = cost_return_on_error!(
                     &mut cost,
-                    Self::worst_case_delete_operation_for_delete_internal::<S, P>(
+                    Self::worst_case_delete_operation_for_delete_internal::<S>(
                         &KeyInfoPath::from_vec(path_at_level.to_vec()),
                         key_at_level,
                         validate,
@@ -585,18 +576,14 @@ impl GroveDb {
         }
     }
 
-    pub fn worst_case_delete_operation_for_delete_internal<'p, 'db, S: Storage<'db>, P>(
+    pub fn worst_case_delete_operation_for_delete_internal<'db, S: Storage<'db>>(
         path: &KeyInfoPath,
         key: &KeyInfo,
         validate: bool,
         check_if_tree: bool,
         except_keys_count: u16,
         max_element_size: u32,
-    ) -> CostResult<GroveDbOp, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
+    ) -> CostResult<GroveDbOp, Error> {
         let mut cost = OperationCost::default();
 
         if validate {
