@@ -1,4 +1,3 @@
 pub const ROOT_KEY_KEY: &[u8] = b"r";
 pub const MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES: u8 = 8;
-pub const MAX_KEY_SIZE: u32 = 256;
 pub const MAX_PREFIXED_KEY_SIZE: u32 = 288;

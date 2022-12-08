@@ -24,10 +24,7 @@ use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext}
 
 use crate::{
     merk::{
-        defaults::{
-            MAX_KEY_SIZE, MAX_PREFIXED_KEY_SIZE, MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES,
-            ROOT_KEY_KEY,
-        },
+        defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
         options::MerkOptions,
     },
     proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
@@ -36,7 +33,6 @@ use crate::{
         Walker, NULL_HASH,
     },
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
-    HASH_LENGTH_U32,
 };
 
 type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);

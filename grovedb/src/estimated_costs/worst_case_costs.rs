@@ -21,7 +21,6 @@ use crate::{
     Element, ElementFlags, Error, GroveDb,
 };
 
-pub const WORST_CASE_FLAGS_SIZE: u32 = 16384;
 pub const WORST_CASE_FLAGS_LEN: u32 = 16386; // 2 bytes to represent this number for varint
 
 impl GroveDb {

@@ -54,8 +54,6 @@ use crate::{
     util::{root_merk_optional_tx, storage_context_optional_tx},
 };
 
-// todo: remove this
-const MAX_ELEMENTS_NUMBER: u32 = 42069;
 type Hash = [u8; 32];
 
 pub struct GroveDb {

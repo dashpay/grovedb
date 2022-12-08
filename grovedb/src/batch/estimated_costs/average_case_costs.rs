@@ -114,7 +114,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                 let paths = self
                     .paths
                     .iter()
-                    .map(|(k, v)| k.0.iter().map(|k| hex::encode(k.as_slice())).join("/"))
+                    .map(|(k, _v)| k.0.iter().map(|k| hex::encode(k.as_slice())).join("/"))
                     .join(" | ");
                 Error::PathNotFoundInCacheForEstimatedCosts(format!(
                     "required path {} not found in paths {}",
