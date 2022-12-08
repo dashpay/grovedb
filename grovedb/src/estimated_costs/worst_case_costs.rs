@@ -21,7 +21,6 @@ use crate::{
     Element, ElementFlags, Error, GroveDb,
 };
 
-pub const WORST_CASE_FLAGS_SIZE: u32 = 16384;
 pub const WORST_CASE_FLAGS_LEN: u32 = 16386; // 2 bytes to represent this number for varint
 
 impl GroveDb {
@@ -61,7 +60,7 @@ impl GroveDb {
     }
 
     /// Add worst case for insertion into merk
-    pub(crate) fn worst_case_merk_insert_tree(
+    pub fn worst_case_merk_insert_tree(
         key: &KeyInfo,
         flags: &Option<ElementFlags>,
         propagate_if_input: Option<&WorstCaseLayerInformation>,
@@ -105,7 +104,7 @@ impl GroveDb {
     }
 
     /// Add worst case for insertion into merk
-    pub(crate) fn worst_case_merk_delete_tree(
+    pub fn worst_case_merk_delete_tree(
         key: &KeyInfo,
         worst_case_layer_information: &WorstCaseLayerInformation,
         propagate: bool,
@@ -126,7 +125,7 @@ impl GroveDb {
     /// Add worst case for insertion into merk
     /// This only propagates on 1 level
     /// As higher level propagation is done in batching
-    pub(crate) fn worst_case_merk_insert_element(
+    pub fn worst_case_merk_insert_element(
         key: &KeyInfo,
         value: &Element,
         propagate_for_level: Option<&WorstCaseLayerInformation>,
@@ -152,7 +151,7 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    pub(crate) fn worst_case_merk_delete_element(
+    pub fn worst_case_merk_delete_element(
         key: &KeyInfo,
         worst_case_layer_information: &WorstCaseLayerInformation,
         propagate: bool,
@@ -180,6 +179,15 @@ impl GroveDb {
         cost.seek_count += 1;
         cost.storage_loaded_bytes += value_size;
         *cost += S::get_storage_context_cost(path.as_vec());
+    }
+
+    pub fn add_worst_case_get_raw_tree_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        _path: &KeyInfoPath,
+        key: &KeyInfo,
+    ) {
+        cost.seek_count += 1;
+        add_worst_case_get_merk_node(cost, key.len() as u32, TREE_COST_SIZE);
     }
 
     pub fn add_worst_case_get_raw_cost<'db, S: Storage<'db>>(

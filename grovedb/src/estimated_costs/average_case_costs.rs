@@ -71,7 +71,7 @@ impl GroveDb {
     }
 
     /// Add average case for insertion into merk
-    pub(crate) fn average_case_merk_insert_tree(
+    pub fn average_case_merk_insert_tree(
         key: &KeyInfo,
         flags: &Option<ElementFlags>,
         propagate_if_input: Option<&EstimatedLayerInformation>,
@@ -115,7 +115,7 @@ impl GroveDb {
     }
 
     /// Add average case for insertion into merk
-    pub(crate) fn average_case_merk_delete_tree(
+    pub fn average_case_merk_delete_tree(
         key: &KeyInfo,
         estimated_layer_information: &EstimatedLayerInformation,
         propagate: bool,
@@ -145,7 +145,7 @@ impl GroveDb {
     /// Add average case for insertion into merk
     /// This only propagates on 1 level
     /// As higher level propagation is done in batching
-    pub(crate) fn average_case_merk_insert_element(
+    pub fn average_case_merk_insert_element(
         key: &KeyInfo,
         value: &Element,
         propagate_for_level: Option<&EstimatedLayerInformation>,
@@ -171,7 +171,7 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    pub(crate) fn average_case_merk_delete_element(
+    pub fn average_case_merk_delete_element(
         key: &KeyInfo,
         estimated_layer_information: &EstimatedLayerInformation,
         propagate: bool,
@@ -182,7 +182,7 @@ impl GroveDb {
         let value_size = cost_return_on_error_no_add!(
             &cost,
             estimated_layer_sizes
-                .non_layered_value_with_flags_size()
+                .value_with_flags_size()
                 .map_err(Error::MerkError)
         );
         add_average_case_merk_delete(&mut cost, key_len, value_size);
@@ -212,24 +212,24 @@ impl GroveDb {
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
-        max_element_size: u32,
+        estimated_element_size: u32,
     ) {
         cost.seek_count += 1;
-        add_average_case_get_merk_node(cost, key.len() as u32, max_element_size);
+        add_average_case_get_merk_node(cost, key.len() as u32, estimated_element_size);
     }
 
     pub fn add_average_case_get_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
-        max_element_size: u32,
-        max_references_sizes: Vec<u32>,
+        estimated_element_size: u32,
+        estimated_references_sizes: Vec<u32>,
     ) {
         // todo: verify
         let value_size: u32 =
-            Tree::average_case_encoded_tree_size(key.len() as u32, max_element_size);
-        cost.seek_count += 1 + max_references_sizes.len() as u16;
-        cost.storage_loaded_bytes += value_size + max_references_sizes.iter().sum::<u32>();
+            Tree::average_case_encoded_tree_size(key.len() as u32, estimated_element_size);
+        cost.seek_count += 1 + estimated_references_sizes.len() as u16;
+        cost.storage_loaded_bytes += value_size + estimated_references_sizes.iter().sum::<u32>();
         *cost += S::get_storage_context_cost(path.as_vec());
     }
 }

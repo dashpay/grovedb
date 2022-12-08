@@ -35,6 +35,7 @@ use estimated_costs::{
     worst_case_costs::WorstCaseTreeCacheKnownPaths,
 };
 use integer_encoding::VarInt;
+use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     anyhow::anyhow,
@@ -122,7 +123,7 @@ impl PartialEq<Vec<Vec<u8>>> for KnownKeysPath {
     }
 }
 
-#[derive(PartialOrd, Ord, PartialEq, Eq, Clone, Debug)]
+#[derive(PartialOrd, Ord, PartialEq, Eq, Clone, Debug, Default)]
 pub struct KeyInfoPath(pub Vec<KeyInfo>);
 
 impl Hash for KeyInfoPath {
@@ -156,6 +157,14 @@ impl KeyInfoPath {
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
     {
         KeyInfoPath(path.into_iter().map(|k| KnownKey(k.to_vec())).collect())
+    }
+
+    pub fn from_known_owned_path<'p, P>(path: P) -> Self
+    where
+        P: IntoIterator<Item = Vec<u8>>,
+        <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
+    {
+        KeyInfoPath(path.into_iter().map(KnownKey).collect())
     }
 
     pub fn to_path_consume(self) -> Vec<Vec<u8>> {
@@ -248,7 +257,7 @@ impl fmt::Debug for GroveDbOp {
 
 impl GroveDbOp {
     pub fn insert_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
-        let path = KeyInfoPath(path.into_iter().map(|k| KnownKey(k)).collect());
+        let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
             key: KnownKey(key),
@@ -256,8 +265,16 @@ impl GroveDbOp {
         }
     }
 
+    pub fn insert_estimated_op(path: KeyInfoPath, key: KeyInfo, element: Element) -> Self {
+        Self {
+            path,
+            key,
+            op: Op::Insert { element },
+        }
+    }
+
     pub fn delete_op(path: Vec<Vec<u8>>, key: Vec<u8>) -> Self {
-        let path = KeyInfoPath(path.into_iter().map(|k| KnownKey(k)).collect());
+        let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
             key: KnownKey(key),
@@ -266,7 +283,7 @@ impl GroveDbOp {
     }
 
     pub fn delete_tree_op(path: Vec<Vec<u8>>, key: Vec<u8>) -> Self {
-        let path = KeyInfoPath(path.into_iter().map(|k| KnownKey(k)).collect());
+        let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
             key: KnownKey(key),
@@ -274,7 +291,7 @@ impl GroveDbOp {
         }
     }
 
-    pub fn delete_worst_case_op(path: KeyInfoPath, key: KeyInfo) -> Self {
+    pub fn delete_estimated_op(path: KeyInfoPath, key: KeyInfo) -> Self {
         Self {
             path,
             key,
@@ -282,7 +299,7 @@ impl GroveDbOp {
         }
     }
 
-    pub fn delete_worst_case_tree_op(path: KeyInfoPath, key: KeyInfo) -> Self {
+    pub fn delete_estimated_tree_op(path: KeyInfoPath, key: KeyInfo) -> Self {
         Self {
             path,
             key,
@@ -1272,9 +1289,10 @@ impl GroveDb {
                     let element = cost_return_on_error!(
                         &mut cost,
                         Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                            Error::InvalidPath(
-                                "could not get key for parent of subtree for batch".to_owned(),
-                            )
+                            Error::InvalidPath(format!(
+                                "could not get key for parent of subtree for batch at path {}",
+                                path_iter.map(hex::encode).join("/")
+                            ))
                         })
                     );
                     let is_sum_tree = element.is_sum_tree();
