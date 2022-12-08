@@ -65,7 +65,7 @@ mod tests {
     fn crash() {
         let mut merk = CrashMerk::open_base().expect("failed to open merk");
         merk.apply::<_, Vec<u8>>(
-            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk))],
+            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk))],
             &[],
             None,
         )

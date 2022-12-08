@@ -138,11 +138,11 @@ pub const fn seq_key(n: u64) -> [u8; 8] {
 }
 
 pub fn put_entry(n: u64) -> BatchEntry<Vec<u8>> {
-    (seq_key(n).to_vec(), Op::Put(vec![123; 60]), Some(BasicMerk))
+    (seq_key(n).to_vec(), Op::Put(vec![123; 60], BasicMerk))
 }
 
 pub fn del_entry(n: u64) -> BatchEntry<Vec<u8>> {
-    (seq_key(n).to_vec(), Op::Delete, None)
+    (seq_key(n).to_vec(), Op::Delete)
 }
 
 pub fn make_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {

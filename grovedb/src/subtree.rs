@@ -214,18 +214,18 @@ impl Element {
     pub fn get_feature_type(
         &self,
         parent_is_sum_tree: bool,
-    ) -> Result<Option<TreeFeatureType>, Error> {
+    ) -> Result<TreeFeatureType, Error> {
         match parent_is_sum_tree {
             true => {
                 let sum_value = self.sum_value();
                 match sum_value {
-                    Some(sum) => Ok(Some(SummedMerk(sum))),
+                    Some(sum) => Ok(SummedMerk(sum)),
                     None => Err(Error::CorruptedData(String::from(
                         "cannot decode sum item to i64",
                     ))),
                 }
             }
-            false => Ok(Some(BasicMerk)),
+            false => Ok(BasicMerk),
         }
     }
 
@@ -321,7 +321,7 @@ impl Element {
         } else {
             Op::Delete
         };
-        let batch = [(key, op, None)];
+        let batch = [(key, op)];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch, &[], merk_options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
         })
@@ -347,7 +347,7 @@ impl Element {
         } else {
             Op::Delete
         };
-        let batch = [(key, op, None)];
+        let batch = [(key, op)];
         merk.apply_with_costs_just_in_time_value_update::<_, Vec<u8>>(
             &batch,
             &[],
@@ -370,7 +370,7 @@ impl Element {
         } else {
             Op::Delete
         };
-        let entry = (key, op, None);
+        let entry = (key, op);
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -1102,7 +1102,7 @@ impl Element {
                 .wrap_with_cost(OperationCost::default())
         );
 
-        let batch_operations = [(key, Op::Put(serialized), merk_feature_type)];
+        let batch_operations = [(key, Op::Put(serialized, merk_feature_type))];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
         })
@@ -1144,14 +1144,14 @@ impl Element {
         &self,
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
-        feature_type: Option<TreeFeatureType>,
+        feature_type: TreeFeatureType,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let entry = (key, Op::Put(serialized), feature_type);
+        let entry = (key, Op::Put(serialized, feature_type));
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -1187,7 +1187,7 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
-        feature_type: Option<TreeFeatureType>,
+        feature_type: TreeFeatureType,
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
         let exists = cost_return_on_error!(
@@ -1231,8 +1231,7 @@ impl Element {
 
         let batch_operations = [(
             key,
-            Op::PutCombinedReference(serialized, referenced_value),
-            merk_feature_type,
+            Op::PutCombinedReference(serialized, referenced_value, merk_feature_type),
         )];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
@@ -1245,7 +1244,7 @@ impl Element {
         key: K,
         referenced_value: Hash,
         batch_operations: &mut Vec<BatchEntry<K>>,
-        feature_type: Option<TreeFeatureType>,
+        feature_type: TreeFeatureType,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
@@ -1254,8 +1253,7 @@ impl Element {
 
         let entry = (
             key,
-            Op::PutCombinedReference(serialized, referenced_value),
-            feature_type,
+            Op::PutCombinedReference(serialized, referenced_value, feature_type),
         );
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
@@ -1292,8 +1290,7 @@ impl Element {
             });
         let batch_operations = [(
             key,
-            Op::PutLayeredReference(serialized, cost, subtree_root_hash),
-            merk_feature_type,
+            Op::PutLayeredReference(serialized, cost, subtree_root_hash, merk_feature_type),
         )];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
@@ -1307,7 +1304,7 @@ impl Element {
         subtree_root_hash: Hash,
         is_replace: bool,
         batch_operations: &mut Vec<BatchEntry<K>>,
-        feature_type: Option<TreeFeatureType>,
+        feature_type: TreeFeatureType,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
@@ -1323,14 +1320,12 @@ impl Element {
         let entry = if is_replace {
             (
                 key,
-                Op::ReplaceLayeredReference(serialized, cost, subtree_root_hash),
-                feature_type,
+                Op::ReplaceLayeredReference(serialized, cost, subtree_root_hash, feature_type),
             )
         } else {
             (
                 key,
-                Op::PutLayeredReference(serialized, cost, subtree_root_hash),
-                feature_type,
+                Op::PutLayeredReference(serialized, cost, subtree_root_hash, feature_type),
             )
         };
         batch_operations.push(entry);

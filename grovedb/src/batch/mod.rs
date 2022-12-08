@@ -671,7 +671,7 @@ where
         let mut merk = cost_return_on_error!(&mut cost, merk_wrapped);
         let is_sum_tree = merk.is_sum_tree;
 
-        let mut batch_operations: Vec<(Vec<u8>, _, Option<TreeFeatureType>)> = vec![];
+        let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
                 Op::Insert { element } => match &element {
