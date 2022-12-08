@@ -160,7 +160,7 @@ impl GroveDb {
         let value_size = cost_return_on_error_no_add!(
             &cost,
             estimated_layer_sizes
-                .non_layered_value_with_flags_size()
+                .value_with_flags_size()
                 .map_err(Error::MerkError)
         );
         add_average_case_merk_delete(&mut cost, key_len, value_size);

@@ -19,7 +19,7 @@ pub enum EstimatedLayerSizes {
     AllItems(AverageKeySize, AverageValueSize, Option<AverageFlagsSize>),
     AllReference(AverageKeySize, AverageValueSize, Option<AverageFlagsSize>),
     Mix {
-        subtree_size: Option<(AverageKeySize, Option<AverageFlagsSize>, Weight)>,
+        subtrees_size: Option<(AverageKeySize, Option<AverageFlagsSize>, Weight)>,
         items_size: Option<(
             AverageKeySize,
             AverageValueSize,
@@ -40,7 +40,7 @@ impl EstimatedLayerSizes {
         match self {
             EstimatedLayerSizes::AllSubtrees(_, flags_size) => Ok(flags_size),
             EstimatedLayerSizes::Mix {
-                subtree_size,
+                subtrees_size: subtree_size,
                 items_size: _,
                 references_size: _,
             } => {
@@ -58,51 +58,68 @@ impl EstimatedLayerSizes {
         }
     }
 
-    pub fn non_layered_value_with_flags_size(&self) -> Result<u32, Error> {
+    pub fn value_with_flags_size(&self) -> Result<u32, Error> {
         match self {
-            EstimatedLayerSizes::AllItems(_, average_value_size, flags_size)
-            | EstimatedLayerSizes::AllReference(_, average_value_size, flags_size) => {
-                Ok(*average_value_size + flags_size.unwrap_or_default())
+            EstimatedLayerSizes::AllItems(_, average_value_size, flags_size) => {
+                // 1 for enum type
+                // 1 for value size
+                // 1 for flags size
+                Ok(*average_value_size + flags_size.unwrap_or_default() + 3)
+            }
+            EstimatedLayerSizes::AllReference(_, average_value_size, flags_size) => {
+                // 1 for enum type
+                // 1 for value size
+                // 1 for flags size
+                // 2 for reference hops
+                Ok(*average_value_size + flags_size.unwrap_or_default() + 5)
+            }
+            EstimatedLayerSizes::AllSubtrees(_, flags_size) => {
+                // 1 for enum type
+                // 1 for empty
+                // 1 for flags size
+                Ok(flags_size.unwrap_or_default() + 3)
             }
             EstimatedLayerSizes::Mix {
-                subtree_size: _,
+                subtrees_size,
                 items_size,
                 references_size,
             } => {
                 let (item_size, item_weight) = items_size
-                    .map(|(ks, vs, fs, weight)| {
-                        (ks as u32 + vs + fs.unwrap_or_default(), weight as u32)
-                    })
+                    .map(|(_, vs, fs, weight)| (vs + fs.unwrap_or_default() + 3, weight as u32))
                     .unwrap_or_default();
 
                 let (ref_size, ref_weight) = references_size
-                    .map(|(ks, vs, fs, weight)| {
-                        (ks as u32 + vs + fs.unwrap_or_default(), weight as u32)
-                    })
+                    .map(|(_, vs, fs, weight)| (vs + fs.unwrap_or_default() + 5, weight as u32))
                     .unwrap_or_default();
 
-                if item_weight == 0 && ref_weight == 0 {
+                let (subtree_size, subtree_weight) = subtrees_size
+                    .map(|(_, fs, weight)| (fs.unwrap_or_default() + 3, weight as u32))
+                    .unwrap_or_default();
+
+                if item_weight == 0 && ref_weight == 0 && subtree_weight == 0 {
                     return Err(Error::WrongEstimatedCostsElementTypeForLevel(
-                        "this layer is a mix and does not have items or refs",
+                        "this layer is a mix and does not have items, refs or trees",
                     ));
                 }
-                if item_weight == 0 {
+                if item_weight == 0 && ref_weight == 0 {
+                    return Ok(subtree_size);
+                }
+                if item_weight == 0 && subtree_weight == 0 {
                     return Ok(ref_size);
                 }
-                if ref_weight == 0 {
+                if ref_weight == 0 && subtree_weight == 0 {
                     return Ok(item_size);
                 }
-                let combined_weight = item_weight.checked_add(ref_weight).ok_or(
-                    Error::Overflow("overflow for non layered value size combining weights"),
-                )?;
+                let combined_weight = item_weight
+                    .checked_add(ref_weight)
+                    .and_then(|a| a.checked_add(subtree_weight))
+                    .ok_or(Error::Overflow("overflow for value size combining weights"))?;
                 item_size
                     .checked_add(ref_size)
+                    .and_then(|a| a.checked_add(subtree_size))
                     .and_then(|a| a.checked_div(combined_weight))
-                    .ok_or(Error::Overflow("overflow for non layered value size"))
+                    .ok_or(Error::Overflow("overflow for value size"))
             }
-            _ => Err(Error::WrongEstimatedCostsElementTypeForLevel(
-                "this layer only has subtree elements",
-            )),
         }
     }
 }
@@ -295,7 +312,7 @@ pub fn add_average_case_merk_propagate(
                 )
         }
         EstimatedLayerSizes::Mix {
-            subtree_size,
+            subtrees_size: subtree_size,
             items_size,
             references_size,
         } => {
@@ -391,7 +408,7 @@ pub fn add_average_case_merk_propagate(
                 )
         }
         EstimatedLayerSizes::Mix {
-            subtree_size,
+            subtrees_size: subtree_size,
             items_size,
             references_size,
         } => {
