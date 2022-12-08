@@ -182,17 +182,7 @@ impl Encode for TreeFeatureType {
             }
             TreeFeatureType::SummedMerk(sum) => {
                 dest.write_all(&[1])?;
-                // let mut encoded_sum = vec![];
-                // dbg!(sum);
-                // encoded_sum.write_varint(sum.to_owned());
-                // let m = (&encoded_sum as &dyn Read).read_varint()?;
-                // dbg!(&m);
-                // dbg!(&encoded_sum);
-                // sum.write_varint(encoded_sum);
-                // let encoded_sum = sum.encode_var_vec();
-                // dest.write_all(&[encoded_sum.len() as u8]);
                 dest.write_varint(sum.to_owned());
-                // dest.write_all(&encoded_sum);
                 Ok(())
             }
         }
