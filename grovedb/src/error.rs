@@ -52,6 +52,8 @@ pub enum Error {
     InvalidQuery(&'static str),
     #[error("missing parameter: {0}")]
     MissingParameter(&'static str),
+    #[error("invalid parameter: {0}")]
+    InvalidParameter(&'static str),
     // Irrecoverable errors
     #[error("storage_cost error: {0}")]
     StorageError(#[from] storage::error::Error),
@@ -85,7 +87,14 @@ pub enum Error {
     #[error("override not allowed error: {0}")]
     OverrideNotAllowed(&'static str),
 
+    #[error("path not found in cache for estimated costs: {0}")]
+    PathNotFoundInCacheForEstimatedCosts(String),
+
     // Support errors
     #[error("not supported: {0}")]
     NotSupported(&'static str),
+
+    // Merk errors
+    #[error("merk error: {0}")]
+    MerkError(merk::error::Error),
 }

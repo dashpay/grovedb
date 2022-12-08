@@ -27,7 +27,11 @@ use crate::{
 const BLAKE_BLOCK_LEN: usize = 64;
 
 fn blake_block_count(len: usize) -> usize {
-    (BLAKE_BLOCK_LEN + len - 1) / BLAKE_BLOCK_LEN
+    if len == 0 {
+        1
+    } else {
+        1 + (len - 1) / BLAKE_BLOCK_LEN
+    }
 }
 
 /// Name of column family used to store auxiliary data
@@ -78,7 +82,7 @@ impl RocksDbStorage {
         Ok(RocksDbStorage { db })
     }
 
-    fn build_prefix_body<'a, P>(path: P) -> Vec<u8>
+    fn build_prefix_body<'a, P>(path: P) -> (Vec<u8>, usize)
     where
         P: IntoIterator<Item = &'a [u8]>,
     {
@@ -95,7 +99,7 @@ impl RocksDbStorage {
 
         res.extend(segments_count.to_ne_bytes());
         res.extend(lengthes);
-        res
+        (res, segments_count)
     }
 
     fn worst_case_body_size<L: WorstKeyLength>(path: &Vec<L>) -> usize {
@@ -108,13 +112,17 @@ impl RocksDbStorage {
     where
         P: IntoIterator<Item = &'a [u8]>,
     {
-        let body = Self::build_prefix_body(path);
-        let blocks_count = blake_block_count(body.len());
+        let (body, segments_count) = Self::build_prefix_body(path);
+        if segments_count == 0 {
+            [0; 32].to_vec().wrap_with_cost(OperationCost::default())
+        } else {
+            let blocks_count = blake_block_count(body.len());
 
-        blake3::hash(&body)
-            .as_bytes()
-            .to_vec()
-            .wrap_with_cost(OperationCost::with_hash_node_calls(blocks_count as u16))
+            blake3::hash(&body)
+                .as_bytes()
+                .to_vec()
+                .wrap_with_cost(OperationCost::with_hash_node_calls(blocks_count as u16))
+        }
     }
 }
 
@@ -215,6 +223,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put(&key, &value);
+                    cost.seek_count += 1;
                     cost_return_on_error_no_add!(
                         &cost,
                         pending_costs
@@ -233,6 +242,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_aux(&self.db), &key, &value);
+                    cost.seek_count += 1;
                     cost_return_on_error_no_add!(
                         &cost,
                         pending_costs
@@ -251,6 +261,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_roots(&self.db), &key, &value);
+                    cost.seek_count += 1;
                     // We only add costs for put root if they are set, otherwise it is free
                     if cost_info.is_some() {
                         cost_return_on_error_no_add!(
@@ -272,6 +283,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_meta(&self.db), &key, &value);
+                    cost.seek_count += 1;
                     cost_return_on_error_no_add!(
                         &cost,
                         pending_costs
@@ -415,10 +427,14 @@ impl<'db> Storage<'db> for RocksDbStorage {
     }
 
     fn get_storage_context_cost<L: WorstKeyLength>(path: &Vec<L>) -> OperationCost {
-        let body_size = Self::worst_case_body_size(path);
-        // the block size of blake3 is 64
-        let blocks_num = blake_block_count(body_size) as u16;
-        OperationCost::with_hash_node_calls(blocks_num)
+        if path.is_empty() {
+            OperationCost::default()
+        } else {
+            let body_size = Self::worst_case_body_size(path);
+            // the block size of blake3 is 64
+            let blocks_num = blake_block_count(body_size) as u16;
+            OperationCost::with_hash_node_calls(blocks_num)
+        }
     }
 
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Self::Error> {

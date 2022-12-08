@@ -75,13 +75,15 @@ impl KV {
         let combined_value_hash =
             combine_hash(&actual_value_hash, &supplied_value_hash).unwrap_add_cost(&mut cost);
 
-        kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash).map(|hash| Self {
-            key,
-            value,
-            value_defined_cost: None,
-            hash,
-            value_hash: combined_value_hash,
-        })
+        kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash)
+            .map(|hash| Self {
+                key,
+                value,
+                value_defined_cost: None,
+                hash,
+                value_hash: combined_value_hash,
+            })
+            .add_cost(cost)
     }
 
     pub fn new_with_layered_value_hash(
@@ -95,13 +97,15 @@ impl KV {
         let combined_value_hash =
             combine_hash(&actual_value_hash, &supplied_value_hash).unwrap_add_cost(&mut cost);
 
-        kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash).map(|hash| Self {
-            key,
-            value,
-            value_defined_cost: Some(value_cost),
-            hash,
-            value_hash: combined_value_hash,
-        })
+        kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash)
+            .map(|hash| Self {
+                key,
+                value,
+                value_defined_cost: Some(value_cost),
+                hash,
+                value_hash: combined_value_hash,
+            })
+            .add_cost(cost)
     }
 
     /// Creates a new `KV` with the given key, value, and hash. The hash is not
@@ -276,18 +280,40 @@ impl KV {
         node_value_size + parent_to_child_cost
     }
 
+    /// Get the costs for the value with known value_len and non prefixed key
+    /// len sizes, this has the parent to child hooks
     #[inline]
-    pub(crate) fn value_byte_cost_size(&self) -> u32 {
+    pub(crate) fn value_byte_cost_size_for_key_and_value_lengths(
+        not_prefixed_key_len: u32,
+        value_len: u32,
+    ) -> u32 {
         // encoding a reference encodes the key last and doesn't encode the size of the
         // key. so no need for a varint required space calculation for the
         // reference.
 
         // however we do need the varint required space for the cost of the key in
         // rocks_db
+        let parent_to_child_reference_len = Link::encoded_link_size(not_prefixed_key_len);
+        value_len + value_len.required_space() as u32 + parent_to_child_reference_len
+    }
+
+    /// Get the costs for the value with known raw value_len and non prefixed
+    /// key len sizes, this has the parent to child hooks
+    #[inline]
+    pub(crate) fn value_byte_cost_size_for_key_and_raw_value_lengths(
+        not_prefixed_key_len: u32,
+        raw_value_len: u32,
+    ) -> u32 {
+        let value_len = raw_value_len + HASH_LENGTH_U32_X2;
+        Self::value_byte_cost_size_for_key_and_value_lengths(not_prefixed_key_len, value_len)
+    }
+
+    /// Get the costs for the value, this has the parent to child hooks
+    #[inline]
+    pub(crate) fn value_byte_cost_size(&self) -> u32 {
         let key_len = self.key.len() as u32;
         let value_len = self.encoding_length().unwrap() as u32;
-        let parent_to_child_reference_len = Link::encoded_link_size(key_len);
-        value_len + value_len.required_space() as u32 + parent_to_child_reference_len
+        Self::value_byte_cost_size_for_key_and_value_lengths(key_len, value_len)
     }
 
     /// This function is used to calculate the cost of groveDB tree nodes
