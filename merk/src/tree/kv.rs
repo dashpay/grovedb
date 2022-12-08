@@ -5,7 +5,15 @@ use ed::{Decode, Encode, Result, Terminated};
 use integer_encoding::VarInt;
 
 use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
-use crate::{tree::hash::{combine_hash, kv_digest_to_kv_hash, value_hash}, Link, HASH_LENGTH_U32, HASH_LENGTH_U32_X2, TreeFeatureType};
+use crate::{
+    tree::{
+        hash::{combine_hash, kv_digest_to_kv_hash, value_hash},
+        Tree,
+    },
+    Link, TreeFeatureType,
+    TreeFeatureType::BasicMerk,
+    HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
+};
 
 // TODO: maybe use something similar to Vec but without capacity field,
 //       (should save 16 bytes per entry). also, maybe a shorter length
@@ -13,11 +21,11 @@ use crate::{tree::hash::{combine_hash, kv_digest_to_kv_hash, value_hash}, Link, 
 //       field and value field.
 
 /// Contains a key/value pair, and the hash of the key/value pair.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct KV {
     pub(super) key: Vec<u8>,
     pub(super) value: Vec<u8>,
-    feature_type: TreeFeatureType,
+    pub(super) feature_type: TreeFeatureType,
     /// The value defined cost is only used on insert
     /// Todo: find another way to do this without this attribute.
     pub(crate) value_defined_cost: Option<u32>,
@@ -28,13 +36,14 @@ pub struct KV {
 impl KV {
     /// Creates a new `KV` with the given key and value and computes its hash.
     #[inline]
-    pub fn new(key: Vec<u8>, value: Vec<u8>) -> CostContext<Self> {
+    pub fn new(key: Vec<u8>, value: Vec<u8>, feature_type: TreeFeatureType) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         let value_hash = value_hash(value.as_slice()).unwrap_add_cost(&mut cost);
         let kv_hash = kv_digest_to_kv_hash(key.as_slice(), &value_hash).unwrap_add_cost(&mut cost);
         Self {
             key,
             value,
+            feature_type,
             value_defined_cost: None,
             hash: kv_hash,
             value_hash,
@@ -49,11 +58,13 @@ impl KV {
         key: Vec<u8>,
         value: Vec<u8>,
         value_hash: CryptoHash,
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         // TODO: length checks?
         kv_digest_to_kv_hash(key.as_slice(), &value_hash).map(|hash| Self {
             key,
             value,
+            feature_type,
             value_defined_cost: None,
             hash,
             value_hash,
@@ -67,6 +78,7 @@ impl KV {
         key: Vec<u8>,
         value: Vec<u8>,
         supplied_value_hash: CryptoHash,
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         let actual_value_hash = value_hash(value.as_slice()).unwrap_add_cost(&mut cost);
@@ -77,6 +89,7 @@ impl KV {
             .map(|hash| Self {
                 key,
                 value,
+                feature_type,
                 value_defined_cost: None,
                 hash,
                 value_hash: combined_value_hash,
@@ -89,6 +102,7 @@ impl KV {
         value: Vec<u8>,
         value_cost: u32,
         supplied_value_hash: CryptoHash,
+        feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         let actual_value_hash = value_hash(value.as_slice()).unwrap_add_cost(&mut cost);
@@ -99,6 +113,7 @@ impl KV {
             .map(|hash| Self {
                 key,
                 value,
+                feature_type,
                 value_defined_cost: Some(value_cost),
                 hash,
                 value_hash: combined_value_hash,
@@ -114,10 +129,12 @@ impl KV {
         value: Vec<u8>,
         hash: CryptoHash,
         value_hash: CryptoHash,
+        feature_type: TreeFeatureType,
     ) -> Self {
         Self {
             key,
             value,
+            feature_type,
             value_defined_cost: None,
             hash,
             value_hash,
@@ -334,6 +351,7 @@ impl KV {
 impl Encode for KV {
     #[inline]
     fn encode_into<W: Write>(&self, out: &mut W) -> Result<()> {
+        &self.feature_type.encode_into(out)?;
         out.write_all(&self.hash[..])?;
         out.write_all(&self.value_hash[..])?;
         out.write_all(self.value.as_slice())?;
@@ -353,6 +371,7 @@ impl Decode for KV {
         let mut kv = Self {
             key: Vec::with_capacity(0),
             value: Vec::with_capacity(128),
+            feature_type: BasicMerk,
             value_defined_cost: None,
             hash: NULL_HASH,
             value_hash: NULL_HASH,
@@ -365,6 +384,7 @@ impl Decode for KV {
     fn decode_into<R: Read>(&mut self, mut input: R) -> Result<()> {
         self.key.clear();
 
+        self.feature_type = TreeFeatureType::decode(&mut input)?;
         input.read_exact(&mut self.hash[..])?;
         input.read_exact(&mut self.value_hash[..])?;
 
@@ -380,10 +400,11 @@ impl Terminated for KV {}
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::TreeFeatureType::SummedMerk;
 
     #[test]
     fn new_kv() {
-        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6]).unwrap();
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], BasicMerk).unwrap();
 
         assert_eq!(kv.key(), &[1, 2, 3]);
         assert_eq!(kv.value_as_slice(), &[4, 5, 6]);
@@ -392,7 +413,7 @@ mod test {
 
     #[test]
     fn with_value() {
-        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6])
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], BasicMerk)
             .unwrap()
             .put_value_then_update(vec![7, 8, 9])
             .unwrap();
@@ -400,5 +421,24 @@ mod test {
         assert_eq!(kv.key(), &[1, 2, 3]);
         assert_eq!(kv.value_as_slice(), &[7, 8, 9]);
         assert_ne!(kv.hash(), &super::super::hash::NULL_HASH);
+    }
+
+    #[test]
+    fn encode_and_decode_kv() {
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], BasicMerk).unwrap();
+        let mut encoded_kv = vec![];
+        kv.encode_into(&mut encoded_kv);
+        let mut decoded_kv = KV::decode(encoded_kv.as_slice()).unwrap();
+        decoded_kv.key = vec![1, 2, 3];
+
+        assert_eq!(kv, decoded_kv);
+
+        let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], SummedMerk(20)).unwrap();
+        let mut encoded_kv = vec![];
+        kv.encode_into(&mut encoded_kv);
+        let mut decoded_kv = KV::decode(encoded_kv.as_slice()).unwrap();
+        decoded_kv.key = vec![1, 2, 3];
+
+        assert_eq!(kv, decoded_kv);
     }
 }

@@ -228,7 +228,7 @@ mod tests {
         let tree = Tree::decode(vec![0], bytes.as_slice()).expect("should decode correctly");
         assert_eq!(tree.key(), &[0]);
         assert_eq!(tree.value_as_slice(), &[1]);
-        assert_eq!(tree.inner.feature_type, BasicMerk);
+        assert_eq!(tree.inner.kv.feature_type, BasicMerk);
     }
 
     #[test]
