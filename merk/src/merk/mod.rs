@@ -22,7 +22,7 @@ use costs::{
     CostContext, CostResult, CostsExt, OperationCost,
 };
 use ed::{Decode, Encode, Terminated};
-use integer_encoding::VarInt;
+use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
 
 use crate::{
@@ -182,9 +182,17 @@ impl Encode for TreeFeatureType {
             }
             TreeFeatureType::SummedMerk(sum) => {
                 dest.write_all(&[1])?;
-                let encoded_sum = sum.encode_var_vec();
-                dest.write_all(&[encoded_sum.len() as u8]);
-                dest.write_all(&encoded_sum);
+                // let mut encoded_sum = vec![];
+                // dbg!(sum);
+                // encoded_sum.write_varint(sum.to_owned());
+                // let m = (&encoded_sum as &dyn Read).read_varint()?;
+                // dbg!(&m);
+                // dbg!(&encoded_sum);
+                // sum.write_varint(encoded_sum);
+                // let encoded_sum = sum.encode_var_vec();
+                // dest.write_all(&[encoded_sum.len() as u8]);
+                dest.write_varint(sum.to_owned());
+                // dest.write_all(&encoded_sum);
                 Ok(())
             }
         }
@@ -196,7 +204,9 @@ impl Encode for TreeFeatureType {
             TreeFeatureType::BasicMerk => Ok(1),
             TreeFeatureType::SummedMerk(sum) => {
                 let encoded_sum = sum.encode_var_vec();
-                Ok(1 + 1 + encoded_sum.len())
+                // 1 for the enum type
+                // encoded_sum.len() for the length of the encoded vector
+                Ok(1 + encoded_sum.len())
             }
         }
     }
@@ -205,17 +215,13 @@ impl Encode for TreeFeatureType {
 impl Decode for TreeFeatureType {
     #[inline]
     fn decode<R: Read>(mut input: R) -> ed::Result<Self> {
-        let mut feature_type: [u8; 1] = [13];
+        let mut feature_type: [u8; 1] = [0];
         input.read_exact(&mut feature_type)?;
         match feature_type {
             [0] => Ok(BasicMerk),
             [1] => {
-                let mut length: [u8; 1] = [0];
-                input.read_exact(&mut length)?;
-                let mut encoded_sum: Vec<u8> = vec![0; length[0] as usize];
-                input.read_exact(&mut encoded_sum)?;
-                let sum = i64::decode_var(&encoded_sum).ok_or(ed::Error::UnexpectedByte(55))?;
-                Ok(SummedMerk(sum.0))
+                let encoded_sum: i64 = input.read_varint()?;
+                Ok(SummedMerk(encoded_sum))
             }
             _ => Err(ed::Error::UnexpectedByte(55)),
         }
