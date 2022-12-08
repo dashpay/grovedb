@@ -9,6 +9,9 @@ pub mod worst_case_costs;
 /// The cost of a subtree layer
 pub const LAYER_COST_SIZE: u32 = 3;
 
+/// The cost of a summed subtree layer
+pub const SUM_LAYER_COST_SIZE: u32 = 11;
+
 impl KV {
     fn encoded_kv_node_size(element_size: u32) -> u32 {
         // KV holds the state of a node

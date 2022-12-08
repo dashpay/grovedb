@@ -228,7 +228,7 @@ impl GroveDb {
                     )
                 );
             }
-            Element::Tree(ref value, _) => {
+            Element::Tree(ref value, _) | Element::SumTree(ref value, ..) => {
                 if value.is_some() {
                     return Err(Error::InvalidCodeExecution(
                         "a tree should be empty at the moment of insertion when not using batches",
@@ -587,7 +587,8 @@ mod tests {
                 None,
                 Some(&tx),
             )
-            .cost;
+            .cost_as_result()
+            .expect("should insert");
         // Explanation for 183 storage_written_bytes
 
         // Key -> 37 bytes

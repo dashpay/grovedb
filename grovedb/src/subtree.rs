@@ -13,7 +13,7 @@ use integer_encoding::VarInt;
 use merk::{
     anyhow,
     ed::Decode,
-    estimated_costs::LAYER_COST_SIZE,
+    estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE},
     proofs::{query::QueryItem, Query},
     tree::{kv::KV, Tree, TreeInner},
     BatchEntry, MerkOptions, Op, TreeFeatureType,
@@ -44,6 +44,8 @@ pub type MaxReferenceHop = Option<u8>;
 
 /// The cost of a tree
 pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
+/// The cost of a sum tree
+pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 11
 
 /// int 64 sum value
 pub type SumValue = i64;
@@ -1082,22 +1084,17 @@ impl Element {
         key: K,
         options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
-        let serialized = match self.serialize() {
-            Ok(s) => s,
-            Err(e) => return Err(e).wrap_with_cost(Default::default()),
-        };
+        let mut cost = OperationCost::default();
+
+        let serialized = cost_return_on_error_no_add!(&cost, self.serialize());
 
         if !merk.is_sum_tree && self.is_sum_item() {
             return Err(Error::InvalidInput("cannot add sum item to non sum tree"))
                 .wrap_with_cost(Default::default());
         }
 
-        let mut cost = OperationCost::default();
-        let merk_feature_type = cost_return_on_error!(
-            &mut cost,
-            self.get_feature_type(merk.is_sum_tree)
-                .wrap_with_cost(OperationCost::default())
-        );
+        let merk_feature_type =
+            cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
 
         let batch_operations = [(key, Op::Put(serialized, merk_feature_type))];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
@@ -1256,6 +1253,16 @@ impl Element {
         Ok(()).wrap_with_cost(Default::default())
     }
 
+    pub fn get_tree_cost(&self) -> Result<u32, Error> {
+        match self {
+            Element::Tree(..) => Ok(TREE_COST_SIZE),
+            Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
+            _ => Err(Error::CorruptedCodeExecution(
+                "trying to get tree cost from non tree element",
+            )),
+        }
+    }
+
     /// Insert a tree element in Merk under a key; path should be resolved
     /// and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -1274,13 +1281,12 @@ impl Element {
         };
 
         let mut cost = OperationCost::default();
-        let merk_feature_type = cost_return_on_error!(
-            &mut cost,
-            self.get_feature_type(merk.is_sum_tree)
-                .wrap_with_cost(OperationCost::default())
-        );
+        let merk_feature_type =
+            cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
 
-        let cost = TREE_COST_SIZE
+        let tree_cost = cost_return_on_error_no_add!(&cost, self.get_tree_cost());
+
+        let cost = tree_cost
             + self.get_flags().as_ref().map_or(0, |flags| {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32
