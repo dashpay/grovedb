@@ -535,7 +535,7 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]), Some(BasicMerk))], &[], None)
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0], BasicMerk))], &[], None)
     ///         .unwrap().expect("");
     ///
     /// use merk::Op;
@@ -543,9 +543,9 @@ where
     ///
     /// let batch = &[
     ///     // puts value [4,5,6] to key[1,2,3]
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)),
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk)),
     ///     // deletes key [4,5,6]
-    ///     (vec![4, 5, 6], Op::Delete, None),
+    ///     (vec![4, 5, 6], Op::Delete),
     /// ];
     /// store.apply::<_, Vec<_>>(batch, &[], None).unwrap().expect("");
     /// ```
@@ -641,7 +641,7 @@ where
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
     /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
-    ///     &[(vec![4,5,6], Op::Put(vec![0]), Some(BasicMerk))],
+    ///     &[(vec![4,5,6], Op::Put(vec![0], BasicMerk))],
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
@@ -655,9 +655,9 @@ where
     ///
     /// let batch = &[
     ///     // puts value [4,5,6] to key[1,2,3]
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)),
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk)),
     ///     // deletes key [4,5,6]
-    ///     (vec![4, 5, 6], Op::Delete, None),
+    ///     (vec![4, 5, 6], Op::Delete),
     /// ];
     ///
     /// store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
@@ -734,7 +734,7 @@ where
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
     /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
-    ///     &[(vec![4,5,6], Op::Put(vec![0]), Some(BasicMerk))],
+    ///     &[(vec![4,5,6], Op::Put(vec![0], BasicMerk))],
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
@@ -748,9 +748,9 @@ where
     ///
     /// let batch = &[
     ///     // puts value [4,5,6] to key [1,2,3]
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6]), Some(BasicMerk)),
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk)),
     ///     // deletes key [4,5,6]
-    ///     (vec![4, 5, 6], Op::Delete, None),
+    ///     (vec![4, 5, 6], Op::Delete),
     /// ];
     ///     unsafe { store.apply_unchecked::<_, Vec<_>, _, _, _>(    /// /// ///
     ///     batch,
@@ -1339,10 +1339,7 @@ mod test {
         .unwrap();
 
         merk.apply::<_, Vec<_>>(
-            &[(
-                vec![1, 2, 3],
-                Op::Put(vec![4, 5, 6], BasicMerk),
-            )],
+            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk))],
             &[],
             None,
         )
@@ -1493,9 +1490,13 @@ mod test {
     #[test]
     fn aux_data() {
         let mut merk = TempMerk::new();
-        merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk), None)], None)
-            .unwrap()
-            .expect("apply failed");
+        merk.apply::<Vec<_>, _>(
+            &[],
+            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk), None)],
+            None,
+        )
+        .unwrap()
+        .expect("apply failed");
         let val = merk.get_aux(&[1, 2, 3]).unwrap().unwrap();
         assert_eq!(val, Some(vec![4, 5, 6]));
     }
@@ -1531,13 +1532,9 @@ mod test {
         assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
 
         // cached
-        merk.apply::<_, Vec<_>>(
-            &[(vec![5, 5, 5], Op::Put(vec![], BasicMerk))],
-            &[],
-            None,
-        )
-        .unwrap()
-        .unwrap();
+        merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![], BasicMerk))], &[], None)
+            .unwrap()
+            .unwrap();
         assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
 
         // uncached

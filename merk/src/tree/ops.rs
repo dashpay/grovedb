@@ -244,8 +244,8 @@ where
             }
             Put(value, feature_type)
             | PutCombinedReference(value, .., feature_type)
-            | PutLayeredReference(value,.., feature_type)
-            | ReplaceLayeredReference(value, .., feature_type) => (value.to_vec(), feature_type)
+            | PutLayeredReference(value, .., feature_type)
+            | ReplaceLayeredReference(value, .., feature_type) => (value.to_vec(), feature_type),
         };
 
         // TODO: take from batch so we don't have to clone
@@ -349,8 +349,7 @@ where
         let key_vec = self.tree().key().to_vec();
         // binary search to see if this node's key is in the batch, and to split
         // into left and right batches
-        let search =
-            batch.binary_search_by(|(key, _op)| key.as_ref().cmp(self.tree().key()));
+        let search = batch.binary_search_by(|(key, _op)| key.as_ref().cmp(self.tree().key()));
 
         let tree = if let Ok(index) = search {
             let (_, op) = &batch[index];
@@ -359,10 +358,7 @@ where
             match op {
                 // TODO: take vec from batch so we don't need to clone
                 Put(value, feature_type) => self
-                    .put_value(
-                        value.to_vec(),
-                        feature_type.to_owned(),
-                    )
+                    .put_value(value.to_vec(), feature_type.to_owned())
                     .unwrap_add_cost(&mut cost),
                 PutCombinedReference(value, referenced_value, feature_type) => self
                     .put_value_and_reference_value_hash(
@@ -372,14 +368,15 @@ where
                     )
                     .unwrap_add_cost(&mut cost),
                 PutLayeredReference(value, value_cost, referenced_value, feature_type)
-                | ReplaceLayeredReference(value, value_cost, referenced_value, feature_type) => self
-                    .put_value_with_reference_value_hash_and_value_cost(
+                | ReplaceLayeredReference(value, value_cost, referenced_value, feature_type) => {
+                    self.put_value_with_reference_value_hash_and_value_cost(
                         value.to_vec(),
                         referenced_value.to_owned(),
                         *value_cost,
                         feature_type.to_owned(),
                     )
-                    .unwrap_add_cost(&mut cost),
+                    .unwrap_add_cost(&mut cost)
+                }
                 Delete | DeleteLayered => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply
                     let source = self.clone_source();

@@ -211,10 +211,7 @@ impl Element {
         }
     }
 
-    pub fn get_feature_type(
-        &self,
-        parent_is_sum_tree: bool,
-    ) -> Result<TreeFeatureType, Error> {
+    pub fn get_feature_type(&self, parent_is_sum_tree: bool) -> Result<TreeFeatureType, Error> {
         match parent_is_sum_tree {
             true => {
                 let sum_value = self.sum_value();
