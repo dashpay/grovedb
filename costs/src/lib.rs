@@ -152,9 +152,10 @@ impl OperationCost {
         let (key_storage_cost, value_storage_costs) = match storage_cost_info {
             None => (None, None),
             Some(s) => {
-                s.key_storage_cost
-                    .verify_key_storage_cost(paid_key_len, s.new_node)?;
-                s.value_storage_cost.verify(final_paid_value_len)?;
+                // TODO: re-enable cost verification
+                // s.key_storage_cost
+                //     .verify_key_storage_cost(paid_key_len, s.new_node)?;
+                // s.value_storage_cost.verify(final_paid_value_len)?;
                 (Some(s.key_storage_cost), Some(s.value_storage_cost))
             }
         };
