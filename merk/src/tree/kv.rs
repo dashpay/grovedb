@@ -5,10 +5,7 @@ use ed::{Decode, Encode, Result, Terminated};
 use integer_encoding::VarInt;
 
 use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
-use crate::{
-    tree::hash::{combine_hash, kv_digest_to_kv_hash, value_hash},
-    Link, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
-};
+use crate::{tree::hash::{combine_hash, kv_digest_to_kv_hash, value_hash}, Link, HASH_LENGTH_U32, HASH_LENGTH_U32_X2, TreeFeatureType};
 
 // TODO: maybe use something similar to Vec but without capacity field,
 //       (should save 16 bytes per entry). also, maybe a shorter length
@@ -20,6 +17,7 @@ use crate::{
 pub struct KV {
     pub(super) key: Vec<u8>,
     pub(super) value: Vec<u8>,
+    feature_type: TreeFeatureType,
     /// The value defined cost is only used on insert
     /// Todo: find another way to do this without this attribute.
     pub(crate) value_defined_cost: Option<u32>,
@@ -332,6 +330,7 @@ impl KV {
     }
 }
 
+// TODO: Fix encoding and decoding of kv
 impl Encode for KV {
     #[inline]
     fn encode_into<W: Write>(&self, out: &mut W) -> Result<()> {

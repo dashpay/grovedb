@@ -47,7 +47,6 @@ use crate::{
 pub struct TreeInner {
     pub(crate) left: Option<Link>,
     pub(crate) right: Option<Link>,
-    feature_type: TreeFeatureType,
     pub(crate) kv: KV,
 }
 
