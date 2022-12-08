@@ -83,7 +83,7 @@ impl EstimatedLayerSizes {
 
                 if item_weight == 0 && ref_weight == 0 {
                     return Err(Error::WrongEstimatedCostsElementTypeForLevel(
-                        "this layer does not have costs for trees",
+                        "this layer is a mix and does not have items or refs",
                     ));
                 }
                 if item_weight == 0 {
@@ -101,7 +101,7 @@ impl EstimatedLayerSizes {
                     .ok_or(Error::Overflow("overflow for non layered value size"))
             }
             _ => Err(Error::WrongEstimatedCostsElementTypeForLevel(
-                "this layer does not have costs for trees",
+                "this layer only has subtree elements",
             )),
         }
     }
