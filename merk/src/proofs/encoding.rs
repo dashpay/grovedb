@@ -539,7 +539,7 @@ mod test {
             [0; 32],
             SummedMerk(6),
         ));
-        assert_eq!(op.encoding_length(), 45);
+        assert_eq!(op.encoding_length(), 44);
 
         let mut bytes = vec![];
         op.encode_into(&mut bytes).unwrap();
@@ -547,7 +547,7 @@ mod test {
             bytes,
             vec![
                 0x07, 3, 1, 2, 3, 0, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 12
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 12
             ]
         )
     }
@@ -655,7 +655,7 @@ mod test {
             [0; 32],
             SummedMerk(5),
         ));
-        assert_eq!(op.encoding_length(), 45);
+        assert_eq!(op.encoding_length(), 44);
 
         let mut bytes = vec![];
         op.encode_into(&mut bytes).unwrap();
@@ -663,7 +663,7 @@ mod test {
             bytes,
             vec![
                 0x0e, 3, 1, 2, 3, 0, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 10
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10
             ]
         );
     }
@@ -818,7 +818,7 @@ mod test {
 
         let bytes = [
             0x07, 3, 1, 2, 3, 0, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 12,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 12,
         ];
         let op = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(
@@ -918,7 +918,7 @@ mod test {
 
         let bytes = [
             0x0e, 3, 1, 2, 3, 0, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 12,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 12,
         ];
         let op = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(

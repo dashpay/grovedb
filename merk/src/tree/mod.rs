@@ -47,7 +47,6 @@ use crate::{
 pub struct TreeInner {
     pub(crate) left: Option<Link>,
     pub(crate) right: Option<Link>,
-    feature_type: TreeFeatureType,
     pub(crate) kv: KV,
 }
 
@@ -92,12 +91,11 @@ impl Tree {
     ///
     /// Hashes the key/value pair and initializes the `kv_hash` field.
     pub fn new(key: Vec<u8>, value: Vec<u8>, feature_type: TreeFeatureType) -> CostContext<Self> {
-        KV::new(key, value).map(|kv| Self {
+        KV::new(key, value, feature_type).map(|kv| Self {
             inner: Box::new(TreeInner {
                 kv,
                 left: None,
                 right: None,
-                feature_type,
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -185,12 +183,11 @@ impl Tree {
         value_hash: CryptoHash,
         feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
-        KV::new_with_value_hash(key, value, value_hash).map(|kv| Self {
+        KV::new_with_value_hash(key, value, value_hash, feature_type).map(|kv| Self {
             inner: Box::new(TreeInner {
                 kv,
                 left: None,
                 right: None,
-                feature_type,
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -206,12 +203,11 @@ impl Tree {
         value_hash: CryptoHash,
         feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
-        KV::new_with_combined_value_hash(key, value, value_hash).map(|kv| Self {
+        KV::new_with_combined_value_hash(key, value, value_hash, feature_type).map(|kv| Self {
             inner: Box::new(TreeInner {
                 kv,
                 left: None,
                 right: None,
-                feature_type,
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -228,16 +224,17 @@ impl Tree {
         value_hash: CryptoHash,
         feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
-        KV::new_with_layered_value_hash(key, value, value_cost, value_hash).map(|kv| Self {
-            inner: Box::new(TreeInner {
-                kv,
-                left: None,
-                right: None,
-                feature_type,
-            }),
-            old_size_with_parent_to_child_hook: 0,
-            old_value: None,
-        })
+        KV::new_with_layered_value_hash(key, value, value_cost, value_hash, feature_type).map(
+            |kv| Self {
+                inner: Box::new(TreeInner {
+                    kv,
+                    left: None,
+                    right: None,
+                }),
+                old_size_with_parent_to_child_hook: 0,
+                old_value: None,
+            },
+        )
     }
 
     /// Creates a `Tree` by supplying all the raw struct fields (mainly useful
@@ -252,10 +249,9 @@ impl Tree {
     ) -> CostContext<Self> {
         value_hash(value.as_slice()).map(|vh| Self {
             inner: Box::new(TreeInner {
-                kv: KV::from_fields(key, value, kv_hash, vh),
+                kv: KV::from_fields(key, value, kv_hash, vh, feature_type),
                 left,
                 right,
-                feature_type,
             }),
             old_size_with_parent_to_child_hook: 0,
             old_value: None,
@@ -271,7 +267,7 @@ impl Tree {
     /// Returns the root node's feature type
     #[inline]
     pub fn feature_type(&self) -> TreeFeatureType {
-        self.inner.feature_type
+        self.inner.kv.feature_type
     }
 
     /// Returns the root node's key as a slice.
@@ -406,7 +402,7 @@ impl Tree {
     /// Computes and returns the hash of the root node.
     #[inline]
     pub fn sum(&self) -> Option<i64> {
-        match self.inner.feature_type {
+        match self.inner.kv.feature_type {
             TreeFeatureType::BasicMerk => None,
             TreeFeatureType::SummedMerk(value) => {
                 Some(value + self.child_sum(true) + self.child_sum(false))
@@ -579,7 +575,7 @@ impl Tree {
             .kv
             .put_value_then_update(value)
             .unwrap_add_cost(&mut cost);
-        self.inner.feature_type = feature_type;
+        self.inner.kv.feature_type = feature_type;
         self.wrap_with_cost(cost)
     }
 
@@ -598,7 +594,7 @@ impl Tree {
             .kv
             .put_value_and_reference_value_hash_then_update(value, value_hash)
             .unwrap_add_cost(&mut cost);
-        self.inner.feature_type = feature_type;
+        self.inner.kv.feature_type = feature_type;
         self.wrap_with_cost(cost)
     }
 
@@ -620,7 +616,7 @@ impl Tree {
                 value, value_hash, value_cost,
             )
             .unwrap_add_cost(&mut cost);
-        self.inner.feature_type = feature_type;
+        self.inner.kv.feature_type = feature_type;
         self.wrap_with_cost(cost)
     }
 
