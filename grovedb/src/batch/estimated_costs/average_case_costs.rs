@@ -110,12 +110,18 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
 
         let layer_element_estimates = cost_return_on_error_no_add!(
             &cost,
-            self.paths
-                .get(path)
-                .ok_or(Error::PathNotFoundInCacheForEstimatedCosts(format!(
-                    "inserting into average case costs path: {}",
-                    path.0.iter().map(|k| hex::encode(k.as_slice())).join("/")
-                )))
+            self.paths.get(path).ok_or_else(|| {
+                let paths = self
+                    .paths
+                    .iter()
+                    .map(|(k, v)| k.0.iter().map(|k| hex::encode(k.as_slice())).join("/"))
+                    .join(" | ");
+                Error::PathNotFoundInCacheForEstimatedCosts(format!(
+                    "required path {} not found in paths {}",
+                    path.0.iter().map(|k| hex::encode(k.as_slice())).join("/"),
+                    paths
+                ))
+            })
         );
 
         let layer_should_be_empty = layer_element_estimates.estimated_to_be_empty();
