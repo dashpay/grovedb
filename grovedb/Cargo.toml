@@ -1,6 +1,8 @@
 [package]
 name = "grovedb"
-version = "0.3.1"
+description = "Fully featured database using balanced hierarchical authenticated data structures"
+version = "0.6.1"
+authors = ["Samuel Westrich <sam@dash.org>", "Wisdom Ogwu <wisdom@dash.org", "Evgeny Fomin <evgeny.fomin@dash.org>"]
 edition = "2021"
 license = "MIT"
 
