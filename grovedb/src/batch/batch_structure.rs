@@ -96,7 +96,7 @@ where
                     }
                     Ok(())
                 }
-                Op::Delete | Op::DeleteTree => Ok(()),
+                Op::Delete | Op::DeleteTree | Op::DeleteSumTree => Ok(()),
                 Op::ReplaceTreeRootKey { .. }
                 | Op::InsertTreeWithRootHash { .. }
                 | Op::InsertSumTreeWithRootHashAndSum { .. } => Err(Error::InvalidBatchOperation(

@@ -313,10 +313,15 @@ impl Element {
         key: K,
         merk_options: Option<MerkOptions>,
         is_layered: bool,
+        is_sum: bool,
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
         let op = if is_layered {
-            Op::DeleteLayered
+            if is_sum {
+                Op::DeleteLayeredHavingSum
+            } else {
+                Op::DeleteLayered
+            }
         } else {
             Op::Delete
         };
@@ -333,6 +338,7 @@ impl Element {
         key: K,
         merk_options: Option<MerkOptions>,
         is_layered: bool,
+        is_sum: bool,
         sectioned_removal: &mut impl FnMut(
             &Vec<u8>,
             u32,
@@ -342,7 +348,11 @@ impl Element {
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
         let op = if is_layered {
-            Op::DeleteLayered
+            if is_sum {
+                Op::DeleteLayeredHavingSum
+            } else {
+                Op::DeleteLayered
+            }
         } else {
             Op::Delete
         };
@@ -362,11 +372,17 @@ impl Element {
     pub fn delete_into_batch_operations<K: AsRef<[u8]>>(
         key: K,
         is_layered: bool,
+        is_sum: bool,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         let op = if is_layered {
-            Op::DeleteLayered
+            if is_sum {
+                Op::DeleteLayeredHavingSum
+            } else {
+                Op::DeleteLayered
+            }
         } else {
+            // non layered doesn't matter for sum trees
             Op::Delete
         };
         let entry = (key, op);

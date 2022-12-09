@@ -9,6 +9,7 @@ pub mod kv;
 mod link;
 mod ops;
 mod walk;
+mod tree_feature_type;
 
 use std::cmp::{max, Ordering};
 
@@ -34,10 +35,7 @@ pub use link::Link;
 pub use ops::{AuxMerkBatch, BatchEntry, MerkBatch, Op, PanicSource};
 pub use walk::{Fetch, RefWalker, Walker};
 
-use crate::{
-    merk::TreeFeatureType::{BasicMerk, SummedMerk},
-    TreeFeatureType,
-};
+pub use tree_feature_type::TreeFeatureType;
 
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
@@ -156,13 +154,13 @@ impl Tree {
 
     pub fn kv_with_parent_hook_size_and_storage_cost(
         &self,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>, bool) -> Result<u32>,
     ) -> Result<(u32, KeyValueStorageCost)> {
         let current_value_byte_cost =
             self.value_encoding_length_with_parent_to_child_reference() as u32;
 
         let old_cost = if self.inner.kv.value_defined_cost.is_some() && self.old_value.is_some() {
-            old_tree_cost(self.key_as_ref(), self.old_value.as_ref().unwrap())
+            old_tree_cost(self.key_as_ref(), self.old_value.as_ref().unwrap(), self.inner.kv.feature_type.is_sum_feature())
         } else {
             Ok(self.old_size_with_parent_to_child_hook)
         }?;
@@ -632,7 +630,7 @@ impl Tree {
     pub fn commit<C: Commit>(
         &mut self,
         c: &mut C,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>, bool) -> Result<u32>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -777,6 +775,7 @@ mod test {
 
     use super::{commit::NoopCommit, hash::NULL_HASH, Tree};
     use crate::{tree::TreeFeatureType::BasicMerk, TreeFeatureType::SummedMerk};
+    use crate::tree::tree_feature_type::TreeFeatureType::SummedMerk;
 
     #[test]
     fn build_tree() {

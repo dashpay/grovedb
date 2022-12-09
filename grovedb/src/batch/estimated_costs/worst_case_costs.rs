@@ -61,6 +61,11 @@ impl Op {
                 worst_case_layer_element_estimates,
                 propagate,
             ),
+            Op::DeleteSumTree => GroveDb::worst_case_merk_delete_tree(
+                key,
+                worst_case_layer_element_estimates,
+                propagate,
+            ),
         }
     }
 }
@@ -110,10 +115,10 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         &mut self,
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, Op>,
-        _ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
-        _batch_apply_options: &BatchApplyOptions,
-        _flags_update: &mut G,
-        _split_removal_bytes: &mut SR,
+        ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, Op>,
+        batch_apply_options: &BatchApplyOptions,
+        flags_update: &mut G,
+        split_removal_bytes: &mut SR,
     ) -> CostResult<(CryptoHash, Option<Vec<u8>>, Option<i64>), Error> {
         let mut cost = OperationCost::default();
 

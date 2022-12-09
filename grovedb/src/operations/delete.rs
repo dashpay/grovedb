@@ -30,6 +30,7 @@ use crate::{
     },
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
+use crate::subtree::SUM_TREE_COST_SIZE;
 
 #[derive(Clone)]
 pub struct DeleteOptions {
@@ -162,7 +163,7 @@ impl GroveDb {
         stop_path_height: Option<u16>,
         options: &DeleteOptions,
         validate: bool,
-        is_known_to_be_subtree: bool,
+        is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         mut current_batch_operations: Vec<GroveDbOp>,
         transaction: TransactionArg,
     ) -> CostResult<Option<Vec<GroveDbOp>>, Error>
@@ -176,7 +177,7 @@ impl GroveDb {
             stop_path_height,
             options,
             validate,
-            is_known_to_be_subtree,
+            is_known_to_be_subtree_with_sum,
             &mut current_batch_operations,
             transaction,
         )
@@ -189,7 +190,7 @@ impl GroveDb {
         stop_path_height: Option<u16>,
         options: &DeleteOptions,
         validate: bool,
-        is_known_to_be_subtree: bool,
+        is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         current_batch_operations: &mut Vec<GroveDbOp>,
         transaction: TransactionArg,
     ) -> CostResult<Option<Vec<GroveDbOp>>, Error>
@@ -218,7 +219,7 @@ impl GroveDb {
                 key,
                 options,
                 validate,
-                is_known_to_be_subtree,
+                is_known_to_be_subtree_with_sum,
                 current_batch_operations,
                 transaction,
             )
@@ -237,7 +238,7 @@ impl GroveDb {
                         stop_path_height,
                         &new_options,
                         validate,
-                        true,
+                        None,//todo: maybe we can know this?
                         current_batch_operations,
                         transaction,
                     )
@@ -399,7 +400,7 @@ impl GroveDb {
         key: &'p [u8],
         options: &DeleteOptions,
         validate: bool,
-        mut is_known_to_be_subtree: bool,
+        is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         current_batch_operations: &[GroveDbOp],
         transaction: TransactionArg,
     ) -> CostResult<Option<GroveDbOp>, Error>
@@ -423,15 +424,22 @@ impl GroveDb {
                     self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
                 );
             }
-            if !is_known_to_be_subtree {
-                let element = cost_return_on_error!(
+            let (is_subtree, is_subtree_with_sum) = match is_known_to_be_subtree_with_sum {
+                None => {
+                    let element = cost_return_on_error!(
                     &mut cost,
                     self.get_raw(path_iter.clone(), key.as_ref(), transaction)
                 );
-                is_known_to_be_subtree = matches!(element, Element::Tree(..));
-            }
+                    match element {
+                        Element::Tree(_, _) => (true, false),
+                        Element::SumTree(_, _, _) => (true, true),
+                        _ => (false, false)
+                    }
+                }
+                Some(x) => x,
+            };
 
-            if is_known_to_be_subtree {
+            if is_subtree {
                 let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
                 let subtree_merk_path_vec = subtree_merk_path
                     .clone()
@@ -445,7 +453,7 @@ impl GroveDb {
                 let batch_deleted_keys = current_batch_operations
                     .iter()
                     .filter_map(|op| match op.op {
-                        Op::Delete | Op::DeleteTree => {
+                        Op::Delete | Op::DeleteTree | Op::DeleteSumTree  => {
                             // todo: to_path clones (best to figure out how to compare without
                             // cloning)
                             if op.path.to_path() == subtree_merk_path_vec {
@@ -473,7 +481,7 @@ impl GroveDb {
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
                 is_empty &= !current_batch_operations.iter().any(|op| match op.op {
-                    Op::Delete | Op::DeleteTree => false,
+                    Op::Delete | Op::DeleteTree | Op::DeleteSumTree  => false,
                     // todo: fix for to_path (it clones)
                     _ => op.path.to_path() == subtree_merk_path_vec,
                 });
@@ -491,6 +499,7 @@ impl GroveDb {
                     Ok(Some(GroveDbOp::delete_tree_op(
                         path_iter.map(|x| x.to_vec()).collect(),
                         key.to_vec(),
+                        is_subtree_with_sum,
                     )))
                 } else {
                     Err(Error::NotSupported(
@@ -547,11 +556,13 @@ impl GroveDb {
                         if let Some(flags_size_at_level) =
                             intermediate_flag_sizes.get(height as u64)
                         {
-                            let value_len = LAYER_COST_SIZE + flags_size_at_level;
+                            // the worst case is that we are only in sum trees
+                            let value_len = SUM_TREE_COST_SIZE + flags_size_at_level;
                             let max_tree_size =
                                 KV::layered_node_byte_cost_size_for_key_and_value_lengths(
                                     last_key.len() as u32,
                                     value_len,
+                                    true,
                                 );
                             Ok((used_path, last_key, false, 1, max_tree_size))
                         } else {
@@ -579,6 +590,7 @@ impl GroveDb {
     pub fn worst_case_delete_operation_for_delete_internal<'db, S: Storage<'db>>(
         path: &KeyInfoPath,
         key: &KeyInfo,
+        parent_tree_is_sum_tree: bool,
         validate: bool,
         check_if_tree: bool,
         except_keys_count: u16,
@@ -587,7 +599,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         if validate {
-            GroveDb::add_worst_case_get_merk_at_path::<S>(&mut cost, path);
+            GroveDb::add_worst_case_get_merk_at_path::<S>(&mut cost, path, parent_tree_is_sum_tree);
         }
         if check_if_tree {
             GroveDb::add_worst_case_get_raw_cost::<S>(&mut cost, path, key, max_element_size);

@@ -14,22 +14,12 @@ pub enum WorstCaseLayerInformation {
 }
 
 impl Tree {
-    pub fn worst_case_encoded_tree_size(not_prefixed_key_len: u32, max_element_size: u32) -> u32 {
+    pub fn worst_case_encoded_tree_size(not_prefixed_key_len: u32, max_element_size: u32, is_sum_node: bool) -> u32 {
         // two option values for the left and right link
         // the actual left and right link encoding size
         // the encoded kv node size
         2 + (2 * Link::encoded_link_size(not_prefixed_key_len))
-            + KV::worst_case_encoded_kv_node_size(max_element_size)
-    }
-}
-
-impl KV {
-    fn worst_case_encoded_kv_node_size(max_element_size: u32) -> u32 {
-        // KV holds the state of a node
-        // 32 bytes to encode the hash of the node
-        // 32 bytes to encode the value hash
-        // max_element_size to encode the worst case value size
-        HASH_LENGTH_U32 + HASH_LENGTH_U32 + max_element_size
+            + KV::encoded_kv_node_size(max_element_size, is_sum_node)
     }
 }
 
@@ -38,6 +28,7 @@ pub fn add_worst_case_get_merk_node(
     cost: &mut OperationCost,
     not_prefixed_key_len: u32,
     max_element_size: u32,
+    is_sum_node: bool,
 ) {
     // Worst case scenario, the element is not already in memory.
     // One direct seek has to be performed to read the node from storage.
@@ -46,7 +37,7 @@ pub fn add_worst_case_get_merk_node(
     // To write a node to disk, the left link, right link and kv nodes are encoded.
     // worst case, the node has both the left and right link present.
     cost.storage_loaded_bytes +=
-        Tree::worst_case_encoded_tree_size(not_prefixed_key_len, max_element_size);
+        Tree::worst_case_encoded_tree_size(not_prefixed_key_len, max_element_size, is_sum_node);
 }
 
 /// Add worst case for getting a merk tree
@@ -60,20 +51,20 @@ pub fn add_worst_case_merk_has_value(
 }
 
 /// Add worst case for insertion into merk
-pub fn add_worst_case_merk_insert(cost: &mut OperationCost, key_len: u32, value_len: u32) {
+pub fn add_worst_case_merk_insert(cost: &mut OperationCost, key_len: u32, value_len: u32, is_sum_node: bool) {
     cost.storage_cost.added_bytes +=
-        KV::node_byte_cost_size_for_key_and_value_lengths(key_len, value_len);
+        KV::node_byte_cost_size_for_key_and_value_lengths(key_len, value_len, is_sum_node);
     // .. and hash computation for the inserted element itself
     // todo: verify this
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
 }
 
 /// Add worst case for insertion into merk
-pub fn add_worst_case_merk_replace_layered(cost: &mut OperationCost, key_len: u32, value_len: u32) {
+pub fn add_worst_case_merk_replace_layered(cost: &mut OperationCost, key_len: u32, value_len: u32, is_sum_node: bool) {
     // todo: verify this
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
     cost.storage_cost.replaced_bytes =
-        KV::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_len);
+        KV::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_len, is_sum_node);
     // 37 + 35 + key_len
 }
 

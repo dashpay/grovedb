@@ -20,6 +20,7 @@ use crate::{
     subtree::TREE_COST_SIZE,
     Element, ElementFlags, Error, GroveDb,
 };
+use crate::subtree::SUM_TREE_COST_SIZE;
 
 pub const WORST_CASE_FLAGS_LEN: u32 = 16386; // 2 bytes to represent this number for varint
 
@@ -28,13 +29,14 @@ impl GroveDb {
     pub fn add_worst_case_get_merk_at_path<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
+        is_sum_tree: bool,
     ) {
         cost.seek_count += 2;
         match path.last() {
             None => {}
             Some(key) => {
                 cost.storage_loaded_bytes +=
-                    Tree::worst_case_encoded_tree_size(key.len() as u32, HASH_LENGTH as u32);
+                    Tree::worst_case_encoded_tree_size(key.len() as u32, HASH_LENGTH as u32, is_sum_tree);
             }
         }
         *cost += S::get_storage_context_cost(path.as_vec());
@@ -43,13 +45,16 @@ impl GroveDb {
     /// Add worst case for insertion into merk
     pub(crate) fn worst_case_merk_replace_tree(
         key: &KeyInfo,
+        is_sum_tree: bool,
+        is_in_parent_sum_tree: bool,
         worst_case_layer_information: &WorstCaseLayerInformation,
         propagate: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let key_len = key.len() as u32;
-        let layer_extra_size = TREE_COST_SIZE + WORST_CASE_FLAGS_LEN;
-        add_worst_case_merk_replace_layered(&mut cost, key_len, layer_extra_size);
+        let tree_cost = if is_sum_tree { SUM_TREE_COST_SIZE } else { TREE_COST_SIZE };
+        let layer_extra_size = tree_cost + WORST_CASE_FLAGS_LEN;
+        add_worst_case_merk_replace_layered(&mut cost, key_len, layer_extra_size, is_in_parent_sum_tree);
         if propagate {
             add_worst_case_merk_propagate(&mut cost, worst_case_layer_information)
                 .map_err(Error::MerkError)
@@ -63,6 +68,8 @@ impl GroveDb {
     pub fn worst_case_merk_insert_tree(
         key: &KeyInfo,
         flags: &Option<ElementFlags>,
+        is_sum_tree: bool,
+        is_in_parent_sum_tree: bool,
         propagate_if_input: Option<&WorstCaseLayerInformation>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -71,30 +78,9 @@ impl GroveDb {
             let flags_len = flags.len() as u32;
             flags_len + flags_len.required_space() as u32
         });
-        let value_len = TREE_COST_SIZE + flags_len;
-        add_cost_case_merk_insert_layered(&mut cost, key_len, value_len);
-        if let Some(input) = propagate_if_input {
-            add_worst_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
-        } else {
-            Ok(())
-        }
-        .wrap_with_cost(cost)
-    }
-
-    /// Add worst case for sum tree insertion into merk
-    pub(crate) fn worst_case_merk_insert_sum_tree(
-        key: &KeyInfo,
-        flags: &Option<ElementFlags>,
-        propagate_if_input: Option<&WorstCaseLayerInformation>,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-        let key_len = key.len() as u32;
-        let flags_len = flags.as_ref().map_or(0, |flags| {
-            let flags_len = flags.len() as u32;
-            flags_len + flags_len.required_space() as u32
-        });
-        let value_len = TREE_COST_SIZE + flags_len + 8;
-        add_cost_case_merk_insert_layered(&mut cost, key_len, value_len);
+        let tree_cost = if is_sum_tree { SUM_TREE_COST_SIZE } else { TREE_COST_SIZE };
+        let value_len = tree_cost + flags_len;
+        add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, is_in_parent_sum_tree);
         if let Some(input) = propagate_if_input {
             add_worst_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
         } else {
@@ -106,12 +92,14 @@ impl GroveDb {
     /// Add worst case for insertion into merk
     pub fn worst_case_merk_delete_tree(
         key: &KeyInfo,
+        is_sum_tree: bool,
         worst_case_layer_information: &WorstCaseLayerInformation,
         propagate: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let key_len = key.len() as u32;
-        let layer_extra_size = TREE_COST_SIZE + WORST_CASE_FLAGS_LEN;
+        let tree_cost = if is_sum_tree { SUM_TREE_COST_SIZE } else { TREE_COST_SIZE };
+        let layer_extra_size = tree_cost + WORST_CASE_FLAGS_LEN;
         add_worst_case_merk_delete_layered(&mut cost, key_len, layer_extra_size);
         if propagate {
             add_worst_case_merk_propagate(&mut cost, worst_case_layer_information)
@@ -128,6 +116,7 @@ impl GroveDb {
     pub fn worst_case_merk_insert_element(
         key: &KeyInfo,
         value: &Element,
+        in_parent_tree_using_sums: bool,
         propagate_for_level: Option<&WorstCaseLayerInformation>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -139,9 +128,9 @@ impl GroveDb {
                     flags_len + flags_len.required_space() as u32
                 });
                 let value_len = TREE_COST_SIZE + flags_len;
-                add_cost_case_merk_insert_layered(&mut cost, key_len, value_len)
+                add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_parent_tree_using_sums)
             }
-            _ => add_cost_case_merk_insert(&mut cost, key_len, value.serialized_size() as u32),
+            _ => add_cost_case_merk_insert(&mut cost, key_len, value.serialized_size() as u32, in_parent_tree_using_sums),
         };
         if let Some(level) = propagate_for_level {
             add_worst_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)
@@ -172,10 +161,11 @@ impl GroveDb {
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
-        estimated_element_size: u32,
+        max_element_size: u32,
+        in_parent_tree_using_sums: bool,
     ) {
         let value_size =
-            Tree::worst_case_encoded_tree_size(key.len() as u32, estimated_element_size);
+            Tree::worst_case_encoded_tree_size(key.len() as u32, max_element_size, in_parent_tree_using_sums);
         cost.seek_count += 1;
         cost.storage_loaded_bytes += value_size;
         *cost += S::get_storage_context_cost(path.as_vec());
@@ -185,9 +175,12 @@ impl GroveDb {
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
+        is_sum_tree: bool,
+        in_parent_tree_using_sums: bool,
     ) {
         cost.seek_count += 1;
-        add_worst_case_get_merk_node(cost, key.len() as u32, TREE_COST_SIZE);
+        let tree_cost_size = if is_sum_tree { SUM_TREE_COST_SIZE} else {TREE_COST_SIZE};
+        add_worst_case_get_merk_node(cost, key.len() as u32, tree_cost_size, in_parent_tree_using_sums);
     }
 
     pub fn add_worst_case_get_raw_cost<'db, S: Storage<'db>>(
@@ -195,9 +188,10 @@ impl GroveDb {
         _path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
+        in_parent_tree_using_sums: bool,
     ) {
         cost.seek_count += 1;
-        add_worst_case_get_merk_node(cost, key.len() as u32, max_element_size);
+        add_worst_case_get_merk_node(cost, key.len() as u32, max_element_size, in_parent_tree_using_sums);
     }
 
     pub fn add_worst_case_get_cost<'db, S: Storage<'db>>(
@@ -205,11 +199,12 @@ impl GroveDb {
         path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
+        in_parent_tree_using_sums: bool,
         max_references_sizes: Vec<u32>,
     ) {
         // todo: verify
         let value_size: u32 =
-            Tree::worst_case_encoded_tree_size(key.len() as u32, max_element_size);
+            Tree::worst_case_encoded_tree_size(key.len() as u32, max_element_size, in_parent_tree_using_sums);
         cost.seek_count += 1 + max_references_sizes.len() as u16;
         cost.storage_loaded_bytes += value_size + max_references_sizes.iter().sum::<u32>();
         *cost += S::get_storage_context_cost(path.as_vec());
@@ -304,6 +299,7 @@ mod test {
             &path,
             &key,
             elem.serialized_size() as u32,
+            false,
         );
 
         let actual_cost = db.has_raw([TEST_LEAF], &[2], None);

@@ -10,10 +10,11 @@ use crate::{
         hash::{combine_hash, kv_digest_to_kv_hash, value_hash},
         Tree,
     },
-    Link, TreeFeatureType,
-    TreeFeatureType::BasicMerk,
+    Link,
     HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
 };
+use crate::tree::tree_feature_type::TreeFeatureType;
+use crate::tree::tree_feature_type::TreeFeatureType::BasicMerk;
 
 // TODO: maybe use something similar to Vec but without capacity field,
 //       (should save 16 bytes per entry). also, maybe a shorter length
@@ -223,23 +224,20 @@ impl KV {
         self.key
     }
 
-    #[allow(dead_code)] // TODO
-    #[inline]
-    pub fn node_byte_cost_size(&self) -> u32 {
-        let key_len = self.key.len() as u32;
-        let value_len = self.encoding_length().unwrap() as u32;
-        Self::node_byte_cost_size_for_key_and_value_lengths(key_len, value_len)
-    }
-
     /// Get the costs for the node, this has the parent to child hooks
     #[inline]
     pub fn node_byte_cost_size_for_key_and_value_lengths(
         not_prefixed_key_len: u32,
         value_len: u32,
+        is_sum_node: bool,
     ) -> u32 {
-        let node_value_size = value_len
-            + HASH_LENGTH_U32_X2
-            + (value_len + HASH_LENGTH_U32_X2).required_space() as u32;
+        // Sum trees are either 1 or 9 bytes. While they might be more or less on disk,
+        // costs can not take advantage of the varint aspect of the feature.
+        let feature_len = if is_sum_node {9} else {1};
+
+        let value_size = value_len
+            + HASH_LENGTH_U32_X2 + feature_len;
+        let node_value_size = value_size + value_size.required_space() as u32;
         // Hash length is for the key prefix
         let node_key_size = HASH_LENGTH_U32
             + not_prefixed_key_len
@@ -257,11 +255,16 @@ impl KV {
     pub fn layered_node_byte_cost_size_for_key_and_value_lengths(
         not_prefixed_key_len: u32,
         value_len: u32,
+        is_sum_node: bool, //this means the node is contained in a sumtree
     ) -> u32 {
+        // Sum trees are either 1 or 9 bytes. While they might be more or less on disk,
+        // costs can not take advantage of the varint aspect of the feature.
+        let feature_len = if is_sum_node {9} else {1};
+
         // Each node stores the key and value, and the node hash
         // the value hash on a layered node is not stored directly in the node
         // The required space is set to 2, even though it could be potentially 1
-        let node_value_size = value_len + HASH_LENGTH_U32 + 2;
+        let node_value_size = value_len + feature_len + HASH_LENGTH_U32 + 2;
         // Hash length is for the key prefix
         let node_key_size = HASH_LENGTH_U32
             + not_prefixed_key_len
@@ -279,7 +282,11 @@ impl KV {
     pub fn layered_value_byte_cost_size_for_key_and_value_lengths(
         not_prefixed_key_len: u32,
         value_len: u32,
+        is_sum_node: bool,
     ) -> u32 {
+        // Sum trees are either 1 or 9 bytes. While they might be more or less on disk,
+        // costs can not take advantage of the varint aspect of the feature.
+        let feature_len = if is_sum_node {9} else {1};
         // Each node stores the key and value, and the node hash
         // the value hash on a layered node is not stored directly in the node
         // The required space is set to 2. However in reality it could be 1 or 2.
@@ -288,7 +295,7 @@ impl KV {
         // There is no point to pay for the value_hash because it is already being paid
         // by the parent to child reference hook of the root of the underlying
         // tree
-        let node_value_size = value_len + HASH_LENGTH_U32 + 2;
+        let node_value_size = value_len + feature_len + HASH_LENGTH_U32 + 2;
         // The node will be a child of another node which stores it's key and hash
         // That will be added during propagation
         let parent_to_child_cost = Link::encoded_link_size(not_prefixed_key_len);
@@ -318,8 +325,10 @@ impl KV {
     pub(crate) fn value_byte_cost_size_for_key_and_raw_value_lengths(
         not_prefixed_key_len: u32,
         raw_value_len: u32,
+        is_sum_node: bool,
     ) -> u32 {
-        let value_len = raw_value_len + HASH_LENGTH_U32_X2;
+        let sum_tree_len = if is_sum_node { 9 } else { 1 };
+        let value_len = raw_value_len + HASH_LENGTH_U32_X2 + sum_tree_len;
         Self::value_byte_cost_size_for_key_and_value_lengths(not_prefixed_key_len, value_len)
     }
 
@@ -342,8 +351,9 @@ impl KV {
     #[inline]
     pub(crate) fn layered_value_byte_cost_size(&self, value_cost: u32) -> u32 {
         let key_len = self.key.len() as u32;
+        let is_sum_node = self.feature_type.is_sum_feature();
 
-        Self::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_cost)
+        Self::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_cost, is_sum_node)
     }
 }
 
@@ -399,6 +409,7 @@ impl Terminated for KV {}
 
 #[cfg(test)]
 mod test {
+    use crate::tree::tree_feature_type::TreeFeatureType::SummedMerk;
     use super::*;
     use crate::TreeFeatureType::SummedMerk;
 
@@ -427,7 +438,7 @@ mod test {
     fn encode_and_decode_kv() {
         let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], BasicMerk).unwrap();
         let mut encoded_kv = vec![];
-        kv.encode_into(&mut encoded_kv);
+        kv.encode_into(&mut encoded_kv).expect("encoded");
         let mut decoded_kv = KV::decode(encoded_kv.as_slice()).unwrap();
         decoded_kv.key = vec![1, 2, 3];
 
@@ -435,7 +446,7 @@ mod test {
 
         let kv = KV::new(vec![1, 2, 3], vec![4, 5, 6], SummedMerk(20)).unwrap();
         let mut encoded_kv = vec![];
-        kv.encode_into(&mut encoded_kv);
+        kv.encode_into(&mut encoded_kv).expect("encoded");
         let mut decoded_kv = KV::decode(encoded_kv.as_slice()).unwrap();
         decoded_kv.key = vec![1, 2, 3];
 

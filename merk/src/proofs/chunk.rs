@@ -12,9 +12,9 @@ use {
 
 use super::{Node, Op};
 use crate::{
-    merk::TreeFeatureType::BasicMerk,
     tree::{Fetch, RefWalker},
 };
+use crate::TreeFeatureType::BasicMerk;
 
 /// The minimum number of layers the trunk will be guaranteed to have before
 /// splitting into multiple chunks. If the tree's height is less than double

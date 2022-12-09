@@ -9,9 +9,9 @@ use rand::prelude::*;
 pub use temp_merk::TempMerk;
 
 use crate::{
-    merk::TreeFeatureType::BasicMerk,
     tree::{kv::KV, BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker},
 };
+use crate::TreeFeatureType::BasicMerk;
 
 pub fn assert_tree_invariants(tree: &Tree) {
     assert!(tree.balance_factor().abs() < 2);
@@ -42,10 +42,11 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
         Some(walker),
         batch,
         PanicSource {},
-        &|key, value| {
+        &|key, value, is_sum_tree| {
             Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                 key.len() as u32,
                 value.len() as u32,
+                is_sum_tree,
             ))
         },
         &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
@@ -61,10 +62,11 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     .expect("expected tree");
     tree.commit(
         &mut NoopCommit {},
-        &|key, value| {
+        &|key, value, is_sum_tree| {
             Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                 key.len() as u32,
                 value.len() as u32,
+                is_sum_tree,
             ))
         },
         &mut |_, _, _| Ok((false, None)),
@@ -92,10 +94,11 @@ pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) ->
         maybe_walker,
         batch,
         PanicSource {},
-        &|key, value| {
+        &|key, value, is_sum_tree| {
             Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                 key.len() as u32,
                 value.len() as u32,
+                is_sum_tree,
             ))
         },
         &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
@@ -111,10 +114,11 @@ pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) ->
     .map(|mut tree| {
         tree.commit(
             &mut NoopCommit {},
-            &|key, value| {
+            &|key, value, is_sum_tree| {
                 Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key.len() as u32,
                     value.len() as u32,
+                    is_sum_tree,
                 ))
             },
             &mut |_, _, _| Ok((false, None)),

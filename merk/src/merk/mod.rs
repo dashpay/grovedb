@@ -25,19 +25,13 @@ use ed::{Decode, Encode, Terminated};
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
 
-use crate::{
-    merk::{
-        defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
-        options::MerkOptions,
-    },
-    proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
-    tree::{
-        kv::KV, AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree,
-        Walker, NULL_HASH,
-    },
-    MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
-    TreeFeatureType::{BasicMerk, SummedMerk},
-};
+use crate::{merk::{
+    defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
+    options::MerkOptions,
+}, proofs::{encode_into, query::QueryItem, Op as ProofOp, Query}, tree::{
+    kv::KV, AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree,
+    Walker, NULL_HASH,
+}, MerkType::{BaseMerk, LayeredMerk, StandaloneMerk}, TreeFeatureType};
 
 type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
 
@@ -159,61 +153,6 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
             }
         } else {
             None.wrap_with_cost(cost)
-        }
-    }
-}
-
-// TODO: Move to seperate file
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum TreeFeatureType {
-    BasicMerk,
-    SummedMerk(i64),
-}
-
-impl Terminated for TreeFeatureType {}
-
-impl Encode for TreeFeatureType {
-    #[inline]
-    fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
-        match self {
-            TreeFeatureType::BasicMerk => {
-                dest.write_all(&[0])?;
-                Ok(())
-            }
-            TreeFeatureType::SummedMerk(sum) => {
-                dest.write_all(&[1])?;
-                dest.write_varint(sum.to_owned());
-                Ok(())
-            }
-        }
-    }
-
-    #[inline]
-    fn encoding_length(&self) -> ed::Result<usize> {
-        match self {
-            TreeFeatureType::BasicMerk => Ok(1),
-            TreeFeatureType::SummedMerk(sum) => {
-                let encoded_sum = sum.encode_var_vec();
-                // 1 for the enum type
-                // encoded_sum.len() for the length of the encoded vector
-                Ok(1 + encoded_sum.len())
-            }
-        }
-    }
-}
-
-impl Decode for TreeFeatureType {
-    #[inline]
-    fn decode<R: Read>(mut input: R) -> ed::Result<Self> {
-        let mut feature_type: [u8; 1] = [0];
-        input.read_exact(&mut feature_type)?;
-        match feature_type {
-            [0] => Ok(BasicMerk),
-            [1] => {
-                let encoded_sum: i64 = input.read_varint()?;
-                Ok(SummedMerk(encoded_sum))
-            }
-            _ => Err(ed::Error::UnexpectedByte(55)),
         }
     }
 }
@@ -559,10 +498,11 @@ where
             batch,
             aux,
             options,
-            &|key, value| {
+            &|key, value, is_sum_tree| {
                 Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key.len() as u32,
                     value.len() as u32,
+                    is_sum_tree,
                 ))
             },
             &mut |_costs, _old_value, _value| Ok((false, None)),
@@ -604,7 +544,7 @@ where
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>, bool) -> Result<u32>,
     ) -> CostContext<Result<()>>
     where
         KB: AsRef<[u8]>,
@@ -670,7 +610,7 @@ where
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>, bool) -> Result<u32>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -770,7 +710,7 @@ where
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
-        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        C: Fn(&Vec<u8>, &Vec<u8>, bool) -> Result<u32>,
         U: FnMut(&StorageCost, &Vec<u8>, &mut Vec<u8>) -> Result<(bool, Option<u32>)>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     {
@@ -905,7 +845,7 @@ where
         updated_root_key_from: Option<Vec<u8>>,
         aux: &AuxMerkBatch<K>,
         options: Option<MerkOptions>,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>, bool) -> Result<u32>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -1219,7 +1159,7 @@ impl Commit for MerkCommitter {
     fn write(
         &mut self,
         tree: &mut Tree,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>, bool) -> Result<u32>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,

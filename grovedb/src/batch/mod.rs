@@ -40,7 +40,7 @@ use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
     anyhow::anyhow,
     tree::{kv::KV, value_hash, NULL_HASH},
-    CryptoHash, Merk, MerkType, TreeFeatureType,
+    CryptoHash, Merk, MerkType,
 };
 pub use options::BatchApplyOptions;
 use storage::{
@@ -57,7 +57,7 @@ use crate::{
     },
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
-    subtree::TREE_COST_SIZE,
+    subtree::{TREE_COST_SIZE, SUM_TREE_COST_SIZE },
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
@@ -84,6 +84,7 @@ pub enum Op {
     },
     Delete,
     DeleteTree,
+    DeleteSumTree,
 }
 
 impl PartialOrd for Op {
@@ -242,6 +243,7 @@ impl fmt::Debug for GroveDbOp {
             },
             Op::Delete => "Delete",
             Op::DeleteTree => "Delete Tree",
+            Op::DeleteSumTree => "Delete Sum Tree",
             Op::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key",
             Op::InsertTreeWithRootHash { .. } => "Insert Tree Hash and Root Key",
             Op::InsertSumTreeWithRootHashAndSum { .. } => "Insert Sum Tree Hash, Root Key and Sum",
@@ -282,12 +284,12 @@ impl GroveDbOp {
         }
     }
 
-    pub fn delete_tree_op(path: Vec<Vec<u8>>, key: Vec<u8>) -> Self {
+    pub fn delete_tree_op(path: Vec<Vec<u8>>, key: Vec<u8>, is_sum_tree: bool) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
             key: KnownKey(key),
-            op: Op::DeleteTree,
+            op: if is_sum_tree { Op::DeleteSumTree } else { Op::DeleteTree },
         }
     }
 
@@ -299,11 +301,11 @@ impl GroveDbOp {
         }
     }
 
-    pub fn delete_estimated_tree_op(path: KeyInfoPath, key: KeyInfo) -> Self {
+    pub fn delete_estimated_tree_op(path: KeyInfoPath, key: KeyInfo, is_sum_tree: bool) -> Self {
         Self {
             path,
             key,
-            op: Op::DeleteTree,
+            op: if is_sum_tree { Op::DeleteSumTree } else { Op::DeleteTree },
         }
     }
 
@@ -517,7 +519,7 @@ where
                         .wrap_with_cost(cost);
                     }
                 },
-                Op::Delete | Op::DeleteTree => {
+                Op::Delete | Op::DeleteTree | Op::DeleteSumTree => {
                     return Err(Error::InvalidBatchOperation(
                         "references can not point to something currently being deleted",
                     ))
@@ -794,6 +796,7 @@ where
                         Element::delete_into_batch_operations(
                             key_info.get_key(),
                             false,
+                            false,
                             &mut batch_operations
                         )
                     );
@@ -803,6 +806,18 @@ where
                         &mut cost,
                         Element::delete_into_batch_operations(
                             key_info.get_key(),
+                            true,
+                            false,
+                            &mut batch_operations
+                        )
+                    );
+                }
+                Op::DeleteSumTree => {
+                    cost_return_on_error!(
+                        &mut cost,
+                        Element::delete_into_batch_operations(
+                            key_info.get_key(),
+                            true,
                             true,
                             &mut batch_operations
                         )
@@ -879,6 +894,8 @@ where
                 }
             }
         }
+        //
+        let is_sum_tree = merk.is_sum_tree;
         cost_return_on_error!(&mut cost, unsafe {
             merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                 &batch_operations,
@@ -887,26 +904,19 @@ where
                 &|key, value| {
                     let element = Element::deserialize(value)?;
                     match element {
-                        Element::Tree(_, flags) => {
+                        Element::Tree(_, flags)
+                        | Element::SumTree(_, _, flags) => {
+                            let tree_cost_size = if element.is_sum_tree() { SUM_TREE_COST_SIZE } else {
+                                TREE_COST_SIZE
+                            };
                             let flags_len = flags.map_or(0, |flags| {
                                 let flags_len = flags.len() as u32;
                                 flags_len + flags_len.required_space() as u32
                             });
-                            let value_len = TREE_COST_SIZE + flags_len;
+                            let value_len = tree_cost_size + flags_len;
                             let key_len = key.len() as u32;
                             Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                                key_len, value_len,
-                            ))
-                        }
-                        Element::SumTree(_, sum_value, flags) => {
-                            let flags_len = flags.map_or(0, |flags| {
-                                let flags_len = flags.len() as u32;
-                                flags_len + flags_len.required_space() as u32
-                            });
-                            let value_len = TREE_COST_SIZE + flags_len + 8;
-                            let key_len = key.len() as u32;
-                            Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                                key_len, value_len,
+                                key_len, value_len, is_sum_tree,
                             ))
                         }
                         _ => Err(anyhow!("only trees are supported for specialized costs")),
@@ -933,8 +943,12 @@ where
                                 // we need to give back the value defined cost in the case that the
                                 // new element is a tree
                                 match new_element {
-                                    Element::Tree(..) => {
-                                        let tree_value_cost = TREE_COST_SIZE
+                                    Element::Tree(..)
+                                    | Element::SumTree(..) => {
+                                        let tree_cost_size = if new_element.is_sum_tree() { SUM_TREE_COST_SIZE } else {
+                                            TREE_COST_SIZE
+                                        };
+                                        let tree_value_cost = tree_cost_size
                                             + flags_len
                                             + flags_len.required_space() as u32;
                                         Ok((true, Some(tree_value_cost)))
@@ -1111,7 +1125,7 @@ impl GroveDb {
                                                         .wrap_with_cost(cost);
                                                     }
                                                 }
-                                                Op::Delete | Op::DeleteTree => {
+                                                Op::Delete | Op::DeleteTree | Op::DeleteSumTree => {
                                                     if calculated_root_key.is_some() {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "modification of tree when it will be \

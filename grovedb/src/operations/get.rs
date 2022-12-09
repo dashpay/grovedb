@@ -425,6 +425,7 @@ where {
         path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
+        in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
         GroveDb::add_worst_case_has_raw_cost::<RocksDbStorage>(
@@ -432,6 +433,7 @@ where {
             path,
             key,
             max_element_size,
+            in_parent_tree_using_sums,
         );
         cost
     }
