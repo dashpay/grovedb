@@ -8,13 +8,11 @@ use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
 use crate::{
     tree::{
         hash::{combine_hash, kv_digest_to_kv_hash, value_hash},
+        tree_feature_type::{TreeFeatureType, TreeFeatureType::BasicMerk},
         Tree,
     },
-    Link,
-    HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
+    Link, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
 };
-use crate::tree::tree_feature_type::TreeFeatureType;
-use crate::tree::tree_feature_type::TreeFeatureType::BasicMerk;
 
 // TODO: maybe use something similar to Vec but without capacity field,
 //       (should save 16 bytes per entry). also, maybe a shorter length
@@ -233,10 +231,9 @@ impl KV {
     ) -> u32 {
         // Sum trees are either 1 or 9 bytes. While they might be more or less on disk,
         // costs can not take advantage of the varint aspect of the feature.
-        let feature_len = if is_sum_node {9} else {1};
+        let feature_len = if is_sum_node { 9 } else { 1 };
 
-        let value_size = value_len
-            + HASH_LENGTH_U32_X2 + feature_len;
+        let value_size = value_len + HASH_LENGTH_U32_X2 + feature_len;
         let node_value_size = value_size + value_size.required_space() as u32;
         // Hash length is for the key prefix
         let node_key_size = HASH_LENGTH_U32
@@ -255,11 +252,11 @@ impl KV {
     pub fn layered_node_byte_cost_size_for_key_and_value_lengths(
         not_prefixed_key_len: u32,
         value_len: u32,
-        is_sum_node: bool, //this means the node is contained in a sumtree
+        is_sum_node: bool, // this means the node is contained in a sumtree
     ) -> u32 {
         // Sum trees are either 1 or 9 bytes. While they might be more or less on disk,
         // costs can not take advantage of the varint aspect of the feature.
-        let feature_len = if is_sum_node {9} else {1};
+        let feature_len = if is_sum_node { 9 } else { 1 };
 
         // Each node stores the key and value, and the node hash
         // the value hash on a layered node is not stored directly in the node
@@ -286,7 +283,7 @@ impl KV {
     ) -> u32 {
         // Sum trees are either 1 or 9 bytes. While they might be more or less on disk,
         // costs can not take advantage of the varint aspect of the feature.
-        let feature_len = if is_sum_node {9} else {1};
+        let feature_len = if is_sum_node { 9 } else { 1 };
         // Each node stores the key and value, and the node hash
         // the value hash on a layered node is not stored directly in the node
         // The required space is set to 2. However in reality it could be 1 or 2.
@@ -353,7 +350,11 @@ impl KV {
         let key_len = self.key.len() as u32;
         let is_sum_node = self.feature_type.is_sum_feature();
 
-        Self::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, value_cost, is_sum_node)
+        Self::layered_value_byte_cost_size_for_key_and_value_lengths(
+            key_len,
+            value_cost,
+            is_sum_node,
+        )
     }
 }
 
@@ -409,9 +410,10 @@ impl Terminated for KV {}
 
 #[cfg(test)]
 mod test {
-    use crate::tree::tree_feature_type::TreeFeatureType::SummedMerk;
     use super::*;
-    use crate::TreeFeatureType::SummedMerk;
+    use crate::{
+        tree::tree_feature_type::TreeFeatureType::SummedMerk, TreeFeatureType::SummedMerk,
+    };
 
     #[test]
     fn new_kv() {

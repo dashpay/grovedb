@@ -38,27 +38,48 @@ impl Op {
             }
         };
         match self {
-            Op::ReplaceTreeRootKey { .. } => {
-                GroveDb::average_case_merk_replace_tree(key, layer_element_estimates, in_tree_using_sums, propagate)
+            Op::ReplaceTreeRootKey { sum, .. } => GroveDb::average_case_merk_replace_tree(
+                key,
+                layer_element_estimates,
+                sum.is_some(),
+                in_tree_using_sums,
+                propagate,
+            ),
+            Op::InsertTreeWithRootHash { flags, sum, .. } => {
+                GroveDb::average_case_merk_insert_tree(
+                    key,
+                    flags,
+                    sum.is_some(),
+                    in_tree_using_sums,
+                    propagate_if_input(),
+                )
             }
-            Op::InsertTreeWithRootHash { flags, .. } => {
-                GroveDb::average_case_merk_insert_tree(key, flags, false, in_tree_using_sums, propagate_if_input())
-            }
-            Op::InsertSumTreeWithRootHashAndSum { flags, .. } => {
-                GroveDb::average_case_merk_insert_tree(key, flags, true, in_tree_using_sums, propagate_if_input())
-            }
-            Op::Insert { element } => {
-                GroveDb::average_case_merk_insert_element(key, &element, in_tree_using_sums, propagate_if_input())
-            }
-            Op::Delete => {
-                GroveDb::average_case_merk_delete_element(key, layer_element_estimates, in_tree_using_sums, propagate)
-            }
-            Op::DeleteTree => {
-                GroveDb::average_case_merk_delete_tree(key, false, layer_element_estimates, propagate)
-            }
-            Op::DeleteSumTree => {
-                GroveDb::average_case_merk_delete_tree(key, true, layer_element_estimates, propagate)
-            }
+            Op::Insert { element } => GroveDb::average_case_merk_insert_element(
+                key,
+                &element,
+                in_tree_using_sums,
+                propagate_if_input(),
+            ),
+            Op::Delete => GroveDb::average_case_merk_delete_element(
+                key,
+                layer_element_estimates,
+                in_tree_using_sums,
+                propagate,
+            ),
+            Op::DeleteTree => GroveDb::average_case_merk_delete_tree(
+                key,
+                false,
+                in_tree_using_sums,
+                layer_element_estimates,
+                propagate,
+            ),
+            Op::DeleteSumTree => GroveDb::average_case_merk_delete_tree(
+                key,
+                true,
+                in_tree_using_sums,
+                layer_element_estimates,
+                propagate,
+            ),
         }
     }
 }
@@ -189,8 +210,8 @@ mod tests {
     use merk::estimated_costs::average_case_costs::{
         EstimatedLayerInformation::{ApproximateElements, EstimatedLevel},
         EstimatedLayerSizes::{AllItems, AllSubtrees},
+        EstimatedSumTrees::NoSumTrees,
     };
-    use merk::estimated_costs::average_case_costs::EstimatedSumTrees::NoSumTrees;
 
     use crate::{
         batch::{
@@ -394,7 +415,7 @@ mod tests {
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
-            EstimatedLevel(1, false, AllSubtrees(1, NoSumTrees,None)),
+            EstimatedLevel(1, false, AllSubtrees(1, NoSumTrees, None)),
         );
 
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
@@ -467,7 +488,7 @@ mod tests {
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
-            EstimatedLevel(0, false, AllSubtrees(1,NoSumTrees, None)),
+            EstimatedLevel(0, false, AllSubtrees(1, NoSumTrees, None)),
         );
         paths.insert(
             KeyInfoPath(vec![KeyInfo::KnownKey(b"0".to_vec())]),

@@ -14,7 +14,11 @@ pub enum WorstCaseLayerInformation {
 }
 
 impl Tree {
-    pub fn worst_case_encoded_tree_size(not_prefixed_key_len: u32, max_element_size: u32, is_sum_node: bool) -> u32 {
+    pub fn worst_case_encoded_tree_size(
+        not_prefixed_key_len: u32,
+        max_element_size: u32,
+        is_sum_node: bool,
+    ) -> u32 {
         // two option values for the left and right link
         // the actual left and right link encoding size
         // the encoded kv node size
@@ -51,7 +55,12 @@ pub fn add_worst_case_merk_has_value(
 }
 
 /// Add worst case for insertion into merk
-pub fn add_worst_case_merk_insert(cost: &mut OperationCost, key_len: u32, value_len: u32, is_sum_node: bool) {
+pub fn add_worst_case_merk_insert(
+    cost: &mut OperationCost,
+    key_len: u32,
+    value_len: u32,
+    is_sum_node: bool,
+) {
     cost.storage_cost.added_bytes +=
         KV::node_byte_cost_size_for_key_and_value_lengths(key_len, value_len, is_sum_node);
     // .. and hash computation for the inserted element itself
@@ -60,7 +69,12 @@ pub fn add_worst_case_merk_insert(cost: &mut OperationCost, key_len: u32, value_
 }
 
 /// Add worst case for insertion into merk
-pub fn add_worst_case_merk_replace_layered(cost: &mut OperationCost, key_len: u32, value_len: u32, is_sum_node: bool) {
+pub fn add_worst_case_merk_replace_layered(
+    cost: &mut OperationCost,
+    key_len: u32,
+    value_len: u32,
+    is_sum_node: bool,
+) {
     // todo: verify this
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
     cost.storage_cost.replaced_bytes =

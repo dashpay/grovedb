@@ -24,7 +24,12 @@ impl KV {
 }
 
 /// Add cost case for insertion into merk
-pub fn add_cost_case_merk_insert(cost: &mut OperationCost, key_len: u32, value_len: u32, in_tree_using_sums: bool) {
+pub fn add_cost_case_merk_insert(
+    cost: &mut OperationCost,
+    key_len: u32,
+    value_len: u32,
+    in_tree_using_sums: bool,
+) {
     cost.seek_count += 1;
     cost.storage_cost.added_bytes +=
         KV::node_byte_cost_size_for_key_and_value_lengths(key_len, value_len, in_tree_using_sums);
@@ -39,10 +44,18 @@ pub fn add_cost_case_merk_insert(cost: &mut OperationCost, key_len: u32, value_l
 }
 
 /// Add cost case for insertion into merk
-pub fn add_cost_case_merk_insert_layered(cost: &mut OperationCost, key_len: u32, value_len: u32, in_tree_using_sums: bool) {
+pub fn add_cost_case_merk_insert_layered(
+    cost: &mut OperationCost,
+    key_len: u32,
+    value_len: u32,
+    in_tree_using_sums: bool,
+) {
     cost.seek_count += 1;
-    cost.storage_cost.added_bytes +=
-        KV::layered_node_byte_cost_size_for_key_and_value_lengths(key_len, value_len, in_tree_using_sums);
+    cost.storage_cost.added_bytes += KV::layered_node_byte_cost_size_for_key_and_value_lengths(
+        key_len,
+        value_len,
+        in_tree_using_sums,
+    );
     // .. and hash computation for the inserted element itself
     // first lets add the value hash
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;

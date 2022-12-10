@@ -7,8 +7,7 @@ pub use fetch::Fetch;
 pub use ref_walker::RefWalker;
 
 use super::{Link, Tree};
-use crate::{owner::Owner, CryptoHash};
-use crate::tree::tree_feature_type::TreeFeatureType;
+use crate::{owner::Owner, tree::tree_feature_type::TreeFeatureType, CryptoHash};
 
 /// Allows traversal of a `Tree`, fetching from the given source when traversing
 /// to a pruned node, detaching children as they are traversed.

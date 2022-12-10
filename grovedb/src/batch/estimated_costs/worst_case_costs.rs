@@ -26,6 +26,7 @@ impl Op {
     fn worst_case_cost(
         &self,
         key: &KeyInfo,
+        is_in_parent_sum_tree: bool,
         worst_case_layer_element_estimates: &WorstCaseLayerInformation,
         propagate: bool,
     ) -> CostResult<(), Error> {
@@ -37,20 +38,26 @@ impl Op {
             }
         };
         match self {
-            Op::ReplaceTreeRootKey { .. } => GroveDb::worst_case_merk_replace_tree(
+            Op::ReplaceTreeRootKey { sum, .. } => GroveDb::worst_case_merk_replace_tree(
                 key,
+                sum.is_some(),
+                is_in_parent_sum_tree,
                 worst_case_layer_element_estimates,
                 propagate,
             ),
-            Op::InsertTreeWithRootHash { flags, .. } => {
-                GroveDb::worst_case_merk_insert_tree(key, flags, propagate_if_input())
-            }
-            Op::InsertSumTreeWithRootHashAndSum { flags, .. } => {
-                GroveDb::worst_case_merk_insert_sum_tree(key, flags, propagate_if_input())
-            }
-            Op::Insert { element } => {
-                GroveDb::worst_case_merk_insert_element(key, &element, propagate_if_input())
-            }
+            Op::InsertTreeWithRootHash { flags, sum, .. } => GroveDb::worst_case_merk_insert_tree(
+                key,
+                flags,
+                sum.is_some(),
+                is_in_parent_sum_tree,
+                propagate_if_input(),
+            ),
+            Op::Insert { element } => GroveDb::worst_case_merk_insert_element(
+                key,
+                &element,
+                is_in_parent_sum_tree,
+                propagate_if_input(),
+            ),
             Op::Delete => GroveDb::worst_case_merk_delete_element(
                 key,
                 worst_case_layer_element_estimates,
@@ -58,11 +65,13 @@ impl Op {
             ),
             Op::DeleteTree => GroveDb::worst_case_merk_delete_tree(
                 key,
+                false,
                 worst_case_layer_element_estimates,
                 propagate,
             ),
             Op::DeleteSumTree => GroveDb::worst_case_merk_delete_tree(
                 key,
+                true,
                 worst_case_layer_element_estimates,
                 propagate,
             ),
@@ -134,14 +143,14 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
 
         // Then we have to get the tree
         if self.cached_merks.get(&path).is_none() {
-            GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, path);
+            GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, path, false);
             self.cached_merks.insert(path.clone());
         }
 
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost_return_on_error!(
                 &mut cost,
-                op.worst_case_cost(&key, worst_case_layer_element_estimates, false)
+                op.worst_case_cost(&key, false, worst_case_layer_element_estimates, false)
             );
         }
 
@@ -159,7 +168,9 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         if let Some(_estimated_layer_info) = self.paths.get(&base_path) {
             // Then we have to get the tree
             if self.cached_merks.get(&base_path).is_none() {
-                GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, &base_path);
+                GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
+                    &mut cost, &base_path, false,
+                );
                 self.cached_merks.insert(base_path);
             }
         }

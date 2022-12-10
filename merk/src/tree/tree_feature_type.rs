@@ -1,6 +1,8 @@
 use std::io::{Read, Write};
+
 use ed::{Decode, Encode, Terminated};
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
+
 use crate::tree::tree_feature_type::TreeFeatureType::{BasicMerk, SummedMerk};
 
 // TODO: Move to seperate file

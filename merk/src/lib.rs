@@ -30,8 +30,8 @@ pub use ed;
 pub use proofs::query::verify_query;
 pub use proofs::query::{execute_proof, verify};
 pub use tree::{
-    BatchEntry, CryptoHash, Link, MerkBatch, Op, PanicSource, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32,
-    HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2, TreeFeatureType
+    BatchEntry, CryptoHash, Link, MerkBatch, Op, PanicSource, TreeFeatureType, HASH_BLOCK_SIZE,
+    HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
 };
 
 // #[cfg(feature = "full")]

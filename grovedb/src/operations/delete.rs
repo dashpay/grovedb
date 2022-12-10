@@ -25,12 +25,12 @@ use storage::{
 
 use crate::{
     batch::{key_info::KeyInfo, GroveDbOp, KeyInfoPath, Op},
+    subtree::SUM_TREE_COST_SIZE,
     util::{
         merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
     },
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
-use crate::subtree::SUM_TREE_COST_SIZE;
 
 #[derive(Clone)]
 pub struct DeleteOptions {
@@ -238,7 +238,7 @@ impl GroveDb {
                         stop_path_height,
                         &new_options,
                         validate,
-                        None,//todo: maybe we can know this?
+                        None, // todo: maybe we can know this?
                         current_batch_operations,
                         transaction,
                     )
@@ -427,13 +427,13 @@ impl GroveDb {
             let (is_subtree, is_subtree_with_sum) = match is_known_to_be_subtree_with_sum {
                 None => {
                     let element = cost_return_on_error!(
-                    &mut cost,
-                    self.get_raw(path_iter.clone(), key.as_ref(), transaction)
-                );
+                        &mut cost,
+                        self.get_raw(path_iter.clone(), key.as_ref(), transaction)
+                    );
                     match element {
-                        Element::Tree(_, _) => (true, false),
-                        Element::SumTree(_, _, _) => (true, true),
-                        _ => (false, false)
+                        Element::Tree(..) => (true, false),
+                        Element::SumTree(..) => (true, true),
+                        _ => (false, false),
                     }
                 }
                 Some(x) => x,
@@ -453,7 +453,7 @@ impl GroveDb {
                 let batch_deleted_keys = current_batch_operations
                     .iter()
                     .filter_map(|op| match op.op {
-                        Op::Delete | Op::DeleteTree | Op::DeleteSumTree  => {
+                        Op::Delete | Op::DeleteTree | Op::DeleteSumTree => {
                             // todo: to_path clones (best to figure out how to compare without
                             // cloning)
                             if op.path.to_path() == subtree_merk_path_vec {
@@ -481,7 +481,7 @@ impl GroveDb {
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
                 is_empty &= !current_batch_operations.iter().any(|op| match op.op {
-                    Op::Delete | Op::DeleteTree | Op::DeleteSumTree  => false,
+                    Op::Delete | Op::DeleteTree | Op::DeleteSumTree => false,
                     // todo: fix for to_path (it clones)
                     _ => op.path.to_path() == subtree_merk_path_vec,
                 });

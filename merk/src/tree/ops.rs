@@ -17,8 +17,7 @@ use integer_encoding::VarInt;
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};
-use crate::{CryptoHash, HASH_LENGTH_U32};
-use crate::tree::tree_feature_type::TreeFeatureType;
+use crate::{tree::tree_feature_type::TreeFeatureType, CryptoHash, HASH_LENGTH_U32};
 
 /// Type alias to add more sense to function signatures.
 type UpdatedRootKeyFrom = Option<Vec<u8>>;
@@ -138,7 +137,7 @@ where
         )>,
     >
     where
-        C: Fn(&Vec<u8>, &Vec<u8>, bool) -> Result<u32>,
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     {
         let mut cost = OperationCost::default();
@@ -200,7 +199,7 @@ where
         section_removal_bytes: &mut R,
     ) -> CostContext<Result<Option<Tree>>>
     where
-        C: Fn(&Vec<u8>, &Vec<u8>, bool) -> Result<u32>,
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     {
         let mut cost = OperationCost::default();
@@ -280,7 +279,9 @@ where
                 )
                 .unwrap_add_cost(&mut cost)
             }
-            Delete | DeleteLayered| DeleteLayeredHavingSum => unreachable!("cannot get here, should return at the top"),
+            Delete | DeleteLayered | DeleteLayeredHavingSum => {
+                unreachable!("cannot get here, should return at the top")
+            }
         };
         let mid_walker = Walker::new(mid_tree, PanicSource {});
 
@@ -317,7 +318,7 @@ where
     > {
         self.apply_sorted(
             batch,
-            &|_, _, _| Ok(0),
+            &|_, _| Ok(0),
             &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
                 Ok((
                     BasicStorageRemoval(key_bytes_to_remove),
@@ -346,7 +347,7 @@ where
         )>,
     >
     where
-        C: Fn(&Vec<u8>, &Vec<u8>, bool) -> Result<u32>,
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     {
         let mut cost = OperationCost::default();
@@ -382,7 +383,7 @@ where
                     )
                     .unwrap_add_cost(&mut cost)
                 }
-                Delete | DeleteLayered| DeleteLayeredHavingSum => {
+                Delete | DeleteLayered | DeleteLayeredHavingSum => {
                     // TODO: we shouldn't have to do this as 2 different calls to apply
                     let source = self.clone_source();
                     let wrap = |maybe_tree: Option<Tree>| {
@@ -399,15 +400,11 @@ where
                             let value = self.tree().value_ref();
 
                             let old_cost = match &batch[index].1 {
-                                Delete => { self.tree().inner.kv.value_byte_cost_size() }
-                                DeleteLayered
-                                | DeleteLayeredHavingSum => { {
-                                    // While we might be deleting a Sum tree or a non sum tree, the feature type
-                                    // if what's needed to pass
-                                    let is_sum_node = self.tree().inner.kv.feature_type.is_sum_feature();
-                                    cost_return_on_error_no_add!(&cost, old_tree_cost(&key, value, is_sum_node))
-                                } }
-                                _ => { 0 } //can't get here anyways
+                                Delete => self.tree().inner.kv.value_byte_cost_size(),
+                                DeleteLayered | DeleteLayeredHavingSum => {
+                                    cost_return_on_error_no_add!(&cost, old_tree_cost(&key, value))
+                                }
+                                _ => 0, // can't get here anyways
                             };
 
                             let (r_key_cost, r_value_cost) = cost_return_on_error_no_add!(
@@ -534,7 +531,7 @@ where
         )>,
     >
     where
-        C: Fn(&Vec<u8>, &Vec<u8>, bool) -> Result<u32>,
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
     {
         let mut cost = OperationCost::default();
@@ -752,9 +749,8 @@ mod test {
     use crate::{
         merk::TreeFeatureType::BasicMerk,
         test_utils::{apply_memonly, assert_tree_invariants, del_entry, make_tree_seq, seq_key},
-        tree::*,
+        tree::{tree_feature_type::TreeFeatureType::BasicMerk, *},
     };
-    use crate::tree::tree_feature_type::TreeFeatureType::BasicMerk;
 
     #[test]
     fn simple_insert() {

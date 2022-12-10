@@ -11,7 +11,7 @@ pub trait Commit {
     fn write(
         &mut self,
         tree: &mut Tree,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>, bool) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
@@ -41,7 +41,7 @@ impl Commit for NoopCommit {
     fn write(
         &mut self,
         _tree: &mut Tree,
-        _old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>, bool) -> Result<u32>,
+        _old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
         _update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,

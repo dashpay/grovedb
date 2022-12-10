@@ -16,7 +16,10 @@ pub type Weight = u8;
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum EstimatedSumTrees {
     NoSumTrees,
-    SomeSumTrees { sum_trees_weight: Weight, non_sum_trees_weight: Weight },
+    SomeSumTrees {
+        sum_trees_weight: Weight,
+        non_sum_trees_weight: Weight,
+    },
     AllSumTrees,
 }
 
@@ -29,13 +32,14 @@ impl Default for EstimatedSumTrees {
 impl EstimatedSumTrees {
     fn estimated_size(&self) -> Result<u32, Error> {
         match self {
-            EstimatedSumTrees::NoSumTrees => { Ok(0) }
-            EstimatedSumTrees::SomeSumTrees { sum_trees_weight, non_sum_trees_weight } => {
-                (*non_sum_trees_weight as u32 * 9).checked_div(*sum_trees_weight as u32 + *non_sum_trees_weight as u32).ok_or(                    Error::DivideByZero(
-                    "weights add up to 0",
-                ))
-            }
-            EstimatedSumTrees::AllSumTrees => { Ok(8) }
+            EstimatedSumTrees::NoSumTrees => Ok(0),
+            EstimatedSumTrees::SomeSumTrees {
+                sum_trees_weight,
+                non_sum_trees_weight,
+            } => (*non_sum_trees_weight as u32 * 9)
+                .checked_div(*sum_trees_weight as u32 + *non_sum_trees_weight as u32)
+                .ok_or(Error::DivideByZero("weights add up to 0")),
+            EstimatedSumTrees::AllSumTrees => Ok(8),
         }
     }
 }
@@ -46,7 +50,12 @@ pub enum EstimatedLayerSizes {
     AllItems(AverageKeySize, AverageValueSize, Option<AverageFlagsSize>),
     AllReference(AverageKeySize, AverageValueSize, Option<AverageFlagsSize>),
     Mix {
-        subtrees_size: Option<(AverageKeySize, EstimatedSumTrees, Option<AverageFlagsSize>, Weight)>,
+        subtrees_size: Option<(
+            AverageKeySize,
+            EstimatedSumTrees,
+            Option<AverageFlagsSize>,
+            Weight,
+        )>,
         items_size: Option<(
             AverageKeySize,
             AverageValueSize,
@@ -87,20 +96,20 @@ impl EstimatedLayerSizes {
 
     pub fn value_with_feature_and_flags_size(&self) -> Result<u32, Error> {
         match self {
-            EstimatedLayerSizes::AllItems(_, average_value_size , flags_size) => {
+            EstimatedLayerSizes::AllItems(_, average_value_size, flags_size) => {
                 // 1 for enum type
                 // 1 for value size
                 // 1 for flags size
                 Ok(*average_value_size + flags_size.unwrap_or_default() + 3)
             }
-            EstimatedLayerSizes::AllReference(_, average_value_size , flags_size) => {
+            EstimatedLayerSizes::AllReference(_, average_value_size, flags_size) => {
                 // 1 for enum type
                 // 1 for value size
                 // 1 for flags size
                 // 2 for reference hops
                 Ok(*average_value_size + flags_size.unwrap_or_default() + 5)
             }
-            EstimatedLayerSizes::AllSubtrees(_, estimated_sum_trees , flags_size) => {
+            EstimatedLayerSizes::AllSubtrees(_, estimated_sum_trees, flags_size) => {
                 // 1 for enum type
                 // 1 for empty
                 // 1 for flags size
@@ -116,21 +125,25 @@ impl EstimatedLayerSizes {
                     Some((_, vs, fs, weight)) => {
                         Some((vs + fs.unwrap_or_default() + 3, *weight as u32))
                     }
-                }.unwrap_or_default();
+                }
+                .unwrap_or_default();
 
                 let (ref_size, ref_weight) = match references_size {
                     None => None,
                     Some((_, vs, fs, weight)) => {
                         Some((vs + fs.unwrap_or_default() + 5, *weight as u32))
                     }
-                }.unwrap_or_default();
+                }
+                .unwrap_or_default();
 
                 let (subtree_size, subtree_weight) = match subtrees_size {
                     None => None,
-                    Some((_, est, fs, weight)) => {
-                        Some((est.estimated_size()? + fs.unwrap_or_default() + 3, *weight as u32))
-                    }
-                }.unwrap_or_default();
+                    Some((_, est, fs, weight)) => Some((
+                        est.estimated_size()? + fs.unwrap_or_default() + 3,
+                        *weight as u32,
+                    )),
+                }
+                .unwrap_or_default();
 
                 if item_weight == 0 && ref_weight == 0 && subtree_weight == 0 {
                     return Err(Error::WrongEstimatedCostsElementTypeForLevel(
@@ -226,8 +239,11 @@ pub fn add_average_case_get_merk_node(
 
     // To write a node to disk, the left link, right link and kv nodes are encoded.
     // worst case, the node has both the left and right link present.
-    cost.storage_loaded_bytes +=
-        Tree::average_case_encoded_tree_size(not_prefixed_key_len, approximate_element_size, is_sum_tree);
+    cost.storage_loaded_bytes += Tree::average_case_encoded_tree_size(
+        not_prefixed_key_len,
+        approximate_element_size,
+        is_sum_tree,
+    );
 }
 
 /// Add worst case for getting a merk tree
@@ -294,7 +310,10 @@ pub fn add_average_case_merk_root_hash(cost: &mut OperationCost) {
     cost.hash_node_calls += node_hash_update_count();
 }
 
-pub fn average_case_merk_propagate(input: &EstimatedLayerInformation, in_sum_tree: bool) -> CostResult<(), Error> {
+pub fn average_case_merk_propagate(
+    input: &EstimatedLayerInformation,
+    in_sum_tree: bool,
+) -> CostResult<(), Error> {
     let mut cost = OperationCost::default();
     add_average_case_merk_propagate(&mut cost, input, in_sum_tree).wrap_with_cost(cost)
 }
@@ -328,11 +347,15 @@ pub fn add_average_case_merk_propagate(
     cost.hash_node_calls += (nodes_updated as u16) * 2;
 
     cost.storage_cost.replaced_bytes += match average_typed_size {
-        EstimatedLayerSizes::AllSubtrees(average_key_size, estimated_sum_trees, average_flags_size) => {
+        EstimatedLayerSizes::AllSubtrees(
+            average_key_size,
+            estimated_sum_trees,
+            average_flags_size,
+        ) => {
             let flags_len = average_flags_size.unwrap_or(0);
             let value_len = LAYER_COST_SIZE + flags_len;
-            // in order to simplify calculations we get the estimated size and remove the cost for
-            // the basic merk
+            // in order to simplify calculations we get the estimated size and remove the
+            // cost for the basic merk
             let sum_tree_addition = estimated_sum_trees.estimated_size()?;
             nodes_updated
                 * (KV::value_byte_cost_size_for_key_and_raw_value_lengths(
@@ -349,28 +372,38 @@ pub fn add_average_case_merk_propagate(
         ) => {
             let flags_len = average_flags_size.unwrap_or(0);
             let average_value_len = average_item_size + flags_len;
-            nodes_updated * KV::value_byte_cost_size_for_key_and_raw_value_lengths(
+            nodes_updated
+                * KV::value_byte_cost_size_for_key_and_raw_value_lengths(
                     *average_key_size as u32,
                     average_value_len,
-                in_sum_tree)
+                    in_sum_tree,
+                )
         }
         EstimatedLayerSizes::Mix {
             subtrees_size,
             items_size,
             references_size,
         } => {
-            let total_weight = subtrees_size.as_ref().map(|(_,_,_,weight)| *weight as u32).unwrap_or_default()
-                + items_size.as_ref().map(|(_,_,_,weight)| *weight as u32).unwrap_or_default()
-                + references_size.as_ref().map(|(_,_,_,weight)| *weight as u32).unwrap_or_default();
+            let total_weight = subtrees_size
+                .as_ref()
+                .map(|(_, _, _, weight)| *weight as u32)
+                .unwrap_or_default()
+                + items_size
+                    .as_ref()
+                    .map(|(_, _, _, weight)| *weight as u32)
+                    .unwrap_or_default()
+                + references_size
+                    .as_ref()
+                    .map(|(_, _, _, weight)| *weight as u32)
+                    .unwrap_or_default();
             if total_weight == 0 {
                 0
             } else {
                 let weighted_nodes_updated = (nodes_updated as u64)
                     .checked_mul(total_weight as u64)
                     .ok_or(Error::Overflow("overflow for weights average cost"))?;
-                let tree_node_updates_cost = match subtrees_size
-                {
-                    None => { 0 }
+                let tree_node_updates_cost = match subtrees_size {
+                    None => 0,
                     Some((average_key_size, estimated_sum_trees, average_flags_size, weight)) => {
                         let flags_len = average_flags_size.unwrap_or(0);
                         let value_len = LAYER_COST_SIZE + flags_len;
@@ -386,7 +419,7 @@ pub fn add_average_case_merk_propagate(
                     }
                 };
                 let item_node_updates_cost = match items_size {
-                    None => { 0 }
+                    None => 0,
                     Some((average_key_size, average_value_size, average_flags_size, weight)) => {
                         let flags_len = average_flags_size.unwrap_or(0);
                         let value_len = average_value_size + flags_len;
@@ -401,7 +434,7 @@ pub fn add_average_case_merk_propagate(
                     }
                 };
                 let reference_node_updates_cost = match references_size {
-                    None => { 0 }
+                    None => 0,
                     Some((average_key_size, average_value_size, average_flags_size, weight)) => {
                         let flags_len = average_flags_size.unwrap_or(0);
                         let value_len = average_value_size + flags_len;
@@ -431,7 +464,11 @@ pub fn add_average_case_merk_propagate(
         }
     };
     cost.storage_loaded_bytes += match average_typed_size {
-        EstimatedLayerSizes::AllSubtrees(average_key_size, estimated_sum_trees, average_flags_size) => {
+        EstimatedLayerSizes::AllSubtrees(
+            average_key_size,
+            estimated_sum_trees,
+            average_flags_size,
+        ) => {
             let flags_len = average_flags_size.unwrap_or(0);
             let value_len = LAYER_COST_SIZE + flags_len;
             let sum_tree_addition = estimated_sum_trees.estimated_size()?;
@@ -454,7 +491,7 @@ pub fn add_average_case_merk_propagate(
                 * KV::node_byte_cost_size_for_key_and_value_lengths(
                     *average_key_size as u32,
                     average_value_len,
-                in_sum_tree,
+                    in_sum_tree,
                 )
         }
         EstimatedLayerSizes::Mix {
@@ -462,33 +499,46 @@ pub fn add_average_case_merk_propagate(
             items_size,
             references_size,
         } => {
-            let total_weight = subtrees_size.as_ref().map(|(_,_,_,weight)| *weight as u32).unwrap_or_default()
-                + items_size.as_ref().map(|(_,_,_,weight)| *weight as u32).unwrap_or_default()
-                + references_size.as_ref().map(|(_,_,_,weight)| *weight as u32).unwrap_or_default();
+            let total_weight = subtrees_size
+                .as_ref()
+                .map(|(_, _, _, weight)| *weight as u32)
+                .unwrap_or_default()
+                + items_size
+                    .as_ref()
+                    .map(|(_, _, _, weight)| *weight as u32)
+                    .unwrap_or_default()
+                + references_size
+                    .as_ref()
+                    .map(|(_, _, _, weight)| *weight as u32)
+                    .unwrap_or_default();
             if total_weight == 0 {
                 0
             } else {
                 let weighted_nodes_updated = (nodes_updated as u64)
                     .checked_mul(total_weight as u64)
                     .ok_or(Error::Overflow("overflow for weights average cost"))?;
-                let tree_node_updates_cost = subtrees_size.as_ref()
-                    .map(|(average_key_size, estimated_sum_trees, average_flags_size, weight)| {
-                        let flags_len = average_flags_size.unwrap_or(0);
-                        let value_len = LAYER_COST_SIZE + flags_len;
-                        let sum_tree_addition = estimated_sum_trees.estimated_size()?;
-                        let cost = KV::layered_node_byte_cost_size_for_key_and_value_lengths(
-                            *average_key_size as u32,
-                            value_len + sum_tree_addition,
-                            in_sum_tree,
-                        );
-                        (*weight as u64)
-                            .checked_mul(cost as u64)
-                            .ok_or(Error::Overflow("overflow for mixed tree nodes updates"))
-                    })
-                    .unwrap_or(Ok(0))?;
-                let item_node_updates_cost = items_size.as_ref()
+                let tree_node_updates_cost = subtrees_size
+                    .as_ref()
                     .map(
-                        |(average_key_size, average_value_size,  average_flags_size, weight)| {
+                        |(average_key_size, estimated_sum_trees, average_flags_size, weight)| {
+                            let flags_len = average_flags_size.unwrap_or(0);
+                            let value_len = LAYER_COST_SIZE + flags_len;
+                            let sum_tree_addition = estimated_sum_trees.estimated_size()?;
+                            let cost = KV::layered_node_byte_cost_size_for_key_and_value_lengths(
+                                *average_key_size as u32,
+                                value_len + sum_tree_addition,
+                                in_sum_tree,
+                            );
+                            (*weight as u64)
+                                .checked_mul(cost as u64)
+                                .ok_or(Error::Overflow("overflow for mixed tree nodes updates"))
+                        },
+                    )
+                    .unwrap_or(Ok(0))?;
+                let item_node_updates_cost = items_size
+                    .as_ref()
+                    .map(
+                        |(average_key_size, average_value_size, average_flags_size, weight)| {
                             let flags_len = average_flags_size.unwrap_or(0);
                             let value_len = average_value_size + flags_len;
                             let cost = KV::node_byte_cost_size_for_key_and_value_lengths(
@@ -502,7 +552,8 @@ pub fn add_average_case_merk_propagate(
                         },
                     )
                     .unwrap_or(Ok(0))?;
-                let reference_node_updates_cost = references_size.as_ref()
+                let reference_node_updates_cost = references_size
+                    .as_ref()
                     .map(
                         |(average_key_size, average_value_size, average_flags_size, weight)| {
                             let flags_len = average_flags_size.unwrap_or(0);

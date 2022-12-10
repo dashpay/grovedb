@@ -56,7 +56,7 @@ mod tests {
         );
 
         tx.rollback().expect("expected to rollback");
-        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec())];
+        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx))
             .cost_as_result()
@@ -179,7 +179,7 @@ mod tests {
             .cost_as_result()
             .expect("expected to insert successfully");
 
-        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec())];
+        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
         let batch_cost = db
             .apply_batch(ops, None, None)
             .cost_as_result()
@@ -317,7 +317,7 @@ mod tests {
         );
 
         tx.rollback().expect("expected to rollback");
-        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec())];
+        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx))
             .cost_as_result()
@@ -408,7 +408,7 @@ mod tests {
         ));
 
         tx.rollback().expect("expected to rollback");
-        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec())];
+        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
         let batch_cost = db
             .apply_batch_with_element_flags_update(
                 ops,
@@ -572,7 +572,7 @@ mod tests {
             .cost_as_result()
             .expect("expected to insert successfully");
 
-        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec())];
+        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
         let batch_cost = db
             .apply_batch(ops, None, None)
             .cost_as_result()

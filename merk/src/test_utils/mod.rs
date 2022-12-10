@@ -10,8 +10,8 @@ pub use temp_merk::TempMerk;
 
 use crate::{
     tree::{kv::KV, BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker},
+    TreeFeatureType::{BasicMerk, SummedMerk},
 };
-use crate::TreeFeatureType::BasicMerk;
 
 pub fn assert_tree_invariants(tree: &Tree) {
     assert!(tree.balance_factor().abs() < 2);
@@ -37,16 +37,17 @@ pub fn assert_tree_invariants(tree: &Tree) {
 }
 
 pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
+    let is_sum_node = tree.is_sum_node();
     let walker = Walker::<PanicSource>::new(tree, PanicSource {});
     let mut tree = Walker::<PanicSource>::apply_to(
         Some(walker),
         batch,
         PanicSource {},
-        &|key, value, is_sum_tree| {
+        &|key, value| {
             Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                 key.len() as u32,
                 value.len() as u32,
-                is_sum_tree,
+                is_sum_node,
             ))
         },
         &mut |_flags, key_bytes_to_remove, value_bytes_to_remove| {
@@ -60,13 +61,14 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     .expect("apply failed")
     .0
     .expect("expected tree");
+    let is_sum_node = tree.is_sum_node();
     tree.commit(
         &mut NoopCommit {},
-        &|key, value, is_sum_tree| {
+        &|key, value| {
             Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                 key.len() as u32,
                 value.len() as u32,
-                is_sum_tree,
+                is_sum_node,
             ))
         },
         &mut |_, _, _| Ok((false, None)),
@@ -88,13 +90,17 @@ pub fn apply_memonly(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     tree
 }
 
-pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) -> Option<Tree> {
+pub fn apply_to_memonly(
+    maybe_tree: Option<Tree>,
+    batch: &MerkBatch<Vec<u8>>,
+    is_sum_tree: bool,
+) -> Option<Tree> {
     let maybe_walker = maybe_tree.map(|tree| Walker::<PanicSource>::new(tree, PanicSource {}));
     Walker::<PanicSource>::apply_to(
         maybe_walker,
         batch,
         PanicSource {},
-        &|key, value, is_sum_tree| {
+        &|key, value| {
             Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                 key.len() as u32,
                 value.len() as u32,
@@ -112,13 +118,14 @@ pub fn apply_to_memonly(maybe_tree: Option<Tree>, batch: &MerkBatch<Vec<u8>>) ->
     .expect("apply failed")
     .0
     .map(|mut tree| {
+        let is_sum_node = tree.is_sum_node();
         tree.commit(
             &mut NoopCommit {},
-            &|key, value, is_sum_tree| {
+            &|key, value| {
                 Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key.len() as u32,
                     value.len() as u32,
-                    is_sum_tree,
+                    is_sum_node,
                 ))
             },
             &mut |_, _, _| Ok((false, None)),
@@ -187,12 +194,22 @@ pub fn make_del_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     batch
 }
 
-pub fn make_tree_rand(node_count: u64, batch_size: u64, initial_seed: u64) -> Tree {
+pub fn make_tree_rand(
+    node_count: u64,
+    batch_size: u64,
+    initial_seed: u64,
+    is_sum_tree: bool,
+) -> Tree {
     assert!(node_count >= batch_size);
     assert_eq!((node_count % batch_size), 0);
 
     let value = vec![123; 60];
-    let mut tree = Tree::new(vec![0; 20], value, BasicMerk).unwrap();
+    let feature_type = if is_sum_tree {
+        SummedMerk(0)
+    } else {
+        BasicMerk
+    };
+    let mut tree = Tree::new(vec![0; 20], value, feature_type).unwrap();
 
     let mut seed = initial_seed;
 
