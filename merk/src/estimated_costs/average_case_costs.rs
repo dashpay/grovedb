@@ -3,7 +3,7 @@ use integer_encoding::VarInt;
 
 use crate::{
     error::Error,
-    estimated_costs::LAYER_COST_SIZE,
+    estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE},
     tree::{kv::KV, Link, Tree},
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
 };
@@ -178,36 +178,44 @@ pub type EstimatedLevelNumber = u32;
 pub type EstimatedToBeEmpty = bool;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum EstimatedLayerInformation {
-    PotentiallyAtMaxElements(EstimatedLayerSizes),
-    ApproximateElements(ApproximateElementCount, EstimatedLayerSizes),
-    EstimatedLevel(
-        EstimatedLevelNumber,
-        EstimatedToBeEmpty,
-        EstimatedLayerSizes,
-    ),
+pub struct EstimatedLayerInformation {
+    pub is_sum_tree: bool,
+    pub estimated_layer_count: EstimatedLayerCount,
+    pub estimated_layer_sizes: EstimatedLayerSizes,
 }
 
-impl EstimatedLayerInformation {
-    pub fn sizes(&self) -> &EstimatedLayerSizes {
+impl EstimatedLayerInformation {}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum EstimatedLayerCount {
+    PotentiallyAtMaxElements,
+    ApproximateElements(ApproximateElementCount),
+    EstimatedLevel(EstimatedLevelNumber, EstimatedToBeEmpty),
+}
+
+impl EstimatedLayerCount {
+    /// Returns true if the tree is estimated to be empty.
+    pub fn estimated_to_be_empty(&self) -> bool {
         match self {
-            EstimatedLayerInformation::ApproximateElements(_, estimated_layer_info) => {
-                estimated_layer_info
-            }
-            EstimatedLayerInformation::EstimatedLevel(_, _, estimated_layer_info) => {
-                estimated_layer_info
-            }
-            EstimatedLayerInformation::PotentiallyAtMaxElements(estimated_layer_info) => {
-                estimated_layer_info
-            }
+            EstimatedLayerCount::ApproximateElements(count) => *count == 0,
+            EstimatedLayerCount::PotentiallyAtMaxElements => false,
+            EstimatedLayerCount::EstimatedLevel(_, empty) => *empty,
         }
     }
 
-    pub fn estimated_to_be_empty(&self) -> bool {
+    /// Estimate the number of levels based on the size of the tree, for big
+    /// trees this is very inaccurate.
+    pub fn estimate_levels(&self) -> u32 {
         match self {
-            EstimatedLayerInformation::ApproximateElements(count, _) => *count == 0,
-            EstimatedLayerInformation::PotentiallyAtMaxElements(_) => false,
-            EstimatedLayerInformation::EstimatedLevel(_, empty, _) => *empty,
+            EstimatedLayerCount::ApproximateElements(n) => {
+                if *n == u32::MAX {
+                    32
+                } else {
+                    ((n + 1) as f32).log2().ceil() as u32
+                }
+            }
+            EstimatedLayerCount::PotentiallyAtMaxElements => 32,
+            EstimatedLayerCount::EstimatedLevel(n, _) => *n,
         }
     }
 }
@@ -310,32 +318,24 @@ pub fn add_average_case_merk_root_hash(cost: &mut OperationCost) {
     cost.hash_node_calls += node_hash_update_count();
 }
 
-pub fn average_case_merk_propagate(
-    input: &EstimatedLayerInformation,
-    in_sum_tree: bool,
-) -> CostResult<(), Error> {
+pub fn average_case_merk_propagate(input: &EstimatedLayerInformation) -> CostResult<(), Error> {
     let mut cost = OperationCost::default();
-    add_average_case_merk_propagate(&mut cost, input, in_sum_tree).wrap_with_cost(cost)
+    add_average_case_merk_propagate(&mut cost, input).wrap_with_cost(cost)
 }
 
 pub fn add_average_case_merk_propagate(
     cost: &mut OperationCost,
     input: &EstimatedLayerInformation,
-    in_sum_tree: bool,
 ) -> Result<(), Error> {
     let mut nodes_updated = 0;
     // Propagation requires to recompute and write hashes up to the root
-    let (levels, average_typed_size) = match input {
-        EstimatedLayerInformation::ApproximateElements(n, s) => {
-            if *n == u32::MAX {
-                (32, s)
-            } else {
-                (((n + 1) as f32).log2().ceil() as u32, s)
-            }
-        }
-        EstimatedLayerInformation::PotentiallyAtMaxElements(s) => (32, s),
-        EstimatedLayerInformation::EstimatedLevel(n, _, s) => (*n, s),
-    };
+    let EstimatedLayerInformation {
+        is_sum_tree,
+        estimated_layer_count,
+        estimated_layer_sizes,
+    } = input;
+    let levels = estimated_layer_count.estimate_levels();
+    let in_sum_tree = *is_sum_tree;
     nodes_updated += levels;
 
     if levels > 1 {
@@ -346,13 +346,16 @@ pub fn add_average_case_merk_propagate(
 
     cost.hash_node_calls += (nodes_updated as u16) * 2;
 
-    cost.storage_cost.replaced_bytes += match average_typed_size {
+    cost.storage_cost.replaced_bytes += match estimated_layer_sizes {
         EstimatedLayerSizes::AllSubtrees(
             average_key_size,
             estimated_sum_trees,
             average_flags_size,
         ) => {
             let flags_len = average_flags_size.unwrap_or(0);
+
+            // it is normal to have LAYER_COST_SIZE here, as we add estimated sum tree
+            // additions right after
             let value_len = LAYER_COST_SIZE + flags_len;
             // in order to simplify calculations we get the estimated size and remove the
             // cost for the basic merk
@@ -361,7 +364,7 @@ pub fn add_average_case_merk_propagate(
                 * (KV::value_byte_cost_size_for_key_and_raw_value_lengths(
                     *average_key_size as u32,
                     value_len,
-                    in_sum_tree,
+                    *is_sum_tree,
                 ) + sum_tree_addition)
         }
         EstimatedLayerSizes::AllItems(average_key_size, average_item_size, average_flags_size)
@@ -463,7 +466,7 @@ pub fn add_average_case_merk_propagate(
             }
         }
     };
-    cost.storage_loaded_bytes += match average_typed_size {
+    cost.storage_loaded_bytes += match estimated_layer_sizes {
         EstimatedLayerSizes::AllSubtrees(
             average_key_size,
             estimated_sum_trees,

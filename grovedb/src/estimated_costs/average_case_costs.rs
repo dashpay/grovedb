@@ -6,7 +6,7 @@ use merk::{
         average_case_costs::{
             add_average_case_get_merk_node, add_average_case_merk_delete,
             add_average_case_merk_delete_layered, add_average_case_merk_propagate,
-            add_average_case_merk_replace_layered, EstimatedLayerInformation,
+            add_average_case_merk_replace_layered, EstimatedLayerCount, EstimatedLayerInformation,
         },
     },
     tree::Tree,
@@ -51,7 +51,6 @@ impl GroveDb {
         key: &KeyInfo,
         estimated_layer_information: &EstimatedLayerInformation,
         is_sum_tree: bool,
-        in_tree_using_sums: bool,
         propagate: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -59,13 +58,13 @@ impl GroveDb {
         let flags_size = cost_return_on_error_no_add!(
             &cost,
             estimated_layer_information
-                .sizes()
+                .estimated_layer_sizes
                 .layered_flags_size()
                 .map_err(Error::MerkError)
         )
         .map(|f| f + f.required_space() as u32)
         .unwrap_or_default();
-        let tree_cost_size = if is_sum_tree {
+        let tree_cost_size = if estimated_layer_information.is_sum_tree {
             SUM_TREE_COST_SIZE
         } else {
             TREE_COST_SIZE
@@ -75,15 +74,11 @@ impl GroveDb {
             &mut cost,
             key_len,
             layer_extra_size,
-            in_tree_using_sums,
+            estimated_layer_information.is_sum_tree,
         );
         if propagate {
-            add_average_case_merk_propagate(
-                &mut cost,
-                estimated_layer_information,
-                in_tree_using_sums,
-            )
-            .map_err(Error::MerkError)
+            add_average_case_merk_propagate(&mut cost, estimated_layer_information)
+                .map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -112,8 +107,7 @@ impl GroveDb {
         let value_len = tree_cost_size + flags_len;
         add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_tree_using_sums);
         if let Some(input) = propagate_if_input {
-            add_average_case_merk_propagate(&mut cost, input, in_tree_using_sums)
-                .map_err(Error::MerkError)
+            add_average_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -124,7 +118,6 @@ impl GroveDb {
     pub fn average_case_merk_delete_tree(
         key: &KeyInfo,
         is_sum_tree: bool,
-        in_tree_using_sums: bool,
         estimated_layer_information: &EstimatedLayerInformation,
         propagate: bool,
     ) -> CostResult<(), Error> {
@@ -133,7 +126,7 @@ impl GroveDb {
         let flags_size = cost_return_on_error_no_add!(
             &cost,
             estimated_layer_information
-                .sizes()
+                .estimated_layer_sizes
                 .layered_flags_size()
                 .map_err(Error::MerkError)
         )
@@ -147,12 +140,8 @@ impl GroveDb {
         let layer_extra_size = tree_cost_size + flags_size;
         add_average_case_merk_delete_layered(&mut cost, key_len, layer_extra_size);
         if propagate {
-            add_average_case_merk_propagate(
-                &mut cost,
-                estimated_layer_information,
-                in_tree_using_sums,
-            )
-            .map_err(Error::MerkError)
+            add_average_case_merk_propagate(&mut cost, estimated_layer_information)
+                .map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -171,12 +160,17 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let key_len = key.len() as u32;
         match value {
-            Element::Tree(_, flags) => {
+            Element::Tree(_, flags) | Element::SumTree(_, _, flags) => {
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = TREE_COST_SIZE + flags_len;
+                let tree_cost_size = if value.is_sum_tree() {
+                    SUM_TREE_COST_SIZE
+                } else {
+                    TREE_COST_SIZE
+                };
+                let value_len = tree_cost_size + flags_len;
                 add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_tree_using_sums)
             }
             _ => add_cost_case_merk_insert(
@@ -187,8 +181,7 @@ impl GroveDb {
             ),
         };
         if let Some(level) = propagate_for_level {
-            add_average_case_merk_propagate(&mut cost, level, in_tree_using_sums)
-                .map_err(Error::MerkError)
+            add_average_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -198,26 +191,21 @@ impl GroveDb {
     pub fn average_case_merk_delete_element(
         key: &KeyInfo,
         estimated_layer_information: &EstimatedLayerInformation,
-        in_tree_using_sums: bool,
         propagate: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let key_len = key.len() as u32;
-        let estimated_layer_sizes = estimated_layer_information.sizes();
         let value_size = cost_return_on_error_no_add!(
             &cost,
-            estimated_layer_sizes
+            estimated_layer_information
+                .estimated_layer_sizes
                 .value_with_feature_and_flags_size()
                 .map_err(Error::MerkError)
         );
         add_average_case_merk_delete(&mut cost, key_len, value_size);
         if propagate {
-            add_average_case_merk_propagate(
-                &mut cost,
-                estimated_layer_information,
-                in_tree_using_sums,
-            )
-            .map_err(Error::MerkError)
+            add_average_case_merk_propagate(&mut cost, estimated_layer_information)
+                .map_err(Error::MerkError)
         } else {
             Ok(())
         }

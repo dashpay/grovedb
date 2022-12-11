@@ -873,11 +873,12 @@ where
                 &batch_operations,
                 &[],
                 Some(batch_apply_options.as_merk_options()),
-                &|key, value, is_sum_tree| {
+                &|key, value| {
                     let element = Element::deserialize(value)?;
+                    let is_sum_tree = element.is_sum_tree();
                     match element {
                         Element::Tree(_, flags) | Element::SumTree(_, _, flags) => {
-                            let tree_cost_size = if element.is_sum_tree() {
+                            let tree_cost_size = if is_sum_tree {
                                 SUM_TREE_COST_SIZE
                             } else {
                                 TREE_COST_SIZE

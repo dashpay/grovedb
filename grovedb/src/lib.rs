@@ -29,7 +29,7 @@ use merk::{
 };
 pub use merk::{
     estimated_costs::{
-        average_case_costs::{EstimatedLayerInformation, EstimatedLayerSizes},
+        average_case_costs::{EstimatedLayerCount, EstimatedLayerSizes},
         worst_case_costs::WorstCaseLayerInformation,
     },
     proofs::{query::QueryItem, Query},

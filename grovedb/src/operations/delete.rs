@@ -124,7 +124,7 @@ impl GroveDb {
                 stop_path_height,
                 options,
                 validate,
-                false,
+                None,
                 &mut batch_operations,
                 transaction,
             )
@@ -522,7 +522,7 @@ impl GroveDb {
         key: &KeyInfo,
         stop_path_height: Option<u16>,
         validate: bool,
-        intermediate_flag_sizes: IntMap<u32>,
+        intermediate_tree_info: IntMap<(bool, u32)>,
         max_element_size: u32,
     ) -> CostResult<Vec<GroveDbOp>, Error> {
         let mut cost = OperationCost::default();
@@ -546,15 +546,23 @@ impl GroveDb {
                     check_if_tree,
                     except_keys_count,
                     max_element_size,
+                    is_sum_tree,
                 ) = cost_return_on_error_no_add!(
                     &cost,
                     if height == path_len {
-                        Ok((used_path, key, true, 0, max_element_size))
+                        if let Some((is_in_sum_tree, _)) = intermediate_tree_info.get(height as u64)
+                        {
+                            Ok((used_path, key, true, 0, max_element_size, *is_in_sum_tree))
+                        } else {
+                            Err(Error::InvalidParameter(
+                                "intermediate flag size missing for height at path length",
+                            ))
+                        }
                     } else {
                         let (last_key, smaller_path) = used_path.split_last().unwrap();
                         used_path = smaller_path;
-                        if let Some(flags_size_at_level) =
-                            intermediate_flag_sizes.get(height as u64)
+                        if let Some((is_in_sum_tree, flags_size_at_level)) =
+                            intermediate_tree_info.get(height as u64)
                         {
                             // the worst case is that we are only in sum trees
                             let value_len = SUM_TREE_COST_SIZE + flags_size_at_level;
@@ -562,9 +570,16 @@ impl GroveDb {
                                 KV::layered_node_byte_cost_size_for_key_and_value_lengths(
                                     last_key.len() as u32,
                                     value_len,
-                                    true,
+                                    *is_in_sum_tree,
                                 );
-                            Ok((used_path, last_key, false, 1, max_tree_size))
+                            Ok((
+                                used_path,
+                                last_key,
+                                false,
+                                1,
+                                max_tree_size,
+                                *is_in_sum_tree,
+                            ))
                         } else {
                             Err(Error::InvalidParameter("intermediate flag size missing"))
                         }
@@ -575,6 +590,7 @@ impl GroveDb {
                     Self::worst_case_delete_operation_for_delete_internal::<S>(
                         &KeyInfoPath::from_vec(path_at_level.to_vec()),
                         key_at_level,
+                        is_sum_tree,
                         validate,
                         check_if_tree,
                         except_keys_count,
@@ -602,7 +618,13 @@ impl GroveDb {
             GroveDb::add_worst_case_get_merk_at_path::<S>(&mut cost, path, parent_tree_is_sum_tree);
         }
         if check_if_tree {
-            GroveDb::add_worst_case_get_raw_cost::<S>(&mut cost, path, key, max_element_size);
+            GroveDb::add_worst_case_get_raw_cost::<S>(
+                &mut cost,
+                path,
+                key,
+                max_element_size,
+                parent_tree_is_sum_tree,
+            );
         }
         // in the worst case this is a tree
         add_worst_case_cost_for_is_empty_tree_except(&mut cost, except_keys_count);
@@ -662,7 +684,8 @@ impl GroveDb {
             &mut cost,
             self.open_transactional_merk_at_path(path_iter.clone(), transaction)
         );
-        if let Element::Tree(..) = element {
+        let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
+        if element.is_tree() {
             let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
 
             let subtree_of_tree_we_are_deleting = cost_return_on_error!(
@@ -710,6 +733,7 @@ impl GroveDb {
                             })
                         );
                     }
+                    // todo: verify why we need to open the same? merk again
                     let storage = self
                         .db
                         .get_batch_transactional_storage_context(
@@ -724,7 +748,7 @@ impl GroveDb {
                         Merk::open_layered_with_root_key(
                             storage,
                             subtree_to_delete_from.root_key(),
-                            false
+                            element.is_sum_tree()
                         )
                         .map_err(|_| {
                             Error::CorruptedData(
@@ -740,6 +764,7 @@ impl GroveDb {
                             &key,
                             Some(options.as_merk_options()),
                             true,
+                            uses_sum_tree,
                             sectioned_removal
                         )
                     );
@@ -776,6 +801,7 @@ impl GroveDb {
                             &key,
                             Some(options.as_merk_options()),
                             true,
+                            uses_sum_tree,
                             sectioned_removal
                         )
                     );
@@ -801,6 +827,7 @@ impl GroveDb {
                     &key,
                     Some(options.as_merk_options()),
                     false,
+                    uses_sum_tree,
                     sectioned_removal,
                 )
             );
@@ -848,7 +875,8 @@ impl GroveDb {
             &mut cost,
             self.open_non_transactional_merk_at_path(path_iter.clone())
         );
-        if let Element::Tree(..) = element {
+        let uses_sum_tree = subtree_to_delete_from.is_sum_tree;
+        if element.is_tree() {
             let subtree_merk_path = path_iter.clone().chain(std::iter::once(key));
             let subtree_of_tree_we_are_deleting = cost_return_on_error!(
                 &mut cost,
@@ -900,6 +928,7 @@ impl GroveDb {
                         &key,
                         Some(options.as_merk_options()),
                         true,
+                        uses_sum_tree,
                         sectioned_removal,
                     )
                 );
@@ -912,6 +941,7 @@ impl GroveDb {
                     &key,
                     Some(options.as_merk_options()),
                     false,
+                    uses_sum_tree,
                     sectioned_removal,
                 )
             );

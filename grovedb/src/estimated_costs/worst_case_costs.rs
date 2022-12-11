@@ -312,7 +312,7 @@ mod test {
         // (this will be the max_element_size)
         let mut cost = OperationCost::default();
         let key = KnownKey(8_u64.to_be_bytes().to_vec());
-        add_worst_case_get_merk_node(&mut cost, key.len() as u32, 60);
+        add_worst_case_get_merk_node(&mut cost, key.len() as u32, 60, false);
         assert_eq!(cost, node_result.cost);
     }
 

@@ -206,6 +206,13 @@ impl Element {
         }
     }
 
+    pub fn is_tree(&self) -> bool {
+        match &self {
+            Element::SumTree(..) | Element::Tree(..) => true,
+            _ => false,
+        }
+    }
+
     pub fn is_sum_item(&self) -> bool {
         match &self {
             Element::SumItem(..) => true,
@@ -301,12 +308,6 @@ impl Element {
         len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1
     }
 
-    /// Get the size that the element will occupy on disk
-    pub fn node_byte_size(&self, key_len: u32) -> u32 {
-        let serialized_value_size = self.serialized_size() as u32; // this includes the flags
-        KV::node_byte_cost_size_for_key_and_value_lengths(key_len, serialized_value_size)
-    }
-
     /// Delete an element from Merk under a key
     pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
@@ -326,8 +327,9 @@ impl Element {
             Op::Delete
         };
         let batch = [(key, op)];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch, &[], merk_options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes).map_err(anyhow::Error::msg)
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -357,11 +359,15 @@ impl Element {
             Op::Delete
         };
         let batch = [(key, op)];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_costs_just_in_time_value_update::<_, Vec<u8>>(
             &batch,
             &[],
             merk_options,
-            &|key, value| Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg),
+            &|key, value| {
+                Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
+                    .map_err(anyhow::Error::msg)
+            },
             &mut |_costs, _old_value, _value| Ok((false, None)),
             sectioned_removal,
         )
@@ -1113,13 +1119,18 @@ impl Element {
             cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
 
         let batch_operations = [(key, Op::Put(serialized, merk_feature_type))];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes).map_err(anyhow::Error::msg)
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    pub fn tree_costs_for_key_value(key: &Vec<u8>, value: &Vec<u8>) -> Result<u32, Error> {
+    pub fn tree_costs_for_key_value(
+        key: &Vec<u8>,
+        value: &Vec<u8>,
+        is_sum_node: bool,
+    ) -> Result<u32, Error> {
         let element = Element::deserialize(value)?;
         match element {
             Element::Tree(_, flags) => {
@@ -1130,7 +1141,9 @@ impl Element {
                 let value_len = TREE_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
                 Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                    key_len, value_len,
+                    key_len,
+                    value_len,
+                    is_sum_node,
                 ))
             }
             Element::SumTree(_, sum_value, flags) => {
@@ -1141,7 +1154,9 @@ impl Element {
                 let value_len = TREE_COST_SIZE + flags_len + 8;
                 let key_len = key.len() as u32;
                 Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                    key_len, value_len,
+                    key_len,
+                    value_len,
+                    is_sum_node,
                 ))
             }
             _ => Err(Error::CorruptedCodeExecution(
@@ -1243,8 +1258,9 @@ impl Element {
             key,
             Op::PutCombinedReference(serialized, referenced_value, merk_feature_type),
         )];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes).map_err(anyhow::Error::msg)
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -1311,8 +1327,9 @@ impl Element {
             key,
             Op::PutLayeredReference(serialized, cost, subtree_root_hash, merk_feature_type),
         )];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes).map_err(anyhow::Error::msg)
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }

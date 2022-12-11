@@ -73,6 +73,9 @@ impl ProofWithoutEncodingResult {
     }
 }
 
+/// A bool type
+pub type IsSumTree = bool;
+
 /// KVIterator allows you to lazily iterate over each kv pair of a subtree
 pub struct KVIterator<'a, I: RawIterator> {
     raw_iter: I,
