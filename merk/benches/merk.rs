@@ -546,7 +546,7 @@ pub fn restore_500_1(c: &mut Criterion) {
             },
             |data| {
                 let ctx = data.0.get_storage_context(empty()).unwrap();
-                let m = Merk::open_standalone(ctx).unwrap().unwrap();
+                let m = Merk::open_standalone(ctx, false).unwrap().unwrap();
                 let mut restorer = Merk::restore(m, root_hash);
 
                 for chunk in data.1 {
