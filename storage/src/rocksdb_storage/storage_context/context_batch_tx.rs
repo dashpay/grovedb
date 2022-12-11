@@ -195,8 +195,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
                 storage_loaded_bytes: value
                     .as_ref()
                     .ok()
-                    .map(Option::as_ref)
-                    .flatten()
+                    .and_then(Option::as_ref)
                     .map(|x| x.len() as u32)
                     .unwrap_or(0),
                 ..Default::default()
@@ -212,8 +211,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
                 storage_loaded_bytes: value
                     .as_ref()
                     .ok()
-                    .map(Option::as_ref)
-                    .flatten()
+                    .and_then(Option::as_ref)
                     .map(|x| x.len() as u32)
                     .unwrap_or(0),
                 ..Default::default()
@@ -229,8 +227,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
                 storage_loaded_bytes: value
                     .as_ref()
                     .ok()
-                    .map(Option::as_ref)
-                    .flatten()
+                    .and_then(Option::as_ref)
                     .map(|x| x.len() as u32)
                     .unwrap_or(0),
                 ..Default::default()
@@ -246,8 +243,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
                 storage_loaded_bytes: value
                     .as_ref()
                     .ok()
-                    .map(Option::as_ref)
-                    .flatten()
+                    .and_then(Option::as_ref)
                     .map(|x| x.len() as u32)
                     .unwrap_or(0),
                 ..Default::default()

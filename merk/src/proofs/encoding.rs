@@ -348,12 +348,10 @@ impl Op {
     fn encode_into<W: Write>(&self, dest: &mut W) -> Result<(), Error> {
         Encode::encode_into(self, dest).map_err(|e| match e {
             EdError::UnexpectedByte(byte) => Error::ProofCreationError(format!(
-                "failed to encode an proofs::Op structure (UnexpectedByte: {})",
-                byte
+                "failed to encode an proofs::Op structure (UnexpectedByte: {byte})"
             )),
             EdError::IOError(error) => Error::ProofCreationError(format!(
-                "failed to encode an proofs::Op structure ({})",
-                error
+                "failed to encode an proofs::Op structure ({error})"
             )),
         })
     }
@@ -365,12 +363,10 @@ impl Op {
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         Decode::decode(bytes).map_err(|e| match e {
             EdError::UnexpectedByte(byte) => Error::ProofCreationError(format!(
-                "failed to decode an proofs::Op structure (UnexpectedByte: {})",
-                byte
+                "failed to decode an proofs::Op structure (UnexpectedByte: {byte})"
             )),
             EdError::IOError(error) => Error::ProofCreationError(format!(
-                "failed to decode an proofs::Op structure ({})",
-                error
+                "failed to decode an proofs::Op structure ({error})"
             )),
         })
     }

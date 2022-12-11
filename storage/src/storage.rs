@@ -582,12 +582,12 @@ mod tests {
             cost_info: None,
         };
         assert_eq!(
-            format!("{:?}", op1),
+            format!("{op1:?}"),
             "PutMeta { key: \"[hex: 6b657931, str: key1]\", value: \"[hex: 76616c756531, str: \
              value1]\" }"
         );
         assert_eq!(
-            format!("{:?}", op2),
+            format!("{op2:?}"),
             "DeleteRoot { key: \"[hex: 6b657931, str: key1]\" }"
         );
     }

@@ -68,7 +68,7 @@ pub fn insert_1m_2k_seq(c: &mut Criterion) {
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
                 merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
-                    &batch,
+                    batch,
                     &[],
                     None,
                     &|_k, _v| Ok(0),
@@ -106,7 +106,7 @@ pub fn insert_1m_2k_rand(c: &mut Criterion) {
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
                 merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
-                    &batch,
+                    batch,
                     &[],
                     None,
                     &|_k, _v| Ok(0),
@@ -161,7 +161,7 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
                 merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
-                    &batch,
+                    batch,
                     &[],
                     None,
                     &|_k, _v| Ok(0),
@@ -216,7 +216,7 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
                 merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
-                    &batch,
+                    batch,
                     &[],
                     None,
                     &|_k, _v| Ok(0),
@@ -277,7 +277,7 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
         // Merk tree is kept with 1m elements before each bench iteration for more or
         // less same inputs.
             merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
-                &insert_batch,
+                insert_batch,
                 &[],
                 None,
                 &|_k, _v| Ok(0),
@@ -294,7 +294,7 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
 
         b.iter_with_large_drop(|| {
                 merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
-                    &delete_batch,
+                    delete_batch,
                     &[],
                     None,
                     &|_k, _v| Ok(0),
@@ -489,7 +489,7 @@ pub fn restore_500_1(c: &mut Criterion) {
 
     let mut merk = TempMerk::new();
 
-    let batch = make_batch_rand(merk_size as u64, 0 as u64);
+    let batch = make_batch_rand(merk_size as u64, 0_u64);
         merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
             &batch,
             &[],

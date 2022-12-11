@@ -67,18 +67,15 @@ impl fmt::Debug for Op {
             f,
             "{}",
             match self {
-                Put(value, _) => format!("Put({:?})", value),
+                Put(value, _) => format!("Put({value:?})"),
                 PutCombinedReference(value, referenced_value, feature_type) => format!(
-                    "Put Combined Reference({:?}) for ({:?}). ({:?})",
-                    value, referenced_value, feature_type
+                    "Put Combined Reference({value:?}) for ({referenced_value:?}). ({feature_type:?})"
                 ),
                 PutLayeredReference(value, cost, referenced_value, feature_type) => format!(
-                    "Put Layered Reference({:?}) with cost ({:?}) for ({:?}). ({:?})",
-                    value, cost, referenced_value, feature_type
+                    "Put Layered Reference({value:?}) with cost ({cost:?}) for ({referenced_value:?}). ({feature_type:?})"
                 ),
                 ReplaceLayeredReference(value, cost, referenced_value, feature_type) => format!(
-                    "Replace Layered Reference({:?}) with cost ({:?}) for ({:?}). ({:?})",
-                    value, cost, referenced_value, feature_type
+                    "Replace Layered Reference({value:?}) with cost ({cost:?}) for ({referenced_value:?}). ({feature_type:?})"
                 ),
                 Delete => "Delete".to_string(),
                 DeleteLayered => "Delete Layered".to_string(),

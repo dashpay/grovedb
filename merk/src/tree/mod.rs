@@ -107,7 +107,7 @@ impl Tree {
         let old_value = inner_tree.kv.value.clone();
         Self {
             inner: Box::new(inner_tree),
-            old_size_with_parent_to_child_hook: decode_size as u32,
+            old_size_with_parent_to_child_hook: decode_size,
             old_value: Some(old_value),
         }
     }
@@ -162,7 +162,7 @@ impl Tree {
         old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
     ) -> Result<(u32, KeyValueStorageCost), Error> {
         let current_value_byte_cost =
-            self.value_encoding_length_with_parent_to_child_reference() as u32;
+            self.value_encoding_length_with_parent_to_child_reference();
 
         let old_cost = if self.inner.kv.value_defined_cost.is_some() && self.old_value.is_some() {
             old_tree_cost(self.key_as_ref(), self.old_value.as_ref().unwrap())
@@ -429,7 +429,7 @@ impl Tree {
                 .checked_add(self.child_sum(true))
                 .and_then(|a| a.checked_add(self.child_sum(false)))
                 .ok_or(Overflow("sum is overflowing"))
-                .map(|value| Some(value)),
+                .map(Some),
         }
     }
 

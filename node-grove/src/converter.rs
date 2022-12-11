@@ -38,7 +38,7 @@ pub fn js_object_to_element<'a, C: Context<'a>>(
             let tree_vec = js_buffer_to_vec_u8(js_buffer, cx);
             Ok(Element::new_tree(Some(tree_vec)))
         }
-        _ => cx.throw_error(format!("Unexpected element type {}", element_string)),
+        _ => cx.throw_error(format!("Unexpected element type {element_string}")),
     }
 }
 

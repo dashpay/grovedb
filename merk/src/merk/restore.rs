@@ -108,7 +108,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     Tree::new_with_value_hash(
                         key.clone(),
                         value.clone(),
-                        value_hash.clone(),
+                        *value_hash,
                         BasicMerk,
                     )
                     .unwrap(),
@@ -118,8 +118,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     Tree::new_with_value_hash(
                         key.clone(),
                         value.clone(),
-                        value_hash.clone(),
-                        feature_type.clone(),
+                        *value_hash,
+                        *feature_type,
                     )
                     .unwrap(),
                     key,

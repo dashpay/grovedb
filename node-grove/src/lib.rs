@@ -316,7 +316,7 @@ impl GroveDbWrapper {
                 .get(
                     path_slice,
                     &key,
-                    using_transaction.then(|| transaction).flatten(),
+                    using_transaction.then_some(transaction).flatten(),
                 )
                 .unwrap(); // Todo: Costs
 
@@ -366,7 +366,7 @@ impl GroveDbWrapper {
                     path_slice,
                     &key,
                     None,
-                    using_transaction.then(|| transaction).flatten(),
+                    using_transaction.then_some(transaction).flatten(),
                 )
                 .unwrap(); // Todo: Costs;
 
@@ -416,7 +416,7 @@ impl GroveDbWrapper {
                     &key,
                     element,
                     None,
-                    using_transaction.then(|| transaction).flatten(),
+                    using_transaction.then_some(transaction).flatten(),
                 )
                 .unwrap(); // Todo: Costs;
 
@@ -459,7 +459,7 @@ impl GroveDbWrapper {
                     path_slice,
                     &key,
                     element,
-                    using_transaction.then(|| transaction).flatten(),
+                    using_transaction.then_some(transaction).flatten(),
                 )
                 .unwrap(); // Todo: Costs;
 
@@ -503,7 +503,7 @@ impl GroveDbWrapper {
                     &key,
                     &value,
                     None, // todo: support this
-                    using_transaction.then(|| transaction).flatten(),
+                    using_transaction.then_some(transaction).flatten(),
                 )
                 .unwrap(); // Todo: Costs;
 
@@ -542,7 +542,7 @@ impl GroveDbWrapper {
 
         db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let result = grove_db
-                .delete_aux(&key, None, using_transaction.then(|| transaction).flatten())
+                .delete_aux(&key, None, using_transaction.then_some(transaction).flatten())
                 .unwrap(); // Todo: Costs;
 
             channel.send(move |mut task_context| {
@@ -580,7 +580,7 @@ impl GroveDbWrapper {
 
         db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let result = grove_db
-                .get_aux(&key, using_transaction.then(|| transaction).flatten())
+                .get_aux(&key, using_transaction.then_some(transaction).flatten())
                 .unwrap(); // Todo: Costs;
 
             channel.send(move |mut task_context| {
@@ -627,7 +627,7 @@ impl GroveDbWrapper {
             let result = grove_db
                 .query(
                     &path_query,
-                    using_transaction.then(|| transaction).flatten(),
+                    using_transaction.then_some(transaction).flatten(),
                 )
                 .unwrap(); // Todo: Costs;
 
@@ -722,7 +722,7 @@ impl GroveDbWrapper {
 
         db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let result = grove_db
-                .root_hash(using_transaction.then(|| transaction).flatten())
+                .root_hash(using_transaction.then_some(transaction).flatten())
                 .unwrap(); // Todo: Costs;
 
             channel.send(move |mut task_context| {

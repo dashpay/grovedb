@@ -267,9 +267,9 @@ impl Query {
 
     pub fn has_subquery(&self) -> bool {
         // checks if a query has subquery items
-        if self.default_subquery_branch.subquery != None
-            || self.default_subquery_branch.subquery_key != None
-            || self.conditional_subquery_branches.len() != 0
+        if self.default_subquery_branch.subquery.is_some()
+            || self.default_subquery_branch.subquery_key.is_some()
+            || !self.conditional_subquery_branches.is_empty()
         {
             return true;
         }
@@ -816,7 +816,7 @@ where
         Node::KVValueHash(
             self.tree().key().to_vec(),
             self.tree().value_ref().to_vec(),
-            self.tree().value_hash().clone(),
+            *self.tree().value_hash(),
         )
     }
 
@@ -826,8 +826,8 @@ where
         Node::KVValueHashFeatureType(
             self.tree().key().to_vec(),
             self.tree().value_ref().to_vec(),
-            self.tree().value_hash().clone(),
-            self.tree().feature_type().clone(),
+            *self.tree().value_hash(),
+            self.tree().feature_type(),
         )
     }
 
@@ -904,7 +904,7 @@ where
 
                 // if range starts before this node's key, include it in left
                 // child's query
-                let left_query = if left_bound == None || left_bound < Some(self.tree().key()) {
+                let left_query = if left_bound.is_none() || left_bound < Some(self.tree().key()) {
                     &query[..=index]
                 } else {
                     &query[..index]
@@ -912,7 +912,7 @@ where
 
                 // if range ends after this node's key, include it in right
                 // child's query
-                let right_query = if right_bound == None || right_bound > Some(self.tree().key()) {
+                let right_query = if right_bound.is_none() || right_bound > Some(self.tree().key()) {
                     &query[index..]
                 } else {
                     &query[index + 1..]
@@ -926,7 +926,7 @@ where
             }
         };
 
-        if offset == None || offset == Some(0) {
+        if offset.is_none() || offset == Some(0) {
             // when the limit hits zero, the rest of the query batch should be cleared
             // so empty the left, right query batch, and set the current node to not found
             if let Some(current_limit) = limit {
@@ -960,7 +960,7 @@ where
             }
         }
 
-        if !skip_current_node && (new_offset == None || new_offset == Some(0)) {
+        if !skip_current_node && (new_offset.is_none() || new_offset == Some(0)) {
             if let Some(current_limit) = new_limit {
                 // if after generating proof for the left subtree, the limit becomes 0
                 // clear the current node and clear the right batch
@@ -1243,7 +1243,7 @@ pub fn execute_proof(
                     }
 
                     if left_to_right {
-                        if query_item.upper_bound().0 != None
+                        if query_item.upper_bound().0.is_some()
                             && Some(key.as_slice()) >= query_item.upper_bound().0
                         {
                             // at or past upper bound of range (or this was an exact
@@ -1257,7 +1257,7 @@ pub fn execute_proof(
                             // unabridged until we reach end of range)
                             in_range = true;
                         }
-                    } else if query_item.lower_bound().0 != None
+                    } else if query_item.lower_bound().0.is_some()
                         && Some(key.as_slice()) <= query_item.lower_bound().0
                     {
                         // at or before lower bound of range (or this was an exact
@@ -1278,10 +1278,10 @@ pub fn execute_proof(
                         // reduce the offset counter
                         // also, verify that a kv node was not pushed before offset is exhausted
                         if let Some(offset) = current_offset {
-                            if offset > 0 && value == None {
+                            if offset > 0 && value.is_none() {
                                 current_offset = Some(offset - 1);
                                 break;
-                            } else if offset > 0 && value != None {
+                            } else if offset > 0 && value.is_some() {
                                 // inserting a kv node before exhausting offset
                                 return Err(Error::InvalidProofError(
                                     "Proof returns data before offset is exhausted".to_string(),
@@ -1400,8 +1400,7 @@ pub fn verify_query(
                 Ok(verification_result)
             } else {
                 Err(Error::InvalidProofError(format!(
-                    "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
-                    expected_hash, root_hash
+                    "Proof did not match expected hash\n\tExpected: {expected_hash:?}\n\tActual: {root_hash:?}"
                 )))
             }
         })
@@ -4878,13 +4877,10 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        (
-            iter.next(),
-            Some(&Op::Push(Node::Hash([
+        iter.next();Some(&Op::Push(Node::Hash([
                 121, 235, 207, 195, 143, 58, 159, 120, 166, 33, 151, 45, 178, 124, 91, 233, 201, 4,
                 241, 127, 41, 198, 197, 228, 19, 190, 36, 173, 183, 73, 104, 30,
-            ]))),
-        );
+            ])));
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVDigest(

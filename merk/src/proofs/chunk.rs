@@ -186,7 +186,7 @@ pub(crate) fn get_next_chunk(
         let kv = Node::KVValueHashFeatureType(
             key.to_vec(),
             node.value_ref().to_vec(),
-            node.value_hash().clone(),
+            *node.value_hash(),
             node.feature_type(),
         );
 

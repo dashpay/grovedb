@@ -367,7 +367,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
-                        cost.storage_loaded_bytes += value_len as u32;
+                        cost.storage_loaded_bytes += value_len;
 
                         let key_len = key.len() as u32;
                         // todo: improve deletion

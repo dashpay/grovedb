@@ -335,8 +335,7 @@ where
     /// when node not found by the key.
     pub fn get_value_hash(&self, key: &[u8]) -> CostResult<Option<CryptoHash>, Error> {
         self.get_node_fn(key, |node| {
-            node.value_hash()
-                .clone()
+            (*node.value_hash())
                 .wrap_with_cost(OperationCost::default())
         })
     }
@@ -345,10 +344,9 @@ where
     /// when node not found by the key.
     pub fn get_kv_hash(&self, key: &[u8]) -> CostResult<Option<CryptoHash>, Error> {
         self.get_node_fn(key, |node| {
-            node.inner
+            (*node.inner
                 .kv
-                .hash()
-                .clone()
+                .hash())
                 .wrap_with_cost(OperationCost::default())
         })
     }
@@ -360,7 +358,7 @@ where
         key: &[u8],
     ) -> CostResult<Option<(Vec<u8>, CryptoHash)>, Error> {
         self.get_node_fn(key, |node| {
-            (node.value_as_slice().to_vec(), node.value_hash().clone())
+            (node.value_as_slice().to_vec(), *node.value_hash())
                 .wrap_with_cost(OperationCost::default())
         })
     }
@@ -1054,12 +1052,12 @@ where
         if let Some(key) = key {
             self.storage
                 .put_root(ROOT_KEY_KEY, key.as_slice(), None)
-                .map_err(|e| Error::StorageError(e.into())) // todo: maybe
+                .map_err(Error::StorageError) // todo: maybe
                                                             // change None?
         } else {
             self.storage
                 .delete_root(ROOT_KEY_KEY, None)
-                .map_err(|e| Error::StorageError(e.into())) // todo: maybe
+                .map_err(Error::StorageError) // todo: maybe
                                                             // change None?
         }
     }
@@ -1070,16 +1068,14 @@ where
     pub(crate) fn load_base_root(&mut self) -> CostResult<(), Error> {
         self.storage
             .get_root(ROOT_KEY_KEY)
-            .map(|root_result| root_result.map_err(|e| Error::StorageError(e.into())))
+            .map(|root_result| root_result.map_err(Error::StorageError))
             .flat_map_ok(|tree_root_key_opt| {
                 // In case of successful seek for root key check if it exists
                 if let Some(tree_root_key) = tree_root_key_opt {
                     // Trying to build a tree out of it, costs will be accumulated because
                     // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
-                    Tree::get(&self.storage, &tree_root_key).map_ok(|tree| {
-                        tree.as_ref().map(|t| {
-                            self.root_tree_key = Cell::new(Some(t.key().to_vec()));
-                        });
+                    Tree::get(&self.storage, tree_root_key).map_ok(|tree| {
+                        if let Some(t) = tree.as_ref() { self.root_tree_key = Cell::new(Some(t.key().to_vec())); }
                         self.tree = Cell::new(tree);
                     })
                 } else {
@@ -1221,7 +1217,7 @@ impl Commit for MerkCommitter {
                 } else {
                     tree.inner.kv.value_defined_cost = value_defined_cost;
                     let after_update_tree_plus_hook_size =
-                        tree.value_encoding_length_with_parent_to_child_reference() as u32;
+                        tree.value_encoding_length_with_parent_to_child_reference();
                     if after_update_tree_plus_hook_size == current_tree_plus_hook_size {
                         break;
                     }
@@ -1250,7 +1246,7 @@ impl Commit for MerkCommitter {
         tree.old_size_with_parent_to_child_hook = current_tree_plus_hook_size;
         tree.old_value = Some(tree.value_ref().clone());
 
-        let mut buf = Vec::with_capacity(tree_size as usize);
+        let mut buf = Vec::with_capacity(tree_size);
         tree.encode_into(&mut buf);
 
         let left_child_sizes = tree.child_ref_and_sum_size(true);
@@ -1444,7 +1440,7 @@ mod test {
         let mut merk = TempMerk::new();
 
         for i in 0..(tree_size / batch_size) {
-            println!("i:{}", i);
+            println!("i:{i}");
             let batch = make_batch_rand(batch_size, i);
             merk.apply::<_, Vec<_>>(&batch, &[], None)
                 .unwrap()
