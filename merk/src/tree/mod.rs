@@ -980,6 +980,6 @@ mod test {
         .unwrap()
         .expect("commit failed");
 
-        assert_eq!(Some(8), tree.sum());
+        assert_eq!(Some(8), tree.sum().expect("expected to get sum from tree"));
     }
 }
