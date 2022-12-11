@@ -1,4 +1,4 @@
-use costs::{CostContext, CostResult, CostsExt, OperationCost};
+use costs::{CostResult, CostsExt, OperationCost};
 
 use super::{
     super::{Link, Tree},

@@ -3,7 +3,7 @@ use integer_encoding::VarInt;
 
 use crate::{
     error::Error,
-    estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE},
+    estimated_costs::{LAYER_COST_SIZE},
     tree::{kv::KV, Link, Tree},
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
 };

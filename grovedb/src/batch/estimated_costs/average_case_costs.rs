@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     fmt,
 };
 
@@ -9,7 +9,7 @@ use costs::{
 use itertools::Itertools;
 use merk::{
     estimated_costs::average_case_costs::{
-        average_case_merk_propagate, EstimatedLayerCount, EstimatedLayerInformation,
+        average_case_merk_propagate, EstimatedLayerInformation,
     },
     CryptoHash, IsSumTree,
 };
@@ -225,7 +225,6 @@ mod tests {
         OperationCost,
     };
     use merk::estimated_costs::average_case_costs::{
-        EstimatedLayerCount,
         EstimatedLayerCount::{ApproximateElements, EstimatedLevel},
         EstimatedLayerInformation,
         EstimatedLayerSizes::{AllItems, AllSubtrees},

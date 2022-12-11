@@ -18,14 +18,13 @@ use std::{collections::HashMap, option::Option::None, path::Path};
 
 use ::visualize::DebugByteVectors;
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt,
     OperationCost,
 };
 use merk::{
     self,
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
-    TreeFeatureType::BasicMerk,
 };
 pub use merk::{
     estimated_costs::{
@@ -602,7 +601,7 @@ impl GroveDb {
         let mut all_query = Query::new();
         all_query.insert_all();
 
-        let in_sum_tree = merk.is_sum_tree;
+        let _in_sum_tree = merk.is_sum_tree;
         let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
         while let Some((key, element_value)) = element_iterator.next().unwrap() {

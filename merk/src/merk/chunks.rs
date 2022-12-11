@@ -1,6 +1,6 @@
 //! Provides `ChunkProducer`, which creates chunk proofs for full replication of
 //! a Merk.
-use std::error::Error as stdError;
+
 
 use costs::CostsExt;
 use storage::{RawIterator, StorageContext};

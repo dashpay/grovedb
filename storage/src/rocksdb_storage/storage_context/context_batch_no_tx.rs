@@ -1,5 +1,5 @@
 use costs::{
-    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostContext,
+    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree,
     CostResult, CostsExt, OperationCost,
 };
 use error::Error;
@@ -10,7 +10,6 @@ use crate::{
     error,
     error::Error::RocksDBError,
     rocksdb_storage::storage::{Db, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
-    storage::ChildrenSizes,
     StorageBatch, StorageContext,
 };
 

@@ -9,7 +9,6 @@ use crate::{
     tree::{
         hash::{combine_hash, kv_digest_to_kv_hash, value_hash, HASH_LENGTH_X2},
         tree_feature_type::{TreeFeatureType, TreeFeatureType::BasicMerk},
-        Tree,
     },
     Link, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
 };
@@ -378,7 +377,7 @@ impl KV {
 impl Encode for KV {
     #[inline]
     fn encode_into<W: Write>(&self, out: &mut W) -> Result<()> {
-        &self.feature_type.encode_into(out)?;
+        let _ = &self.feature_type.encode_into(out)?;
         out.write_all(&self.hash[..])?;
         out.write_all(&self.value_hash[..])?;
         out.write_all(self.value.as_slice())?;

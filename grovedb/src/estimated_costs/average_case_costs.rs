@@ -6,7 +6,7 @@ use merk::{
         average_case_costs::{
             add_average_case_get_merk_node, add_average_case_merk_delete,
             add_average_case_merk_delete_layered, add_average_case_merk_propagate,
-            add_average_case_merk_replace_layered, EstimatedLayerCount, EstimatedLayerInformation,
+            add_average_case_merk_replace_layered, EstimatedLayerInformation,
         },
     },
     tree::Tree,
@@ -50,7 +50,7 @@ impl GroveDb {
     pub(crate) fn average_case_merk_replace_tree(
         key: &KeyInfo,
         estimated_layer_information: &EstimatedLayerInformation,
-        is_sum_tree: bool,
+        _is_sum_tree: bool,
         propagate: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();

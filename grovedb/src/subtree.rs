@@ -1108,7 +1108,7 @@ impl Element {
         key: K,
         options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
+        let cost = OperationCost::default();
 
         let serialized = cost_return_on_error_no_add!(&cost, self.serialize());
 
@@ -1149,7 +1149,7 @@ impl Element {
                     is_sum_node,
                 ))
             }
-            Element::SumTree(_, sum_value, flags) => {
+            Element::SumTree(_, _sum_value, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
@@ -1316,7 +1316,7 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let mut cost = OperationCost::default();
+        let cost = OperationCost::default();
         let merk_feature_type =
             cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
 

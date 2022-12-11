@@ -1,5 +1,5 @@
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt,
     OperationCost,
 };
 use storage::RawIterator;

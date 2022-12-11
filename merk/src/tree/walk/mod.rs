@@ -200,7 +200,7 @@ where
 #[cfg(test)]
 mod test {
     use costs::{
-        storage_cost::removal::StorageRemovedBytes::NoStorageRemoval, CostContext, CostsExt,
+        storage_cost::removal::StorageRemovedBytes::NoStorageRemoval, CostsExt,
     };
 
     use super::{super::NoopCommit, *};

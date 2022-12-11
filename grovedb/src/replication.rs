@@ -218,7 +218,7 @@ impl<'db> Restorer<'db> {
                 .map_err(|e| RestorerError(e.to_string()))?;
             if let Some((next_path, combining_value, expected_hash, _)) = self.queue.pop_front() {
                 // Process next subtree.
-                let mut merk: Merk<PrefixedRocksDbStorageContext> = self
+                let merk: Merk<PrefixedRocksDbStorageContext> = self
                     .grove_db
                     .open_non_transactional_merk_at_path(next_path.iter().map(|a| a.as_ref()))
                     .unwrap()

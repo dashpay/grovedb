@@ -1,7 +1,7 @@
 //! Storage context implementation with a transaction.
 use costs::{
     cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost,
-    ChildrenSizesWithIsSumTree, CostContext, CostResult, CostsExt, OperationCost,
+    ChildrenSizesWithIsSumTree, CostResult, CostsExt, OperationCost,
 };
 use error::Error;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
@@ -11,7 +11,6 @@ use crate::{
     error,
     error::Error::RocksDBError,
     rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
-    storage::ChildrenSizes,
     RawIterator, StorageBatch, StorageContext,
 };
 

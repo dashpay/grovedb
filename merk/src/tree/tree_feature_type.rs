@@ -30,7 +30,7 @@ impl TreeFeatureType {
     pub(crate) fn encoding_cost(&self) -> usize {
         match self {
             BasicMerk => 1,
-            SummedMerk(sum) => 9,
+            SummedMerk(_sum) => 9,
         }
     }
 }

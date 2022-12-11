@@ -1,5 +1,5 @@
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt,
     OperationCost,
 };
 use ed::{Decode, Encode};
@@ -250,7 +250,7 @@ mod tests {
             key,
             child_heights,
             hash,
-            sum,
+            sum: _,
         }) = tree.link(true)
         {
             assert_eq!(*key, [2]);

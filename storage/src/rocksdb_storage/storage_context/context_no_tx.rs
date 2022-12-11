@@ -3,7 +3,7 @@ use costs::{
     storage_cost::{
         key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
     },
-    ChildrenSizesWithIsSumTree, CostContext, CostResult, CostsExt, OperationCost,
+    ChildrenSizesWithIsSumTree, CostResult, CostsExt, OperationCost,
 };
 use error::Error;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, WriteBatchWithTransaction};
@@ -13,7 +13,6 @@ use crate::{
     error,
     error::Error::{CostError, RocksDBError},
     rocksdb_storage::storage::{Db, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
-    storage::ChildrenSizes,
     StorageContext,
 };
 

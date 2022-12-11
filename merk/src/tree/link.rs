@@ -4,7 +4,7 @@ use ed::{Decode, Encode, Result, Terminated};
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
 use super::{hash::CryptoHash, Tree};
-use crate::{HASH_LENGTH, HASH_LENGTH_U32};
+use crate::{HASH_LENGTH_U32};
 
 // TODO: optimize memory footprint
 
@@ -245,7 +245,7 @@ impl Link {
         Ok(match self {
             Link::Reference { key, sum, .. } => match sum {
                 None => key.len() + 36, // 1 + HASH_LENGTH + 2 + 1,
-                Some(sum_value) => {
+                Some(_sum_value) => {
                     // 1 for key len
                     // key_len for keys
                     // 32 for hash
@@ -261,7 +261,7 @@ impl Link {
             Link::Uncommitted { tree, sum, .. } | Link::Loaded { tree, sum, .. } => match sum {
                 None => tree.key().len() + 36, // 1 + 32 + 2 + 1,
                 Some(sum_value) => {
-                    let encoded_sum_value = sum_value.encode_var_vec();
+                    let _encoded_sum_value = sum_value.encode_var_vec();
                     tree.key().len() + 44 // 1 + 32 + 2 + 1 + 8
                 }
             },

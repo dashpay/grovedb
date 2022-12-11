@@ -1,6 +1,6 @@
 //! Prefixed storage batch implementation for RocksDB backend.
 use costs::{
-    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizes, ChildrenSizesWithIsSumTree,
+    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree,
     OperationCost,
 };
 use integer_encoding::VarInt;

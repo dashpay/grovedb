@@ -8,7 +8,7 @@ use std::{
     cmp::Ordering,
     collections::{BTreeSet, LinkedList},
     fmt,
-    io::{Read, Write},
+    io::{Read},
 };
 
 use costs::{
@@ -17,12 +17,11 @@ use costs::{
         key_value_cost::KeyValueStorageCost,
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
-    },
-    ChildrenSizes, ChildrenSizesWithValue, CostContext, CostResult, CostsExt, FeatureSumLength,
+    }, ChildrenSizesWithValue, CostContext, CostResult, CostsExt, FeatureSumLength,
     OperationCost,
 };
-use ed::{Decode, Encode, Terminated};
-use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
+use ed::{Decode, Encode};
+
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
@@ -1284,7 +1283,7 @@ mod test {
     use tempfile::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};
-    use crate::{test_utils::*, Op, TreeFeatureType, TreeFeatureType::BasicMerk};
+    use crate::{test_utils::*, Op, TreeFeatureType::BasicMerk};
 
     // TODO: Close and then reopen test
 

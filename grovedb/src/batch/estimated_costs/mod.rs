@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use merk::estimated_costs::{
-    average_case_costs::{EstimatedLayerCount, EstimatedLayerInformation},
+    average_case_costs::{EstimatedLayerInformation},
     worst_case_costs::WorstCaseLayerInformation,
 };
 

@@ -4,7 +4,7 @@ use crate::{
     error::Error,
     merk::defaults::MAX_PREFIXED_KEY_SIZE,
     tree::{kv::KV, Link, Tree},
-    HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
+    HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH,
 };
 
 #[derive(Clone, PartialEq, Eq, Debug)]

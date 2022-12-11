@@ -1,4 +1,4 @@
-use costs::{CostContext, CostResult, CostsExt, OperationCost};
+use costs::{CostResult, CostsExt, OperationCost};
 use merk::proofs::{query::QueryItem, Query};
 
 use crate::Error;
