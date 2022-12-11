@@ -289,12 +289,13 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 41
+        // Value -> 42
         //   1 for the flag option (but no flags)
         //   1 for the flags size
         //   3 bytes for flags
         //   1 for the enum type
         //   1 for empty tree value
+        //   1 for Basic Merk
         // 32 for node hash
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
@@ -305,9 +306,10 @@ mod tests {
         // Key Length 1
         // Child Heights 2
         // Sum 1
-        // Total 37 + 37 + 39 = 117
 
-        assert_eq!(insertion_cost.storage_cost.added_bytes, 117);
+        // Total 37 + 42 + 40 = 119
+
+        assert_eq!(insertion_cost.storage_cost.added_bytes, 119);
         assert_eq!(
             insertion_cost.storage_cost.added_bytes,
             non_batch_cost
@@ -382,6 +384,7 @@ mod tests {
         //   2 bytes for flags
         //   1 for the enum type
         //   1 for empty tree value
+        //   1 for basic merk
         // 32 for node hash
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
@@ -392,9 +395,9 @@ mod tests {
         // Key Length 1
         // Child Heights 2
         // Sum 1
-        // Total 37 + 37 + 39 = 116
+        // Total 37 + 41 + 40 = 118
 
-        assert_eq!(insertion_cost.storage_cost.added_bytes, 116);
+        assert_eq!(insertion_cost.storage_cost.added_bytes, 118);
         assert_eq!(
             insertion_cost.storage_cost.added_bytes,
             non_batch_cost
@@ -531,12 +534,13 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 41
+        // Value -> 42
         //   1 for the flag option
         //   1 for flags size
         //   3 for flag bytes
         //   1 for the enum type
         //   1 for empty tree value
+        //   1 for Basic Merk
         // 32 for node hash
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
@@ -547,9 +551,9 @@ mod tests {
         // Key Length 1
         // Child Heights 2
         // Sum 1
-        // Total 37 + 41 + 39 = 117
+        // Total 37 + 42 + 40 = 119
 
-        assert_eq!(insertion_cost.storage_cost.added_bytes, 117);
+        assert_eq!(insertion_cost.storage_cost.added_bytes, 119);
 
         assert_eq!(
             insertion_cost.storage_cost.added_bytes,
