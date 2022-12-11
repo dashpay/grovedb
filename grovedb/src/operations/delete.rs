@@ -1458,11 +1458,12 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 71
+        // Value -> 72
         //   1 for the flag option (but no flags)
         //   1 for the enum type item
         //   3 for "cat"
         //   1 for cat length
+        //   1 for Basic Merk
         // 32 for node hash
         // 32 for value hash (trees have this for free)
         // 1 byte for the value_size (required space for 70)
@@ -1473,7 +1474,8 @@ mod tests {
         // Key Length 1
         // Child Heights 2
         // Sum 1
-        // Total 37 + 71 + 39 = 147
+
+        // Total 37 + 72 + 40 = 149
 
         // Hash node calls
         // everything is empty, so no need for hashes?
@@ -1484,9 +1486,9 @@ mod tests {
                 storage_cost: StorageCost {
                     added_bytes: 0,
                     replaced_bytes: 0,
-                    removed_bytes: BasicStorageRemoval(147)
+                    removed_bytes: BasicStorageRemoval(149)
                 },
-                storage_loaded_bytes: 152, // todo: verify this
+                storage_loaded_bytes: 154, // todo: verify this
                 hash_node_calls: 0,
             }
         );
