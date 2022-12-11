@@ -229,7 +229,7 @@ impl Tree {
         // two option values for the left and right link
         // the actual left and right link encoding size
         // the encoded kv node size
-        2 + (2 * Link::encoded_link_size(not_prefixed_key_len))
+        2 + (2 * Link::encoded_link_size(not_prefixed_key_len, is_sum_node))
             + KV::encoded_kv_node_size(estimated_element_size, is_sum_node)
     }
 }
@@ -411,11 +411,11 @@ pub fn add_average_case_merk_propagate(
                         let flags_len = average_flags_size.unwrap_or(0);
                         let value_len = LAYER_COST_SIZE + flags_len;
                         let sum_tree_addition = estimated_sum_trees.estimated_size()?;
-                        let cost = (KV::value_byte_cost_size_for_key_and_raw_value_lengths(
+                        let cost = KV::value_byte_cost_size_for_key_and_raw_value_lengths(
                             *average_key_size as u32,
                             value_len,
                             in_sum_tree,
-                        ) + sum_tree_addition);
+                        ) + sum_tree_addition;
                         (*weight as u64)
                             .checked_mul(cost as u64)
                             .ok_or(Error::Overflow("overflow for mixed tree nodes updates"))?

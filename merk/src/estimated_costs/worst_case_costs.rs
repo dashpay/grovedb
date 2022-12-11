@@ -22,7 +22,7 @@ impl Tree {
         // two option values for the left and right link
         // the actual left and right link encoding size
         // the encoded kv node size
-        2 + (2 * Link::encoded_link_size(not_prefixed_key_len))
+        2 + (2 * Link::encoded_link_size(not_prefixed_key_len, is_sum_node))
             + KV::encoded_kv_node_size(max_element_size, is_sum_node)
     }
 }

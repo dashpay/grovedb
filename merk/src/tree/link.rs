@@ -225,14 +225,16 @@ impl Link {
 
     // Costs for operations within a single merk
     #[inline]
-    pub const fn encoded_link_size(not_prefixed_key_len: u32) -> u32 {
+    pub const fn encoded_link_size(not_prefixed_key_len: u32, is_sum_tree: bool) -> u32 {
+        let sum_tree_cost = if is_sum_tree { 8 } else { 0 };
         // Links are optional values that represent the right or left node for a given
         // 1 byte to represent key_length (this is a u8)
         // key_length to represent the actual key
         // 32 bytes for the hash of the node
         // 1 byte for the left child height
         // 1 byte for the right child height
-        not_prefixed_key_len + HASH_LENGTH_U32 + 3
+        // 1 byte for the sum tree option
+        not_prefixed_key_len + HASH_LENGTH_U32 + 4 + sum_tree_cost
     }
 
     /// the encoding cost is always 8 bytes for the sum instead of a varint

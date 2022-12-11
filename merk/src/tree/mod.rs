@@ -29,6 +29,7 @@ pub use hash::{
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
     NULL_HASH,
 };
+use integer_encoding::VarInt;
 use kv::KV;
 pub use link::Link;
 pub use ops::{AuxMerkBatch, BatchEntry, MerkBatch, Op, PanicSource};
@@ -347,6 +348,17 @@ impl Tree {
         self.link(left).map(|link| link.key().len() as u32 + 35)
     }
 
+    /// Returns a the size of node's child key and sum on the given side, if
+    /// any. If there is no child, returns `None`.
+    pub fn child_ref_and_sum_size(&self, left: bool) -> Option<(u32, u32)> {
+        self.link(left).map(|link| {
+            (
+                link.key().len() as u32 + 35,
+                link.sum().unwrap_or_default().encode_var_vec().len() as u32,
+            )
+        })
+    }
+
     /// Returns a reference to the root node's child on the given side, if any.
     /// If there is no child, returns `None`.
     #[inline]
@@ -388,6 +400,13 @@ impl Tree {
             Some(link) => link.sum().unwrap_or_default(),
             _ => 0,
         }
+    }
+
+    /// Returns the size of the sum of the root node's child on the given side,
+    /// if any. If there is no child, returns 0.
+    #[inline]
+    pub fn child_sum_size(&self, left: bool) -> u32 {
+        self.child_sum(left).encode_var_vec().len() as u32
     }
 
     /// Computes and returns the hash of the root node.

@@ -93,6 +93,8 @@ pub trait Storage<'db> {
     fn get_storage_context_cost<L: WorstKeyLength>(path: &Vec<L>) -> OperationCost;
 }
 
+pub use costs::ChildrenSizes;
+
 /// Storage context.
 /// Provides operations expected from a database abstracting details such as
 /// whether it is a transaction or not.
@@ -110,7 +112,7 @@ pub trait StorageContext<'db> {
         &self,
         key: K,
         value: &[u8],
-        children_sizes: Option<(Option<u32>, Option<u32>)>,
+        children_sizes: ChildrenSizes,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error>;
 
@@ -197,7 +199,7 @@ pub trait Batch {
         &mut self,
         key: K,
         value: &[u8],
-        children_sizes: Option<(Option<u32>, Option<u32>)>,
+        children_sizes: Option<(Option<(u32, u32)>, Option<(u32,u32)>)>,
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error>;
 
@@ -309,7 +311,7 @@ impl StorageBatch {
         &self,
         key: Vec<u8>,
         value: Vec<u8>,
-        children_sizes: Option<(Option<u32>, Option<u32>)>,
+        children_sizes: ChildrenSizes,
         cost_info: Option<KeyValueStorageCost>,
     ) {
         self.operations.borrow_mut().data.insert(
@@ -494,7 +496,7 @@ pub enum AbstractBatchOperation {
     Put {
         key: Vec<u8>,
         value: Vec<u8>,
-        children_sizes: Option<(Option<u32>, Option<u32>)>,
+        children_sizes: ChildrenSizes,
         cost_info: Option<KeyValueStorageCost>,
     },
     /// Deferred put operation for aux storage_cost

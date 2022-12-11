@@ -21,6 +21,19 @@ use crate::{
     StorageRemovedBytes::BasicStorageRemoval,
 };
 
+/// Child key length
+pub type ChildKeyLength = u32;
+
+/// Child sum length
+pub type ChildSumLength = u32;
+
+/// Children sizes
+pub type ChildrenSizes = Option<(Option<(ChildKeyLength,ChildSumLength)>, Option<(ChildKeyLength,ChildSumLength)>)>;
+
+/// Children sizes starting with a value
+pub type ChildrenSizesWithValue = Option<(Vec<u8>, Option<(ChildKeyLength,ChildSumLength)>, Option<(ChildKeyLength,ChildSumLength)>)>;
+
+
 /// Piece of data representing affected computer resources (approximately).
 #[derive(Debug, Default, Eq, PartialEq, Clone)]
 pub struct OperationCost {
@@ -100,7 +113,7 @@ impl OperationCost {
         &mut self,
         key_len: u32,
         value_len: u32,
-        children_sizes: Option<(Option<u32>, Option<u32>)>,
+        children_sizes: Option<(Option<(u32,u32)>, Option<(u32,u32)>)>,
         storage_cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), Error> {
         let paid_key_len = key_len + key_len.required_space() as u32;
@@ -127,11 +140,13 @@ impl OperationCost {
                 paid_value_len -= 2; // for the child options
 
                 // We need to remove the costs of the children
-                if let Some(left_child_len) = left_child {
+                if let Some((left_child_len, left_child_sum_len)) = left_child {
                     paid_value_len -= left_child_len;
+                    paid_value_len -= left_child_sum_len;
                 }
-                if let Some(right_child_len) = right_child {
+                if let Some((right_child_len, right_child_sum_len)) = right_child {
                     paid_value_len -= right_child_len;
+                    paid_value_len -= right_child_sum_len;
                 }
 
                 // This is the moment we need to add the required space (after removing
@@ -141,8 +156,8 @@ impl OperationCost {
                 // We need to add the cost of a parent
                 // key_len has a hash length already in it from the key prefix
                 // So we need to remove it and then add a hash length
-                // For the parent ref + 3 (2 for child sizes, 1 for key_len)
-                paid_value_len += key_len + 3;
+                // For the parent ref + 4 (2 for child sizes, 1 for key_len, 1 for sum option)
+                paid_value_len += key_len + 4;
             } else {
                 paid_value_len += paid_value_len.required_space() as u32;
             }

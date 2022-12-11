@@ -9,7 +9,7 @@ mod storage;
 pub mod worst_case_costs;
 
 pub use crate::storage::{
-    AbstractBatchOperation, Batch, RawIterator, Storage, StorageBatch, StorageContext,
+    AbstractBatchOperation, Batch, RawIterator, Storage, StorageBatch, StorageContext, ChildrenSizes
 };
 
 pub use crate::error::Error;

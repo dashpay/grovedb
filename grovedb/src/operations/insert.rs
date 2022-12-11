@@ -606,13 +606,14 @@ mod tests {
         // 1 for Basic merk
         // 1 byte for the value_size (required space for 70)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
+        // Basic Merk 1
         // Child Heights 2
 
-        // Total 37 + 71 + 39 = 147
+        // Total 37 + 72 + 40 = 149
 
         // Hash node calls
         // 1 for the kv_digest_to_kv_hash hash
@@ -622,7 +623,7 @@ mod tests {
             OperationCost {
                 seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
                 storage_cost: StorageCost {
-                    added_bytes: 148,
+                    added_bytes: 149,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },

@@ -10,6 +10,7 @@ use crate::{
     rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
     RawIterator, StorageBatch, StorageContext,
 };
+use crate::storage::ChildrenSizes;
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
 /// transaction.
@@ -88,7 +89,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
         &self,
         key: K,
         value: &[u8],
-        children_sizes: Option<(Option<u32>, Option<u32>)>,
+        children_sizes: ChildrenSizes,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
         self.batch.put(

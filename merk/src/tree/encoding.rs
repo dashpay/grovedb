@@ -92,7 +92,7 @@ mod tests {
         assert_eq!(tree.encoding_length(), 68);
         assert_eq!(
             tree.value_encoding_length_with_parent_to_child_reference(),
-            103
+            104
         );
         assert_eq!(
             tree.encode(),
@@ -205,7 +205,7 @@ mod tests {
         );
         assert_eq!(
             tree.value_encoding_length_with_parent_to_child_reference(),
-            103 // This is 2 less, because the right "Option" byte was not paid for
+            104 // This is 1 less, because the right "Option" byte was not paid for
         );
         assert_eq!(
             tree.encode(),

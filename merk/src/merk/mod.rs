@@ -18,7 +18,7 @@ use costs::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
     },
-    CostContext, CostResult, CostsExt, OperationCost,
+    ChildrenSizes, ChildrenSizesWithValue, CostContext, CostResult, CostsExt, OperationCost,
 };
 use ed::{Decode, Encode, Terminated};
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
@@ -205,14 +205,8 @@ impl<S> fmt::Debug for Merk<S> {
 }
 
 // key, maybe value, maybe child reference hooks, maybe key value storage costs
-pub type UseTreeMutResult = CostResult<
-    Vec<(
-        Vec<u8>,
-        Option<(Vec<u8>, Option<u32>, Option<u32>)>,
-        Option<KeyValueStorageCost>,
-    )>,
-    Error,
->;
+pub type UseTreeMutResult =
+    CostResult<Vec<(Vec<u8>, ChildrenSizesWithValue, Option<KeyValueStorageCost>)>, Error>;
 
 impl<'db, S> Merk<S>
 where
@@ -1157,11 +1151,7 @@ struct MerkCommitter {
     /// The batch has a key, maybe a value, with the value bytes, maybe the left
     /// child size and maybe the right child size, then the
     /// key_value_storage_cost
-    batch: Vec<(
-        Vec<u8>,
-        Option<(Vec<u8>, Option<u32>, Option<u32>)>,
-        Option<KeyValueStorageCost>,
-    )>,
+    batch: Vec<(Vec<u8>, ChildrenSizesWithValue, Option<KeyValueStorageCost>)>,
     height: u8,
     levels: u8,
 }
@@ -1246,11 +1236,11 @@ impl Commit for MerkCommitter {
         let mut buf = Vec::with_capacity(tree_size as usize);
         tree.encode_into(&mut buf);
 
-        let left_child_ref_size = tree.child_ref_size(true);
-        let right_child_ref_size = tree.child_ref_size(false);
+        let left_child_sizes = tree.child_ref_and_sum_size(true);
+        let right_child_sizes = tree.child_ref_and_sum_size(false);
         self.batch.push((
             tree.key().to_vec(),
-            Some((buf, left_child_ref_size, right_child_ref_size)),
+            Some((buf, left_child_sizes, right_child_sizes)),
             Some(storage_costs),
         ));
         Ok(())
