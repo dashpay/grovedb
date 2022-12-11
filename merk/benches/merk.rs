@@ -16,7 +16,6 @@ pub fn get(c: &mut Criterion) {
     let mut batches = vec![];
     for i in 0..num_batches {
         let batch = make_batch_rand(batch_size, i);
-        unsafe {
             merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                 &batch,
                 &[],
@@ -31,8 +30,7 @@ pub fn get(c: &mut Criterion) {
                 },
             )
             .unwrap()
-            .expect("apply failed")
-        };
+            .expect("apply failed");
         batches.push(batch);
     }
 
@@ -69,7 +67,6 @@ pub fn insert_1m_2k_seq(c: &mut Criterion) {
 
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
-            unsafe {
                 merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                     &batch,
                     &[],
@@ -84,8 +81,7 @@ pub fn insert_1m_2k_seq(c: &mut Criterion) {
                     },
                 )
                 .unwrap()
-                .expect("apply failed")
-            };
+                .expect("apply failed");
             i += 1;
         });
     });
@@ -109,7 +105,6 @@ pub fn insert_1m_2k_rand(c: &mut Criterion) {
 
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
-            unsafe {
                 merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                     &batch,
                     &[],
@@ -124,8 +119,7 @@ pub fn insert_1m_2k_rand(c: &mut Criterion) {
                     },
                 )
                 .unwrap()
-                .expect("apply failed")
-            };
+                .expect("apply failed");
             i += 1;
         });
     });
@@ -142,7 +136,6 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
 
     for i in 0..n_batches {
         let batch = make_batch_seq(((i * batch_size) as u64)..((i + 1) * batch_size) as u64);
-        unsafe {
             merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                 &batch,
                 &[],
@@ -157,8 +150,7 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
                 },
             )
             .unwrap()
-            .expect("apply failed")
-        };
+            .expect("apply failed");
 
         batches.push(batch);
     }
@@ -168,7 +160,6 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
 
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
-            unsafe {
                 merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                     &batch,
                     &[],
@@ -183,8 +174,7 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
                     },
                 )
                 .unwrap()
-                .expect("apply failed")
-            };
+                .expect("apply failed");
             i += 1;
         });
     });
@@ -201,7 +191,6 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
-        unsafe {
             merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                 &batch,
                 &[],
@@ -216,8 +205,7 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
                 },
             )
             .unwrap()
-            .expect("apply failed")
-        };
+            .expect("apply failed");
 
         batches.push(batch);
     }
@@ -227,7 +215,6 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
 
         b.iter_with_large_drop(|| {
             let batch = &batches[i % n_batches];
-            unsafe {
                 merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                     &batch,
                     &[],
@@ -242,8 +229,7 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
                     },
                 )
                 .unwrap()
-                .expect("apply failed")
-            };
+                .expect("apply failed");
             i += 1;
         });
     });
@@ -262,7 +248,6 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
         let delete_batch = make_del_batch_rand(batch_size as u64, i as u64);
-        unsafe {
             merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                 &batch,
                 &[],
@@ -277,8 +262,7 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
                 },
             )
             .unwrap()
-            .expect("apply failed")
-        };
+            .expect("apply failed");
 
         batches.push(batch);
         delete_batches.push(delete_batch);
@@ -292,7 +276,6 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
 
         // Merk tree is kept with 1m elements before each bench iteration for more or
         // less same inputs.
-        unsafe {
             merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                 &insert_batch,
                 &[],
@@ -307,11 +290,9 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
                 },
             )
             .unwrap()
-            .expect("apply failed")
-        };
+            .expect("apply failed");
 
         b.iter_with_large_drop(|| {
-            unsafe {
                 merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                     &delete_batch,
                     &[],
@@ -326,8 +307,7 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
                     },
                 )
                 .unwrap()
-                .expect("apply failed")
-            };
+                .expect("apply failed");
             i += 1;
         });
     });
@@ -345,7 +325,6 @@ pub fn prove_1m_2k_rand(c: &mut Criterion) {
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
-        unsafe {
             merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                 &batch,
                 &[],
@@ -360,8 +339,7 @@ pub fn prove_1m_2k_rand(c: &mut Criterion) {
                 },
             )
             .unwrap()
-            .expect("apply failed")
-        };
+            .expect("apply failed");
         let mut prove_keys = Vec::with_capacity(batch_size);
         for (key, _) in batch.iter() {
             prove_keys.push(merk::proofs::query::QueryItem::Key(key.clone()));
@@ -394,7 +372,6 @@ pub fn build_trunk_chunk_1m_2k_rand(c: &mut Criterion) {
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
-        unsafe {
             merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                 &batch,
                 &[],
@@ -410,7 +387,6 @@ pub fn build_trunk_chunk_1m_2k_rand(c: &mut Criterion) {
             )
             .unwrap()
             .expect("apply failed")
-        };
     }
 
     c.bench_function("build_trunk_chunk_1m_2k_rand", |b| {
@@ -436,7 +412,6 @@ pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
-        unsafe {
             merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                 &batch,
                 &[],
@@ -452,7 +427,6 @@ pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
             )
             .unwrap()
             .expect("apply failed")
-        };
     }
 
     let mut rng = rand::thread_rng();
@@ -476,7 +450,6 @@ pub fn chunk_iter_1m_1(c: &mut Criterion) {
 
     for i in 0..n_batches {
         let batch = make_batch_rand(batch_size as u64, i as u64);
-        unsafe {
             merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
                 &batch,
                 &[],
@@ -492,7 +465,6 @@ pub fn chunk_iter_1m_1(c: &mut Criterion) {
             )
             .unwrap()
             .expect("apply failed")
-        };
     }
 
     let mut chunks = merk.chunks().unwrap().into_iter();
@@ -518,7 +490,6 @@ pub fn restore_500_1(c: &mut Criterion) {
     let mut merk = TempMerk::new();
 
     let batch = make_batch_rand(merk_size as u64, 0 as u64);
-    unsafe {
         merk.apply_unchecked::<_, Vec<u8>, _, _, _>(
             &batch,
             &[],
@@ -533,8 +504,7 @@ pub fn restore_500_1(c: &mut Criterion) {
             },
         )
         .unwrap()
-        .expect("apply failed")
-    };
+        .expect("apply failed");
 
     let root_hash = merk.root_hash().unwrap();
 
