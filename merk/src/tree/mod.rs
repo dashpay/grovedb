@@ -777,10 +777,7 @@ mod test {
     use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
 
     use super::{commit::NoopCommit, hash::NULL_HASH, Tree};
-    use crate::{
-        tree::{tree_feature_type::TreeFeatureType::SummedMerk, TreeFeatureType::BasicMerk},
-        TreeFeatureType::SummedMerk,
-    };
+    use crate::tree::{tree_feature_type::TreeFeatureType::SummedMerk, TreeFeatureType::BasicMerk};
 
     #[test]
     fn build_tree() {

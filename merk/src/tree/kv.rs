@@ -411,9 +411,7 @@ impl Terminated for KV {}
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{
-        tree::tree_feature_type::TreeFeatureType::SummedMerk, TreeFeatureType::SummedMerk,
-    };
+    use crate::tree::tree_feature_type::TreeFeatureType::SummedMerk;
 
     #[test]
     fn new_kv() {

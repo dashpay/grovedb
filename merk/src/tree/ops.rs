@@ -747,7 +747,6 @@ where
 mod test {
     use super::*;
     use crate::{
-        merk::TreeFeatureType::BasicMerk,
         test_utils::{apply_memonly, assert_tree_invariants, del_entry, make_tree_seq, seq_key},
         tree::{tree_feature_type::TreeFeatureType::BasicMerk, *},
     };

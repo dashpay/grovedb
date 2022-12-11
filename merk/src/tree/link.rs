@@ -401,7 +401,7 @@ mod test {
         super::{hash::NULL_HASH, Tree},
         *,
     };
-    use crate::merk::TreeFeatureType::BasicMerk;
+    use crate::TreeFeatureType::BasicMerk;
 
     #[test]
     fn from_modified_tree() {
