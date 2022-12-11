@@ -634,6 +634,65 @@ mod tests {
     }
 
     #[test]
+    fn test_one_insert_sum_item_in_sum_tree_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"s", Element::empty_sum_tree(), None, Some(&tx))
+            .unwrap()
+            .expect("expected to add upper tree");
+
+        let cost = db
+            .insert(
+                vec![b"s".as_slice()],
+                b"key1",
+                Element::new_sum_item(5),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("should insert");
+        // Explanation for 183 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 78
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type item
+        //   1 for the value (encoded var vec
+        //   1 for the value length
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 9 for Summed merk
+        // 1 byte for the value_size (required space for 77)
+
+        // Parent Hook -> 48
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Summed Merk 9
+        // Child Heights 2
+
+        // Total 37 + 78 + 48 = 163
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 5,
+                storage_cost: StorageCost {
+                    added_bytes: 163,
+                    replaced_bytes: 83, // todo: verify
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 143,
+                hash_node_calls: 8,
+            }
+        );
+    }
+
+    #[test]
     fn test_one_insert_item_cost_with_flags() {
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
@@ -735,6 +794,59 @@ mod tests {
                 seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
                 storage_cost: StorageCost {
                     added_bytes: 115,
+                    replaced_bytes: 0,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 0,
+                hash_node_calls: 3, // todo: verify this
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_insert_empty_sum_tree_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let cost = db
+            .insert(vec![], b"key1", Element::empty_sum_tree(), None, Some(&tx))
+            .cost;
+        // Explanation for 183 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 46
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type tree
+        //   1 for empty option
+        //   1 for no sum feature
+        //   8 bytes for sum
+        // 32 for node hash
+        // 0 for value hash (trees have this for free)
+        // 2 byte for the value_size (required space for 98 + x where x can be up to
+        // 256)
+
+        // Parent Hook -> 40
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+        // Sum 1
+
+        // Total 37 + 46 + 40 = 123
+
+        // Hash node calls
+        // 1 for the node hash
+        // 1 for the value hash
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
+                storage_cost: StorageCost {
+                    added_bytes: 123,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },

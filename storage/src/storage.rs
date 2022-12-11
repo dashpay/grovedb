@@ -5,7 +5,8 @@ use std::{
 };
 
 use costs::{
-    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, OperationCost,
+    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostContext,
+    CostResult, OperationCost,
 };
 use visualize::visualize_to_vec;
 
@@ -107,7 +108,7 @@ pub trait StorageContext<'db> {
         &self,
         key: K,
         value: &[u8],
-        children_sizes: ChildrenSizes,
+        children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error>;
 
@@ -192,7 +193,7 @@ pub trait Batch {
         &mut self,
         key: K,
         value: &[u8],
-        children_sizes: Option<(Option<(u32, u32)>, Option<(u32, u32)>)>,
+        children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error>;
 
@@ -304,7 +305,7 @@ impl StorageBatch {
         &self,
         key: Vec<u8>,
         value: Vec<u8>,
-        children_sizes: ChildrenSizes,
+        children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) {
         self.operations.borrow_mut().data.insert(
@@ -489,7 +490,7 @@ pub enum AbstractBatchOperation {
     Put {
         key: Vec<u8>,
         value: Vec<u8>,
-        children_sizes: ChildrenSizes,
+        children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     },
     /// Deferred put operation for aux storage_cost

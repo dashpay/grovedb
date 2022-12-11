@@ -18,7 +18,8 @@ use costs::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
     },
-    ChildrenSizes, ChildrenSizesWithValue, CostContext, CostResult, CostsExt, OperationCost,
+    ChildrenSizes, ChildrenSizesWithValue, CostContext, CostResult, CostsExt, FeatureSumLength,
+    OperationCost,
 };
 use ed::{Decode, Encode, Terminated};
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
@@ -205,8 +206,15 @@ impl<S> fmt::Debug for Merk<S> {
 }
 
 // key, maybe value, maybe child reference hooks, maybe key value storage costs
-pub type UseTreeMutResult =
-    CostResult<Vec<(Vec<u8>, ChildrenSizesWithValue, Option<KeyValueStorageCost>)>, Error>;
+pub type UseTreeMutResult = CostResult<
+    Vec<(
+        Vec<u8>,
+        Option<FeatureSumLength>,
+        ChildrenSizesWithValue,
+        Option<KeyValueStorageCost>,
+    )>,
+    Error,
+>;
 
 impl<'db, S> Merk<S>
 where
@@ -942,15 +950,20 @@ where
 
         // TODO: move this to MerkCommitter impl?
         for (key, maybe_cost) in deleted_keys {
-            to_batch.push((key, None, maybe_cost));
+            to_batch.push((key, None, None, maybe_cost));
         }
         to_batch.sort_by(|a, b| a.0.cmp(&b.0));
-        for (key, maybe_value, maybe_cost) in to_batch {
+        for (key, maybe_sum_tree_cost, maybe_value, maybe_cost) in to_batch {
             if let Some((value, left_size, right_size)) = maybe_value {
                 cost_return_on_error_no_add!(
                     &cost,
                     batch
-                        .put(&key, &value, Some((left_size, right_size)), maybe_cost)
+                        .put(
+                            &key,
+                            &value,
+                            Some((maybe_sum_tree_cost, left_size, right_size)),
+                            maybe_cost
+                        )
                         .map_err(CostsError)
                 );
             } else {
@@ -1151,7 +1164,12 @@ struct MerkCommitter {
     /// The batch has a key, maybe a value, with the value bytes, maybe the left
     /// child size and maybe the right child size, then the
     /// key_value_storage_cost
-    batch: Vec<(Vec<u8>, ChildrenSizesWithValue, Option<KeyValueStorageCost>)>,
+    batch: Vec<(
+        Vec<u8>,
+        Option<FeatureSumLength>,
+        ChildrenSizesWithValue,
+        Option<KeyValueStorageCost>,
+    )>,
     height: u8,
     levels: u8,
 }
@@ -1240,6 +1258,7 @@ impl Commit for MerkCommitter {
         let right_child_sizes = tree.child_ref_and_sum_size(false);
         self.batch.push((
             tree.key().to_vec(),
+            tree.feature_type().sum_length(),
             Some((buf, left_child_sizes, right_child_sizes)),
             Some(storage_costs),
         ));

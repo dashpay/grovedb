@@ -1,6 +1,6 @@
 use costs::{
-    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
-    OperationCost,
+    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostContext,
+    CostResult, CostsExt, OperationCost,
 };
 use error::Error;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
@@ -64,7 +64,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchStorageContext<'db> {
         &self,
         key: K,
         value: &[u8],
-        children_sizes: ChildrenSizes,
+        children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
         self.batch.put(

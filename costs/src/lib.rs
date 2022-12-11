@@ -25,6 +25,9 @@ use crate::{
 pub type ChildKeyLength = u32;
 
 /// Child sum length
+pub type FeatureSumLength = u32;
+
+/// Child sum length
 pub type ChildSumLength = u32;
 
 /// Children sizes
@@ -36,6 +39,13 @@ pub type ChildrenSizes = Option<(
 /// Children sizes starting with a value
 pub type ChildrenSizesWithValue = Option<(
     Vec<u8>,
+    Option<(ChildKeyLength, ChildSumLength)>,
+    Option<(ChildKeyLength, ChildSumLength)>,
+)>;
+
+/// Children sizes starting with if we are in a sum tree
+pub type ChildrenSizesWithIsSumTree = Option<(
+    Option<FeatureSumLength>,
     Option<(ChildKeyLength, ChildSumLength)>,
     Option<(ChildKeyLength, ChildSumLength)>,
 )>;
@@ -119,7 +129,7 @@ impl OperationCost {
         &mut self,
         key_len: u32,
         value_len: u32,
-        children_sizes: Option<(Option<(u32, u32)>, Option<(u32, u32)>)>,
+        children_sizes: ChildrenSizesWithIsSumTree,
         storage_cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), Error> {
         let paid_key_len = key_len + key_len.required_space() as u32;
@@ -142,7 +152,7 @@ impl OperationCost {
         } else {
             let mut paid_value_len = value_len;
             // We need to remove the child sizes if they exist
-            if let Some((left_child, right_child)) = children_sizes {
+            if let Some((in_sum_tree, left_child, right_child)) = children_sizes {
                 paid_value_len -= 2; // for the child options
 
                 // We need to remove the costs of the children
@@ -155,15 +165,24 @@ impl OperationCost {
                     paid_value_len -= right_child_sum_len;
                 }
 
+                if let Some(sum_tree_len) = in_sum_tree {
+                    paid_value_len -= sum_tree_len;
+                    paid_value_len += 8;
+                }
+
                 // This is the moment we need to add the required space (after removing
                 // children) but before adding the parent to child hook
                 paid_value_len += paid_value_len.required_space() as u32;
+
+                // we need to add the sum tree node size
+                let sum_tree_node_size = if in_sum_tree.is_some() { 8 } else { 0 };
 
                 // We need to add the cost of a parent
                 // key_len has a hash length already in it from the key prefix
                 // So we need to remove it and then add a hash length
                 // For the parent ref + 4 (2 for child sizes, 1 for key_len, 1 for sum option)
-                paid_value_len += key_len + 4;
+
+                paid_value_len += key_len + 4 + sum_tree_node_size;
             } else {
                 paid_value_len += paid_value_len.required_space() as u32;
             }

@@ -4,7 +4,7 @@ use costs::{
     storage_cost::{
         key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
     },
-    CostContext, CostResult, CostsExt, OperationCost,
+    ChildrenSizesWithIsSumTree, CostContext, CostResult, CostsExt, OperationCost,
 };
 use error::Error;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, WriteBatchWithTransaction};
@@ -68,7 +68,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         &self,
         key: K,
         value: &[u8],
-        children_sizes: ChildrenSizes,
+        children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost {

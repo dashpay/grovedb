@@ -13,6 +13,15 @@ pub enum TreeFeatureType {
 }
 
 impl TreeFeatureType {
+    #[inline]
+    pub fn sum_length(&self) -> Option<u32> {
+        match self {
+            BasicMerk => None,
+            SummedMerk(m) => Some(m.encode_var_vec().len() as u32),
+        }
+    }
+
+    #[inline]
     pub fn is_sum_feature(&self) -> bool {
         matches!(self, SummedMerk(_))
     }
