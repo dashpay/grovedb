@@ -1,11 +1,7 @@
 //! Storage context implementation with a transaction.
-use costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
-    storage_cost::{
-        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
-    },
-    CostContext, CostsExt, OperationCost,
-};
+use costs::{cost_return_on_error, cost_return_on_error_no_add, storage_cost::{
+    key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
+}, CostContext, CostsExt, OperationCost, CostResult};
 use error::Error;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode, WriteBatchWithTransaction};
 
@@ -61,7 +57,6 @@ impl<'db> PrefixedRocksDbTransactionContext<'db> {
 
 impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
     type Batch = PrefixedRocksDbBatch<'db>;
-    type Error = Error;
     type RawIterator = PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'db, Tx<'db>>>;
 
     fn put<K: AsRef<[u8]>>(
@@ -70,7 +65,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         value: &[u8],
         children_sizes: Option<(Option<u32>, Option<u32>)>,
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>> {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost {
             seek_count: 1,
             ..Default::default()
@@ -96,7 +91,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>> {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost {
             seek_count: 1,
             ..Default::default()
@@ -126,7 +121,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>> {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost {
             seek_count: 1,
             ..Default::default()
@@ -156,7 +151,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>> {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost {
             seek_count: 1,
             ..Default::default()
@@ -185,7 +180,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         &self,
         key: K,
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>> {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         if let Some(cost_info) = cost_info {
@@ -211,7 +206,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         &self,
         key: K,
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>> {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         if let Some(cost_info) = cost_info {
@@ -236,7 +231,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         &self,
         key: K,
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>> {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         if let Some(cost_info) = cost_info {
@@ -261,7 +256,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         &self,
         key: K,
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>> {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         if let Some(cost_info) = cost_info {
@@ -282,7 +277,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             .wrap_with_cost(cost)
     }
 
-    fn get<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
+    fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
             .get(make_prefixed_key(self.prefix.clone(), key))
             .map_err(RocksDBError)
@@ -299,7 +294,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
             })
     }
 
-    fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
+    fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
             .get_cf(self.cf_aux(), make_prefixed_key(self.prefix.clone(), key))
             .map_err(RocksDBError)
@@ -319,7 +314,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
     fn get_root<K: AsRef<[u8]>>(
         &self,
         key: K,
-    ) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
+    ) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
             .get_cf(self.cf_roots(), make_prefixed_key(self.prefix.clone(), key))
             .map_err(RocksDBError)
@@ -339,7 +334,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
     fn get_meta<K: AsRef<[u8]>>(
         &self,
         key: K,
-    ) -> CostContext<Result<Option<Vec<u8>>, Self::Error>> {
+    ) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
             .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
             .map_err(RocksDBError)
@@ -366,7 +361,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         }
     }
 
-    fn commit_batch(&self, batch: Self::Batch) -> CostContext<Result<(), Self::Error>> {
+    fn commit_batch(&self, batch: Self::Batch) -> CostResult<(), Error> {
         let cost = OperationCost::default();
 
         // On unsuccessul batch commit only deletion finalization cost will be returned.

@@ -38,9 +38,8 @@ use integer_encoding::VarInt;
 use itertools::Itertools;
 use key_info::{KeyInfo, KeyInfo::KnownKey};
 use merk::{
-    anyhow::anyhow,
     tree::{kv::KV, value_hash, NULL_HASH},
-    CryptoHash, Merk, MerkType,
+    CryptoHash, Merk, MerkType, Error as MerkError
 };
 pub use options::BatchApplyOptions;
 use storage::{
@@ -874,7 +873,7 @@ where
                 &[],
                 Some(batch_apply_options.as_merk_options()),
                 &|key, value| {
-                    let element = Element::deserialize(value)?;
+                    let element = Element::deserialize(value).map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
                     let is_sum_tree = element.is_sum_tree();
                     match element {
                         Element::Tree(_, flags) | Element::SumTree(_, _, flags) => {
@@ -895,27 +894,27 @@ where
                                 is_sum_tree,
                             ))
                         }
-                        _ => Err(anyhow!("only trees are supported for specialized costs")),
+                        _ => Err(MerkError::SpecializedCostsError("only trees are supported for specialized costs")),
                     }
                 },
                 &mut |storage_costs, old_value, new_value| {
                     // todo: change the flags without full deserialization
-                    let old_element = Element::deserialize(old_value.as_slice())?;
+                    let old_element = Element::deserialize(old_value.as_slice()).map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
                     let maybe_old_flags = old_element.get_flags_owned();
 
-                    let mut new_element = Element::deserialize(new_value.as_slice())?;
+                    let mut new_element = Element::deserialize(new_value.as_slice()).map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
                     let maybe_new_flags = new_element.get_flags_mut();
                     match maybe_new_flags {
                         None => Ok((false, None)),
                         Some(new_flags) => {
                             let changed = (flags_update)(storage_costs, maybe_old_flags, new_flags)
                                 .map_err(|e| match e {
-                                    Error::JustInTimeElementFlagsClientError(_) => e,
-                                    _ => Error::ClientReturnedNonClientError("non client error"),
+                                    Error::JustInTimeElementFlagsClientError(_) => MerkError::ClientCorruptionError(e.to_string()),
+                                    _ => MerkError::ClientCorruptionError("non client error".to_string()),
                                 })?;
                             if changed {
                                 let flags_len = new_flags.len() as u32;
-                                new_value.clone_from(&new_element.serialize()?);
+                                new_value.clone_from(&new_element.serialize().map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?);
                                 // we need to give back the value defined cost in the case that the
                                 // new element is a tree
                                 match new_element {
@@ -939,7 +938,7 @@ where
                     }
                 },
                 &mut |value, removed_key_bytes, removed_value_bytes| {
-                    let mut element = Element::deserialize(value.as_slice())?;
+                    let mut element = Element::deserialize(value.as_slice()).map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
                     let maybe_flags = element.get_flags_mut();
                     match maybe_flags {
                         None => Ok((
@@ -948,14 +947,14 @@ where
                         )),
                         Some(flags) => {
                             (split_removal_bytes)(flags, removed_key_bytes, removed_value_bytes)
-                                .map_err(|e| e.into())
+                                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
                         }
                     }
                 },
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         });
-        let r = merk.root_hash_key_and_sum().add_cost(cost).map(Ok);
+        let r = merk.root_hash_key_and_sum().add_cost(cost).map_err(Error::MerkError);
         // We need to reinsert the merk
         self.merks.insert(path.clone(), merk);
         r

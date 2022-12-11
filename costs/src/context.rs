@@ -175,3 +175,21 @@ macro_rules! cost_return_on_error_no_add {
         }
     };
 }
+
+/// Macro to achieve a kind of what `?` operator does, but with `CostContext` on
+/// top. The difference between this macro and `cost_return_on_error` is that it
+/// is intended to use it on `Result` rather than `CostContext<Result<..>>`, so
+/// no costs will be added except previously accumulated.
+#[macro_export]
+macro_rules! cost_return_on_error_default {
+    ( $($body:tt)+ ) => {
+        {
+            use $crate::CostsExt;
+            let result = { $($body)+ };
+            match result {
+                Ok(x) => x,
+                Err(e) => return Err(e).wrap_with_cost(OperationCost::default()),
+            }
+        }
+    };
+}

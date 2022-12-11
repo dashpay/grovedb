@@ -1,10 +1,10 @@
-use anyhow::Result;
-use costs::{CostContext, CostsExt, OperationCost};
+use costs::{CostContext, CostResult, CostsExt, OperationCost};
 
 use super::{
     super::{Link, Tree},
     Fetch,
 };
+use crate::Error;
 
 /// Allows read-only traversal of a `Tree`, fetching from the given source when
 /// traversing to a pruned node. The fetched nodes are then retained in memory
@@ -38,7 +38,7 @@ where
     /// Traverses to the child on the given side (if any), fetching from the
     /// source if pruned. When fetching, the link is upgraded from
     /// `Link::Reference` to `Link::Loaded`.
-    pub fn walk(&mut self, left: bool) -> CostContext<Result<Option<RefWalker<S>>>> {
+    pub fn walk(&mut self, left: bool) -> CostResult<Option<RefWalker<S>>, Error> {
         let link = match self.tree.link(left) {
             None => return Ok(None).wrap_with_cost(Default::default()),
             Some(link) => link,

@@ -11,13 +11,13 @@ use costs::{
 };
 use integer_encoding::VarInt;
 use merk::{
-    anyhow,
     ed::Decode,
     estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE},
     proofs::{query::QueryItem, Query},
     tree::{kv::KV, Tree, TreeInner},
     BatchEntry, MerkOptions, Op, TreeFeatureType,
     TreeFeatureType::{BasicMerk, SummedMerk},
+    Error as MerkError,
 };
 use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
@@ -329,7 +329,7 @@ impl Element {
         let batch = [(key, op)];
         let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch, &[], merk_options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value, uses_sum_nodes).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes).map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -346,7 +346,7 @@ impl Element {
             u32,
             u32,
         )
-            -> anyhow::Result<(StorageRemovedBytes, StorageRemovedBytes)>,
+            -> Result<(StorageRemovedBytes, StorageRemovedBytes), MerkError>,
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
         let op = if is_layered {
@@ -365,8 +365,7 @@ impl Element {
             &[],
             merk_options,
             &|key, value| {
-                Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
-                    .map_err(anyhow::Error::msg)
+                Self::tree_costs_for_key_value(key, value, uses_sum_nodes).map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
             },
             &mut |_costs, _old_value, _value| Ok((false, None)),
             sectioned_removal,
@@ -1121,7 +1120,7 @@ impl Element {
         let batch_operations = [(key, Op::Put(serialized, merk_feature_type))];
         let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value, uses_sum_nodes).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes).map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -1260,7 +1259,7 @@ impl Element {
         )];
         let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value, uses_sum_nodes).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes).map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -1329,7 +1328,7 @@ impl Element {
         )];
         let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value, uses_sum_nodes).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes).map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }

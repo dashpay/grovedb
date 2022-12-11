@@ -8,6 +8,7 @@ use costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, OperationCost,
 };
 use visualize::visualize_to_vec;
+use crate::Error;
 
 use crate::worst_case_costs::WorstKeyLength;
 
@@ -19,19 +20,16 @@ pub trait Storage<'db> {
     type Transaction;
 
     /// Storage context type
-    type StorageContext: StorageContext<'db, Error = Self::Error>;
+    type StorageContext: StorageContext<'db>;
 
     /// Storage context type for transactional data
-    type TransactionalStorageContext: StorageContext<'db, Error = Self::Error>;
+    type TransactionalStorageContext: StorageContext<'db>;
 
     /// Storage context type for mutli-tree batch operations
     type BatchStorageContext;
 
     /// Storage context type for multi-tree batch operations inside transaction
     type BatchTransactionalStorageContext;
-
-    /// Error type
-    type Error: std::error::Error + Send + Sync + 'static;
 
     /// Starts a new transaction
     fn start_transaction(&'db self) -> Self::Transaction;
@@ -40,20 +38,20 @@ pub trait Storage<'db> {
     fn commit_transaction(
         &self,
         transaction: Self::Transaction,
-    ) -> CostContext<Result<(), Self::Error>>;
+    ) -> CostResult<(), Error>;
 
     /// Rollback a transaction
-    fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Self::Error>;
+    fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Error>;
 
     /// Consumes and applies multi-context batch.
     fn commit_multi_context_batch(
         &self,
         batch: StorageBatch,
         transaction: Option<&'db Self::Transaction>,
-    ) -> CostResult<(), Self::Error>;
+    ) -> CostResult<(), Error>;
 
     /// Forces data to be written
-    fn flush(&self) -> Result<(), Self::Error>;
+    fn flush(&self) -> Result<(), Error>;
 
     /// Make storage_cost context for a subtree with path
     fn get_storage_context<'p, P>(&'db self, path: P) -> CostContext<Self::StorageContext>
@@ -89,7 +87,7 @@ pub trait Storage<'db> {
         P: IntoIterator<Item = &'p [u8]>;
 
     /// Creates a database checkpoint in a specified path
-    fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Self::Error>;
+    fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error>;
 
     /// Return worst case cost for storage_cost context creation.
     fn get_storage_context_cost<L: WorstKeyLength>(path: &Vec<L>) -> OperationCost;
@@ -99,8 +97,6 @@ pub trait Storage<'db> {
 /// Provides operations expected from a database abstracting details such as
 /// whether it is a transaction or not.
 pub trait StorageContext<'db> {
-    /// Storage error type
-    type Error: std::error::Error + Send + Sync + 'static;
 
     /// Storage batch type
     type Batch: Batch;
@@ -116,7 +112,7 @@ pub trait StorageContext<'db> {
         value: &[u8],
         children_sizes: Option<(Option<u32>, Option<u32>)>,
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>>;
+    ) -> CostResult<(), Error>;
 
     /// Put `value` into auxiliary data storage_cost with `key`
     fn put_aux<K: AsRef<[u8]>>(
@@ -124,7 +120,7 @@ pub trait StorageContext<'db> {
         key: K,
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>>;
+    ) -> CostResult<(), Error>;
 
     /// Put `value` into trees roots storage_cost with `key`
     fn put_root<K: AsRef<[u8]>>(
@@ -132,7 +128,7 @@ pub trait StorageContext<'db> {
         key: K,
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>>;
+    ) -> CostResult<(), Error>;
 
     /// Put `value` into GroveDB metadata storage_cost with `key`
     fn put_meta<K: AsRef<[u8]>>(
@@ -140,55 +136,55 @@ pub trait StorageContext<'db> {
         key: K,
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>>;
+    ) -> CostResult<(), Error>;
 
     /// Delete entry with `key` from data storage_cost
     fn delete<K: AsRef<[u8]>>(
         &self,
         key: K,
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>>;
+    ) -> CostResult<(), Error>;
 
     /// Delete entry with `key` from auxiliary data storage_cost
     fn delete_aux<K: AsRef<[u8]>>(
         &self,
         key: K,
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>>;
+    ) -> CostResult<(), Error>;
 
     /// Delete entry with `key` from trees roots storage_cost
     fn delete_root<K: AsRef<[u8]>>(
         &self,
         key: K,
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>>;
+    ) -> CostResult<(), Error>;
 
     /// Delete entry with `key` from GroveDB metadata storage_cost
     fn delete_meta<K: AsRef<[u8]>>(
         &self,
         key: K,
         cost_info: Option<KeyValueStorageCost>,
-    ) -> CostContext<Result<(), Self::Error>>;
+    ) -> CostResult<(), Error>;
 
     /// Get entry by `key` from data storage_cost
-    fn get<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<Option<Vec<u8>>, Self::Error>>;
+    fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error>;
 
     /// Get entry by `key` from auxiliary data storage_cost
-    fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostContext<Result<Option<Vec<u8>>, Self::Error>>;
+    fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error>;
 
     /// Get entry by `key` from trees roots storage_cost
     fn get_root<K: AsRef<[u8]>>(&self, key: K)
-        -> CostContext<Result<Option<Vec<u8>>, Self::Error>>;
+        -> CostResult<Option<Vec<u8>>, Error>;
 
     /// Get entry by `key` from GroveDB metadata storage_cost
     fn get_meta<K: AsRef<[u8]>>(&self, key: K)
-        -> CostContext<Result<Option<Vec<u8>>, Self::Error>>;
+        -> CostResult<Option<Vec<u8>>, Error>;
 
     /// Initialize a new batch
     fn new_batch(&self) -> Self::Batch;
 
     /// Commits changes from batch into storage
-    fn commit_batch(&self, batch: Self::Batch) -> CostContext<Result<(), Self::Error>>;
+    fn commit_batch(&self, batch: Self::Batch) -> CostResult<(), Error>;
 
     /// Get raw iterator over storage_cost
     fn raw_iter(&self) -> Self::RawIterator;

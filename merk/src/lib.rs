@@ -24,8 +24,8 @@ pub mod error;
 pub mod estimated_costs;
 mod visualize;
 
-pub use anyhow;
 pub use ed;
+pub use error::Error;
 #[allow(deprecated)]
 pub use proofs::query::verify_query;
 pub use proofs::query::{execute_proof, verify};

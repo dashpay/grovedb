@@ -9,7 +9,6 @@ license = "MIT"
 [dependencies]
 thiserror = "1.0.37"
 storage = { path = "../storage" }
-anyhow = "1.0.66"
 failure = "0.1.8"
 integer-encoding = "3.0.4"
 indexmap = "1.9.2"

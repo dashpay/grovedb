@@ -1,10 +1,9 @@
 use std::io::{Read, Write};
 
-use anyhow::{anyhow, Result};
-use ed::{Decode, Encode, Error, Terminated};
+use ed::{Decode, Encode, Error as EdError, Terminated};
 
 use super::{Node, Op};
-use crate::{tree::HASH_LENGTH, TreeFeatureType};
+use crate::{error::Error, tree::HASH_LENGTH, TreeFeatureType};
 
 impl Encode for Op {
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
@@ -346,15 +345,16 @@ impl Decode for Op {
 impl Terminated for Op {}
 
 impl Op {
-    fn encode_into<W: Write>(&self, dest: &mut W) -> Result<()> {
+    fn encode_into<W: Write>(&self, dest: &mut W) -> Result<(), Error> {
         Encode::encode_into(self, dest).map_err(|e| match e {
-            Error::UnexpectedByte(byte) => anyhow!(
+            EdError::UnexpectedByte(byte) => Error::ProofCreationError(format!(
                 "failed to encode an proofs::Op structure (UnexpectedByte: {})",
                 byte
-            ),
-            Error::IOError(error) => {
-                anyhow!("failed to encode an proofs::Op structure ({})", error)
-            }
+            )),
+            EdError::IOError(error) => Error::ProofCreationError(format!(
+                "failed to encode an proofs::Op structure ({})",
+                error
+            )),
         })
     }
 
@@ -362,15 +362,16 @@ impl Op {
         Encode::encoding_length(self).unwrap()
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         Decode::decode(bytes).map_err(|e| match e {
-            Error::UnexpectedByte(byte) => anyhow!(
+            EdError::UnexpectedByte(byte) => Error::ProofCreationError(format!(
                 "failed to decode an proofs::Op structure (UnexpectedByte: {})",
                 byte
-            ),
-            Error::IOError(error) => {
-                anyhow!("failed to decode an proofs::Op structure ({})", error)
-            }
+            )),
+            EdError::IOError(error) => Error::ProofCreationError(format!(
+                "failed to decode an proofs::Op structure ({})",
+                error
+            )),
         })
     }
 }
@@ -396,7 +397,7 @@ impl<'a> Decoder<'a> {
 }
 
 impl<'a> Iterator for Decoder<'a> {
-    type Item = Result<Op>;
+    type Item = Result<Op, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.offset >= self.bytes.len() {

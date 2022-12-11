@@ -1,26 +1,29 @@
-use anyhow::{anyhow, Error};
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
+    OperationCost,
 };
 use ed::{Decode, Encode};
 use storage::StorageContext;
 
 use super::Tree;
-use crate::tree::TreeInner;
+use crate::{
+    error::{Error, Error::EdError},
+    tree::TreeInner,
+    Error::StorageError,
+};
 
 impl Tree {
     pub fn decode_raw(bytes: &[u8], key: Vec<u8>) -> Result<Self, Error> {
-        Tree::decode(key, bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
+        Tree::decode(key, bytes).map_err(EdError)
     }
 
-    pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> CostContext<Result<Option<Self>, Error>>
+    pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> CostResult<Option<Self>, Error>
     where
         S: StorageContext<'db>,
         K: AsRef<[u8]>,
-        Error: From<S::Error>,
     {
         let mut cost = OperationCost::default();
-        let tree_bytes = cost_return_on_error!(&mut cost, storage.get(&key).map_err(|e| e.into()));
+        let tree_bytes = cost_return_on_error!(&mut cost, storage.get(&key).map_err(StorageError));
 
         let tree_opt = cost_return_on_error_no_add!(
             &cost,

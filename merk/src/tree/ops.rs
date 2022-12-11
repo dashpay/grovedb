@@ -3,7 +3,6 @@ use std::{
     fmt,
 };
 
-use anyhow::{anyhow, Result};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
@@ -11,13 +10,13 @@ use costs::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
     },
-    CostContext, CostsExt, OperationCost,
+    CostContext, CostResult, CostsExt, OperationCost,
 };
 use integer_encoding::VarInt;
 use Op::*;
 
 use super::{Fetch, Link, Tree, Walker};
-use crate::{tree::tree_feature_type::TreeFeatureType, CryptoHash, HASH_LENGTH_U32};
+use crate::{error::Error, tree::tree_feature_type::TreeFeatureType, CryptoHash, HASH_LENGTH_U32};
 
 /// Type alias to add more sense to function signatures.
 type UpdatedRootKeyFrom = Option<Vec<u8>>;
@@ -107,7 +106,7 @@ pub type AuxMerkBatch<K> = [AuxBatchEntry<K>];
 #[derive(Clone)]
 pub struct PanicSource {}
 impl Fetch for PanicSource {
-    fn fetch(&self, _link: &Link) -> CostContext<Result<Tree>> {
+    fn fetch(&self, _link: &Link) -> CostResult<Tree, Error> {
         unreachable!("'fetch' should not have been called")
     }
 }
@@ -128,17 +127,20 @@ where
         old_tree_cost: &C,
         section_removal_bytes: &mut R,
     ) -> CostContext<
-        Result<(
-            Option<Tree>,
-            NewKeys,
-            UpdatedKeys,
-            DeletedKeys,
-            UpdatedRootKeyFrom,
-        )>,
+        Result<
+            (
+                Option<Tree>,
+                NewKeys,
+                UpdatedKeys,
+                DeletedKeys,
+                UpdatedRootKeyFrom,
+            ),
+            Error,
+        >,
     >
     where
-        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
-        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let mut cost = OperationCost::default();
 
@@ -197,10 +199,10 @@ where
         source: S,
         old_tree_cost: &C,
         section_removal_bytes: &mut R,
-    ) -> CostContext<Result<Option<Tree>>>
+    ) -> CostResult<Option<Tree>, Error>
     where
-        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
-        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let mut cost = OperationCost::default();
 
@@ -307,14 +309,15 @@ where
     fn apply_sorted_without_costs<K: AsRef<[u8]>>(
         self,
         batch: &MerkBatch<K>,
-    ) -> CostContext<
-        Result<(
+    ) -> CostResult<
+        (
             Option<Self>,
             NewKeys,
             UpdatedKeys,
             DeletedKeys,
             UpdatedRootKeyFrom,
-        )>,
+        ),
+        Error,
     > {
         self.apply_sorted(
             batch,
@@ -337,18 +340,19 @@ where
         batch: &MerkBatch<K>,
         old_tree_cost: &C,
         section_removal_bytes: &mut R,
-    ) -> CostContext<
-        Result<(
+    ) -> CostResult<
+        (
             Option<Self>,
             NewKeys,
             UpdatedKeys,
             DeletedKeys,
             UpdatedRootKeyFrom,
-        )>,
+        ),
+        Error,
     >
     where
-        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
-        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let mut cost = OperationCost::default();
 
@@ -521,18 +525,19 @@ where
         mut updated_keys: BTreeSet<Vec<u8>>,
         old_tree_cost: &C,
         section_removal_bytes: &mut R,
-    ) -> CostContext<
-        Result<(
+    ) -> CostResult<
+        (
             Option<Self>,
             NewKeys,
             UpdatedKeys,
             DeletedKeys,
             UpdatedRootKeyFrom,
-        )>,
+        ),
+        Error,
     >
     where
-        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
-        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let mut cost = OperationCost::default();
 
@@ -640,7 +645,7 @@ where
     /// Checks if the tree is unbalanced and if so, applies AVL tree rotation(s)
     /// to rebalance the tree and its subtrees. Returns the root node of the
     /// balanced tree after applying the rotations.
-    fn maybe_balance(self) -> CostContext<Result<Self>> {
+    fn maybe_balance(self) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
         let balance_factor = self.balance_factor();
@@ -666,7 +671,7 @@ where
 
     /// Applies an AVL tree rotation, a constant-time operation which only needs
     /// to swap pointers in order to rebalance a tree.
-    fn rotate(self, left: bool) -> CostContext<Result<Self>> {
+    fn rotate(self, left: bool) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
         let (tree, child) = cost_return_on_error!(&mut cost, self.detach_expect(left));
@@ -684,7 +689,7 @@ where
 
     /// Removes the root node from the tree. Rearranges and rebalances
     /// descendants (if any) in order to maintain a valid tree.
-    pub fn remove(self) -> CostContext<Result<Option<Self>>> {
+    pub fn remove(self) -> CostResult<Option<Self>, Error> {
         let mut cost = OperationCost::default();
 
         let tree = self.tree();
@@ -714,7 +719,7 @@ where
     /// reattaches it at the top in order to fill in a gap when removing a root
     /// node from a tree with both left and right children. Attaches `attach` on
     /// the opposite side. Returns the promoted node.
-    fn promote_edge(self, left: bool, attach: Self) -> CostContext<Result<Self>> {
+    fn promote_edge(self, left: bool, attach: Self) -> CostResult<Self, Error> {
         self.remove_edge(left).flat_map_ok(|(edge, maybe_child)| {
             edge.attach(!left, maybe_child)
                 .attach(left, Some(attach))
@@ -725,7 +730,7 @@ where
     /// Traverses to the tree's edge on the given side and detaches it
     /// (reattaching its child, if any, to its former parent). Return value is
     /// `(edge, maybe_updated_tree)`.
-    fn remove_edge(self, left: bool) -> CostContext<Result<(Self, Option<Self>)>> {
+    fn remove_edge(self, left: bool) -> CostResult<(Self, Option<Self>), Error> {
         let mut cost = OperationCost::default();
 
         if self.tree().link(left).is_some() {

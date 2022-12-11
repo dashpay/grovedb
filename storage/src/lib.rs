@@ -11,3 +11,5 @@ pub mod worst_case_costs;
 pub use crate::storage::{
     AbstractBatchOperation, Batch, RawIterator, Storage, StorageBatch, StorageContext,
 };
+
+pub use crate::error::Error;

@@ -8,8 +8,7 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-use anyhow::{anyhow, bail, Result};
-use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
+use costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
 use indexmap::IndexMap;
 pub use map::*;
 use storage::RawIterator;
@@ -18,6 +17,7 @@ use {super::Op, std::collections::LinkedList};
 
 use super::{tree::execute, Decoder, Node};
 use crate::{
+    error::Error,
     tree::{value_hash, CryptoHash as MerkHash, Fetch, Link, RefWalker},
     CryptoHash,
 };
@@ -856,7 +856,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostContext<Result<ProofAbsenceLimitOffset>> {
+    ) -> CostResult<ProofAbsenceLimitOffset, Error> {
         self.create_proof(query, limit, offset, left_to_right)
     }
 
@@ -873,7 +873,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostContext<Result<ProofAbsenceLimitOffset>> {
+    ) -> CostResult<ProofAbsenceLimitOffset, Error> {
         let mut cost = OperationCost::default();
 
         // TODO: don't copy into vec, support comparing QI to byte slice
@@ -1080,7 +1080,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostContext<Result<ProofAbsenceLimitOffset>> {
+    ) -> CostResult<ProofAbsenceLimitOffset, Error> {
         if !query.is_empty() {
             self.walk(left).flat_map_ok(|child_opt| {
                 if let Some(mut child) = child_opt {
@@ -1105,21 +1105,21 @@ where
     }
 }
 
-pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostContext<Result<Map>> {
+pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
     let ops = Decoder::new(bytes);
     let mut map_builder = MapBuilder::new();
 
     execute(ops, true, |node| map_builder.insert(node)).flat_map_ok(|root| {
         root.hash().map(|hash| {
             if hash != expected_hash {
-                bail!(
+                Err(Error::InvalidProofError(format!(
                     "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
                     expected_hash,
                     root.hash()
-                );
+                )))
+            } else {
+                Ok(map_builder.build())
             }
-
-            Ok(map_builder.build())
         })
     })
 }
@@ -1140,7 +1140,7 @@ pub fn execute_proof(
     limit: Option<u16>,
     offset: Option<u16>,
     left_to_right: bool,
-) -> CostContext<Result<(MerkHash, ProofVerificationResult)>> {
+) -> CostResult<(MerkHash, ProofVerificationResult), Error> {
     let mut cost = OperationCost::default();
 
     let mut output = Vec::with_capacity(query.len());
@@ -1154,7 +1154,7 @@ pub fn execute_proof(
 
     let root_wrapped = execute(ops, true, |node| {
         let mut execute_node =
-            |key: &Vec<u8>, value: Option<&Vec<u8>>, value_hash: CryptoHash| -> Result<_> {
+            |key: &Vec<u8>, value: Option<&Vec<u8>>, value_hash: CryptoHash| -> Result<_, Error> {
                 while let Some(item) = query.peek() {
                     // get next item in query
                     let query_item = *item;
@@ -1206,7 +1206,9 @@ pub fn execute_proof(
                                 // cannot verify lower bound - we have an abridged
                                 // tree so we cannot tell what the preceding key was
                                 Some(_) => {
-                                    bail!("Cannot verify lower bound of queried range");
+                                    return Err(Error::InvalidProofError(
+                                        "Cannot verify lower bound of queried range".to_string(),
+                                    ));
                                 }
                             }
                         } else {
@@ -1232,7 +1234,9 @@ pub fn execute_proof(
                                 // cannot verify upper bound - we have an abridged
                                 // tree so we cannot tell what the previous key was
                                 Some(_) => {
-                                    bail!("Cannot verify upper bound of queried range");
+                                    return Err(Error::InvalidProofError(
+                                        "Cannot verify upper bound of queried range".to_string(),
+                                    ));
                                 }
                             }
                         }
@@ -1279,7 +1283,9 @@ pub fn execute_proof(
                                 break;
                             } else if offset > 0 && value != None {
                                 // inserting a kv node before exhausting offset
-                                bail!("Proof returns data before offset is exhausted");
+                                return Err(Error::InvalidProofError(
+                                    "Proof returns data before offset is exhausted".to_string(),
+                                ));
                             }
                         }
 
@@ -1287,7 +1293,9 @@ pub fn execute_proof(
                         if let Some(val) = value {
                             if let Some(limit) = current_limit {
                                 if limit == 0 {
-                                    bail!("Proof returns more data than limit");
+                                    return Err(Error::InvalidProofError(
+                                        "Proof returns more data than limit".to_string(),
+                                    ));
                                 } else {
                                     current_limit = Some(limit - 1);
                                     if current_limit == Some(0) {
@@ -1301,7 +1309,9 @@ pub fn execute_proof(
                             // continue to next push
                             break;
                         } else {
-                            bail!("Proof is missing data for query");
+                            return Err(Error::InvalidProofError(
+                                "Proof is missing data for query".to_string(),
+                            ));
                         }
                     }
                     {}
@@ -1321,7 +1331,9 @@ pub fn execute_proof(
         } else if in_range {
             // we encountered a queried range but the proof was abridged (saw a
             // non-KV push), we are missing some part of the range
-            bail!("Proof is missing data for query");
+            return Err(Error::InvalidProofError(
+                "Proof is missing data for query for range".to_string(),
+            ));
         }
 
         last_push = Some(node.clone());
@@ -1345,7 +1357,12 @@ pub fn execute_proof(
 
                 // proof contains abridged data so we cannot verify absence of
                 // remaining query items
-                _ => return Err(anyhow!("Proof is missing data for query")).wrap_with_cost(cost),
+                _ => {
+                    return Err(Error::InvalidProofError(
+                        "Proof is missing data for query".to_string(),
+                    ))
+                    .wrap_with_cost(cost)
+                }
             }
         }
     }
@@ -1376,17 +1393,17 @@ pub fn verify_query(
     offset: Option<u16>,
     left_to_right: bool,
     expected_hash: MerkHash,
-) -> CostContext<Result<ProofVerificationResult>> {
+) -> CostResult<ProofVerificationResult, Error> {
     execute_proof(bytes, query, limit, offset, left_to_right)
         .map_ok(|(root_hash, verification_result)| {
-            if root_hash != expected_hash {
-                bail!(
+            if root_hash == expected_hash {
+                Ok(verification_result)
+            } else {
+                Err(Error::InvalidProofError(format!(
                     "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
-                    expected_hash,
-                    root_hash
-                );
-            };
-            Ok(verification_result)
+                    expected_hash, root_hash
+                )))
+            }
         })
         .flatten()
 }

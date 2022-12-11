@@ -129,7 +129,6 @@ impl RocksDbStorage {
 impl<'db> Storage<'db> for RocksDbStorage {
     type BatchStorageContext = PrefixedRocksDbBatchStorageContext<'db>;
     type BatchTransactionalStorageContext = PrefixedRocksDbBatchTransactionContext<'db>;
-    type Error = Error;
     type StorageContext = PrefixedRocksDbStorageContext<'db>;
     type Transaction = Tx<'db>;
     type TransactionalStorageContext = PrefixedRocksDbTransactionContext<'db>;
@@ -141,7 +140,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
     fn commit_transaction(
         &self,
         transaction: Self::Transaction,
-    ) -> CostContext<Result<(), Self::Error>> {
+    ) -> CostResult<(), Error> {
         // All transaction costs were provided on method calls
         transaction
             .commit()
@@ -149,11 +148,11 @@ impl<'db> Storage<'db> for RocksDbStorage {
             .wrap_with_cost(Default::default())
     }
 
-    fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Self::Error> {
+    fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Error> {
         transaction.rollback().map_err(RocksDBError)
     }
 
-    fn flush(&self) -> Result<(), Self::Error> {
+    fn flush(&self) -> Result<(), Error> {
         self.db.flush().map_err(RocksDBError)
     }
 
@@ -206,7 +205,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         &self,
         batch: StorageBatch,
         transaction: Option<&'db Self::Transaction>,
-    ) -> CostResult<(), Self::Error> {
+    ) -> CostResult<(), Error> {
         let mut db_batch = WriteBatchWithTransaction::<true>::default();
 
         let mut cost = OperationCost::default();
@@ -437,7 +436,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         }
     }
 
-    fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Self::Error> {
+    fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
         Checkpoint::new(&self.db)
             .and_then(|x| x.create_checkpoint(path))
             .map_err(RocksDBError)

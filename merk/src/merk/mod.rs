@@ -11,9 +11,8 @@ use std::{
     io::{Read, Write},
 };
 
-use anyhow::{anyhow, Error, Result};
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
+    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::{
         key_value_cost::KeyValueStorageCost,
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
@@ -23,9 +22,10 @@ use costs::{
 };
 use ed::{Decode, Encode, Terminated};
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
-use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
+use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
+    error::Error,
     merk::{
         defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
         options::MerkOptions,
@@ -35,6 +35,7 @@ use crate::{
         kv::KV, AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree,
         Walker, NULL_HASH,
     },
+    Error::{CostsError, EdError, StorageError},
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
     TreeFeatureType,
 };
@@ -204,20 +205,18 @@ impl<S> fmt::Debug for Merk<S> {
 }
 
 // key, maybe value, maybe child reference hooks, maybe key value storage costs
-pub type UseTreeMutResult = CostContext<
-    Result<
-        Vec<(
-            Vec<u8>,
-            Option<(Vec<u8>, Option<u32>, Option<u32>)>,
-            Option<KeyValueStorageCost>,
-        )>,
-    >,
+pub type UseTreeMutResult = CostResult<
+    Vec<(
+        Vec<u8>,
+        Option<(Vec<u8>, Option<u32>, Option<u32>)>,
+        Option<KeyValueStorageCost>,
+    )>,
+    Error,
 >;
 
 impl<'db, S> Merk<S>
 where
     S: StorageContext<'db>,
-    <S as StorageContext<'db>>::Error: std::error::Error,
 {
     pub fn open_empty(storage: S, merk_type: MerkType, is_sum_tree: bool) -> Self {
         Self {
@@ -229,7 +228,7 @@ where
         }
     }
 
-    pub fn open_standalone(storage: S, is_sum_tree: bool) -> CostContext<Result<Self>> {
+    pub fn open_standalone(storage: S, is_sum_tree: bool) -> CostResult<Self, Error> {
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
@@ -241,7 +240,7 @@ where
         merk.load_base_root().map_ok(|_| merk)
     }
 
-    pub fn open_base(storage: S, is_sum_tree: bool) -> CostContext<Result<Self>> {
+    pub fn open_base(storage: S, is_sum_tree: bool) -> CostResult<Self, Error> {
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
@@ -257,7 +256,7 @@ where
         storage: S,
         root_key: Option<Vec<u8>>,
         is_sum_tree: bool,
-    ) -> CostContext<Result<Self>> {
+    ) -> CostResult<Self, Error> {
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(root_key),
@@ -270,7 +269,7 @@ where
     }
 
     /// Deletes tree data
-    pub fn clear(&mut self) -> CostContext<Result<()>> {
+    pub fn clear(&mut self) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         let mut iter = self.storage.raw_iter();
@@ -286,22 +285,22 @@ where
         }
         cost_return_on_error!(
             &mut cost,
-            self.storage.commit_batch(to_delete).map_err(|e| e.into())
+            self.storage.commit_batch(to_delete).map_err(StorageError)
         );
         self.tree.set(None);
         Ok(()).wrap_with_cost(cost)
     }
 
     /// Gets an auxiliary value.
-    pub fn get_aux(&self, key: &[u8]) -> CostContext<Result<Option<Vec<u8>>>> {
-        self.storage.get_aux(key).map_err(|e| e.into())
+    pub fn get_aux(&self, key: &[u8]) -> CostResult<Option<Vec<u8>>, Error> {
+        self.storage.get_aux(key).map_err(StorageError)
     }
 
     /// Returns if the value at the given key exists
     ///
     /// Note that this is essentially the same as a normal RocksDB `get`, so
     /// should be a fast operation and has almost no tree overhead.
-    pub fn exists(&self, key: &[u8]) -> CostContext<Result<bool>> {
+    pub fn exists(&self, key: &[u8]) -> CostResult<bool, Error> {
         self.has_node(key)
     }
 
@@ -310,7 +309,7 @@ where
     ///
     /// Note that this is essentially the same as a normal RocksDB `get`, so
     /// should be a fast operation and has almost no tree overhead.
-    pub fn get(&self, key: &[u8]) -> CostContext<Result<Option<Vec<u8>>>> {
+    pub fn get(&self, key: &[u8]) -> CostResult<Option<Vec<u8>>, Error> {
         self.get_node_fn(key, |node| {
             node.value_as_slice()
                 .to_vec()
@@ -319,7 +318,7 @@ where
     }
 
     /// Returns the feature type for the node at the given key.
-    pub fn get_feature_type(&self, key: &[u8]) -> CostContext<Result<Option<TreeFeatureType>>> {
+    pub fn get_feature_type(&self, key: &[u8]) -> CostResult<Option<TreeFeatureType>, Error> {
         self.get_node_fn(key, |node| {
             node.feature_type().wrap_with_cost(Default::default())
         })
@@ -327,13 +326,13 @@ where
 
     /// Gets a hash of a node by a given key, `None` is returned in case
     /// when node not found by the key.
-    pub fn get_hash(&self, key: &[u8]) -> CostContext<Result<Option<CryptoHash>>> {
+    pub fn get_hash(&self, key: &[u8]) -> CostResult<Option<CryptoHash>, Error> {
         self.get_node_fn(key, |node| node.hash())
     }
 
     /// Gets the value hash of a node by a given key, `None` is returned in case
     /// when node not found by the key.
-    pub fn get_value_hash(&self, key: &[u8]) -> CostContext<Result<Option<CryptoHash>>> {
+    pub fn get_value_hash(&self, key: &[u8]) -> CostResult<Option<CryptoHash>, Error> {
         self.get_node_fn(key, |node| {
             node.value_hash()
                 .clone()
@@ -343,7 +342,7 @@ where
 
     /// Gets a hash of a node by a given key, `None` is returned in case
     /// when node not found by the key.
-    pub fn get_kv_hash(&self, key: &[u8]) -> CostContext<Result<Option<CryptoHash>>> {
+    pub fn get_kv_hash(&self, key: &[u8]) -> CostResult<Option<CryptoHash>, Error> {
         self.get_node_fn(key, |node| {
             node.inner
                 .kv
@@ -358,7 +357,7 @@ where
     pub fn get_value_and_value_hash(
         &self,
         key: &[u8],
-    ) -> CostContext<Result<Option<(Vec<u8>, CryptoHash)>>> {
+    ) -> CostResult<Option<(Vec<u8>, CryptoHash)>, Error> {
         self.get_node_fn(key, |node| {
             (node.value_as_slice().to_vec(), node.value_hash().clone())
                 .wrap_with_cost(OperationCost::default())
@@ -366,7 +365,7 @@ where
     }
 
     /// See if a node's field exists
-    fn has_node(&self, key: &[u8]) -> CostContext<Result<bool>> {
+    fn has_node(&self, key: &[u8]) -> CostResult<bool, Error> {
         self.use_tree(move |maybe_tree| {
             let mut cursor = match maybe_tree {
                 None => return Ok(false).wrap_with_cost(Default::default()), // empty tree
@@ -397,7 +396,7 @@ where
     }
 
     /// Generic way to get a node's field
-    fn get_node_fn<T, F>(&self, key: &[u8], f: F) -> CostContext<Result<Option<T>>>
+    fn get_node_fn<T, F>(&self, key: &[u8], f: F) -> CostResult<Option<T>, Error>
     where
         F: FnOnce(&Tree) -> CostContext<T>,
     {
@@ -446,8 +445,11 @@ where
     }
 
     /// Returns the total sum value in the Merk tree
-    pub fn sum(&self) -> Option<i64> {
-        self.use_tree(|tree| tree.map_or(None, |tree| tree.sum()))
+    pub fn sum(&self) -> Result<Option<i64>, Error> {
+        self.use_tree(|tree| match tree {
+            None => Ok(None),
+            Some(tree) => tree.sum(),
+        })
     }
 
     /// Returns the root non-prefixed key of the tree. If the tree is empty,
@@ -457,15 +459,16 @@ where
     }
 
     /// Returns the root hash and non-prefixed key of the tree.
-    pub fn root_hash_key_and_sum(&self) -> CostContext<(CryptoHash, Option<Vec<u8>>, Option<i64>)> {
-        self.use_tree(|tree| {
-            tree.map_or(
-                (NULL_HASH, None, None).wrap_with_cost(Default::default()),
-                |tree| {
-                    tree.hash()
-                        .map(|hash| (hash, Some(tree.key().to_vec()), tree.sum()))
-                },
-            )
+    pub fn root_hash_key_and_sum(
+        &self,
+    ) -> CostResult<(CryptoHash, Option<Vec<u8>>, Option<i64>), Error> {
+        self.use_tree(|tree| match tree {
+            None => Ok((NULL_HASH, None, None)).wrap_with_cost(Default::default()),
+            Some(tree) => {
+                let sum = cost_return_on_error_default!(tree.sum());
+                tree.hash()
+                    .map(|hash| Ok((hash, Some(tree.key().to_vec()), sum)))
+            }
         })
     }
 
@@ -498,7 +501,7 @@ where
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
-    ) -> CostContext<Result<()>>
+    ) -> CostResult<(), Error>
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
@@ -554,8 +557,8 @@ where
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
-    ) -> CostContext<Result<()>>
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+    ) -> CostResult<(), Error>
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
@@ -620,19 +623,21 @@ where
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
         options: Option<MerkOptions>,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<u32>)>,
+        ) -> Result<(bool, Option<u32>), Error>,
         section_removal_bytes: &mut impl FnMut(
             &Vec<u8>,
             u32,
             u32,
-        )
-            -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
-    ) -> CostContext<Result<()>>
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<(), Error>
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
@@ -643,11 +648,11 @@ where
             if let Some(prev_key) = maybe_prev_key {
                 match prev_key.as_ref().cmp(key.as_ref()) {
                     Ordering::Greater => {
-                        return Err(anyhow!("Keys in batch must be sorted"))
+                        return Err(Error::InvalidInputError("Keys in batch must be sorted"))
                             .wrap_with_cost(Default::default())
                     }
                     Ordering::Equal => {
-                        return Err(anyhow!("Keys in batch must be unique"))
+                        return Err(Error::InvalidInputError("Keys in batch must be unique"))
                             .wrap_with_cost(Default::default())
                     }
                     _ => (),
@@ -656,16 +661,14 @@ where
             maybe_prev_key = Some(key);
         }
 
-        unsafe {
-            self.apply_unchecked(
-                batch,
-                aux,
-                options,
-                old_tree_cost,
-                update_tree_value_based_on_costs,
-                section_removal_bytes,
-            )
-        }
+        self.apply_unchecked(
+            batch,
+            aux,
+            options,
+            old_tree_cost,
+            update_tree_value_based_on_costs,
+            section_removal_bytes,
+        )
     }
 
     /// Applies a batch of operations (puts and deletes) to the tree.
@@ -708,7 +711,7 @@ where
     /// ).unwrap().expect("");
     /// }
     /// ```
-    pub unsafe fn apply_unchecked<KB, KA, C, U, R>(
+    pub fn apply_unchecked<KB, KA, C, U, R>(
         &mut self,
         batch: &MerkBatch<KB>,
         aux: &AuxMerkBatch<KA>,
@@ -716,13 +719,13 @@ where
         old_tree_cost: &C,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
-    ) -> CostContext<Result<()>>
+    ) -> CostResult<(), Error>
     where
         KB: AsRef<[u8]>,
         KA: AsRef<[u8]>,
-        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
-        U: FnMut(&StorageCost, &Vec<u8>, &mut Vec<u8>) -> Result<(bool, Option<u32>)>,
-        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        U: FnMut(&StorageCost, &Vec<u8>, &mut Vec<u8>) -> Result<(bool, Option<u32>), Error>,
+        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let maybe_walker = self
             .tree
@@ -778,7 +781,7 @@ where
         query: Query,
         limit: Option<u16>,
         offset: Option<u16>,
-    ) -> CostContext<Result<ProofConstructionResult>> {
+    ) -> CostResult<ProofConstructionResult, Error> {
         let left_to_right = query.left_to_right;
         self.prove_unchecked(query, limit, offset, left_to_right)
             .map_ok(|(proof, limit, offset)| {
@@ -804,7 +807,7 @@ where
         query: Query,
         limit: Option<u16>,
         offset: Option<u16>,
-    ) -> CostContext<Result<ProofWithoutEncodingResult>> {
+    ) -> CostResult<ProofWithoutEncodingResult, Error> {
         let left_to_right = query.left_to_right;
         self.prove_unchecked(query, limit, offset, left_to_right)
             .map_ok(|(proof, limit, offset)| ProofWithoutEncodingResult::new(proof, limit, offset))
@@ -828,7 +831,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostContext<Result<Proof>>
+    ) -> CostResult<Proof, Error>
     where
         Q: Into<QueryItem>,
         I: IntoIterator<Item = Q>,
@@ -837,7 +840,7 @@ where
 
         self.use_tree_mut(|maybe_tree| {
             maybe_tree
-                .ok_or_else(|| anyhow!("Cannot create proof for empty tree"))
+                .ok_or_else(|| Error::CorruptionError("Cannot create proof for empty tree"))
                 .wrap_with_cost(Default::default())
                 .flat_map_ok(|tree| {
                     let mut ref_walker = RefWalker::new(tree, self.source());
@@ -855,18 +858,20 @@ where
         updated_root_key_from: Option<Vec<u8>>,
         aux: &AuxMerkBatch<K>,
         options: Option<MerkOptions>,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<u32>)>,
+        ) -> Result<(bool, Option<u32>), Error>,
         section_removal_bytes: &mut impl FnMut(
             &Vec<u8>,
             u32,
             u32,
-        )
-            -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
     ) -> CostResult<(), Error>
     where
         K: AsRef<[u8]>,
@@ -916,8 +921,7 @@ where
                             &inner_cost,
                             batch
                                 .put_root(ROOT_KEY_KEY, tree_key, costs)
-                                .map_err(CostError)
-                                .map_err(|e| e.into())
+                                .map_err(CostsError)
                         );
                     }
                 }
@@ -953,7 +957,7 @@ where
                     &cost,
                     batch
                         .put(&key, &value, Some((left_size, right_size)), maybe_cost)
-                        .map_err(|e| e.into())
+                        .map_err(CostsError)
                 );
             } else {
                 batch.delete(&key, maybe_cost);
@@ -966,13 +970,15 @@ where
                     &cost,
                     batch
                         .put_aux(key, value, storage_cost.clone())
-                        .map_err(|e| e.into())
+                        .map_err(CostsError)
                 ),
                 Op::Delete => batch.delete_aux(key, storage_cost.clone()),
                 _ => {
                     cost_return_on_error_no_add!(
                         &cost,
-                        Err(anyhow!("only put and delete allowed for aux storage"))
+                        Err(Error::InvalidOperation(
+                            "only put and delete allowed for aux storage"
+                        ))
                     );
                 }
             };
@@ -981,7 +987,7 @@ where
         // write to db
         self.storage
             .commit_batch(batch)
-            .map_err(|e| e.into())
+            .map_err(StorageError)
             .add_cost(cost)
     }
 
@@ -1017,6 +1023,7 @@ where
     fn source(&self) -> MerkSource<S> {
         MerkSource {
             storage: &self.storage,
+            is_sum_tree: self.is_sum_tree,
         }
     }
 
@@ -1037,25 +1044,27 @@ where
     /// Sets the tree's top node (base) key
     /// The base root key should only be used if the Merk tree is independent
     /// Meaning that it doesn't have a parent Merk
-    pub fn set_base_root_key(&mut self, key: Option<Vec<u8>>) -> CostContext<Result<(), Error>> {
+    pub fn set_base_root_key(&mut self, key: Option<Vec<u8>>) -> CostResult<(), Error> {
         if let Some(key) = key {
             self.storage
                 .put_root(ROOT_KEY_KEY, key.as_slice(), None)
-                .map_err(|e| anyhow!(e)) // todo: maybe change None?
+                .map_err(|e| Error::StorageError(e.into())) // todo: maybe
+                                                            // change None?
         } else {
             self.storage
                 .delete_root(ROOT_KEY_KEY, None)
-                .map_err(|e| anyhow!(e)) // todo: maybe change None?
+                .map_err(|e| Error::StorageError(e.into())) // todo: maybe
+                                                            // change None?
         }
     }
 
     /// Loads the Merk from the base root key
     /// The base root key should only be used if the Merk tree is independent
     /// Meaning that it doesn't have a parent Merk
-    pub(crate) fn load_base_root(&mut self) -> CostContext<Result<()>> {
+    pub(crate) fn load_base_root(&mut self) -> CostResult<(), Error> {
         self.storage
             .get_root(ROOT_KEY_KEY)
-            .map(|root_result| root_result.map_err(|e| anyhow!(e)))
+            .map(|root_result| root_result.map_err(|e| Error::StorageError(e.into())))
             .flat_map_ok(|tree_root_key_opt| {
                 // In case of successful seek for root key check if it exists
                 if let Some(tree_root_key) = tree_root_key_opt {
@@ -1076,7 +1085,7 @@ where
     /// Loads the Merk from it's parent root key
     /// The base root key should only be used if the Merk tree is independent
     /// Meaning that it doesn't have a parent Merk
-    pub(crate) fn load_root(&mut self) -> CostContext<Result<()>> {
+    pub(crate) fn load_root(&mut self) -> CostResult<(), Error> {
         // In case of successful seek for root key check if it exists
         if let Some(tree_root_key) = self.root_tree_key.get_mut() {
             // Trying to build a tree out of it, costs will be accumulated because
@@ -1091,10 +1100,10 @@ where
     }
 }
 
-fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<Tree>> {
-    let bytes = db.get(key).unwrap()?; // TODO: get_pinned ?
+fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<Tree>, Error> {
+    let bytes = db.get(key).unwrap().map_err(StorageError)?; // TODO: get_pinned ?
     if let Some(bytes) = bytes {
-        Ok(Some(Tree::decode(key.to_vec(), &bytes)?))
+        Ok(Some(Tree::decode(key.to_vec(), &bytes).map_err(EdError)?))
     } else {
         Ok(None)
     }
@@ -1121,12 +1130,14 @@ fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<T
 #[derive(Debug)]
 pub struct MerkSource<'s, S> {
     storage: &'s S,
+    is_sum_tree: bool,
 }
 
 impl<'s, S> Clone for MerkSource<'s, S> {
     fn clone(&self) -> Self {
         MerkSource {
             storage: self.storage,
+            is_sum_tree: self.is_sum_tree,
         }
     }
 }
@@ -1135,9 +1146,9 @@ impl<'s, 'db, S> Fetch for MerkSource<'s, S>
 where
     S: StorageContext<'db>,
 {
-    fn fetch(&self, link: &Link) -> CostContext<Result<Tree>> {
+    fn fetch(&self, link: &Link) -> CostResult<Tree, Error> {
         Tree::get(self.storage, link.key())
-            .map_ok(|x| x.ok_or_else(|| anyhow!("Key not found")))
+            .map_ok(|x| x.ok_or_else(|| Error::KeyNotFoundError("Key not found for fetch")))
             .flatten()
     }
 }
@@ -1169,19 +1180,21 @@ impl Commit for MerkCommitter {
     fn write(
         &mut self,
         tree: &mut Tree,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<u32>)>,
+        ) -> Result<(bool, Option<u32>), Error>,
         section_removal_bytes: &mut impl FnMut(
             &Vec<u8>,
             u32,
             u32,
-        )
-            -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
-    ) -> Result<()> {
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> Result<(), Error> {
         let tree_size = tree.encoding_length();
         let (mut current_tree_plus_hook_size, mut storage_costs) =
             tree.kv_with_parent_hook_size_and_storage_cost(old_tree_cost)?;
@@ -1211,7 +1224,9 @@ impl Commit for MerkCommitter {
                     storage_costs = new_size_and_storage_costs.1;
                 }
                 if i > MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES {
-                    return Err(anyhow!("updated value based on costs too many times"));
+                    return Err(Error::CyclicError(
+                        "updated value based on costs too many times",
+                    ));
                 }
                 i += 1;
             }
@@ -1398,6 +1413,20 @@ mod test {
         let result = merk.has_node(key).unwrap().unwrap();
 
         assert!(result);
+    }
+
+    #[test]
+    fn insert_two() {
+        let tree_size = 2;
+        let batch_size = 1;
+        let mut merk = TempMerk::new();
+
+        for i in 0..(tree_size / batch_size) {
+            let batch = make_batch_rand(batch_size, i);
+            merk.apply::<_, Vec<_>>(&batch, &[], None)
+                .unwrap()
+                .expect("apply failed");
+        }
     }
 
     #[test]

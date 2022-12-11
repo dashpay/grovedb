@@ -3,11 +3,11 @@
 
 use std::{iter::Peekable, u8};
 
-use anyhow::{anyhow, Error};
 use storage::{Batch, StorageContext};
 
 use super::Merk;
 use crate::{
+    error::Error,
     merk::MerkSource,
     proofs::{
         chunk::{verify_leaf, verify_trunk, MIN_TRUNK_HEIGHT},
@@ -16,6 +16,7 @@ use crate::{
     },
     tree::{combine_hash, value_hash, Link, RefWalker, Tree},
     CryptoHash,
+    Error::{CostsError, EdError, StorageError},
     TreeFeatureType::BasicMerk,
 };
 
@@ -58,8 +59,6 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     ///
     /// Once there are no remaining chunks to be processed, `finalize` should
     /// be called.
-    ///
-    /// TODO: `anyhow::Error` is too vague
     pub fn process_chunk(&mut self, ops: impl IntoIterator<Item = Op>) -> Result<usize, Error> {
         match self.leaf_hashes {
             None => self.process_trunk(ops),
@@ -73,7 +72,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// to 0).
     pub fn finalize(mut self) -> Result<Merk<S>, Error> {
         if self.remaining_chunks().unwrap_or(0) != 0 {
-            return Err(anyhow!("Called finalize before all chunks were processed"));
+            return Err(Error::ChunkRestoringError(
+                "Called finalize before all chunks were processed".to_string(),
+            ));
         }
 
         if self.trunk_height.unwrap() >= MIN_TRUNK_HEIGHT {
@@ -130,14 +131,17 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 *node.slot_mut(false) = proof_node.right.as_ref().map(Child::as_link);
 
                 let bytes = node.encode();
-                batch.put(key, &bytes, None, None).map_err(|e| e.into())
+                batch.put(key, &bytes, None, None).map_err(CostsError)
             } else {
                 Ok(())
             }
         })?;
 
-        self.merk.storage.commit_batch(batch).unwrap()?;
-        Ok(())
+        self.merk
+            .storage
+            .commit_batch(batch)
+            .unwrap()
+            .map_err(StorageError)
     }
 
     /// Verifies the trunk then writes its data to the RocksDB.
@@ -155,11 +159,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         };
 
         if root_hash != self.expected_root_hash {
-            return Err(anyhow!(
+            return Err(Error::ChunkRestoringError(format!(
                 "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
                 self.expected_root_hash,
                 trunk.hash()
-            ));
+            )));
         }
 
         let root_key = trunk.key().to_vec();
@@ -245,7 +249,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         self.merk
             .storage
             .put(parent_key, &parent_bytes, None, None)
-            .unwrap()?;
+            .unwrap()
+            .map_err(StorageError)?;
 
         if !is_left_child {
             let parent_keys = self.parent_keys.as_mut().unwrap();
@@ -266,7 +271,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             }
 
             let mut cloned_node =
-                Tree::decode(node.tree().key().to_vec(), node.tree().encode().as_slice())?;
+                Tree::decode(node.tree().key().to_vec(), node.tree().encode().as_slice())
+                    .map_err(EdError)?;
 
             let left_child = node.walk(true).unwrap()?.unwrap();
             let left_child_heights = recurse(left_child, remaining_depth - 1, batch)?;
@@ -279,7 +285,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             *cloned_node.link_mut(false).unwrap().child_heights_mut() = right_child_heights;
 
             let bytes = cloned_node.encode();
-            batch.put(node.tree().key(), &bytes, None, None)?;
+            batch
+                .put(node.tree().key(), &bytes, None, None)
+                .map_err(CostsError)?;
 
             Ok((left_height, right_height))
         }
@@ -295,9 +303,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             recurse(walker, depth, &mut batch)
         })?;
 
-        self.merk.storage.commit_batch(batch).unwrap()?;
-
-        Ok(())
+        self.merk
+            .storage
+            .commit_batch(batch)
+            .unwrap()
+            .map_err(StorageError)
     }
 
     /// Returns the number of remaining chunks to be processed. This method will

@@ -16,6 +16,14 @@ impl TreeFeatureType {
     pub fn is_sum_feature(&self) -> bool {
         matches!(self, SummedMerk(_))
     }
+
+    #[inline]
+    pub(crate) fn encoding_cost(&self) -> usize {
+        match self {
+            BasicMerk => 1,
+            SummedMerk(sum) => 9,
+        }
+    }
 }
 
 impl Terminated for TreeFeatureType {}

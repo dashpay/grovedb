@@ -74,7 +74,7 @@ impl GroveDb {
         &'db self,
         path: P,
         tx: &'db Transaction,
-    ) -> CostContext<Result<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>>
+    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + Clone,
@@ -124,7 +124,7 @@ impl GroveDb {
     pub fn open_non_transactional_merk_at_path<'p, P>(
         &self,
         path: P,
-    ) -> CostContext<Result<Merk<PrefixedRocksDbStorageContext>, Error>>
+    ) -> CostResult<Merk<PrefixedRocksDbStorageContext>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + Clone,
@@ -246,9 +246,11 @@ impl GroveDb {
                     false
                 )
             );
-            let (root_hash, root_key, sum) = child_tree
-                .root_hash_key_and_sum()
-                .unwrap_add_cost(&mut cost);
+            let (root_hash, root_key, sum) =
+                cost_return_on_error!(
+                    &mut cost,
+                    child_tree
+                .root_hash_key_and_sum().map_err(Error::MerkError));
             cost_return_on_error!(
                 &mut cost,
                 Self::update_tree_item_preserve_flag(
@@ -301,9 +303,10 @@ impl GroveDb {
                 &mut cost,
                 self.open_transactional_merk_at_path(path_iter.clone(), transaction)
             );
-            let (root_hash, root_key, sum) = child_tree
-                .root_hash_key_and_sum()
-                .unwrap_add_cost(&mut cost);
+            let (root_hash, root_key, sum) =                 cost_return_on_error!(
+                    &mut cost,
+                    child_tree
+                .root_hash_key_and_sum().map_err(Error::MerkError));
             cost_return_on_error!(
                 &mut cost,
                 Self::update_tree_item_preserve_flag(
@@ -354,9 +357,12 @@ impl GroveDb {
                 &mut cost,
                 self.open_non_transactional_merk_at_path(path_iter.clone())
             );
-            let (root_hash, root_key, sum) = child_tree
-                .root_hash_key_and_sum()
-                .unwrap_add_cost(&mut cost);
+            let (root_hash, root_key, sum) =
+
+                cost_return_on_error!(
+                    &mut cost,
+                    child_tree
+                .root_hash_key_and_sum().map_err(Error::MerkError));
             cost_return_on_error!(
                 &mut cost,
                 Self::update_tree_item_preserve_flag(
@@ -599,6 +605,7 @@ impl GroveDb {
         let mut all_query = Query::new();
         all_query.insert_all();
 
+        let in_sum_tree = merk.is_sum_tree;
         let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
         while let Some((key, element_value)) = element_iterator.next().unwrap() {

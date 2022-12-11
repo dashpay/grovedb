@@ -7,7 +7,7 @@ use integer_encoding::VarInt;
 use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
 use crate::{
     tree::{
-        hash::{combine_hash, kv_digest_to_kv_hash, value_hash},
+        hash::{combine_hash, kv_digest_to_kv_hash, value_hash, HASH_LENGTH_X2},
         tree_feature_type::{TreeFeatureType, TreeFeatureType::BasicMerk},
         Tree,
     },
@@ -333,7 +333,7 @@ impl KV {
     #[inline]
     pub(crate) fn value_byte_cost_size(&self) -> u32 {
         let key_len = self.key.len() as u32;
-        let value_len = self.encoding_length().unwrap() as u32;
+        let value_len = self.encoding_cost() as u32;
         Self::value_byte_cost_size_for_key_and_value_lengths(key_len, value_len)
     }
 
@@ -355,6 +355,12 @@ impl KV {
             value_cost,
             is_sum_node,
         )
+    }
+
+    #[inline]
+    fn encoding_cost(&self) -> usize {
+        debug_assert!(self.key().len() < 256, "Key length must be less than 256");
+        HASH_LENGTH_X2 + self.value.len() + self.feature_type.encoding_cost()
     }
 }
 
