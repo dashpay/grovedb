@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 
 use ed::{Decode, Encode, Result, Terminated};
-use integer_encoding::VarInt;
+use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
 use super::{hash::CryptoHash, Tree};
 use crate::{HASH_LENGTH, HASH_LENGTH_U32};
@@ -234,6 +234,37 @@ impl Link {
         // 1 byte for the right child height
         not_prefixed_key_len + HASH_LENGTH_U32 + 3
     }
+
+    /// the encoding cost is always 8 bytes for the sum instead of a varint
+    #[inline]
+    fn encoding_cost(&self) -> Result<usize> {
+        debug_assert!(self.key().len() < 256, "Key length must be less than 256");
+
+        Ok(match self {
+            Link::Reference { key, sum, .. } => match sum {
+                None => key.len() + 36, // 1 + HASH_LENGTH + 2 + 1,
+                Some(sum_value) => {
+                    // 1 for key len
+                    // key_len for keys
+                    // 32 for hash
+                    // 2 for child heights
+                    // 1 to represent presence of sum value
+                    //    if above is 1, then
+                    //    1 for sum len
+                    //    sum_len for sum vale
+                    key.len() + 44 // 1 + 32 + 2 + 1 + 8
+                }
+            },
+            Link::Modified { .. } => panic!("No encoding for Link::Modified"),
+            Link::Uncommitted { tree, sum, .. } | Link::Loaded { tree, sum, .. } => match sum {
+                None => tree.key().len() + 36, // 1 + 32 + 2 + 1,
+                Some(sum_value) => {
+                    let encoded_sum_value = sum_value.encode_var_vec();
+                    tree.key().len() + 44 // 1 + 32 + 2 + 1 + 8
+                }
+            },
+        })
+    }
 }
 
 impl Encode for Link {
@@ -277,9 +308,7 @@ impl Encode for Link {
             }
             Some(sum_value) => {
                 out.write_all(&[1]);
-                let encoded_sum = sum_value.encode_var_vec();
-                out.write_all(&[encoded_sum.len() as u8]);
-                out.write_all(&encoded_sum);
+                out.write_varint(sum_value.to_owned())?;
             }
         }
 
@@ -292,7 +321,7 @@ impl Encode for Link {
 
         Ok(match self {
             Link::Reference { key, sum, .. } => match sum {
-                None => 1 + key.len() + HASH_LENGTH + 2 + 1,
+                None => key.len() + 36, // 1 + 32 + 2 + 1
                 Some(sum_value) => {
                     let encoded_sum_value = sum_value.encode_var_vec();
                     // 1 for key len
@@ -303,15 +332,15 @@ impl Encode for Link {
                     //    if above is 1, then
                     //    1 for sum len
                     //    sum_len for sum vale
-                    1 + key.len() + 32 + 2 + 1 + 1 + encoded_sum_value.len()
+                    key.len() + encoded_sum_value.len() + 36 // 1 + 32 + 2 + 1
                 }
             },
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
             Link::Uncommitted { tree, sum, .. } | Link::Loaded { tree, sum, .. } => match sum {
-                None => 1 + tree.key().len() + 32 + 2 + 1,
+                None => tree.key().len() + 36, // 1 + 32 + 2 + 1
                 Some(sum_value) => {
                     let encoded_sum_value = sum_value.encode_var_vec();
-                    1 + tree.key().len() + 32 + 2 + 1 + 1 + encoded_sum_value.len()
+                    tree.key().len() + encoded_sum_value.len() + 36 // 1 + 32 + 2 + 1
                 }
             },
         })
@@ -367,14 +396,8 @@ impl Decode for Link {
             *sum = match has_sum {
                 0 => None,
                 1 => {
-                    let length = read_u8(&mut input)?;
-                    let mut encoded_sum: Vec<u8> = vec![0; length as usize];
-                    input.read_exact(&mut encoded_sum)?;
-                    Some(
-                        i64::decode_var(&encoded_sum)
-                            .ok_or(ed::Error::UnexpectedByte(55))?
-                            .0,
-                    )
+                    let encoded_sum: i64 = input.read_varint()?;
+                    Some(encoded_sum)
                 }
                 _ => return Err(ed::Error::UnexpectedByte(55)),
             };
@@ -557,7 +580,7 @@ mod test {
             child_heights: (123, 124),
             hash: [55; 32],
         };
-        assert_eq!(link.encoding_length().unwrap(), 41);
+        assert_eq!(link.encoding_length().unwrap(), 40);
 
         let mut bytes = vec![];
         link.encode_into(&mut bytes).unwrap();
@@ -567,7 +590,7 @@ mod test {
             bytes,
             vec![
                 3, 1, 2, 3, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
-                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 1, 1, 100,
+                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 123, 124, 1, 100,
             ]
         );
     }
