@@ -246,11 +246,10 @@ impl GroveDb {
                     false
                 )
             );
-            let (root_hash, root_key, sum) =
-                cost_return_on_error!(
-                    &mut cost,
-                    child_tree
-                .root_hash_key_and_sum().map_err(Error::MerkError));
+            let (root_hash, root_key, sum) = cost_return_on_error!(
+                &mut cost,
+                child_tree.root_hash_key_and_sum().map_err(Error::MerkError)
+            );
             cost_return_on_error!(
                 &mut cost,
                 Self::update_tree_item_preserve_flag(
@@ -303,10 +302,10 @@ impl GroveDb {
                 &mut cost,
                 self.open_transactional_merk_at_path(path_iter.clone(), transaction)
             );
-            let (root_hash, root_key, sum) =                 cost_return_on_error!(
-                    &mut cost,
-                    child_tree
-                .root_hash_key_and_sum().map_err(Error::MerkError));
+            let (root_hash, root_key, sum) = cost_return_on_error!(
+                &mut cost,
+                child_tree.root_hash_key_and_sum().map_err(Error::MerkError)
+            );
             cost_return_on_error!(
                 &mut cost,
                 Self::update_tree_item_preserve_flag(
@@ -357,12 +356,10 @@ impl GroveDb {
                 &mut cost,
                 self.open_non_transactional_merk_at_path(path_iter.clone())
             );
-            let (root_hash, root_key, sum) =
-
-                cost_return_on_error!(
-                    &mut cost,
-                    child_tree
-                .root_hash_key_and_sum().map_err(Error::MerkError));
+            let (root_hash, root_key, sum) = cost_return_on_error!(
+                &mut cost,
+                child_tree.root_hash_key_and_sum().map_err(Error::MerkError)
+            );
             cost_return_on_error!(
                 &mut cost,
                 Self::update_tree_item_preserve_flag(

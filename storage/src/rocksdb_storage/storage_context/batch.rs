@@ -149,7 +149,7 @@ impl Batch for PrefixedMultiContextBatchPart {
         &mut self,
         key: K,
         value: &[u8],
-        children_sizes: Option<(Option<(u32,u32)>, Option<(u32,u32)>)>,
+        children_sizes: Option<(Option<(u32, u32)>, Option<(u32, u32)>)>,
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);

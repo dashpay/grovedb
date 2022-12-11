@@ -28,11 +28,17 @@ pub type ChildKeyLength = u32;
 pub type ChildSumLength = u32;
 
 /// Children sizes
-pub type ChildrenSizes = Option<(Option<(ChildKeyLength,ChildSumLength)>, Option<(ChildKeyLength,ChildSumLength)>)>;
+pub type ChildrenSizes = Option<(
+    Option<(ChildKeyLength, ChildSumLength)>,
+    Option<(ChildKeyLength, ChildSumLength)>,
+)>;
 
 /// Children sizes starting with a value
-pub type ChildrenSizesWithValue = Option<(Vec<u8>, Option<(ChildKeyLength,ChildSumLength)>, Option<(ChildKeyLength,ChildSumLength)>)>;
-
+pub type ChildrenSizesWithValue = Option<(
+    Vec<u8>,
+    Option<(ChildKeyLength, ChildSumLength)>,
+    Option<(ChildKeyLength, ChildSumLength)>,
+)>;
 
 /// Piece of data representing affected computer resources (approximately).
 #[derive(Debug, Default, Eq, PartialEq, Clone)]
@@ -113,7 +119,7 @@ impl OperationCost {
         &mut self,
         key_len: u32,
         value_len: u32,
-        children_sizes: Option<(Option<(u32,u32)>, Option<(u32,u32)>)>,
+        children_sizes: Option<(Option<(u32, u32)>, Option<(u32, u32)>)>,
         storage_cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), Error> {
         let paid_key_len = key_len + key_len.required_space() as u32;

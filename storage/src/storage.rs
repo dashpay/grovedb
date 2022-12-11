@@ -8,9 +8,8 @@ use costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, OperationCost,
 };
 use visualize::visualize_to_vec;
-use crate::Error;
 
-use crate::worst_case_costs::WorstKeyLength;
+use crate::{worst_case_costs::WorstKeyLength, Error};
 
 /// Top-level storage_cost abstraction.
 /// Should be able to hold storage_cost connection and to start transaction when
@@ -35,10 +34,7 @@ pub trait Storage<'db> {
     fn start_transaction(&'db self) -> Self::Transaction;
 
     /// Consumes and commits a transaction
-    fn commit_transaction(
-        &self,
-        transaction: Self::Transaction,
-    ) -> CostResult<(), Error>;
+    fn commit_transaction(&self, transaction: Self::Transaction) -> CostResult<(), Error>;
 
     /// Rollback a transaction
     fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Error>;
@@ -99,7 +95,6 @@ pub use costs::ChildrenSizes;
 /// Provides operations expected from a database abstracting details such as
 /// whether it is a transaction or not.
 pub trait StorageContext<'db> {
-
     /// Storage batch type
     type Batch: Batch;
 
@@ -175,12 +170,10 @@ pub trait StorageContext<'db> {
     fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error>;
 
     /// Get entry by `key` from trees roots storage_cost
-    fn get_root<K: AsRef<[u8]>>(&self, key: K)
-        -> CostResult<Option<Vec<u8>>, Error>;
+    fn get_root<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error>;
 
     /// Get entry by `key` from GroveDB metadata storage_cost
-    fn get_meta<K: AsRef<[u8]>>(&self, key: K)
-        -> CostResult<Option<Vec<u8>>, Error>;
+    fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error>;
 
     /// Initialize a new batch
     fn new_batch(&self) -> Self::Batch;
@@ -199,7 +192,7 @@ pub trait Batch {
         &mut self,
         key: K,
         value: &[u8],
-        children_sizes: Option<(Option<(u32, u32)>, Option<(u32,u32)>)>,
+        children_sizes: Option<(Option<(u32, u32)>, Option<(u32, u32)>)>,
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error>;
 

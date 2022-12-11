@@ -405,7 +405,10 @@ fn test_sum_tree_feature() {
         .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"])
         .unwrap()
         .expect("should open tree");
-    assert_eq!(merk.sum().expect("expected to get sum"), Some(9999940)); // 30 + 10 - 100 + 10000000
+    assert_eq!(merk.sum().expect("expected to get sum"), Some(9999940)); // 30 +
+                                                                         // 10 -
+                                                                         // 100 +
+                                                                         // 10000000
 
     // TODO: Test out overflows
 }

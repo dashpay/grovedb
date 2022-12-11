@@ -11,8 +11,7 @@ use merk::{
         worst_case_costs::add_worst_case_cost_for_is_empty_tree_except, LAYER_COST_SIZE,
     },
     tree::kv::KV,
-    Merk, MerkOptions,
-    Error as MerkError,
+    Error as MerkError, Merk, MerkOptions,
 };
 use storage::{
     rocksdb_storage::{
@@ -305,7 +304,8 @@ impl GroveDb {
             &options,
             transaction,
             &mut |value, removed_key_bytes, removed_value_bytes| {
-                let mut element = Element::deserialize(value.as_slice()).map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
+                let mut element = Element::deserialize(value.as_slice())
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
                 let maybe_flags = element.get_flags_mut();
                 match maybe_flags {
                     None => Ok((
@@ -316,7 +316,8 @@ impl GroveDb {
                         flags,
                         removed_key_bytes,
                         removed_value_bytes,
-                    ).map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                    )
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string())),
                 }
             },
         )
@@ -375,7 +376,8 @@ impl GroveDb {
             &options,
             transaction,
             &mut |value, removed_key_bytes, removed_value_bytes| {
-                let mut element = Element::deserialize(value.as_slice()).map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
+                let mut element = Element::deserialize(value.as_slice())
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
                 let maybe_flags = element.get_flags_mut();
                 match maybe_flags {
                     None => Ok((
@@ -386,7 +388,8 @@ impl GroveDb {
                         flags,
                         removed_key_bytes,
                         removed_value_bytes,
-                    ).map_err(|e| MerkError::ClientCorruptionError(e.to_string())),
+                    )
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string())),
                 }
             },
         )
@@ -640,8 +643,10 @@ impl GroveDb {
             &Vec<u8>,
             u32,
             u32,
-        )
-            -> Result<(StorageRemovedBytes, StorageRemovedBytes), MerkError>,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            MerkError,
+        >,
     ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -664,8 +669,10 @@ impl GroveDb {
             &Vec<u8>,
             u32,
             u32,
-        )
-            -> Result<(StorageRemovedBytes, StorageRemovedBytes), MerkError>,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            MerkError,
+        >,
     ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -853,8 +860,10 @@ impl GroveDb {
             &Vec<u8>,
             u32,
             u32,
-        )
-            -> Result<(StorageRemovedBytes, StorageRemovedBytes), MerkError>,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            MerkError,
+        >,
     ) -> CostResult<bool, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -1458,12 +1467,12 @@ mod tests {
         // 32 for value hash (trees have this for free)
         // 1 byte for the value_size (required space for 70)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 71 + 39 = 147
 
         // Hash node calls

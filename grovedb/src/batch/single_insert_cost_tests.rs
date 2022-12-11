@@ -63,12 +63,12 @@ mod tests {
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 37 + 39 = 113
 
         // Hash node calls
@@ -128,12 +128,12 @@ mod tests {
         // 1 for basic merk
         // 1 byte for the value_size (required space for 71)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Root -> 39
         // 1 byte for the root key length size
         // 1 byte for the root value length size
@@ -209,12 +209,12 @@ mod tests {
         // 1 for basic merk
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 38 + 39 = 114
 
         // Replaced bytes
@@ -292,12 +292,12 @@ mod tests {
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 37 + 39 = 113
 
         // Replaced bytes
@@ -368,12 +368,12 @@ mod tests {
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 37 + 39 = 113
 
         // Replaced bytes
@@ -445,12 +445,12 @@ mod tests {
         // 1 for basic merk
         // 1 byte for the value_size (required space for 127)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 128 + 39 = 204
 
         // Hash node calls
@@ -507,12 +507,12 @@ mod tests {
         // 1 for basic merk
         // 2 byte for the value_size (required space for 128)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 130 + 39 = 206
 
         // Hash node calls

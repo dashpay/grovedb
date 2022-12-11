@@ -1,5 +1,8 @@
 //! Storage context implementation with a transaction.
-use costs::{cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostsExt, OperationCost, CostResult};
+use costs::{
+    cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost, CostContext,
+    CostResult, CostsExt, OperationCost,
+};
 use error::Error;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};
 
@@ -8,9 +11,9 @@ use crate::{
     error,
     error::Error::RocksDBError,
     rocksdb_storage::storage::{Db, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME},
+    storage::ChildrenSizes,
     RawIterator, StorageBatch, StorageContext,
 };
-use crate::storage::ChildrenSizes;
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
 /// transaction.
@@ -218,10 +221,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
             })
     }
 
-    fn get_root<K: AsRef<[u8]>>(
-        &self,
-        key: K,
-    ) -> CostResult<Option<Vec<u8>>, Error> {
+    fn get_root<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
             .get_cf(self.cf_roots(), make_prefixed_key(self.prefix.clone(), key))
             .map_err(RocksDBError)
@@ -238,10 +238,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbBatchTransactionContext<'db> {
             })
     }
 
-    fn get_meta<K: AsRef<[u8]>>(
-        &self,
-        key: K,
-    ) -> CostResult<Option<Vec<u8>>, Error> {
+    fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
             .get_cf(self.cf_meta(), make_prefixed_key(self.prefix.clone(), key))
             .map_err(RocksDBError)

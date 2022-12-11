@@ -137,10 +137,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         self.db.transaction()
     }
 
-    fn commit_transaction(
-        &self,
-        transaction: Self::Transaction,
-    ) -> CostResult<(), Error> {
+    fn commit_transaction(&self, transaction: Self::Transaction) -> CostResult<(), Error> {
         // All transaction costs were provided on method calls
         transaction
             .commit()

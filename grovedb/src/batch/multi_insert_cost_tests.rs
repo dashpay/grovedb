@@ -192,12 +192,12 @@ mod tests {
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total (37 + 37 + 39) * 2 = 226
 
         // Hashes
@@ -249,12 +249,12 @@ mod tests {
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total (37 + 37 + 39) * 2 = 226
 
         // Hashes

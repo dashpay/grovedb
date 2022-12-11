@@ -666,13 +666,13 @@ mod tests {
         // 32 for value hash (trees have this for free)
         // 1 byte for the value_size (required space for 70)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
-        // Total 37 + 76 + 39 = 152
+        // Sum 1
+        // Total 37 + 76 + 40 = 153
 
         // Hash node calls
         // 1 for the kv_digest_to_kv_hash hash
@@ -682,7 +682,7 @@ mod tests {
             OperationCost {
                 seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
                 storage_cost: StorageCost {
-                    added_bytes: 152,
+                    added_bytes: 153,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },
@@ -717,13 +717,14 @@ mod tests {
         // 2 byte for the value_size (required space for 98 + x where x can be up to
         // 256)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // Total 37 + 38 + 39 = 114
+        // Total 37 + 38 + 40 = 115
 
         // Hash node calls
         // 1 for the node hash
@@ -733,7 +734,7 @@ mod tests {
             OperationCost {
                 seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
                 storage_cost: StorageCost {
-                    added_bytes: 114,
+                    added_bytes: 115,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },
@@ -776,13 +777,14 @@ mod tests {
         // 2 byte for the value_size (required space for 98 + x where x can be up to
         // 256)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // Total 37 + 42 + 39 = 118
+        // Total 37 + 42 + 40 = 119
 
         // Hash node calls
         // 1 for the kv_digest_to_kv_hash hash
@@ -794,7 +796,7 @@ mod tests {
             OperationCost {
                 seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
                 storage_cost: StorageCost {
-                    added_bytes: 118,
+                    added_bytes: 119,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },
@@ -831,7 +833,7 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 74
+        // Value -> 73
         //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for size of test bytes
@@ -839,33 +841,34 @@ mod tests {
         //   1 for a basic merk
         // 32 for node hash
         // 32 for value hash
-        // 1 byte for the value_size (required space for 73)
+        // 1 byte for the value_size (required space for 72)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // Total 37 + 74 + 39 = 149
+        // Total 37 + 73 + 40 = 150
 
         // Explanation for replaced bytes
 
-        // Replaced parent Value -> 77
+        // Replaced parent Value -> 78
         //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for an empty option
         //   1 for a basic merk
         // 32 for node hash
-        // 32 for value hash
-        // 1 byte for the value_size (required space for 76)
+        // 40 for the parent hook
+        // 2 byte for the value_size
         assert_eq!(
             cost,
             OperationCost {
                 seek_count: 5, // todo: verify this
                 storage_cost: StorageCost {
-                    added_bytes: 149,
-                    replaced_bytes: 77,
+                    added_bytes: 150,
+                    replaced_bytes: 78,
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 144, // todo: verify this
@@ -909,13 +912,14 @@ mod tests {
         // 32 for value hash
         // 1 byte for the value_size (required space for 77)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // Total 37 + 79 + 39 = 155
+        // Total 37 + 79 + 40 = 156
 
         // Hash node calls
         // 1 for the kv_digest_to_kv_hash hash
@@ -926,7 +930,7 @@ mod tests {
             OperationCost {
                 seek_count: 3, // todo: verify this
                 storage_cost: StorageCost {
-                    added_bytes: 155,
+                    added_bytes: 156,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },
@@ -975,26 +979,25 @@ mod tests {
         // 32 for value hash
         // 1 byte for the value_size (required space for 78)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // Total 37 + 79 + 39 = 155
+        // Total 37 + 79 + 40 = 156
 
         // Explanation for replaced bytes
 
-        // Replaced parent Value -> 77
-        //   1 for the flag option
-        //   3 bytes for flags
-        //   1 for flags size
+        // Replaced parent Value -> 78
+        //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for an empty option
-        //   1 for the basic merk
+        //   1 for a basic merk
         // 32 for node hash
-        // 32 for value hash
-        // 1 byte for the value_size (required space for 75)
+        // 40 for the parent hook
+        // 2 byte for the value_size
 
         // Hash node calls
         // 1 for getting the merk
@@ -1012,8 +1015,8 @@ mod tests {
             OperationCost {
                 seek_count: 5, // todo: verify this
                 storage_cost: StorageCost {
-                    added_bytes: 155,
-                    replaced_bytes: 77,
+                    added_bytes: 156,
+                    replaced_bytes: 78,
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 144, // todo: verify this
@@ -1067,17 +1070,17 @@ mod tests {
         // 32 for value hash
         // 1 byte for the value_size (required space for 78)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
-        // Total 37 + 79 + 39 = 155
+        // Sum 1
+        // Total 37 + 79 + 40 = 156
 
         // Explanation for replaced bytes
 
-        // Replaced parent Value -> 81
+        // Replaced parent Value -> 82
         //   1 for the flag option
         //   3 bytes for flags
         //   1 for flags size
@@ -1086,7 +1089,7 @@ mod tests {
         //   1 for basic merk
         // 32 for node hash
         // 0 for value hash (trees have this for free)
-        // 39 for the child to parent hook
+        // 40 for the child to parent hook
         // 2 byte for the value_size (required space)
 
         // Hash node calls
@@ -1105,8 +1108,8 @@ mod tests {
             OperationCost {
                 seek_count: 5, // todo: verify this
                 storage_cost: StorageCost {
-                    added_bytes: 155,
-                    replaced_bytes: 81,
+                    added_bytes: 156,
+                    replaced_bytes: 82,
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 152, // todo: verify this
@@ -1142,7 +1145,7 @@ mod tests {
 
         // Explanation for 110 replaced bytes
 
-        // Value -> 71
+        // Value -> 72
         //   1 for the flag option (but no flags)
         //   1 for the enum type item
         //   3 for "cat"
@@ -1150,15 +1153,16 @@ mod tests {
         //   1 for basic merk
         // 32 for node hash
         // 32 for value hash (trees have this for free)
-        // 1 byte for the value_size (required space for 70)
+        // 1 byte for the value_size (required space for 71)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // 71 + 39 = 110
+        // 72 + 40 = 112
 
         // Hash node calls
         // 1 for the kv_digest_to_kv_hash hash
@@ -1170,7 +1174,7 @@ mod tests {
                 seek_count: 3, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
-                    replaced_bytes: 111,
+                    replaced_bytes: 112,
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 77,
@@ -1212,10 +1216,10 @@ mod tests {
                 seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
-                    replaced_bytes: 188,
+                    replaced_bytes: 190,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 227,//todo verify this
+                storage_loaded_bytes: 227, // todo verify this
                 hash_node_calls: 8,
             }
         );
@@ -1254,7 +1258,7 @@ mod tests {
                 seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 1,
-                    replaced_bytes: 189, // todo: verify this
+                    replaced_bytes: 191, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 228,
@@ -1302,21 +1306,25 @@ mod tests {
 
         // Explanation for replaced bytes
 
-        // Replaced parent Value -> 76
+        // Replaced parent Value -> 78
         //   1 for the flag option (but no flags)
         //   1 for the enum type tree
         //   1 for empty option
+        //   1 for Basic Merk
         // 32 for node hash
         // 0 for value hash (trees have this for free)
+        // 40 for child to parent hook
         // 2 byte for the value_size (required space for 98 + x where x can be up to
         // 256)
 
-        // Replaced current tree -> 76
+        // Replaced current tree -> 78
         //   1 for the flag option (but no flags)
         //   1 for the enum type tree
         //   1 for empty option
+        //   1 for Basic Merk
         // 32 for node hash
         // 0 for value hash (trees have this for free)
+        // 40 for child to parent hook
         // 2 byte for the value_size (required space for 98 + x where x can be up to
         // 256)
 
@@ -1326,7 +1334,7 @@ mod tests {
                 seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 4,
-                    replaced_bytes: 154, // todo: verify this
+                    replaced_bytes: 156,
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 224,

@@ -39,12 +39,12 @@ mod tests {
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 37 + 39 = 113
 
         assert_eq!(
@@ -102,12 +102,12 @@ mod tests {
         // 32 for value hash
         // 1 byte for the value_size (required space for 70)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 71 + 39 = 147
 
         assert_eq!(
@@ -156,12 +156,12 @@ mod tests {
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 37 + 39 = 113
 
         assert_eq!(
@@ -223,12 +223,12 @@ mod tests {
         // 32 for value hash
         // 1 byte for the value_size (required space for 70)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 71 + 39 = 147
 
         assert_eq!(
@@ -299,12 +299,12 @@ mod tests {
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 37 + 39 = 117
 
         assert_eq!(insertion_cost.storage_cost.added_bytes, 117);
@@ -386,12 +386,12 @@ mod tests {
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 37 + 39 = 116
 
         assert_eq!(insertion_cost.storage_cost.added_bytes, 116);
@@ -479,12 +479,12 @@ mod tests {
         // 32 for value hash
         // 1 byte for the value_size (required space for 70)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 71 + 39 = 147
 
         assert_eq!(
@@ -541,12 +541,12 @@ mod tests {
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 41 + 39 = 117
 
         assert_eq!(insertion_cost.storage_cost.added_bytes, 117);
@@ -616,12 +616,12 @@ mod tests {
         // 32 for value hash
         // 1 byte for the value_size (required space for 70)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 71 + 39 = 147
 
         assert_eq!(
