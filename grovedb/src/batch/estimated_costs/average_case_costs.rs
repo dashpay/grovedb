@@ -298,7 +298,7 @@ mod tests {
             OperationCost {
                 seek_count: 3,
                 storage_cost: StorageCost {
-                    added_bytes: 113,
+                    added_bytes: 115,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -363,7 +363,7 @@ mod tests {
             OperationCost {
                 seek_count: 3,
                 storage_cost: StorageCost {
-                    added_bytes: 117,
+                    added_bytes: 119,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -423,7 +423,7 @@ mod tests {
             OperationCost {
                 seek_count: 3,
                 storage_cost: StorageCost {
-                    added_bytes: 147,
+                    added_bytes: 149,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -500,11 +500,11 @@ mod tests {
             OperationCost {
                 seek_count: 5, // todo: why is this 5
                 storage_cost: StorageCost {
-                    added_bytes: 113,
-                    replaced_bytes: 104,
+                    added_bytes: 115,
+                    replaced_bytes: 106,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 107,
+                storage_loaded_bytes: 109,
                 hash_node_calls: 8,
             }
         );
@@ -584,11 +584,11 @@ mod tests {
             OperationCost {
                 seek_count: 6,
                 storage_cost: StorageCost {
-                    added_bytes: 113,
-                    replaced_bytes: 73,
+                    added_bytes: 115,
+                    replaced_bytes: 75,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 170,
+                storage_loaded_bytes: 173,
                 hash_node_calls: 12,
             }
         );

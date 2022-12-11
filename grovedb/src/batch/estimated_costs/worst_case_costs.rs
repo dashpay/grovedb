@@ -240,7 +240,7 @@ mod tests {
             OperationCost {
                 seek_count: 5,
                 storage_cost: StorageCost {
-                    added_bytes: 113,
+                    added_bytes: 115,
                     replaced_bytes: 65535, // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
@@ -293,7 +293,7 @@ mod tests {
             OperationCost {
                 seek_count: 4,
                 storage_cost: StorageCost {
-                    added_bytes: 117,
+                    added_bytes: 119,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -346,7 +346,7 @@ mod tests {
             OperationCost {
                 seek_count: 4,
                 storage_cost: StorageCost {
-                    added_bytes: 147,
+                    added_bytes: 149,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -403,7 +403,7 @@ mod tests {
             OperationCost {
                 seek_count: 38,
                 storage_cost: StorageCost {
-                    added_bytes: 113,
+                    added_bytes: 115,
                     replaced_bytes: 2228190, // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
@@ -458,11 +458,11 @@ mod tests {
             OperationCost {
                 seek_count: 7,
                 storage_cost: StorageCost {
-                    added_bytes: 113,
-                    replaced_bytes: 81994,
+                    added_bytes: 115,
+                    replaced_bytes: 81996,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 65961,
+                storage_loaded_bytes: 65964,
                 hash_node_calls: 266,
             }
         );
