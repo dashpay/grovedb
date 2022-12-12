@@ -11,7 +11,10 @@ use {
 };
 
 use super::{Node, Op};
-use crate::tree::{Fetch, RefWalker};
+use crate::{
+    merk::TreeFeatureType::BasicMerk,
+    tree::{Fetch, RefWalker},
+};
 
 /// The minimum number of layers the trunk will be guaranteed to have before
 /// splitting into multiple chunks. If the tree's height is less than double
@@ -127,7 +130,7 @@ where
         }
 
         // add this node's data
-        proof.push(Op::Push(self.to_kv_value_hash_node()));
+        proof.push(Op::Push(self.to_kv_value_hash_feature_type_node()));
 
         if has_left_child {
             proof.push(Op::Parent);
@@ -159,7 +162,7 @@ pub(crate) fn get_next_chunk(
 
     let mut chunk = Vec::with_capacity(512);
     let mut stack = Vec::with_capacity(32);
-    let mut node = Tree::new(vec![], vec![]).unwrap_add_cost(&mut cost);
+    let mut node = Tree::new(vec![], vec![], BasicMerk).unwrap_add_cost(&mut cost);
 
     while iter.valid().unwrap_add_cost(&mut cost) {
         let key = iter.key().unwrap_add_cost(&mut cost).unwrap();
@@ -178,10 +181,11 @@ pub(crate) fn get_next_chunk(
 
         // TODO: Only use the KVValueHash if needed, saves 32 bytes
         //  only needed when dealing with references and trees
-        let kv = Node::KVValueHash(
+        let kv = Node::KVValueHashFeatureType(
             key.to_vec(),
             node.value_ref().to_vec(),
             node.value_hash().clone(),
+            node.feature_type(),
         );
 
         chunk.push(Op::Push(kv));
@@ -222,7 +226,7 @@ pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op>>>(
     expected_hash: CryptoHash,
 ) -> CostContext<Result<ProofTree>> {
     execute(ops, false, |node| match node {
-        Node::KVValueHash(..) | Node::KV(..) => Ok(()),
+        Node::KVValueHash(..) | Node::KV(..) | Node::KVValueHashFeatureType(..) => Ok(()),
         _ => bail!("Leaf chunks must contain full subtree"),
     })
     .flat_map_ok(|tree| {
@@ -272,7 +276,7 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
 
         if remaining_depth > 0 {
             match tree.node {
-                Node::KVValueHash(..) | Node::KV(..) => {}
+                Node::KVValueHash(..) | Node::KV(..) | Node::KVValueHashFeatureType(..) => {}
                 _ => bail!("Expected trunk inner nodes to contain keys and values"),
             }
             recurse(true, leftmost)?;
@@ -294,7 +298,9 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
     let tree = cost_return_on_error!(
         &mut cost,
         execute(ops, false, |node| {
-            kv_only &= matches!(node, Node::KVValueHash(..)) || matches!(node, Node::KV(..));
+            kv_only &= matches!(node, Node::KVValueHash(..))
+                || matches!(node, Node::KV(..))
+                || matches!(node, Node::KVValueHashFeatureType(..));
             Ok(())
         })
     );
@@ -334,6 +340,7 @@ mod tests {
         kv_value_hash: usize,
         kv_digest: usize,
         kv_ref_value_hash: usize,
+        kv_value_hash_feature_type: usize,
     }
 
     fn count_node_types(tree: Tree) -> NodeCounts {
@@ -347,6 +354,7 @@ mod tests {
                 Node::KVValueHash(..) => counts.kv_value_hash += 1,
                 Node::KVDigest(..) => counts.kv_digest += 1,
                 Node::KVRefValueHash(..) => counts.kv_ref_value_hash += 1,
+                Node::KVValueHashFeatureType(..) => counts.kv_value_hash_feature_type += 1,
             };
         });
 
@@ -366,7 +374,7 @@ mod tests {
 
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv_value_hash, 32);
+        assert_eq!(counts.kv_value_hash_feature_type, 32);
         assert_eq!(counts.kv_hash, 0);
     }
 
@@ -386,7 +394,7 @@ mod tests {
             2usize.pow(MIN_TRUNK_HEIGHT as u32) + MIN_TRUNK_HEIGHT - 1
         );
         assert_eq!(
-            counts.kv_value_hash,
+            counts.kv_value_hash_feature_type,
             2usize.pow(MIN_TRUNK_HEIGHT as u32) - 1
         );
         assert_eq!(counts.kv_hash, MIN_TRUNK_HEIGHT + 1);
@@ -394,7 +402,7 @@ mod tests {
 
     #[test]
     fn one_node_tree_trunk_roundtrip() {
-        let mut tree = BaseTree::new(vec![0], vec![]).unwrap();
+        let mut tree = BaseTree::new(vec![0], vec![], BasicMerk).unwrap();
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),
@@ -411,7 +419,7 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv_value_hash, 1);
+        assert_eq!(counts.kv_value_hash_feature_type, 1);
         assert_eq!(counts.kv_hash, 0);
     }
 
@@ -420,9 +428,10 @@ mod tests {
         // 0
         //  \
         //   1
-        let mut tree = BaseTree::new(vec![0], vec![])
-            .unwrap()
-            .attach(false, Some(BaseTree::new(vec![1], vec![]).unwrap()));
+        let mut tree = BaseTree::new(vec![0], vec![], BasicMerk).unwrap().attach(
+            false,
+            Some(BaseTree::new(vec![1], vec![], BasicMerk).unwrap()),
+        );
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),
@@ -438,7 +447,7 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv_value_hash, 2);
+        assert_eq!(counts.kv_value_hash_feature_type, 2);
         assert_eq!(counts.kv_hash, 0);
     }
 
@@ -447,9 +456,10 @@ mod tests {
         //   1
         //  /
         // 0
-        let mut tree = BaseTree::new(vec![1], vec![])
-            .unwrap()
-            .attach(true, Some(BaseTree::new(vec![0], vec![]).unwrap()));
+        let mut tree = BaseTree::new(vec![1], vec![], BasicMerk).unwrap().attach(
+            true,
+            Some(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()),
+        );
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),
@@ -465,7 +475,7 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv_value_hash, 2);
+        assert_eq!(counts.kv_value_hash_feature_type, 2);
         assert_eq!(counts.kv_hash, 0);
     }
 
@@ -474,10 +484,16 @@ mod tests {
         //   1
         //  / \
         // 0   2
-        let mut tree = BaseTree::new(vec![1], vec![])
+        let mut tree = BaseTree::new(vec![1], vec![], BasicMerk)
             .unwrap()
-            .attach(true, Some(BaseTree::new(vec![0], vec![]).unwrap()))
-            .attach(false, Some(BaseTree::new(vec![2], vec![]).unwrap()));
+            .attach(
+                true,
+                Some(BaseTree::new(vec![0], vec![], BasicMerk).unwrap()),
+            )
+            .attach(
+                false,
+                Some(BaseTree::new(vec![2], vec![], BasicMerk).unwrap()),
+            );
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),
@@ -494,7 +510,7 @@ mod tests {
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
         let counts = count_node_types(trunk);
         assert_eq!(counts.hash, 0);
-        assert_eq!(counts.kv_value_hash, 3);
+        assert_eq!(counts.kv_value_hash_feature_type, 3);
         assert_eq!(counts.kv_hash, 0);
     }
 
@@ -519,7 +535,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let counts = count_node_types(chunk);
-        assert_eq!(counts.kv_value_hash, 31);
+        assert_eq!(counts.kv_value_hash_feature_type, 31);
         assert_eq!(counts.hash, 0);
         assert_eq!(counts.kv_hash, 0);
         drop(iter);
@@ -542,7 +558,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let counts = count_node_types(chunk);
-        assert_eq!(counts.kv_value_hash, 15);
+        assert_eq!(counts.kv_value_hash_feature_type, 15);
         assert_eq!(counts.hash, 0);
         assert_eq!(counts.kv_hash, 0);
 
@@ -559,7 +575,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let counts = count_node_types(chunk);
-        assert_eq!(counts.kv_value_hash, 15);
+        assert_eq!(counts.kv_value_hash_feature_type, 15);
         assert_eq!(counts.hash, 0);
         assert_eq!(counts.kv_hash, 0);
     }

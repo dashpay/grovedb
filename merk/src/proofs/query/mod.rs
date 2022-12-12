@@ -820,6 +820,17 @@ where
         )
     }
 
+    /// Creates a `Node::KVValueHashFeatureType` from the key/value pair of the
+    /// root node
+    pub(crate) fn to_kv_value_hash_feature_type_node(&self) -> Node {
+        Node::KVValueHashFeatureType(
+            self.tree().key().to_vec(),
+            self.tree().value_ref().to_vec(),
+            self.tree().value_hash().clone(),
+            self.tree().feature_type().clone(),
+        )
+    }
+
     /// Creates a `Node::KVHash` from the hash of the key/value pair of the root
     /// node.
     pub(crate) fn to_kvhash_node(&self) -> Node {
@@ -1393,6 +1404,7 @@ mod test {
         proofs::query::QueryItem::RangeAfter,
         test_utils::make_tree_seq,
         tree::{NoopCommit, PanicSource, RefWalker, Tree},
+        TreeFeatureType::BasicMerk,
     };
 
     fn compare_result_tuples(
@@ -1407,10 +1419,10 @@ mod test {
     }
 
     fn make_3_node_tree() -> Tree {
-        let mut tree = Tree::new(vec![5], vec![5])
+        let mut tree = Tree::new(vec![5], vec![5], BasicMerk)
             .unwrap()
-            .attach(true, Some(Tree::new(vec![3], vec![3]).unwrap()))
-            .attach(false, Some(Tree::new(vec![7], vec![7]).unwrap()));
+            .attach(true, Some(Tree::new(vec![3], vec![3], BasicMerk).unwrap()))
+            .attach(false, Some(Tree::new(vec![7], vec![7], BasicMerk).unwrap()));
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),
@@ -1423,9 +1435,9 @@ mod test {
     }
 
     fn make_6_node_tree() -> Tree {
-        let two_tree = Tree::new(vec![2], vec![2]).unwrap();
-        let four_tree = Tree::new(vec![4], vec![4]).unwrap();
-        let mut three_tree = Tree::new(vec![3], vec![3])
+        let two_tree = Tree::new(vec![2], vec![2], BasicMerk).unwrap();
+        let four_tree = Tree::new(vec![4], vec![4], BasicMerk).unwrap();
+        let mut three_tree = Tree::new(vec![3], vec![3], BasicMerk)
             .unwrap()
             .attach(true, Some(two_tree))
             .attach(false, Some(four_tree));
@@ -1439,8 +1451,8 @@ mod test {
             .unwrap()
             .expect("commit failed");
 
-        let seven_tree = Tree::new(vec![7], vec![7]).unwrap();
-        let mut eight_tree = Tree::new(vec![8], vec![8])
+        let seven_tree = Tree::new(vec![7], vec![7], BasicMerk).unwrap();
+        let mut eight_tree = Tree::new(vec![8], vec![8], BasicMerk)
             .unwrap()
             .attach(true, Some(seven_tree));
         eight_tree
@@ -1453,7 +1465,7 @@ mod test {
             .unwrap()
             .expect("commit failed");
 
-        let mut root_tree = Tree::new(vec![5], vec![5])
+        let mut root_tree = Tree::new(vec![5], vec![5], BasicMerk)
             .unwrap()
             .attach(true, Some(three_tree))
             .attach(false, Some(eight_tree));
@@ -2135,45 +2147,49 @@ mod test {
 
     #[test]
     fn doc_proof() {
-        let mut tree = Tree::new(vec![5], vec![5])
+        let mut tree = Tree::new(vec![5], vec![5], BasicMerk)
             .unwrap()
             .attach(
                 true,
                 Some(
-                    Tree::new(vec![2], vec![2])
+                    Tree::new(vec![2], vec![2], BasicMerk)
                         .unwrap()
-                        .attach(true, Some(Tree::new(vec![1], vec![1]).unwrap()))
+                        .attach(true, Some(Tree::new(vec![1], vec![1], BasicMerk).unwrap()))
                         .attach(
                             false,
-                            Some(
-                                Tree::new(vec![4], vec![4])
-                                    .unwrap()
-                                    .attach(true, Some(Tree::new(vec![3], vec![3]).unwrap())),
-                            ),
+                            Some(Tree::new(vec![4], vec![4], BasicMerk).unwrap().attach(
+                                true,
+                                Some(Tree::new(vec![3], vec![3], BasicMerk).unwrap()),
+                            )),
                         ),
                 ),
             )
             .attach(
                 false,
                 Some(
-                    Tree::new(vec![9], vec![9])
+                    Tree::new(vec![9], vec![9], BasicMerk)
                         .unwrap()
                         .attach(
                             true,
                             Some(
-                                Tree::new(vec![7], vec![7])
+                                Tree::new(vec![7], vec![7], BasicMerk)
                                     .unwrap()
-                                    .attach(true, Some(Tree::new(vec![6], vec![6]).unwrap()))
-                                    .attach(false, Some(Tree::new(vec![8], vec![8]).unwrap())),
+                                    .attach(
+                                        true,
+                                        Some(Tree::new(vec![6], vec![6], BasicMerk).unwrap()),
+                                    )
+                                    .attach(
+                                        false,
+                                        Some(Tree::new(vec![8], vec![8], BasicMerk).unwrap()),
+                                    ),
                             ),
                         )
                         .attach(
                             false,
-                            Some(
-                                Tree::new(vec![11], vec![11])
-                                    .unwrap()
-                                    .attach(true, Some(Tree::new(vec![10], vec![10]).unwrap())),
-                            ),
+                            Some(Tree::new(vec![11], vec![11], BasicMerk).unwrap().attach(
+                                true,
+                                Some(Tree::new(vec![10], vec![10], BasicMerk).unwrap()),
+                            )),
                         ),
                 ),
             );
@@ -6121,7 +6137,7 @@ mod test {
 
     #[test]
     fn verify_ops() {
-        let mut tree = Tree::new(vec![5], vec![5]).unwrap();
+        let mut tree = Tree::new(vec![5], vec![5], BasicMerk).unwrap();
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),
@@ -6152,7 +6168,7 @@ mod test {
     #[test]
     #[should_panic(expected = "verify failed")]
     fn verify_ops_mismatched_hash() {
-        let mut tree = Tree::new(vec![5], vec![5]).unwrap();
+        let mut tree = Tree::new(vec![5], vec![5], BasicMerk).unwrap();
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),

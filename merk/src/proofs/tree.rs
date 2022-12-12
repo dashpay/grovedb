@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use anyhow::{anyhow, bail, Result};
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
@@ -57,7 +59,8 @@ impl Tree {
             Node::KVHash(kv_hash) => compute_hash(self, *kv_hash),
             Node::KV(key, value) => kv_hash(key.as_slice(), value.as_slice())
                 .flat_map(|kv_hash| compute_hash(self, kv_hash)),
-            Node::KVValueHash(key, _, value_hash) => {
+            Node::KVValueHash(key, _, value_hash)
+            | Node::KVValueHashFeatureType(key, _, value_hash, _) => {
                 // TODO: add verification of the value
                 kv_digest_to_kv_hash(key.as_slice(), value_hash)
                     .flat_map(|kv_hash| compute_hash(self, kv_hash))
@@ -173,7 +176,8 @@ impl Tree {
         match self.node {
             Node::KV(ref key, _)
             | Node::KVValueHash(ref key, ..)
-            | Node::KVRefValueHash(ref key, ..) => key,
+            | Node::KVRefValueHash(ref key, ..)
+            | Node::KVValueHashFeatureType(ref key, ..) => key,
             _ => panic!("Expected node to be type KV"),
         }
     }
@@ -353,7 +357,7 @@ where
             }
             Op::Push(node) => {
                 if let Node::KV(key, _)
-                | Node::KVValueHash(key, ..)
+                | Node::KVValueHashFeatureType(key, ..)
                 | Node::KVRefValueHash(key, ..) = &node
                 {
                     // keys should always increase
@@ -373,7 +377,7 @@ where
             }
             Op::PushInverted(node) => {
                 if let Node::KV(key, _)
-                | Node::KVValueHash(key, ..)
+                | Node::KVValueHashFeatureType(key, ..)
                 | Node::KVRefValueHash(key, ..) = &node
                 {
                     // keys should always decrease

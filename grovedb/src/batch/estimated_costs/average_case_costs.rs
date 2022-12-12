@@ -43,6 +43,9 @@ impl Op {
             Op::InsertTreeWithRootHash { flags, .. } => {
                 GroveDb::average_case_merk_insert_tree(key, flags, propagate_if_input())
             }
+            Op::InsertSumTreeWithRootHashAndSum { flags, .. } => {
+                GroveDb::average_case_merk_insert_sum_tree(key, flags, propagate_if_input())
+            }
             Op::Insert { element } => {
                 GroveDb::average_case_merk_insert_element(key, &element, propagate_if_input())
             }
@@ -81,7 +84,7 @@ impl fmt::Debug for AverageCaseTreeCacheKnownPaths {
 }
 
 impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
-    fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
+    fn insert(&mut self, op: &GroveDbOp, _is_sum_tree: bool) -> CostResult<(), Error> {
         let mut average_case_cost = OperationCost::default();
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
@@ -105,7 +108,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
-    ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error> {
+    ) -> CostResult<(CryptoHash, Option<Vec<u8>>, Option<i64>), Error> {
         let mut cost = OperationCost::default();
 
         let layer_element_estimates = cost_return_on_error_no_add!(
@@ -147,7 +150,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             &mut cost,
             average_case_merk_propagate(layer_element_estimates).map_err(Error::MerkError)
         );
-        Ok(([0u8; 32], None)).wrap_with_cost(cost)
+        Ok(([0u8; 32], None, None)).wrap_with_cost(cost)
     }
 
     fn update_base_merk_root_key(&mut self, _root_key: Option<Vec<u8>>) -> CostResult<(), Error> {

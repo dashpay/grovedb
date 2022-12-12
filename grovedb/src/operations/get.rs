@@ -318,8 +318,8 @@ where {
                                 )),
                             }
                         }
-                        Element::Item(item, _) => Ok(item),
-                        Element::Tree(..) => Err(Error::InvalidQuery(
+                        Element::Item(item, _) | Element::SumItem(item, _) => Ok(item),
+                        Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items and references",
                         )),
                     }
@@ -379,7 +379,7 @@ where {
         }
         .unwrap_add_cost(&mut cost);
         match element {
-            Ok(Element::Tree(..)) => Ok(()).wrap_with_cost(cost),
+            Ok(Element::Tree(..)) | Ok(Element::SumTree(..)) => Ok(()).wrap_with_cost(cost),
             Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error).wrap_with_cost(cost),
             Err(e) => Err(e).wrap_with_cost(cost),
         }

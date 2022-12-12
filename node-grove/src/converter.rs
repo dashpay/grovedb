@@ -4,8 +4,10 @@ use neon::{prelude::*, types::buffer::TypedArray};
 fn element_to_string(element: Element) -> String {
     match element {
         Element::Item(..) => "item".to_string(),
+        Element::SumItem(..) => "sum_item".to_string(),
         Element::Reference(..) => "reference".to_string(),
         Element::Tree(..) => "tree".to_string(),
+        Element::SumTree(..) => "sum_tree".to_string(),
     }
 }
 
@@ -49,13 +51,14 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
     js_object.set(cx, "type", js_type_string)?;
 
     let js_value: Handle<JsValue> = match element {
-        Element::Item(item, _) => {
+        Element::Item(item, _) | Element::SumItem(item, _) => {
             let js_buffer = JsBuffer::external(cx, item);
             js_buffer.upcast()
         }
         // TODO: Fix bindings
-        Element::Reference(_reference, ..) => nested_vecs_to_js(vec![], cx)?,
-        Element::Tree(_tree, _) => nested_vecs_to_js(vec![], cx)?,
+        Element::Reference(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::Tree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::SumTree(..) => nested_vecs_to_js(vec![], cx)?,
     };
 
     js_object.set(cx, "value", js_value)?;

@@ -118,13 +118,14 @@ mod tests {
         // 1 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 71
+        // Value -> 72
         //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for required space for bytes
         //   3 for item bytes
         // 32 for node hash
         // 32 for value hash
+        // 1 for basic merk
         // 1 byte for the value_size (required space for 71)
 
         // Parent Hook -> 39
@@ -140,7 +141,7 @@ mod tests {
         // 1 bytes for the key to put in root
         // 1 byte for the root "r"
 
-        // Total 34 + 71 + 36 = 141
+        // Total 34 + 72 + 36 = 142
 
         // Hash node calls
         // 2 for the node hash
@@ -156,7 +157,7 @@ mod tests {
             OperationCost {
                 seek_count: 3,
                 storage_cost: StorageCost {
-                    added_bytes: 141,
+                    added_bytes: 142,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -182,7 +183,7 @@ mod tests {
             .cost_as_result()
             .expect("successful root tree leaf insert");
 
-        assert_eq!(cost.storage_cost.added_bytes, 141);
+        assert_eq!(cost.storage_cost.added_bytes, 142);
 
         let ops = vec![GroveDbOp::insert_op(
             vec![],
@@ -199,12 +200,13 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 37
+        // Value -> 38
         //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for empty tree value
         // 32 for node hash
         // 0 for value hash
+        // 1 for basic merk
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
         // Parent Hook -> 39
@@ -213,20 +215,21 @@ mod tests {
         // Key Length 1
         // Child Heights 2
 
-        // Total 37 + 37 + 39 = 113
+        // Total 37 + 38 + 39 = 114
 
         // Replaced bytes
 
-        // Value -> 71
+        // Value -> 72
         //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for required space for bytes
         //   3 for item bytes
         // 32 for node hash
         // 32 for value hash
+        // 1 for basic merk
         // 1 byte for the value_size (required space for 99)
 
-        // 71 + 36 = 107 (key is not replaced)
+        // 72 + 36 = 108 (key is not replaced)
 
         // Hash node calls 8
         // 1 for the inserted tree hash
@@ -247,8 +250,8 @@ mod tests {
             OperationCost {
                 seek_count: 5,
                 storage_cost: StorageCost {
-                    added_bytes: 113,
-                    replaced_bytes: 107,
+                    added_bytes: 114,
+                    replaced_bytes: 108,
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 73, // todo: verify and explain
@@ -299,8 +302,8 @@ mod tests {
 
         // Replaced bytes
 
-        // 37 + 36 = 73 (key is not replaced)
-        // We instead are getting 104, because we are paying for (+ hash - key byte
+        // 37 + 36 = 74 (key is not replaced)
+        // We instead are getting 105, because we are paying for (+ hash - key byte
         // size) this means 31 extra bytes.
         // In reality though we really are replacing 104 bytes. TBD what to do.
 
@@ -324,7 +327,7 @@ mod tests {
                 seek_count: 5,
                 storage_cost: StorageCost {
                     added_bytes: 113,
-                    replaced_bytes: 104, // todo: this should actually be 73
+                    replaced_bytes: 105, // todo: this should actually be 74
                     removed_bytes: NoStorageRemoval,
                 },
                 storage_loaded_bytes: 70, // todo: verify and explain
@@ -406,7 +409,7 @@ mod tests {
                     replaced_bytes: 73,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 139, // todo: verify and explain
+                storage_loaded_bytes: 141, // todo: verify and explain
                 hash_node_calls: 12,
             }
         );
@@ -420,7 +423,7 @@ mod tests {
         let ops = vec![GroveDbOp::insert_op(
             vec![],
             b"key1".to_vec(),
-            Element::new_item([0u8; 60].to_vec()),
+            Element::new_item([0u8; 59].to_vec()),
         )];
         let cost_result = db.apply_batch(ops, None, Some(&tx));
         cost_result.value.expect("expected to execute batch");
@@ -436,9 +439,10 @@ mod tests {
         //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for the value size
-        //   60 bytes
+        //   59 bytes
         // 32 for node hash
         // 32 for value hash
+        // 1 for basic merk
         // 1 byte for the value_size (required space for 127)
 
         // Parent Hook -> 39
@@ -481,7 +485,7 @@ mod tests {
         let ops = vec![GroveDbOp::insert_op(
             vec![],
             b"key1".to_vec(),
-            Element::new_item([0u8; 61].to_vec()),
+            Element::new_item([0u8; 60].to_vec()),
         )];
         let cost_result = db.apply_batch(ops, None, Some(&tx));
         cost_result.value.expect("expected to execute batch");
@@ -497,9 +501,10 @@ mod tests {
         //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for the value size
-        //   61 bytes
+        //   60 bytes
         // 32 for node hash
         // 32 for value hash
+        // 1 for basic merk
         // 2 byte for the value_size (required space for 128)
 
         // Parent Hook -> 39
@@ -581,10 +586,10 @@ mod tests {
                 seek_count: 7, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 2,
-                    replaced_bytes: 191, // todo: verify this
+                    replaced_bytes: 192, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 229, // todo: verify this
+                storage_loaded_bytes: 232, // todo: verify this
                 hash_node_calls: 10,       // todo: verify this
             }
         );
@@ -660,10 +665,10 @@ mod tests {
                 seek_count: 7, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 4,
-                    replaced_bytes: 192, // todo: verify this
+                    replaced_bytes: 193, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 230, // todo: verify this
+                storage_loaded_bytes: 233, // todo: verify this
                 hash_node_calls: 10,       // todo: verify this
             }
         );
@@ -715,10 +720,10 @@ mod tests {
                 seek_count: 7, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
-                    replaced_bytes: 190, // todo: verify this
+                    replaced_bytes: 191, // todo: verify this
                     removed_bytes: BasicStorageRemoval(1)
                 },
-                storage_loaded_bytes: 229, // todo: verify this
+                storage_loaded_bytes: 232, // todo: verify this
                 hash_node_calls: 10,       // todo: verify this
             }
         );
@@ -795,10 +800,10 @@ mod tests {
                 seek_count: 7, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
-                    replaced_bytes: 191, // todo: verify this
+                    replaced_bytes: 192, // todo: verify this
                     removed_bytes: SectionedStorageRemoval(removed_bytes)
                 },
-                storage_loaded_bytes: 230, // todo: verify this
+                storage_loaded_bytes: 233, // todo: verify this
                 hash_node_calls: 10,       // todo: verify this
             }
         );
@@ -871,7 +876,7 @@ mod tests {
                     replaced_bytes: 155, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 224, // todo: verify this
+                storage_loaded_bytes: 227, // todo: verify this
                 hash_node_calls: 12,       // todo: verify this
             }
         );

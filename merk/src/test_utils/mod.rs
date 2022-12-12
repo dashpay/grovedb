@@ -8,7 +8,10 @@ pub use crash_merk::CrashMerk;
 use rand::prelude::*;
 pub use temp_merk::TempMerk;
 
-use crate::tree::{kv::KV, BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker};
+use crate::{
+    merk::TreeFeatureType::BasicMerk,
+    tree::{kv::KV, BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker},
+};
 
 pub fn assert_tree_invariants(tree: &Tree) {
     assert!(tree.balance_factor().abs() < 2);
@@ -135,7 +138,7 @@ pub const fn seq_key(n: u64) -> [u8; 8] {
 }
 
 pub fn put_entry(n: u64) -> BatchEntry<Vec<u8>> {
-    (seq_key(n).to_vec(), Op::Put(vec![123; 60]))
+    (seq_key(n).to_vec(), Op::Put(vec![123; 60], BasicMerk))
 }
 
 pub fn del_entry(n: u64) -> BatchEntry<Vec<u8>> {
@@ -185,7 +188,7 @@ pub fn make_tree_rand(node_count: u64, batch_size: u64, initial_seed: u64) -> Tr
     assert_eq!((node_count % batch_size), 0);
 
     let value = vec![123; 60];
-    let mut tree = Tree::new(vec![0; 20], value).unwrap();
+    let mut tree = Tree::new(vec![0; 20], value, BasicMerk).unwrap();
 
     let mut seed = initial_seed;
 
@@ -208,7 +211,7 @@ pub fn make_tree_seq(node_count: u64) -> Tree {
     };
 
     let value = vec![123; 60];
-    let mut tree = Tree::new(vec![0; 20], value).unwrap();
+    let mut tree = Tree::new(vec![0; 20], value, BasicMerk).unwrap();
 
     let batch_count = node_count / batch_size;
     for i in 0..batch_count {

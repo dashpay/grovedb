@@ -13,10 +13,11 @@ use integer_encoding::VarInt;
 use merk::{
     anyhow,
     ed::Decode,
-    estimated_costs::LAYER_COST_SIZE,
+    estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE},
     proofs::{query::QueryItem, Query},
     tree::{kv::KV, Tree, TreeInner},
-    BatchEntry, MerkOptions, Op,
+    BatchEntry, MerkOptions, Op, TreeFeatureType,
+    TreeFeatureType::{BasicMerk, SummedMerk},
 };
 use serde::{Deserialize, Serialize};
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
@@ -43,6 +44,11 @@ pub type MaxReferenceHop = Option<u8>;
 
 /// The cost of a tree
 pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
+/// The cost of a sum tree
+pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 11
+
+/// int 64 sum value
+pub type SumValue = i64;
 
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
@@ -56,6 +62,11 @@ pub enum Element {
     /// A subtree, contains the a prefixed key representing the root of the
     /// subtree.
     Tree(Option<Vec<u8>>, Option<ElementFlags>),
+    /// Vector encoded integer value that can be totaled in a sum tree
+    SumItem(Vec<u8>, Option<ElementFlags>),
+    /// Same as Element::Tree but underlying Merk sums value of it's summable
+    /// nodes
+    SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
 }
 
 impl fmt::Debug for Element {
@@ -96,12 +107,28 @@ impl Element {
         Element::new_tree_with_flags(Default::default(), flags)
     }
 
+    pub fn empty_sum_tree() -> Self {
+        Element::new_sum_tree(Default::default())
+    }
+
+    pub fn empty_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::new_sum_tree_with_flags(Default::default(), flags)
+    }
+
     pub fn new_item(item_value: Vec<u8>) -> Self {
         Element::Item(item_value, None)
     }
 
     pub fn new_item_with_flags(item_value: Vec<u8>, flags: Option<ElementFlags>) -> Self {
         Element::Item(item_value, flags)
+    }
+
+    pub fn new_sum_item(value: i64) -> Self {
+        Element::SumItem(value.encode_var_vec(), None)
+    }
+
+    pub fn new_sum_item_with_flags(value: i64, flags: Option<ElementFlags>) -> Self {
+        Element::SumItem(value.encode_var_vec(), flags)
     }
 
     pub fn new_reference(reference_path: ReferencePathType) -> Self {
@@ -141,37 +168,103 @@ impl Element {
         Element::Tree(maybe_root_key, flags)
     }
 
+    pub fn new_sum_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::SumTree(maybe_root_key, 0, None)
+    }
+
+    pub fn new_sum_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::SumTree(maybe_root_key, 0, flags)
+    }
+
+    pub fn new_sum_tree_with_flags_and_sum_value(
+        maybe_root_key: Option<Vec<u8>>,
+        sum_value: SumValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::SumTree(maybe_root_key, sum_value, flags)
+    }
+
+    /// Decoded the integer value in the SumItem element type, returns 0 for
+    /// everything else
+    pub fn sum_value(&self) -> Option<i64> {
+        match self {
+            Element::SumItem(value, _) => {
+                i64::decode_var(value).map(|(encoded_value, _)| encoded_value)
+            }
+            Element::SumTree(_, sum_value, _) => Some(*sum_value),
+            _ => Some(0),
+        }
+    }
+
+    pub fn is_sum_tree(&self) -> bool {
+        match &self {
+            Element::SumTree(..) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_sum_item(&self) -> bool {
+        match &self {
+            Element::SumItem(..) => true,
+            _ => false,
+        }
+    }
+
+    pub fn get_feature_type(&self, parent_is_sum_tree: bool) -> Result<TreeFeatureType, Error> {
+        match parent_is_sum_tree {
+            true => {
+                let sum_value = self.sum_value();
+                match sum_value {
+                    Some(sum) => Ok(SummedMerk(sum)),
+                    None => Err(Error::CorruptedData(String::from(
+                        "cannot decode sum item to i64",
+                    ))),
+                }
+            }
+            false => Ok(BasicMerk),
+        }
+    }
+
     /// Grab the optional flag stored in an element
     pub fn get_flags(&self) -> &Option<ElementFlags> {
         match self {
-            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
-                flags
-            }
+            Element::Tree(_, flags)
+            | Element::Item(_, flags)
+            | Element::Reference(_, _, flags)
+            | Element::SumTree(.., flags)
+            | Element::SumItem(_, flags) => flags,
         }
     }
 
     /// Grab the optional flag stored in an element
     pub fn get_flags_owned(self) -> Option<ElementFlags> {
         match self {
-            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
-                flags
-            }
+            Element::Tree(_, flags)
+            | Element::Item(_, flags)
+            | Element::Reference(_, _, flags)
+            | Element::SumTree(.., flags)
+            | Element::SumItem(_, flags) => flags,
         }
     }
 
     /// Grab the optional flag stored in an element as mutable
     pub fn get_flags_mut(&mut self) -> &mut Option<ElementFlags> {
         match self {
-            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
-                flags
-            }
+            Element::Tree(_, flags)
+            | Element::Item(_, flags)
+            | Element::Reference(_, _, flags)
+            | Element::SumTree(.., flags)
+            | Element::SumItem(_, flags) => flags,
         }
     }
 
     /// Get the size of an element in bytes
     pub fn byte_size(&self) -> u32 {
         match self {
-            Element::Item(item, element_flag) => {
+            Element::Item(item, element_flag) | Element::SumItem(item, element_flag) => {
                 if let Some(flag) = element_flag {
                     flag.len() as u32 + item.len() as u32
                 } else {
@@ -192,6 +285,13 @@ impl Element {
                     flag.len() as u32 + 32
                 } else {
                     32
+                }
+            }
+            Element::SumTree(_, _, element_flag) => {
+                if let Some(flag) = element_flag {
+                    flag.len() as u32 + 32 + 8
+                } else {
+                    32 + 8
                 }
             }
         }
@@ -984,12 +1084,19 @@ impl Element {
         key: K,
         options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
-        let serialized = match self.serialize() {
-            Ok(s) => s,
-            Err(e) => return Err(e).wrap_with_cost(Default::default()),
-        };
+        let mut cost = OperationCost::default();
 
-        let batch_operations = [(key, Op::Put(serialized))];
+        let serialized = cost_return_on_error_no_add!(&cost, self.serialize());
+
+        if !merk.is_sum_tree && self.is_sum_item() {
+            return Err(Error::InvalidInput("cannot add sum item to non sum tree"))
+                .wrap_with_cost(Default::default());
+        }
+
+        let merk_feature_type =
+            cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
+
+        let batch_operations = [(key, Op::Put(serialized, merk_feature_type))];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
         })
@@ -1010,6 +1117,17 @@ impl Element {
                     key_len, value_len,
                 ))
             }
+            Element::SumTree(_, sum_value, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = TREE_COST_SIZE + flags_len + 8;
+                let key_len = key.len() as u32;
+                Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len,
+                ))
+            }
             _ => Err(Error::CorruptedCodeExecution(
                 "only trees are supported for specialized costs",
             )),
@@ -1020,13 +1138,14 @@ impl Element {
         &self,
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let entry = (key, Op::Put(serialized));
+        let entry = (key, Op::Put(serialized, feature_type));
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
@@ -1062,6 +1181,7 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
         let exists = cost_return_on_error!(
@@ -1073,7 +1193,7 @@ impl Element {
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.insert_into_batch_operations(key, batch_operations)
+                self.insert_into_batch_operations(key, batch_operations, feature_type)
             );
             Ok(true).wrap_with_cost(cost)
         }
@@ -1096,7 +1216,17 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let batch_operations = [(key, Op::PutCombinedReference(serialized, referenced_value))];
+        let mut cost = OperationCost::default();
+        let merk_feature_type = cost_return_on_error!(
+            &mut cost,
+            self.get_feature_type(merk.is_sum_tree)
+                .wrap_with_cost(OperationCost::default())
+        );
+
+        let batch_operations = [(
+            key,
+            Op::PutCombinedReference(serialized, referenced_value, merk_feature_type),
+        )];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
         })
@@ -1108,14 +1238,29 @@ impl Element {
         key: K,
         referenced_value: Hash,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
-        let entry = (key, Op::PutCombinedReference(serialized, referenced_value));
+
+        let entry = (
+            key,
+            Op::PutCombinedReference(serialized, referenced_value, feature_type),
+        );
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
+    }
+
+    pub fn get_tree_cost(&self) -> Result<u32, Error> {
+        match self {
+            Element::Tree(..) => Ok(TREE_COST_SIZE),
+            Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
+            _ => Err(Error::CorruptedCodeExecution(
+                "trying to get tree cost from non tree element",
+            )),
+        }
     }
 
     /// Insert a tree element in Merk under a key; path should be resolved
@@ -1130,19 +1275,25 @@ impl Element {
         subtree_root_hash: Hash,
         options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
-        let cost = TREE_COST_SIZE
-            + self.get_flags().as_ref().map_or(0, |flags| {
-                let flags_len = flags.len() as u32;
-                flags_len + flags_len.required_space() as u32
-            });
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
+        let mut cost = OperationCost::default();
+        let merk_feature_type =
+            cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
+
+        let tree_cost = cost_return_on_error_no_add!(&cost, self.get_tree_cost());
+
+        let cost = tree_cost
+            + self.get_flags().as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
         let batch_operations = [(
             key,
-            Op::PutLayeredReference(serialized, cost, subtree_root_hash),
+            Op::PutLayeredReference(serialized, cost, subtree_root_hash, merk_feature_type),
         )];
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
             Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
@@ -1156,6 +1307,7 @@ impl Element {
         subtree_root_hash: Hash,
         is_replace: bool,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
@@ -1166,16 +1318,17 @@ impl Element {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32
             });
+
         // Replacing is more efficient, but should lead to the same costs
         let entry = if is_replace {
             (
                 key,
-                Op::ReplaceLayeredReference(serialized, cost, subtree_root_hash),
+                Op::ReplaceLayeredReference(serialized, cost, subtree_root_hash, feature_type),
             )
         } else {
             (
                 key,
-                Op::PutLayeredReference(serialized, cost, subtree_root_hash),
+                Op::PutLayeredReference(serialized, cost, subtree_root_hash, feature_type),
             )
         };
         batch_operations.push(entry);

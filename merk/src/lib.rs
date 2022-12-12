@@ -36,6 +36,6 @@ pub use tree::{
 // // pub use crate::merk::{chunks, restore, Merk};
 pub use crate::merk::{
     defaults::ROOT_KEY_KEY, KVIterator, Merk, MerkType, ProofConstructionResult,
-    ProofWithoutEncodingResult,
+    ProofWithoutEncodingResult, TreeFeatureType,
 };
 pub use crate::visualize::VisualizeableMerk;

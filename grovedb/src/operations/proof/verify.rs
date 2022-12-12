@@ -119,7 +119,8 @@ impl ProofVerifier {
                 for (key, value_bytes, value_hash) in children {
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
                     match child_element {
-                        Element::Tree(expected_root_key, _) => {
+                        Element::Tree(expected_root_key, _)
+                        | Element::SumTree(expected_root_key, ..) => {
                             let mut expected_combined_child_hash = value_hash;
                             let mut current_value_bytes = value_bytes;
 
@@ -243,7 +244,7 @@ impl ProofVerifier {
             .map_err(|_| Error::CorruptedData("failed to deserialize element".to_string()))?;
         match subquery_key_element {
             // TODO: Add sum trees here
-            Element::Tree(..) => {
+            Element::Tree(..) | Element::SumTree(..) => {
                 *expected_child_hash = subquery_key_result_set[0].2;
                 *current_value_bytes = subquery_key_result_set[0].1.to_owned();
             }
@@ -335,7 +336,7 @@ impl ProofVerifier {
 
             let elem = Element::deserialize(last_result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(..) => Ok(Some(last_result_set[0].2)),
+                Element::Tree(..) | Element::SumTree(..) => Ok(Some(last_result_set[0].2)),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),
@@ -388,7 +389,7 @@ impl ProofVerifier {
 
             let elem = Element::deserialize(result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(_root_key, ..) => Ok(result_set[0].2),
+                Element::Tree(..) | Element::SumTree(..) => Ok(result_set[0].2),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),

@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use ed::{Decode, Encode, Error, Terminated};
 
 use super::{Node, Op};
-use crate::tree::HASH_LENGTH;
+use crate::{tree::HASH_LENGTH, TreeFeatureType};
 
 impl Encode for Op {
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
@@ -54,6 +54,17 @@ impl Encode for Op {
                 dest.write_all(value)?;
                 dest.write_all(value_hash)?;
             }
+            Op::Push(Node::KVValueHashFeatureType(key, value, value_hash, feature_type)) => {
+                debug_assert!(key.len() < 256);
+                debug_assert!(value.len() < 65536);
+
+                dest.write_all(&[0x07, key.len() as u8])?;
+                dest.write_all(key)?;
+                (value.len() as u16).encode_into(dest)?;
+                dest.write_all(value)?;
+                dest.write_all(value_hash)?;
+                feature_type.encode_into(dest)?;
+            }
 
             // PushInverted
             Op::PushInverted(Node::Hash(hash)) => {
@@ -100,6 +111,22 @@ impl Encode for Op {
                 dest.write_all(value)?;
                 dest.write_all(value_hash)?;
             }
+            Op::PushInverted(Node::KVValueHashFeatureType(
+                key,
+                value,
+                value_hash,
+                feature_type,
+            )) => {
+                debug_assert!(key.len() < 256);
+                debug_assert!(value.len() < 65536);
+
+                dest.write_all(&[0x0e, key.len() as u8])?;
+                dest.write_all(key)?;
+                (value.len() as u16).encode_into(dest)?;
+                dest.write_all(value)?;
+                dest.write_all(value_hash)?;
+                feature_type.encode_into(dest)?;
+            }
 
             Op::Parent => dest.write_all(&[0x10])?,
             Op::Child => dest.write_all(&[0x11])?,
@@ -119,6 +146,9 @@ impl Encode for Op {
             Op::Push(Node::KVRefValueHash(key, value, _)) => {
                 4 + key.len() + value.len() + HASH_LENGTH
             }
+            Op::Push(Node::KVValueHashFeatureType(key, value, _, feature_type)) => {
+                4 + key.len() + value.len() + HASH_LENGTH + feature_type.encoding_length()?
+            }
             Op::PushInverted(Node::Hash(_)) => 1 + HASH_LENGTH,
             Op::PushInverted(Node::KVHash(_)) => 1 + HASH_LENGTH,
             Op::PushInverted(Node::KVDigest(key, _)) => 2 + key.len() + HASH_LENGTH,
@@ -128,6 +158,9 @@ impl Encode for Op {
             }
             Op::PushInverted(Node::KVRefValueHash(key, value, _)) => {
                 4 + key.len() + value.len() + HASH_LENGTH
+            }
+            Op::PushInverted(Node::KVValueHashFeatureType(key, value, _, feature_type)) => {
+                4 + key.len() + value.len() + HASH_LENGTH + feature_type.encoding_length()?
             }
             Op::Parent => 1,
             Op::Child => 1,
@@ -201,6 +234,26 @@ impl Decode for Op {
 
                 Self::Push(Node::KVRefValueHash(key, value, value_hash))
             }
+            0x07 => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u16 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let tree_feature_type = TreeFeatureType::decode(input)?;
+                Self::Push(Node::KVValueHashFeatureType(
+                    key,
+                    value,
+                    value_hash,
+                    tree_feature_type,
+                ))
+            }
             0x08 => {
                 let mut hash = [0; HASH_LENGTH];
                 input.read_exact(&mut hash)?;
@@ -258,7 +311,27 @@ impl Decode for Op {
                 let mut value_hash = [0; HASH_LENGTH];
                 input.read_exact(&mut value_hash)?;
 
-                Self::Push(Node::KVRefValueHash(key, value, value_hash))
+                Self::PushInverted(Node::KVRefValueHash(key, value, value_hash))
+            }
+            0x0e => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u16 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let tree_feature_type = TreeFeatureType::decode(input)?;
+                Self::PushInverted(Node::KVValueHashFeatureType(
+                    key,
+                    value,
+                    value_hash,
+                    tree_feature_type,
+                ))
             }
             0x10 => Self::Parent,
             0x11 => Self::Child,
@@ -342,7 +415,10 @@ impl<'a> Iterator for Decoder<'a> {
 #[cfg(test)]
 mod test {
     use super::super::{Node, Op};
-    use crate::tree::HASH_LENGTH;
+    use crate::{
+        tree::HASH_LENGTH,
+        TreeFeatureType::{BasicMerk, SummedMerk},
+    };
 
     #[test]
     fn encode_push_hash() {
@@ -438,6 +514,45 @@ mod test {
     }
 
     #[test]
+    fn encode_push_kvvalue_hash_feature_type() {
+        let op = Op::Push(Node::KVValueHashFeatureType(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            BasicMerk,
+        ));
+        assert_eq!(op.encoding_length(), 43);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x07, 3, 1, 2, 3, 0, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ]
+        );
+
+        let op = Op::Push(Node::KVValueHashFeatureType(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            SummedMerk(6),
+        ));
+        assert_eq!(op.encoding_length(), 44);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x07, 3, 1, 2, 3, 0, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 12
+            ]
+        )
+    }
+
+    #[test]
     fn encode_push_inverted_hash() {
         let op = Op::PushInverted(Node::Hash([123; HASH_LENGTH]));
         assert_eq!(op.encoding_length(), 1 + HASH_LENGTH);
@@ -512,6 +627,45 @@ mod test {
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
             ]
         )
+    }
+
+    #[test]
+    fn encode_push_inverted_kvvalue_hash_feature_type() {
+        let op = Op::PushInverted(Node::KVValueHashFeatureType(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            BasicMerk,
+        ));
+        assert_eq!(op.encoding_length(), 43);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x0e, 3, 1, 2, 3, 0, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ]
+        );
+
+        let op = Op::PushInverted(Node::KVValueHashFeatureType(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            SummedMerk(5),
+        ));
+        assert_eq!(op.encoding_length(), 44);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x0e, 3, 1, 2, 3, 0, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10
+            ]
+        );
     }
 
     #[test]
@@ -646,6 +800,39 @@ mod test {
     }
 
     #[test]
+    fn decode_push_kvvalue_hash_feature_type() {
+        let bytes = [
+            0x07, 3, 1, 2, 3, 0, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let op = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(
+            op,
+            Op::Push(Node::KVValueHashFeatureType(
+                vec![1, 2, 3],
+                vec![4, 5, 6],
+                [0; 32],
+                BasicMerk
+            ))
+        );
+
+        let bytes = [
+            0x07, 3, 1, 2, 3, 0, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 12,
+        ];
+        let op = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(
+            op,
+            Op::Push(Node::KVValueHashFeatureType(
+                vec![1, 2, 3],
+                vec![4, 5, 6],
+                [0; 32],
+                SummedMerk(6)
+            ))
+        );
+    }
+
+    #[test]
     fn decode_push_inverted_hash() {
         let bytes = [
             0x08, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123, 123,
@@ -708,7 +895,40 @@ mod test {
         let op = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(
             op,
-            Op::Push(Node::KVRefValueHash(vec![1, 2, 3], vec![4, 5, 6], [0; 32]))
+            Op::PushInverted(Node::KVRefValueHash(vec![1, 2, 3], vec![4, 5, 6], [0; 32]))
+        );
+    }
+
+    #[test]
+    fn decode_push_inverted_kvvalue_hash_feature_type() {
+        let bytes = [
+            0x0e, 3, 1, 2, 3, 0, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let op = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(
+            op,
+            Op::PushInverted(Node::KVValueHashFeatureType(
+                vec![1, 2, 3],
+                vec![4, 5, 6],
+                [0; 32],
+                BasicMerk
+            ))
+        );
+
+        let bytes = [
+            0x0e, 3, 1, 2, 3, 0, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 12,
+        ];
+        let op = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(
+            op,
+            Op::PushInverted(Node::KVValueHashFeatureType(
+                vec![1, 2, 3],
+                vec![4, 5, 6],
+                [0; 32],
+                SummedMerk(6)
+            ))
         );
     }
 

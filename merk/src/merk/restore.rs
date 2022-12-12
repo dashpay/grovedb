@@ -8,7 +8,7 @@ use storage::{Batch, StorageContext};
 
 use super::Merk;
 use crate::{
-    merk::MerkSource,
+    merk::{MerkSource, TreeFeatureType::BasicMerk},
     proofs::{
         chunk::{verify_leaf, verify_trunk, MIN_TRUNK_HEIGHT},
         tree::{Child, Tree as ProofTree},
@@ -98,10 +98,28 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
         tree.visit_refs(&mut |proof_node| {
             if let Some((mut node, key)) = match &proof_node.node {
-                Node::KV(key, value) => Some((Tree::new(key.clone(), value.clone()).unwrap(), key)),
+                Node::KV(key, value) => Some((
+                    Tree::new(key.clone(), value.clone(), BasicMerk).unwrap(),
+                    key,
+                )),
                 Node::KVValueHash(key, value, value_hash) => Some((
-                    Tree::new_with_value_hash(key.clone(), value.clone(), value_hash.clone())
-                        .unwrap(),
+                    Tree::new_with_value_hash(
+                        key.clone(),
+                        value.clone(),
+                        value_hash.clone(),
+                        BasicMerk,
+                    )
+                    .unwrap(),
+                    key,
+                )),
+                Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => Some((
+                    Tree::new_with_value_hash(
+                        key.clone(),
+                        value.clone(),
+                        value_hash.clone(),
+                        feature_type.clone(),
+                    )
+                    .unwrap(),
                     key,
                 )),
                 _ => None,
@@ -310,7 +328,9 @@ impl ProofTree {
 impl Child {
     fn as_link(&self) -> Link {
         let key = match &self.tree.node {
-            Node::KV(key, _) | Node::KVValueHash(key, ..) => key.as_slice(),
+            Node::KV(key, _)
+            | Node::KVValueHash(key, ..)
+            | Node::KVValueHashFeatureType(key, ..) => key.as_slice(),
             // for the connection between the trunk and leaf chunks, we don't
             // have the child key so we must first write in an empty one. once
             // the leaf gets verified, we can write in this key to its parent
@@ -319,6 +339,7 @@ impl Child {
 
         Link::Reference {
             hash: self.hash,
+            sum: None,
             child_heights: self.tree.child_heights(),
             key: key.to_vec(),
         }
@@ -350,7 +371,7 @@ mod tests {
 
         let storage = TempStorage::default();
         let ctx = storage.get_storage_context(empty()).unwrap();
-        let merk = Merk::open_base(ctx).unwrap().unwrap();
+        let merk = Merk::open_base(ctx, false).unwrap().unwrap();
         let mut restorer = Merk::restore(merk, original.root_hash().unwrap());
 
         assert_eq!(restorer.remaining_chunks(), None);
@@ -383,7 +404,10 @@ mod tests {
     #[test]
     fn restore_2_left_heavy() {
         restore_test(
-            &[&[(vec![0], Op::Put(vec![]))], &[(vec![1], Op::Put(vec![]))]],
+            &[
+                &[(vec![0], Op::Put(vec![], BasicMerk))],
+                &[(vec![1], Op::Put(vec![], BasicMerk))],
+            ],
             2,
         );
     }
@@ -391,7 +415,10 @@ mod tests {
     #[test]
     fn restore_2_right_heavy() {
         restore_test(
-            &[&[(vec![1], Op::Put(vec![]))], &[(vec![0], Op::Put(vec![]))]],
+            &[
+                &[(vec![1], Op::Put(vec![], BasicMerk))],
+                &[(vec![0], Op::Put(vec![], BasicMerk))],
+            ],
             2,
         );
     }

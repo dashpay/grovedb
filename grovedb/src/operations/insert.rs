@@ -228,7 +228,7 @@ impl GroveDb {
                     )
                 );
             }
-            Element::Tree(ref value, _) => {
+            Element::Tree(ref value, _) | Element::SumTree(ref value, ..) => {
                 if value.is_some() {
                     return Err(Error::InvalidCodeExecution(
                         "a tree should be empty at the moment of insertion when not using batches",
@@ -587,7 +587,8 @@ mod tests {
                 None,
                 Some(&tx),
             )
-            .cost;
+            .cost_as_result()
+            .expect("should insert");
         // Explanation for 183 storage_written_bytes
 
         // Key -> 37 bytes
@@ -595,13 +596,14 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 71
+        // Value -> 72
         //   1 for the flag option (but no flags)
         //   1 for the enum type item
         //   3 for "cat"
         //   1 for cat length
         // 32 for node hash
         // 32 for value hash (trees have this for free)
+        // 1 for Basic merk
         // 1 byte for the value_size (required space for 70)
 
         // Parent Hook -> 39
@@ -620,7 +622,7 @@ mod tests {
             OperationCost {
                 seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
                 storage_cost: StorageCost {
-                    added_bytes: 147,
+                    added_bytes: 148,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },

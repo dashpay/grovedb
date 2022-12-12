@@ -8,6 +8,7 @@ use std::{
     cmp::Ordering,
     collections::{BTreeSet, LinkedList},
     fmt,
+    io::{Read, Write},
 };
 
 use anyhow::{anyhow, Error, Result};
@@ -20,6 +21,8 @@ use costs::{
     },
     CostContext, CostResult, CostsExt, OperationCost,
 };
+use ed::{Decode, Encode, Terminated};
+use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 use storage::{self, error::Error::CostError, Batch, RawIterator, StorageContext};
 
 use crate::{
@@ -33,6 +36,7 @@ use crate::{
         Walker, NULL_HASH,
     },
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
+    TreeFeatureType::{BasicMerk, SummedMerk},
 };
 
 type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
@@ -159,6 +163,61 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
     }
 }
 
+// TODO: Move to seperate file
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum TreeFeatureType {
+    BasicMerk,
+    SummedMerk(i64),
+}
+
+impl Terminated for TreeFeatureType {}
+
+impl Encode for TreeFeatureType {
+    #[inline]
+    fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
+        match self {
+            TreeFeatureType::BasicMerk => {
+                dest.write_all(&[0])?;
+                Ok(())
+            }
+            TreeFeatureType::SummedMerk(sum) => {
+                dest.write_all(&[1])?;
+                dest.write_varint(sum.to_owned());
+                Ok(())
+            }
+        }
+    }
+
+    #[inline]
+    fn encoding_length(&self) -> ed::Result<usize> {
+        match self {
+            TreeFeatureType::BasicMerk => Ok(1),
+            TreeFeatureType::SummedMerk(sum) => {
+                let encoded_sum = sum.encode_var_vec();
+                // 1 for the enum type
+                // encoded_sum.len() for the length of the encoded vector
+                Ok(1 + encoded_sum.len())
+            }
+        }
+    }
+}
+
+impl Decode for TreeFeatureType {
+    #[inline]
+    fn decode<R: Read>(mut input: R) -> ed::Result<Self> {
+        let mut feature_type: [u8; 1] = [0];
+        input.read_exact(&mut feature_type)?;
+        match feature_type {
+            [0] => Ok(BasicMerk),
+            [1] => {
+                let encoded_sum: i64 = input.read_varint()?;
+                Ok(SummedMerk(encoded_sum))
+            }
+            _ => Err(ed::Error::UnexpectedByte(55)),
+        }
+    }
+}
+
 #[derive(PartialEq, Eq)]
 pub enum MerkType {
     /// A StandaloneMerk has it's root key storage on a field and pays for root
@@ -187,6 +246,7 @@ pub struct Merk<S> {
     pub(crate) root_tree_key: Cell<Option<Vec<u8>>>,
     pub storage: S,
     pub merk_type: MerkType,
+    pub is_sum_tree: bool,
 }
 
 impl<S> fmt::Debug for Merk<S> {
@@ -211,32 +271,35 @@ where
     S: StorageContext<'db>,
     <S as StorageContext<'db>>::Error: std::error::Error,
 {
-    pub fn open_empty(storage: S, merk_type: MerkType) -> Self {
+    pub fn open_empty(storage: S, merk_type: MerkType, is_sum_tree: bool) -> Self {
         Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
             storage,
             merk_type,
+            is_sum_tree,
         }
     }
 
-    pub fn open_standalone(storage: S) -> CostContext<Result<Self>> {
+    pub fn open_standalone(storage: S, is_sum_tree: bool) -> CostContext<Result<Self>> {
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
             storage,
             merk_type: StandaloneMerk,
+            is_sum_tree,
         };
 
         merk.load_base_root().map_ok(|_| merk)
     }
 
-    pub fn open_base(storage: S) -> CostContext<Result<Self>> {
+    pub fn open_base(storage: S, is_sum_tree: bool) -> CostContext<Result<Self>> {
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(None),
             storage,
             merk_type: BaseMerk,
+            is_sum_tree,
         };
 
         merk.load_base_root().map_ok(|_| merk)
@@ -245,12 +308,14 @@ where
     pub fn open_layered_with_root_key(
         storage: S,
         root_key: Option<Vec<u8>>,
+        is_sum_tree: bool,
     ) -> CostContext<Result<Self>> {
         let mut merk = Self {
             tree: Cell::new(None),
             root_tree_key: Cell::new(root_key),
             storage,
             merk_type: LayeredMerk,
+            is_sum_tree,
         };
 
         merk.load_root().map_ok(|_| merk)
@@ -302,6 +367,13 @@ where
             node.value_as_slice()
                 .to_vec()
                 .wrap_with_cost(Default::default())
+        })
+    }
+
+    /// Returns the feature type for the node at the given key.
+    pub fn get_feature_type(&self, key: &[u8]) -> CostContext<Result<Option<TreeFeatureType>>> {
+        self.get_node_fn(key, |node| {
+            node.feature_type().wrap_with_cost(Default::default())
         })
     }
 
@@ -425,6 +497,11 @@ where
         })
     }
 
+    /// Returns the total sum value in the Merk tree
+    pub fn sum(&self) -> Option<i64> {
+        self.use_tree(|tree| tree.map_or(None, |tree| tree.sum()))
+    }
+
     /// Returns the root non-prefixed key of the tree. If the tree is empty,
     /// None.
     pub fn root_key(&self) -> Option<Vec<u8>> {
@@ -432,11 +509,14 @@ where
     }
 
     /// Returns the root hash and non-prefixed key of the tree.
-    pub fn root_hash_and_key(&self) -> CostContext<(CryptoHash, Option<Vec<u8>>)> {
+    pub fn root_hash_key_and_sum(&self) -> CostContext<(CryptoHash, Option<Vec<u8>>, Option<i64>)> {
         self.use_tree(|tree| {
             tree.map_or(
-                (NULL_HASH, None).wrap_with_cost(Default::default()),
-                |tree| tree.hash().map(|hash| (hash, Some(tree.key().to_vec()))),
+                (NULL_HASH, None, None).wrap_with_cost(Default::default()),
+                |tree| {
+                    tree.hash()
+                        .map(|hash| (hash, Some(tree.key().to_vec()), tree.sum()))
+                },
             )
         })
     }
@@ -451,14 +531,17 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[], None)
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0], BasicMerk))], &[], None)
     ///         .unwrap().expect("");
     ///
     /// use merk::Op;
+    /// use merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
+    ///     // puts value [4,5,6] to key[1,2,3]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk)),
+    ///     // deletes key [4,5,6]
+    ///     (vec![4, 5, 6], Op::Delete),
     /// ];
     /// store.apply::<_, Vec<_>>(batch, &[], None).unwrap().expect("");
     /// ```
@@ -502,14 +585,17 @@ where
     /// # Example
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
-    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0]))], &[], None)
+    /// # store.apply::<_, Vec<_>>(&[(vec![4,5,6], Op::Put(vec![0], BasicMerk))], &[], None)
     ///         .unwrap().expect("");
     ///
     /// use merk::Op;
+    /// use merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
+    ///     // puts value [4,5,6] to key[1,2,3]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk)),
+    ///     // deletes key [4,5,6]
+    ///     (vec![4, 5, 6], Op::Delete),
     /// ];
     /// store.apply::<_, Vec<_>>(batch, &[], None).unwrap().expect("");
     /// ```
@@ -551,7 +637,7 @@ where
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
     /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
-    ///     &[(vec![4,5,6], Op::Put(vec![0]))],
+    ///     &[(vec![4,5,6], Op::Put(vec![0], BasicMerk))],
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
@@ -561,10 +647,13 @@ where
     ///
     /// use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     /// use merk::Op;
+    /// use merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key[1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
+    ///     // puts value [4,5,6] to key[1,2,3]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk)),
+    ///     // deletes key [4,5,6]
+    ///     (vec![4, 5, 6], Op::Delete),
     /// ];
     ///
     /// store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
@@ -600,7 +689,7 @@ where
     {
         // ensure keys in batch are sorted and unique
         let mut maybe_prev_key: Option<&KB> = None;
-        for (key, _) in batch.iter() {
+        for (key, ..) in batch.iter() {
             if let Some(prev_key) = maybe_prev_key {
                 match prev_key.as_ref().cmp(key.as_ref()) {
                     Ordering::Greater => {
@@ -641,7 +730,7 @@ where
     /// ```
     /// # let mut store = merk::test_utils::TempMerk::new();
     /// # store.apply_with_costs_just_in_time_value_update::<_, Vec<_>>(
-    ///     &[(vec![4,5,6], Op::Put(vec![0]))],
+    ///     &[(vec![4,5,6], Op::Put(vec![0], BasicMerk))],
     ///     &[],
     ///     None,
     ///     &|k, v| Ok(0),
@@ -651,10 +740,13 @@ where
     ///
     /// use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
     /// use merk::Op;
+    /// use merk::TreeFeatureType::BasicMerk;
     ///
     /// let batch = &[
-    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6])), // puts value [4,5,6] to key [1,2,3]
-    ///     (vec![4, 5, 6], Op::Delete),             // deletes key [4,5,6]
+    ///     // puts value [4,5,6] to key [1,2,3]
+    ///     (vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk)),
+    ///     // deletes key [4,5,6]
+    ///     (vec![4, 5, 6], Op::Delete),
     /// ];
     ///     unsafe { store.apply_unchecked::<_, Vec<_>, _, _, _>(    /// /// ///
     ///     batch,
@@ -920,7 +1012,7 @@ where
 
         for (key, value, storage_cost) in aux {
             match value {
-                Op::Put(value) => cost_return_on_error_no_add!(
+                Op::Put(value, ..) => cost_return_on_error_no_add!(
                     &cost,
                     batch
                         .put_aux(key, value, storage_cost.clone())
@@ -1218,7 +1310,7 @@ mod test {
     use tempfile::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};
-    use crate::{test_utils::*, Op};
+    use crate::{test_utils::*, Op, TreeFeatureType, TreeFeatureType::BasicMerk};
 
     // TODO: Close and then reopen test
 
@@ -1235,17 +1327,24 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let test_prefix = [b"ayy"].into_iter().map(|x| x.as_slice());
-        let mut merk = Merk::open_base(storage.get_storage_context(test_prefix.clone()).unwrap())
-            .unwrap()
-            .unwrap();
+        let mut merk = Merk::open_base(
+            storage.get_storage_context(test_prefix.clone()).unwrap(),
+            false,
+        )
+        .unwrap()
+        .unwrap();
 
-        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[], None)
-            .unwrap()
-            .expect("apply failed");
+        merk.apply::<_, Vec<_>>(
+            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk))],
+            &[],
+            None,
+        )
+        .unwrap()
+        .expect("apply failed");
 
         let root_hash = merk.root_hash();
         drop(merk);
-        let merk = Merk::open_base(storage.get_storage_context(test_prefix).unwrap())
+        let merk = Merk::open_base(storage.get_storage_context(test_prefix).unwrap(), false)
             .unwrap()
             .unwrap();
         assert_eq!(merk.root_hash(), root_hash);
@@ -1257,8 +1356,10 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let test_prefix = [b"ayy"].into_iter().map(|x| x.as_slice());
-        let merk_fee_context =
-            Merk::open_base(storage.get_storage_context(test_prefix.clone()).unwrap());
+        let merk_fee_context = Merk::open_base(
+            storage.get_storage_context(test_prefix.clone()).unwrap(),
+            false,
+        );
 
         // Opening not existing merk should cost only root key seek (except context
         // creation)
@@ -1268,13 +1369,18 @@ mod test {
         ));
 
         let mut merk = merk_fee_context.unwrap().unwrap();
-        merk.apply::<_, Vec<_>>(&[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]))], &[], None)
-            .unwrap()
-            .expect("apply failed");
+        merk.apply::<_, Vec<_>>(
+            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk))],
+            &[],
+            None,
+        )
+        .unwrap()
+        .expect("apply failed");
 
         drop(merk);
 
-        let merk_fee_context = Merk::open_base(storage.get_storage_context(test_prefix).unwrap());
+        let merk_fee_context =
+            Merk::open_base(storage.get_storage_context(test_prefix).unwrap(), false);
 
         // Opening existing merk should cost two seeks. (except context creation)
         assert!(matches!(
@@ -1331,7 +1437,7 @@ mod test {
 
         assert!(!result);
 
-        let batch_entry = (key, Op::Put(vec![123; 60]));
+        let batch_entry = (key, Op::Put(vec![123; 60], BasicMerk));
 
         let batch = vec![batch_entry];
 
@@ -1380,9 +1486,13 @@ mod test {
     #[test]
     fn aux_data() {
         let mut merk = TempMerk::new();
-        merk.apply::<Vec<_>, _>(&[], &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6]), None)], None)
-            .unwrap()
-            .expect("apply failed");
+        merk.apply::<Vec<_>, _>(
+            &[],
+            &[(vec![1, 2, 3], Op::Put(vec![4, 5, 6], BasicMerk), None)],
+            None,
+        )
+        .unwrap()
+        .expect("apply failed");
         let val = merk.get_aux(&[1, 2, 3]).unwrap().unwrap();
         assert_eq!(val, Some(vec![4, 5, 6]));
     }
@@ -1392,8 +1502,8 @@ mod test {
         let mut merk = CrashMerk::open_base().expect("failed to open merk");
 
         merk.apply::<_, Vec<_>>(
-            &[(vec![0], Op::Put(vec![1]))],
-            &[(vec![2], Op::Put(vec![3]), None)],
+            &[(vec![0], Op::Put(vec![1], BasicMerk))],
+            &[(vec![2], Op::Put(vec![3], BasicMerk), None)],
             None,
         )
         .unwrap()
@@ -1418,7 +1528,7 @@ mod test {
         assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
 
         // cached
-        merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![]))], &[], None)
+        merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![], BasicMerk))], &[], None)
             .unwrap()
             .unwrap();
         assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
@@ -1426,9 +1536,9 @@ mod test {
         // uncached
         merk.apply::<_, Vec<_>>(
             &[
-                (vec![0, 0, 0], Op::Put(vec![])),
-                (vec![1, 1, 1], Op::Put(vec![])),
-                (vec![2, 2, 2], Op::Put(vec![])),
+                (vec![0, 0, 0], Op::Put(vec![], BasicMerk)),
+                (vec![1, 1, 1], Op::Put(vec![], BasicMerk)),
+                (vec![2, 2, 2], Op::Put(vec![], BasicMerk)),
             ],
             &[],
             None,
@@ -1443,7 +1553,7 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
@@ -1461,7 +1571,7 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
         let batch = make_batch_seq(1..10);
@@ -1499,7 +1609,7 @@ mod test {
         let original_nodes = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
-            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
                 .unwrap()
                 .expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
@@ -1516,7 +1626,7 @@ mod test {
 
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
         let mut tree = merk.tree.take().unwrap();
@@ -1550,7 +1660,7 @@ mod test {
         let original_nodes = {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
-            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
                 .unwrap()
                 .expect("cannot open merk");
             let batch = make_batch_seq(1..10_000);
@@ -1564,7 +1674,7 @@ mod test {
         };
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
 
@@ -1579,16 +1689,24 @@ mod test {
         let tmp_dir = TempDir::new().expect("cannot open tempdir");
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
 
-        merk.apply::<_, Vec<_>>(&[(b"9".to_vec(), Op::Put(b"a".to_vec()))], &[], None)
-            .unwrap()
-            .expect("should insert successfully");
-        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"a".to_vec()))], &[], None)
-            .unwrap()
-            .expect("should insert successfully");
+        merk.apply::<_, Vec<_>>(
+            &[(b"9".to_vec(), Op::Put(b"a".to_vec(), BasicMerk))],
+            &[],
+            None,
+        )
+        .unwrap()
+        .expect("should insert successfully");
+        merk.apply::<_, Vec<_>>(
+            &[(b"10".to_vec(), Op::Put(b"a".to_vec(), BasicMerk))],
+            &[],
+            None,
+        )
+        .unwrap()
+        .expect("should insert successfully");
 
         let result = merk
             .get(b"10".as_slice())
@@ -1597,9 +1715,13 @@ mod test {
         assert_eq!(result, Some(b"a".to_vec()));
 
         // Update the node
-        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"b".to_vec()))], &[], None)
-            .unwrap()
-            .expect("should insert successfully");
+        merk.apply::<_, Vec<_>>(
+            &[(b"10".to_vec(), Op::Put(b"b".to_vec(), BasicMerk))],
+            &[],
+            None,
+        )
+        .unwrap()
+        .expect("should insert successfully");
         let result = merk
             .get(b"10".as_slice())
             .unwrap()
@@ -1608,14 +1730,18 @@ mod test {
 
         drop(merk);
 
-        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .expect("cannot open merk");
 
         // Update the node after dropping merk
-        merk.apply::<_, Vec<_>>(&[(b"10".to_vec(), Op::Put(b"c".to_vec()))], &[], None)
-            .unwrap()
-            .expect("should insert successfully");
+        merk.apply::<_, Vec<_>>(
+            &[(b"10".to_vec(), Op::Put(b"c".to_vec(), BasicMerk))],
+            &[],
+            None,
+        )
+        .unwrap()
+        .expect("should insert successfully");
         let result = merk
             .get(b"10".as_slice())
             .unwrap()
