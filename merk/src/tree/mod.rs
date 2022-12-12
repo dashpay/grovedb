@@ -8,20 +8,20 @@ mod iter;
 pub mod kv;
 mod link;
 mod ops;
+mod tree_feature_type;
 mod walk;
 
 use std::cmp::{max, Ordering};
 
-use anyhow::Result;
 pub use commit::{Commit, NoopCommit};
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
+    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::{
         key_value_cost::KeyValueStorageCost,
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
     },
-    CostContext, CostsExt, OperationCost,
+    CostContext, CostResult, CostsExt, OperationCost,
 };
 use ed::{Decode, Encode, Terminated};
 pub use hash::{
@@ -29,15 +29,14 @@ pub use hash::{
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
     NULL_HASH,
 };
+use integer_encoding::VarInt;
 use kv::KV;
 pub use link::Link;
 pub use ops::{AuxMerkBatch, BatchEntry, MerkBatch, Op, PanicSource};
+pub use tree_feature_type::TreeFeatureType;
 pub use walk::{Fetch, RefWalker, Walker};
 
-use crate::{
-    merk::TreeFeatureType::{BasicMerk, SummedMerk},
-    TreeFeatureType,
-};
+use crate::{error::Error, Error::Overflow};
 
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
@@ -108,16 +107,20 @@ impl Tree {
         let old_value = inner_tree.kv.value.clone();
         Self {
             inner: Box::new(inner_tree),
-            old_size_with_parent_to_child_hook: decode_size as u32,
+            old_size_with_parent_to_child_hook: decode_size,
             old_value: Some(old_value),
         }
+    }
+
+    pub fn is_sum_node(&self) -> bool {
+        self.inner.kv.feature_type.is_sum_feature()
     }
 
     pub fn kv_with_parent_hook_size_and_storage_cost_from_old_cost(
         &self,
         current_value_byte_cost: u32,
         old_cost: u32,
-    ) -> Result<(u32, KeyValueStorageCost)> {
+    ) -> Result<(u32, KeyValueStorageCost), Error> {
         let key_storage_cost = StorageCost {
             ..Default::default()
         };
@@ -156,10 +159,9 @@ impl Tree {
 
     pub fn kv_with_parent_hook_size_and_storage_cost(
         &self,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
-    ) -> Result<(u32, KeyValueStorageCost)> {
-        let current_value_byte_cost =
-            self.value_encoding_length_with_parent_to_child_reference() as u32;
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+    ) -> Result<(u32, KeyValueStorageCost), Error> {
+        let current_value_byte_cost = self.value_encoding_length_with_parent_to_child_reference();
 
         let old_cost = if self.inner.kv.value_defined_cost.is_some() && self.old_value.is_some() {
             old_tree_cost(self.key_as_ref(), self.old_value.as_ref().unwrap())
@@ -339,10 +341,18 @@ impl Tree {
         }
     }
 
-    /// Returns a the size of node's child on the given side, if any.
-    /// If there is no child, returns `None`.
-    pub fn child_ref_size(&self, left: bool) -> Option<u32> {
-        self.link(left).map(|link| link.key().len() as u32 + 35)
+    /// Returns a the size of node's child key and sum on the given side, if
+    /// any. If there is no child, returns `None`.
+    pub fn child_ref_and_sum_size(&self, left: bool) -> Option<(u32, u32)> {
+        self.link(left).map(|link| {
+            (
+                // 36 = 32 Hash + 1 key length + 2 child heights + 1 feature type
+                link.key().len() as u32 + 36,
+                link.sum()
+                    .map(|s| s.encode_var_vec().len() as u32)
+                    .unwrap_or_default(),
+            )
+        })
     }
 
     /// Returns a reference to the root node's child on the given side, if any.
@@ -401,12 +411,14 @@ impl Tree {
 
     /// Computes and returns the hash of the root node.
     #[inline]
-    pub fn sum(&self) -> Option<i64> {
+    pub fn sum(&self) -> Result<Option<i64>, Error> {
         match self.inner.kv.feature_type {
-            TreeFeatureType::BasicMerk => None,
-            TreeFeatureType::SummedMerk(value) => {
-                Some(value + self.child_sum(true) + self.child_sum(false))
-            }
+            TreeFeatureType::BasicMerk => Ok(None),
+            TreeFeatureType::SummedMerk(value) => value
+                .checked_add(self.child_sum(true))
+                .and_then(|a| a.checked_add(self.child_sum(false)))
+                .ok_or(Overflow("sum is overflowing"))
+                .map(Some),
         }
     }
 
@@ -632,19 +644,21 @@ impl Tree {
     pub fn commit<C: Commit>(
         &mut self,
         c: &mut C,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<u32>)>,
+        ) -> Result<(bool, Option<u32>), Error>,
         section_removal_bytes: &mut impl FnMut(
             &Vec<u8>,
             u32,
             u32,
-        )
-            -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
-    ) -> CostContext<Result<()>> {
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<(), Error> {
         // TODO: make this method less ugly
         // TODO: call write in-order for better performance in writing batch to db?
 
@@ -669,7 +683,8 @@ impl Tree {
                         section_removal_bytes
                     )
                 );
-                let sum = tree.sum();
+                let sum = cost_return_on_error_default!(tree.sum());
+
                 self.inner.left = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
                     tree,
@@ -699,7 +714,7 @@ impl Tree {
                         section_removal_bytes
                     )
                 );
-                let sum = tree.sum();
+                let sum = cost_return_on_error_default!(tree.sum());
                 self.inner.right = Some(Link::Loaded {
                     hash: tree.hash().unwrap_add_cost(&mut cost),
                     tree,
@@ -737,7 +752,7 @@ impl Tree {
     /// Fetches the child on the given side using the given data source, and
     /// places it in the child slot (upgrading the link from `Link::Reference`
     /// to `Link::Loaded`).
-    pub fn load<S: Fetch>(&mut self, left: bool, source: &S) -> CostContext<Result<()>> {
+    pub fn load<S: Fetch>(&mut self, left: bool, source: &S) -> CostResult<(), Error> {
         // TODO: return Err instead of panic?
         let link = self.link(left).expect("Expected link");
         let (child_heights, hash, sum) = match link {
@@ -776,7 +791,7 @@ mod test {
     use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
 
     use super::{commit::NoopCommit, hash::NULL_HASH, Tree};
-    use crate::{tree::TreeFeatureType::BasicMerk, TreeFeatureType::SummedMerk};
+    use crate::tree::{tree_feature_type::TreeFeatureType::SummedMerk, TreeFeatureType::BasicMerk};
 
     #[test]
     fn build_tree() {
@@ -973,6 +988,6 @@ mod test {
         .unwrap()
         .expect("commit failed");
 
-        assert_eq!(Some(8), tree.sum());
+        assert_eq!(Some(8), tree.sum().expect("expected to get sum from tree"));
     }
 }

@@ -3,13 +3,12 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use anyhow::Result;
 use storage::{
     rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
     Storage,
 };
 
-use crate::Merk;
+use crate::{error::Error, Merk};
 
 /// Wraps a Merk instance and drops it without flushing once it goes out of
 /// scope.
@@ -21,7 +20,7 @@ pub struct CrashMerk {
 impl CrashMerk {
     /// Opens a `CrashMerk` at the given file path, creating a new one if it
     /// does not exist.
-    pub fn open_base() -> Result<CrashMerk> {
+    pub fn open_base() -> Result<CrashMerk, Error> {
         let storage = Box::leak(Box::new(TempStorage::new()));
         let context = storage.get_storage_context(empty()).unwrap();
         let merk = Merk::open_base(context, false).unwrap().unwrap();

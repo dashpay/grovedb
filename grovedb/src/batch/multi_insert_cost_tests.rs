@@ -184,21 +184,23 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 37
+        // Value -> 38
         //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for empty tree value
+        //   1 for Basic Merk
         // 32 for node hash
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // Total (37 + 37 + 39) * 2 = 226
+        // Total (37 + 38 + 40) * 2 = 230
 
         // Hashes
         // 2 trees
@@ -208,7 +210,7 @@ mod tests {
             OperationCost {
                 seek_count: 4,
                 storage_cost: StorageCost {
-                    added_bytes: 226,
+                    added_bytes: 230,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -245,17 +247,19 @@ mod tests {
         //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for empty tree value
+        //   1 for Basic Merk
         // 32 for node hash
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // Total (37 + 37 + 39) * 2 = 226
+        // Total (37 + 38 + 40) * 2 = 230
 
         // Hashes
         // 2 trees
@@ -267,7 +271,7 @@ mod tests {
             OperationCost {
                 seek_count: 4,
                 storage_cost: StorageCost {
-                    added_bytes: 226,
+                    added_bytes: 230,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },

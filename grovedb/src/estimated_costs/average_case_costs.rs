@@ -16,7 +16,7 @@ use storage::{worst_case_costs::WorstKeyLength, Storage};
 
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
-    subtree::TREE_COST_SIZE,
+    subtree::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     Element, ElementFlags, Error, GroveDb,
 };
 
@@ -26,6 +26,7 @@ impl GroveDb {
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         merk_should_be_empty: bool,
+        is_sum_tree: bool,
     ) {
         cost.seek_count += 1;
         // If the merk is not empty we load the tree
@@ -35,8 +36,11 @@ impl GroveDb {
         match path.last() {
             None => {}
             Some(key) => {
-                cost.storage_loaded_bytes +=
-                    Tree::average_case_encoded_tree_size(key.len() as u32, HASH_LENGTH as u32);
+                cost.storage_loaded_bytes += Tree::average_case_encoded_tree_size(
+                    key.len() as u32,
+                    HASH_LENGTH as u32,
+                    is_sum_tree,
+                );
             }
         }
         *cost += S::get_storage_context_cost(path.as_vec());
@@ -46,6 +50,7 @@ impl GroveDb {
     pub(crate) fn average_case_merk_replace_tree(
         key: &KeyInfo,
         estimated_layer_information: &EstimatedLayerInformation,
+        _is_sum_tree: bool,
         propagate: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -53,14 +58,24 @@ impl GroveDb {
         let flags_size = cost_return_on_error_no_add!(
             &cost,
             estimated_layer_information
-                .sizes()
+                .estimated_layer_sizes
                 .layered_flags_size()
                 .map_err(Error::MerkError)
         )
         .map(|f| f + f.required_space() as u32)
         .unwrap_or_default();
-        let layer_extra_size = TREE_COST_SIZE + flags_size;
-        add_average_case_merk_replace_layered(&mut cost, key_len, layer_extra_size);
+        let tree_cost_size = if estimated_layer_information.is_sum_tree {
+            SUM_TREE_COST_SIZE
+        } else {
+            TREE_COST_SIZE
+        };
+        let layer_extra_size = tree_cost_size + flags_size;
+        add_average_case_merk_replace_layered(
+            &mut cost,
+            key_len,
+            layer_extra_size,
+            estimated_layer_information.is_sum_tree,
+        );
         if propagate {
             add_average_case_merk_propagate(&mut cost, estimated_layer_information)
                 .map_err(Error::MerkError)
@@ -74,6 +89,8 @@ impl GroveDb {
     pub fn average_case_merk_insert_tree(
         key: &KeyInfo,
         flags: &Option<ElementFlags>,
+        is_sum_tree: bool,
+        in_tree_using_sums: bool,
         propagate_if_input: Option<&EstimatedLayerInformation>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -82,30 +99,13 @@ impl GroveDb {
             let flags_len = flags.len() as u32;
             flags_len + flags_len.required_space() as u32
         });
-        let value_len = TREE_COST_SIZE + flags_len;
-        add_cost_case_merk_insert_layered(&mut cost, key_len, value_len);
-        if let Some(input) = propagate_if_input {
-            add_average_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
+        let tree_cost_size = if is_sum_tree {
+            SUM_TREE_COST_SIZE
         } else {
-            Ok(())
-        }
-        .wrap_with_cost(cost)
-    }
-
-    /// Add average case for insertion of sum tree into merk
-    pub(crate) fn average_case_merk_insert_sum_tree(
-        key: &KeyInfo,
-        flags: &Option<ElementFlags>,
-        propagate_if_input: Option<&EstimatedLayerInformation>,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-        let key_len = key.len() as u32;
-        let flags_len = flags.as_ref().map_or(0, |flags| {
-            let flags_len = flags.len() as u32;
-            flags_len + flags_len.required_space() as u32
-        });
-        let value_len = TREE_COST_SIZE + flags_len + 8;
-        add_cost_case_merk_insert_layered(&mut cost, key_len, value_len);
+            TREE_COST_SIZE
+        };
+        let value_len = tree_cost_size + flags_len;
+        add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_tree_using_sums);
         if let Some(input) = propagate_if_input {
             add_average_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
         } else {
@@ -117,6 +117,7 @@ impl GroveDb {
     /// Add average case for insertion into merk
     pub fn average_case_merk_delete_tree(
         key: &KeyInfo,
+        is_sum_tree: bool,
         estimated_layer_information: &EstimatedLayerInformation,
         propagate: bool,
     ) -> CostResult<(), Error> {
@@ -125,13 +126,18 @@ impl GroveDb {
         let flags_size = cost_return_on_error_no_add!(
             &cost,
             estimated_layer_information
-                .sizes()
+                .estimated_layer_sizes
                 .layered_flags_size()
                 .map_err(Error::MerkError)
         )
         .map(|f| f + f.required_space() as u32)
         .unwrap_or_default();
-        let layer_extra_size = TREE_COST_SIZE + flags_size;
+        let tree_cost_size = if is_sum_tree {
+            SUM_TREE_COST_SIZE
+        } else {
+            TREE_COST_SIZE
+        };
+        let layer_extra_size = tree_cost_size + flags_size;
         add_average_case_merk_delete_layered(&mut cost, key_len, layer_extra_size);
         if propagate {
             add_average_case_merk_propagate(&mut cost, estimated_layer_information)
@@ -148,20 +154,31 @@ impl GroveDb {
     pub fn average_case_merk_insert_element(
         key: &KeyInfo,
         value: &Element,
+        in_tree_using_sums: bool,
         propagate_for_level: Option<&EstimatedLayerInformation>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let key_len = key.len() as u32;
         match value {
-            Element::Tree(_, flags) => {
+            Element::Tree(_, flags) | Element::SumTree(_, _, flags) => {
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = TREE_COST_SIZE + flags_len;
-                add_cost_case_merk_insert_layered(&mut cost, key_len, value_len)
+                let tree_cost_size = if value.is_sum_tree() {
+                    SUM_TREE_COST_SIZE
+                } else {
+                    TREE_COST_SIZE
+                };
+                let value_len = tree_cost_size + flags_len;
+                add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_tree_using_sums)
             }
-            _ => add_cost_case_merk_insert(&mut cost, key_len, value.serialized_size() as u32),
+            _ => add_cost_case_merk_insert(
+                &mut cost,
+                key_len,
+                value.serialized_size() as u32,
+                in_tree_using_sums,
+            ),
         };
         if let Some(level) = propagate_for_level {
             add_average_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)
@@ -178,11 +195,11 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         let key_len = key.len() as u32;
-        let estimated_layer_sizes = estimated_layer_information.sizes();
         let value_size = cost_return_on_error_no_add!(
             &cost,
-            estimated_layer_sizes
-                .value_with_flags_size()
+            estimated_layer_information
+                .estimated_layer_sizes
+                .value_with_feature_and_flags_size()
                 .map_err(Error::MerkError)
         );
         add_average_case_merk_delete(&mut cost, key_len, value_size);
@@ -200,9 +217,13 @@ impl GroveDb {
         path: &KeyInfoPath,
         key: &KeyInfo,
         estimated_element_size: u32,
+        in_parent_tree_using_sums: bool,
     ) {
-        let value_size =
-            Tree::average_case_encoded_tree_size(key.len() as u32, estimated_element_size);
+        let value_size = Tree::average_case_encoded_tree_size(
+            key.len() as u32,
+            estimated_element_size,
+            in_parent_tree_using_sums,
+        );
         cost.seek_count += 1;
         cost.storage_loaded_bytes += value_size;
         *cost += S::get_storage_context_cost(path.as_vec());
@@ -213,21 +234,31 @@ impl GroveDb {
         _path: &KeyInfoPath,
         key: &KeyInfo,
         estimated_element_size: u32,
+        in_parent_tree_using_sums: bool,
     ) {
         cost.seek_count += 1;
-        add_average_case_get_merk_node(cost, key.len() as u32, estimated_element_size);
+        add_average_case_get_merk_node(
+            cost,
+            key.len() as u32,
+            estimated_element_size,
+            in_parent_tree_using_sums,
+        );
     }
 
     pub fn add_average_case_get_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
+        in_parent_tree_using_sums: bool,
         estimated_element_size: u32,
         estimated_references_sizes: Vec<u32>,
     ) {
         // todo: verify
-        let value_size: u32 =
-            Tree::average_case_encoded_tree_size(key.len() as u32, estimated_element_size);
+        let value_size: u32 = Tree::average_case_encoded_tree_size(
+            key.len() as u32,
+            estimated_element_size,
+            in_parent_tree_using_sums,
+        );
         cost.seek_count += 1 + estimated_references_sizes.len() as u16;
         cost.storage_loaded_bytes += value_size + estimated_references_sizes.iter().sum::<u32>();
         *cost += S::get_storage_context_cost(path.as_vec());
@@ -286,7 +317,7 @@ mod test {
         // (this will be the max_element_size)
         let mut cost = OperationCost::default();
         let key = KnownKey(8_u64.to_be_bytes().to_vec());
-        add_average_case_get_merk_node(&mut cost, key.len() as u32, 60);
+        add_average_case_get_merk_node(&mut cost, key.len() as u32, 60, false);
         assert_eq!(cost, node_result.cost);
     }
 
@@ -322,6 +353,7 @@ mod test {
             &path,
             &key,
             elem.serialized_size() as u32,
+            false,
         );
 
         let actual_cost = db.has_raw([TEST_LEAF], &[2], None);

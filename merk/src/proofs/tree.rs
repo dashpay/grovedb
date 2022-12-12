@@ -1,13 +1,16 @@
 use std::fmt::Debug;
 
-use anyhow::{anyhow, bail, Result};
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
+    OperationCost,
 };
 
 use super::{Node, Op};
-use crate::tree::{
-    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, NULL_HASH,
+use crate::{
+    error::Error,
+    tree::{
+        combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, NULL_HASH,
+    },
 };
 
 /// Contains a tree's child node and its hash. The hash can always be assumed to
@@ -103,7 +106,10 @@ impl Tree {
 
     /// Does an in-order traversal over references to all the nodes in the tree,
     /// calling `visit_node` for each.
-    pub fn visit_refs<F: FnMut(&Self) -> Result<()>>(&self, visit_node: &mut F) -> Result<()> {
+    pub fn visit_refs<F: FnMut(&Self) -> Result<(), Error>>(
+        &self,
+        visit_node: &mut F,
+    ) -> Result<(), Error> {
         if let Some(child) = &self.left {
             child.tree.visit_refs(visit_node)?;
         }
@@ -136,12 +142,12 @@ impl Tree {
 
     /// Attaches the child to the `Tree`'s given side. Panics if there is
     /// already a child attached to this side.
-    pub(crate) fn attach(&mut self, left: bool, child: Self) -> CostContext<Result<()>> {
+    pub(crate) fn attach(&mut self, left: bool, child: Self) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         if self.child(left).is_some() {
-            return Err(anyhow!(
-                "Tried to attach to left child, but it is already Some"
+            return Err(Error::CorruptionError(
+                "Tried to attach to left child, but it is already Some",
             ))
             .wrap_with_cost(cost);
         }
@@ -264,21 +270,20 @@ impl<'a> Iterator for LayerIter<'a> {
 /// `visit_node` will be called once for every push operation in the proof, in
 /// key-order. If `visit_node` returns an `Err` result, it will halt the
 /// execution and `execute` will return the error.
-pub(crate) fn execute<I, F>(ops: I, collapse: bool, mut visit_node: F) -> CostContext<Result<Tree>>
+pub(crate) fn execute<I, F>(ops: I, collapse: bool, mut visit_node: F) -> CostResult<Tree, Error>
 where
-    I: IntoIterator<Item = Result<Op>>,
-    F: FnMut(&Node) -> Result<()>,
+    I: IntoIterator<Item = Result<Op, Error>>,
+    F: FnMut(&Node) -> Result<(), Error>,
 {
     let mut cost = OperationCost::default();
 
     let mut stack: Vec<Tree> = Vec::with_capacity(32);
     let mut maybe_last_key = None;
 
-    fn try_pop(stack: &mut Vec<Tree>) -> Result<Tree> {
-        match stack.pop() {
-            None => bail!("Stack underflow"),
-            Some(tree) => Ok(tree),
-        }
+    fn try_pop(stack: &mut Vec<Tree>) -> Result<Tree, Error> {
+        stack
+            .pop()
+            .ok_or(Error::InvalidProofError("Stack underflow".to_string()))
     }
 
     for op in ops {
@@ -363,7 +368,10 @@ where
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
                         if key <= last_key {
-                            return Err(anyhow!("Incorrect key ordering")).wrap_with_cost(cost);
+                            return Err(Error::InvalidProofError(
+                                "Incorrect key ordering".to_string(),
+                            ))
+                            .wrap_with_cost(cost);
                         }
                     }
 
@@ -383,7 +391,10 @@ where
                     // keys should always decrease
                     if let Some(last_key) = &maybe_last_key {
                         if key >= last_key {
-                            return Err(anyhow!("Incorrect key ordering")).wrap_with_cost(cost);
+                            return Err(Error::InvalidProofError(
+                                "Incorrect key ordering inverted".to_string(),
+                            ))
+                            .wrap_with_cost(cost);
                         }
                     }
 
@@ -399,8 +410,8 @@ where
     }
 
     if stack.len() != 1 {
-        return Err(anyhow!(
-            "Expected proof to result in exactly one stack item"
+        return Err(Error::InvalidProofError(
+            "Expected proof to result in exactly one stack item".to_string(),
         ))
         .wrap_with_cost(cost);
     }

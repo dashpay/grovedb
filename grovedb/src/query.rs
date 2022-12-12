@@ -1,4 +1,4 @@
-use costs::{CostContext, CostsExt, OperationCost};
+use costs::{CostResult, CostsExt, OperationCost};
 use merk::proofs::{query::QueryItem, Query};
 
 use crate::Error;
@@ -46,7 +46,7 @@ impl PathQuery {
     /// TODO: Currently not allowing unlimited depth queries when paths are
     /// equal     this is possible, should handle later.
     /// [a] + [b] (valid, unique and non subset)
-    pub fn merge(path_queries: Vec<&PathQuery>) -> CostContext<Result<Self, Error>> {
+    pub fn merge(path_queries: Vec<&PathQuery>) -> CostResult<Self, Error> {
         let cost = OperationCost::default();
 
         if path_queries.len() < 2 {

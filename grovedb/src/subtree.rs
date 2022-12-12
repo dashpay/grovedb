@@ -11,12 +11,11 @@ use costs::{
 };
 use integer_encoding::VarInt;
 use merk::{
-    anyhow,
     ed::Decode,
     estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE},
     proofs::{query::QueryItem, Query},
     tree::{kv::KV, Tree, TreeInner},
-    BatchEntry, MerkOptions, Op, TreeFeatureType,
+    BatchEntry, Error as MerkError, MerkOptions, Op, TreeFeatureType,
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
 use serde::{Deserialize, Serialize};
@@ -206,6 +205,13 @@ impl Element {
         }
     }
 
+    pub fn is_tree(&self) -> bool {
+        match &self {
+            Element::SumTree(..) | Element::Tree(..) => true,
+            _ => false,
+        }
+    }
+
     pub fn is_sum_item(&self) -> bool {
         match &self {
             Element::SumItem(..) => true,
@@ -301,28 +307,29 @@ impl Element {
         len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1
     }
 
-    /// Get the size that the element will occupy on disk
-    pub fn node_byte_size(&self, key_len: u32) -> u32 {
-        let serialized_value_size = self.serialized_size() as u32; // this includes the flags
-        KV::node_byte_cost_size_for_key_and_value_lengths(key_len, serialized_value_size)
-    }
-
     /// Delete an element from Merk under a key
     pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
         key: K,
         merk_options: Option<MerkOptions>,
         is_layered: bool,
+        is_sum: bool,
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
         let op = if is_layered {
-            Op::DeleteLayered
+            if is_sum {
+                Op::DeleteLayeredHavingSum
+            } else {
+                Op::DeleteLayered
+            }
         } else {
             Op::Delete
         };
         let batch = [(key, op)];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch, &[], merk_options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -333,25 +340,36 @@ impl Element {
         key: K,
         merk_options: Option<MerkOptions>,
         is_layered: bool,
+        is_sum: bool,
         sectioned_removal: &mut impl FnMut(
             &Vec<u8>,
             u32,
             u32,
-        )
-            -> anyhow::Result<(StorageRemovedBytes, StorageRemovedBytes)>,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            MerkError,
+        >,
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
         let op = if is_layered {
-            Op::DeleteLayered
+            if is_sum {
+                Op::DeleteLayeredHavingSum
+            } else {
+                Op::DeleteLayered
+            }
         } else {
             Op::Delete
         };
         let batch = [(key, op)];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_costs_just_in_time_value_update::<_, Vec<u8>>(
             &batch,
             &[],
             merk_options,
-            &|key, value| Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg),
+            &|key, value| {
+                Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+            },
             &mut |_costs, _old_value, _value| Ok((false, None)),
             sectioned_removal,
         )
@@ -362,11 +380,17 @@ impl Element {
     pub fn delete_into_batch_operations<K: AsRef<[u8]>>(
         key: K,
         is_layered: bool,
+        is_sum: bool,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         let op = if is_layered {
-            Op::DeleteLayered
+            if is_sum {
+                Op::DeleteLayeredHavingSum
+            } else {
+                Op::DeleteLayered
+            }
         } else {
+            // non layered doesn't matter for sum trees
             Op::Delete
         };
         let entry = (key, op);
@@ -1084,7 +1108,7 @@ impl Element {
         key: K,
         options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
+        let cost = OperationCost::default();
 
         let serialized = cost_return_on_error_no_add!(&cost, self.serialize());
 
@@ -1097,13 +1121,19 @@ impl Element {
             cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
 
         let batch_operations = [(key, Op::Put(serialized, merk_feature_type))];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    pub fn tree_costs_for_key_value(key: &Vec<u8>, value: &Vec<u8>) -> Result<u32, Error> {
+    pub fn tree_costs_for_key_value(
+        key: &Vec<u8>,
+        value: &Vec<u8>,
+        is_sum_node: bool,
+    ) -> Result<u32, Error> {
         let element = Element::deserialize(value)?;
         match element {
             Element::Tree(_, flags) => {
@@ -1114,10 +1144,12 @@ impl Element {
                 let value_len = TREE_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
                 Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                    key_len, value_len,
+                    key_len,
+                    value_len,
+                    is_sum_node,
                 ))
             }
-            Element::SumTree(_, sum_value, flags) => {
+            Element::SumTree(_, _sum_value, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
@@ -1125,7 +1157,9 @@ impl Element {
                 let value_len = TREE_COST_SIZE + flags_len + 8;
                 let key_len = key.len() as u32;
                 Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                    key_len, value_len,
+                    key_len,
+                    value_len,
+                    is_sum_node,
                 ))
             }
             _ => Err(Error::CorruptedCodeExecution(
@@ -1227,8 +1261,10 @@ impl Element {
             key,
             Op::PutCombinedReference(serialized, referenced_value, merk_feature_type),
         )];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -1280,7 +1316,7 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let mut cost = OperationCost::default();
+        let cost = OperationCost::default();
         let merk_feature_type =
             cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
 
@@ -1295,8 +1331,10 @@ impl Element {
             key,
             Op::PutLayeredReference(serialized, cost, subtree_root_hash, merk_feature_type),
         )];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
@@ -1470,6 +1508,15 @@ mod tests {
         assert_eq!(serialized.len(), item.serialized_size());
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "0003abcdef00");
+
+        assert_eq!(hex::encode(5.encode_var_vec()), "0a");
+
+        let item = Element::new_sum_item(5);
+        let serialized = item.serialize().expect("expected to serialize");
+        assert_eq!(serialized.len(), 4);
+        assert_eq!(serialized.len(), item.serialized_size());
+        // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
+        assert_eq!(hex::encode(serialized), "03010a00");
 
         let item = Element::new_item_with_flags(
             hex::decode("abcdef").expect("expected to decode"),

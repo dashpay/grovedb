@@ -1,8 +1,11 @@
-//! Cost Errors File
+//! Storage Errors File
 
 /// Storage and underlying errors
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Storage Error
+    #[error("storage error: {0}")]
+    StorageError(String),
     /// Cost Error
     #[error("cost error: {0}")]
     CostError(costs::error::Error),

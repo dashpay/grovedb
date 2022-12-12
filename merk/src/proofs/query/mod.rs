@@ -8,8 +8,7 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-use anyhow::{anyhow, bail, Result};
-use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
+use costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
 use indexmap::IndexMap;
 pub use map::*;
 use storage::RawIterator;
@@ -18,6 +17,7 @@ use {super::Op, std::collections::LinkedList};
 
 use super::{tree::execute, Decoder, Node};
 use crate::{
+    error::Error,
     tree::{value_hash, CryptoHash as MerkHash, Fetch, Link, RefWalker},
     CryptoHash,
 };
@@ -267,9 +267,9 @@ impl Query {
 
     pub fn has_subquery(&self) -> bool {
         // checks if a query has subquery items
-        if self.default_subquery_branch.subquery != None
-            || self.default_subquery_branch.subquery_key != None
-            || self.conditional_subquery_branches.len() != 0
+        if self.default_subquery_branch.subquery.is_some()
+            || self.default_subquery_branch.subquery_key.is_some()
+            || !self.conditional_subquery_branches.is_empty()
         {
             return true;
         }
@@ -816,7 +816,7 @@ where
         Node::KVValueHash(
             self.tree().key().to_vec(),
             self.tree().value_ref().to_vec(),
-            self.tree().value_hash().clone(),
+            *self.tree().value_hash(),
         )
     }
 
@@ -826,8 +826,8 @@ where
         Node::KVValueHashFeatureType(
             self.tree().key().to_vec(),
             self.tree().value_ref().to_vec(),
-            self.tree().value_hash().clone(),
-            self.tree().feature_type().clone(),
+            *self.tree().value_hash(),
+            self.tree().feature_type(),
         )
     }
 
@@ -856,7 +856,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostContext<Result<ProofAbsenceLimitOffset>> {
+    ) -> CostResult<ProofAbsenceLimitOffset, Error> {
         self.create_proof(query, limit, offset, left_to_right)
     }
 
@@ -873,7 +873,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostContext<Result<ProofAbsenceLimitOffset>> {
+    ) -> CostResult<ProofAbsenceLimitOffset, Error> {
         let mut cost = OperationCost::default();
 
         // TODO: don't copy into vec, support comparing QI to byte slice
@@ -904,7 +904,7 @@ where
 
                 // if range starts before this node's key, include it in left
                 // child's query
-                let left_query = if left_bound == None || left_bound < Some(self.tree().key()) {
+                let left_query = if left_bound.is_none() || left_bound < Some(self.tree().key()) {
                     &query[..=index]
                 } else {
                     &query[..index]
@@ -912,7 +912,8 @@ where
 
                 // if range ends after this node's key, include it in right
                 // child's query
-                let right_query = if right_bound == None || right_bound > Some(self.tree().key()) {
+                let right_query = if right_bound.is_none() || right_bound > Some(self.tree().key())
+                {
                     &query[index..]
                 } else {
                     &query[index + 1..]
@@ -926,7 +927,7 @@ where
             }
         };
 
-        if offset == None || offset == Some(0) {
+        if offset.is_none() || offset == Some(0) {
             // when the limit hits zero, the rest of the query batch should be cleared
             // so empty the left, right query batch, and set the current node to not found
             if let Some(current_limit) = limit {
@@ -960,7 +961,7 @@ where
             }
         }
 
-        if !skip_current_node && (new_offset == None || new_offset == Some(0)) {
+        if !skip_current_node && (new_offset.is_none() || new_offset == Some(0)) {
             if let Some(current_limit) = new_limit {
                 // if after generating proof for the left subtree, the limit becomes 0
                 // clear the current node and clear the right batch
@@ -1080,7 +1081,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostContext<Result<ProofAbsenceLimitOffset>> {
+    ) -> CostResult<ProofAbsenceLimitOffset, Error> {
         if !query.is_empty() {
             self.walk(left).flat_map_ok(|child_opt| {
                 if let Some(mut child) = child_opt {
@@ -1105,21 +1106,21 @@ where
     }
 }
 
-pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostContext<Result<Map>> {
+pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
     let ops = Decoder::new(bytes);
     let mut map_builder = MapBuilder::new();
 
     execute(ops, true, |node| map_builder.insert(node)).flat_map_ok(|root| {
         root.hash().map(|hash| {
             if hash != expected_hash {
-                bail!(
+                Err(Error::InvalidProofError(format!(
                     "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
                     expected_hash,
                     root.hash()
-                );
+                )))
+            } else {
+                Ok(map_builder.build())
             }
-
-            Ok(map_builder.build())
         })
     })
 }
@@ -1140,7 +1141,7 @@ pub fn execute_proof(
     limit: Option<u16>,
     offset: Option<u16>,
     left_to_right: bool,
-) -> CostContext<Result<(MerkHash, ProofVerificationResult)>> {
+) -> CostResult<(MerkHash, ProofVerificationResult), Error> {
     let mut cost = OperationCost::default();
 
     let mut output = Vec::with_capacity(query.len());
@@ -1154,7 +1155,7 @@ pub fn execute_proof(
 
     let root_wrapped = execute(ops, true, |node| {
         let mut execute_node =
-            |key: &Vec<u8>, value: Option<&Vec<u8>>, value_hash: CryptoHash| -> Result<_> {
+            |key: &Vec<u8>, value: Option<&Vec<u8>>, value_hash: CryptoHash| -> Result<_, Error> {
                 while let Some(item) = query.peek() {
                     // get next item in query
                     let query_item = *item;
@@ -1206,7 +1207,9 @@ pub fn execute_proof(
                                 // cannot verify lower bound - we have an abridged
                                 // tree so we cannot tell what the preceding key was
                                 Some(_) => {
-                                    bail!("Cannot verify lower bound of queried range");
+                                    return Err(Error::InvalidProofError(
+                                        "Cannot verify lower bound of queried range".to_string(),
+                                    ));
                                 }
                             }
                         } else {
@@ -1232,14 +1235,16 @@ pub fn execute_proof(
                                 // cannot verify upper bound - we have an abridged
                                 // tree so we cannot tell what the previous key was
                                 Some(_) => {
-                                    bail!("Cannot verify upper bound of queried range");
+                                    return Err(Error::InvalidProofError(
+                                        "Cannot verify upper bound of queried range".to_string(),
+                                    ));
                                 }
                             }
                         }
                     }
 
                     if left_to_right {
-                        if query_item.upper_bound().0 != None
+                        if query_item.upper_bound().0.is_some()
                             && Some(key.as_slice()) >= query_item.upper_bound().0
                         {
                             // at or past upper bound of range (or this was an exact
@@ -1253,7 +1258,7 @@ pub fn execute_proof(
                             // unabridged until we reach end of range)
                             in_range = true;
                         }
-                    } else if query_item.lower_bound().0 != None
+                    } else if query_item.lower_bound().0.is_some()
                         && Some(key.as_slice()) <= query_item.lower_bound().0
                     {
                         // at or before lower bound of range (or this was an exact
@@ -1274,12 +1279,14 @@ pub fn execute_proof(
                         // reduce the offset counter
                         // also, verify that a kv node was not pushed before offset is exhausted
                         if let Some(offset) = current_offset {
-                            if offset > 0 && value == None {
+                            if offset > 0 && value.is_none() {
                                 current_offset = Some(offset - 1);
                                 break;
-                            } else if offset > 0 && value != None {
+                            } else if offset > 0 && value.is_some() {
                                 // inserting a kv node before exhausting offset
-                                bail!("Proof returns data before offset is exhausted");
+                                return Err(Error::InvalidProofError(
+                                    "Proof returns data before offset is exhausted".to_string(),
+                                ));
                             }
                         }
 
@@ -1287,7 +1294,9 @@ pub fn execute_proof(
                         if let Some(val) = value {
                             if let Some(limit) = current_limit {
                                 if limit == 0 {
-                                    bail!("Proof returns more data than limit");
+                                    return Err(Error::InvalidProofError(
+                                        "Proof returns more data than limit".to_string(),
+                                    ));
                                 } else {
                                     current_limit = Some(limit - 1);
                                     if current_limit == Some(0) {
@@ -1301,7 +1310,9 @@ pub fn execute_proof(
                             // continue to next push
                             break;
                         } else {
-                            bail!("Proof is missing data for query");
+                            return Err(Error::InvalidProofError(
+                                "Proof is missing data for query".to_string(),
+                            ));
                         }
                     }
                     {}
@@ -1321,7 +1332,9 @@ pub fn execute_proof(
         } else if in_range {
             // we encountered a queried range but the proof was abridged (saw a
             // non-KV push), we are missing some part of the range
-            bail!("Proof is missing data for query");
+            return Err(Error::InvalidProofError(
+                "Proof is missing data for query for range".to_string(),
+            ));
         }
 
         last_push = Some(node.clone());
@@ -1345,7 +1358,12 @@ pub fn execute_proof(
 
                 // proof contains abridged data so we cannot verify absence of
                 // remaining query items
-                _ => return Err(anyhow!("Proof is missing data for query")).wrap_with_cost(cost),
+                _ => {
+                    return Err(Error::InvalidProofError(
+                        "Proof is missing data for query".to_string(),
+                    ))
+                    .wrap_with_cost(cost)
+                }
             }
         }
     }
@@ -1376,17 +1394,17 @@ pub fn verify_query(
     offset: Option<u16>,
     left_to_right: bool,
     expected_hash: MerkHash,
-) -> CostContext<Result<ProofVerificationResult>> {
+) -> CostResult<ProofVerificationResult, Error> {
     execute_proof(bytes, query, limit, offset, left_to_right)
         .map_ok(|(root_hash, verification_result)| {
-            if root_hash != expected_hash {
-                bail!(
-                    "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
-                    expected_hash,
-                    root_hash
-                );
-            };
-            Ok(verification_result)
+            if root_hash == expected_hash {
+                Ok(verification_result)
+            } else {
+                Err(Error::InvalidProofError(format!(
+                    "Proof did not match expected hash\n\tExpected: {expected_hash:?}\n\tActual: \
+                     {root_hash:?}"
+                )))
+            }
         })
         .flatten()
 }
@@ -4861,13 +4879,11 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        (
-            iter.next(),
-            Some(&Op::Push(Node::Hash([
-                121, 235, 207, 195, 143, 58, 159, 120, 166, 33, 151, 45, 178, 124, 91, 233, 201, 4,
-                241, 127, 41, 198, 197, 228, 19, 190, 36, 173, 183, 73, 104, 30,
-            ]))),
-        );
+        iter.next();
+        Some(&Op::Push(Node::Hash([
+            121, 235, 207, 195, 143, 58, 159, 120, 166, 33, 151, 45, 178, 124, 91, 233, 201, 4,
+            241, 127, 41, 198, 197, 228, 19, 190, 36, 173, 183, 73, 104, 30,
+        ])));
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVDigest(

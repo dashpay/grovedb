@@ -425,6 +425,7 @@ where {
         path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
+        in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
         GroveDb::add_worst_case_has_raw_cost::<RocksDbStorage>(
@@ -432,6 +433,7 @@ where {
             path,
             key,
             max_element_size,
+            in_parent_tree_using_sums,
         );
         cost
     }
@@ -440,6 +442,7 @@ where {
         path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
+        in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
         GroveDb::add_worst_case_get_raw_cost::<RocksDbStorage>(
@@ -447,6 +450,7 @@ where {
             path,
             key,
             max_element_size,
+            in_parent_tree_using_sums,
         );
         cost
     }
@@ -456,6 +460,7 @@ where {
         key: &KeyInfo,
         max_element_size: u32,
         max_references_sizes: Vec<u32>,
+        in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
         GroveDb::add_worst_case_get_cost::<RocksDbStorage>(
@@ -463,6 +468,7 @@ where {
             path,
             key,
             max_element_size,
+            in_parent_tree_using_sums,
             max_references_sizes,
         );
         cost
@@ -472,6 +478,7 @@ where {
         path: &KeyInfoPath,
         key: &KeyInfo,
         estimated_element_size: u32,
+        in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
         GroveDb::add_average_case_has_raw_cost::<RocksDbStorage>(
@@ -479,6 +486,7 @@ where {
             path,
             key,
             estimated_element_size,
+            in_parent_tree_using_sums,
         );
         cost
     }
@@ -487,6 +495,7 @@ where {
         path: &KeyInfoPath,
         key: &KeyInfo,
         estimated_element_size: u32,
+        in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
         GroveDb::add_average_case_get_raw_cost::<RocksDbStorage>(
@@ -494,6 +503,7 @@ where {
             path,
             key,
             estimated_element_size,
+            in_parent_tree_using_sums,
         );
         cost
     }
@@ -501,6 +511,7 @@ where {
     pub fn average_case_for_get(
         path: &KeyInfoPath,
         key: &KeyInfo,
+        in_parent_tree_using_sums: bool,
         estimated_element_size: u32,
         estimated_references_sizes: Vec<u32>,
     ) -> OperationCost {
@@ -509,6 +520,7 @@ where {
             &mut cost,
             path,
             key,
+            in_parent_tree_using_sums,
             estimated_element_size,
             estimated_references_sizes,
         );

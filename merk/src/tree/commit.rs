@@ -1,7 +1,7 @@
-use anyhow::Result;
 use costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
 
 use super::Tree;
+use crate::error::Error;
 
 /// To be used when committing a tree (writing it to a store after applying the
 /// changes).
@@ -11,19 +11,21 @@ pub trait Commit {
     fn write(
         &mut self,
         tree: &mut Tree,
-        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<u32>)>,
+        ) -> Result<(bool, Option<u32>), Error>,
         section_removal_bytes: &mut impl FnMut(
             &Vec<u8>,
             u32,
             u32,
-        )
-            -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
-    ) -> Result<()>;
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> Result<(), Error>;
 
     /// Called once per node after writing a node and its children. The returned
     /// tuple specifies whether or not to prune the left and right child nodes,
@@ -41,19 +43,22 @@ impl Commit for NoopCommit {
     fn write(
         &mut self,
         _tree: &mut Tree,
-        _old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32>,
+        _old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         _update_tree_value_based_on_costs: &mut impl FnMut(
             &StorageCost,
             &Vec<u8>,
             &mut Vec<u8>,
-        ) -> Result<(bool, Option<u32>)>,
+        )
+            -> Result<(bool, Option<u32>), Error>,
         _section_removal_bytes: &mut impl FnMut(
             &Vec<u8>,
             u32,
             u32,
-        )
-            -> Result<(StorageRemovedBytes, StorageRemovedBytes)>,
-    ) -> Result<()> {
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> Result<(), Error> {
         Ok(())
     }
 

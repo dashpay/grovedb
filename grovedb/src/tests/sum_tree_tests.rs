@@ -238,7 +238,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
             .expect("node should exist"),
         Some(SummedMerk(0))
     ));
-    assert_eq!(merk.sum(), Some(40));
+    assert_eq!(merk.sum().expect("expected to get sum"), Some(40));
 
     // Perform the same test on regular trees
     let db = make_test_grovedb();
@@ -280,7 +280,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
             .expect("node should exist"),
         Some(BasicMerk)
     ));
-    assert_eq!(merk.sum(), None);
+    assert_eq!(merk.sum().expect("expected to get sum"), None);
 }
 
 #[test]
@@ -296,7 +296,7 @@ fn test_sum_tree_feature() {
         .open_non_transactional_merk_at_path([TEST_LEAF, b"key"])
         .unwrap()
         .expect("should open tree");
-    assert_eq!(merk.sum(), None);
+    assert_eq!(merk.sum().expect("expected to get sum"), None);
 
     // Add sum tree
     db.insert([TEST_LEAF], b"key2", Element::empty_sum_tree(), None, None)
@@ -323,7 +323,7 @@ fn test_sum_tree_feature() {
         .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"])
         .unwrap()
         .expect("should open tree");
-    assert_eq!(merk.sum(), Some(30));
+    assert_eq!(merk.sum().expect("expected to get sum"), Some(30));
 
     // Add more sum items
     db.insert(
@@ -348,7 +348,7 @@ fn test_sum_tree_feature() {
         .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"])
         .unwrap()
         .expect("should open tree");
-    assert_eq!(merk.sum(), Some(70)); // 30 - 10 + 50 = 70
+    assert_eq!(merk.sum().expect("expected to get sum"), Some(70)); // 30 - 10 + 50 = 70
 
     // Add non sum items, result should remain the same
     db.insert(
@@ -364,7 +364,7 @@ fn test_sum_tree_feature() {
         .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"])
         .unwrap()
         .expect("should open tree");
-    assert_eq!(merk.sum(), Some(70));
+    assert_eq!(merk.sum().expect("expected to get sum"), Some(70));
 
     // Update existing sum items
     db.insert(
@@ -389,7 +389,7 @@ fn test_sum_tree_feature() {
         .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"])
         .unwrap()
         .expect("should open tree");
-    assert_eq!(merk.sum(), Some(-60)); // 30 + 10 - 100 = -60
+    assert_eq!(merk.sum().expect("expected to get sum"), Some(-60)); // 30 + 10 - 100 = -60
 
     // Use a large value
     db.insert(
@@ -405,7 +405,10 @@ fn test_sum_tree_feature() {
         .open_non_transactional_merk_at_path([TEST_LEAF, b"key2"])
         .unwrap()
         .expect("should open tree");
-    assert_eq!(merk.sum(), Some(9999940)); // 30 + 10 - 100 + 10000000
+    assert_eq!(merk.sum().expect("expected to get sum"), Some(9999940)); // 30 +
+                                                                         // 10 -
+                                                                         // 100 +
+                                                                         // 10000000
 
     // TODO: Test out overflows
 }
@@ -616,7 +619,7 @@ fn test_sum_tree_with_batches() {
             .expect("node should exist"),
         Some(SummedMerk(10))
     ));
-    assert_eq!(sum_tree.sum(), Some(20));
+    assert_eq!(sum_tree.sum().expect("expected to get sum"), Some(20));
 
     // Test propagation
     // Add a new sum tree with it's own sum items, should affect sum of original
@@ -685,5 +688,5 @@ fn test_sum_tree_with_batches() {
         .open_non_transactional_merk_at_path([TEST_LEAF, b"key1"])
         .unwrap()
         .expect("should open tree");
-    assert_eq!(sum_tree.sum(), Some(41));
+    assert_eq!(sum_tree.sum().expect("expected to get sum"), Some(41));
 }

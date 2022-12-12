@@ -96,12 +96,12 @@ where
                     }
                     Ok(())
                 }
-                Op::Delete | Op::DeleteTree => Ok(()),
-                Op::ReplaceTreeRootKey { .. }
-                | Op::InsertTreeWithRootHash { .. }
-                | Op::InsertSumTreeWithRootHashAndSum { .. } => Err(Error::InvalidBatchOperation(
-                    "replace and insert tree hash are internal operations only",
-                )),
+                Op::Delete | Op::DeleteTree | Op::DeleteSumTree => Ok(()),
+                Op::ReplaceTreeRootKey { .. } | Op::InsertTreeWithRootHash { .. } => {
+                    Err(Error::InvalidBatchOperation(
+                        "replace and insert tree hash are internal operations only",
+                    ))
+                }
             };
             if op_result.is_err() {
                 return Err(op_result.err().unwrap()).wrap_with_cost(op_cost);

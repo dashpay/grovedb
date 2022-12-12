@@ -39,12 +39,12 @@ mod tests {
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 37 + 39 = 113
 
         assert_eq!(
@@ -56,7 +56,7 @@ mod tests {
         );
 
         tx.rollback().expect("expected to rollback");
-        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec())];
+        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx))
             .cost_as_result()
@@ -102,12 +102,12 @@ mod tests {
         // 32 for value hash
         // 1 byte for the value_size (required space for 70)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 71 + 39 = 147
 
         assert_eq!(
@@ -156,12 +156,12 @@ mod tests {
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 37 + 39 = 113
 
         assert_eq!(
@@ -179,7 +179,7 @@ mod tests {
             .cost_as_result()
             .expect("expected to insert successfully");
 
-        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec())];
+        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
         let batch_cost = db
             .apply_batch(ops, None, None)
             .cost_as_result()
@@ -223,12 +223,12 @@ mod tests {
         // 32 for value hash
         // 1 byte for the value_size (required space for 70)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 71 + 39 = 147
 
         assert_eq!(
@@ -289,25 +289,27 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 41
+        // Value -> 42
         //   1 for the flag option (but no flags)
         //   1 for the flags size
         //   3 bytes for flags
         //   1 for the enum type
         //   1 for empty tree value
+        //   1 for Basic Merk
         // 32 for node hash
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // Total 37 + 37 + 39 = 117
+        // Total 37 + 42 + 40 = 119
 
-        assert_eq!(insertion_cost.storage_cost.added_bytes, 117);
+        assert_eq!(insertion_cost.storage_cost.added_bytes, 119);
         assert_eq!(
             insertion_cost.storage_cost.added_bytes,
             non_batch_cost
@@ -317,7 +319,7 @@ mod tests {
         );
 
         tx.rollback().expect("expected to rollback");
-        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec())];
+        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx))
             .cost_as_result()
@@ -382,19 +384,20 @@ mod tests {
         //   2 bytes for flags
         //   1 for the enum type
         //   1 for empty tree value
+        //   1 for basic merk
         // 32 for node hash
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
+        // Total 37 + 41 + 40 = 118
 
-        // Total 37 + 37 + 39 = 116
-
-        assert_eq!(insertion_cost.storage_cost.added_bytes, 116);
+        assert_eq!(insertion_cost.storage_cost.added_bytes, 118);
         assert_eq!(
             insertion_cost.storage_cost.added_bytes,
             non_batch_cost
@@ -408,7 +411,7 @@ mod tests {
         ));
 
         tx.rollback().expect("expected to rollback");
-        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec())];
+        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
         let batch_cost = db
             .apply_batch_with_element_flags_update(
                 ops,
@@ -479,12 +482,12 @@ mod tests {
         // 32 for value hash
         // 1 byte for the value_size (required space for 70)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 71 + 39 = 147
 
         assert_eq!(
@@ -531,25 +534,26 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 41
+        // Value -> 42
         //   1 for the flag option
         //   1 for flags size
         //   3 for flag bytes
         //   1 for the enum type
         //   1 for empty tree value
+        //   1 for Basic Merk
         // 32 for node hash
         // 0 for value hash
         // 2 byte for the value_size (required space for 98 + up to 256 for child key)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
+        // Total 37 + 42 + 40 = 119
 
-        // Total 37 + 41 + 39 = 117
-
-        assert_eq!(insertion_cost.storage_cost.added_bytes, 117);
+        assert_eq!(insertion_cost.storage_cost.added_bytes, 119);
 
         assert_eq!(
             insertion_cost.storage_cost.added_bytes,
@@ -572,7 +576,7 @@ mod tests {
             .cost_as_result()
             .expect("expected to insert successfully");
 
-        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec())];
+        let ops = vec![GroveDbOp::delete_tree_op(vec![], b"key1".to_vec(), false)];
         let batch_cost = db
             .apply_batch(ops, None, None)
             .cost_as_result()
@@ -616,12 +620,12 @@ mod tests {
         // 32 for value hash
         // 1 byte for the value_size (required space for 70)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
+        // Sum 1
         // Total 37 + 71 + 39 = 147
 
         assert_eq!(

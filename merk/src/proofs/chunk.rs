@@ -1,6 +1,5 @@
-use anyhow::{anyhow, bail, Result};
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use storage::RawIterator;
 #[cfg(feature = "full")]
@@ -12,8 +11,10 @@ use {
 
 use super::{Node, Op};
 use crate::{
-    merk::TreeFeatureType::BasicMerk,
+    error::Error,
     tree::{Fetch, RefWalker},
+    Error::EdError,
+    TreeFeatureType::BasicMerk,
 };
 
 /// The minimum number of layers the trunk will be guaranteed to have before
@@ -31,7 +32,7 @@ where
     /// whether or not there will be more chunks to follow. If the chunk
     /// contains the entire tree, the boolean will be `false`, if the chunk
     /// is abridged and will be connected to leaf chunks, it will be `true`.
-    pub fn create_trunk_proof(&mut self) -> CostContext<Result<(Vec<Op>, bool)>> {
+    pub fn create_trunk_proof(&mut self) -> CostResult<(Vec<Op>, bool), Error> {
         let approx_size = 2usize.pow((self.tree().height() / 2) as u32) * 3;
         let mut proof = Vec::with_capacity(approx_size);
 
@@ -56,7 +57,7 @@ where
         &mut self,
         proof: &mut Vec<Op>,
         depth: usize,
-    ) -> CostContext<Result<usize>> {
+    ) -> CostResult<usize, Error> {
         let mut cost = OperationCost::default();
         let maybe_left = match self.walk(true).unwrap_add_cost(&mut cost) {
             Ok(maybe_left) => maybe_left,
@@ -102,7 +103,7 @@ where
         proof: &mut Vec<Op>,
         remaining_depth: usize,
         is_leftmost: bool,
-    ) -> CostContext<Result<()>> {
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
         if remaining_depth == 0 {
@@ -157,7 +158,7 @@ where
 pub(crate) fn get_next_chunk(
     iter: &mut impl RawIterator,
     end_key: Option<&[u8]>,
-) -> CostContext<Result<Vec<Op>>> {
+) -> CostResult<Vec<Op>, Error> {
     let mut cost = OperationCost::default();
 
     let mut chunk = Vec::with_capacity(512);
@@ -176,7 +177,7 @@ pub(crate) fn get_next_chunk(
         let encoded_node = iter.value().unwrap_add_cost(&mut cost).unwrap();
         cost_return_on_error_no_add!(
             &cost,
-            Tree::decode_into(&mut node, vec![], encoded_node).map_err(|e| e.into())
+            Tree::decode_into(&mut node, vec![], encoded_node).map_err(EdError)
         );
 
         // TODO: Only use the KVValueHash if needed, saves 32 bytes
@@ -184,7 +185,7 @@ pub(crate) fn get_next_chunk(
         let kv = Node::KVValueHashFeatureType(
             key.to_vec(),
             node.value_ref().to_vec(),
-            node.value_hash().clone(),
+            *node.value_hash(),
             node.feature_type(),
         );
 
@@ -221,23 +222,25 @@ pub(crate) fn get_next_chunk(
 /// `expected_hash`.
 #[cfg(feature = "full")]
 #[allow(dead_code)] // TODO: remove when proofs will be enabled
-pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op>>>(
+pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op, Error>>>(
     ops: I,
     expected_hash: CryptoHash,
-) -> CostContext<Result<ProofTree>> {
+) -> CostResult<ProofTree, Error> {
     execute(ops, false, |node| match node {
         Node::KVValueHash(..) | Node::KV(..) | Node::KVValueHashFeatureType(..) => Ok(()),
-        _ => bail!("Leaf chunks must contain full subtree"),
+        _ => Err(Error::ChunkRestoringError(
+            "Leaf chunks must contain full subtree".to_string(),
+        )),
     })
     .flat_map_ok(|tree| {
         tree.hash().map(|hash| {
             if hash != expected_hash {
-                bail!(
+                Error::ChunkRestoringError(format!(
                     "Leaf chunk proof did not match expected hash\n\tExpected: {:?}\n\tActual: \
                      {:?}",
                     expected_hash,
                     tree.hash()
-                );
+                ));
             }
             Ok(tree)
         })
@@ -249,16 +252,18 @@ pub(crate) fn verify_leaf<I: Iterator<Item = Result<Op>>>(
 /// height, and all of its inner nodes are not abridged. Returns the tree and
 /// the height given by the height proof.
 #[cfg(feature = "full")]
-pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
+pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op, Error>>>(
     ops: I,
-) -> CostContext<Result<(ProofTree, usize)>> {
+) -> CostResult<(ProofTree, usize), Error> {
     let mut cost = OperationCost::default();
 
-    fn verify_height_proof(tree: &ProofTree) -> Result<usize> {
+    fn verify_height_proof(tree: &ProofTree) -> Result<usize, Error> {
         Ok(match tree.child(true) {
             Some(child) => {
                 if let Node::Hash(_) = child.tree.node {
-                    bail!("Expected height proof to only contain KV and KVHash nodes")
+                    return Err(Error::ChunkRestoringError(
+                        "Expected height proof to only contain KV and KVHash nodes".to_string(),
+                    ));
                 }
                 verify_height_proof(&child.tree)? + 1
             }
@@ -266,7 +271,11 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
         })
     }
 
-    fn verify_completeness(tree: &ProofTree, remaining_depth: usize, leftmost: bool) -> Result<()> {
+    fn verify_completeness(
+        tree: &ProofTree,
+        remaining_depth: usize,
+        leftmost: bool,
+    ) -> Result<(), Error> {
         let recurse = |left, leftmost| {
             if let Some(child) = tree.child(left) {
                 verify_completeness(&child.tree, remaining_depth - 1, left && leftmost)?;
@@ -277,19 +286,31 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
         if remaining_depth > 0 {
             match tree.node {
                 Node::KVValueHash(..) | Node::KV(..) | Node::KVValueHashFeatureType(..) => {}
-                _ => bail!("Expected trunk inner nodes to contain keys and values"),
+                _ => {
+                    return Err(Error::ChunkRestoringError(
+                        "Expected trunk inner nodes to contain keys and values".to_string(),
+                    ))
+                }
             }
             recurse(true, leftmost)?;
             recurse(false, false)
         } else if !leftmost {
             match tree.node {
                 Node::Hash(_) => Ok(()),
-                _ => bail!("Expected trunk leaves to contain Hash nodes"),
+                _ => {
+                    return Err(Error::ChunkRestoringError(
+                        "Expected trunk leaves to contain Hash nodes".to_string(),
+                    ))
+                }
             }
         } else {
             match &tree.node {
                 Node::KVHash(_) => Ok(()),
-                _ => bail!("Expected leftmost trunk leaf to contain KVHash node"),
+                _ => {
+                    return Err(Error::ChunkRestoringError(
+                        "Expected leftmost trunk leaf to contain KVHash node".to_string(),
+                    ))
+                }
             }
         }
     }
@@ -310,7 +331,10 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op>>>(
 
     if trunk_height < MIN_TRUNK_HEIGHT {
         if !kv_only {
-            return Err(anyhow!("Leaf chunks must contain full subtree")).wrap_with_cost(cost);
+            return Err(Error::ChunkRestoringError(
+                "Leaf chunks must contain full subtree".to_string(),
+            ))
+            .wrap_with_cost(cost);
         }
     } else {
         cost_return_on_error_no_add!(&cost, verify_completeness(&tree, trunk_height, true));
@@ -369,7 +393,7 @@ mod tests {
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
 
-        println!("{:?}", &proof);
+        // println!("{:?}", &proof);
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
 
         let counts = count_node_types(trunk);

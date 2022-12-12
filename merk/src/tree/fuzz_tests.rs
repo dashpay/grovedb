@@ -29,10 +29,10 @@ fn fuzz_396148930387069749() {
     fuzz_case(396148930387069749);
 }
 
-fn fuzz_case(seed: u64) {
+fn fuzz_case(seed: u64, using_sum_trees: bool) {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(seed);
     let initial_size = (rng.gen::<u64>() % 10) + 1;
-    let tree = make_tree_rand(initial_size, initial_size, seed);
+    let tree = make_tree_rand(initial_size, initial_size, seed, using_sum_trees);
     let mut map = Map::from_iter(tree.iter());
     let mut maybe_tree = Some(tree);
     println!("====== MERK FUZZ ======");
@@ -44,7 +44,7 @@ fn fuzz_case(seed: u64) {
         let batch = make_batch(maybe_tree.as_ref(), batch_size, rng.gen::<u64>());
         println!("BATCH {}", j);
         println!("{:?}", batch);
-        maybe_tree = apply_to_memonly(maybe_tree, &batch);
+        maybe_tree = apply_to_memonly(maybe_tree, &batch, using_sum_trees);
         apply_to_map(&mut map, &batch);
         assert_map(maybe_tree.as_ref(), &map);
         if let Some(tree) = &maybe_tree {

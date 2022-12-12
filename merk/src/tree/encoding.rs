@@ -1,26 +1,28 @@
-use anyhow::{anyhow, Error};
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use ed::{Decode, Encode};
 use storage::StorageContext;
 
 use super::Tree;
-use crate::tree::TreeInner;
+use crate::{
+    error::{Error, Error::EdError},
+    tree::TreeInner,
+    Error::StorageError,
+};
 
 impl Tree {
     pub fn decode_raw(bytes: &[u8], key: Vec<u8>) -> Result<Self, Error> {
-        Tree::decode(key, bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
+        Tree::decode(key, bytes).map_err(EdError)
     }
 
-    pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> CostContext<Result<Option<Self>, Error>>
+    pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> CostResult<Option<Self>, Error>
     where
         S: StorageContext<'db>,
         K: AsRef<[u8]>,
-        Error: From<S::Error>,
     {
         let mut cost = OperationCost::default();
-        let tree_bytes = cost_return_on_error!(&mut cost, storage.get(&key).map_err(|e| e.into()));
+        let tree_bytes = cost_return_on_error!(&mut cost, storage.get(&key).map_err(StorageError));
 
         let tree_opt = cost_return_on_error_no_add!(
             &cost,
@@ -89,7 +91,7 @@ mod tests {
         assert_eq!(tree.encoding_length(), 68);
         assert_eq!(
             tree.value_encoding_length_with_parent_to_child_reference(),
-            102
+            104
         );
         assert_eq!(
             tree.encode(),
@@ -170,9 +172,9 @@ mod tests {
             tree.encode(),
             vec![
                 1, 1, 2, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66,
-                66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 123, 124, 1, 1, 20, 0, 1,
-                10, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
-                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27, 167, 116,
+                66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 123, 124, 1, 20, 0, 1, 10,
+                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
+                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27, 167, 116,
                 207, 158, 131, 208, 25, 73, 98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39,
                 98, 166, 199, 149, 144, 21, 1
             ]
@@ -202,7 +204,7 @@ mod tests {
         );
         assert_eq!(
             tree.value_encoding_length_with_parent_to_child_reference(),
-            102 // This is 1 less, because the right "Option" byte was not paid for
+            104 // This is 1 less, because the right "Option" byte was not paid for
         );
         assert_eq!(
             tree.encode(),
@@ -247,7 +249,7 @@ mod tests {
             key,
             child_heights,
             hash,
-            sum,
+            sum: _,
         }) = tree.link(true)
         {
             assert_eq!(*key, [2]);
