@@ -341,12 +341,6 @@ impl Tree {
         }
     }
 
-    /// Returns a the size of node's child on the given side, if any.
-    /// If there is no child, returns `None`.
-    pub fn child_ref_size(&self, left: bool) -> Option<u32> {
-        self.link(left).map(|link| link.key().len() as u32 + 35)
-    }
-
     /// Returns a the size of node's child key and sum on the given side, if
     /// any. If there is no child, returns `None`.
     pub fn child_ref_and_sum_size(&self, left: bool) -> Option<(u32, u32)> {
@@ -402,13 +396,6 @@ impl Tree {
             Some(link) => link.sum().unwrap_or_default(),
             _ => 0,
         }
-    }
-
-    /// Returns the size of the sum of the root node's child on the given side,
-    /// if any. If there is no child, returns 0.
-    #[inline]
-    pub fn child_sum_size(&self, left: bool) -> u32 {
-        self.child_sum(left).encode_var_vec().len() as u32
     }
 
     /// Computes and returns the hash of the root node.
