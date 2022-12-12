@@ -212,6 +212,7 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
+    /// Adds the average case of checking to see if a raw value exists
     pub fn add_average_case_has_raw_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
@@ -227,6 +228,28 @@ impl GroveDb {
         cost.seek_count += 1;
         cost.storage_loaded_bytes += value_size;
         *cost += S::get_storage_context_cost(path.as_vec());
+    }
+
+    /// Adds the average case of checking to see if a tree exists
+    pub fn add_average_case_has_raw_tree_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        is_sum_tree: bool,
+        in_parent_tree_using_sums: bool,
+    ) {
+        let estimated_element_size = if is_sum_tree {
+            SUM_TREE_COST_SIZE
+        } else {
+            TREE_COST_SIZE
+        };
+        Self::add_average_case_has_raw_cost::<S>(
+            cost,
+            path,
+            key,
+            estimated_element_size,
+            in_parent_tree_using_sums,
+        );
     }
 
     pub fn add_average_case_get_raw_cost<'db, S: Storage<'db>>(
@@ -245,6 +268,30 @@ impl GroveDb {
         );
     }
 
+    /// adds the average cost of getting a tree
+    pub fn add_average_case_get_raw_tree_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        _path: &KeyInfoPath,
+        key: &KeyInfo,
+        is_sum_tree: bool,
+        in_parent_tree_using_sums: bool,
+    ) {
+        let estimated_element_size = if is_sum_tree {
+            SUM_TREE_COST_SIZE
+        } else {
+            TREE_COST_SIZE
+        };
+        cost.seek_count += 1;
+        add_average_case_get_merk_node(
+            cost,
+            key.len() as u32,
+            estimated_element_size,
+            in_parent_tree_using_sums,
+        );
+    }
+
+    /// adds the average cost of getting an element knowing there can be
+    /// intermediate references
     pub fn add_average_case_get_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
