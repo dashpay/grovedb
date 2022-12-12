@@ -235,13 +235,14 @@ impl GroveDb {
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
+        estimated_flags_size: u32,
         is_sum_tree: bool,
         in_parent_tree_using_sums: bool,
     ) {
         let estimated_element_size = if is_sum_tree {
-            SUM_TREE_COST_SIZE
+            SUM_TREE_COST_SIZE + estimated_flags_size
         } else {
-            TREE_COST_SIZE
+            TREE_COST_SIZE + estimated_flags_size
         };
         Self::add_average_case_has_raw_cost::<S>(
             cost,
@@ -273,13 +274,14 @@ impl GroveDb {
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
+        estimated_flags_size: u32,
         is_sum_tree: bool,
         in_parent_tree_using_sums: bool,
     ) {
         let estimated_element_size = if is_sum_tree {
-            SUM_TREE_COST_SIZE
+            SUM_TREE_COST_SIZE + estimated_flags_size
         } else {
-            TREE_COST_SIZE
+            TREE_COST_SIZE + estimated_flags_size
         };
         cost.seek_count += 1;
         add_average_case_get_merk_node(
