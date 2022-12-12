@@ -1,6 +1,5 @@
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt,
-    OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use storage::RawIterator;
 #[cfg(feature = "full")]
@@ -394,7 +393,7 @@ mod tests {
         let (proof, has_more) = walker.create_trunk_proof().unwrap().unwrap();
         assert!(!has_more);
 
-        println!("{:?}", &proof);
+        // println!("{:?}", &proof);
         let (trunk, _) = verify_trunk(proof.into_iter().map(Ok)).unwrap().unwrap();
 
         let counts = count_node_types(trunk);

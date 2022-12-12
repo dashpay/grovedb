@@ -1,6 +1,5 @@
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt,
-    OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use ed::{Decode, Encode};
 use storage::StorageContext;

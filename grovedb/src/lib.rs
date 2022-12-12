@@ -18,8 +18,7 @@ use std::{collections::HashMap, option::Option::None, path::Path};
 
 use ::visualize::DebugByteVectors;
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt,
-    OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use merk::{
     self,

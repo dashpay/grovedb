@@ -912,7 +912,8 @@ where
 
                 // if range ends after this node's key, include it in right
                 // child's query
-                let right_query = if right_bound.is_none() || right_bound > Some(self.tree().key()) {
+                let right_query = if right_bound.is_none() || right_bound > Some(self.tree().key())
+                {
                     &query[index..]
                 } else {
                     &query[index + 1..]
@@ -1400,7 +1401,8 @@ pub fn verify_query(
                 Ok(verification_result)
             } else {
                 Err(Error::InvalidProofError(format!(
-                    "Proof did not match expected hash\n\tExpected: {expected_hash:?}\n\tActual: {root_hash:?}"
+                    "Proof did not match expected hash\n\tExpected: {expected_hash:?}\n\tActual: \
+                     {root_hash:?}"
                 )))
             }
         })
@@ -4877,10 +4879,11 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        iter.next();Some(&Op::Push(Node::Hash([
-                121, 235, 207, 195, 143, 58, 159, 120, 166, 33, 151, 45, 178, 124, 91, 233, 201, 4,
-                241, 127, 41, 198, 197, 228, 19, 190, 36, 173, 183, 73, 104, 30,
-            ])));
+        iter.next();
+        Some(&Op::Push(Node::Hash([
+            121, 235, 207, 195, 143, 58, 159, 120, 166, 33, 151, 45, 178, 124, 91, 233, 201, 4,
+            241, 127, 41, 198, 197, 228, 19, 190, 36, 173, 183, 73, 104, 30,
+        ])));
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVDigest(

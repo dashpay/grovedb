@@ -8,7 +8,7 @@ use std::{
     cmp::Ordering,
     collections::{BTreeSet, LinkedList},
     fmt,
-    io::{Read},
+    io::Read,
 };
 
 use costs::{
@@ -17,11 +17,10 @@ use costs::{
         key_value_cost::KeyValueStorageCost,
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
-    }, ChildrenSizesWithValue, CostContext, CostResult, CostsExt, FeatureSumLength,
-    OperationCost,
+    },
+    ChildrenSizesWithValue, CostContext, CostResult, CostsExt, FeatureSumLength, OperationCost,
 };
 use ed::{Decode, Encode};
-
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
@@ -335,8 +334,7 @@ where
     /// when node not found by the key.
     pub fn get_value_hash(&self, key: &[u8]) -> CostResult<Option<CryptoHash>, Error> {
         self.get_node_fn(key, |node| {
-            (*node.value_hash())
-                .wrap_with_cost(OperationCost::default())
+            (*node.value_hash()).wrap_with_cost(OperationCost::default())
         })
     }
 
@@ -344,10 +342,7 @@ where
     /// when node not found by the key.
     pub fn get_kv_hash(&self, key: &[u8]) -> CostResult<Option<CryptoHash>, Error> {
         self.get_node_fn(key, |node| {
-            (*node.inner
-                .kv
-                .hash())
-                .wrap_with_cost(OperationCost::default())
+            (*node.inner.kv.hash()).wrap_with_cost(OperationCost::default())
         })
     }
 
@@ -1053,12 +1048,12 @@ where
             self.storage
                 .put_root(ROOT_KEY_KEY, key.as_slice(), None)
                 .map_err(Error::StorageError) // todo: maybe
-                                                            // change None?
+                                              // change None?
         } else {
             self.storage
                 .delete_root(ROOT_KEY_KEY, None)
                 .map_err(Error::StorageError) // todo: maybe
-                                                            // change None?
+                                              // change None?
         }
     }
 
@@ -1075,7 +1070,9 @@ where
                     // Trying to build a tree out of it, costs will be accumulated because
                     // `Tree::get` returns `CostContext` and this call happens inside `flat_map_ok`.
                     Tree::get(&self.storage, tree_root_key).map_ok(|tree| {
-                        if let Some(t) = tree.as_ref() { self.root_tree_key = Cell::new(Some(t.key().to_vec())); }
+                        if let Some(t) = tree.as_ref() {
+                            self.root_tree_key = Cell::new(Some(t.key().to_vec()));
+                        }
                         self.tree = Cell::new(tree);
                     })
                 } else {

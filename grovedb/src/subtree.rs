@@ -1509,6 +1509,15 @@ mod tests {
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "0003abcdef00");
 
+        assert_eq!(hex::encode(5.encode_var_vec()), "0a");
+
+        let item = Element::new_sum_item(5);
+        let serialized = item.serialize().expect("expected to serialize");
+        assert_eq!(serialized.len(), 4);
+        assert_eq!(serialized.len(), item.serialized_size());
+        // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
+        assert_eq!(hex::encode(serialized), "03010a00");
+
         let item = Element::new_item_with_flags(
             hex::decode("abcdef").expect("expected to decode"),
             Some(vec![1]),

@@ -1,7 +1,6 @@
 //! Provides `ChunkProducer`, which creates chunk proofs for full replication of
 //! a Merk.
 
-
 use costs::CostsExt;
 use storage::{RawIterator, StorageContext};
 

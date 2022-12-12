@@ -660,10 +660,10 @@ mod tests {
         // 1 byte for key_size (required space for 36)
 
         // Value -> 78
-        //   1 for the flag option (but no flags)
         //   1 for the enum type item
-        //   1 for the value (encoded var vec
+        //   1 for the value (encoded var vec)
         //   1 for the value length
+        //   1 for the flag option (but no flags)
         // 32 for node hash
         // 32 for value hash (trees have this for free)
         // 9 for Summed merk
@@ -688,6 +688,75 @@ mod tests {
                 },
                 storage_loaded_bytes: 143,
                 hash_node_calls: 8,
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_insert_sum_item_under_sum_item_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"s", Element::empty_sum_tree(), None, Some(&tx))
+            .unwrap()
+            .expect("expected to add upper tree");
+
+        db.insert(
+            vec![b"s".as_slice()],
+            b"key1",
+            Element::new_sum_item(5),
+            None,
+            Some(&tx),
+        )
+        .unwrap()
+        .expect("should insert");
+
+        let cost = db
+            .insert(
+                vec![b"s".as_slice()],
+                b"key2",
+                Element::new_sum_item(6),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("should insert");
+        // Explanation for 183 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 78
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type item
+        //   1 for the value (encoded var vec
+        //   1 for the value length
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 9 for Summed merk
+        // 1 byte for the value_size (required space for 77)
+
+        // Parent Hook -> 48
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Summed Merk 9
+        // Child Heights 2
+
+        // Total 37 + 78 + 48 = 163
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 7,
+                storage_cost: StorageCost {
+                    added_bytes: 163,
+                    replaced_bytes: 209, // todo: verify
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 225,
+                hash_node_calls: 10,
             }
         );
     }

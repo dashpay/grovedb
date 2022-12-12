@@ -7,10 +7,7 @@ use costs::{
 };
 use intmap::IntMap;
 use merk::{
-    estimated_costs::{
-        worst_case_costs::add_worst_case_cost_for_is_empty_tree_except,
-    },
-    tree::kv::KV,
+    estimated_costs::worst_case_costs::add_worst_case_cost_for_is_empty_tree_except, tree::kv::KV,
     Error as MerkError, Merk, MerkOptions,
 };
 use storage::{

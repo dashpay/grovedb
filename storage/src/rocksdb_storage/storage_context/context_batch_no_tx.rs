@@ -1,6 +1,6 @@
 use costs::{
-    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree,
-    CostResult, CostsExt, OperationCost,
+    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostResult,
+    CostsExt, OperationCost,
 };
 use error::Error;
 use rocksdb::{ColumnFamily, DBRawIteratorWithThreadMode};

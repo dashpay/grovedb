@@ -174,6 +174,8 @@ impl OperationCost {
                 // children) but before adding the parent to child hook
                 paid_value_len += paid_value_len.required_space() as u32;
 
+                // Now we are the parent to child hook
+
                 // we need to add the sum tree node size
                 let sum_tree_node_size = if in_sum_tree.is_some() { 8 } else { 0 };
 

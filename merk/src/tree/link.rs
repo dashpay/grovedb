@@ -4,7 +4,7 @@ use ed::{Decode, Encode, Result, Terminated};
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
 use super::{hash::CryptoHash, Tree};
-use crate::{HASH_LENGTH_U32};
+use crate::HASH_LENGTH_U32;
 
 // TODO: optimize memory footprint
 

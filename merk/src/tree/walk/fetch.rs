@@ -1,4 +1,4 @@
-use costs::{CostResult};
+use costs::CostResult;
 
 use super::super::{Link, Tree};
 use crate::error::Error;

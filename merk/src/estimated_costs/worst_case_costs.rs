@@ -100,7 +100,6 @@ const fn node_hash_update_count() -> u16 {
     // It's a hash of node hash, left and right
     let bytes = HASH_LENGTH * 3;
     // todo: verify this
-    
 
     1 + ((bytes - 1) / HASH_BLOCK_SIZE) as u16
 }

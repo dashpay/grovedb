@@ -3,7 +3,7 @@ use integer_encoding::VarInt;
 
 use crate::{
     error::Error,
-    estimated_costs::{LAYER_COST_SIZE},
+    estimated_costs::LAYER_COST_SIZE,
     tree::{kv::KV, Link, Tree},
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
 };
@@ -120,11 +120,15 @@ impl EstimatedLayerSizes {
                 items_size,
                 references_size,
             } => {
-                let (item_size, item_weight) = items_size.as_ref().map(|(_, vs, fs, weight)| (vs + fs.unwrap_or_default() + 3, *weight as u32))
-                .unwrap_or_default();
+                let (item_size, item_weight) = items_size
+                    .as_ref()
+                    .map(|(_, vs, fs, weight)| (vs + fs.unwrap_or_default() + 3, *weight as u32))
+                    .unwrap_or_default();
 
-                let (ref_size, ref_weight) = references_size.as_ref().map(|(_, vs, fs, weight)| (vs + fs.unwrap_or_default() + 5, *weight as u32))
-                .unwrap_or_default();
+                let (ref_size, ref_weight) = references_size
+                    .as_ref()
+                    .map(|(_, vs, fs, weight)| (vs + fs.unwrap_or_default() + 5, *weight as u32))
+                    .unwrap_or_default();
 
                 let (subtree_size, subtree_weight) = match subtrees_size {
                     None => None,
@@ -298,7 +302,6 @@ const fn node_hash_update_count() -> u16 {
     // It's a hash of node hash, left and right
     let bytes = HASH_LENGTH * 3;
     // todo: verify this
-    
 
     1 + ((bytes - 1) / HASH_BLOCK_SIZE) as u16
 }

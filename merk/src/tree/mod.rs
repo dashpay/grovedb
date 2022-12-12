@@ -161,8 +161,7 @@ impl Tree {
         &self,
         old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
     ) -> Result<(u32, KeyValueStorageCost), Error> {
-        let current_value_byte_cost =
-            self.value_encoding_length_with_parent_to_child_reference();
+        let current_value_byte_cost = self.value_encoding_length_with_parent_to_child_reference();
 
         let old_cost = if self.inner.kv.value_defined_cost.is_some() && self.old_value.is_some() {
             old_tree_cost(self.key_as_ref(), self.old_value.as_ref().unwrap())
@@ -353,8 +352,11 @@ impl Tree {
     pub fn child_ref_and_sum_size(&self, left: bool) -> Option<(u32, u32)> {
         self.link(left).map(|link| {
             (
-                link.key().len() as u32 + 35,
-                link.sum().unwrap_or_default().encode_var_vec().len() as u32,
+                // 36 = 32 Hash + 1 key length + 2 child heights + 1 feature type
+                link.key().len() as u32 + 36,
+                link.sum()
+                    .map(|s| s.encode_var_vec().len() as u32)
+                    .unwrap_or_default(),
             )
         })
     }

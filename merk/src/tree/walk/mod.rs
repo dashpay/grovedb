@@ -199,9 +199,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use costs::{
-        storage_cost::removal::StorageRemovedBytes::NoStorageRemoval, CostsExt,
-    };
+    use costs::{storage_cost::removal::StorageRemovedBytes::NoStorageRemoval, CostsExt};
 
     use super::{super::NoopCommit, *};
     use crate::tree::{Tree, TreeFeatureType::BasicMerk};
