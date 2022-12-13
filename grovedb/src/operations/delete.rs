@@ -671,7 +671,7 @@ impl GroveDb {
                     is_sum_tree,
                 ) = cost_return_on_error_no_add!(
                     &cost,
-                    if height == path_len {
+                    if height == path_len - 1 {
                         if let Some(layer_info) = estimated_layer_info.get(height as u64) {
                             let estimated_value_len = cost_return_on_error_no_add!(
                                 &cost,
@@ -715,7 +715,7 @@ impl GroveDb {
                                 layer_info.is_sum_tree,
                             ))
                         } else {
-                            Err(Error::InvalidParameter("intermediate flag size missing"))
+                            Err(Error::InvalidParameter("intermediate layer info missing"))
                         }
                     }
                 );

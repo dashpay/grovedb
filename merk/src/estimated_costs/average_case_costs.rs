@@ -112,7 +112,7 @@ impl EstimatedLayerSizes {
             },
             _ => {
                 return Err(Error::WrongEstimatedCostsElementTypeForLevel(
-                    "this layer is needs to have trees",
+                    "this layer needs to have trees",
                 ));
             }
         }
