@@ -169,7 +169,7 @@ impl GroveDb {
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         mut current_batch_operations: Vec<GroveDbOp>,
         transaction: TransactionArg,
-    ) -> CostResult<Option<Vec<GroveDbOp>>, Error>
+    ) -> CostResult<Vec<GroveDbOp>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
         <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
@@ -184,6 +184,7 @@ impl GroveDb {
             &mut current_batch_operations,
             transaction,
         )
+        .map_ok(|ops| ops.unwrap_or_default())
     }
 
     pub fn add_delete_operations_for_delete_up_tree_while_empty<'p, P>(
