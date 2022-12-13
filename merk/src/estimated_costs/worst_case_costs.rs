@@ -160,3 +160,12 @@ pub fn add_worst_case_cost_for_is_empty_tree_except(
     cost.seek_count += except_keys_count + 1;
     cost.storage_loaded_bytes += MAX_PREFIXED_KEY_SIZE * (except_keys_count as u32 + 1);
 }
+
+pub fn add_average_case_cost_for_is_empty_tree_except(
+    cost: &mut OperationCost,
+    except_keys_count: u16,
+    estimated_prefixed_key_size: u32,
+) {
+    cost.seek_count += except_keys_count + 1;
+    cost.storage_loaded_bytes += estimated_prefixed_key_size * (except_keys_count as u32 + 1);
+}

@@ -94,6 +94,30 @@ impl EstimatedLayerSizes {
         }
     }
 
+    /// this only takes into account subtrees in the estimated layer info
+    /// only should be used when it is known to be a subtree
+    pub fn subtree_with_feature_and_flags_size(&self) -> Result<u32, Error> {
+        match self {
+            EstimatedLayerSizes::AllSubtrees(_, estimated_sum_trees, flags_size) => {
+                // 1 for enum type
+                // 1 for empty
+                // 1 for flags size
+                Ok(estimated_sum_trees.estimated_size()? + flags_size.unwrap_or_default() + 3)
+            }
+            EstimatedLayerSizes::Mix { subtrees_size, .. } => match subtrees_size {
+                None => Err(Error::WrongEstimatedCostsElementTypeForLevel(
+                    "this layer is a mix but doesn't have subtrees",
+                )),
+                Some((_, est, fs, _)) => Ok(est.estimated_size()? + fs.unwrap_or_default() + 3),
+            },
+            _ => {
+                return Err(Error::WrongEstimatedCostsElementTypeForLevel(
+                    "this layer is needs to have trees",
+                ));
+            }
+        }
+    }
+
     pub fn value_with_feature_and_flags_size(&self) -> Result<u32, Error> {
         match self {
             EstimatedLayerSizes::AllItems(_, average_value_size, flags_size) => {
