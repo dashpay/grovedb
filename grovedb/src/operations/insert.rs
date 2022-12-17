@@ -727,10 +727,10 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 78
+        // Value -> 77
         //   1 for the flag option (but no flags)
         //   1 for the enum type item
-        //   1 for the value (encoded var vec
+        //   1 for the value (encoded var vec)
         // 32 for node hash
         // 32 for value hash (trees have this for free)
         // 9 for Summed merk
@@ -743,7 +743,7 @@ mod tests {
         // Summed Merk 9
         // Child Heights 2
 
-        // Total 37 + 78 + 48 = 163
+        // Total 37 + 77 + 48 = 162
         assert_eq!(
             cost,
             OperationCost {
@@ -796,14 +796,14 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 78
+        // Value -> 81
         //   1 for the flag option (but no flags)
         //   1 for the enum type item
-        //   1 for the value (encoded var vec
+        //   5 for the value (encoded var vec)
         // 32 for node hash
         // 32 for value hash (trees have this for free)
         // 9 for Summed merk
-        // 1 byte for the value_size (required space for 77)
+        // 1 byte for the value_size (required space for 81)
 
         // Parent Hook -> 48
         // Key Bytes 4
@@ -812,7 +812,7 @@ mod tests {
         // Summed Merk 9
         // Child Heights 2
 
-        // Total 37 + 78 + 48 = 163
+        // Total 37 + 81 + 48 = 166
         assert_eq!(
             cost,
             OperationCost {
