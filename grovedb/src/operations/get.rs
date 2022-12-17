@@ -340,7 +340,7 @@ where {
         &self,
         path_query: &PathQuery,
         transaction: TransactionArg,
-    ) -> CostResult<(Vec<Vec<u8>>, u16), Error> {
+    ) -> CostResult<(Vec<i64>, u16), Error> {
         let mut cost = OperationCost::default();
 
         let (elements, skipped) = cost_return_on_error!(
@@ -369,11 +369,11 @@ where {
                                         .follow_reference(absolute_path, transaction)
                                         .unwrap_add_cost(&mut cost)?;
 
-                                    if let Element::Item(item, _) = maybe_item {
+                                    if let Element::SumItem(item, _) = maybe_item {
                                         Ok(item)
                                     } else {
                                         Err(Error::InvalidQuery(
-                                            "the reference must result in an item",
+                                            "the reference must result in a sum item",
                                         ))
                                     }
                                 }
@@ -382,10 +382,9 @@ where {
                                 )),
                             }
                         }
-                        Element::Item(item, _) => Ok(item),
-                        Element::SumItem(item, _) => Ok(item.encode_var_vec()),
-                        Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidQuery(
-                            "path_queries can only refer to items and references",
+                        Element::SumItem(item, _) => Ok(item),
+                        Element::Tree(..) | Element::SumTree(..) | Element::Item(..) => Err(Error::InvalidQuery(
+                            "path_queries over sum items can only refer to sum items and references",
                         )),
                     }
                 }
@@ -393,7 +392,7 @@ where {
                     "query returned incorrect result type",
                 )),
             })
-            .collect::<Result<Vec<Vec<u8>>, Error>>();
+            .collect::<Result<Vec<i64>, Error>>();
 
         let results = cost_return_on_error_no_add!(&cost, results_wrapped);
         Ok((results, skipped)).wrap_with_cost(cost)
