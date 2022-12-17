@@ -383,9 +383,12 @@ where {
                             }
                         }
                         Element::SumItem(item, _) => Ok(item),
-                        Element::Tree(..) | Element::SumTree(..) | Element::Item(..) => Err(Error::InvalidQuery(
-                            "path_queries over sum items can only refer to sum items and references",
-                        )),
+                        Element::Tree(..) | Element::SumTree(..) | Element::Item(..) => {
+                            Err(Error::InvalidQuery(
+                                "path_queries over sum items can only refer to sum items and \
+                                 references",
+                            ))
+                        }
                     }
                 }
                 _ => Err(Error::CorruptedCodeExecution(
