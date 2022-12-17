@@ -71,14 +71,14 @@ jobs:
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: nightly
           default: true
           components: rustfmt
 
       - name: Enable Rust cache
         uses: Swatinem/rust-cache@v2
 
-      - run: exit `cargo fmt --check | wc -l`
+      - run: exit `cargo +nightly fmt --check | wc -l`
 
   errors:
     name: Compilation errors
