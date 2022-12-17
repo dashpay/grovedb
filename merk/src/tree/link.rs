@@ -239,7 +239,7 @@ impl Link {
 
     /// the encoding cost is always 8 bytes for the sum instead of a varint
     #[inline]
-    fn encoding_cost(&self) -> Result<usize> {
+    pub fn encoding_cost(&self) -> Result<usize> {
         debug_assert!(self.key().len() < 256, "Key length must be less than 256");
 
         Ok(match self {
@@ -306,10 +306,10 @@ impl Encode for Link {
 
         match sum {
             None => {
-                out.write_all(&[0]);
+                out.write_all(&[0])?;
             }
             Some(sum_value) => {
-                out.write_all(&[1]);
+                out.write_all(&[1])?;
                 out.write_varint(sum_value.to_owned())?;
             }
         }
