@@ -221,29 +221,45 @@ impl KV {
         self.key
     }
 
-    /// Get the costs for the node, this has the parent to child hooks
+    /// Get the key costs for the node, this has the parent to child hooks
     #[inline]
-    pub fn node_byte_cost_size_for_key_and_value_lengths(
+    pub fn node_key_byte_cost_size(not_prefixed_key_len: u32) -> u32 {
+        HASH_LENGTH_U32
+            + not_prefixed_key_len
+            + (not_prefixed_key_len + HASH_LENGTH_U32).required_space() as u32
+    }
+
+    /// Get the key costs for the node, this has the parent to child hooks
+    #[inline]
+    pub fn node_value_byte_cost_size(
         not_prefixed_key_len: u32,
-        value_len: u32,
+        raw_value_len: u32,
         is_sum_node: bool,
     ) -> u32 {
         // Sum trees are either 1 or 9 bytes. While they might be more or less on disk,
         // costs can not take advantage of the varint aspect of the feature.
         let feature_len = if is_sum_node { 9 } else { 1 };
 
-        let value_size = value_len + HASH_LENGTH_U32_X2 + feature_len;
-        let node_value_size = value_size + value_size.required_space() as u32;
-        // Hash length is for the key prefix
-        let node_key_size = HASH_LENGTH_U32
-            + not_prefixed_key_len
-            + (not_prefixed_key_len + HASH_LENGTH_U32).required_space() as u32;
-        // Each node stores the key and value, the value hash and node hash
-        let node_size = node_value_size + node_key_size;
+        let value_size = raw_value_len + HASH_LENGTH_U32_X2 + feature_len;
         // The node will be a child of another node which stores it's key and hash
         // That will be added during propagation
         let parent_to_child_cost = Link::encoded_link_size(not_prefixed_key_len, is_sum_node);
-        node_size + parent_to_child_cost
+
+        value_size + value_size.required_space() as u32 + parent_to_child_cost
+    }
+
+    /// Get the costs for the node, this has the parent to child hooks
+    #[inline]
+    pub fn node_byte_cost_size_for_key_and_raw_value_lengths(
+        not_prefixed_key_len: u32,
+        raw_value_len: u32,
+        is_sum_node: bool,
+    ) -> u32 {
+        let node_value_size =
+            Self::node_value_byte_cost_size(not_prefixed_key_len, raw_value_len, is_sum_node);
+        let node_key_size = Self::node_key_byte_cost_size(not_prefixed_key_len);
+        // Each node stores the key and value, the value hash and node hash
+        node_value_size + node_key_size
     }
 
     /// Get the costs for the node, this has the parent to child hooks

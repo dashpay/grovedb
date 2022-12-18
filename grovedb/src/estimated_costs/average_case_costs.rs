@@ -3,6 +3,7 @@ use integer_encoding::VarInt;
 use merk::{
     estimated_costs::{
         add_cost_case_merk_insert, add_cost_case_merk_insert_layered,
+        add_cost_case_merk_replace_same_size,
         average_case_costs::{
             add_average_case_get_merk_node, add_average_case_merk_delete,
             add_average_case_merk_delete_layered, add_average_case_merk_propagate,
@@ -16,7 +17,7 @@ use storage::{worst_case_costs::WorstKeyLength, Storage};
 
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
-    subtree::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
+    subtree::{SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     Element, ElementFlags, Error, GroveDb,
 };
 
@@ -172,6 +173,59 @@ impl GroveDb {
                 };
                 let value_len = tree_cost_size + flags_len;
                 add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_tree_using_sums)
+            }
+            _ => add_cost_case_merk_insert(
+                &mut cost,
+                key_len,
+                value.serialized_size() as u32,
+                in_tree_using_sums,
+            ),
+        };
+        if let Some(level) = propagate_for_level {
+            add_average_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)
+        } else {
+            Ok(())
+        }
+        .wrap_with_cost(cost)
+    }
+
+    /// Add average case for replacement into merk
+    /// This only propagates on 1 level
+    /// As higher level propagation is done in batching
+    pub fn average_case_merk_replace_element(
+        key: &KeyInfo,
+        value: &Element,
+        in_tree_using_sums: bool,
+        propagate_for_level: Option<&EstimatedLayerInformation>,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        let key_len = key.len() as u32;
+        match value {
+            Element::Tree(_, flags) | Element::SumTree(_, _, flags) => {
+                let flags_len = flags.as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let tree_cost_size = if value.is_sum_tree() {
+                    SUM_TREE_COST_SIZE
+                } else {
+                    TREE_COST_SIZE
+                };
+                let value_len = tree_cost_size + flags_len;
+                add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_tree_using_sums)
+            }
+            Element::SumItem(_, flags) => {
+                let flags_len = flags.as_ref().map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = SUM_ITEM_COST_SIZE + flags_len;
+                add_cost_case_merk_replace_same_size(
+                    &mut cost,
+                    key_len,
+                    value_len,
+                    in_tree_using_sums,
+                )
             }
             _ => add_cost_case_merk_insert(
                 &mut cost,
