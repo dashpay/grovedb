@@ -1,16 +1,22 @@
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use ed::{Decode, Encode};
+#[cfg(feature = "full")]
 use storage::StorageContext;
 
+#[cfg(feature = "full")]
 use super::Tree;
+#[cfg(feature = "full")]
 use crate::{
     error::{Error, Error::EdError},
     tree::TreeInner,
     Error::StorageError,
 };
 
+#[cfg(feature = "full")]
 impl Tree {
     pub fn decode_raw(bytes: &[u8], key: Vec<u8>) -> Result<Self, Error> {
         Tree::decode(key, bytes).map_err(EdError)
@@ -35,6 +41,7 @@ impl Tree {
     }
 }
 
+#[cfg(feature = "full")]
 impl Tree {
     #[inline]
     pub fn encode(&self) -> Vec<u8> {
@@ -80,6 +87,7 @@ impl Tree {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use super::{super::Link, *};

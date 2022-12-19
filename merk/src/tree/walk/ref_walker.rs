@@ -1,11 +1,15 @@
+#[cfg(feature = "full")]
 use costs::{CostResult, CostsExt, OperationCost};
 
+#[cfg(feature = "full")]
 use super::{
     super::{Link, Tree},
     Fetch,
 };
+#[cfg(feature = "full")]
 use crate::Error;
 
+#[cfg(feature = "full")]
 /// Allows read-only traversal of a `Tree`, fetching from the given source when
 /// traversing to a pruned node. The fetched nodes are then retained in memory
 /// until they (possibly) get pruned on the next commit.
@@ -20,6 +24,7 @@ where
     source: S,
 }
 
+#[cfg(feature = "full")]
 impl<'a, S> RefWalker<'a, S>
 where
     S: Fetch + Sized + Clone,

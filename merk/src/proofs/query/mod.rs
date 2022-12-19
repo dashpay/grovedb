@@ -1,5 +1,7 @@
+#[cfg(feature = "full")]
 mod map;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use std::{
     cmp,
     cmp::{max, min, Ordering},
@@ -8,26 +10,32 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
+#[cfg(any(feature = "full", feature = "verify"))]
 use indexmap::IndexMap;
+#[cfg(feature = "full")]
 pub use map::*;
+#[cfg(any(feature = "full", feature = "verify"))]
 use storage::RawIterator;
 #[cfg(feature = "full")]
 use {super::Op, std::collections::LinkedList};
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use super::{tree::execute, Decoder, Node};
-use crate::{
-    error::Error,
-    tree::{value_hash, CryptoHash as MerkHash, Fetch, Link, RefWalker},
-    CryptoHash,
-};
+#[cfg(feature = "full")]
+use crate::tree::{Fetch, Link, RefWalker};
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::{error::Error, tree::value_hash, CryptoHash as MerkHash, CryptoHash};
 
+#[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct SubqueryBranch {
     pub subquery_key: Option<Vec<u8>>,
     pub subquery: Option<Box<Query>>,
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all of the requested values.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -38,8 +46,10 @@ pub struct Query {
     pub left_to_right: bool,
 }
 
+#[cfg(feature = "full")]
 type ProofAbsenceLimitOffset = (LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>);
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl Query {
     /// Creates a new query which contains no items.
     pub fn new() -> Self {
@@ -277,6 +287,7 @@ impl Query {
     }
 }
 
+#[cfg(feature = "full")]
 impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
     fn from(other: Vec<Q>) -> Self {
         let items = other.into_iter().map(Into::into).collect();
@@ -292,12 +303,14 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
     }
 }
 
+#[cfg(feature = "full")]
 impl From<Query> for Vec<QueryItem> {
     fn from(q: Query) -> Self {
         q.into_iter().collect()
     }
 }
 
+#[cfg(feature = "full")]
 impl IntoIterator for Query {
     type IntoIter = <BTreeSet<QueryItem> as IntoIterator>::IntoIter;
     type Item = QueryItem;
@@ -307,6 +320,7 @@ impl IntoIterator for Query {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// A `QueryItem` represents a key or range of keys to be included in a proof.
 #[derive(Clone, Debug)]
 pub enum QueryItem {
@@ -322,6 +336,7 @@ pub enum QueryItem {
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl Hash for QueryItem {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.enum_value().hash(state);
@@ -329,6 +344,7 @@ impl Hash for QueryItem {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl QueryItem {
     pub fn processing_footprint(&self) -> u32 {
         match self {
@@ -693,20 +709,24 @@ impl QueryItem {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl PartialEq for QueryItem {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl PartialEq<&[u8]> for QueryItem {
     fn eq(&self, other: &&[u8]) -> bool {
         matches!(self.partial_cmp(other), Some(Ordering::Equal))
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl Eq for QueryItem {}
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl Ord for QueryItem {
     fn cmp(&self, other: &Self) -> Ordering {
         let cmp_lu = if self.lower_unbounded() {
@@ -762,12 +782,14 @@ impl Ord for QueryItem {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl PartialOrd for QueryItem {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl PartialOrd<&[u8]> for QueryItem {
     fn partial_cmp(&self, other: &&[u8]) -> Option<Ordering> {
         let other = Self::Key(other.to_vec());
@@ -775,12 +797,14 @@ impl PartialOrd<&[u8]> for QueryItem {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl From<Vec<u8>> for QueryItem {
     fn from(key: Vec<u8>) -> Self {
         Self::Key(key)
     }
 }
 
+#[cfg(feature = "full")]
 impl Link {
     /// Creates a `Node::Hash` from this link. Panics if the link is of variant
     /// `Link::Modified` since its hash has not yet been computed.
@@ -798,6 +822,7 @@ impl Link {
     }
 }
 
+#[cfg(feature = "full")]
 impl<'a, S> RefWalker<'a, S>
 where
     S: Fetch + Sized + Clone,
@@ -1106,6 +1131,7 @@ where
     }
 }
 
+#[cfg(feature = "full")]
 pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
     let ops = Decoder::new(bytes);
     let mut map_builder = MapBuilder::new();
@@ -1125,6 +1151,7 @@ pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
     })
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Verifies the encoded proof with the given query
 ///
 /// Every key in `keys` is checked to either have a key/value pair in the proof,
@@ -1379,6 +1406,7 @@ pub fn execute_proof(
     .wrap_with_cost(cost)
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 #[derive(PartialEq, Eq, Debug)]
 pub struct ProofVerificationResult {
     pub result_set: Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,
@@ -1386,6 +1414,7 @@ pub struct ProofVerificationResult {
     pub offset: Option<u16>,
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Verifies the encoded proof with the given query and expected hash
 pub fn verify_query(
     bytes: &[u8],
@@ -1409,6 +1438,7 @@ pub fn verify_query(
         .flatten()
 }
 
+#[cfg(feature = "full")]
 #[allow(deprecated)]
 #[cfg(test)]
 mod test {

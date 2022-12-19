@@ -1,11 +1,15 @@
 //! Provides `Restorer`, which can create a replica of a Merk instance by
 //! receiving chunk proofs.
 
+#[cfg(feature = "full")]
 use std::{iter::Peekable, u8};
 
+#[cfg(feature = "full")]
 use storage::{Batch, StorageContext};
 
+#[cfg(feature = "full")]
 use super::Merk;
+#[cfg(feature = "full")]
 use crate::{
     error::Error,
     merk::MerkSource,
@@ -20,6 +24,7 @@ use crate::{
     TreeFeatureType::BasicMerk,
 };
 
+#[cfg(feature = "full")]
 /// A `Restorer` handles decoding, verifying, and storing chunk proofs to
 /// replicate an entire Merk tree. It expects the chunks to be processed in
 /// order, retrying the last chunk if verification fails.
@@ -32,6 +37,7 @@ pub struct Restorer<S> {
     combining_value: Option<Vec<u8>>,
 }
 
+#[cfg(feature = "full")]
 impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// Creates a new `Restorer`, which will initialize a new Merk at the given
     /// file path. The first chunk (the "trunk") will be compared against
@@ -313,6 +319,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     }
 }
 
+#[cfg(feature = "full")]
 impl<'db, S: StorageContext<'db>> Merk<S> {
     /// Creates a new `Restorer`, which can be used to verify chunk proofs to
     /// replicate an entire Merk tree. A new Merk instance will be initialized
@@ -322,6 +329,7 @@ impl<'db, S: StorageContext<'db>> Merk<S> {
     }
 }
 
+#[cfg(feature = "full")]
 impl ProofTree {
     fn child_heights(&self) -> (u8, u8) {
         (
@@ -331,6 +339,7 @@ impl ProofTree {
     }
 }
 
+#[cfg(feature = "full")]
 impl Child {
     fn as_link(&self) -> Link {
         let key = match &self.tree.node {
@@ -352,6 +361,7 @@ impl Child {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use std::iter::empty;
