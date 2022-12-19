@@ -284,7 +284,7 @@ impl Element {
                 }
             }
             Element::Reference(path_reference, _, element_flag) => {
-                let path_length = path_reference.encoding_length() as u32;
+                let path_length = path_reference.serialized_size() as u32;
 
                 if let Some(flag) = element_flag {
                     flag.len() as u32 + path_length

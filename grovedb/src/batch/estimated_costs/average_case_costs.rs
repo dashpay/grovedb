@@ -599,8 +599,6 @@ mod tests {
 
     #[test]
     fn test_batch_root_one_sum_item_replace_op_average_case_costs() {
-        let db = make_empty_grovedb();
-
         let ops = vec![GroveDbOp::replace_op(
             vec![vec![7]],
             hex::decode("46447a3b4c8939fd4cf8b610ba7da3d3f6b52b39ab2549bf91503b9b07814055")
