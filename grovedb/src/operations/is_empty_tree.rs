@@ -1,7 +1,10 @@
+#[cfg(feature = "full")]
 use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
+#[cfg(feature = "full")]
 use crate::{util::merk_optional_tx, Element, Error, GroveDb, TransactionArg};
 
+#[cfg(feature = "full")]
 impl GroveDb {
     pub fn is_empty_tree<'p, P>(
         &self,

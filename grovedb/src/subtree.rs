@@ -2,55 +2,75 @@
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
 
+#[cfg(feature = "full")]
 use core::fmt;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use bincode::Options;
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
     CostContext, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
+#[cfg(any(feature = "full", feature = "verify"))]
+use merk::proofs::Query;
+#[cfg(feature = "full")]
 use merk::{
     ed::Decode,
     estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE},
-    proofs::{query::QueryItem, Query},
+    proofs::query::QueryItem,
     tree::{kv::KV, Tree, TreeInner},
     BatchEntry, Error as MerkError, MerkOptions, Op, TreeFeatureType,
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
+#[cfg(any(feature = "full", feature = "verify"))]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "full")]
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+#[cfg(feature = "full")]
 use visualize::visualize_to_vec;
 
+#[cfg(feature = "full")]
 use crate::{
     query_result_type::{
         KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType,
         QueryResultType::QueryElementResultType,
     },
-    reference_path::{path_from_reference_path_type, ReferencePathType},
+    reference_path::path_from_reference_path_type,
     util::{
         merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
     },
-    Error, Hash, Merk, PathQuery, SizedQuery, TransactionArg,
+    Hash, Merk, PathQuery, TransactionArg,
 };
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::{reference_path::ReferencePathType, Error, SizedQuery};
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Optional meta-data to be stored per element
 pub type ElementFlags = Vec<u8>;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Optional single byte to represent the maximum number of reference hop to
 /// base element
 pub type MaxReferenceHop = Option<u8>;
 
+#[cfg(feature = "full")]
 /// The cost of a tree
 pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
+#[cfg(feature = "full")]
 /// The cost of a tree
 pub const SUM_ITEM_COST_SIZE: u32 = 10;
+#[cfg(feature = "full")]
 /// The cost of a sum tree
 pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 11
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// int 64 sum value
 pub type SumValue = i64;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
@@ -70,6 +90,7 @@ pub enum Element {
     SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
 }
 
+#[cfg(feature = "full")]
 impl fmt::Debug for Element {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut v = Vec::new();
@@ -79,6 +100,7 @@ impl fmt::Debug for Element {
     }
 }
 
+#[cfg(feature = "full")]
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>
 where
     'db: 'ctx,
@@ -99,43 +121,53 @@ where
 }
 
 impl Element {
+    #[cfg(feature = "full")]
     // TODO: improve API to avoid creation of Tree elements with uncertain state
     pub fn empty_tree() -> Self {
         Element::new_tree(Default::default())
     }
 
+    #[cfg(feature = "full")]
     pub fn empty_tree_with_flags(flags: Option<ElementFlags>) -> Self {
         Element::new_tree_with_flags(Default::default(), flags)
     }
 
+    #[cfg(feature = "full")]
     pub fn empty_sum_tree() -> Self {
         Element::new_sum_tree(Default::default())
     }
 
+    #[cfg(feature = "full")]
     pub fn empty_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
         Element::new_sum_tree_with_flags(Default::default(), flags)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_item(item_value: Vec<u8>) -> Self {
         Element::Item(item_value, None)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_item_with_flags(item_value: Vec<u8>, flags: Option<ElementFlags>) -> Self {
         Element::Item(item_value, flags)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_sum_item(value: i64) -> Self {
         Element::SumItem(value, None)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_sum_item_with_flags(value: i64, flags: Option<ElementFlags>) -> Self {
         Element::SumItem(value, flags)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_reference(reference_path: ReferencePathType) -> Self {
         Element::Reference(reference_path, None, None)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_reference_with_flags(
         reference_path: ReferencePathType,
         flags: Option<ElementFlags>,
@@ -143,6 +175,7 @@ impl Element {
         Element::Reference(reference_path, None, flags)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_reference_with_hops(
         reference_path: ReferencePathType,
         max_reference_hop: MaxReferenceHop,
@@ -150,6 +183,7 @@ impl Element {
         Element::Reference(reference_path, max_reference_hop, None)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_reference_with_max_hops_and_flags(
         reference_path: ReferencePathType,
         max_reference_hop: MaxReferenceHop,
@@ -158,10 +192,12 @@ impl Element {
         Element::Reference(reference_path, max_reference_hop, flags)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
         Element::Tree(maybe_root_key, None)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_tree_with_flags(
         maybe_root_key: Option<Vec<u8>>,
         flags: Option<ElementFlags>,
@@ -169,10 +205,12 @@ impl Element {
         Element::Tree(maybe_root_key, flags)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_sum_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
         Element::SumTree(maybe_root_key, 0, None)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_sum_tree_with_flags(
         maybe_root_key: Option<Vec<u8>>,
         flags: Option<ElementFlags>,
@@ -180,6 +218,7 @@ impl Element {
         Element::SumTree(maybe_root_key, 0, flags)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_sum_tree_with_flags_and_sum_value(
         maybe_root_key: Option<Vec<u8>>,
         sum_value: SumValue,
@@ -188,6 +227,7 @@ impl Element {
         Element::SumTree(maybe_root_key, sum_value, flags)
     }
 
+    #[cfg(feature = "full")]
     /// Decoded the integer value in the SumItem element type, returns 0 for
     /// everything else
     pub fn sum_value(&self) -> Option<i64> {
@@ -197,6 +237,7 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     pub fn is_sum_tree(&self) -> bool {
         match &self {
             Element::SumTree(..) => true,
@@ -204,6 +245,7 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     pub fn is_tree(&self) -> bool {
         match &self {
             Element::SumTree(..) | Element::Tree(..) => true,
@@ -211,6 +253,7 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     pub fn is_sum_item(&self) -> bool {
         match &self {
             Element::SumItem(..) => true,
@@ -218,6 +261,7 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     pub fn get_feature_type(&self, parent_is_sum_tree: bool) -> Result<TreeFeatureType, Error> {
         match parent_is_sum_tree {
             true => {
@@ -233,6 +277,7 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     /// Grab the optional flag stored in an element
     pub fn get_flags(&self) -> &Option<ElementFlags> {
         match self {
@@ -244,6 +289,7 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     /// Grab the optional flag stored in an element
     pub fn get_flags_owned(self) -> Option<ElementFlags> {
         match self {
@@ -255,6 +301,7 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     /// Grab the optional flag stored in an element as mutable
     pub fn get_flags_mut(&mut self) -> &mut Option<ElementFlags> {
         match self {
@@ -266,6 +313,7 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     /// Get the size of an element in bytes
     pub fn byte_size(&self) -> u32 {
         match self {
@@ -309,10 +357,12 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     pub fn required_item_space(len: u32, flag_len: u32) -> u32 {
         len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1
     }
 
+    #[cfg(feature = "full")]
     /// Delete an element from Merk under a key
     pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
@@ -340,6 +390,7 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
+    #[cfg(feature = "full")]
     /// Delete an element from Merk under a key
     pub fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
@@ -382,6 +433,7 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
+    #[cfg(feature = "full")]
     /// Delete an element from Merk under a key to batch operations
     pub fn delete_into_batch_operations<K: AsRef<[u8]>>(
         key: K,
@@ -404,6 +456,7 @@ impl Element {
         Ok(()).wrap_with_cost(Default::default())
     }
 
+    #[cfg(feature = "full")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
     pub fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -434,6 +487,7 @@ impl Element {
         Ok(element).wrap_with_cost(cost)
     }
 
+    #[cfg(feature = "full")]
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
     pub fn get_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -469,6 +523,7 @@ impl Element {
         Ok(element).wrap_with_cost(cost)
     }
 
+    #[cfg(feature = "full")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
     pub fn get_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -488,6 +543,7 @@ impl Element {
         Ok(absolute_element).wrap_with_cost(cost)
     }
 
+    #[cfg(feature = "full")]
     /// Get an element's value hash from Merk under a key
     pub fn get_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
@@ -504,6 +560,7 @@ impl Element {
         Ok(value_hash).wrap_with_cost(cost)
     }
 
+    #[cfg(feature = "full")]
     pub fn get_query(
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
@@ -516,6 +573,7 @@ impl Element {
             .map_ok(|(elements, _)| elements)
     }
 
+    #[cfg(feature = "full")]
     pub fn get_query_values(
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
@@ -543,6 +601,7 @@ impl Element {
         })
     }
 
+    #[cfg(feature = "full")]
     fn convert_if_reference_to_absolute_reference(
         self,
         path: &[&[u8]],
@@ -576,6 +635,7 @@ impl Element {
         })
     }
 
+    #[cfg(feature = "full")]
     fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
         let PathQueryPushArgs {
             path,
@@ -621,6 +681,7 @@ impl Element {
         Ok(())
     }
 
+    #[cfg(feature = "full")]
     fn path_query_push(args: PathQueryPushArgs) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -811,6 +872,7 @@ impl Element {
         Ok(()).wrap_with_cost(cost)
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub fn subquery_paths_for_sized_query(
         sized_query: &SizedQuery,
         key: &[u8],
@@ -839,6 +901,7 @@ impl Element {
         (subquery_key, subquery)
     }
 
+    #[cfg(feature = "full")]
     // TODO: refactor
     #[allow(clippy::too_many_arguments)]
     fn query_item(
@@ -954,6 +1017,7 @@ impl Element {
         .wrap_with_cost(cost)
     }
 
+    #[cfg(feature = "full")]
     pub fn get_query_apply_function(
         storage: &RocksDbStorage,
         path: &[&[u8]],
@@ -1025,6 +1089,7 @@ impl Element {
         Ok((QueryResultElements::from_elements(results), skipped)).wrap_with_cost(cost)
     }
 
+    #[cfg(feature = "full")]
     // Returns a vector of elements excluding trees, and the number of skipped
     // elements
     pub fn get_path_query(
@@ -1049,6 +1114,7 @@ impl Element {
         )
     }
 
+    #[cfg(feature = "full")]
     // Returns a vector of elements including trees, and the number of skipped
     // elements
     pub fn get_raw_path_query(
@@ -1073,6 +1139,7 @@ impl Element {
         )
     }
 
+    #[cfg(feature = "full")]
     /// Returns a vector of elements, and the number of skipped elements
     pub fn get_sized_query(
         storage: &RocksDbStorage,
@@ -1092,6 +1159,7 @@ impl Element {
         )
     }
 
+    #[cfg(feature = "full")]
     /// Helper function that returns whether an element at the key for the
     /// element already exists.
     pub fn element_at_key_already_exists<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -1103,6 +1171,7 @@ impl Element {
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
+    #[cfg(feature = "full")]
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -1135,6 +1204,7 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
+    #[cfg(feature = "full")]
     pub fn tree_costs_for_key_value(
         key: &Vec<u8>,
         value: &Vec<u8>,
@@ -1174,6 +1244,7 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     pub fn insert_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -1190,6 +1261,7 @@ impl Element {
         Ok(()).wrap_with_cost(Default::default())
     }
 
+    #[cfg(feature = "full")]
     /// Insert an element in Merk under a key if it doesn't yet exist; path
     /// should be resolved and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -1212,6 +1284,7 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     pub fn insert_if_not_exists_into_batch_operations<
         'db,
         S: StorageContext<'db>,
@@ -1239,6 +1312,7 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     /// Insert a reference element in Merk under a key; path should be resolved
     /// and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -1275,6 +1349,7 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
+    #[cfg(feature = "full")]
     pub fn insert_reference_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -1295,6 +1370,7 @@ impl Element {
         Ok(()).wrap_with_cost(Default::default())
     }
 
+    #[cfg(feature = "full")]
     pub fn get_tree_cost(&self) -> Result<u32, Error> {
         match self {
             Element::Tree(..) => Ok(TREE_COST_SIZE),
@@ -1305,6 +1381,7 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     /// Insert a tree element in Merk under a key; path should be resolved
     /// and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -1345,6 +1422,7 @@ impl Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
+    #[cfg(feature = "full")]
     pub fn insert_subtree_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -1379,6 +1457,7 @@ impl Element {
         Ok(()).wrap_with_cost(Default::default())
     }
 
+    #[cfg(feature = "full")]
     pub fn serialize(&self) -> Result<Vec<u8>, Error> {
         bincode::DefaultOptions::default()
             .with_varint_encoding()
@@ -1387,6 +1466,7 @@ impl Element {
             .map_err(|_| Error::CorruptedData(String::from("unable to serialize element")))
     }
 
+    #[cfg(feature = "full")]
     pub fn serialized_size(&self) -> usize {
         bincode::DefaultOptions::default()
             .with_varint_encoding()
@@ -1395,6 +1475,7 @@ impl Element {
             .unwrap() as usize // this should not be able to error
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
         bincode::DefaultOptions::default()
             .with_varint_encoding()
@@ -1403,6 +1484,7 @@ impl Element {
             .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
     }
 
+    #[cfg(feature = "full")]
     pub fn iterator<I: RawIterator>(mut raw_iter: I) -> CostContext<ElementsIterator<I>> {
         let mut cost = OperationCost::default();
         raw_iter.seek_to_first().unwrap_add_cost(&mut cost);
@@ -1410,16 +1492,19 @@ impl Element {
     }
 }
 
+#[cfg(feature = "full")]
 pub struct ElementsIterator<I: RawIterator> {
     raw_iter: I,
 }
 
+#[cfg(feature = "full")]
 pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
     let tree = Tree::decode_raw(bytes, vec![]).map_err(|e| Error::CorruptedData(e.to_string()))?;
     let element: Element = Element::deserialize(tree.value_as_slice())?;
     Ok(element)
 }
 
+#[cfg(feature = "full")]
 impl<I: RawIterator> ElementsIterator<I> {
     pub fn new(raw_iter: I) -> Self {
         ElementsIterator { raw_iter }
@@ -1460,6 +1545,7 @@ impl<I: RawIterator> ElementsIterator<I> {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use merk::test_utils::TempMerk;

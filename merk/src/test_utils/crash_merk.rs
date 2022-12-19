@@ -1,15 +1,19 @@
+#[cfg(feature = "full")]
 use std::{
     iter::empty,
     ops::{Deref, DerefMut},
 };
 
+#[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{test_utils::TempStorage, PrefixedRocksDbStorageContext},
     Storage,
 };
 
+#[cfg(feature = "full")]
 use crate::{error::Error, Merk};
 
+#[cfg(feature = "full")]
 /// Wraps a Merk instance and drops it without flushing once it goes out of
 /// scope.
 pub struct CrashMerk {
@@ -17,6 +21,7 @@ pub struct CrashMerk {
     merk: Merk<PrefixedRocksDbStorageContext<'static>>,
 }
 
+#[cfg(feature = "full")]
 impl CrashMerk {
     /// Opens a `CrashMerk` at the given file path, creating a new one if it
     /// does not exist.
@@ -32,6 +37,7 @@ impl CrashMerk {
     }
 }
 
+#[cfg(feature = "full")]
 impl Drop for CrashMerk {
     fn drop(&mut self) {
         unsafe {
@@ -40,6 +46,7 @@ impl Drop for CrashMerk {
     }
 }
 
+#[cfg(feature = "full")]
 impl Deref for CrashMerk {
     type Target = Merk<PrefixedRocksDbStorageContext<'static>>;
 
@@ -48,12 +55,14 @@ impl Deref for CrashMerk {
     }
 }
 
+#[cfg(feature = "full")]
 impl DerefMut for CrashMerk {
     fn deref_mut(&mut self) -> &mut Merk<PrefixedRocksDbStorageContext<'static>> {
         &mut self.merk
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use super::CrashMerk;

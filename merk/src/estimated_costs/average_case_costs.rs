@@ -1,6 +1,9 @@
+#[cfg(feature = "full")]
 use costs::{CostResult, CostsExt, OperationCost};
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
+#[cfg(feature = "full")]
 use crate::{
     error::Error,
     estimated_costs::LAYER_COST_SIZE,
@@ -8,11 +11,16 @@ use crate::{
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
 };
 
+#[cfg(feature = "full")]
 pub type AverageKeySize = u8;
+#[cfg(feature = "full")]
 pub type AverageValueSize = u32;
+#[cfg(feature = "full")]
 pub type AverageFlagsSize = u32;
+#[cfg(feature = "full")]
 pub type Weight = u8;
 
+#[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum EstimatedSumTrees {
     NoSumTrees,
@@ -23,12 +31,14 @@ pub enum EstimatedSumTrees {
     AllSumTrees,
 }
 
+#[cfg(feature = "full")]
 impl Default for EstimatedSumTrees {
     fn default() -> Self {
         EstimatedSumTrees::NoSumTrees
     }
 }
 
+#[cfg(feature = "full")]
 impl EstimatedSumTrees {
     fn estimated_size(&self) -> Result<u32, Error> {
         match self {
@@ -44,6 +54,7 @@ impl EstimatedSumTrees {
     }
 }
 
+#[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum EstimatedLayerSizes {
     AllSubtrees(AverageKeySize, EstimatedSumTrees, Option<AverageFlagsSize>),
@@ -71,6 +82,7 @@ pub enum EstimatedLayerSizes {
     },
 }
 
+#[cfg(feature = "full")]
 impl EstimatedLayerSizes {
     pub fn layered_flags_size(&self) -> Result<&Option<AverageFlagsSize>, Error> {
         match self {
@@ -191,10 +203,14 @@ impl EstimatedLayerSizes {
     }
 }
 
+#[cfg(feature = "full")]
 pub type ApproximateElementCount = u32;
+#[cfg(feature = "full")]
 pub type EstimatedLevelNumber = u32;
+#[cfg(feature = "full")]
 pub type EstimatedToBeEmpty = bool;
 
+#[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EstimatedLayerInformation {
     pub is_sum_tree: bool,
@@ -202,8 +218,10 @@ pub struct EstimatedLayerInformation {
     pub estimated_layer_sizes: EstimatedLayerSizes,
 }
 
+#[cfg(feature = "full")]
 impl EstimatedLayerInformation {}
 
+#[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum EstimatedLayerCount {
     PotentiallyAtMaxElements,
@@ -211,6 +229,7 @@ pub enum EstimatedLayerCount {
     EstimatedLevel(EstimatedLevelNumber, EstimatedToBeEmpty),
 }
 
+#[cfg(feature = "full")]
 impl EstimatedLayerCount {
     /// Returns true if the tree is estimated to be empty.
     pub fn estimated_to_be_empty(&self) -> bool {
@@ -238,6 +257,7 @@ impl EstimatedLayerCount {
     }
 }
 
+#[cfg(feature = "full")]
 impl Tree {
     pub fn average_case_encoded_tree_size(
         not_prefixed_key_len: u32,
@@ -252,6 +272,7 @@ impl Tree {
     }
 }
 
+#[cfg(feature = "full")]
 /// Add worst case for getting a merk node
 pub fn add_average_case_get_merk_node(
     cost: &mut OperationCost,
@@ -272,6 +293,7 @@ pub fn add_average_case_get_merk_node(
     );
 }
 
+#[cfg(feature = "full")]
 /// Add worst case for getting a merk tree
 pub fn add_average_case_merk_has_value(
     cost: &mut OperationCost,
@@ -282,6 +304,7 @@ pub fn add_average_case_merk_has_value(
     cost.storage_loaded_bytes += not_prefixed_key_len + estimated_element_size;
 }
 
+#[cfg(feature = "full")]
 /// Add worst case for insertion into merk
 pub fn add_average_case_merk_replace_layered(
     cost: &mut OperationCost,
@@ -304,6 +327,7 @@ pub fn add_average_case_merk_replace_layered(
     cost.hash_node_calls += 2;
 }
 
+#[cfg(feature = "full")]
 /// Add average case for deletion from merk
 pub fn add_average_case_merk_delete_layered(
     cost: &mut OperationCost,
@@ -315,6 +339,7 @@ pub fn add_average_case_merk_delete_layered(
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
 }
 
+#[cfg(feature = "full")]
 /// Add average case for deletion from merk
 pub fn add_average_case_merk_delete(cost: &mut OperationCost, _key_len: u32, value_len: u32) {
     // todo: verify this
@@ -322,6 +347,7 @@ pub fn add_average_case_merk_delete(cost: &mut OperationCost, _key_len: u32, val
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
 }
 
+#[cfg(feature = "full")]
 const fn node_hash_update_count() -> u16 {
     // It's a hash of node hash, left and right
     let bytes = HASH_LENGTH * 3;
@@ -330,16 +356,19 @@ const fn node_hash_update_count() -> u16 {
     1 + ((bytes - 1) / HASH_BLOCK_SIZE) as u16
 }
 
+#[cfg(feature = "full")]
 /// Add worst case for getting a merk tree root hash
 pub fn add_average_case_merk_root_hash(cost: &mut OperationCost) {
     cost.hash_node_calls += node_hash_update_count();
 }
 
+#[cfg(feature = "full")]
 pub fn average_case_merk_propagate(input: &EstimatedLayerInformation) -> CostResult<(), Error> {
     let mut cost = OperationCost::default();
     add_average_case_merk_propagate(&mut cost, input).wrap_with_cost(cost)
 }
 
+#[cfg(feature = "full")]
 pub fn add_average_case_merk_propagate(
     cost: &mut OperationCost,
     input: &EstimatedLayerInformation,

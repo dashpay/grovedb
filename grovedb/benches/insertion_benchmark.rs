@@ -1,10 +1,16 @@
+#[cfg(feature = "full")]
 use criterion::{criterion_group, criterion_main, Criterion};
+#[cfg(feature = "full")]
 use grovedb::{Element, GroveDb};
+#[cfg(feature = "full")]
 use rand::Rng;
+#[cfg(feature = "full")]
 use tempfile::TempDir;
 
+#[cfg(feature = "full")]
 const N_ITEMS: usize = 10_000;
 
+#[cfg(feature = "full")]
 pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
@@ -25,6 +31,7 @@ pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
     });
 }
 
+#[cfg(feature = "full")]
 pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
@@ -53,6 +60,7 @@ pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
     });
 }
 
+#[cfg(feature = "full")]
 pub fn root_leaf_insertion_benchmark_without_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
@@ -69,6 +77,7 @@ pub fn root_leaf_insertion_benchmark_without_transaction(c: &mut Criterion) {
     });
 }
 
+#[cfg(feature = "full")]
 pub fn root_leaf_insertion_benchmark_with_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
@@ -87,6 +96,7 @@ pub fn root_leaf_insertion_benchmark_with_transaction(c: &mut Criterion) {
     });
 }
 
+#[cfg(feature = "full")]
 pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
@@ -123,6 +133,7 @@ pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) 
     });
 }
 
+#[cfg(feature = "full")]
 pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
     let db = GroveDb::open(dir.path()).unwrap();
@@ -161,6 +172,7 @@ pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
     });
 }
 
+#[cfg(feature = "full")]
 criterion_group!(
     benches,
     insertion_benchmark_without_transaction,
@@ -170,4 +182,5 @@ criterion_group!(
     deeply_nested_insertion_benchmark_without_transaction,
     deeply_nested_insertion_benchmark_with_transaction,
 );
+#[cfg(feature = "full")]
 criterion_main!(benches);

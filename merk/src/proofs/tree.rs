@@ -1,18 +1,20 @@
+#[cfg(feature = "full")]
 use std::fmt::Debug;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use super::{Node, Op};
-use crate::{
-    error::Error,
-    tree::{
-        combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, NULL_HASH,
-    },
-};
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::tree::{combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, NULL_HASH};
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::{error::Error, tree::CryptoHash};
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Contains a tree's child node and its hash. The hash can always be assumed to
 /// be up-to-date.
 #[derive(Debug)]
@@ -21,6 +23,7 @@ pub struct Child {
     pub hash: CryptoHash,
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// A binary tree data structure used to represent a select subset of a tree
 /// when verifying Merkle proofs.
 #[derive(Debug)]
@@ -31,6 +34,7 @@ pub struct Tree {
     pub height: usize,
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl From<Node> for Tree {
     /// Creates a childless tree with the target node as the `node` field.
     fn from(node: Node) -> Self {
@@ -43,6 +47,7 @@ impl From<Node> for Tree {
     }
 }
 
+#[cfg(feature = "full")]
 impl PartialEq for Tree {
     /// Checks equality for the root hashes of the two trees.
     fn eq(&self, other: &Self) -> bool {
@@ -52,6 +57,7 @@ impl PartialEq for Tree {
 
 impl Tree {
     /// Gets or computes the hash for this tree node.
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub fn hash(&self) -> CostContext<CryptoHash> {
         fn compute_hash(tree: &Tree, kv_hash: CryptoHash) -> CostContext<CryptoHash> {
             node_hash(&kv_hash, &tree.child_hash(true), &tree.child_hash(false))
@@ -85,12 +91,14 @@ impl Tree {
 
     /// Creates an iterator that yields the in-order traversal of the nodes at
     /// the given depth.
+    #[cfg(feature = "full")]
     pub fn layer(&self, depth: usize) -> LayerIter {
         LayerIter::new(self, depth)
     }
 
     /// Consumes the `Tree` and does an in-order traversal over all the nodes in
     /// the tree, calling `visit_node` for each.
+    #[cfg(feature = "full")]
     pub fn visit_nodes<F: FnMut(Node)>(mut self, visit_node: &mut F) {
         if let Some(child) = self.left.take() {
             child.tree.visit_nodes(visit_node);
@@ -106,6 +114,7 @@ impl Tree {
 
     /// Does an in-order traversal over references to all the nodes in the tree,
     /// calling `visit_node` for each.
+    #[cfg(feature = "full")]
     pub fn visit_refs<F: FnMut(&Self) -> Result<(), Error>>(
         &self,
         visit_node: &mut F,
@@ -123,6 +132,7 @@ impl Tree {
     }
 
     /// Returns an immutable reference to the child on the given side, if any.
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub const fn child(&self, left: bool) -> Option<&Child> {
         if left {
             self.left.as_ref()
@@ -132,6 +142,7 @@ impl Tree {
     }
 
     /// Returns a mutable reference to the child on the given side, if any.
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub(crate) fn child_mut(&mut self, left: bool) -> &mut Option<Child> {
         if left {
             &mut self.left
@@ -142,6 +153,7 @@ impl Tree {
 
     /// Attaches the child to the `Tree`'s given side. Panics if there is
     /// already a child attached to this side.
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub(crate) fn attach(&mut self, left: bool, child: Self) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -164,6 +176,7 @@ impl Tree {
     /// Returns the already-computed hash for this tree node's child on the
     /// given side, if any. If there is no child, returns the null hash
     /// (zero-filled).
+    #[cfg(any(feature = "full", feature = "verify"))]
     #[inline]
     const fn child_hash(&self, left: bool) -> CryptoHash {
         match self.child(left) {
@@ -174,10 +187,12 @@ impl Tree {
 
     /// Consumes the tree node, calculates its hash, and returns a `Node::Hash`
     /// variant.
+    #[cfg(any(feature = "full", feature = "verify"))]
     fn into_hash(self) -> CostContext<Self> {
         self.hash().map(|hash| Node::Hash(hash).into())
     }
 
+    #[cfg(feature = "full")]
     pub(crate) fn key(&self) -> &[u8] {
         match self.node {
             Node::KV(ref key, _)
@@ -189,6 +204,7 @@ impl Tree {
     }
 }
 
+#[cfg(feature = "full")]
 /// `LayerIter` iterates over the nodes in a `Tree` at a given depth. Nodes are
 /// visited in order.
 pub struct LayerIter<'a> {
@@ -196,6 +212,7 @@ pub struct LayerIter<'a> {
     depth: usize,
 }
 
+#[cfg(feature = "full")]
 impl<'a> LayerIter<'a> {
     /// Creates a new `LayerIter` that iterates over `tree` at the given depth.
     fn new(tree: &'a Tree, depth: usize) -> Self {
@@ -225,6 +242,7 @@ impl<'a> LayerIter<'a> {
     }
 }
 
+#[cfg(feature = "full")]
 impl<'a> Iterator for LayerIter<'a> {
     type Item = &'a Tree;
 
@@ -258,6 +276,7 @@ impl<'a> Iterator for LayerIter<'a> {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Executes a proof by stepping through its operators, modifying the
 /// verification stack as it goes. The resulting stack item is returned.
 ///
@@ -419,6 +438,7 @@ where
     Ok(stack.pop().unwrap()).wrap_with_cost(cost)
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
     use super::{super::*, Tree as ProofTree, *};

@@ -1,8 +1,13 @@
+#[cfg(feature = "full")]
 pub mod chunks;
+#[cfg(feature = "full")]
 pub(crate) mod defaults;
+#[cfg(feature = "full")]
 pub mod options;
+#[cfg(feature = "full")]
 pub mod restore;
 
+#[cfg(feature = "full")]
 use std::{
     cell::Cell,
     cmp::Ordering,
@@ -10,6 +15,7 @@ use std::{
     fmt,
 };
 
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::{
@@ -19,8 +25,12 @@ use costs::{
     },
     ChildrenSizesWithValue, CostContext, CostResult, CostsExt, FeatureSumLength, OperationCost,
 };
+#[cfg(feature = "full")]
+use ed::{Decode, Encode};
+#[cfg(feature = "full")]
 use storage::{self, Batch, RawIterator, StorageContext};
 
+#[cfg(feature = "full")]
 use crate::{
     error::Error,
     merk::{
@@ -37,14 +47,17 @@ use crate::{
     TreeFeatureType,
 };
 
+#[cfg(feature = "full")]
 type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
 
+#[cfg(feature = "full")]
 pub struct ProofConstructionResult {
     pub proof: Vec<u8>,
     pub limit: Option<u16>,
     pub offset: Option<u16>,
 }
 
+#[cfg(feature = "full")]
 impl ProofConstructionResult {
     pub fn new(proof: Vec<u8>, limit: Option<u16>, offset: Option<u16>) -> Self {
         Self {
@@ -55,12 +68,14 @@ impl ProofConstructionResult {
     }
 }
 
+#[cfg(feature = "full")]
 pub struct ProofWithoutEncodingResult {
     pub proof: LinkedList<ProofOp>,
     pub limit: Option<u16>,
     pub offset: Option<u16>,
 }
 
+#[cfg(feature = "full")]
 impl ProofWithoutEncodingResult {
     pub fn new(proof: LinkedList<ProofOp>, limit: Option<u16>, offset: Option<u16>) -> Self {
         Self {
@@ -71,9 +86,11 @@ impl ProofWithoutEncodingResult {
     }
 }
 
+#[cfg(feature = "full")]
 /// A bool type
 pub type IsSumTree = bool;
 
+#[cfg(feature = "full")]
 /// KVIterator allows you to lazily iterate over each kv pair of a subtree
 pub struct KVIterator<'a, I: RawIterator> {
     raw_iter: I,
@@ -83,6 +100,7 @@ pub struct KVIterator<'a, I: RawIterator> {
     current_query_item: Option<&'a QueryItem>,
 }
 
+#[cfg(feature = "full")]
 impl<'a, I: RawIterator> KVIterator<'a, I> {
     pub fn new(raw_iter: I, query: &'a Query) -> CostContext<Self> {
         let mut cost = OperationCost::default();
@@ -144,6 +162,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
     }
 }
 
+#[cfg(feature = "full")]
 // Cannot be an Iterator as it should return cost
 impl<'a, I: RawIterator> KVIterator<'a, I> {
     pub fn next(&mut self) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
@@ -164,6 +183,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
     }
 }
 
+#[cfg(feature = "full")]
 #[derive(PartialEq, Eq)]
 pub enum MerkType {
     /// A StandaloneMerk has it's root key storage on a field and pays for root
@@ -176,6 +196,7 @@ pub enum MerkType {
     LayeredMerk,
 }
 
+#[cfg(feature = "full")]
 impl MerkType {
     pub(crate) fn requires_root_storage_update(&self) -> bool {
         match self {
@@ -186,6 +207,7 @@ impl MerkType {
     }
 }
 
+#[cfg(feature = "full")]
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk<S> {
     pub(crate) tree: Cell<Option<Tree>>,
@@ -195,12 +217,14 @@ pub struct Merk<S> {
     pub is_sum_tree: bool,
 }
 
+#[cfg(feature = "full")]
 impl<S> fmt::Debug for Merk<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Merk").finish()
     }
 }
 
+#[cfg(feature = "full")]
 // key, maybe value, maybe child reference hooks, maybe key value storage costs
 pub type UseTreeMutResult = CostResult<
     Vec<(
@@ -212,6 +236,7 @@ pub type UseTreeMutResult = CostResult<
     Error,
 >;
 
+#[cfg(feature = "full")]
 impl<'db, S> Merk<S>
 where
     S: StorageContext<'db>,
@@ -1097,6 +1122,7 @@ where
     }
 }
 
+#[cfg(feature = "full")]
 fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<Tree>, Error> {
     let bytes = db.get(key).unwrap().map_err(StorageError)?; // TODO: get_pinned ?
     if let Some(bytes) = bytes {
@@ -1124,12 +1150,14 @@ fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<T
 // }
 
 // // TODO: get rid of Fetch/source and use GroveDB storage_cost abstraction
+#[cfg(feature = "full")]
 #[derive(Debug)]
 pub struct MerkSource<'s, S> {
     storage: &'s S,
     is_sum_tree: bool,
 }
 
+#[cfg(feature = "full")]
 impl<'s, S> Clone for MerkSource<'s, S> {
     fn clone(&self) -> Self {
         MerkSource {
@@ -1139,6 +1167,7 @@ impl<'s, S> Clone for MerkSource<'s, S> {
     }
 }
 
+#[cfg(feature = "full")]
 impl<'s, 'db, S> Fetch for MerkSource<'s, S>
 where
     S: StorageContext<'db>,
@@ -1150,6 +1179,7 @@ where
     }
 }
 
+#[cfg(feature = "full")]
 struct MerkCommitter {
     /// The batch has a key, maybe a value, with the value bytes, maybe the left
     /// child size and maybe the right child size, then the
@@ -1164,6 +1194,7 @@ struct MerkCommitter {
     levels: u8,
 }
 
+#[cfg(feature = "full")]
 impl MerkCommitter {
     fn new(height: u8, levels: u8) -> Self {
         Self {
@@ -1174,6 +1205,7 @@ impl MerkCommitter {
     }
 }
 
+#[cfg(feature = "full")]
 impl Commit for MerkCommitter {
     fn write(
         &mut self,
@@ -1262,6 +1294,7 @@ impl Commit for MerkCommitter {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
     use std::iter::empty;

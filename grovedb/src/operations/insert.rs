@@ -1,16 +1,22 @@
+#[cfg(feature = "full")]
 use std::{collections::HashMap, option::Option::None};
 
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use merk::{tree::NULL_HASH, Merk, MerkOptions};
+#[cfg(feature = "full")]
 use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 
+#[cfg(feature = "full")]
 use crate::{
     reference_path::path_from_reference_path_type, Element, Error, GroveDb, Transaction,
     TransactionArg,
 };
 
+#[cfg(feature = "full")]
 #[derive(Clone)]
 pub struct InsertOptions {
     pub validate_insertion_does_not_override: bool,
@@ -18,6 +24,7 @@ pub struct InsertOptions {
     pub base_root_storage_is_free: bool,
 }
 
+#[cfg(feature = "full")]
 impl Default for InsertOptions {
     fn default() -> Self {
         InsertOptions {
@@ -28,6 +35,7 @@ impl Default for InsertOptions {
     }
 }
 
+#[cfg(feature = "full")]
 impl InsertOptions {
     fn checks_for_override(&self) -> bool {
         self.validate_insertion_does_not_override_tree || self.validate_insertion_does_not_override
@@ -40,6 +48,7 @@ impl InsertOptions {
     }
 }
 
+#[cfg(feature = "full")]
 impl GroveDb {
     pub fn insert<'p, P>(
         &self,
@@ -420,6 +429,7 @@ impl GroveDb {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use costs::{

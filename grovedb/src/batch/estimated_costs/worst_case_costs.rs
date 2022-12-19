@@ -1,18 +1,24 @@
+#[cfg(feature = "full")]
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
 };
 
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use itertools::Itertools;
+#[cfg(feature = "full")]
 use merk::{
     estimated_costs::worst_case_costs::{worst_case_merk_propagate, WorstCaseLayerInformation},
     CryptoHash,
 };
+#[cfg(feature = "full")]
 use storage::rocksdb_storage::RocksDbStorage;
 
+#[cfg(feature = "full")]
 use crate::{
     batch::{
         key_info::KeyInfo,
@@ -22,6 +28,7 @@ use crate::{
     Error, GroveDb,
 };
 
+#[cfg(feature = "full")]
 impl Op {
     fn worst_case_cost(
         &self,
@@ -85,6 +92,7 @@ impl Op {
     }
 }
 
+#[cfg(feature = "full")]
 /// Cache for subtree paths for worst case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
@@ -92,6 +100,7 @@ pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
     cached_merks: HashSet<KeyInfoPath>,
 }
 
+#[cfg(feature = "full")]
 impl WorstCaseTreeCacheKnownPaths {
     pub(in crate::batch) fn new_with_worst_case_layer_information(
         paths: HashMap<KeyInfoPath, WorstCaseLayerInformation>,
@@ -103,12 +112,14 @@ impl WorstCaseTreeCacheKnownPaths {
     }
 }
 
+#[cfg(feature = "full")]
 impl fmt::Debug for WorstCaseTreeCacheKnownPaths {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheKnownPaths").finish()
     }
 }
 
+#[cfg(feature = "full")]
 impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     fn insert(&mut self, op: &GroveDbOp, _is_sum_tree: bool) -> CostResult<(), Error> {
         let mut worst_case_cost = OperationCost::default();
@@ -184,6 +195,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

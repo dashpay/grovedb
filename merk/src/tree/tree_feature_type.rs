@@ -1,17 +1,24 @@
+#[cfg(any(feature = "full", feature = "verify"))]
 use std::io::{Read, Write};
 
-use ed::{Decode, Encode, Terminated};
+#[cfg(feature = "full")]
+use ed::Terminated;
+#[cfg(any(feature = "full", feature = "verify"))]
+use ed::{Decode, Encode};
+#[cfg(any(feature = "full", feature = "verify"))]
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use crate::tree::tree_feature_type::TreeFeatureType::{BasicMerk, SummedMerk};
 
-// TODO: Move to seperate file
+#[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum TreeFeatureType {
     BasicMerk,
     SummedMerk(i64),
 }
 
+#[cfg(feature = "full")]
 impl TreeFeatureType {
     #[inline]
     pub fn sum_length(&self) -> Option<u32> {
@@ -35,6 +42,7 @@ impl TreeFeatureType {
     }
 }
 
+#[cfg(feature = "full")]
 impl Terminated for TreeFeatureType {}
 
 impl Encode for TreeFeatureType {
@@ -67,6 +75,7 @@ impl Encode for TreeFeatureType {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl Decode for TreeFeatureType {
     #[inline]
     fn decode<R: Read>(mut input: R) -> ed::Result<Self> {

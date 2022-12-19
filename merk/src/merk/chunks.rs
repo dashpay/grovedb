@@ -1,15 +1,20 @@
 //! Provides `ChunkProducer`, which creates chunk proofs for full replication of
 //! a Merk.
 
+#[cfg(feature = "full")]
 use costs::CostsExt;
+#[cfg(feature = "full")]
 use storage::{RawIterator, StorageContext};
 
+#[cfg(feature = "full")]
 use super::Merk;
+#[cfg(feature = "full")]
 use crate::{
     error::Error,
     proofs::{chunk::get_next_chunk, Node, Op},
 };
 
+#[cfg(feature = "full")]
 /// A `ChunkProducer` allows the creation of chunk proofs, used for trustlessly
 /// replicating entire Merk trees. Chunks can be generated on the fly in a
 /// random order, or iterated in order for slightly better performance.
@@ -20,6 +25,7 @@ pub struct ChunkProducer<'db, S: StorageContext<'db>> {
     index: usize,
 }
 
+#[cfg(feature = "full")]
 impl<'db, S> ChunkProducer<'db, S>
 where
     S: StorageContext<'db>,
@@ -116,6 +122,7 @@ where
     }
 }
 
+#[cfg(feature = "full")]
 impl<'db, S> IntoIterator for ChunkProducer<'db, S>
 where
     S: StorageContext<'db>,
@@ -128,6 +135,7 @@ where
     }
 }
 
+#[cfg(feature = "full")]
 /// A `ChunkIter` iterates through all the chunks for the underlying `Merk`
 /// instance in order (the first chunk is the "trunk" chunk). Yields `None`
 /// after all chunks have been yielded.
@@ -135,6 +143,7 @@ pub struct ChunkIter<'db, S>(ChunkProducer<'db, S>)
 where
     S: StorageContext<'db>;
 
+#[cfg(feature = "full")]
 impl<'db, S> Iterator for ChunkIter<'db, S>
 where
     S: StorageContext<'db>,
@@ -154,6 +163,7 @@ where
     }
 }
 
+#[cfg(feature = "full")]
 impl<'db, S> Merk<S>
 where
     S: StorageContext<'db>,
@@ -165,6 +175,7 @@ where
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use std::iter::empty;

@@ -1,6 +1,8 @@
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use storage::RawIterator;
 #[cfg(feature = "full")]
 use {
@@ -9,7 +11,9 @@ use {
     crate::tree::Tree,
 };
 
+#[cfg(feature = "full")]
 use super::{Node, Op};
+#[cfg(feature = "full")]
 use crate::{
     error::Error,
     tree::{Fetch, RefWalker},
@@ -20,8 +24,10 @@ use crate::{
 /// The minimum number of layers the trunk will be guaranteed to have before
 /// splitting into multiple chunks. If the tree's height is less than double
 /// this value, the trunk should be verified as a leaf chunk.
+#[cfg(feature = "full")]
 pub const MIN_TRUNK_HEIGHT: usize = 5;
 
+#[cfg(feature = "full")]
 impl<'a, S> RefWalker<'a, S>
 where
     S: Fetch + Sized + Clone,
@@ -343,6 +349,7 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op, Error>>>(
     Ok((tree, height)).wrap_with_cost(cost)
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use std::usize;

@@ -1,10 +1,16 @@
+#[cfg(feature = "full")]
 use std::io::{Read, Write};
 
+#[cfg(feature = "full")]
 use costs::{CostContext, CostsExt, OperationCost};
+#[cfg(feature = "full")]
 use ed::{Decode, Encode, Result, Terminated};
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
+#[cfg(feature = "full")]
 use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
+#[cfg(feature = "full")]
 use crate::{
     tree::{
         hash::{combine_hash, kv_digest_to_kv_hash, value_hash, HASH_LENGTH_X2},
@@ -18,6 +24,7 @@ use crate::{
 //       field to save even more. also might be possible to combine key
 //       field and value field.
 
+#[cfg(feature = "full")]
 /// Contains a key/value pair, and the hash of the key/value pair.
 #[derive(Clone, Debug, PartialEq)]
 pub struct KV {
@@ -31,6 +38,7 @@ pub struct KV {
     pub(super) value_hash: CryptoHash,
 }
 
+#[cfg(feature = "full")]
 impl KV {
     /// Creates a new `KV` with the given key and value and computes its hash.
     #[inline]
@@ -389,6 +397,7 @@ impl KV {
     }
 }
 
+#[cfg(feature = "full")]
 // TODO: Fix encoding and decoding of kv
 impl Encode for KV {
     #[inline]
@@ -407,6 +416,7 @@ impl Encode for KV {
     }
 }
 
+#[cfg(feature = "full")]
 impl Decode for KV {
     #[inline]
     fn decode<R: Read>(input: R) -> Result<Self> {
@@ -437,8 +447,10 @@ impl Decode for KV {
     }
 }
 
+#[cfg(feature = "full")]
 impl Terminated for KV {}
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
     use super::*;

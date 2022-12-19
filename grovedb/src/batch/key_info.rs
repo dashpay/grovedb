@@ -1,19 +1,25 @@
+#[cfg(feature = "full")]
 use std::{
     cmp::Ordering,
     hash::{Hash, Hasher},
 };
 
+#[cfg(feature = "full")]
 use storage::worst_case_costs::WorstKeyLength;
+#[cfg(feature = "full")]
 use visualize::{Drawer, Visualize};
 
+#[cfg(feature = "full")]
 use crate::batch::key_info::KeyInfo::{KnownKey, MaxKeySize};
 
+#[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum KeyInfo {
     KnownKey(Vec<u8>),
     MaxKeySize { unique_id: Vec<u8>, max_size: u8 },
 }
 
+#[cfg(feature = "full")]
 impl PartialOrd<Self> for KeyInfo {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match self.as_slice().partial_cmp(other.as_slice()) {
@@ -33,6 +39,7 @@ impl PartialOrd<Self> for KeyInfo {
     }
 }
 
+#[cfg(feature = "full")]
 impl Ord for KeyInfo {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.as_slice().cmp(other.as_slice()) {
@@ -46,6 +53,7 @@ impl Ord for KeyInfo {
     }
 }
 
+#[cfg(feature = "full")]
 impl Hash for KeyInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
@@ -61,6 +69,7 @@ impl Hash for KeyInfo {
     }
 }
 
+#[cfg(feature = "full")]
 impl WorstKeyLength for KeyInfo {
     fn len(&self) -> u8 {
         match self {
@@ -70,6 +79,7 @@ impl WorstKeyLength for KeyInfo {
     }
 }
 
+#[cfg(feature = "full")]
 impl KeyInfo {
     pub fn as_slice(&self) -> &[u8] {
         match self {
@@ -93,6 +103,7 @@ impl KeyInfo {
     }
 }
 
+#[cfg(feature = "full")]
 impl Visualize for KeyInfo {
     fn visualize<W: std::io::Write>(&self, mut drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
         match self {

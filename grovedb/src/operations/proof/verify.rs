@@ -1,17 +1,22 @@
+#[cfg(any(feature = "full", feature = "verify"))]
 use merk::{
     proofs::Query,
     tree::{combine_hash, value_hash as value_hash_fn},
     CryptoHash,
 };
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use crate::{
     operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
     Element, Error, GroveDb, PathQuery,
 };
 
+#[cfg(any(feature = "full", feature = "verify"))]
 type ProofKeyValue = (Vec<u8>, Vec<u8>, CryptoHash);
+#[cfg(any(feature = "full", feature = "verify"))]
 type Proof = Vec<(Vec<u8>, Vec<u8>, CryptoHash)>;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl GroveDb {
     pub fn verify_query_many(
         proof: &[u8],
@@ -33,12 +38,14 @@ impl GroveDb {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 struct ProofVerifier {
     limit: Option<u16>,
     offset: Option<u16>,
     result_set: Proof,
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl ProofVerifier {
     pub fn new(query: &PathQuery) -> Self {
         ProofVerifier {

@@ -1,14 +1,25 @@
+#[cfg(feature = "full")]
 pub mod chunk;
+#[cfg(any(feature = "full", feature = "verify"))]
 pub mod encoding;
+#[cfg(any(feature = "full", feature = "verify"))]
 pub mod query;
+#[cfg(any(feature = "full", feature = "verify"))]
 pub mod tree;
 
-pub use encoding::{encode_into, Decoder};
+#[cfg(feature = "full")]
+pub use encoding::encode_into;
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use encoding::Decoder;
+#[cfg(any(feature = "full", feature = "verify"))]
 pub use query::Query;
+#[cfg(feature = "full")]
 pub use tree::Tree;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use crate::{tree::CryptoHash, TreeFeatureType};
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// A proof operator, executed to verify the data in a Merkle proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
@@ -41,6 +52,7 @@ pub enum Op {
     ChildInverted,
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// A selected piece of data about a single tree node, to be contained in a
 /// `Push` operator in a proof.
 #[derive(Clone, Debug, PartialEq, Eq)]

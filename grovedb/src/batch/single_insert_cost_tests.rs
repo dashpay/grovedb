@@ -1,3 +1,4 @@
+#[cfg(feature = "full")]
 mod tests {
     use costs::{
         storage_cost::{

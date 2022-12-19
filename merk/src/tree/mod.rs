@@ -1,19 +1,32 @@
+#[cfg(feature = "full")]
 mod commit;
 #[cfg(feature = "full")]
 mod debug;
+#[cfg(feature = "full")]
 mod encoding;
+#[cfg(feature = "full")]
 mod fuzz_tests;
+#[cfg(any(feature = "full", feature = "verify"))]
 mod hash;
+#[cfg(feature = "full")]
 mod iter;
+#[cfg(feature = "full")]
 pub mod kv;
+#[cfg(feature = "full")]
 mod link;
+#[cfg(feature = "full")]
 mod ops;
+#[cfg(any(feature = "full", feature = "verify"))]
 mod tree_feature_type;
+#[cfg(feature = "full")]
 mod walk;
 
+#[cfg(feature = "full")]
 use std::cmp::{max, Ordering};
 
+#[cfg(feature = "full")]
 pub use commit::{Commit, NoopCommit};
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::{
@@ -23,24 +36,35 @@ use costs::{
     },
     CostContext, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use ed::{Decode, Encode, Terminated};
+#[cfg(any(feature = "full", feature = "verify"))]
 pub use hash::{
-    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash,
-    HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
+    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, CryptoHash, HASH_LENGTH,
     NULL_HASH,
 };
+#[cfg(feature = "full")]
+pub use hash::{HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
+#[cfg(feature = "full")]
 use kv::KV;
+#[cfg(feature = "full")]
 pub use link::Link;
+#[cfg(feature = "full")]
 pub use ops::{AuxMerkBatch, BatchEntry, MerkBatch, Op, PanicSource};
+#[cfg(any(feature = "full", feature = "verify"))]
 pub use tree_feature_type::TreeFeatureType;
+#[cfg(feature = "full")]
 pub use walk::{Fetch, RefWalker, Walker};
 
+#[cfg(feature = "full")]
 use crate::{error::Error, Error::Overflow};
 
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
 
+#[cfg(feature = "full")]
 /// The fields of the `Tree` type, stored on the heap.
 #[derive(Clone, Encode, Decode, Debug)]
 pub struct TreeInner {
@@ -49,6 +73,7 @@ pub struct TreeInner {
     pub(crate) kv: KV,
 }
 
+#[cfg(feature = "full")]
 impl TreeInner {
     /// Get the value as owned of the key value struct
     pub fn value_as_owned(self) -> Vec<u8> {
@@ -71,8 +96,10 @@ impl TreeInner {
     }
 }
 
+#[cfg(feature = "full")]
 impl Terminated for Box<TreeInner> {}
 
+#[cfg(feature = "full")]
 /// A binary AVL tree data structure, with Merkle hashes.
 ///
 /// Trees' inner fields are stored on the heap so that nodes can recursively
@@ -85,6 +112,7 @@ pub struct Tree {
     pub(crate) old_value: Option<Vec<u8>>,
 }
 
+#[cfg(feature = "full")]
 impl Tree {
     /// Creates a new `Tree` with the given key and value, and no children.
     ///
@@ -778,6 +806,7 @@ impl Tree {
     }
 }
 
+#[cfg(feature = "full")]
 pub const fn side_to_str(left: bool) -> &'static str {
     if left {
         "left"
@@ -786,6 +815,7 @@ pub const fn side_to_str(left: bool) -> &'static str {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
     use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;

@@ -54,10 +54,10 @@ features = ["disable_initial_exec_tls"]
 optional = true
 
 [features]
-default = ["full", "verify"]
-full = ["rand", 
+default = ["verify"]
+full = ["rand",
         "time",
-        "hex", 
+        "hex",
         "colored",
         "num_cpus",
         "byteorder",
@@ -65,8 +65,9 @@ full = ["rand",
         "blake3",
         "jemallocator"
 ]
-verify = ["ed",
-          "blake3"
+verify = [
+        "ed",
+        "blake3"
 ]
 
 [dev-dependencies]

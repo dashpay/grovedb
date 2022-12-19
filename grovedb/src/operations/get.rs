@@ -1,10 +1,15 @@
+#[cfg(feature = "full")]
 use std::collections::HashSet;
 
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
+#[cfg(feature = "full")]
 use merk::Merk;
+#[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{
         PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext, RocksDbStorage,
@@ -12,6 +17,7 @@ use storage::{
     StorageContext,
 };
 
+#[cfg(feature = "full")]
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
@@ -22,9 +28,11 @@ use crate::{
     Element, Error, GroveDb, PathQuery, Transaction, TransactionArg,
 };
 
+#[cfg(feature = "full")]
 /// Limit of possible indirections
 pub const MAX_REFERENCE_HOPS: usize = 10;
 
+#[cfg(feature = "full")]
 impl GroveDb {
     pub fn get<'p, P>(
         &self,

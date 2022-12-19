@@ -1,8 +1,10 @@
+#[cfg(feature = "full")]
 use std::{
     collections::{BTreeSet, LinkedList},
     fmt,
 };
 
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
@@ -12,24 +14,33 @@ use costs::{
     },
     CostContext, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
+#[cfg(feature = "full")]
 use Op::*;
 
+#[cfg(feature = "full")]
 use super::{Fetch, Link, Tree, Walker};
+#[cfg(feature = "full")]
 use crate::{error::Error, tree::tree_feature_type::TreeFeatureType, CryptoHash, HASH_LENGTH_U32};
 
 /// Type alias to add more sense to function signatures.
+#[cfg(feature = "full")]
 type UpdatedRootKeyFrom = Option<Vec<u8>>;
 
 /// Type alias to add more sense to function signatures.
+#[cfg(feature = "full")]
 type NewKeys = BTreeSet<Vec<u8>>;
 
 /// Type alias to add more sense to function signatures.
+#[cfg(feature = "full")]
 type UpdatedKeys = BTreeSet<Vec<u8>>;
 
 /// Type alias to add more sense to function signatures.
+#[cfg(feature = "full")]
 type DeletedKeys = LinkedList<(Vec<u8>, Option<KeyValueStorageCost>)>;
 
+#[cfg(feature = "full")]
 /// An operation to be applied to a key in the store.
 #[derive(PartialEq, Clone, Eq)]
 pub enum Op {
@@ -61,6 +72,7 @@ pub enum Op {
     DeleteLayeredHavingSum,
 }
 
+#[cfg(feature = "full")]
 impl fmt::Debug for Op {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(
@@ -101,16 +113,20 @@ pub type MerkBatch<K> = [BatchEntry<K>];
 /// and unique.
 pub type AuxMerkBatch<K> = [AuxBatchEntry<K>];
 
+#[cfg(feature = "full")]
 /// A source of data which panics when called. Useful when creating a store
 /// which always keeps the state in memory.
 #[derive(Clone)]
 pub struct PanicSource {}
+
+#[cfg(feature = "full")]
 impl Fetch for PanicSource {
     fn fetch(&self, _link: &Link) -> CostResult<Tree, Error> {
         unreachable!("'fetch' should not have been called")
     }
 }
 
+#[cfg(feature = "full")]
 impl<S> Walker<S>
 where
     S: Fetch + Sized + Clone,
@@ -748,6 +764,7 @@ where
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
     use super::*;

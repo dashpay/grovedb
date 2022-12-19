@@ -1,5 +1,7 @@
+#[cfg(feature = "full")]
 use costs::{CostResult, CostsExt, OperationCost};
 
+#[cfg(feature = "full")]
 use crate::{
     error::Error,
     merk::defaults::MAX_PREFIXED_KEY_SIZE,
@@ -7,12 +9,14 @@ use crate::{
     HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH,
 };
 
+#[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum WorstCaseLayerInformation {
     MaxElementsNumber(u32),
     NumberOfLevels(u32),
 }
 
+#[cfg(feature = "full")]
 impl Tree {
     pub fn worst_case_encoded_tree_size(
         not_prefixed_key_len: u32,
@@ -27,6 +31,7 @@ impl Tree {
     }
 }
 
+#[cfg(feature = "full")]
 /// Add worst case for getting a merk node
 pub fn add_worst_case_get_merk_node(
     cost: &mut OperationCost,
@@ -44,6 +49,7 @@ pub fn add_worst_case_get_merk_node(
         Tree::worst_case_encoded_tree_size(not_prefixed_key_len, max_element_size, is_sum_node);
 }
 
+#[cfg(feature = "full")]
 /// Add worst case for getting a merk tree
 pub fn add_worst_case_merk_has_value(
     cost: &mut OperationCost,
@@ -54,6 +60,7 @@ pub fn add_worst_case_merk_has_value(
     cost.storage_loaded_bytes += not_prefixed_key_len + max_element_size;
 }
 
+#[cfg(feature = "full")]
 /// Add worst case for insertion into merk
 pub fn add_worst_case_merk_insert(
     cost: &mut OperationCost,
@@ -68,6 +75,7 @@ pub fn add_worst_case_merk_insert(
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
 }
 
+#[cfg(feature = "full")]
 /// Add worst case for insertion into merk
 pub fn add_worst_case_merk_replace_layered(
     cost: &mut OperationCost,
@@ -82,6 +90,7 @@ pub fn add_worst_case_merk_replace_layered(
     // 37 + 35 + key_len
 }
 
+#[cfg(feature = "full")]
 /// Add average case for deletion from merk
 pub fn add_worst_case_merk_delete_layered(cost: &mut OperationCost, _key_len: u32, value_len: u32) {
     // todo: verify this
@@ -89,6 +98,7 @@ pub fn add_worst_case_merk_delete_layered(cost: &mut OperationCost, _key_len: u3
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
 }
 
+#[cfg(feature = "full")]
 /// Add average case for deletion from merk
 pub fn add_worst_case_merk_delete(cost: &mut OperationCost, _key_len: u32, value_len: u32) {
     // todo: verify this
@@ -96,6 +106,7 @@ pub fn add_worst_case_merk_delete(cost: &mut OperationCost, _key_len: u32, value
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;
 }
 
+#[cfg(feature = "full")]
 const fn node_hash_update_count() -> u16 {
     // It's a hash of node hash, left and right
     let bytes = HASH_LENGTH * 3;
@@ -104,19 +115,24 @@ const fn node_hash_update_count() -> u16 {
     1 + ((bytes - 1) / HASH_BLOCK_SIZE) as u16
 }
 
+#[cfg(feature = "full")]
 /// Add worst case for getting a merk tree root hash
 pub fn add_worst_case_merk_root_hash(cost: &mut OperationCost) {
     cost.hash_node_calls += node_hash_update_count();
 }
 
+#[cfg(feature = "full")]
 pub const MERK_BIGGEST_VALUE_SIZE: u32 = u16::MAX as u32;
+#[cfg(feature = "full")]
 pub const MERK_BIGGEST_KEY_SIZE: u32 = 256;
 
+#[cfg(feature = "full")]
 pub fn worst_case_merk_propagate(input: &WorstCaseLayerInformation) -> CostResult<(), Error> {
     let mut cost = OperationCost::default();
     add_worst_case_merk_propagate(&mut cost, input).wrap_with_cost(cost)
 }
 
+#[cfg(feature = "full")]
 pub fn add_worst_case_merk_propagate(
     cost: &mut OperationCost,
     input: &WorstCaseLayerInformation,
@@ -153,6 +169,7 @@ pub fn add_worst_case_merk_propagate(
     Ok(())
 }
 
+#[cfg(feature = "full")]
 pub fn add_worst_case_cost_for_is_empty_tree_except(
     cost: &mut OperationCost,
     except_keys_count: u16,
@@ -161,6 +178,7 @@ pub fn add_worst_case_cost_for_is_empty_tree_except(
     cost.storage_loaded_bytes += MAX_PREFIXED_KEY_SIZE * (except_keys_count as u32 + 1);
 }
 
+#[cfg(feature = "full")]
 pub fn add_average_case_cost_for_is_empty_tree_except(
     cost: &mut OperationCost,
     except_keys_count: u16,

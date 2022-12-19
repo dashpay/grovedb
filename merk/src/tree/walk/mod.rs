@@ -1,13 +1,21 @@
+#[cfg(feature = "full")]
 mod fetch;
+#[cfg(feature = "full")]
 mod ref_walker;
 
+#[cfg(feature = "full")]
 use costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
+#[cfg(feature = "full")]
 pub use fetch::Fetch;
+#[cfg(feature = "full")]
 pub use ref_walker::RefWalker;
 
+#[cfg(feature = "full")]
 use super::{Link, Tree};
+#[cfg(feature = "full")]
 use crate::{owner::Owner, tree::tree_feature_type::TreeFeatureType, CryptoHash, Error};
 
+#[cfg(feature = "full")]
 /// Allows traversal of a `Tree`, fetching from the given source when traversing
 /// to a pruned node, detaching children as they are traversed.
 pub struct Walker<S>
@@ -18,6 +26,7 @@ where
     source: S,
 }
 
+#[cfg(feature = "full")]
 impl<S> Walker<S>
 where
     S: Fetch + Sized + Clone,
@@ -188,6 +197,7 @@ where
     }
 }
 
+#[cfg(feature = "full")]
 impl<S> From<Walker<S>> for Tree
 where
     S: Fetch + Sized + Clone,
@@ -197,6 +207,7 @@ where
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
     use costs::{storage_cost::removal::StorageRemovedBytes::NoStorageRemoval, CostsExt};
