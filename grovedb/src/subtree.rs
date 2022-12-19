@@ -315,6 +315,7 @@ impl Element {
 
     #[cfg(feature = "full")]
     /// Get the size of an element in bytes
+    #[deprecated]
     pub fn byte_size(&self) -> u32 {
         match self {
             Element::Item(item, element_flag) => {
@@ -332,7 +333,7 @@ impl Element {
                 }
             }
             Element::Reference(path_reference, _, element_flag) => {
-                let path_length = path_reference.encoding_length() as u32;
+                let path_length = path_reference.serialized_size() as u32;
 
                 if let Some(flag) = element_flag {
                     flag.len() as u32 + path_length

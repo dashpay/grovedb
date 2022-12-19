@@ -95,6 +95,17 @@ impl Visualize for ReferencePathType {
                 drawer.write(b"cousin reference: ")?;
                 drawer = key.visualize(drawer)?;
             }
+            ReferencePathType::RemovedCousinReference(middle_path) => {
+                drawer.write(b"removed cousin reference: ")?;
+                drawer.write(
+                    middle_path
+                        .iter()
+                        .map(|a| hex::encode(a))
+                        .collect::<Vec<String>>()
+                        .join("/")
+                        .as_bytes(),
+                )?;
+            }
             ReferencePathType::SiblingReference(key) => {
                 drawer.write(b"sibling reference: ")?;
                 drawer = key.visualize(drawer)?;
