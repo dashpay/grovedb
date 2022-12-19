@@ -97,7 +97,7 @@ where
             ops_by_qualified_paths.insert(path.to_path_consume(), op.op.clone());
             let op_cost = OperationCost::default();
             let op_result = match &op.op {
-                Op::Insert { element } => {
+                Op::Insert { element } | Op::Replace { element } => {
                     if let Element::Tree(..) = element {
                         cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op, false));
                     } else if let Element::SumTree(..) = element {

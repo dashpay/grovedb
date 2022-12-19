@@ -66,6 +66,12 @@ impl Op {
                 in_tree_using_sums,
                 propagate_if_input(),
             ),
+            Op::Replace { element } => GroveDb::average_case_merk_replace_element(
+                key,
+                &element,
+                in_tree_using_sums,
+                propagate_if_input(),
+            ),
             Op::Delete => {
                 GroveDb::average_case_merk_delete_element(key, layer_element_estimates, propagate)
             }
@@ -235,10 +241,10 @@ mod tests {
         OperationCost,
     };
     use merk::estimated_costs::average_case_costs::{
-        EstimatedLayerCount::{ApproximateElements, EstimatedLevel},
+        EstimatedLayerCount::{ApproximateElements, EstimatedLevel, PotentiallyAtMaxElements},
         EstimatedLayerInformation,
         EstimatedLayerSizes::{AllItems, AllSubtrees},
-        EstimatedSumTrees::NoSumTrees,
+        EstimatedSumTrees::{NoSumTrees, SomeSumTrees},
     };
 
     use crate::{
@@ -599,6 +605,71 @@ mod tests {
                 },
                 storage_loaded_bytes: 173,
                 hash_node_calls: 12,
+            }
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_sum_item_replace_op_average_case_costs() {
+        let db = make_empty_grovedb();
+
+        let ops = vec![GroveDbOp::replace_op(
+            vec![vec![7]],
+            hex::decode("46447a3b4c8939fd4cf8b610ba7da3d3f6b52b39ab2549bf91503b9b07814055")
+                .unwrap(),
+            Element::new_sum_item(500),
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                is_sum_tree: false,
+                estimated_layer_count: EstimatedLevel(1, false),
+                estimated_layer_sizes: AllSubtrees(
+                    1,
+                    SomeSumTrees {
+                        sum_trees_weight: 1,
+                        non_sum_trees_weight: 1,
+                    },
+                    None,
+                ),
+            },
+        );
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            EstimatedLayerInformation {
+                is_sum_tree: true,
+                estimated_layer_count: PotentiallyAtMaxElements,
+                estimated_layer_sizes: AllItems(32, 8, None),
+            },
+        );
+        let average_case_cost = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops.clone(),
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+        )
+        .cost_as_result()
+        .expect("expected to get average case costs");
+
+        // because we know the object we are inserting we can know the average
+        // case cost if it doesn't already exist
+        assert_eq!(average_case_cost.storage_cost.added_bytes, 0);
+
+        assert_eq!(
+            average_case_cost,
+            OperationCost {
+                seek_count: 41,
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 5624,
+                    removed_bytes: NoStorageRemoval,
+                },
+                storage_loaded_bytes: 7669,
+                hash_node_calls: 79,
             }
         );
     }

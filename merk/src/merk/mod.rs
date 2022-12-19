@@ -13,7 +13,6 @@ use std::{
     cmp::Ordering,
     collections::{BTreeSet, LinkedList},
     fmt,
-    io::Read,
 };
 
 #[cfg(feature = "full")]

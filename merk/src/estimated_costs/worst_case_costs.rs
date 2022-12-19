@@ -69,7 +69,7 @@ pub fn add_worst_case_merk_insert(
     is_sum_node: bool,
 ) {
     cost.storage_cost.added_bytes +=
-        KV::node_byte_cost_size_for_key_and_value_lengths(key_len, value_len, is_sum_node);
+        KV::node_byte_cost_size_for_key_and_raw_value_lengths(key_len, value_len, is_sum_node);
     // .. and hash computation for the inserted element itself
     // todo: verify this
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32) as u16;

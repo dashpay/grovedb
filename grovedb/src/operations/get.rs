@@ -6,6 +6,8 @@ use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
+use integer_encoding::VarInt;
+#[cfg(feature = "full")]
 use merk::Merk;
 #[cfg(feature = "full")]
 use storage::{
@@ -312,12 +314,12 @@ where {
                                         .follow_reference(absolute_path, transaction)
                                         .unwrap_add_cost(&mut cost)?;
 
-                                    if let Element::Item(item, _) = maybe_item {
-                                        Ok(item)
-                                    } else {
-                                        Err(Error::InvalidQuery(
+                                    match maybe_item {
+                                        Element::Item(item, _) => Ok(item),
+                                        Element::SumItem(item, _) => Ok(item.encode_var_vec()),
+                                        _ => Err(Error::InvalidQuery(
                                             "the reference must result in an item",
-                                        ))
+                                        )),
                                     }
                                 }
                                 _ => Err(Error::CorruptedCodeExecution(
@@ -325,7 +327,8 @@ where {
                                 )),
                             }
                         }
-                        Element::Item(item, _) | Element::SumItem(item, _) => Ok(item),
+                        Element::Item(item, _) => Ok(item),
+                        Element::SumItem(item, _) => Ok(item.encode_var_vec()),
                         Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items and references",
                         )),
@@ -336,6 +339,71 @@ where {
                 )),
             })
             .collect::<Result<Vec<Vec<u8>>, Error>>();
+
+        let results = cost_return_on_error_no_add!(&cost, results_wrapped);
+        Ok((results, skipped)).wrap_with_cost(cost)
+    }
+
+    pub fn query_sums(
+        &self,
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+    ) -> CostResult<(Vec<i64>, u16), Error> {
+        let mut cost = OperationCost::default();
+
+        let (elements, skipped) = cost_return_on_error!(
+            &mut cost,
+            self.query_raw(
+                path_query,
+                QueryResultType::QueryElementResultType,
+                transaction
+            )
+        );
+
+        let results_wrapped = elements
+            .into_iter()
+            .map(|result_item| match result_item {
+                QueryResultElement::ElementResultItem(element) => {
+                    match element {
+                        Element::Reference(reference_path, ..) => {
+                            match reference_path {
+                                ReferencePathType::AbsolutePathReference(absolute_path) => {
+                                    // While `map` on iterator is lazy, we should accumulate costs
+                                    // even if `collect` will
+                                    // end in `Err`, so we'll use
+                                    // external costs accumulator instead of
+                                    // returning costs from `map` call.
+                                    let maybe_item = self
+                                        .follow_reference(absolute_path, transaction)
+                                        .unwrap_add_cost(&mut cost)?;
+
+                                    if let Element::SumItem(item, _) = maybe_item {
+                                        Ok(item)
+                                    } else {
+                                        Err(Error::InvalidQuery(
+                                            "the reference must result in a sum item",
+                                        ))
+                                    }
+                                }
+                                _ => Err(Error::CorruptedCodeExecution(
+                                    "reference after query must have absolute paths",
+                                )),
+                            }
+                        }
+                        Element::SumItem(item, _) => Ok(item),
+                        Element::Tree(..) | Element::SumTree(..) | Element::Item(..) => {
+                            Err(Error::InvalidQuery(
+                                "path_queries over sum items can only refer to sum items and \
+                                 references",
+                            ))
+                        }
+                    }
+                }
+                _ => Err(Error::CorruptedCodeExecution(
+                    "query returned incorrect result type",
+                )),
+            })
+            .collect::<Result<Vec<i64>, Error>>();
 
         let results = cost_return_on_error_no_add!(&cost, results_wrapped);
         Ok((results, skipped)).wrap_with_cost(cost)
