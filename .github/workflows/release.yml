@@ -90,7 +90,7 @@ jobs:
         if: ${{ steps.set-target.outputs.result != 'aarch64-unknown-linux-musl' }}
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
           default: true
           target: ${{ steps.set-target.outputs.result }}
 

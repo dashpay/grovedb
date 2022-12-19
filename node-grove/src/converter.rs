@@ -51,11 +51,12 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
     js_object.set(cx, "type", js_type_string)?;
 
     let js_value: Handle<JsValue> = match element {
-        Element::Item(item, _) | Element::SumItem(item, _) => {
+        Element::Item(item, _) => {
             let js_buffer = JsBuffer::external(cx, item);
             js_buffer.upcast()
         }
         // TODO: Fix bindings
+        Element::SumItem(..) => nested_vecs_to_js(vec![], cx)?,
         Element::Reference(..) => nested_vecs_to_js(vec![], cx)?,
         Element::Tree(..) => nested_vecs_to_js(vec![], cx)?,
         Element::SumTree(..) => nested_vecs_to_js(vec![], cx)?,

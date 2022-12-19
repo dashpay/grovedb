@@ -58,6 +58,12 @@ impl Op {
                 is_in_parent_sum_tree,
                 propagate_if_input(),
             ),
+            Op::Replace { element } => GroveDb::worst_case_merk_replace_element(
+                key,
+                &element,
+                is_in_parent_sum_tree,
+                propagate_if_input(),
+            ),
             Op::Delete => GroveDb::worst_case_merk_delete_element(
                 key,
                 worst_case_layer_element_estimates,

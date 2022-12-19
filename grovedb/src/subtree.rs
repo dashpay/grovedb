@@ -43,6 +43,8 @@ pub type MaxReferenceHop = Option<u8>;
 
 /// The cost of a tree
 pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
+/// The cost of a tree
+pub const SUM_ITEM_COST_SIZE: u32 = 10;
 /// The cost of a sum tree
 pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 11
 
@@ -61,8 +63,8 @@ pub enum Element {
     /// A subtree, contains the a prefixed key representing the root of the
     /// subtree.
     Tree(Option<Vec<u8>>, Option<ElementFlags>),
-    /// Vector encoded integer value that can be totaled in a sum tree
-    SumItem(Vec<u8>, Option<ElementFlags>),
+    /// Signed integer value that can be totaled in a sum tree
+    SumItem(SumValue, Option<ElementFlags>),
     /// Same as Element::Tree but underlying Merk sums value of it's summable
     /// nodes
     SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
@@ -123,11 +125,11 @@ impl Element {
     }
 
     pub fn new_sum_item(value: i64) -> Self {
-        Element::SumItem(value.encode_var_vec(), None)
+        Element::SumItem(value, None)
     }
 
     pub fn new_sum_item_with_flags(value: i64, flags: Option<ElementFlags>) -> Self {
-        Element::SumItem(value.encode_var_vec(), flags)
+        Element::SumItem(value, flags)
     }
 
     pub fn new_reference(reference_path: ReferencePathType) -> Self {
@@ -190,10 +192,7 @@ impl Element {
     /// everything else
     pub fn sum_value(&self) -> Option<i64> {
         match self {
-            Element::SumItem(value, _) => {
-                i64::decode_var(value).map(|(encoded_value, _)| encoded_value)
-            }
-            Element::SumTree(_, sum_value, _) => Some(*sum_value),
+            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => Some(*sum_value),
             _ => Some(0),
         }
     }
@@ -270,11 +269,18 @@ impl Element {
     /// Get the size of an element in bytes
     pub fn byte_size(&self) -> u32 {
         match self {
-            Element::Item(item, element_flag) | Element::SumItem(item, element_flag) => {
+            Element::Item(item, element_flag) => {
                 if let Some(flag) = element_flag {
                     flag.len() as u32 + item.len() as u32
                 } else {
                     item.len() as u32
+                }
+            }
+            Element::SumItem(item, element_flag) => {
+                if let Some(flag) = element_flag {
+                    flag.len() as u32 + item.required_space() as u32
+                } else {
+                    item.required_space() as u32
                 }
             }
             Element::Reference(path_reference, _, element_flag) => {
@@ -1513,10 +1519,10 @@ mod tests {
 
         let item = Element::new_sum_item(5);
         let serialized = item.serialize().expect("expected to serialize");
-        assert_eq!(serialized.len(), 4);
+        assert_eq!(serialized.len(), 3);
         assert_eq!(serialized.len(), item.serialized_size());
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
-        assert_eq!(hex::encode(serialized), "03010a00");
+        assert_eq!(hex::encode(serialized), "030a00");
 
         let item = Element::new_item_with_flags(
             hex::decode("abcdef").expect("expected to decode"),

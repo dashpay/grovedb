@@ -18,8 +18,7 @@ impl Visualize for Element {
                 drawer = value.visualize(drawer)?;
             }
             Element::SumItem(value, _) => {
-                drawer.write(b"sum_item: ")?;
-                drawer = value.visualize(drawer)?;
+                drawer.write(format!("sum_item: {}", value).as_bytes())?;
             }
             Element::Reference(_ref, ..) => {
                 drawer.write(b"ref")?;

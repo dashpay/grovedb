@@ -8,7 +8,6 @@ use std::{
     cmp::Ordering,
     collections::{BTreeSet, LinkedList},
     fmt,
-    io::Read,
 };
 
 use costs::{
@@ -20,7 +19,6 @@ use costs::{
     },
     ChildrenSizesWithValue, CostContext, CostResult, CostsExt, FeatureSumLength, OperationCost,
 };
-use ed::{Decode, Encode};
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{

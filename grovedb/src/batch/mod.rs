@@ -70,6 +70,9 @@ pub enum Op {
     Insert {
         element: Element,
     },
+    Replace {
+        element: Element,
+    },
     InsertTreeWithRootHash {
         hash: [u8; 32],
         root_key: Option<Vec<u8>>,
@@ -85,7 +88,9 @@ impl PartialOrd for Op {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
             (Op::Delete, Op::Insert { .. }) => Some(Ordering::Less),
+            (Op::Delete, Op::Replace { .. }) => Some(Ordering::Less),
             (Op::Insert { .. }, Op::Delete) => Some(Ordering::Greater),
+            (Op::Replace { .. }, Op::Delete) => Some(Ordering::Greater),
             _ => Some(Ordering::Equal),
         }
     }
@@ -235,6 +240,13 @@ impl fmt::Debug for GroveDbOp {
                 Element::SumTree(..) => "Insert Sum Tree",
                 Element::SumItem(..) => "Insert Sum Item",
             },
+            Op::Replace { element } => match element {
+                Element::Item(..) => "Replace Item",
+                Element::Reference(..) => "Replace Ref",
+                Element::Tree(..) => "Replace Tree",
+                Element::SumTree(..) => "Replace Sum Tree",
+                Element::SumItem(..) => "Replace Sum Item",
+            },
             Op::Delete => "Delete",
             Op::DeleteTree => "Delete Tree",
             Op::DeleteSumTree => "Delete Sum Tree",
@@ -265,6 +277,23 @@ impl GroveDbOp {
             path,
             key,
             op: Op::Insert { element },
+        }
+    }
+
+    pub fn replace_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: KnownKey(key),
+            op: Op::Replace { element },
+        }
+    }
+
+    pub fn replace_estimated_op(path: KeyInfoPath, key: KeyInfo, element: Element) -> Self {
+        Self {
+            path,
+            key,
+            op: Op::Replace { element },
         }
     }
 
@@ -356,12 +385,9 @@ impl GroveDbOp {
 
         let inserts = ops
             .iter()
-            .filter_map(|current_op| {
-                if let Op::Insert { .. } = current_op.op {
-                    Some(current_op.clone())
-                } else {
-                    None
-                }
+            .filter_map(|current_op| match current_op.op {
+                Op::Insert { .. } | Op::Replace { .. } => Some(current_op.clone()),
+                _ => None,
             })
             .collect::<Vec<GroveDbOp>>();
 
@@ -494,7 +520,7 @@ where
                     ))
                     .wrap_with_cost(cost);
                 }
-                Op::Insert { element } => match element {
+                Op::Insert { element } | Op::Replace { element } => match element {
                     Element::Item(..) | Element::SumItem(..) => {
                         let serialized = cost_return_on_error_no_add!(&cost, element.serialize());
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
@@ -692,7 +718,7 @@ where
         let mut batch_operations: Vec<(Vec<u8>, _)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
-                Op::Insert { element } => match &element {
+                Op::Insert { element } | Op::Replace { element } => match &element {
                     Element::Reference(path_reference, element_max_reference_hop, _) => {
                         let merk_feature_type = cost_return_on_error!(
                             &mut cost,
@@ -1091,7 +1117,8 @@ impl GroveDb {
                                                     ))
                                                     .wrap_with_cost(cost);
                                                 }
-                                                Op::Insert { element } => {
+                                                Op::Insert { element }
+                                                | Op::Replace { element } => {
                                                     if let Element::Tree(_, flags) = element {
                                                         *mutable_occupied_entry =
                                                             Op::InsertTreeWithRootHash {
@@ -1213,7 +1240,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         for op in ops.into_iter() {
             match op.op {
-                Op::Insert { element } => {
+                Op::Insert { element } | Op::Replace { element } => {
                     let path_slices: Vec<&[u8]> = op.path.iter().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,

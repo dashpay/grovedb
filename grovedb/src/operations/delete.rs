@@ -15,7 +15,7 @@ use merk::{
         },
     },
     tree::kv::KV,
-    Error as MerkError, Merk, MerkOptions, HASH_LENGTH, HASH_LENGTH_U32,
+    Error as MerkError, Merk, MerkOptions, HASH_LENGTH_U32,
 };
 use storage::{
     rocksdb_storage::{

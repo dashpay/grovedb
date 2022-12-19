@@ -508,7 +508,7 @@ pub fn add_average_case_merk_propagate(
             let flags_len = average_flags_size.unwrap_or(0);
             let average_value_len = average_item_size + flags_len;
             nodes_updated
-                * KV::node_byte_cost_size_for_key_and_value_lengths(
+                * KV::node_byte_cost_size_for_key_and_raw_value_lengths(
                     *average_key_size as u32,
                     average_value_len,
                     in_sum_tree,
@@ -561,7 +561,7 @@ pub fn add_average_case_merk_propagate(
                         |(average_key_size, average_value_size, average_flags_size, weight)| {
                             let flags_len = average_flags_size.unwrap_or(0);
                             let value_len = average_value_size + flags_len;
-                            let cost = KV::node_byte_cost_size_for_key_and_value_lengths(
+                            let cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
                                 *average_key_size as u32,
                                 value_len,
                                 in_sum_tree,
@@ -578,7 +578,7 @@ pub fn add_average_case_merk_propagate(
                         |(average_key_size, average_value_size, average_flags_size, weight)| {
                             let flags_len = average_flags_size.unwrap_or(0);
                             let value_len = average_value_size + flags_len;
-                            let cost = KV::node_byte_cost_size_for_key_and_value_lengths(
+                            let cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
                                 *average_key_size as u32,
                                 value_len,
                                 false,
