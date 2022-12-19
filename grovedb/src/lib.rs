@@ -70,7 +70,6 @@ use storage::{
     },
     StorageBatch,
 };
-
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use subtree::Element;
 #[cfg(feature = "full")]
