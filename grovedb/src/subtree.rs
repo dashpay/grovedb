@@ -2,14 +2,19 @@
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
 
+#[cfg(feature = "full")]
 use core::fmt;
 
+#[cfg(feature = "full")]
 use bincode::Options;
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
     CostContext, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
+#[cfg(feature = "full")]
 use merk::{
     ed::Decode,
     estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE},
@@ -18,10 +23,14 @@ use merk::{
     BatchEntry, Error as MerkError, MerkOptions, Op, TreeFeatureType,
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
+#[cfg(feature = "full")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "full")]
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+#[cfg(feature = "full")]
 use visualize::visualize_to_vec;
 
+#[cfg(feature = "full")]
 use crate::{
     query_result_type::{
         KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType,
@@ -34,21 +43,27 @@ use crate::{
     Error, Hash, Merk, PathQuery, SizedQuery, TransactionArg,
 };
 
+#[cfg(feature = "full")]
 /// Optional meta-data to be stored per element
 pub type ElementFlags = Vec<u8>;
 
+#[cfg(feature = "full")]
 /// Optional single byte to represent the maximum number of reference hop to
 /// base element
 pub type MaxReferenceHop = Option<u8>;
 
+#[cfg(feature = "full")]
 /// The cost of a tree
 pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
+#[cfg(feature = "full")]
 /// The cost of a sum tree
 pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 11
 
+#[cfg(feature = "full")]
 /// int 64 sum value
 pub type SumValue = i64;
 
+#[cfg(feature = "full")]
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
@@ -68,6 +83,7 @@ pub enum Element {
     SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
 }
 
+#[cfg(feature = "full")]
 impl fmt::Debug for Element {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut v = Vec::new();
@@ -77,6 +93,7 @@ impl fmt::Debug for Element {
     }
 }
 
+#[cfg(feature = "full")]
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>
 where
     'db: 'ctx,
@@ -96,6 +113,7 @@ where
     pub offset: &'a mut Option<u16>,
 }
 
+#[cfg(feature = "full")]
 impl Element {
     // TODO: improve API to avoid creation of Tree elements with uncertain state
     pub fn empty_tree() -> Self {
@@ -1404,16 +1422,19 @@ impl Element {
     }
 }
 
+#[cfg(feature = "full")]
 pub struct ElementsIterator<I: RawIterator> {
     raw_iter: I,
 }
 
+#[cfg(feature = "full")]
 pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
     let tree = Tree::decode_raw(bytes, vec![]).map_err(|e| Error::CorruptedData(e.to_string()))?;
     let element: Element = Element::deserialize(tree.value_as_slice())?;
     Ok(element)
 }
 
+#[cfg(feature = "full")]
 impl<I: RawIterator> ElementsIterator<I> {
     pub fn new(raw_iter: I) -> Self {
         ElementsIterator { raw_iter }
@@ -1454,6 +1475,7 @@ impl<I: RawIterator> ElementsIterator<I> {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use merk::test_utils::TempMerk;

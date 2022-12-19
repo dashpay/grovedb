@@ -1,7 +1,10 @@
+#[cfg(feature = "full")]
 use merk::CryptoHash;
 
+#[cfg(feature = "full")]
 use crate::{Element, Error};
 
+#[cfg(feature = "full")]
 pub fn compare_result_tuples(
     result_set: Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,
     expected_result_set: Vec<(Vec<u8>, Vec<u8>)>,
@@ -13,6 +16,7 @@ pub fn compare_result_tuples(
     }
 }
 
+#[cfg(feature = "full")]
 fn deserialize_and_extract_item_bytes(raw_bytes: &[u8]) -> Result<Vec<u8>, Error> {
     let elem = Element::deserialize(raw_bytes)?;
     return match elem {
@@ -21,6 +25,7 @@ fn deserialize_and_extract_item_bytes(raw_bytes: &[u8]) -> Result<Vec<u8>, Error
     };
 }
 
+#[cfg(feature = "full")]
 pub fn compare_result_sets(
     elements: &Vec<Vec<u8>>,
     result_set: &Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,

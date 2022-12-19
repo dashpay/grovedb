@@ -1,11 +1,17 @@
+#[cfg(feature = "full")]
 use std::fmt;
 
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
+#[cfg(feature = "full")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "full")]
 use visualize::visualize_to_vec;
 
+#[cfg(feature = "full")]
 use crate::Error;
 
+#[cfg(feature = "full")]
 /// Reference path variants
 #[derive(Hash, Eq, PartialEq, Serialize, Deserialize, Clone)]
 pub enum ReferencePathType {
@@ -34,6 +40,7 @@ pub enum ReferencePathType {
     SiblingReference(Vec<u8>),
 }
 
+#[cfg(feature = "full")]
 impl fmt::Debug for ReferencePathType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut v = Vec::new();
@@ -43,6 +50,7 @@ impl fmt::Debug for ReferencePathType {
     }
 }
 
+#[cfg(feature = "full")]
 /// Given the reference path type and the current qualified path (path+key),
 /// this computes the absolute path of the item the reference is pointing to.
 pub fn path_from_reference_qualified_path_type(
@@ -62,6 +70,7 @@ pub fn path_from_reference_qualified_path_type(
     }
 }
 
+#[cfg(feature = "full")]
 /// Given the reference path type, the current path and the terminal key, this
 /// computes the absolute path of the item the reference is pointing to.
 pub fn path_from_reference_path_type<'p, P>(
@@ -148,6 +157,7 @@ where
     };
 }
 
+#[cfg(feature = "full")]
 impl ReferencePathType {
     pub fn encoding_length(&self) -> usize {
         match self {
@@ -193,6 +203,7 @@ impl ReferencePathType {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use merk::proofs::Query;

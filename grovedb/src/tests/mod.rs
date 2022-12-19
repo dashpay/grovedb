@@ -1,38 +1,53 @@
+#[cfg(feature = "full")]
 pub mod common;
+#[cfg(feature = "full")]
 mod query_tests;
+#[cfg(feature = "full")]
 mod sum_tree_tests;
+#[cfg(feature = "full")]
 mod tree_hashes_tests;
 
+#[cfg(feature = "full")]
 use std::{
     ops::{Deref, DerefMut},
     option::Option::None,
 };
 
+#[cfg(feature = "full")]
 use ::visualize::{Drawer, Visualize};
+#[cfg(feature = "full")]
 use tempfile::TempDir;
 
+#[cfg(feature = "full")]
 use super::*;
+#[cfg(feature = "full")]
 use crate::{
     query_result_type::QueryResultType::QueryKeyElementPairResultType,
     reference_path::ReferencePathType, tests::common::compare_result_tuples,
 };
 
+#[cfg(feature = "full")]
 pub const TEST_LEAF: &[u8] = b"test_leaf";
+#[cfg(feature = "full")]
 pub const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
+#[cfg(feature = "full")]
 const DEEP_LEAF: &[u8] = b"deep_leaf";
 
+#[cfg(feature = "full")]
 /// GroveDB wrapper to keep temp directory alive
 pub struct TempGroveDb {
     _tmp_dir: TempDir,
     grove_db: GroveDb,
 }
 
+#[cfg(feature = "full")]
 impl DerefMut for TempGroveDb {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.grove_db
     }
 }
 
+#[cfg(feature = "full")]
 impl Deref for TempGroveDb {
     type Target = GroveDb;
 
@@ -41,12 +56,14 @@ impl Deref for TempGroveDb {
     }
 }
 
+#[cfg(feature = "full")]
 impl Visualize for TempGroveDb {
     fn visualize<W: std::io::Write>(&self, drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
         self.grove_db.visualize(drawer)
     }
 }
 
+#[cfg(feature = "full")]
 /// A helper method to create an empty GroveDB
 pub fn make_empty_grovedb() -> TempGroveDb {
     let tmp_dir = TempDir::new().unwrap();
@@ -57,6 +74,7 @@ pub fn make_empty_grovedb() -> TempGroveDb {
     }
 }
 
+#[cfg(feature = "full")]
 /// A helper method to create GroveDB with one leaf for a root tree
 pub fn make_test_grovedb() -> TempGroveDb {
     // Tree Structure
@@ -72,6 +90,7 @@ pub fn make_test_grovedb() -> TempGroveDb {
     }
 }
 
+#[cfg(feature = "full")]
 fn add_test_leaves(db: &mut GroveDb) {
     db.insert([], TEST_LEAF, Element::empty_tree(), None, None)
         .unwrap()
@@ -81,6 +100,7 @@ fn add_test_leaves(db: &mut GroveDb) {
         .expect("successful root tree leaf 2 insert");
 }
 
+#[cfg(feature = "full")]
 pub fn make_deep_tree() -> TempGroveDb {
     // Tree Structure
     // root
@@ -406,12 +426,14 @@ pub fn make_deep_tree() -> TempGroveDb {
     temp_db
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_init() {
     let tmp_dir = TempDir::new().unwrap();
     GroveDb::open(tmp_dir).expect("empty tree is ok");
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_element_with_flags() {
     let db = make_test_grovedb();
@@ -552,6 +574,7 @@ fn test_element_with_flags() {
     );
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_cannot_update_populated_tree_item() {
     // This test shows that you cannot update a tree item
@@ -578,6 +601,7 @@ fn test_cannot_update_populated_tree_item() {
     assert_ne!(current_element, new_element);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_changes_propagated() {
     let db = make_test_grovedb();
@@ -624,6 +648,7 @@ fn test_changes_propagated() {
 }
 
 // TODO: Add solid test cases to this
+#[cfg(feature = "full")]
 #[test]
 fn test_references() {
     let db = make_test_grovedb();
@@ -685,6 +710,7 @@ fn test_references() {
     assert!(db.get([TEST_LEAF], b"merk_2", None).unwrap().is_ok());
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_follow_references() {
     let db = make_test_grovedb();
@@ -721,6 +747,7 @@ fn test_follow_references() {
     );
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_reference_must_point_to_item() {
     let db = make_test_grovedb();
@@ -741,6 +768,7 @@ fn test_reference_must_point_to_item() {
     assert!(matches!(result, Err(Error::MissingReference(_))));
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_too_many_indirections() {
     use crate::operations::get::MAX_REFERENCE_HOPS;
@@ -794,6 +822,7 @@ fn test_too_many_indirections() {
     assert!(matches!(result, Err(Error::ReferenceLimit)));
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_reference_value_affects_state() {
     let db_one = make_test_grovedb();
@@ -846,6 +875,7 @@ fn test_reference_value_affects_state() {
     );
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_tree_structure_is_persistent() {
     let tmp_dir = TempDir::new().unwrap();
@@ -901,6 +931,7 @@ fn test_tree_structure_is_persistent() {
     assert_eq!(prev_root_hash, db.root_hash(None).unwrap().unwrap());
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_root_tree_leaves_are_noted() {
     let db = make_test_grovedb();
@@ -912,6 +943,7 @@ fn test_root_tree_leaves_are_noted() {
         .expect("should exist");
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_proof_for_invalid_path_root_key() {
     let db = make_test_grovedb();
@@ -927,6 +959,7 @@ fn test_proof_for_invalid_path_root_key() {
     assert_eq!(result_set.len(), 0);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_proof_for_invalid_path() {
     let db = make_deep_tree();
@@ -996,6 +1029,7 @@ fn test_proof_for_invalid_path() {
     assert_eq!(result_set.len(), 0);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_proof_for_non_existent_data() {
     let temp_db = make_test_grovedb();
@@ -1014,6 +1048,7 @@ fn test_proof_for_non_existent_data() {
     assert_eq!(result_set.len(), 0);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_path_query_proofs_without_subquery_with_reference() {
     // Tree Structure
@@ -1176,6 +1211,7 @@ fn test_path_query_proofs_without_subquery_with_reference() {
     );
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_path_query_proofs_without_subquery() {
     // Tree Structure
@@ -1349,6 +1385,7 @@ fn test_path_query_proofs_without_subquery() {
     );
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_path_query_proofs_with_default_subquery() {
     let temp_db = make_deep_tree();
@@ -1487,6 +1524,7 @@ fn test_path_query_proofs_with_default_subquery() {
     compare_result_tuples(result_set, expected_result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_path_query_proofs_with_subquery_key() {
     let temp_db = make_deep_tree();
@@ -1516,6 +1554,7 @@ fn test_path_query_proofs_with_subquery_key() {
     compare_result_tuples(result_set, expected_result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_path_query_proofs_with_key_and_subquery() {
     let temp_db = make_deep_tree();
@@ -1545,6 +1584,7 @@ fn test_path_query_proofs_with_key_and_subquery() {
     compare_result_tuples(result_set, expected_result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_path_query_proofs_with_conditional_subquery() {
     let temp_db = make_deep_tree();
@@ -1640,6 +1680,7 @@ fn test_path_query_proofs_with_conditional_subquery() {
     compare_result_tuples(result_set, expected_result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_path_query_proofs_with_sized_query() {
     let temp_db = make_deep_tree();
@@ -1684,6 +1725,7 @@ fn test_path_query_proofs_with_sized_query() {
     compare_result_tuples(result_set, expected_result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_path_query_proofs_with_direction() {
     let temp_db = make_deep_tree();
@@ -1779,6 +1821,7 @@ fn test_path_query_proofs_with_direction() {
     compare_result_tuples(result_set, expected_result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_checkpoint() {
     let db = make_test_grovedb();
@@ -1884,6 +1927,7 @@ fn test_checkpoint() {
     ));
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_is_empty_tree() {
     let db = make_test_grovedb();
@@ -1914,6 +1958,7 @@ fn test_is_empty_tree() {
         .expect("path is valid tree"));
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn transaction_should_be_aborted_when_rollback_is_called() {
     let item_key = b"key3";
@@ -1935,6 +1980,7 @@ fn transaction_should_be_aborted_when_rollback_is_called() {
     assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn transaction_should_be_aborted() {
     let db = make_test_grovedb();
@@ -1954,6 +2000,7 @@ fn transaction_should_be_aborted() {
     assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_subtree_pairs_iterator() {
     let db = make_test_grovedb();
@@ -2053,6 +2100,7 @@ fn test_subtree_pairs_iterator() {
     assert!(matches!(iter.next().unwrap(), Ok(None)));
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_find_subtrees() {
     let element = Element::new_item(b"ayy".to_vec());
@@ -2092,6 +2140,7 @@ fn test_find_subtrees() {
     );
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_root_subtree_has_root_key() {
     let db = make_test_grovedb();
@@ -2106,6 +2155,7 @@ fn test_root_subtree_has_root_key() {
     assert!(root_key.is_some())
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_subtree() {
     let db = make_test_grovedb();
@@ -2231,6 +2281,7 @@ fn test_get_subtree() {
     assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_full_query() {
     let db = make_test_grovedb();
@@ -2307,6 +2358,7 @@ fn test_get_full_query() {
     );
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_aux_uses_separate_cf() {
     let element = Element::new_item(b"ayy".to_vec());
@@ -2380,6 +2432,7 @@ fn test_aux_uses_separate_cf() {
     );
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_aux_with_transaction() {
     let element = Element::new_item(b"ayy".to_vec());
@@ -2420,6 +2473,7 @@ fn test_aux_with_transaction() {
     );
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_root_hash() {
     let db = make_test_grovedb();
@@ -2459,12 +2513,14 @@ fn test_root_hash() {
     assert_ne!(db.root_hash(None).unwrap().unwrap(), root_hash_outside);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_non_existing_root_leaf() {
     let db = make_test_grovedb();
     assert!(matches!(db.get([], b"ayy", None).unwrap(), Err(_)));
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_check_subtree_exists_function() {
     let db = make_test_grovedb();
@@ -2513,6 +2569,7 @@ fn test_check_subtree_exists_function() {
     ));
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_tree_value_exists_method_no_tx() {
     let db = make_test_grovedb();
@@ -2539,6 +2596,7 @@ fn test_tree_value_exists_method_no_tx() {
     assert!(!db.has_raw([], b"badleaf", None).unwrap().unwrap());
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_tree_value_exists_method_tx() {
     let db = make_test_grovedb();

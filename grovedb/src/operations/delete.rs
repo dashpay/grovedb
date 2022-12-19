@@ -1,11 +1,15 @@
+#[cfg(feature = "full")]
 use std::collections::{BTreeSet, HashMap};
 
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use intmap::IntMap;
+#[cfg(feature = "full")]
 use merk::{
     estimated_costs::{
         average_case_costs::EstimatedLayerInformation,
@@ -17,6 +21,7 @@ use merk::{
     tree::kv::KV,
     Error as MerkError, Merk, MerkOptions, HASH_LENGTH, HASH_LENGTH_U32,
 };
+#[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{
         PrefixedRocksDbBatchTransactionContext, PrefixedRocksDbStorageContext,
@@ -26,6 +31,7 @@ use storage::{
     Storage, StorageBatch, StorageContext,
 };
 
+#[cfg(feature = "full")]
 use crate::{
     batch::{key_info::KeyInfo, GroveDbOp, KeyInfoPath, Op},
     subtree::SUM_TREE_COST_SIZE,
@@ -35,6 +41,7 @@ use crate::{
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
+#[cfg(feature = "full")]
 #[derive(Clone)]
 pub struct DeleteOptions {
     pub allow_deleting_non_empty_trees: bool,
@@ -42,6 +49,7 @@ pub struct DeleteOptions {
     pub base_root_storage_is_free: bool,
 }
 
+#[cfg(feature = "full")]
 impl Default for DeleteOptions {
     fn default() -> Self {
         DeleteOptions {
@@ -52,6 +60,7 @@ impl Default for DeleteOptions {
     }
 }
 
+#[cfg(feature = "full")]
 impl DeleteOptions {
     fn as_merk_options(&self) -> MerkOptions {
         MerkOptions {
@@ -60,6 +69,7 @@ impl DeleteOptions {
     }
 }
 
+#[cfg(feature = "full")]
 impl GroveDb {
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.
@@ -1154,6 +1164,7 @@ impl GroveDb {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use costs::{

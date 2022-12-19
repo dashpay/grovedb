@@ -1,9 +1,13 @@
+#[cfg(feature = "full")]
 use std::io::{Read, Write};
 
+#[cfg(feature = "full")]
 use crate::Error;
 
+#[cfg(feature = "full")]
 pub const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
 
+#[cfg(feature = "full")]
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProofType {
     Merk,
@@ -14,6 +18,7 @@ pub enum ProofType {
     Invalid,
 }
 
+#[cfg(feature = "full")]
 impl From<ProofType> for u8 {
     fn from(proof_type: ProofType) -> Self {
         match proof_type {
@@ -27,6 +32,7 @@ impl From<ProofType> for u8 {
     }
 }
 
+#[cfg(feature = "full")]
 impl From<u8> for ProofType {
     fn from(val: u8) -> Self {
         match val {
@@ -40,11 +46,13 @@ impl From<u8> for ProofType {
     }
 }
 
+#[cfg(feature = "full")]
 #[derive(Debug)]
 pub struct ProofReader<'a> {
     proof_data: &'a [u8],
 }
 
+#[cfg(feature = "full")]
 impl<'a> ProofReader<'a> {
     pub fn new(proof_data: &'a [u8]) -> Self {
         Self { proof_data }
@@ -97,6 +105,7 @@ impl<'a> ProofReader<'a> {
     }
 }
 
+#[cfg(feature = "full")]
 pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
     dest.write_all(value).expect("TODO what if it fails?");
 }

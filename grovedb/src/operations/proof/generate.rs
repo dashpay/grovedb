@@ -1,13 +1,17 @@
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use merk::{
     proofs::{encode_into, Node, Op},
     tree::value_hash,
     KVIterator, Merk, ProofWithoutEncodingResult,
 };
+#[cfg(feature = "full")]
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, StorageContext};
 
+#[cfg(feature = "full")]
 use crate::{
     operations::proof::util::{write_to_vec, ProofType, EMPTY_TREE_HASH},
     reference_path::path_from_reference_path_type,
@@ -15,6 +19,7 @@ use crate::{
     Element, Error, GroveDb, PathQuery, Query,
 };
 
+#[cfg(feature = "full")]
 impl GroveDb {
     pub fn prove_query_many(&self, query: Vec<&PathQuery>) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost::default();

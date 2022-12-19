@@ -1,5 +1,8 @@
+#[cfg(feature = "full")]
 use costs::{cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
+#[cfg(feature = "full")]
 use merk::{
     estimated_costs::{
         add_cost_case_merk_insert, add_cost_case_merk_insert_layered,
@@ -12,14 +15,17 @@ use merk::{
     tree::Tree,
     HASH_LENGTH,
 };
+#[cfg(feature = "full")]
 use storage::{worst_case_costs::WorstKeyLength, Storage};
 
+#[cfg(feature = "full")]
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     subtree::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     Element, ElementFlags, Error, GroveDb,
 };
 
+#[cfg(feature = "full")]
 impl GroveDb {
     /// Add average case for getting a merk tree
     pub fn add_average_case_get_merk_at_path<'db, S: Storage<'db>>(
@@ -314,6 +320,7 @@ impl GroveDb {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
     use std::{iter::empty, option::Option::None};

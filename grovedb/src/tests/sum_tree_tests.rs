@@ -1,8 +1,10 @@
+#[cfg(feature = "full")]
 use merk::{
     proofs::Query,
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
 
+#[cfg(feature = "full")]
 use crate::{
     batch::GroveDbOp,
     reference_path::ReferencePathType,
@@ -10,6 +12,7 @@ use crate::{
     Element, Error, GroveDb, PathQuery,
 };
 
+#[cfg(feature = "full")]
 #[test]
 fn test_sum_tree_behaves_like_regular_tree() {
     let db = make_test_grovedb();
@@ -78,6 +81,7 @@ fn test_sum_tree_behaves_like_regular_tree() {
     );
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_sum_item_behaves_like_regular_item() {
     let db = make_test_grovedb();
@@ -144,6 +148,7 @@ fn test_sum_item_behaves_like_regular_item() {
     assert_eq!(element_from_proof.sum_value(), Some(5));
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_cannot_insert_sum_item_in_regular_tree() {
     let db = make_test_grovedb();
@@ -163,6 +168,7 @@ fn test_cannot_insert_sum_item_in_regular_tree() {
     ));
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
     // All elements in a sum tree must have a summed feature type
@@ -283,6 +289,7 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
     assert_eq!(merk.sum().expect("expected to get sum"), None);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_sum_tree_feature() {
     let db = make_test_grovedb();
@@ -413,6 +420,7 @@ fn test_sum_tree_feature() {
     // TODO: Test out overflows
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_sum_tree_propagation() {
     let db = make_test_grovedb();
@@ -555,6 +563,7 @@ fn test_sum_tree_propagation() {
     ));
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_sum_tree_with_batches() {
     let db = make_test_grovedb();

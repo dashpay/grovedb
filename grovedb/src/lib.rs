@@ -1,30 +1,47 @@
+#[cfg(feature = "full")]
 extern crate core;
 
+#[cfg(feature = "full")]
 pub mod batch;
+#[cfg(feature = "full")]
 pub mod error;
+#[cfg(feature = "full")]
 mod estimated_costs;
+#[cfg(any(feature = "full", feature = "verify"))]
 pub mod operations;
+#[cfg(feature = "full")]
 mod query;
+#[cfg(feature = "full")]
 pub mod query_result_type;
+#[cfg(feature = "full")]
 pub mod reference_path;
+#[cfg(feature = "full")]
 mod replication;
+#[cfg(feature = "full")]
 pub mod subtree;
 #[cfg(test)]
 mod tests;
+#[cfg(feature = "full")]
 mod util;
+#[cfg(feature = "full")]
 mod visualize;
 
+#[cfg(feature = "full")]
 use std::{collections::HashMap, option::Option::None, path::Path};
 
+#[cfg(feature = "full")]
 use ::visualize::DebugByteVectors;
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use merk::{
     self,
     tree::{combine_hash, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
+#[cfg(feature = "full")]
 pub use merk::{
     estimated_costs::{
         average_case_costs::{
@@ -34,12 +51,16 @@ pub use merk::{
     },
     proofs::{query::QueryItem, Query},
 };
+#[cfg(feature = "full")]
 pub use query::{PathQuery, SizedQuery};
+#[cfg(feature = "full")]
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
+#[cfg(feature = "full")]
 pub use storage::{
     rocksdb_storage::{self, RocksDbStorage},
     Storage, StorageContext,
 };
+#[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{
         PrefixedRocksDbBatchTransactionContext, PrefixedRocksDbStorageContext,
@@ -47,23 +68,31 @@ use storage::{
     },
     StorageBatch,
 };
+#[cfg(feature = "full")]
 pub use subtree::{Element, ElementFlags};
 
+#[cfg(feature = "full")]
 pub use crate::error::Error;
+#[cfg(feature = "full")]
 use crate::{
     subtree::raw_decode,
     util::{root_merk_optional_tx, storage_context_optional_tx},
 };
 
+#[cfg(feature = "full")]
 type Hash = [u8; 32];
 
+#[cfg(feature = "full")]
 pub struct GroveDb {
     db: RocksDbStorage,
 }
 
+#[cfg(feature = "full")]
 pub type Transaction<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
+#[cfg(feature = "full")]
 pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
 
+#[cfg(feature = "full")]
 impl GroveDb {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = RocksDbStorage::default_rocksdb_with_path(path)?;

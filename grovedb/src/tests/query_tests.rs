@@ -1,7 +1,11 @@
+#[cfg(feature = "full")]
 use merk::proofs::{query::QueryItem, Query};
+#[cfg(feature = "full")]
 use rand::Rng;
+#[cfg(feature = "full")]
 use tempfile::TempDir;
 
+#[cfg(feature = "full")]
 use crate::{
     batch::GroveDbOp,
     reference_path::ReferencePathType,
@@ -9,6 +13,7 @@ use crate::{
     Element, GroveDb, PathQuery, SizedQuery,
 };
 
+#[cfg(feature = "full")]
 fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
@@ -44,6 +49,7 @@ fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
     }
 }
 
+#[cfg(feature = "full")]
 fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 0u32..10 {
@@ -103,6 +109,7 @@ fn populate_tree_for_non_unique_double_range_subquery(db: &TempGroveDb) {
     }
 }
 
+#[cfg(feature = "full")]
 fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
     // This subtree will be holding values
     db.insert([TEST_LEAF], b"\0", Element::empty_tree(), None, None)
@@ -164,6 +171,7 @@ fn populate_tree_by_reference_for_non_unique_range_subquery(db: &TempGroveDb) {
     }
 }
 
+#[cfg(feature = "full")]
 fn populate_tree_for_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
     for i in 1985u32..2000 {
@@ -184,6 +192,7 @@ fn populate_tree_for_unique_range_subquery(db: &TempGroveDb) {
     }
 }
 
+#[cfg(feature = "full")]
 fn populate_tree_by_reference_for_unique_range_subquery(db: &TempGroveDb) {
     // This subtree will be holding values
     db.insert([TEST_LEAF], b"\0", Element::empty_tree(), None, None)
@@ -229,6 +238,7 @@ fn populate_tree_by_reference_for_unique_range_subquery(db: &TempGroveDb) {
     }
 }
 
+#[cfg(feature = "full")]
 fn populate_tree_for_unique_range_subquery_with_non_unique_null_values(db: &mut TempGroveDb) {
     populate_tree_for_unique_range_subquery(db);
     db.insert([TEST_LEAF], &[], Element::empty_tree(), None, None)
@@ -252,6 +262,7 @@ fn populate_tree_for_unique_range_subquery_with_non_unique_null_values(db: &mut 
     }
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -292,6 +303,7 @@ fn test_get_range_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_query_with_unique_subquery() {
     let mut db = make_test_grovedb();
@@ -327,6 +339,7 @@ fn test_get_range_query_with_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_query_with_unique_subquery_on_references() {
     let db = make_test_grovedb();
@@ -362,6 +375,7 @@ fn test_get_range_query_with_unique_subquery_on_references() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_query_with_unique_subquery_with_non_unique_null_values() {
     let mut db = make_test_grovedb();
@@ -406,6 +420,7 @@ fn test_get_range_query_with_unique_subquery_with_non_unique_null_values() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_query_with_unique_subquery_ignore_non_unique_null_values() {
     let mut db = make_test_grovedb();
@@ -449,6 +464,7 @@ fn test_get_range_query_with_unique_subquery_ignore_non_unique_null_values() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_inclusive_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -489,6 +505,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
     let db = make_test_grovedb();
@@ -532,6 +549,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_inclusive_query_with_unique_subquery() {
     let db = make_test_grovedb();
@@ -567,6 +585,7 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_from_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -607,6 +626,7 @@ fn test_get_range_from_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_from_query_with_unique_subquery() {
     let db = make_test_grovedb();
@@ -642,6 +662,7 @@ fn test_get_range_from_query_with_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_to_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -682,6 +703,7 @@ fn test_get_range_to_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_to_query_with_unique_subquery() {
     let db = make_test_grovedb();
@@ -717,6 +739,7 @@ fn test_get_range_to_query_with_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -757,6 +780,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bounds() {
     let db = make_test_grovedb();
@@ -797,6 +821,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bou
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_to_inclusive_query_with_unique_subquery() {
     let db = make_test_grovedb();
@@ -832,6 +857,7 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_after_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -872,6 +898,7 @@ fn test_get_range_after_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_after_to_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -912,6 +939,7 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -954,6 +982,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_after_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bounds() {
     let db = make_test_grovedb();
@@ -996,6 +1025,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery_and_key_out_
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
     let db = make_test_grovedb();
@@ -1042,6 +1072,7 @@ fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_get_range_query_with_limit_and_offset() {
     let db = make_test_grovedb();
@@ -1291,6 +1322,7 @@ fn test_get_range_query_with_limit_and_offset() {
     compare_result_sets(&elements, &result_set);
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
     let tmp_dir = TempDir::new().unwrap();

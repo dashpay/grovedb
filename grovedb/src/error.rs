@@ -1,3 +1,4 @@
+#[cfg(feature = "full")]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     // Input data errors

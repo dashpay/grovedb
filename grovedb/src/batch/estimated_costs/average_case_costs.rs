@@ -1,18 +1,24 @@
+#[cfg(feature = "full")]
 use std::{
     collections::{BTreeMap, HashMap},
     fmt,
 };
 
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use itertools::Itertools;
+#[cfg(feature = "full")]
 use merk::{
     estimated_costs::average_case_costs::{average_case_merk_propagate, EstimatedLayerInformation},
     CryptoHash, IsSumTree,
 };
+#[cfg(feature = "full")]
 use storage::rocksdb_storage::RocksDbStorage;
 
+#[cfg(feature = "full")]
 use crate::{
     batch::{
         key_info::KeyInfo,
@@ -22,6 +28,7 @@ use crate::{
     Error, GroveDb,
 };
 
+#[cfg(feature = "full")]
 impl Op {
     fn average_case_cost(
         &self,
@@ -78,6 +85,7 @@ impl Op {
     }
 }
 
+#[cfg(feature = "full")]
 /// Cache for subtree paths for average case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
@@ -85,6 +93,7 @@ pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
     cached_merks: HashMap<KeyInfoPath, IsSumTree>,
 }
 
+#[cfg(feature = "full")]
 impl AverageCaseTreeCacheKnownPaths {
     pub(in crate::batch) fn new_with_estimated_layer_information(
         paths: HashMap<KeyInfoPath, EstimatedLayerInformation>,
@@ -96,12 +105,14 @@ impl AverageCaseTreeCacheKnownPaths {
     }
 }
 
+#[cfg(feature = "full")]
 impl fmt::Debug for AverageCaseTreeCacheKnownPaths {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheKnownPaths").finish()
     }
 }
 
+#[cfg(feature = "full")]
 impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     fn insert(&mut self, op: &GroveDbOp, is_sum_tree: bool) -> CostResult<(), Error> {
         let mut average_case_cost = OperationCost::default();
@@ -214,6 +225,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
