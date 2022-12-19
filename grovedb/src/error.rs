@@ -1,4 +1,4 @@
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     // Input data errors

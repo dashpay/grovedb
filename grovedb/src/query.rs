@@ -1,12 +1,12 @@
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 use costs::{CostResult, CostsExt, OperationCost};
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 use merk::proofs::{query::QueryItem, Query};
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 use crate::Error;
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Clone)]
 pub struct PathQuery {
     // TODO: Make generic over path type
@@ -14,7 +14,7 @@ pub struct PathQuery {
     pub query: SizedQuery,
 }
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Clone)]
 pub struct SizedQuery {
     pub query: Query,
@@ -22,7 +22,7 @@ pub struct SizedQuery {
     pub offset: Option<u16>,
 }
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 impl SizedQuery {
     pub const fn new(query: Query, limit: Option<u16>, offset: Option<u16>) -> Self {
         Self {
@@ -33,7 +33,7 @@ impl SizedQuery {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 impl PathQuery {
     pub const fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> Self {
         Self { path, query }

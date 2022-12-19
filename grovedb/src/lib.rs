@@ -3,21 +3,21 @@ extern crate core;
 
 #[cfg(feature = "full")]
 pub mod batch;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub mod error;
 #[cfg(feature = "full")]
 mod estimated_costs;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod operations;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 mod query;
 #[cfg(feature = "full")]
 pub mod query_result_type;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub mod reference_path;
 #[cfg(feature = "full")]
 mod replication;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub mod subtree;
 #[cfg(test)]
 mod tests;
@@ -51,13 +51,15 @@ pub use merk::{
     },
     proofs::{query::QueryItem, Query},
 };
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
 #[cfg(feature = "full")]
 pub use replication::{BufferedRestorer, Restorer, SiblingsChunkProducer, SubtreeChunkProducer};
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
 pub use storage::{
-    rocksdb_storage::{self, RocksDbStorage},
+    rocksdb_storage::{self},
     Storage, StorageContext,
 };
 #[cfg(feature = "full")]
@@ -68,10 +70,13 @@ use storage::{
     },
     StorageBatch,
 };
-#[cfg(feature = "full")]
-pub use subtree::{Element, ElementFlags};
 
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use subtree::Element;
 #[cfg(feature = "full")]
+pub use subtree::ElementFlags;
+
+#[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
 #[cfg(feature = "full")]
 use crate::{
@@ -82,7 +87,7 @@ use crate::{
 #[cfg(feature = "full")]
 type Hash = [u8; 32];
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub struct GroveDb {
     db: RocksDbStorage,
 }

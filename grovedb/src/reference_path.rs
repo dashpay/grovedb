@@ -3,7 +3,7 @@ use std::fmt;
 
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "full")]
 use visualize::visualize_to_vec;
@@ -11,7 +11,7 @@ use visualize::visualize_to_vec;
 #[cfg(feature = "full")]
 use crate::Error;
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Reference path variants
 #[derive(Hash, Eq, PartialEq, Serialize, Deserialize, Clone)]
 pub enum ReferencePathType {

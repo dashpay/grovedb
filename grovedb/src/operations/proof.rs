@@ -1,6 +1,6 @@
 #[cfg(feature = "full")]
 mod generate;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 mod util;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod verify;
