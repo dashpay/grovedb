@@ -267,6 +267,7 @@ impl Element {
     }
 
     /// Get the size of an element in bytes
+    #[deprecated]
     pub fn byte_size(&self) -> u32 {
         match self {
             Element::Item(item, element_flag) => {
