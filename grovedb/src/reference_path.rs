@@ -31,7 +31,7 @@ pub enum ReferencePathType {
 
     /// This swaps the immediate parent of the stored path with a path,
     /// retaining the key value. e.g. current path = [a, b, c, d] you can use
-    /// the removed cousin reference to swap c with m and n to get [a, b, c, n,
+    /// the removed cousin reference to swap c with m and n to get [a, b, m, n,
     /// d]
     RemovedCousinReference(Vec<Vec<u8>>),
 
