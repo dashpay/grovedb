@@ -302,7 +302,7 @@ where
     fn try_pop(stack: &mut Vec<Tree>) -> Result<Tree, Error> {
         stack
             .pop()
-            .ok_or(Error::InvalidProofError("Stack underflow".to_string()))
+            .ok_or_else(|| Error::InvalidProofError("Stack underflow".to_string()))
     }
 
     for op in ops {

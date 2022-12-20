@@ -26,8 +26,6 @@ use costs::{
     ChildrenSizesWithValue, CostContext, CostResult, CostsExt, FeatureSumLength, OperationCost,
 };
 #[cfg(feature = "full")]
-use ed::{Decode, Encode};
-#[cfg(feature = "full")]
 use storage::{self, Batch, RawIterator, StorageContext};
 
 #[cfg(feature = "full")]
@@ -165,7 +163,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
 #[cfg(feature = "full")]
 // Cannot be an Iterator as it should return cost
 impl<'a, I: RawIterator> KVIterator<'a, I> {
-    pub fn next(&mut self) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
+    pub fn next_kv(&mut self) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
         let mut cost = OperationCost::default();
 
         if let Some(query_item) = self.current_query_item {
@@ -175,7 +173,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
                 kv_pair.wrap_with_cost(cost)
             } else {
                 self.seek().unwrap_add_cost(&mut cost);
-                self.next().add_cost(cost)
+                self.next_kv().add_cost(cost)
             }
         } else {
             None.wrap_with_cost(cost)
@@ -857,7 +855,7 @@ where
 
         self.use_tree_mut(|maybe_tree| {
             maybe_tree
-                .ok_or_else(|| Error::CorruptionError("Cannot create proof for empty tree"))
+                .ok_or(Error::CorruptionError("Cannot create proof for empty tree"))
                 .wrap_with_cost(Default::default())
                 .flat_map_ok(|tree| {
                     let mut ref_walker = RefWalker::new(tree, self.source());
@@ -1174,7 +1172,7 @@ where
 {
     fn fetch(&self, link: &Link) -> CostResult<Tree, Error> {
         Tree::get(self.storage, link.key())
-            .map_ok(|x| x.ok_or_else(|| Error::KeyNotFoundError("Key not found for fetch")))
+            .map_ok(|x| x.ok_or(Error::KeyNotFoundError("Key not found for fetch")))
             .flatten()
     }
 }

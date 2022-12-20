@@ -638,7 +638,7 @@ impl GroveDb {
         let _in_sum_tree = merk.is_sum_tree;
         let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
-        while let Some((key, element_value)) = element_iterator.next().unwrap() {
+        while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value).unwrap();
             match element {
                 Element::Tree(..) => {

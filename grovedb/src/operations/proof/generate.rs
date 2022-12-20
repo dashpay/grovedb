@@ -143,7 +143,7 @@ impl GroveDb {
 
         let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query)
             .unwrap_add_cost(&mut cost);
-        while let Some((key, value_bytes)) = kv_iterator.next().unwrap_add_cost(&mut cost) {
+        while let Some((key, value_bytes)) = kv_iterator.next_kv().unwrap_add_cost(&mut cost) {
             let (subquery_key, subquery_value) =
                 Element::subquery_paths_for_sized_query(&query.query, &key);
 
