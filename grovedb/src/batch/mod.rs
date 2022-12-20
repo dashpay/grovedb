@@ -578,10 +578,10 @@ where
                     .wrap_with_cost(cost),
                 },
                 Op::Delete | Op::DeleteTree | Op::DeleteSumTree => {
-                    return Err(Error::InvalidBatchOperation(
+                    Err(Error::InvalidBatchOperation(
                         "references can not point to something currently being deleted",
                     ))
-                    .wrap_with_cost(cost);
+                    .wrap_with_cost(cost)
                 }
             }
         } else {
@@ -610,7 +610,7 @@ where
                         .ok_or({
                             let reference_string = reference_path
                                 .iter()
-                                .map(|a| hex::encode(a))
+                                .map(hex::encode)
                                 .collect::<Vec<String>>()
                                 .join("/");
                             Error::MissingReference(format!(
@@ -622,7 +622,7 @@ where
                         .wrap_with_cost(OperationCost::default())
                 );
 
-                return Ok(referenced_element_value_hash).wrap_with_cost(cost);
+                Ok(referenced_element_value_hash).wrap_with_cost(cost)
             } else {
                 // Here the element being referenced doesn't change in the same batch
                 // but the hop count is greater than 1, we can't just take the value hash from
@@ -639,7 +639,7 @@ where
                     referenced_element.ok_or({
                         let reference_string = reference_path
                             .iter()
-                            .map(|a| hex::encode(a))
+                            .map(hex::encode)
                             .collect::<Vec<String>>()
                             .join("/");
                         Error::MissingReference(format!(
@@ -674,12 +674,10 @@ where
                             recursions_allowed - 1,
                         )
                     }
-                    Element::Tree(..) | Element::SumTree(..) => {
-                        return Err(Error::InvalidBatchOperation(
-                            "references can not point to trees being updated",
-                        ))
-                        .wrap_with_cost(cost);
-                    }
+                    Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidBatchOperation(
+                        "references can not point to trees being updated",
+                    ))
+                    .wrap_with_cost(cost),
                 }
             }
         }
