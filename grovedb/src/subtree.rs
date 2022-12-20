@@ -609,7 +609,7 @@ impl Element {
                 _ => {
                     // Element is a reference and is not absolute.
                     // build the stored path for this reference
-                    let current_path = path.clone().to_vec();
+                    let current_path = <&[&[u8]]>::clone(&path).to_vec();
                     let absolute_path = path_from_reference_path_type(
                         reference_path_type.clone(),
                         current_path,
@@ -1197,7 +1197,7 @@ impl Element {
     #[cfg(feature = "full")]
     pub fn tree_costs_for_key_value(
         key: &Vec<u8>,
-        value: &Vec<u8>,
+        value: &[u8],
         is_sum_node: bool,
     ) -> Result<u32, Error> {
         let element = Element::deserialize(value)?;

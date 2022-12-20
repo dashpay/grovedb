@@ -61,7 +61,7 @@ impl Visualize for ReferencePathType {
                 drawer.write(b"absolute path reference: ")?;
                 drawer.write(
                     path.iter()
-                        .map(|a| hex::encode(a))
+                        .map(hex::encode)
                         .collect::<Vec<String>>()
                         .join("/")
                         .as_bytes(),
@@ -73,7 +73,7 @@ impl Visualize for ReferencePathType {
                 drawer.write(
                     end_path
                         .iter()
-                        .map(|a| hex::encode(a))
+                        .map(hex::encode)
                         .collect::<Vec<String>>()
                         .join("/")
                         .as_bytes(),
@@ -85,7 +85,7 @@ impl Visualize for ReferencePathType {
                 drawer.write(
                     end_path
                         .iter()
-                        .map(|a| hex::encode(a))
+                        .map(hex::encode)
                         .collect::<Vec<String>>()
                         .join("/")
                         .as_bytes(),
@@ -100,7 +100,7 @@ impl Visualize for ReferencePathType {
                 drawer.write(
                     middle_path
                         .iter()
-                        .map(|a| hex::encode(a))
+                        .map(hex::encode)
                         .collect::<Vec<String>>()
                         .join("/")
                         .as_bytes(),
