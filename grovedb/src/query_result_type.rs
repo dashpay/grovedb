@@ -31,6 +31,10 @@ impl QueryResultElements {
         self.elements.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.elements.is_empty()
+    }
+
     pub fn into_iter(self) -> IntoIter<QueryResultElement> {
         self.elements.into_iter()
     }
@@ -76,6 +80,13 @@ impl QueryResultElements {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(feature = "full")]
+impl Default for QueryResultElements {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
