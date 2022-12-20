@@ -865,118 +865,112 @@ impl GroveDb {
                 } else {
                     Ok(false).wrap_with_cost(cost)
                 };
-            } else {
-                if !is_empty {
-                    let storage_batch = StorageBatch::new();
-                    let subtrees_paths = cost_return_on_error!(
-                        &mut cost,
-                        self.find_subtrees(subtree_merk_path, Some(transaction))
-                    );
-                    for subtree_path in subtrees_paths {
-                        let mut storage = self
-                            .db
-                            .get_batch_transactional_storage_context(
-                                subtree_path.iter().map(|x| x.as_slice()),
-                                &storage_batch,
-                                transaction,
-                            )
-                            .unwrap_add_cost(&mut cost);
-
-                        cost_return_on_error!(
-                            &mut cost,
-                            storage.clear().map_err(|e| {
-                                Error::CorruptedData(format!(
-                                    "unable to cleanup tree from storage: {}",
-                                    e
-                                ))
-                            })
-                        );
-                    }
-                    // todo: verify why we need to open the same? merk again
-                    let storage = self
+            } else if !is_empty {
+                let storage_batch = StorageBatch::new();
+                let subtrees_paths = cost_return_on_error!(
+                    &mut cost,
+                    self.find_subtrees(subtree_merk_path, Some(transaction))
+                );
+                for subtree_path in subtrees_paths {
+                    let mut storage = self
                         .db
                         .get_batch_transactional_storage_context(
-                            path_iter.clone(),
+                            subtree_path.iter().map(|x| x.as_slice()),
                             &storage_batch,
                             transaction,
                         )
                         .unwrap_add_cost(&mut cost);
 
-                    let mut merk_to_delete_tree_from = cost_return_on_error!(
+                    cost_return_on_error!(
                         &mut cost,
-                        Merk::open_layered_with_root_key(
-                            storage,
-                            subtree_to_delete_from.root_key(),
-                            element.is_sum_tree()
-                        )
-                        .map_err(|_| {
-                            Error::CorruptedData(
-                                "cannot open a subtree with given root key".to_owned(),
-                            )
+                        storage.clear().map_err(|e| {
+                            Error::CorruptedData(format!(
+                                "unable to cleanup tree from storage: {}",
+                                e
+                            ))
                         })
                     );
-                    // We are deleting a tree, a tree uses 3 bytes
-                    cost_return_on_error!(
-                        &mut cost,
-                        Element::delete_with_sectioned_removal_bytes(
-                            &mut merk_to_delete_tree_from,
-                            &key,
-                            Some(options.as_merk_options()),
-                            true,
-                            uses_sum_tree,
-                            sectioned_removal
-                        )
-                    );
-                    let mut merk_cache: HashMap<
-                        Vec<Vec<u8>>,
-                        Merk<PrefixedRocksDbBatchTransactionContext>,
-                    > = HashMap::default();
-                    merk_cache.insert(
-                        path_iter.clone().map(|k| k.to_vec()).collect(),
-                        merk_to_delete_tree_from,
-                    );
-                    cost_return_on_error!(
-                        &mut cost,
-                        self.propagate_changes_with_batch_transaction(
-                            &storage_batch,
-                            merk_cache,
-                            path_iter,
-                            transaction
-                        )
-                    );
-                    cost_return_on_error_no_add!(
-                        &cost,
-                        self.db
-                            .commit_multi_context_batch(storage_batch, Some(transaction))
-                            .unwrap_add_cost(&mut cost)
-                            .map_err(|e| e.into())
-                    );
-                } else {
-                    // We are deleting a tree, a tree uses 3 bytes
-                    cost_return_on_error!(
-                        &mut cost,
-                        Element::delete_with_sectioned_removal_bytes(
-                            &mut subtree_to_delete_from,
-                            &key,
-                            Some(options.as_merk_options()),
-                            true,
-                            uses_sum_tree,
-                            sectioned_removal
-                        )
-                    );
-                    let mut merk_cache: HashMap<
-                        Vec<Vec<u8>>,
-                        Merk<PrefixedRocksDbTransactionContext>,
-                    > = HashMap::default();
-                    merk_cache.insert(
-                        path_iter.clone().map(|k| k.to_vec()).collect(),
-                        subtree_to_delete_from,
-                    );
-                    cost_return_on_error!(
-                        &mut cost,
-                        self.propagate_changes_with_transaction(merk_cache, path_iter, transaction)
-                    );
                 }
+                // todo: verify why we need to open the same? merk again
+                let storage = self
+                    .db
+                    .get_batch_transactional_storage_context(
+                        path_iter.clone(),
+                        &storage_batch,
+                        transaction,
+                    )
+                    .unwrap_add_cost(&mut cost);
+
+                let mut merk_to_delete_tree_from = cost_return_on_error!(
+                    &mut cost,
+                    Merk::open_layered_with_root_key(
+                        storage,
+                        subtree_to_delete_from.root_key(),
+                        element.is_sum_tree()
+                    )
+                    .map_err(|_| {
+                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                    })
+                );
+                // We are deleting a tree, a tree uses 3 bytes
+                cost_return_on_error!(
+                    &mut cost,
+                    Element::delete_with_sectioned_removal_bytes(
+                        &mut merk_to_delete_tree_from,
+                        &key,
+                        Some(options.as_merk_options()),
+                        true,
+                        uses_sum_tree,
+                        sectioned_removal
+                    )
+                );
+                let mut merk_cache: HashMap<
+                    Vec<Vec<u8>>,
+                    Merk<PrefixedRocksDbBatchTransactionContext>,
+                > = HashMap::default();
+                merk_cache.insert(
+                    path_iter.clone().map(|k| k.to_vec()).collect(),
+                    merk_to_delete_tree_from,
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    self.propagate_changes_with_batch_transaction(
+                        &storage_batch,
+                        merk_cache,
+                        path_iter,
+                        transaction
+                    )
+                );
+                cost_return_on_error_no_add!(
+                    &cost,
+                    self.db
+                        .commit_multi_context_batch(storage_batch, Some(transaction))
+                        .unwrap_add_cost(&mut cost)
+                        .map_err(|e| e.into())
+                );
+            } else {
+                // We are deleting a tree, a tree uses 3 bytes
+                cost_return_on_error!(
+                    &mut cost,
+                    Element::delete_with_sectioned_removal_bytes(
+                        &mut subtree_to_delete_from,
+                        &key,
+                        Some(options.as_merk_options()),
+                        true,
+                        uses_sum_tree,
+                        sectioned_removal
+                    )
+                );
+                let mut merk_cache: HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext>> =
+                    HashMap::default();
+                merk_cache.insert(
+                    path_iter.clone().map(|k| k.to_vec()).collect(),
+                    subtree_to_delete_from,
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    self.propagate_changes_with_transaction(merk_cache, path_iter, transaction)
+                );
             }
         } else {
             cost_return_on_error!(

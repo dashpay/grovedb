@@ -819,34 +819,32 @@ impl Element {
                     } else if let Some(offset) = offset {
                         *offset -= 1;
                     }
+                } else if allow_get_raw {
+                    cost_return_on_error_no_add!(
+                        &cost,
+                        Element::basic_push(PathQueryPushArgs {
+                            storage,
+                            transaction,
+                            key: Some(key),
+                            element,
+                            path,
+                            subquery_key,
+                            subquery,
+                            left_to_right,
+                            allow_get_raw,
+                            result_type,
+                            results,
+                            limit,
+                            offset,
+                        })
+                    );
                 } else {
-                    if allow_get_raw {
-                        cost_return_on_error_no_add!(
-                            &cost,
-                            Element::basic_push(PathQueryPushArgs {
-                                storage,
-                                transaction,
-                                key: Some(key),
-                                element,
-                                path,
-                                subquery_key,
-                                subquery,
-                                left_to_right,
-                                allow_get_raw,
-                                result_type,
-                                results,
-                                limit,
-                                offset,
-                            })
-                        );
-                    } else {
-                        return Err(Error::InvalidPath(
-                            "you must provide a subquery or a subquery_key when interacting with \
-                             a Tree of trees"
-                                .to_owned(),
-                        ))
-                        .wrap_with_cost(cost);
-                    }
+                    return Err(Error::InvalidPath(
+                        "you must provide a subquery or a subquery_key when interacting with a \
+                         Tree of trees"
+                            .to_owned(),
+                    ))
+                    .wrap_with_cost(cost);
                 }
             }
             _ => {

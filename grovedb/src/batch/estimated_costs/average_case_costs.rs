@@ -62,13 +62,13 @@ impl Op {
             }
             Op::Insert { element } => GroveDb::average_case_merk_insert_element(
                 key,
-                &element,
+                element,
                 in_tree_using_sums,
                 propagate_if_input(),
             ),
             Op::Replace { element } => GroveDb::average_case_merk_replace_element(
                 key,
-                &element,
+                element,
                 in_tree_using_sums,
                 propagate_if_input(),
             ),
@@ -168,10 +168,10 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             .estimated_to_be_empty();
 
         // Then we have to get the tree
-        if self.cached_merks.get(&path).is_none() {
+        if self.cached_merks.get(path).is_none() {
             let layer_info = cost_return_on_error_no_add!(
                 &cost,
-                self.paths.get(&path).ok_or_else(|| {
+                self.paths.get(path).ok_or_else(|| {
                     let paths = self
                         .paths
                         .iter()

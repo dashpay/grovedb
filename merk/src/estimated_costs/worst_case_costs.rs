@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+
 #[cfg(feature = "full")]
 use costs::{CostResult, CostsExt, OperationCost};
 
@@ -156,7 +157,7 @@ pub fn add_worst_case_merk_propagate(
         Ordering::Equal => {
             // we can get about 1 rotation, if there are more than 2 levels
             nodes_updated += 1;
-        },
+        }
         Ordering::Greater => {
             // In AVL tree two rotation may happen at most on insertion, some of them may
             // update one more node except one we already have on our path to the

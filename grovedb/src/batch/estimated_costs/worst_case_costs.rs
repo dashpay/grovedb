@@ -61,13 +61,13 @@ impl Op {
             ),
             Op::Insert { element } => GroveDb::worst_case_merk_insert_element(
                 key,
-                &element,
+                element,
                 is_in_parent_sum_tree,
                 propagate_if_input(),
             ),
             Op::Replace { element } => GroveDb::worst_case_merk_replace_element(
                 key,
-                &element,
+                element,
                 is_in_parent_sum_tree,
                 propagate_if_input(),
             ),
@@ -152,14 +152,14 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
             &cost,
             self.paths
                 .get(path)
-                .ok_or(Error::PathNotFoundInCacheForEstimatedCosts(format!(
+                .ok_or_else(|| Error::PathNotFoundInCacheForEstimatedCosts(format!(
                     "inserting into worst case costs path: {}",
                     path.0.iter().map(|k| hex::encode(k.as_slice())).join("/")
                 )))
         );
 
         // Then we have to get the tree
-        if self.cached_merks.get(&path).is_none() {
+        if self.cached_merks.get(path).is_none() {
             GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, path, false);
             self.cached_merks.insert(path.clone());
         }

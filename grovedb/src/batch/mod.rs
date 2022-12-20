@@ -1417,36 +1417,32 @@ impl GroveDb {
                 MerkType::LayeredMerk
             };
             Ok(Merk::open_empty(storage, merk_type, false)).wrap_with_cost(local_cost)
-        } else {
-            if let Some((last, base_path)) = path.split_last() {
-                let parent_storage = self
-                    .db
-                    .get_storage_context(base_path.iter().map(|x| x.as_slice()))
-                    .unwrap_add_cost(&mut local_cost);
-                let element = cost_return_on_error!(
-                    &mut local_cost,
-                    Element::get_from_storage(&parent_storage, last)
-                );
-                let is_sum_tree = element.is_sum_tree();
-                if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
-                    Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
-                        .map_err(|_| {
-                            Error::CorruptedData(
-                                "cannot open a subtree with given root key".to_owned(),
-                            )
-                        })
-                        .add_cost(local_cost)
-                } else {
-                    Err(Error::CorruptedData(
-                        "cannot open a subtree as parent exists but is not a tree".to_owned(),
-                    ))
-                    .wrap_with_cost(local_cost)
-                }
-            } else {
-                Merk::open_base(storage, false)
-                    .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+        } else if let Some((last, base_path)) = path.split_last() {
+            let parent_storage = self
+                .db
+                .get_storage_context(base_path.iter().map(|x| x.as_slice()))
+                .unwrap_add_cost(&mut local_cost);
+            let element = cost_return_on_error!(
+                &mut local_cost,
+                Element::get_from_storage(&parent_storage, last)
+            );
+            let is_sum_tree = element.is_sum_tree();
+            if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) = element {
+                Merk::open_layered_with_root_key(storage, root_key, is_sum_tree)
+                    .map_err(|_| {
+                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                    })
                     .add_cost(local_cost)
+            } else {
+                Err(Error::CorruptedData(
+                    "cannot open a subtree as parent exists but is not a tree".to_owned(),
+                ))
+                .wrap_with_cost(local_cost)
             }
+        } else {
+            Merk::open_base(storage, false)
+                .map_err(|_| Error::CorruptedData("cannot open a subtree".to_owned()))
+                .add_cost(local_cost)
         }
     }
 
