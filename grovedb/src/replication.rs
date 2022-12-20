@@ -22,7 +22,7 @@ const OPS_PER_CHUNK: usize = 128;
 impl GroveDb {
     /// Creates a chunk producer to replicate GroveDb.
     pub fn chunks(&self) -> SubtreeChunkProducer {
-        SubtreeChunkProducer::new(&self)
+        SubtreeChunkProducer::new(self)
     }
 }
 
@@ -55,8 +55,7 @@ impl<'db> SubtreeChunkProducer<'db> {
     pub fn chunks_in_current_producer(&self) -> usize {
         self.cache
             .as_ref()
-            .map(|c| c.current_chunk_producer.as_ref().map(|p| p.len()))
-            .flatten()
+            .and_then(|c| c.current_chunk_producer.as_ref().map(|p| p.len()))
             .unwrap_or(0)
     }
 
@@ -204,8 +203,8 @@ impl<'db> Restorer<'db> {
                         self.queue.push_back((
                             path,
                             value_bytes.to_owned(),
-                            value_hash.clone(),
-                            feature_type.clone(),
+                            *value_hash,
+                            *feature_type,
                         ));
                     }
                 }
@@ -334,7 +333,7 @@ impl<'db> SiblingsChunkProducer<'db> {
         while let Some(subtree_key) = siblings_keys.pop_front() {
             let subtree_path = parent_path
                 .clone()
-                .map(|x| x.as_ref())
+                .map(|x| x)
                 .chain(once(subtree_key.as_slice()));
 
             self.process_subtree_chunks(&mut result, &mut ops_count, subtree_path, current_index)?;

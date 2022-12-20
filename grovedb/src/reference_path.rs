@@ -88,7 +88,7 @@ where
     P: IntoIterator<Item = &'p [u8]>,
     <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
 {
-    return match reference_path_type {
+    match reference_path_type {
         // No computation required, we already know the absolute path
         ReferencePathType::AbsolutePathReference(path) => Ok(path),
 
@@ -182,7 +182,7 @@ where
             current_path_as_vec.push(sibling_key);
             Ok(current_path_as_vec)
         }
-    };
+    }
 }
 
 #[cfg(feature = "full")]
