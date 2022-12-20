@@ -187,7 +187,7 @@ impl KeyInfoPath {
         KeyInfoPath(path.into_iter().map(|k| KnownKey(k.to_vec())).collect())
     }
 
-    pub fn from_known_owned_path<'p, P>(path: P) -> Self
+    pub fn from_known_owned_path<P>(path: P) -> Self
     where
         P: IntoIterator<Item = Vec<u8>>,
         <P as IntoIterator>::IntoIter: ExactSizeIterator + DoubleEndedIterator + Clone,
@@ -242,7 +242,7 @@ impl KeyInfoPath {
 
 #[cfg(feature = "full")]
 /// Batch operation
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct GroveDbOp {
     /// Path to a subtree - subject to an operation
     pub path: KeyInfoPath,
@@ -408,7 +408,7 @@ impl GroveDbOp {
                     }
                 })
                 .collect::<Vec<Op>>();
-            if doubled_ops.len() > 0 {
+            if !doubled_ops.is_empty() {
                 doubled_ops.push(op.op.clone());
                 same_path_key_ops.push((op.path.clone(), op.key.clone(), doubled_ops));
             }
@@ -454,7 +454,7 @@ impl GroveDbOp {
                     }
                 })
                 .collect::<Vec<GroveDbOp>>();
-            if inserts_with_deleted_ops_above.len() > 0 {
+            if !inserts_with_deleted_ops_above.is_empty() {
                 insert_ops_below_deleted_ops
                     .push((deleted_op.clone(), inserts_with_deleted_ops_above));
             }
@@ -551,12 +551,10 @@ where
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
             // the path is being modified, inserted or deleted in the batch of operations
             match op {
-                Op::ReplaceTreeRootKey { .. } | Op::InsertTreeWithRootHash { .. } => {
-                    return Err(Error::InvalidBatchOperation(
-                        "references can not point to trees being updated",
-                    ))
-                    .wrap_with_cost(cost);
-                }
+                Op::ReplaceTreeRootKey { .. } | Op::InsertTreeWithRootHash { .. } => Err(
+                    Error::InvalidBatchOperation("references can not point to trees being updated"),
+                )
+                .wrap_with_cost(cost),
                 Op::Insert { element } | Op::Replace { element } => match element {
                     Element::Item(..) | Element::SumItem(..) => {
                         let serialized = cost_return_on_error_no_add!(&cost, element.serialize());
@@ -574,12 +572,10 @@ where
                             recursions_allowed - 1,
                         )
                     }
-                    Element::Tree(..) | Element::SumTree(..) => {
-                        return Err(Error::InvalidBatchOperation(
-                            "references can not point to trees being updated",
-                        ))
-                        .wrap_with_cost(cost);
-                    }
+                    Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidBatchOperation(
+                        "references can not point to trees being updated",
+                    ))
+                    .wrap_with_cost(cost),
                 },
                 Op::Delete | Op::DeleteTree | Op::DeleteSumTree => {
                     return Err(Error::InvalidBatchOperation(
@@ -670,7 +666,7 @@ where
                     Element::Reference(path, ..) => {
                         let path = cost_return_on_error_no_add!(
                             &cost,
-                            path_from_reference_qualified_path_type(path.clone(), qualified_path)
+                            path_from_reference_qualified_path_type(path, qualified_path)
                         );
                         self.follow_reference_get_value_hash(
                             path.as_slice(),
