@@ -146,12 +146,12 @@ impl GroveDb {
         let ops = cost_return_on_error_no_add!(
             &cost,
             if let Some(stop_path_height) = stop_path_height {
-                maybe_ops.ok_or(Error::DeleteUpTreeStopHeightMoreThanInitialPathSize(
-                    format!(
+                maybe_ops.ok_or_else(|| {
+                    Error::DeleteUpTreeStopHeightMoreThanInitialPathSize(format!(
                         "stop path height {} more than path size of {}",
                         stop_path_height, path_len
-                    ),
-                ))
+                    ))
+                })
             } else {
                 maybe_ops.ok_or(Error::CorruptedCodeExecution(
                     "stop path height not set, but still not deleting element",
@@ -917,7 +917,7 @@ impl GroveDb {
                     &mut cost,
                     Element::delete_with_sectioned_removal_bytes(
                         &mut merk_to_delete_tree_from,
-                        &key,
+                        key,
                         Some(options.as_merk_options()),
                         true,
                         uses_sum_tree,
@@ -954,7 +954,7 @@ impl GroveDb {
                     &mut cost,
                     Element::delete_with_sectioned_removal_bytes(
                         &mut subtree_to_delete_from,
-                        &key,
+                        key,
                         Some(options.as_merk_options()),
                         true,
                         uses_sum_tree,
@@ -977,7 +977,7 @@ impl GroveDb {
                 &mut cost,
                 Element::delete_with_sectioned_removal_bytes(
                     &mut subtree_to_delete_from,
-                    &key,
+                    key,
                     Some(options.as_merk_options()),
                     false,
                     uses_sum_tree,
@@ -1080,7 +1080,7 @@ impl GroveDb {
                     &mut cost,
                     Element::delete_with_sectioned_removal_bytes(
                         &mut subtree_to_delete_from,
-                        &key,
+                        key,
                         Some(options.as_merk_options()),
                         true,
                         uses_sum_tree,
@@ -1093,7 +1093,7 @@ impl GroveDb {
                 &mut cost,
                 Element::delete_with_sectioned_removal_bytes(
                     &mut subtree_to_delete_from,
-                    &key,
+                    key,
                     Some(options.as_merk_options()),
                     false,
                     uses_sum_tree,
