@@ -53,18 +53,24 @@ macro_rules! storage_context_with_parent_optional_tx {
                             )
                         })
                     );
-                    // TODO: add block for sum tree element type
-                    if let Element::Tree(root_key, _) = element {
-                        let $root_key = root_key;
-                        let $is_sum_tree = false;
-                        $($body)*
-                    } else {
-                        return Err(Error::CorruptedData(
-                            "parent is not a tree"
-                                .to_owned(),
-                        )).wrap_with_cost($cost);
+                    match element {
+                        Element::Tree(root_key, _) => {
+                            let $root_key = root_key;
+                            let $is_sum_tree = false;
+                            $($body)*
+                        }
+                        Element::SumTree(root_key, ..) => {
+                            let $root_key = root_key;
+                            let $is_sum_tree = true;
+                            $($body)*
+                        }
+                        _ => {
+                            return Err(Error::CorruptedData(
+                                "parent is not a tree"
+                                    .to_owned(),
+                            )).wrap_with_cost($cost);
+                        }
                     }
-
                 } else {
                     return Err(Error::CorruptedData(
                         "path is empty".to_owned(),
@@ -88,15 +94,23 @@ macro_rules! storage_context_with_parent_optional_tx {
                             )
                         })
                     );
-                    // TODO: add block for sum tree element type
-                    if let Element::Tree(root_key, _) = element {
-                        let $root_key = root_key;
-                        let $is_sum_tree = false;
-                        $($body)*
-                    } else {
-                        return Err(Error::CorruptedData(
-                            "parent is not a tree".to_owned(),
-                        )).wrap_with_cost($cost);
+                    match element {
+                        Element::Tree(root_key, _) => {
+                            let $root_key = root_key;
+                            let $is_sum_tree = false;
+                            $($body)*
+                        }
+                        Element::SumTree(root_key, ..) => {
+                            let $root_key = root_key;
+                            let $is_sum_tree = true;
+                            $($body)*
+                        }
+                        _ => {
+                            return Err(Error::CorruptedData(
+                                "parent is not a tree"
+                                    .to_owned(),
+                            )).wrap_with_cost($cost);
+                        }
                     }
                 } else {
                     return Err(Error::CorruptedData(
