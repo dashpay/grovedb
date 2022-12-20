@@ -475,7 +475,7 @@ where {
             transaction,
             Error::PathNotFound(format!(
                 "subtree doesn't exist at path {:?}",
-                path_iter.map(|k| hex::encode(k)).collect::<Vec<String>>()
+                path_iter.map(hex::encode).collect::<Vec<String>>()
             )),
         )
     }
