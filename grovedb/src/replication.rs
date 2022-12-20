@@ -401,10 +401,7 @@ impl<'db> BufferedRestorer<'db> {
     }
 
     /// Process next chunk and receive instruction on what to do next.
-    pub fn process_grove_chunks<'a, I>(
-        &'a mut self,
-        chunks: I,
-    ) -> Result<RestorerResponse, RestorerError>
+    pub fn process_grove_chunks<I>(&mut self, chunks: I) -> Result<RestorerResponse, RestorerError>
     where
         I: IntoIterator<Item = GroveChunk> + ExactSizeIterator,
     {
@@ -412,7 +409,7 @@ impl<'db> BufferedRestorer<'db> {
 
         for c in chunks.into_iter() {
             for ops in c.subtree_chunks.into_iter().map(|x| x.1) {
-                if ops.len() > 0 {
+                if !ops.is_empty() {
                     response = self.restorer.process_chunk(ops)?;
                 }
             }

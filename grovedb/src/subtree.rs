@@ -239,26 +239,17 @@ impl Element {
 
     #[cfg(feature = "full")]
     pub fn is_sum_tree(&self) -> bool {
-        match &self {
-            Element::SumTree(..) => true,
-            _ => false,
-        }
+        matches!(self, Element::SumTree(..))
     }
 
     #[cfg(feature = "full")]
     pub fn is_tree(&self) -> bool {
-        match &self {
-            Element::SumTree(..) | Element::Tree(..) => true,
-            _ => false,
-        }
+        matches!(self, Element::SumTree(..) | Element::Tree(..))
     }
 
     #[cfg(feature = "full")]
     pub fn is_sum_item(&self) -> bool {
-        match &self {
-            Element::SumItem(..) => true,
-            _ => false,
-        }
+        matches!(self, Element::SumItem(..))
     }
 
     #[cfg(feature = "full")]
