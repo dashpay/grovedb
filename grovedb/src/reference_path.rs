@@ -65,9 +65,9 @@ pub fn path_from_reference_qualified_path_type(
 ) -> Result<Vec<Vec<u8>>, Error> {
     match current_qualified_path.split_last() {
         None => {
-            return Err(Error::CorruptedPath(
+            Err(Error::CorruptedPath(
                 "qualified path should always have an element",
-            ));
+            ))
         }
         Some((key, path)) => {
             let path_iter = path.iter().map(|k| k.as_slice());

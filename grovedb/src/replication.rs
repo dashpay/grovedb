@@ -307,7 +307,7 @@ impl<'db> SiblingsChunkProducer<'db> {
 
         let mut siblings_keys: VecDeque<Vec<u8>> = VecDeque::new();
 
-        let mut parent_path = path_iter.clone();
+        let mut parent_path = path_iter;
         let requested_key = parent_path.next_back();
 
         let parent_ctx = self
