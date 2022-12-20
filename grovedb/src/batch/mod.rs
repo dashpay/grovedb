@@ -22,7 +22,7 @@ use core::fmt;
 #[cfg(feature = "full")]
 use std::{
     cmp::Ordering,
-    collections::{btree_map::Entry, BTreeMap, HashMap},
+    collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap},
     hash::{Hash, Hasher},
     ops::AddAssign,
     slice::Iter,
@@ -701,11 +701,11 @@ where
 
         let mut inserted_path = op.path.to_path();
         inserted_path.push(op.key.get_key_clone());
-        if !self.merks.contains_key(&inserted_path) {
+        if let HashMapEntry::Vacant(e) = self.merks.entry(inserted_path.clone()) {
             let mut merk =
                 cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
             merk.is_sum_tree = is_sum_tree;
-            self.merks.insert(inserted_path, merk);
+            e.insert(merk);
         }
 
         Ok(()).wrap_with_cost(cost)
@@ -768,7 +768,7 @@ where
                             )
                             .wrap_with_cost(OperationCost::default())
                         );
-                        if path_reference.len() == 0 {
+                        if path_reference.is_empty() {
                             return Err(Error::InvalidBatchOperation(
                                 "attempting to insert an empty reference",
                             ))
@@ -1142,7 +1142,7 @@ impl GroveDb {
                                                 } => {
                                                     *hash = root_hash;
                                                     *root_key = calculated_root_key;
-                                                    *sum = sum.clone();
+                                                    *sum = *sum;
                                                 }
                                                 Op::InsertTreeWithRootHash { .. } => {
                                                     return Err(Error::CorruptedCodeExecution(
@@ -1339,7 +1339,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let storage = self
             .db
-            .get_batch_transactional_storage_context(path_iter.clone(), &storage_batch, tx)
+            .get_batch_transactional_storage_context(path_iter.clone(), storage_batch, tx)
             .unwrap_add_cost(&mut cost);
 
         match path_iter.next_back() {
@@ -1510,7 +1510,7 @@ impl GroveDb {
                         self.open_batch_transactional_merk_at_path(
                             &storage_batch,
                             path.iter().map(|x| x.as_slice()),
-                            &tx,
+                            tx,
                             new_merk,
                         )
                     }
