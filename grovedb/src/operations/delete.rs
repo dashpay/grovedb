@@ -47,8 +47,7 @@ pub struct DeleteOptions {
     pub allow_deleting_non_empty_trees: bool,
     pub deleting_non_empty_trees_returns_error: bool,
     pub base_root_storage_is_free: bool,
-    pub validate: bool,
-    pub stop_path_height: Option<u16>,
+    pub validate_tree_at_path_exists: bool,
 }
 
 #[cfg(feature = "full")]
@@ -58,15 +57,10 @@ impl Default for DeleteOptions {
             allow_deleting_non_empty_trees: false,
             deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: true,
-            validate: true,
-            stop_path_height: None,
+            validate_tree_at_path_exists: false,
         }
     }
 }
-
-#[cfg(feature = "full")]
-/// 0 represents key size, 1 represents element size
-type EstimatedKeyAndElementSize = (u32, u32);
 
 #[cfg(feature = "full")]
 impl DeleteOptions {
@@ -78,6 +72,45 @@ impl DeleteOptions {
 }
 
 #[cfg(feature = "full")]
+#[derive(Clone)]
+pub struct DeleteUpTreeOptions {
+    pub allow_deleting_non_empty_trees: bool,
+    pub deleting_non_empty_trees_returns_error: bool,
+    pub base_root_storage_is_free: bool,
+    pub validate_tree_at_path_exists: bool,
+    pub stop_path_height: Option<u16>,
+}
+
+#[cfg(feature = "full")]
+impl Default for DeleteUpTreeOptions {
+    fn default() -> Self {
+        DeleteUpTreeOptions {
+            allow_deleting_non_empty_trees: false,
+            deleting_non_empty_trees_returns_error: true,
+            base_root_storage_is_free: true,
+            validate_tree_at_path_exists: false,
+            stop_path_height: None,
+        }
+    }
+}
+
+#[cfg(feature = "full")]
+impl DeleteUpTreeOptions {
+    fn to_delete_options(&self) -> DeleteOptions {
+        DeleteOptions {
+            allow_deleting_non_empty_trees: self.allow_deleting_non_empty_trees,
+            deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
+            base_root_storage_is_free: self.base_root_storage_is_free,
+            validate_tree_at_path_exists: self.validate_tree_at_path_exists,
+        }
+    }
+}
+
+#[cfg(feature = "full")]
+/// 0 represents key size, 1 represents element size
+type EstimatedKeyAndElementSize = (u32, u32);
+
+#[cfg(feature = "full")]
 impl GroveDb {
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.
@@ -85,7 +118,7 @@ impl GroveDb {
         &self,
         path: P,
         key: &'p [u8],
-        options: &DeleteOptions,
+        options: &DeleteUpTreeOptions,
         transaction: TransactionArg,
     ) -> CostResult<u16, Error>
     where
@@ -112,7 +145,7 @@ impl GroveDb {
         &self,
         path: P,
         key: &'p [u8],
-        options: &DeleteOptions,
+        options: &DeleteUpTreeOptions,
         transaction: TransactionArg,
         split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
@@ -173,7 +206,7 @@ impl GroveDb {
         &self,
         path: P,
         key: &'p [u8],
-        options: &DeleteOptions,
+        options: &DeleteUpTreeOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         mut current_batch_operations: Vec<GroveDbOp>,
         transaction: TransactionArg,
@@ -197,7 +230,7 @@ impl GroveDb {
         &self,
         path: P,
         key: &'p [u8],
-        options: &DeleteOptions,
+        options: &DeleteUpTreeOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         current_batch_operations: &mut Vec<GroveDbOp>,
         transaction: TransactionArg,
@@ -214,7 +247,7 @@ impl GroveDb {
                 return Ok(None).wrap_with_cost(cost);
             }
         }
-        if options.validate {
+        if options.validate_tree_at_path_exists {
             cost_return_on_error!(
                 &mut cost,
                 self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
@@ -225,7 +258,7 @@ impl GroveDb {
             self.delete_operation_for_delete_internal(
                 path_iter.clone(),
                 key,
-                options,
+                &options.to_delete_options(),
                 is_known_to_be_subtree_with_sum,
                 current_batch_operations,
                 transaction,
@@ -236,6 +269,7 @@ impl GroveDb {
                 current_batch_operations.push(delete_operation_this_level);
                 let mut new_options = options.clone();
                 // we should not give an error from now on
+                new_options.allow_deleting_non_empty_trees = false;
                 new_options.deleting_non_empty_trees_returns_error = false;
                 if let Some(mut delete_operations_upper_level) = cost_return_on_error!(
                     &mut cost,
@@ -424,7 +458,7 @@ impl GroveDb {
             ))
             .wrap_with_cost(cost)
         } else {
-            if options.validate {
+            if options.validate_tree_at_path_exists {
                 cost_return_on_error!(
                     &mut cost,
                     self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
@@ -1158,7 +1192,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use crate::{
-        operations::delete::DeleteOptions,
+        operations::delete::{DeleteOptions, DeleteUpTreeOptions},
         tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
         Element, Error,
     };
@@ -1313,7 +1347,7 @@ mod tests {
             .delete_up_tree_while_empty(
                 [TEST_LEAF, b"level1-A", b"level2-A"],
                 b"level3-A",
-                &DeleteOptions {
+                &DeleteUpTreeOptions {
                     stop_path_height: Some(0),
                     ..Default::default()
                 },
@@ -1404,7 +1438,7 @@ mod tests {
             .delete_up_tree_while_empty(
                 [TEST_LEAF, b"level1-A", b"level2-A"],
                 b"level3-A",
-                &DeleteOptions {
+                &DeleteUpTreeOptions {
                     stop_path_height: Some(0),
                     ..Default::default()
                 },

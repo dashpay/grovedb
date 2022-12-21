@@ -45,8 +45,7 @@ impl BatchApplyOptions {
             allow_deleting_non_empty_trees: self.allow_deleting_non_empty_trees,
             deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
             base_root_storage_is_free: self.base_root_storage_is_free,
-            validate: true,
-            stop_path_height: None,
+            validate_tree_at_path_exists: false,
         }
     }
 
