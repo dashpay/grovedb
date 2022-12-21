@@ -47,6 +47,7 @@ pub struct DeleteOptions {
     pub allow_deleting_non_empty_trees: bool,
     pub deleting_non_empty_trees_returns_error: bool,
     pub base_root_storage_is_free: bool,
+    pub validate: bool,
 }
 
 #[cfg(feature = "full")]
@@ -56,6 +57,7 @@ impl Default for DeleteOptions {
             allow_deleting_non_empty_trees: false,
             deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: true,
+            validate: true,
         }
     }
 }
@@ -79,7 +81,6 @@ impl GroveDb {
         key: &'p [u8],
         stop_path_height: Option<u16>,
         options: &DeleteOptions,
-        validate: bool,
         transaction: TransactionArg,
     ) -> CostResult<u16, Error>
     where
@@ -91,7 +92,6 @@ impl GroveDb {
             key,
             stop_path_height,
             options,
-            validate,
             transaction,
             |_, removed_key_bytes, removed_value_bytes| {
                 Ok((
@@ -110,7 +110,6 @@ impl GroveDb {
         key: &'p [u8],
         stop_path_height: Option<u16>,
         options: &DeleteOptions,
-        validate: bool,
         transaction: TransactionArg,
         split_removal_bytes_function: impl FnMut(
             &mut ElementFlags,
@@ -136,7 +135,6 @@ impl GroveDb {
                 key,
                 stop_path_height,
                 options,
-                validate,
                 None,
                 &mut batch_operations,
                 transaction,
@@ -175,7 +173,6 @@ impl GroveDb {
         key: &'p [u8],
         stop_path_height: Option<u16>,
         options: &DeleteOptions,
-        validate: bool,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         mut current_batch_operations: Vec<GroveDbOp>,
         transaction: TransactionArg,
@@ -189,7 +186,6 @@ impl GroveDb {
             key,
             stop_path_height,
             options,
-            validate,
             is_known_to_be_subtree_with_sum,
             &mut current_batch_operations,
             transaction,
@@ -203,7 +199,6 @@ impl GroveDb {
         key: &'p [u8],
         stop_path_height: Option<u16>,
         options: &DeleteOptions,
-        validate: bool,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         current_batch_operations: &mut Vec<GroveDbOp>,
         transaction: TransactionArg,
@@ -220,7 +215,7 @@ impl GroveDb {
                 return Ok(None).wrap_with_cost(cost);
             }
         }
-        if validate {
+        if options.validate {
             cost_return_on_error!(
                 &mut cost,
                 self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
@@ -232,7 +227,6 @@ impl GroveDb {
                 path_iter.clone(),
                 key,
                 options,
-                validate,
                 is_known_to_be_subtree_with_sum,
                 current_batch_operations,
                 transaction,
@@ -251,7 +245,6 @@ impl GroveDb {
                         last,
                         stop_path_height,
                         &new_options,
-                        validate,
                         None, // todo: maybe we can know this?
                         current_batch_operations,
                         transaction,
@@ -415,7 +408,6 @@ impl GroveDb {
         path: P,
         key: &'p [u8],
         options: &DeleteOptions,
-        validate: bool,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         current_batch_operations: &[GroveDbOp],
         transaction: TransactionArg,
@@ -434,7 +426,7 @@ impl GroveDb {
             ))
             .wrap_with_cost(cost)
         } else {
-            if validate {
+            if options.validate {
                 cost_return_on_error!(
                     &mut cost,
                     self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
@@ -1327,7 +1319,6 @@ mod tests {
                 b"level3-A",
                 Some(0),
                 &DeleteOptions::default(),
-                true,
                 Some(&transaction),
             )
             .unwrap()
@@ -1417,7 +1408,6 @@ mod tests {
                 b"level3-A",
                 Some(0),
                 &DeleteOptions::default(),
-                true,
                 None,
             )
             .unwrap()
