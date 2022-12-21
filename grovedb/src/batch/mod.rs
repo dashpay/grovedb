@@ -122,13 +122,20 @@ impl Ord for Op {
 }
 
 #[cfg(feature = "full")]
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(Eq, Clone, Debug)]
 pub struct KnownKeysPath(Vec<Vec<u8>>);
 
 #[cfg(feature = "full")]
 impl Hash for KnownKeysPath {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state)
+    }
+}
+
+#[cfg(feature = "full")]
+impl PartialEq for KnownKeysPath {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
     }
 }
 
@@ -147,13 +154,20 @@ impl PartialEq<Vec<Vec<u8>>> for KnownKeysPath {
 }
 
 #[cfg(feature = "full")]
-#[derive(PartialOrd, Ord, PartialEq, Eq, Clone, Debug, Default)]
+#[derive(PartialOrd, Ord, Eq, Clone, Debug, Default)]
 pub struct KeyInfoPath(pub Vec<KeyInfo>);
 
 #[cfg(feature = "full")]
 impl Hash for KeyInfoPath {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state)
+    }
+}
+
+#[cfg(feature = "full")]
+impl PartialEq for KeyInfoPath {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
     }
 }
 

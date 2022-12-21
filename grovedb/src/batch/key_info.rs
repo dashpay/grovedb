@@ -13,10 +13,30 @@ use visualize::{Drawer, Visualize};
 use crate::batch::key_info::KeyInfo::{KnownKey, MaxKeySize};
 
 #[cfg(feature = "full")]
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Eq, Debug)]
 pub enum KeyInfo {
     KnownKey(Vec<u8>),
     MaxKeySize { unique_id: Vec<u8>, max_size: u8 },
+}
+
+#[cfg(feature = "full")]
+impl PartialEq for KeyInfo {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (KnownKey(..), MaxKeySize { .. }) | (MaxKeySize { .. }, KnownKey(..)) => false,
+            (KnownKey(a), KnownKey(b)) => a == b,
+            (
+                MaxKeySize {
+                    unique_id: unique_id_a,
+                    max_size: max_size_a,
+                },
+                MaxKeySize {
+                    unique_id: unique_id_b,
+                    max_size: max_size_b,
+                },
+            ) => unique_id_a == unique_id_b && max_size_a == max_size_b,
+        }
+    }
 }
 
 #[cfg(feature = "full")]
