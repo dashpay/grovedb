@@ -87,7 +87,7 @@ pub trait Storage<'db> {
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error>;
 
     /// Return worst case cost for storage_cost context creation.
-    fn get_storage_context_cost<L: WorstKeyLength>(path: &Vec<L>) -> OperationCost;
+    fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost;
 }
 
 pub use costs::ChildrenSizes;

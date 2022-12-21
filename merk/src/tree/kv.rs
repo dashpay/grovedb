@@ -26,7 +26,7 @@ use crate::{
 
 #[cfg(feature = "full")]
 /// Contains a key/value pair, and the hash of the key/value pair.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KV {
     pub(super) key: Vec<u8>,
     pub(super) value: Vec<u8>,

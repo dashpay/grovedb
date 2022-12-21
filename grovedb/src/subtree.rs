@@ -239,26 +239,17 @@ impl Element {
 
     #[cfg(feature = "full")]
     pub fn is_sum_tree(&self) -> bool {
-        match &self {
-            Element::SumTree(..) => true,
-            _ => false,
-        }
+        matches!(self, Element::SumTree(..))
     }
 
     #[cfg(feature = "full")]
     pub fn is_tree(&self) -> bool {
-        match &self {
-            Element::SumTree(..) | Element::Tree(..) => true,
-            _ => false,
-        }
+        matches!(self, Element::SumTree(..) | Element::Tree(..))
     }
 
     #[cfg(feature = "full")]
     pub fn is_sum_item(&self) -> bool {
-        match &self {
-            Element::SumItem(..) => true,
-            _ => false,
-        }
+        matches!(self, Element::SumItem(..))
     }
 
     #[cfg(feature = "full")]
@@ -618,7 +609,7 @@ impl Element {
                 _ => {
                     // Element is a reference and is not absolute.
                     // build the stored path for this reference
-                    let current_path = path.clone().to_vec();
+                    let current_path = <&[&[u8]]>::clone(&path).to_vec();
                     let absolute_path = path_from_reference_path_type(
                         reference_path_type.clone(),
                         current_path,
@@ -819,34 +810,32 @@ impl Element {
                     } else if let Some(offset) = offset {
                         *offset -= 1;
                     }
+                } else if allow_get_raw {
+                    cost_return_on_error_no_add!(
+                        &cost,
+                        Element::basic_push(PathQueryPushArgs {
+                            storage,
+                            transaction,
+                            key: Some(key),
+                            element,
+                            path,
+                            subquery_key,
+                            subquery,
+                            left_to_right,
+                            allow_get_raw,
+                            result_type,
+                            results,
+                            limit,
+                            offset,
+                        })
+                    );
                 } else {
-                    if allow_get_raw {
-                        cost_return_on_error_no_add!(
-                            &cost,
-                            Element::basic_push(PathQueryPushArgs {
-                                storage,
-                                transaction,
-                                key: Some(key),
-                                element,
-                                path,
-                                subquery_key,
-                                subquery,
-                                left_to_right,
-                                allow_get_raw,
-                                result_type,
-                                results,
-                                limit,
-                                offset,
-                            })
-                        );
-                    } else {
-                        return Err(Error::InvalidPath(
-                            "you must provide a subquery or a subquery_key when interacting with \
-                             a Tree of trees"
-                                .to_owned(),
-                        ))
-                        .wrap_with_cost(cost);
-                    }
+                    return Err(Error::InvalidPath(
+                        "you must provide a subquery or a subquery_key when interacting with a \
+                         Tree of trees"
+                            .to_owned(),
+                    ))
+                    .wrap_with_cost(cost);
                 }
             }
             _ => {
@@ -1208,7 +1197,7 @@ impl Element {
     #[cfg(feature = "full")]
     pub fn tree_costs_for_key_value(
         key: &Vec<u8>,
-        value: &Vec<u8>,
+        value: &[u8],
         is_sum_node: bool,
     ) -> Result<u32, Error> {
         let element = Element::deserialize(value)?;
@@ -1511,7 +1500,7 @@ impl<I: RawIterator> ElementsIterator<I> {
         ElementsIterator { raw_iter }
     }
 
-    pub fn next(&mut self) -> CostResult<Option<KeyElementPair>, Error> {
+    pub fn next_element(&mut self) -> CostResult<Option<KeyElementPair>, Error> {
         let mut cost = OperationCost::default();
 
         Ok(if self.raw_iter.valid().unwrap_add_cost(&mut cost) {
@@ -1863,7 +1852,7 @@ mod tests {
         .expect("expected successful get_query");
 
         let elements: Vec<KeyElementPair> = elements
-            .into_iter()
+            .into_iterator()
             .filter_map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(_element) => None,
                 QueryResultElement::KeyElementPairResultItem(key_element_pair) => {
@@ -1896,7 +1885,7 @@ mod tests {
         .expect("expected successful get_query");
 
         let elements: Vec<KeyElementPair> = elements
-            .into_iter()
+            .into_iterator()
             .filter_map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(_element) => None,
                 QueryResultElement::KeyElementPairResultItem(key_element_pair) => {

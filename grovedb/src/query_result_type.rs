@@ -31,20 +31,24 @@ impl QueryResultElements {
         self.elements.len()
     }
 
-    pub fn into_iter(self) -> IntoIter<QueryResultElement> {
+    pub fn is_empty(&self) -> bool {
+        self.elements.is_empty()
+    }
+
+    pub fn into_iterator(self) -> IntoIter<QueryResultElement> {
         self.elements.into_iter()
     }
 
     pub fn to_elements(self) -> Vec<Element> {
         self.elements
             .into_iter()
-            .filter_map(|result_item| match result_item {
-                QueryResultElement::ElementResultItem(element) => Some(element),
+            .map(|result_item| match result_item {
+                QueryResultElement::ElementResultItem(element) => element,
                 QueryResultElement::KeyElementPairResultItem(element_key_pair) => {
-                    Some(element_key_pair.1)
+                    element_key_pair.1
                 }
                 QueryResultElement::PathKeyElementTrioResultItem(path_key_element_trio) => {
-                    Some(path_key_element_trio.2)
+                    path_key_element_trio.2
                 }
             })
             .collect()
@@ -76,6 +80,13 @@ impl QueryResultElements {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(feature = "full")]
+impl Default for QueryResultElements {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

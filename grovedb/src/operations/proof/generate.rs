@@ -20,6 +20,9 @@ use crate::{
 };
 
 #[cfg(feature = "full")]
+type LimitOffset = (Option<u16>, Option<u16>);
+
+#[cfg(feature = "full")]
 impl GroveDb {
     pub fn prove_query_many(&self, query: Vec<&PathQuery>) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost::default();
@@ -80,8 +83,7 @@ impl GroveDb {
                             current_path.iter().copied(),
                             &subtree.expect("confirmed not error above"),
                             &next_key_query,
-                            None,
-                            None,
+                            (None, None),
                             ProofType::Merk,
                             &mut proof_result,
                         )
@@ -143,7 +145,7 @@ impl GroveDb {
 
         let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query)
             .unwrap_add_cost(&mut cost);
-        while let Some((key, value_bytes)) = kv_iterator.next().unwrap_add_cost(&mut cost) {
+        while let Some((key, value_bytes)) = kv_iterator.next_kv().unwrap_add_cost(&mut cost) {
             let (subquery_key, subquery_value) =
                 Element::subquery_paths_for_sized_query(&query.query, &key);
 
@@ -167,8 +169,7 @@ impl GroveDb {
                                 path.iter().copied(),
                                 &subtree,
                                 &query.query.query,
-                                None,
-                                None,
+                                (None, None),
                                 ProofType::Merk,
                                 proofs,
                             )
@@ -197,8 +198,7 @@ impl GroveDb {
                                     new_path.iter().copied(),
                                     &inner_subtree,
                                     &key_as_query,
-                                    None,
-                                    None,
+                                    (None, None),
                                     ProofType::Merk,
                                     proofs,
                                 )
@@ -257,8 +257,7 @@ impl GroveDb {
                     path.iter().copied(),
                     &subtree,
                     &query.query.query,
-                    *current_limit,
-                    *current_offset,
+                    (*current_limit, *current_offset),
                     ProofType::SizedMerk,
                     proofs,
                 )
@@ -295,8 +294,7 @@ impl GroveDb {
                     path_slice.iter().copied(),
                     &subtree,
                     &query,
-                    None,
-                    None,
+                    (None, None),
                     ProofType::Merk,
                     proof_result,
                 )
@@ -313,8 +311,7 @@ impl GroveDb {
         path: P,
         subtree: &'a Merk<S>,
         query: &Query,
-        limit: Option<u16>,
-        offset: Option<u16>,
+        limit_offset: LimitOffset,
         proof_type: ProofType,
         proofs: &mut Vec<u8>,
     ) -> CostResult<(Option<u16>, Option<u16>), Error>
@@ -328,7 +325,7 @@ impl GroveDb {
         // TODO: How do you handle mixed tree types?
         // TODO implement costs
         let mut proof_result = subtree
-            .prove_without_encoding(query.clone(), limit, offset)
+            .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
             .unwrap()
             .expect("should generate proof");
 

@@ -241,7 +241,7 @@ impl ProofVerifier {
 
     /// Deserialize subkey_element and update expected root hash and element
     /// value
-    fn update_root_key_from_subquery_key_element<'a>(
+    fn update_root_key_from_subquery_key_element(
         expected_child_hash: &mut CryptoHash,
         current_value_bytes: &mut Vec<u8>,
         subquery_key_result_set: &[ProofKeyValue],
@@ -319,7 +319,7 @@ impl ProofVerifier {
             let proof_result =
                 self.execute_merk_proof(ProofType::Merk, &merk_proof, &child_query, true)?;
 
-            if expected_child_hash == None {
+            if expected_child_hash.is_none() {
                 root_key_hash = Some(proof_result.0);
             } else {
                 let combined_hash = combine_hash(

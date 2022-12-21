@@ -64,11 +64,9 @@ pub fn path_from_reference_qualified_path_type(
     current_qualified_path: &[Vec<u8>],
 ) -> Result<Vec<Vec<u8>>, Error> {
     match current_qualified_path.split_last() {
-        None => {
-            return Err(Error::CorruptedPath(
-                "qualified path should always have an element",
-            ));
-        }
+        None => Err(Error::CorruptedPath(
+            "qualified path should always have an element",
+        )),
         Some((key, path)) => {
             let path_iter = path.iter().map(|k| k.as_slice());
             path_from_reference_path_type(reference_path_type, path_iter, Some(key.as_slice()))
@@ -88,7 +86,7 @@ where
     P: IntoIterator<Item = &'p [u8]>,
     <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
 {
-    return match reference_path_type {
+    match reference_path_type {
         // No computation required, we already know the absolute path
         ReferencePathType::AbsolutePathReference(path) => Ok(path),
 
@@ -182,7 +180,7 @@ where
             current_path_as_vec.push(sibling_key);
             Ok(current_path_as_vec)
         }
-    };
+    }
 }
 
 #[cfg(feature = "full")]

@@ -26,8 +26,6 @@ use costs::{
     ChildrenSizesWithValue, CostContext, CostResult, CostsExt, FeatureSumLength, OperationCost,
 };
 #[cfg(feature = "full")]
-use ed::{Decode, Encode};
-#[cfg(feature = "full")]
 use storage::{self, Batch, RawIterator, StorageContext};
 
 #[cfg(feature = "full")]
@@ -87,8 +85,44 @@ impl ProofWithoutEncodingResult {
 }
 
 #[cfg(feature = "full")]
+pub struct KeyUpdates {
+    pub new_keys: BTreeSet<Vec<u8>>,
+    pub updated_keys: BTreeSet<Vec<u8>>,
+    pub deleted_keys: LinkedList<(Vec<u8>, Option<KeyValueStorageCost>)>,
+    pub updated_root_key_from: Option<Vec<u8>>,
+}
+
+#[cfg(feature = "full")]
+impl KeyUpdates {
+    pub fn new(
+        new_keys: BTreeSet<Vec<u8>>,
+        updated_keys: BTreeSet<Vec<u8>>,
+        deleted_keys: LinkedList<(Vec<u8>, Option<KeyValueStorageCost>)>,
+        updated_root_key_from: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            new_keys,
+            updated_keys,
+            deleted_keys,
+            updated_root_key_from,
+        }
+    }
+}
+
+#[cfg(feature = "full")]
+/// Type alias for simple function signature
+pub type BatchValue = (
+    Vec<u8>,
+    Option<FeatureSumLength>,
+    ChildrenSizesWithValue,
+    Option<KeyValueStorageCost>,
+);
+
+#[cfg(feature = "full")]
 /// A bool type
 pub type IsSumTree = bool;
+#[cfg(feature = "full")]
+pub type RootHashKeyAndSum = (CryptoHash, Option<Vec<u8>>, Option<i64>);
 
 #[cfg(feature = "full")]
 /// KVIterator allows you to lazily iterate over each kv pair of a subtree
@@ -165,7 +199,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
 #[cfg(feature = "full")]
 // Cannot be an Iterator as it should return cost
 impl<'a, I: RawIterator> KVIterator<'a, I> {
-    pub fn next(&mut self) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
+    pub fn next_kv(&mut self) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
         let mut cost = OperationCost::default();
 
         if let Some(query_item) = self.current_query_item {
@@ -175,7 +209,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
                 kv_pair.wrap_with_cost(cost)
             } else {
                 self.seek().unwrap_add_cost(&mut cost);
-                self.next().add_cost(cost)
+                self.next_kv().add_cost(cost)
             }
         } else {
             None.wrap_with_cost(cost)
@@ -476,9 +510,7 @@ where
     }
 
     /// Returns the root hash and non-prefixed key of the tree.
-    pub fn root_hash_key_and_sum(
-        &self,
-    ) -> CostResult<(CryptoHash, Option<Vec<u8>>, Option<i64>), Error> {
+    pub fn root_hash_key_and_sum(&self) -> CostResult<RootHashKeyAndSum, Error> {
         self.use_tree(|tree| match tree {
             None => Ok((NULL_HASH, None, None)).wrap_with_cost(Default::default()),
             Some(tree) => {
@@ -761,24 +793,19 @@ where
             old_tree_cost,
             section_removal_bytes,
         )
-        .flat_map_ok(
-            |(maybe_tree, new_keys, updated_keys, deleted_keys, updated_root_key_from)| {
-                // we set the new root node of the merk tree
-                self.tree.set(maybe_tree);
-                // commit changes to db
-                self.commit(
-                    new_keys,
-                    updated_keys,
-                    deleted_keys,
-                    updated_root_key_from,
-                    aux,
-                    options,
-                    old_tree_cost,
-                    update_tree_value_based_on_costs,
-                    section_removal_bytes,
-                )
-            },
-        )
+        .flat_map_ok(|(maybe_tree, key_updates)| {
+            // we set the new root node of the merk tree
+            self.tree.set(maybe_tree);
+            // commit changes to db
+            self.commit(
+                key_updates,
+                aux,
+                options,
+                old_tree_cost,
+                update_tree_value_based_on_costs,
+                section_removal_bytes,
+            )
+        })
     }
 
     /// Creates a Merkle proof for the list of queried keys. For each key in the
@@ -857,7 +884,7 @@ where
 
         self.use_tree_mut(|maybe_tree| {
             maybe_tree
-                .ok_or_else(|| Error::CorruptionError("Cannot create proof for empty tree"))
+                .ok_or(Error::CorruptionError("Cannot create proof for empty tree"))
                 .wrap_with_cost(Default::default())
                 .flat_map_ok(|tree| {
                     let mut ref_walker = RefWalker::new(tree, self.source());
@@ -869,10 +896,7 @@ where
 
     pub fn commit<K>(
         &mut self,
-        new_keys: BTreeSet<Vec<u8>>,
-        _updated_keys: BTreeSet<Vec<u8>>,
-        deleted_keys: LinkedList<(Vec<u8>, Option<KeyValueStorageCost>)>,
-        updated_root_key_from: Option<Vec<u8>>,
+        key_updates: KeyUpdates,
         aux: &AuxMerkBatch<K>,
         options: Option<MerkOptions>,
         old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
@@ -920,11 +944,16 @@ where
                     // there are two situation where we want to put the root key
                     // it was updated from something else
                     // or it is part of new keys
-                    if updated_root_key_from.is_some() || new_keys.contains(tree_key) {
+                    if key_updates.updated_root_key_from.is_some()
+                        || key_updates.new_keys.contains(tree_key)
+                    {
                         let costs = if self.merk_type == StandaloneMerk {
                             // if we are a standalone merk we want real costs
                             Some(KeyValueStorageCost::for_updated_root_cost(
-                                updated_root_key_from.as_ref().map(|k| k.len() as u32),
+                                key_updates
+                                    .updated_root_key_from
+                                    .as_ref()
+                                    .map(|k| k.len() as u32),
                                 tree_key.len() as u32,
                             ))
                         } else {
@@ -964,7 +993,7 @@ where
         let mut to_batch = cost_return_on_error!(&mut cost, to_batch_wrapped);
 
         // TODO: move this to MerkCommitter impl?
-        for (key, maybe_cost) in deleted_keys {
+        for (key, maybe_cost) in key_updates.deleted_keys {
             to_batch.push((key, None, None, maybe_cost));
         }
         to_batch.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1174,7 +1203,7 @@ where
 {
     fn fetch(&self, link: &Link) -> CostResult<Tree, Error> {
         Tree::get(self.storage, link.key())
-            .map_ok(|x| x.ok_or_else(|| Error::KeyNotFoundError("Key not found for fetch")))
+            .map_ok(|x| x.ok_or(Error::KeyNotFoundError("Key not found for fetch")))
             .flatten()
     }
 }
@@ -1184,12 +1213,7 @@ struct MerkCommitter {
     /// The batch has a key, maybe a value, with the value bytes, maybe the left
     /// child size and maybe the right child size, then the
     /// key_value_storage_cost
-    batch: Vec<(
-        Vec<u8>,
-        Option<FeatureSumLength>,
-        ChildrenSizesWithValue,
-        Option<KeyValueStorageCost>,
-    )>,
+    batch: Vec<BatchValue>,
     height: u8,
     levels: u8,
 }

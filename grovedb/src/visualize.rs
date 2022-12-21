@@ -61,7 +61,7 @@ impl Visualize for ReferencePathType {
                 drawer.write(b"absolute path reference: ")?;
                 drawer.write(
                     path.iter()
-                        .map(|a| hex::encode(a))
+                        .map(hex::encode)
                         .collect::<Vec<String>>()
                         .join("/")
                         .as_bytes(),
@@ -73,7 +73,7 @@ impl Visualize for ReferencePathType {
                 drawer.write(
                     end_path
                         .iter()
-                        .map(|a| hex::encode(a))
+                        .map(hex::encode)
                         .collect::<Vec<String>>()
                         .join("/")
                         .as_bytes(),
@@ -85,7 +85,7 @@ impl Visualize for ReferencePathType {
                 drawer.write(
                     end_path
                         .iter()
-                        .map(|a| hex::encode(a))
+                        .map(hex::encode)
                         .collect::<Vec<String>>()
                         .join("/")
                         .as_bytes(),
@@ -100,7 +100,7 @@ impl Visualize for ReferencePathType {
                 drawer.write(
                     middle_path
                         .iter()
-                        .map(|a| hex::encode(a))
+                        .map(hex::encode)
                         .collect::<Vec<String>>()
                         .join("/")
                         .as_bytes(),
@@ -132,8 +132,10 @@ impl GroveDb {
             storage,
             {
                 let mut iter = Element::iterator(storage.unwrap().raw_iter()).unwrap();
-                while let Some((key, element)) =
-                    iter.next().unwrap().expect("cannot get next element")
+                while let Some((key, element)) = iter
+                    .next_element()
+                    .unwrap()
+                    .expect("cannot get next element")
                 {
                     drawer.write(b"\n[key: ")?;
                     drawer = key.visualize(drawer)?;

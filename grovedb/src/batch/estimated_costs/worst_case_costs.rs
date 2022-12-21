@@ -11,19 +11,18 @@ use costs::{
 #[cfg(feature = "full")]
 use itertools::Itertools;
 #[cfg(feature = "full")]
-use merk::{
-    estimated_costs::worst_case_costs::{worst_case_merk_propagate, WorstCaseLayerInformation},
-    CryptoHash,
+use merk::estimated_costs::worst_case_costs::{
+    worst_case_merk_propagate, WorstCaseLayerInformation,
 };
+use merk::RootHashKeyAndSum;
 #[cfg(feature = "full")]
 use storage::rocksdb_storage::RocksDbStorage;
 
 #[cfg(feature = "full")]
 use crate::{
     batch::{
-        key_info::KeyInfo,
-        mode::{BatchRunMode, BatchRunMode::WorstCaseMode},
-        BatchApplyOptions, GroveDbOp, KeyInfoPath, Op, TreeCache,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveDbOp, KeyInfoPath, Op,
+        TreeCache,
     },
     Error, GroveDb,
 };
@@ -61,13 +60,13 @@ impl Op {
             ),
             Op::Insert { element } => GroveDb::worst_case_merk_insert_element(
                 key,
-                &element,
+                element,
                 is_in_parent_sum_tree,
                 propagate_if_input(),
             ),
             Op::Replace { element } => GroveDb::worst_case_merk_replace_element(
                 key,
-                &element,
+                element,
                 is_in_parent_sum_tree,
                 propagate_if_input(),
             ),
@@ -134,7 +133,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     }
 
     fn get_batch_run_mode(&self) -> BatchRunMode {
-        WorstCaseMode(self.paths.clone())
+        BatchRunMode::WorstCase(self.paths.clone())
     }
 
     fn execute_ops_on_path(
@@ -145,21 +144,21 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
-    ) -> CostResult<(CryptoHash, Option<Vec<u8>>, Option<i64>), Error> {
+    ) -> CostResult<RootHashKeyAndSum, Error> {
         let mut cost = OperationCost::default();
 
         let worst_case_layer_element_estimates = cost_return_on_error_no_add!(
             &cost,
             self.paths
                 .get(path)
-                .ok_or(Error::PathNotFoundInCacheForEstimatedCosts(format!(
+                .ok_or_else(|| Error::PathNotFoundInCacheForEstimatedCosts(format!(
                     "inserting into worst case costs path: {}",
                     path.0.iter().map(|k| hex::encode(k.as_slice())).join("/")
                 )))
         );
 
         // Then we have to get the tree
-        if self.cached_merks.get(&path).is_none() {
+        if self.cached_merks.get(path).is_none() {
             GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, path, false);
             self.cached_merks.insert(path.clone());
         }

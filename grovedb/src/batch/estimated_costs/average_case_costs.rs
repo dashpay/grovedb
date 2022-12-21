@@ -10,10 +10,11 @@ use costs::{
 };
 #[cfg(feature = "full")]
 use itertools::Itertools;
+use merk::RootHashKeyAndSum;
 #[cfg(feature = "full")]
 use merk::{
     estimated_costs::average_case_costs::{average_case_merk_propagate, EstimatedLayerInformation},
-    CryptoHash, IsSumTree,
+    IsSumTree,
 };
 #[cfg(feature = "full")]
 use storage::rocksdb_storage::RocksDbStorage;
@@ -21,9 +22,8 @@ use storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
 use crate::{
     batch::{
-        key_info::KeyInfo,
-        mode::{BatchRunMode, BatchRunMode::AverageCaseMode},
-        BatchApplyOptions, GroveDbOp, KeyInfoPath, Op, TreeCache,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveDbOp, KeyInfoPath, Op,
+        TreeCache,
     },
     Error, GroveDb,
 };
@@ -62,13 +62,13 @@ impl Op {
             }
             Op::Insert { element } => GroveDb::average_case_merk_insert_element(
                 key,
-                &element,
+                element,
                 in_tree_using_sums,
                 propagate_if_input(),
             ),
             Op::Replace { element } => GroveDb::average_case_merk_replace_element(
                 key,
-                &element,
+                element,
                 in_tree_using_sums,
                 propagate_if_input(),
             ),
@@ -133,7 +133,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     }
 
     fn get_batch_run_mode(&self) -> BatchRunMode {
-        AverageCaseMode(self.paths.clone())
+        BatchRunMode::AverageCase(self.paths.clone())
     }
 
     fn execute_ops_on_path(
@@ -144,7 +144,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
-    ) -> CostResult<(CryptoHash, Option<Vec<u8>>, Option<i64>), Error> {
+    ) -> CostResult<RootHashKeyAndSum, Error> {
         let mut cost = OperationCost::default();
 
         let layer_element_estimates = cost_return_on_error_no_add!(
@@ -168,10 +168,10 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             .estimated_to_be_empty();
 
         // Then we have to get the tree
-        if self.cached_merks.get(&path).is_none() {
+        if self.cached_merks.get(path).is_none() {
             let layer_info = cost_return_on_error_no_add!(
                 &cost,
-                self.paths.get(&path).ok_or_else(|| {
+                self.paths.get(path).ok_or_else(|| {
                     let paths = self
                         .paths
                         .iter()

@@ -44,7 +44,7 @@ impl GroveDb {
             None => {}
             Some(key) => {
                 cost.storage_loaded_bytes += Tree::average_case_encoded_tree_size(
-                    key.len() as u32,
+                    key.max_length() as u32,
                     HASH_LENGTH as u32,
                     is_sum_tree,
                 );
@@ -61,7 +61,7 @@ impl GroveDb {
         propagate: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-        let key_len = key.len() as u32;
+        let key_len = key.max_length() as u32;
         let flags_size = cost_return_on_error_no_add!(
             &cost,
             estimated_layer_information
@@ -101,7 +101,7 @@ impl GroveDb {
         propagate_if_input: Option<&EstimatedLayerInformation>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-        let key_len = key.len() as u32;
+        let key_len = key.max_length() as u32;
         let flags_len = flags.as_ref().map_or(0, |flags| {
             let flags_len = flags.len() as u32;
             flags_len + flags_len.required_space() as u32
@@ -129,7 +129,7 @@ impl GroveDb {
         propagate: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-        let key_len = key.len() as u32;
+        let key_len = key.max_length() as u32;
         let flags_size = cost_return_on_error_no_add!(
             &cost,
             estimated_layer_information
@@ -165,7 +165,7 @@ impl GroveDb {
         propagate_for_level: Option<&EstimatedLayerInformation>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-        let key_len = key.len() as u32;
+        let key_len = key.max_length() as u32;
         match value {
             Element::Tree(_, flags) | Element::SumTree(_, _, flags) => {
                 let flags_len = flags.as_ref().map_or(0, |flags| {
@@ -205,7 +205,7 @@ impl GroveDb {
         propagate_for_level: Option<&EstimatedLayerInformation>,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-        let key_len = key.len() as u32;
+        let key_len = key.max_length() as u32;
         match value {
             Element::Tree(_, flags) | Element::SumTree(_, _, flags) => {
                 let flags_len = flags.as_ref().map_or(0, |flags| {
@@ -254,7 +254,7 @@ impl GroveDb {
         propagate: bool,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-        let key_len = key.len() as u32;
+        let key_len = key.max_length() as u32;
         let value_size = cost_return_on_error_no_add!(
             &cost,
             estimated_layer_information
@@ -281,7 +281,7 @@ impl GroveDb {
         in_parent_tree_using_sums: bool,
     ) {
         let value_size = Tree::average_case_encoded_tree_size(
-            key.len() as u32,
+            key.max_length() as u32,
             estimated_element_size,
             in_parent_tree_using_sums,
         );
@@ -323,7 +323,7 @@ impl GroveDb {
         cost.seek_count += 1;
         add_average_case_get_merk_node(
             cost,
-            key.len() as u32,
+            key.max_length() as u32,
             estimated_element_size,
             in_parent_tree_using_sums,
         );
@@ -346,7 +346,7 @@ impl GroveDb {
         cost.seek_count += 1;
         add_average_case_get_merk_node(
             cost,
-            key.len() as u32,
+            key.max_length() as u32,
             estimated_element_size,
             in_parent_tree_using_sums,
         );
@@ -364,7 +364,7 @@ impl GroveDb {
     ) {
         // todo: verify
         let value_size: u32 = Tree::average_case_encoded_tree_size(
-            key.len() as u32,
+            key.max_length() as u32,
             estimated_element_size,
             in_parent_tree_using_sums,
         );
@@ -427,7 +427,7 @@ mod test {
         // (this will be the max_element_size)
         let mut cost = OperationCost::default();
         let key = KnownKey(8_u64.to_be_bytes().to_vec());
-        add_average_case_get_merk_node(&mut cost, key.len() as u32, 60, false);
+        add_average_case_get_merk_node(&mut cost, key.max_length() as u32, 60, false);
         assert_eq!(cost, node_result.cost);
     }
 

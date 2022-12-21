@@ -122,11 +122,9 @@ impl EstimatedLayerSizes {
                 )),
                 Some((_, est, fs, _)) => Ok(est.estimated_size()? + fs.unwrap_or_default() + 3),
             },
-            _ => {
-                return Err(Error::WrongEstimatedCostsElementTypeForLevel(
-                    "this layer needs to have trees",
-                ));
-            }
+            _ => Err(Error::WrongEstimatedCostsElementTypeForLevel(
+                "this layer needs to have trees",
+            )),
         }
     }
 

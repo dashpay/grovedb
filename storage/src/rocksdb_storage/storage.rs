@@ -102,8 +102,8 @@ impl RocksDbStorage {
         (res, segments_count)
     }
 
-    fn worst_case_body_size<L: WorstKeyLength>(path: &Vec<L>) -> usize {
-        path.len() + path.iter().map(|a| a.len() as usize).sum::<usize>()
+    fn worst_case_body_size<L: WorstKeyLength>(path: &[L]) -> usize {
+        path.len() + path.iter().map(|a| a.max_length() as usize).sum::<usize>()
     }
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
@@ -422,7 +422,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         result.map_err(RocksDBError).wrap_with_cost(cost)
     }
 
-    fn get_storage_context_cost<L: WorstKeyLength>(path: &Vec<L>) -> OperationCost {
+    fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost {
         if path.is_empty() {
             OperationCost::default()
         } else {

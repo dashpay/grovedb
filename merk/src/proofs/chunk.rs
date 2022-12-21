@@ -303,20 +303,16 @@ pub(crate) fn verify_trunk<I: Iterator<Item = Result<Op, Error>>>(
         } else if !leftmost {
             match tree.node {
                 Node::Hash(_) => Ok(()),
-                _ => {
-                    return Err(Error::ChunkRestoringError(
-                        "Expected trunk leaves to contain Hash nodes".to_string(),
-                    ))
-                }
+                _ => Err(Error::ChunkRestoringError(
+                    "Expected trunk leaves to contain Hash nodes".to_string(),
+                )),
             }
         } else {
             match &tree.node {
                 Node::KVHash(_) => Ok(()),
-                _ => {
-                    return Err(Error::ChunkRestoringError(
-                        "Expected leftmost trunk leaf to contain KVHash node".to_string(),
-                    ))
-                }
+                _ => Err(Error::ChunkRestoringError(
+                    "Expected leftmost trunk leaf to contain KVHash node".to_string(),
+                )),
             }
         }
     }

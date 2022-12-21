@@ -604,7 +604,7 @@ impl GroveDb {
             .map(|(path, (root_hash, expected, actual))| {
                 (
                     path.iter()
-                        .map(|a| hex::encode(a))
+                        .map(hex::encode)
                         .collect::<Vec<String>>()
                         .join("/"),
                     (
@@ -638,36 +638,33 @@ impl GroveDb {
         let _in_sum_tree = merk.is_sum_tree;
         let mut issues = HashMap::new();
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
-        while let Some((key, element_value)) = element_iterator.next().unwrap() {
+        while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value).unwrap();
-            match element {
-                Element::Tree(..) => {
-                    let (kv_value, element_value_hash) = merk
-                        .get_value_and_value_hash(&key)
-                        .unwrap()
-                        .unwrap()
-                        .unwrap();
-                    let mut new_path = path.clone();
-                    new_path.push(key.to_vec());
+            if let Element::Tree(..) = element {
+                let (kv_value, element_value_hash) = merk
+                    .get_value_and_value_hash(&key)
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                let mut new_path = path.clone();
+                new_path.push(key.to_vec());
 
-                    let inner_merk = self
-                        .open_non_transactional_merk_at_path(new_path.iter().map(|x| x.as_slice()))
-                        .unwrap()
-                        .expect("should exist");
-                    let root_hash = inner_merk.root_hash().unwrap();
+                let inner_merk = self
+                    .open_non_transactional_merk_at_path(new_path.iter().map(|x| x.as_slice()))
+                    .unwrap()
+                    .expect("should exist");
+                let root_hash = inner_merk.root_hash().unwrap();
 
-                    let actual_value_hash = value_hash(&kv_value).unwrap();
-                    let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
+                let actual_value_hash = value_hash(&kv_value).unwrap();
+                let combined_value_hash = combine_hash(&actual_value_hash, &root_hash).unwrap();
 
-                    if combined_value_hash != element_value_hash {
-                        issues.insert(
-                            new_path.clone(),
-                            (root_hash, combined_value_hash, element_value_hash),
-                        );
-                    }
-                    issues.extend(self.verify_merk_and_submerks(inner_merk, new_path));
+                if combined_value_hash != element_value_hash {
+                    issues.insert(
+                        new_path.clone(),
+                        (root_hash, combined_value_hash, element_value_hash),
+                    );
                 }
-                _ => {}
+                issues.extend(self.verify_merk_and_submerks(inner_merk, new_path));
             }
         }
         issues

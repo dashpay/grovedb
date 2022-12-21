@@ -2084,20 +2084,20 @@ fn test_subtree_pairs_iterator() {
         .unwrap();
     let mut iter = Element::iterator(storage_context.raw_iter()).unwrap();
     assert_eq!(
-        iter.next().unwrap().unwrap(),
+        iter.next_element().unwrap().unwrap(),
         Some((b"key1".to_vec(), element))
     );
     assert_eq!(
-        iter.next().unwrap().unwrap(),
+        iter.next_element().unwrap().unwrap(),
         Some((b"key2".to_vec(), element2))
     );
-    let subtree_element = iter.next().unwrap().unwrap().unwrap();
+    let subtree_element = iter.next_element().unwrap().unwrap().unwrap();
     assert_eq!(subtree_element.0, b"subtree11".to_vec());
     assert!(matches!(subtree_element.1, Element::Tree(..)));
-    let subtree_element = iter.next().unwrap().unwrap().unwrap();
+    let subtree_element = iter.next_element().unwrap().unwrap().unwrap();
     assert_eq!(subtree_element.0, b"subtree12".to_vec());
     assert!(matches!(subtree_element.1, Element::Tree(..)));
-    assert!(matches!(iter.next().unwrap(), Ok(None)));
+    assert!(matches!(iter.next_element().unwrap(), Ok(None)));
 }
 
 #[cfg(feature = "full")]

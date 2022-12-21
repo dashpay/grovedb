@@ -215,7 +215,7 @@ impl GroveDb {
                         .ok_or({
                             let reference_string = reference_path
                                 .iter()
-                                .map(|a| hex::encode(a))
+                                .map(hex::encode)
                                 .collect::<Vec<String>>()
                                 .join("/");
                             Error::MissingReference(format!(
@@ -350,7 +350,7 @@ impl GroveDb {
                         .ok_or({
                             let reference_string = reference_path
                                 .iter()
-                                .map(|a| hex::encode(a))
+                                .map(hex::encode)
                                 .collect::<Vec<String>>()
                                 .join("/");
                             Error::MissingReference(format!(

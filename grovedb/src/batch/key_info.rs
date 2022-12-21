@@ -13,10 +13,30 @@ use visualize::{Drawer, Visualize};
 use crate::batch::key_info::KeyInfo::{KnownKey, MaxKeySize};
 
 #[cfg(feature = "full")]
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Eq, Debug)]
 pub enum KeyInfo {
     KnownKey(Vec<u8>),
     MaxKeySize { unique_id: Vec<u8>, max_size: u8 },
+}
+
+#[cfg(feature = "full")]
+impl PartialEq for KeyInfo {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (KnownKey(..), MaxKeySize { .. }) | (MaxKeySize { .. }, KnownKey(..)) => false,
+            (KnownKey(a), KnownKey(b)) => a == b,
+            (
+                MaxKeySize {
+                    unique_id: unique_id_a,
+                    max_size: max_size_a,
+                },
+                MaxKeySize {
+                    unique_id: unique_id_b,
+                    max_size: max_size_b,
+                },
+            ) => unique_id_a == unique_id_b && max_size_a == max_size_b,
+        }
+    }
 }
 
 #[cfg(feature = "full")]
@@ -27,8 +47,8 @@ impl PartialOrd<Self> for KeyInfo {
             Some(ord) => match ord {
                 Ordering::Less => Some(Ordering::Less),
                 Ordering::Equal => {
-                    let other_len = other.len();
-                    match self.len().partial_cmp(&other_len) {
+                    let other_len = other.max_length();
+                    match self.max_length().partial_cmp(&other_len) {
                         None => Some(Ordering::Equal),
                         Some(ord) => Some(ord),
                     }
@@ -45,8 +65,8 @@ impl Ord for KeyInfo {
         match self.as_slice().cmp(other.as_slice()) {
             Ordering::Less => Ordering::Less,
             Ordering::Equal => {
-                let other_len = other.len();
-                self.len().cmp(&other_len)
+                let other_len = other.max_length();
+                self.max_length().cmp(&other_len)
             }
             Ordering::Greater => Ordering::Greater,
         }
@@ -71,7 +91,7 @@ impl Hash for KeyInfo {
 
 #[cfg(feature = "full")]
 impl WorstKeyLength for KeyInfo {
-    fn len(&self) -> u8 {
+    fn max_length(&self) -> u8 {
         match self {
             Self::KnownKey(key) => key.len() as u8,
             Self::MaxKeySize { max_size, .. } => *max_size,
