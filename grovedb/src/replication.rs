@@ -331,6 +331,7 @@ impl<'db> SiblingsChunkProducer<'db> {
         let mut current_index = index;
         // Process each subtree
         while let Some(subtree_key) = siblings_keys.pop_front() {
+            #[allow(clippy::map_identity)]
             let subtree_path = parent_path
                 .clone()
                 .map(|x| x)
