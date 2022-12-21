@@ -322,7 +322,7 @@ impl<'db> SiblingsChunkProducer<'db> {
             siblings_iter.fast_forward(key)?;
         }
 
-        while let Some(element) = siblings_iter.next().unwrap()? {
+        while let Some(element) = siblings_iter.next_element().unwrap()? {
             if let (key, Element::Tree(..)) | (key, Element::SumTree(..)) = element {
                 siblings_keys.push_back(key);
             }

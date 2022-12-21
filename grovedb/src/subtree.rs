@@ -1500,7 +1500,7 @@ impl<I: RawIterator> ElementsIterator<I> {
         ElementsIterator { raw_iter }
     }
 
-    pub fn next(&mut self) -> CostResult<Option<KeyElementPair>, Error> {
+    pub fn next_element(&mut self) -> CostResult<Option<KeyElementPair>, Error> {
         let mut cost = OperationCost::default();
 
         Ok(if self.raw_iter.valid().unwrap_add_cost(&mut cost) {

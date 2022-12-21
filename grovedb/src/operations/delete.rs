@@ -1144,7 +1144,7 @@ impl GroveDb {
             storage_context_optional_tx!(self.db, path_iter.clone(), transaction, storage, {
                 let storage = storage.unwrap_add_cost(&mut cost);
                 let mut raw_iter = Element::iterator(storage.raw_iter()).unwrap_add_cost(&mut cost);
-                while let Some((key, value)) = cost_return_on_error!(&mut cost, raw_iter.next()) {
+                while let Some((key, value)) = cost_return_on_error!(&mut cost, raw_iter.next_element()) {
                     if let Element::Tree(..) = value {
                         let mut sub_path = q.clone();
                         sub_path.push(key.to_vec());
