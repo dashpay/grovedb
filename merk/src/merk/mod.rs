@@ -784,21 +784,19 @@ where
             old_tree_cost,
             section_removal_bytes,
         )
-        .flat_map_ok(
-            |(maybe_tree, new_keys, updated_keys, deleted_keys, updated_root_key_from)| {
-                // we set the new root node of the merk tree
-                self.tree.set(maybe_tree);
-                // commit changes to db
-                self.commit(
-                    KeyUpdates::new(new_keys, updated_keys, deleted_keys, updated_root_key_from),
-                    aux,
-                    options,
-                    old_tree_cost,
-                    update_tree_value_based_on_costs,
-                    section_removal_bytes,
-                )
-            },
-        )
+        .flat_map_ok(|(maybe_tree, key_updates)| {
+            // we set the new root node of the merk tree
+            self.tree.set(maybe_tree);
+            // commit changes to db
+            self.commit(
+                key_updates,
+                aux,
+                options,
+                old_tree_cost,
+                update_tree_value_based_on_costs,
+                section_removal_bytes,
+            )
+        })
     }
 
     /// Creates a Merkle proof for the list of queried keys. For each key in the
@@ -937,11 +935,16 @@ where
                     // there are two situation where we want to put the root key
                     // it was updated from something else
                     // or it is part of new keys
-                    if key_updates.updated_root_key_from.is_some() || key_updates.new_keys.contains(tree_key) {
+                    if key_updates.updated_root_key_from.is_some()
+                        || key_updates.new_keys.contains(tree_key)
+                    {
                         let costs = if self.merk_type == StandaloneMerk {
                             // if we are a standalone merk we want real costs
                             Some(KeyValueStorageCost::for_updated_root_cost(
-                                key_updates.updated_root_key_from.as_ref().map(|k| k.len() as u32),
+                                key_updates
+                                    .updated_root_key_from
+                                    .as_ref()
+                                    .map(|k| k.len() as u32),
                                 tree_key.len() as u32,
                             ))
                         } else {
