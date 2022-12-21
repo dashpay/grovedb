@@ -67,9 +67,7 @@ use visualize::{Drawer, Visualize};
 #[cfg(feature = "full")]
 use crate::{
     batch::{
-        batch_structure::BatchStructure,
-        estimated_costs::EstimatedCostsType,
-        mode::{BatchRunMode},
+        batch_structure::BatchStructure, estimated_costs::EstimatedCostsType, mode::BatchRunMode,
     },
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},

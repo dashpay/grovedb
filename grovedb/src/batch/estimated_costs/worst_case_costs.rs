@@ -21,9 +21,8 @@ use storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "full")]
 use crate::{
     batch::{
-        key_info::KeyInfo,
-        mode::{BatchRunMode},
-        BatchApplyOptions, GroveDbOp, KeyInfoPath, Op, TreeCache,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveDbOp, KeyInfoPath, Op,
+        TreeCache,
     },
     Error, GroveDb,
 };
