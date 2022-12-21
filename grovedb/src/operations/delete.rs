@@ -48,6 +48,7 @@ pub struct DeleteOptions {
     pub deleting_non_empty_trees_returns_error: bool,
     pub base_root_storage_is_free: bool,
     pub validate: bool,
+    pub stop_path_height: Option<u16>,
 }
 
 #[cfg(feature = "full")]
@@ -58,6 +59,7 @@ impl Default for DeleteOptions {
             deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: true,
             validate: true,
+            stop_path_height: None,
         }
     }
 }
@@ -79,7 +81,6 @@ impl GroveDb {
         &self,
         path: P,
         key: &'p [u8],
-        stop_path_height: Option<u16>,
         options: &DeleteOptions,
         transaction: TransactionArg,
     ) -> CostResult<u16, Error>
@@ -90,7 +91,6 @@ impl GroveDb {
         self.delete_up_tree_while_empty_with_sectional_storage(
             path,
             key,
-            stop_path_height,
             options,
             transaction,
             |_, removed_key_bytes, removed_value_bytes| {
@@ -108,7 +108,6 @@ impl GroveDb {
         &self,
         path: P,
         key: &'p [u8],
-        stop_path_height: Option<u16>,
         options: &DeleteOptions,
         transaction: TransactionArg,
         split_removal_bytes_function: impl FnMut(
@@ -133,7 +132,6 @@ impl GroveDb {
             self.add_delete_operations_for_delete_up_tree_while_empty(
                 path_iter,
                 key,
-                stop_path_height,
                 options,
                 None,
                 &mut batch_operations,
@@ -143,7 +141,7 @@ impl GroveDb {
 
         let ops = cost_return_on_error_no_add!(
             &cost,
-            if let Some(stop_path_height) = stop_path_height {
+            if let Some(stop_path_height) = options.stop_path_height {
                 maybe_ops.ok_or_else(|| {
                     Error::DeleteUpTreeStopHeightMoreThanInitialPathSize(format!(
                         "stop path height {} more than path size of {}",
@@ -171,7 +169,6 @@ impl GroveDb {
         &self,
         path: P,
         key: &'p [u8],
-        stop_path_height: Option<u16>,
         options: &DeleteOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         mut current_batch_operations: Vec<GroveDbOp>,
@@ -184,7 +181,6 @@ impl GroveDb {
         self.add_delete_operations_for_delete_up_tree_while_empty(
             path,
             key,
-            stop_path_height,
             options,
             is_known_to_be_subtree_with_sum,
             &mut current_batch_operations,
@@ -197,7 +193,6 @@ impl GroveDb {
         &self,
         path: P,
         key: &'p [u8],
-        stop_path_height: Option<u16>,
         options: &DeleteOptions,
         is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
         current_batch_operations: &mut Vec<GroveDbOp>,
@@ -210,7 +205,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         let mut path_iter = path.into_iter();
-        if let Some(stop_path_height) = stop_path_height {
+        if let Some(stop_path_height) = options.stop_path_height {
             if stop_path_height == path_iter.clone().len() as u16 {
                 return Ok(None).wrap_with_cost(cost);
             }
@@ -243,7 +238,6 @@ impl GroveDb {
                     self.add_delete_operations_for_delete_up_tree_while_empty(
                         path_iter,
                         last,
-                        stop_path_height,
                         &new_options,
                         None, // todo: maybe we can know this?
                         current_batch_operations,
@@ -1317,8 +1311,10 @@ mod tests {
             .delete_up_tree_while_empty(
                 [TEST_LEAF, b"level1-A", b"level2-A"],
                 b"level3-A",
-                Some(0),
-                &DeleteOptions::default(),
+                &DeleteOptions {
+                    stop_path_height: Some(0),
+                    ..Default::default()
+                },
                 Some(&transaction),
             )
             .unwrap()
@@ -1406,8 +1402,10 @@ mod tests {
             .delete_up_tree_while_empty(
                 [TEST_LEAF, b"level1-A", b"level2-A"],
                 b"level3-A",
-                Some(0),
-                &DeleteOptions::default(),
+                &DeleteOptions {
+                    stop_path_height: Some(0),
+                    ..Default::default()
+                },
                 None,
             )
             .unwrap()
