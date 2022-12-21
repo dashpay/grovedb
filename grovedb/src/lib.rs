@@ -640,7 +640,7 @@ impl GroveDb {
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             let element = raw_decode(&element_value).unwrap();
-            if let Element::Tree(..) = element {
+            if element.is_tree() {
                 let (kv_value, element_value_hash) = merk
                     .get_value_and_value_hash(&key)
                     .unwrap()

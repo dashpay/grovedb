@@ -179,7 +179,7 @@ impl GroveDb {
                             Error::CorruptedData(String::from("unable to deserialize element"))
                         })
                     );
-                    if matches!(element, Element::Tree(..)) {
+                    if element.is_tree() {
                         return Err(Error::OverrideNotAllowed(
                             "insertion not allowed to override tree",
                         ))
@@ -314,7 +314,7 @@ impl GroveDb {
                             Error::CorruptedData(String::from("unable to deserialize element"))
                         })
                     );
-                    if matches!(element, Element::Tree(..)) {
+                    if element.is_tree() {
                         return Err(Error::OverrideNotAllowed(
                             "insertion not allowed to override tree",
                         ))
@@ -372,7 +372,7 @@ impl GroveDb {
                     )
                 );
             }
-            Element::Tree(ref value, _) => {
+            Element::Tree(ref value, _) | Element::SumTree(ref value, ..) => {
                 if value.is_some() {
                     return Err(Error::InvalidCodeExecution(
                         "a tree should be empty at the moment of insertion when not using batches",

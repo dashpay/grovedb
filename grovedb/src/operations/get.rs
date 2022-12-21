@@ -231,10 +231,12 @@ impl GroveDb {
                                 .follow_reference(absolute_path, transaction)
                                 .unwrap_add_cost(&mut cost)?;
 
-                            if let Element::Item(item, _) = maybe_item {
-                                Ok(item)
-                            } else {
-                                Err(Error::InvalidQuery("the reference must result in an item"))
+                            match maybe_item {
+                                Element::Item(item, _) => Ok(item),
+                                Element::SumItem(value, _) => Ok(value.encode_var_vec()),
+                                _ => {
+                                    Err(Error::InvalidQuery("the reference must result in an item"))
+                                }
                             }
                         }
                         _ => Err(Error::CorruptedCodeExecution(
