@@ -1099,7 +1099,7 @@ impl GroveDb {
                         );
                     }
                 } else {
-                    let (root_hash, calculated_root_key, sum) = cost_return_on_error!(
+                    let (root_hash, calculated_root_key, sum_value) = cost_return_on_error!(
                         &mut cost,
                         merk_tree_cache.execute_ops_on_path(
                             &path,
@@ -1127,7 +1127,7 @@ impl GroveDb {
                                             vacant_entry.insert(Op::ReplaceTreeRootKey {
                                                 hash: root_hash,
                                                 root_key: calculated_root_key,
-                                                sum,
+                                                sum: sum_value,
                                             });
                                         }
                                         Entry::Occupied(occupied_entry) => {
@@ -1140,7 +1140,7 @@ impl GroveDb {
                                                 } => {
                                                     *hash = root_hash;
                                                     *root_key = calculated_root_key;
-                                                    *sum = *sum;
+                                                    *sum = sum_value;
                                                 }
                                                 Op::InsertTreeWithRootHash { .. } => {
                                                     return Err(Error::CorruptedCodeExecution(
@@ -1166,7 +1166,7 @@ impl GroveDb {
                                                                 hash: root_hash,
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
-                                                                sum,
+                                                                sum: sum_value,
                                                             };
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
@@ -1194,7 +1194,7 @@ impl GroveDb {
                                         Op::ReplaceTreeRootKey {
                                             hash: root_hash,
                                             root_key: calculated_root_key,
-                                            sum,
+                                            sum: sum_value,
                                         },
                                     );
                                     ops_at_level_above.insert(parent_path, ops_on_path);
@@ -1206,7 +1206,7 @@ impl GroveDb {
                                     Op::ReplaceTreeRootKey {
                                         hash: root_hash,
                                         root_key: calculated_root_key,
-                                        sum,
+                                        sum: sum_value,
                                     },
                                 );
                                 let mut ops_on_level: BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>> =
