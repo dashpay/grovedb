@@ -218,7 +218,7 @@ impl GroveDb {
             )
         );
         let results_wrapped = elements
-            .into_iter()
+            .into_iterator()
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(Element::Reference(reference_path, ..)) => {
                     match reference_path {
@@ -298,7 +298,7 @@ where {
         );
 
         let results_wrapped = elements
-            .into_iter()
+            .into_iterator()
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(element) => {
                     match element {
@@ -361,7 +361,7 @@ where {
         );
 
         let results_wrapped = elements
-            .into_iter()
+            .into_iterator()
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(element) => {
                     match element {

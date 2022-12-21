@@ -35,7 +35,7 @@ impl QueryResultElements {
         self.elements.is_empty()
     }
 
-    pub fn into_iter(self) -> IntoIter<QueryResultElement> {
+    pub fn into_iterator(self) -> IntoIter<QueryResultElement> {
         self.elements.into_iter()
     }
 

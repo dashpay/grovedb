@@ -1852,7 +1852,7 @@ mod tests {
         .expect("expected successful get_query");
 
         let elements: Vec<KeyElementPair> = elements
-            .into_iter()
+            .into_iterator()
             .filter_map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(_element) => None,
                 QueryResultElement::KeyElementPairResultItem(key_element_pair) => {
@@ -1885,7 +1885,7 @@ mod tests {
         .expect("expected successful get_query");
 
         let elements: Vec<KeyElementPair> = elements
-            .into_iter()
+            .into_iterator()
             .filter_map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(_element) => None,
                 QueryResultElement::KeyElementPairResultItem(key_element_pair) => {

@@ -229,11 +229,11 @@ impl KeyInfoPath {
         self.0.push(k);
     }
 
-    pub fn iter(&self) -> Iter<'_, KeyInfo> {
+    pub fn iterator(&self) -> Iter<'_, KeyInfo> {
         self.0.iter()
     }
 
-    pub fn into_iter(self) -> IntoIter<KeyInfo> {
+    pub fn into_iterator(self) -> IntoIter<KeyInfo> {
         self.0.into_iter()
     }
 }
@@ -442,8 +442,8 @@ impl GroveDbOp {
                 .filter_map(|inserted_op| {
                     if deleted_op.path.len() < inserted_op.path.len()
                         && deleted_qualified_path
-                            .iter()
-                            .zip(inserted_op.path.iter())
+                            .iterator()
+                            .zip(inserted_op.path.iterator())
                             .all(|(a, b)| a == b)
                     {
                         Some(inserted_op.clone())
@@ -1272,7 +1272,8 @@ impl GroveDb {
         for op in ops.into_iter() {
             match op.op {
                 Op::Insert { element } | Op::Replace { element } => {
-                    let path_slices: Vec<&[u8]> = op.path.iter().map(|p| p.as_slice()).collect();
+                    let path_slices: Vec<&[u8]> =
+                        op.path.iterator().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,
                         self.insert(
@@ -1285,7 +1286,8 @@ impl GroveDb {
                     );
                 }
                 Op::Delete => {
-                    let path_slices: Vec<&[u8]> = op.path.iter().map(|p| p.as_slice()).collect();
+                    let path_slices: Vec<&[u8]> =
+                        op.path.iterator().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,
                         self.delete(

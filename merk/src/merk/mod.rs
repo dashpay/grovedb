@@ -110,6 +110,15 @@ impl KeyUpdates {
 }
 
 #[cfg(feature = "full")]
+/// Type alias for simple function signature
+pub type BatchValue = (
+    Vec<u8>,
+    Option<FeatureSumLength>,
+    ChildrenSizesWithValue,
+    Option<KeyValueStorageCost>,
+);
+
+#[cfg(feature = "full")]
 /// A bool type
 pub type IsSumTree = bool;
 
@@ -1204,12 +1213,7 @@ struct MerkCommitter {
     /// The batch has a key, maybe a value, with the value bytes, maybe the left
     /// child size and maybe the right child size, then the
     /// key_value_storage_cost
-    batch: Vec<(
-        Vec<u8>,
-        Option<FeatureSumLength>,
-        ChildrenSizesWithValue,
-        Option<KeyValueStorageCost>,
-    )>,
+    batch: Vec<BatchValue>,
     height: u8,
     levels: u8,
 }
