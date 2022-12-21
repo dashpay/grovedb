@@ -65,6 +65,10 @@ impl Default for DeleteOptions {
 }
 
 #[cfg(feature = "full")]
+/// 0 represents key size, 1 represents element size
+type EstimatedKeyAndElementSize = (u32, u32);
+
+#[cfg(feature = "full")]
 impl DeleteOptions {
     fn as_merk_options(&self) -> MerkOptions {
         MerkOptions {
@@ -724,8 +728,7 @@ impl GroveDb {
                         validate,
                         check_if_tree,
                         except_keys_count,
-                        key_len,
-                        estimated_element_size
+                        (key_len, estimated_element_size)
                     )
                 );
                 ops.push(op);
@@ -741,8 +744,7 @@ impl GroveDb {
         validate: bool,
         check_if_tree: bool,
         except_keys_count: u16,
-        estimated_key_size: u32,
-        estimated_element_size: u32,
+        estimated_key_element_size: EstimatedKeyAndElementSize,
     ) -> CostResult<GroveDbOp, Error> {
         let mut cost = OperationCost::default();
 
@@ -759,7 +761,7 @@ impl GroveDb {
                 &mut cost,
                 path,
                 key,
-                estimated_element_size,
+                estimated_key_element_size.1,
                 parent_tree_is_sum_tree,
             );
         }
@@ -767,7 +769,7 @@ impl GroveDb {
         add_average_case_cost_for_is_empty_tree_except(
             &mut cost,
             except_keys_count,
-            estimated_key_size + HASH_LENGTH_U32,
+            estimated_key_element_size.0 + HASH_LENGTH_U32,
         );
 
         Ok(GroveDbOp::delete_estimated_op(path.clone(), key.clone())).wrap_with_cost(cost)
