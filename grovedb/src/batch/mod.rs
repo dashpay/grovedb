@@ -1140,7 +1140,7 @@ impl GroveDb {
                                                 } => {
                                                     *hash = root_hash;
                                                     *root_key = calculated_root_key;
-                                                    *sum = sum.clone();
+                                                    *sum = *sum;
                                                 }
                                                 Op::InsertTreeWithRootHash { .. } => {
                                                     return Err(Error::CorruptedCodeExecution(
