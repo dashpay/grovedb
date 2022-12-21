@@ -49,6 +49,7 @@ use integer_encoding::VarInt;
 use itertools::Itertools;
 #[cfg(feature = "full")]
 use key_info::{KeyInfo, KeyInfo::KnownKey};
+use merk::RootHashKeyAndSum;
 #[cfg(feature = "full")]
 use merk::{
     tree::{kv::KV, value_hash, NULL_HASH},
@@ -513,7 +514,7 @@ trait TreeCache<G, SR> {
         batch_apply_options: &BatchApplyOptions,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
-    ) -> CostResult<(CryptoHash, Option<Vec<u8>>, Option<i64>), Error>;
+    ) -> CostResult<RootHashKeyAndSum, Error>;
 
     fn update_base_merk_root_key(&mut self, root_key: Option<Vec<u8>>) -> CostResult<(), Error>;
 }
@@ -731,7 +732,7 @@ where
         batch_apply_options: &BatchApplyOptions,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
-    ) -> CostResult<(CryptoHash, Option<Vec<u8>>, Option<i64>), Error> {
+    ) -> CostResult<RootHashKeyAndSum, Error> {
         let mut cost = OperationCost::default();
         // todo: fix this
         let p = path.to_path();

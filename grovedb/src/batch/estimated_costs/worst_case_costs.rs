@@ -11,10 +11,10 @@ use costs::{
 #[cfg(feature = "full")]
 use itertools::Itertools;
 #[cfg(feature = "full")]
-use merk::{
-    estimated_costs::worst_case_costs::{worst_case_merk_propagate, WorstCaseLayerInformation},
-    CryptoHash,
+use merk::estimated_costs::worst_case_costs::{
+    worst_case_merk_propagate, WorstCaseLayerInformation,
 };
+use merk::RootHashKeyAndSum;
 #[cfg(feature = "full")]
 use storage::rocksdb_storage::RocksDbStorage;
 
@@ -144,7 +144,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
-    ) -> CostResult<(CryptoHash, Option<Vec<u8>>, Option<i64>), Error> {
+    ) -> CostResult<RootHashKeyAndSum, Error> {
         let mut cost = OperationCost::default();
 
         let worst_case_layer_element_estimates = cost_return_on_error_no_add!(

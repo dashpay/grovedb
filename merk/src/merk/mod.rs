@@ -121,6 +121,8 @@ pub type BatchValue = (
 #[cfg(feature = "full")]
 /// A bool type
 pub type IsSumTree = bool;
+#[cfg(feature = "full")]
+pub type RootHashKeyAndSum = (CryptoHash, Option<Vec<u8>>, Option<i64>);
 
 #[cfg(feature = "full")]
 /// KVIterator allows you to lazily iterate over each kv pair of a subtree
@@ -508,9 +510,7 @@ where
     }
 
     /// Returns the root hash and non-prefixed key of the tree.
-    pub fn root_hash_key_and_sum(
-        &self,
-    ) -> CostResult<(CryptoHash, Option<Vec<u8>>, Option<i64>), Error> {
+    pub fn root_hash_key_and_sum(&self) -> CostResult<RootHashKeyAndSum, Error> {
         self.use_tree(|tree| match tree {
             None => Ok((NULL_HASH, None, None)).wrap_with_cost(Default::default()),
             Some(tree) => {
