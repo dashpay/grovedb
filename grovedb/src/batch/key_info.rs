@@ -27,8 +27,8 @@ impl PartialOrd<Self> for KeyInfo {
             Some(ord) => match ord {
                 Ordering::Less => Some(Ordering::Less),
                 Ordering::Equal => {
-                    let other_len = other.len();
-                    match self.len().partial_cmp(&other_len) {
+                    let other_len = other.max_length();
+                    match self.max_length().partial_cmp(&other_len) {
                         None => Some(Ordering::Equal),
                         Some(ord) => Some(ord),
                     }
@@ -45,8 +45,8 @@ impl Ord for KeyInfo {
         match self.as_slice().cmp(other.as_slice()) {
             Ordering::Less => Ordering::Less,
             Ordering::Equal => {
-                let other_len = other.len();
-                self.len().cmp(&other_len)
+                let other_len = other.max_length();
+                self.max_length().cmp(&other_len)
             }
             Ordering::Greater => Ordering::Greater,
         }
@@ -71,7 +71,7 @@ impl Hash for KeyInfo {
 
 #[cfg(feature = "full")]
 impl WorstKeyLength for KeyInfo {
-    fn len(&self) -> u8 {
+    fn max_length(&self) -> u8 {
         match self {
             Self::KnownKey(key) => key.len() as u8,
             Self::MaxKeySize { max_size, .. } => *max_size,

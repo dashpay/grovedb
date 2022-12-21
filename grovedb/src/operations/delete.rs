@@ -584,7 +584,7 @@ impl GroveDb {
                             let value_len = SUM_TREE_COST_SIZE + flags_size_at_level;
                             let max_tree_size =
                                 KV::layered_node_byte_cost_size_for_key_and_value_lengths(
-                                    last_key.len() as u32,
+                                    last_key.max_length() as u32,
                                     value_len,
                                     *is_in_sum_tree,
                                 );
@@ -695,7 +695,7 @@ impl GroveDb {
                                 key,
                                 true,
                                 0,
-                                key.len() as u32,
+                                key.max_length() as u32,
                                 estimated_value_len,
                                 layer_info.is_sum_tree,
                             ))
@@ -720,7 +720,7 @@ impl GroveDb {
                                 last_key,
                                 false,
                                 1,
-                                last_key.len() as u32,
+                                last_key.max_length() as u32,
                                 estimated_value_len,
                                 layer_info.is_sum_tree,
                             ))

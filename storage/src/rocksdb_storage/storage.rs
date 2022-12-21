@@ -103,7 +103,7 @@ impl RocksDbStorage {
     }
 
     fn worst_case_body_size<L: WorstKeyLength>(path: &[L]) -> usize {
-        path.len() + path.iter().map(|a| a.len() as usize).sum::<usize>()
+        path.len() + path.iter().map(|a| a.max_length() as usize).sum::<usize>()
     }
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree

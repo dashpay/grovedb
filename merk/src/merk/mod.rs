@@ -85,6 +85,31 @@ impl ProofWithoutEncodingResult {
 }
 
 #[cfg(feature = "full")]
+pub struct KeyUpdates {
+    pub new_keys: BTreeSet<Vec<u8>>,
+    pub updated_keys: BTreeSet<Vec<u8>>,
+    pub deleted_keys: LinkedList<(Vec<u8>, Option<KeyValueStorageCost>)>,
+    pub updated_root_key_from: Option<Vec<u8>>,
+}
+
+#[cfg(feature = "full")]
+impl KeyUpdates {
+    pub fn new(
+        new_keys: BTreeSet<Vec<u8>>,
+        updated_keys: BTreeSet<Vec<u8>>,
+        deleted_keys: LinkedList<(Vec<u8>, Option<KeyValueStorageCost>)>,
+        updated_root_key_from: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            new_keys,
+            updated_keys,
+            deleted_keys,
+            updated_root_key_from,
+        }
+    }
+}
+
+#[cfg(feature = "full")]
 /// A bool type
 pub type IsSumTree = bool;
 
@@ -765,10 +790,7 @@ where
                 self.tree.set(maybe_tree);
                 // commit changes to db
                 self.commit(
-                    new_keys,
-                    updated_keys,
-                    deleted_keys,
-                    updated_root_key_from,
+                    KeyUpdates::new(new_keys, updated_keys, deleted_keys, updated_root_key_from),
                     aux,
                     options,
                     old_tree_cost,
@@ -867,10 +889,7 @@ where
 
     pub fn commit<K>(
         &mut self,
-        new_keys: BTreeSet<Vec<u8>>,
-        _updated_keys: BTreeSet<Vec<u8>>,
-        deleted_keys: LinkedList<(Vec<u8>, Option<KeyValueStorageCost>)>,
-        updated_root_key_from: Option<Vec<u8>>,
+        key_updates: KeyUpdates,
         aux: &AuxMerkBatch<K>,
         options: Option<MerkOptions>,
         old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
@@ -918,11 +937,11 @@ where
                     // there are two situation where we want to put the root key
                     // it was updated from something else
                     // or it is part of new keys
-                    if updated_root_key_from.is_some() || new_keys.contains(tree_key) {
+                    if key_updates.updated_root_key_from.is_some() || key_updates.new_keys.contains(tree_key) {
                         let costs = if self.merk_type == StandaloneMerk {
                             // if we are a standalone merk we want real costs
                             Some(KeyValueStorageCost::for_updated_root_cost(
-                                updated_root_key_from.as_ref().map(|k| k.len() as u32),
+                                key_updates.updated_root_key_from.as_ref().map(|k| k.len() as u32),
                                 tree_key.len() as u32,
                             ))
                         } else {
@@ -962,7 +981,7 @@ where
         let mut to_batch = cost_return_on_error!(&mut cost, to_batch_wrapped);
 
         // TODO: move this to MerkCommitter impl?
-        for (key, maybe_cost) in deleted_keys {
+        for (key, maybe_cost) in key_updates.deleted_keys {
             to_batch.push((key, None, None, maybe_cost));
         }
         to_batch.sort_by(|a, b| a.0.cmp(&b.0));
