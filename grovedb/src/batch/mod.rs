@@ -69,7 +69,7 @@ use crate::{
     batch::{
         batch_structure::BatchStructure,
         estimated_costs::EstimatedCostsType,
-        mode::{BatchRunMode, BatchRunMode::ExecuteMode},
+        mode::{BatchRunMode},
     },
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
@@ -1035,7 +1035,7 @@ where
     }
 
     fn get_batch_run_mode(&self) -> BatchRunMode {
-        ExecuteMode
+        BatchRunMode::Execute
     }
 }
 

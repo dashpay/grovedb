@@ -11,9 +11,9 @@ use crate::batch::KeyInfoPath;
 
 #[cfg(feature = "full")]
 /// Batch Running Mode
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum BatchRunMode {
-    ExecuteMode,
-    AverageCaseMode(HashMap<KeyInfoPath, EstimatedLayerInformation>),
-    WorstCaseMode(HashMap<KeyInfoPath, WorstCaseLayerInformation>),
+    Execute,
+    AverageCase(HashMap<KeyInfoPath, EstimatedLayerInformation>),
+    WorstCase(HashMap<KeyInfoPath, WorstCaseLayerInformation>),
 }

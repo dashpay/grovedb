@@ -25,22 +25,6 @@ use crate::merk::KeyUpdates;
 #[cfg(feature = "full")]
 use crate::{error::Error, tree::tree_feature_type::TreeFeatureType, CryptoHash, HASH_LENGTH_U32};
 
-/// Type alias to add more sense to function signatures.
-#[cfg(feature = "full")]
-type UpdatedRootKeyFrom = Option<Vec<u8>>;
-
-/// Type alias to add more sense to function signatures.
-#[cfg(feature = "full")]
-type NewKeys = BTreeSet<Vec<u8>>;
-
-/// Type alias to add more sense to function signatures.
-#[cfg(feature = "full")]
-type UpdatedKeys = BTreeSet<Vec<u8>>;
-
-/// Type alias to add more sense to function signatures.
-#[cfg(feature = "full")]
-type DeletedKeys = LinkedList<(Vec<u8>, Option<KeyValueStorageCost>)>;
-
 #[cfg(feature = "full")]
 /// An operation to be applied to a key in the store.
 #[derive(PartialEq, Clone, Eq)]

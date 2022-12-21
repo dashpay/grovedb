@@ -22,7 +22,7 @@ use storage::rocksdb_storage::RocksDbStorage;
 use crate::{
     batch::{
         key_info::KeyInfo,
-        mode::{BatchRunMode, BatchRunMode::AverageCaseMode},
+        mode::{BatchRunMode},
         BatchApplyOptions, GroveDbOp, KeyInfoPath, Op, TreeCache,
     },
     Error, GroveDb,
@@ -133,7 +133,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     }
 
     fn get_batch_run_mode(&self) -> BatchRunMode {
-        AverageCaseMode(self.paths.clone())
+        BatchRunMode::AverageCase(self.paths.clone())
     }
 
     fn execute_ops_on_path(

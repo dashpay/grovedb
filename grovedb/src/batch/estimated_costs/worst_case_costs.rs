@@ -22,7 +22,7 @@ use storage::rocksdb_storage::RocksDbStorage;
 use crate::{
     batch::{
         key_info::KeyInfo,
-        mode::{BatchRunMode, BatchRunMode::WorstCaseMode},
+        mode::{BatchRunMode},
         BatchApplyOptions, GroveDbOp, KeyInfoPath, Op, TreeCache,
     },
     Error, GroveDb,
@@ -134,7 +134,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     }
 
     fn get_batch_run_mode(&self) -> BatchRunMode {
-        WorstCaseMode(self.paths.clone())
+        BatchRunMode::WorstCase(self.paths.clone())
     }
 
     fn execute_ops_on_path(
