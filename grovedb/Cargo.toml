@@ -1,7 +1,7 @@
 [package]
 name = "grovedb"
 description = "Fully featured database using balanced hierarchical authenticated data structures"
-version = "0.8.1"
+version = "0.8.2"
 authors = ["Samuel Westrich <sam@dash.org>", "Wisdom Ogwu <wisdom@dash.org", "Evgeny Fomin <evgeny.fomin@dash.org>"]
 edition = "2021"
 license = "MIT"
@@ -18,7 +18,7 @@ visualize = { path = "../visualize" }
 hex = "0.4.3"
 itertools = { version = "0.10.5" }
 integer-encoding = "3.0.4"
-costs = { version = "0.0.0", path = "../costs" }
+costs = { version = "1.0.0", path = "../costs" }
 nohash-hasher = "0.2.0"
 indexmap = "1.9.2"
 intmap = "2.0.0"
