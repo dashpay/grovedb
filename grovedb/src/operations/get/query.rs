@@ -257,12 +257,6 @@ where {
             ))
             .wrap_with_cost(OperationCost::default());
         }
-        if path_query.query.query.has_only_keys() {
-            return Err(Error::NotSupported(
-                "ranges are not supported in query_raw_keys_optional",
-            ))
-            .wrap_with_cost(OperationCost::default());
-        }
         let mut cost = OperationCost::default();
 
         let (elements, _) = cost_return_on_error!(
@@ -321,7 +315,7 @@ mod tests {
         .expect("should insert subtree successfully");
         db.insert(
             [TEST_LEAF],
-            b"2",
+            b"3",
             Element::new_item(b"hello too".to_vec()),
             None,
             None,
@@ -341,7 +335,7 @@ mod tests {
         let mut query = Query::new();
         query.insert_key(b"1".to_vec());
         query.insert_key(b"2".to_vec());
-        query.insert_key(b"3".to_vec());
+        query.insert_key(b"5".to_vec());
         let path_query =
             PathQuery::new(vec![TEST_LEAF.to_vec()], SizedQuery::new(query, None, None));
         let raw_result = db
@@ -353,7 +347,7 @@ mod tests {
 
         assert_eq!(raw_result.len(), 3);
         assert_eq!(raw_result.get(b"4".to_vec().as_slice()), None);
-        assert_eq!(raw_result.get(b"3".to_vec().as_slice()), Some(&None));
+        assert_eq!(raw_result.get(b"2".to_vec().as_slice()), Some(&None));
         assert_eq!(
             raw_result.get(b"5".to_vec().as_slice()),
             Some(&Some(Element::new_item(b"bye".to_vec())))
