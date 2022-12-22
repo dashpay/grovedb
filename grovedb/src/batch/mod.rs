@@ -72,7 +72,7 @@ use crate::{
     },
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
-    subtree::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
+    element::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 

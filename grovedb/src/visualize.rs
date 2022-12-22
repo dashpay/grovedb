@@ -12,7 +12,7 @@ use visualize::{visualize_stdout, Drawer, Visualize};
 
 #[cfg(feature = "full")]
 use crate::{
-    reference_path::ReferencePathType, subtree::Element, util::storage_context_optional_tx,
+    reference_path::ReferencePathType, element::Element, util::storage_context_optional_tx,
     GroveDb, TransactionArg,
 };
 

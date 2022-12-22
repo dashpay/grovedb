@@ -7,7 +7,7 @@ use storage::worst_case_costs::WorstKeyLength;
 use crate::batch::key_info::KeyInfo;
 use crate::batch::{GroveDbOp, KeyInfoPath};
 use crate::{Error, GroveDb};
-use crate::subtree::SUM_TREE_COST_SIZE;
+use crate::element::SUM_TREE_COST_SIZE;
 
 #[cfg(feature = "full")]
 impl GroveDb {

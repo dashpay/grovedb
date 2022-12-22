@@ -18,7 +18,7 @@ pub mod reference_path;
 #[cfg(feature = "full")]
 mod replication;
 #[cfg(any(feature = "full", feature = "verify"))]
-pub mod subtree;
+pub mod element;
 #[cfg(test)]
 mod tests;
 #[cfg(feature = "full")]
@@ -38,8 +38,8 @@ use costs::{
 #[cfg(feature = "full")]
 use merk::{
     self,
-    tree::{combine_hash, value_hash},
-    BatchEntry, CryptoHash, KVIterator, Merk,
+    BatchEntry,
+    CryptoHash, KVIterator, Merk, tree::{combine_hash, value_hash},
 };
 #[cfg(feature = "full")]
 pub use merk::{
@@ -49,7 +49,7 @@ pub use merk::{
         },
         worst_case_costs::WorstCaseLayerInformation,
     },
-    proofs::{query::QueryItem, Query},
+    proofs::{Query, query::QueryItem},
 };
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
@@ -71,15 +71,16 @@ use storage::{
     StorageBatch,
 };
 #[cfg(any(feature = "full", feature = "verify"))]
-pub use subtree::Element;
+pub use element::Element;
 #[cfg(feature = "full")]
-pub use subtree::ElementFlags;
+pub use element::ElementFlags;
+#[cfg(feature = "full")]
+use element::helpers::raw_decode;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
 #[cfg(feature = "full")]
 use crate::{
-    subtree::raw_decode,
     util::{root_merk_optional_tx, storage_context_optional_tx},
 };
 

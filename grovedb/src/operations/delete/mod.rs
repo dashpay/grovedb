@@ -43,7 +43,7 @@ use crate::{
     batch::{GroveDbOp, key_info::KeyInfo, KeyInfoPath, Op},
     Element,
     ElementFlags,
-    Error, GroveDb, subtree::SUM_TREE_COST_SIZE, Transaction, TransactionArg, util::{
+    Error, GroveDb, element::SUM_TREE_COST_SIZE, Transaction, TransactionArg, util::{
         merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
     },
 };
