@@ -1,0 +1,223 @@
+use costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
+use costs::storage_cost::removal::StorageRemovedBytes;
+use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
+use crate::{ElementFlags, Error, GroveDb, TransactionArg};
+use crate::batch::GroveDbOp;
+use crate::operations::delete::DeleteOptions;
+
+#[cfg(feature = "full")]
+#[derive(Clone)]
+pub struct DeleteUpTreeOptions {
+    pub allow_deleting_non_empty_trees: bool,
+    pub deleting_non_empty_trees_returns_error: bool,
+    pub base_root_storage_is_free: bool,
+    pub validate_tree_at_path_exists: bool,
+    pub stop_path_height: Option<u16>,
+}
+
+#[cfg(feature = "full")]
+impl Default for DeleteUpTreeOptions {
+    fn default() -> Self {
+        DeleteUpTreeOptions {
+            allow_deleting_non_empty_trees: false,
+            deleting_non_empty_trees_returns_error: true,
+            base_root_storage_is_free: true,
+            validate_tree_at_path_exists: false,
+            stop_path_height: None,
+        }
+    }
+}
+
+#[cfg(feature = "full")]
+impl DeleteUpTreeOptions {
+    fn to_delete_options(&self) -> DeleteOptions {
+        DeleteOptions {
+            allow_deleting_non_empty_trees: self.allow_deleting_non_empty_trees,
+            deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
+            base_root_storage_is_free: self.base_root_storage_is_free,
+            validate_tree_at_path_exists: self.validate_tree_at_path_exists,
+        }
+    }
+}
+
+#[cfg(feature = "full")]
+impl GroveDb {
+    /// Delete up tree while empty will delete nodes while they are empty up a
+    /// tree.
+    pub fn delete_up_tree_while_empty<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        options: &DeleteUpTreeOptions,
+        transaction: TransactionArg,
+    ) -> CostResult<u16, Error>
+        where
+            P: IntoIterator<Item = &'p [u8]>,
+            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        self.delete_up_tree_while_empty_with_sectional_storage(
+            path,
+            key,
+            options,
+            transaction,
+            |_, removed_key_bytes, removed_value_bytes| {
+                Ok((
+                    BasicStorageRemoval(removed_key_bytes),
+                    (BasicStorageRemoval(removed_value_bytes)),
+                ))
+            },
+        )
+    }
+
+    /// Delete up tree while empty will delete nodes while they are empty up a
+    /// tree.
+    pub fn delete_up_tree_while_empty_with_sectional_storage<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        options: &DeleteUpTreeOptions,
+        transaction: TransactionArg,
+        split_removal_bytes_function: impl FnMut(
+            &mut ElementFlags,
+            u32, // key removed bytes
+            u32, // value removed bytes
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<u16, Error>
+        where
+            P: IntoIterator<Item = &'p [u8]>,
+            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+        let mut batch_operations: Vec<GroveDbOp> = Vec::new();
+        let path_iter = path.into_iter();
+        let path_len = path_iter.len();
+        let maybe_ops = cost_return_on_error!(
+            &mut cost,
+            self.add_delete_operations_for_delete_up_tree_while_empty(
+                path_iter,
+                key,
+                options,
+                None,
+                &mut batch_operations,
+                transaction,
+            )
+        );
+
+        let ops = cost_return_on_error_no_add!(
+            &cost,
+            if let Some(stop_path_height) = options.stop_path_height {
+                maybe_ops.ok_or_else(|| {
+                    Error::DeleteUpTreeStopHeightMoreThanInitialPathSize(format!(
+                        "stop path height {} more than path size of {}",
+                        stop_path_height, path_len
+                    ))
+                })
+            } else {
+                maybe_ops.ok_or(Error::CorruptedCodeExecution(
+                    "stop path height not set, but still not deleting element",
+                ))
+            }
+        );
+        let ops_len = ops.len();
+        self.apply_batch_with_element_flags_update(
+            ops,
+            None,
+            |_, _, _| Ok(false),
+            split_removal_bytes_function,
+            transaction,
+        )
+            .map_ok(|_| ops_len as u16)
+    }
+
+    pub fn delete_operations_for_delete_up_tree_while_empty<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        options: &DeleteUpTreeOptions,
+        is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
+        mut current_batch_operations: Vec<GroveDbOp>,
+        transaction: TransactionArg,
+    ) -> CostResult<Vec<GroveDbOp>, Error>
+        where
+            P: IntoIterator<Item = &'p [u8]>,
+            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        self.add_delete_operations_for_delete_up_tree_while_empty(
+            path,
+            key,
+            options,
+            is_known_to_be_subtree_with_sum,
+            &mut current_batch_operations,
+            transaction,
+        )
+            .map_ok(|ops| ops.unwrap_or_default())
+    }
+
+    pub fn add_delete_operations_for_delete_up_tree_while_empty<'p, P>(
+        &self,
+        path: P,
+        key: &'p [u8],
+        options: &DeleteUpTreeOptions,
+        is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
+        current_batch_operations: &mut Vec<GroveDbOp>,
+        transaction: TransactionArg,
+    ) -> CostResult<Option<Vec<GroveDbOp>>, Error>
+        where
+            P: IntoIterator<Item = &'p [u8]>,
+            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    {
+        let mut cost = OperationCost::default();
+
+        let mut path_iter = path.into_iter();
+        if let Some(stop_path_height) = options.stop_path_height {
+            if stop_path_height == path_iter.clone().len() as u16 {
+                return Ok(None).wrap_with_cost(cost);
+            }
+        }
+        if options.validate_tree_at_path_exists {
+            cost_return_on_error!(
+                &mut cost,
+                self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
+            );
+        }
+        if let Some(delete_operation_this_level) = cost_return_on_error!(
+            &mut cost,
+            self.delete_operation_for_delete_internal(
+                path_iter.clone(),
+                key,
+                &options.to_delete_options(),
+                is_known_to_be_subtree_with_sum,
+                current_batch_operations,
+                transaction,
+            )
+        ) {
+            let mut delete_operations = vec![delete_operation_this_level.clone()];
+            if let Some(last) = path_iter.next_back() {
+                current_batch_operations.push(delete_operation_this_level);
+                let mut new_options = options.clone();
+                // we should not give an error from now on
+                new_options.allow_deleting_non_empty_trees = false;
+                new_options.deleting_non_empty_trees_returns_error = false;
+                if let Some(mut delete_operations_upper_level) = cost_return_on_error!(
+                    &mut cost,
+                    self.add_delete_operations_for_delete_up_tree_while_empty(
+                        path_iter,
+                        last,
+                        &new_options,
+                        None, // todo: maybe we can know this?
+                        current_batch_operations,
+                        transaction,
+                    )
+                ) {
+                    delete_operations.append(&mut delete_operations_upper_level);
+                }
+            }
+            Ok(Some(delete_operations)).wrap_with_cost(cost)
+        } else {
+            Ok(None).wrap_with_cost(cost)
+        }
+    }
+}
