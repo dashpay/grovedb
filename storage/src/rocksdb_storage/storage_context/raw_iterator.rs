@@ -16,9 +16,8 @@ pub struct PrefixedRocksDbRawIterator<I> {
 
 impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'a, Db>> {
     fn seek_to_first(&mut self) -> CostContext<()> {
-        self.raw_iterator
-            .seek(&self.prefix)
-            .wrap_with_cost(OperationCost::with_seek_count(1))
+        self.raw_iterator.seek(&self.prefix);
+        ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
     fn seek_to_last(&mut self) -> CostContext<()> {
@@ -30,33 +29,30 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
                 break;
             }
         }
-        self.raw_iterator
-            .seek_for_prev(prefix_vec)
-            .wrap_with_cost(OperationCost::with_seek_count(1))
+        self.raw_iterator.seek_for_prev(prefix_vec);
+        ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
     fn seek<K: AsRef<[u8]>>(&mut self, key: K) -> CostContext<()> {
         self.raw_iterator
-            .seek(make_prefixed_key(self.prefix.to_vec(), key))
-            .wrap_with_cost(OperationCost::with_seek_count(1))
+            .seek(make_prefixed_key(self.prefix.to_vec(), key));
+        ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
     fn seek_for_prev<K: AsRef<[u8]>>(&mut self, key: K) -> CostContext<()> {
         self.raw_iterator
-            .seek_for_prev(make_prefixed_key(self.prefix.to_vec(), key))
-            .wrap_with_cost(OperationCost::with_seek_count(1))
+            .seek_for_prev(make_prefixed_key(self.prefix.to_vec(), key));
+        ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
     fn next(&mut self) -> CostContext<()> {
-        self.raw_iterator
-            .next()
-            .wrap_with_cost(OperationCost::with_seek_count(1))
+        self.raw_iterator.next();
+        ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
     fn prev(&mut self) -> CostContext<()> {
-        self.raw_iterator
-            .prev()
-            .wrap_with_cost(OperationCost::with_seek_count(1))
+        self.raw_iterator.prev();
+        ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
     fn value(&self) -> CostContext<Option<&[u8]>> {
@@ -77,20 +73,16 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
     fn key(&self) -> CostContext<Option<&[u8]>> {
         let mut cost = OperationCost::default();
 
-        let value = self
-            .raw_iterator
-            .key()
-            .map(|k| {
-                // Even if we truncate prefix, loaded cost should be maximum for the whole
-                // function
-                cost.storage_loaded_bytes += k.len() as u32;
-                if k.starts_with(&self.prefix) {
-                    Some(k.split_at(self.prefix.len()).1)
-                } else {
-                    None
-                }
-            })
-            .flatten();
+        let value = self.raw_iterator.key().and_then(|k| {
+            // Even if we truncate prefix, loaded cost should be maximum for the whole
+            // function
+            cost.storage_loaded_bytes += k.len() as u32;
+            if k.starts_with(&self.prefix) {
+                Some(k.split_at(self.prefix.len()).1)
+            } else {
+                None
+            }
+        });
 
         value.wrap_with_cost(cost)
     }
@@ -111,9 +103,8 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
 
 impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'a, Tx<'a>>> {
     fn seek_to_first(&mut self) -> CostContext<()> {
-        self.raw_iterator
-            .seek(&self.prefix)
-            .wrap_with_cost(OperationCost::with_seek_count(1))
+        self.raw_iterator.seek(&self.prefix);
+        ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
     fn seek_to_last(&mut self) -> CostContext<()> {
@@ -125,33 +116,30 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
                 break;
             }
         }
-        self.raw_iterator
-            .seek_for_prev(prefix_vec)
-            .wrap_with_cost(OperationCost::with_seek_count(1))
+        self.raw_iterator.seek_for_prev(prefix_vec);
+        ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
     fn seek<K: AsRef<[u8]>>(&mut self, key: K) -> CostContext<()> {
         self.raw_iterator
-            .seek(make_prefixed_key(self.prefix.to_vec(), key))
-            .wrap_with_cost(OperationCost::with_seek_count(1))
+            .seek(make_prefixed_key(self.prefix.to_vec(), key));
+        ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
     fn seek_for_prev<K: AsRef<[u8]>>(&mut self, key: K) -> CostContext<()> {
         self.raw_iterator
-            .seek_for_prev(make_prefixed_key(self.prefix.to_vec(), key))
-            .wrap_with_cost(OperationCost::with_seek_count(1))
+            .seek_for_prev(make_prefixed_key(self.prefix.to_vec(), key));
+        ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
     fn next(&mut self) -> CostContext<()> {
-        self.raw_iterator
-            .next()
-            .wrap_with_cost(OperationCost::with_seek_count(1))
+        self.raw_iterator.next();
+        ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
     fn prev(&mut self) -> CostContext<()> {
-        self.raw_iterator
-            .prev()
-            .wrap_with_cost(OperationCost::with_seek_count(1))
+        self.raw_iterator.prev();
+        ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
     fn value(&self) -> CostContext<Option<&[u8]>> {
@@ -172,20 +160,16 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
     fn key(&self) -> CostContext<Option<&[u8]>> {
         let mut cost = OperationCost::default();
 
-        let value = self
-            .raw_iterator
-            .key()
-            .map(|k| {
-                // Even if we truncate prefix, loaded cost should be maximum for the whole
-                // function
-                cost.storage_loaded_bytes += k.len() as u32;
-                if k.starts_with(&self.prefix) {
-                    Some(k.split_at(self.prefix.len()).1)
-                } else {
-                    None
-                }
-            })
-            .flatten();
+        let value = self.raw_iterator.key().and_then(|k| {
+            // Even if we truncate prefix, loaded cost should be maximum for the whole
+            // function
+            cost.storage_loaded_bytes += k.len() as u32;
+            if k.starts_with(&self.prefix) {
+                Some(k.split_at(self.prefix.len()).1)
+            } else {
+                None
+            }
+        });
 
         value.wrap_with_cost(cost)
     }

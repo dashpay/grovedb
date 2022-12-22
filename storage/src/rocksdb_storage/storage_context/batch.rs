@@ -1,5 +1,7 @@
 //! Prefixed storage batch implementation for RocksDB backend.
-use costs::{storage_cost::key_value_cost::KeyValueStorageCost, OperationCost};
+use costs::{
+    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, OperationCost,
+};
 use integer_encoding::VarInt;
 use rocksdb::{ColumnFamily, WriteBatchWithTransaction};
 
@@ -35,7 +37,7 @@ impl<'db> Batch for PrefixedRocksDbBatch<'db> {
         &mut self,
         key: K,
         value: &[u8],
-        children_sizes: Option<(Option<u32>, Option<u32>)>,
+        children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);
@@ -149,7 +151,7 @@ impl Batch for PrefixedMultiContextBatchPart {
         &mut self,
         key: K,
         value: &[u8],
-        children_sizes: Option<(Option<u32>, Option<u32>)>,
+        children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), costs::error::Error> {
         let prefixed_key = make_prefixed_key(self.prefix.clone(), key);

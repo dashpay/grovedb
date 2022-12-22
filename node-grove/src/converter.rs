@@ -4,8 +4,10 @@ use neon::{prelude::*, types::buffer::TypedArray};
 fn element_to_string(element: Element) -> String {
     match element {
         Element::Item(..) => "item".to_string(),
+        Element::SumItem(..) => "sum_item".to_string(),
         Element::Reference(..) => "reference".to_string(),
         Element::Tree(..) => "tree".to_string(),
+        Element::SumTree(..) => "sum_tree".to_string(),
     }
 }
 
@@ -36,7 +38,7 @@ pub fn js_object_to_element<'a, C: Context<'a>>(
             let tree_vec = js_buffer_to_vec_u8(js_buffer, cx);
             Ok(Element::new_tree(Some(tree_vec)))
         }
-        _ => cx.throw_error(format!("Unexpected element type {}", element_string)),
+        _ => cx.throw_error(format!("Unexpected element type {element_string}")),
     }
 }
 
@@ -54,8 +56,10 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
             js_buffer.upcast()
         }
         // TODO: Fix bindings
-        Element::Reference(_reference, ..) => nested_vecs_to_js(vec![], cx)?,
-        Element::Tree(_tree, _) => nested_vecs_to_js(vec![], cx)?,
+        Element::SumItem(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::Reference(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::Tree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::SumTree(..) => nested_vecs_to_js(vec![], cx)?,
     };
 
     js_object.set(cx, "value", js_value)?;

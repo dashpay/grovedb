@@ -1,24 +1,29 @@
 #![allow(unstable_name_collisions)]
 
+#[cfg(feature = "full")]
 use std::{
     collections::{btree_map, btree_map::Iter, BTreeMap},
     ops::{Bound, RangeBounds},
 };
 
-use anyhow::{anyhow, bail, ensure, Result};
-
+#[cfg(feature = "full")]
 use super::super::Node;
+#[cfg(feature = "full")]
+use crate::error::Error;
 
+#[cfg(feature = "full")]
 /// `MapBuilder` allows a consumer to construct a `Map` by inserting the nodes
 /// contained in a proof, in key-order.
 pub struct MapBuilder(Map);
 
+#[cfg(feature = "full")]
 impl Default for MapBuilder {
     fn default() -> Self {
         MapBuilder::new()
     }
 }
 
+#[cfg(feature = "full")]
 impl MapBuilder {
     /// Creates a new `MapBuilder` with an empty internal `Map`.
     pub fn new() -> Self {
@@ -31,14 +36,15 @@ impl MapBuilder {
     /// Adds the node's data to the underlying `Map` (if node is type `KV`), or
     /// makes a note of non-contiguous data (if node is type `KVHash` or
     /// `Hash`).
-    pub fn insert(&mut self, node: &Node) -> Result<()> {
+    pub fn insert(&mut self, node: &Node) -> Result<(), Error> {
         match node {
             Node::KV(key, value) | Node::KVValueHash(key, value, ..) => {
                 if let Some((prev_key, _)) = self.0.entries.last_key_value() {
-                    ensure!(
-                        key > prev_key,
-                        "Expected nodes to be in increasing key order"
-                    );
+                    if key <= prev_key {
+                        return Err(Error::KeyOrderingError(
+                            "Expected nodes to be in increasing key order",
+                        ));
+                    }
                 }
 
                 let value = (self.0.right_edge, value.clone());
@@ -57,6 +63,7 @@ impl MapBuilder {
     }
 }
 
+#[cfg(feature = "full")]
 /// `Map` stores data extracted from a proof (which has already been verified
 /// against a known root hash), and allows a consumer to access the data by
 /// looking up individual keys using the `get` method, or iterating over ranges
@@ -67,12 +74,13 @@ pub struct Map {
     right_edge: bool,
 }
 
+#[cfg(feature = "full")]
 impl Map {
     /// Gets the value for a single key, or `None` if the key was proven to not
     /// exist in the tree. If the proof does not include the data and also does
     /// not prove that the key is absent in the tree (meaning the proof is not
     /// valid), an error will be returned.
-    pub fn get<'a>(&'a self, key: &'a [u8]) -> Result<Option<&'a [u8]>> {
+    pub fn get<'a>(&'a self, key: &'a [u8]) -> Result<Option<&'a [u8]>, Error> {
         // if key is in proof just get from entries
         if let Some((_, value)) = self.entries.get(key) {
             return Ok(Some(value.as_slice()));
@@ -109,6 +117,7 @@ impl Map {
     }
 }
 
+#[cfg(feature = "full")]
 /// Returns `None` for `Bound::Unbounded`, or the inner key value for
 /// `Bound::Included` and `Bound::Excluded`.
 fn bound_to_inner<T>(bound: Bound<T>) -> Option<T> {
@@ -118,6 +127,7 @@ fn bound_to_inner<T>(bound: Bound<T>) -> Option<T> {
     }
 }
 
+#[cfg(feature = "full")]
 fn bound_to_vec(bound: Bound<&&[u8]>) -> Bound<Vec<u8>> {
     match bound {
         Bound::Unbounded => Bound::Unbounded,
@@ -126,6 +136,7 @@ fn bound_to_vec(bound: Bound<&&[u8]>) -> Bound<Vec<u8>> {
     }
 }
 
+#[cfg(feature = "full")]
 fn bounds_to_vec<'a, R: RangeBounds<&'a [u8]>>(bounds: R) -> impl RangeBounds<Vec<u8>> {
     (
         bound_to_vec(bounds.start_bound()),
@@ -133,6 +144,7 @@ fn bounds_to_vec<'a, R: RangeBounds<&'a [u8]>>(bounds: R) -> impl RangeBounds<Ve
     )
 }
 
+#[cfg(feature = "full")]
 /// An iterator over (key, value) entries as extracted from a verified proof. If
 /// during iteration we encounter a gap in the data (e.g. the proof did not
 /// include all nodes within the range), the iterator will yield an error.
@@ -143,10 +155,11 @@ pub struct Range<'a> {
     prev_key: Option<Vec<u8>>,
 }
 
+#[cfg(feature = "full")]
 impl<'a> Range<'a> {
     /// Returns an error if the proof does not properly prove the end of the
     /// range.
-    fn check_end_bound(&self) -> Result<()> {
+    fn check_end_bound(&self) -> Result<(), Error> {
         let excluded_data = match self.prev_key {
             // unbounded end, ensure proof has not excluded data at global right
             // edge of tree
@@ -170,15 +183,18 @@ impl<'a> Range<'a> {
         };
 
         if excluded_data {
-            bail!("Proof is missing data for query");
+            Err(Error::InvalidProofError(
+                "Proof is missing data for query".to_string(),
+            ))
+        } else {
+            Ok(())
         }
-
-        Ok(())
     }
 }
 
+#[cfg(feature = "full")]
 impl<'a> Iterator for Range<'a> {
-    type Item = Result<(&'a [u8], &'a [u8])>;
+    type Item = Result<(&'a [u8], &'a [u8]), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let (key, (contiguous, value)) = match self.iter.next() {
@@ -207,7 +223,9 @@ impl<'a> Iterator for Range<'a> {
         // if nodes weren't contiguous, we cannot verify that we have all values
         // in the desired range
         if !skip_exclusion_check && !*contiguous {
-            return Some(Err(anyhow!("Proof is missing data for query")));
+            return Some(Err(Error::InvalidProofError(
+                "Proof is not contiguous for query".to_string(),
+            )));
         }
 
         // passed checks, return entry
@@ -215,6 +233,7 @@ impl<'a> Iterator for Range<'a> {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Proof is missing data for query")]
+    #[should_panic(expected = "Proof is not contiguous for query")]
     fn range_lower_unbounded_map_non_contiguous() {
         let mut builder = MapBuilder::new();
         builder.insert(&Node::KV(vec![1, 2, 3], vec![1])).unwrap();
@@ -347,6 +366,7 @@ mod tests {
     }
 }
 
+#[cfg(feature = "full")]
 /// `BTreeMapExtras` provides extra functionality to work with `BTreeMap` that
 /// either missed or unstable
 /// NOTE: We can easily remove this when the following feature will be rolled
@@ -364,6 +384,7 @@ trait BTreeMapExtras {
     fn last_key_value(&self) -> Option<(&Self::K, &Self::V)>;
 }
 
+#[cfg(feature = "full")]
 impl<KK: Ord, VV: Ord> BTreeMapExtras for BTreeMap<KK, VV> {
     type K = KK;
     type V = VV;

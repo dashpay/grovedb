@@ -1,17 +1,22 @@
+#[cfg(any(feature = "full", feature = "verify"))]
 use merk::{
     proofs::Query,
     tree::{combine_hash, value_hash as value_hash_fn},
     CryptoHash,
 };
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use crate::{
     operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
     Element, Error, GroveDb, PathQuery,
 };
 
+#[cfg(any(feature = "full", feature = "verify"))]
 type ProofKeyValue = (Vec<u8>, Vec<u8>, CryptoHash);
+#[cfg(any(feature = "full", feature = "verify"))]
 type Proof = Vec<(Vec<u8>, Vec<u8>, CryptoHash)>;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl GroveDb {
     pub fn verify_query_many(
         proof: &[u8],
@@ -33,12 +38,14 @@ impl GroveDb {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 struct ProofVerifier {
     limit: Option<u16>,
     offset: Option<u16>,
     result_set: Proof,
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl ProofVerifier {
     pub fn new(query: &PathQuery) -> Self {
         ProofVerifier {
@@ -119,7 +126,8 @@ impl ProofVerifier {
                 for (key, value_bytes, value_hash) in children {
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
                     match child_element {
-                        Element::Tree(expected_root_key, _) => {
+                        Element::Tree(expected_root_key, _)
+                        | Element::SumTree(expected_root_key, ..) => {
                             let mut expected_combined_child_hash = value_hash;
                             let mut current_value_bytes = value_bytes;
 
@@ -233,7 +241,7 @@ impl ProofVerifier {
 
     /// Deserialize subkey_element and update expected root hash and element
     /// value
-    fn update_root_key_from_subquery_key_element<'a>(
+    fn update_root_key_from_subquery_key_element(
         expected_child_hash: &mut CryptoHash,
         current_value_bytes: &mut Vec<u8>,
         subquery_key_result_set: &[ProofKeyValue],
@@ -243,7 +251,7 @@ impl ProofVerifier {
             .map_err(|_| Error::CorruptedData("failed to deserialize element".to_string()))?;
         match subquery_key_element {
             // TODO: Add sum trees here
-            Element::Tree(..) => {
+            Element::Tree(..) | Element::SumTree(..) => {
                 *expected_child_hash = subquery_key_result_set[0].2;
                 *current_value_bytes = subquery_key_result_set[0].1.to_owned();
             }
@@ -311,7 +319,7 @@ impl ProofVerifier {
             let proof_result =
                 self.execute_merk_proof(ProofType::Merk, &merk_proof, &child_query, true)?;
 
-            if expected_child_hash == None {
+            if expected_child_hash.is_none() {
                 root_key_hash = Some(proof_result.0);
             } else {
                 let combined_hash = combine_hash(
@@ -335,7 +343,7 @@ impl ProofVerifier {
 
             let elem = Element::deserialize(last_result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(..) => Ok(Some(last_result_set[0].2)),
+                Element::Tree(..) | Element::SumTree(..) => Ok(Some(last_result_set[0].2)),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),
@@ -388,7 +396,7 @@ impl ProofVerifier {
 
             let elem = Element::deserialize(result_set[0].1.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(_root_key, ..) => Ok(result_set[0].2),
+                Element::Tree(..) | Element::SumTree(..) => Ok(result_set[0].2),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),

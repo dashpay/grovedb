@@ -1,19 +1,31 @@
+#[cfg(any(feature = "full", feature = "verify"))]
 use costs::{CostContext, CostsExt, OperationCost};
+#[cfg(any(feature = "full", feature = "verify"))]
 use integer_encoding::*;
 
 /// The length of a `Hash` (in bytes).
+#[cfg(any(feature = "full", feature = "verify"))]
 pub const HASH_LENGTH: usize = 32;
+#[cfg(feature = "full")]
+pub const HASH_LENGTH_X2: usize = 64;
+#[cfg(feature = "full")]
 pub const HASH_LENGTH_U32: u32 = 32;
+#[cfg(feature = "full")]
 pub const HASH_LENGTH_U32_X2: u32 = 64;
+#[cfg(feature = "full")]
 pub const HASH_BLOCK_SIZE: usize = 64;
+#[cfg(feature = "full")]
 pub const HASH_BLOCK_SIZE_U32: u32 = 64;
 
 /// A zero-filled `Hash`.
+#[cfg(any(feature = "full", feature = "verify"))]
 pub const NULL_HASH: CryptoHash = [0; HASH_LENGTH];
 
 /// A cryptographic hash digest.
+#[cfg(any(feature = "full", feature = "verify"))]
 pub type CryptoHash = [u8; HASH_LENGTH];
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Hashes a value
 pub fn value_hash(value: &[u8]) -> CostContext<CryptoHash> {
     // TODO: make generic to allow other hashers
@@ -34,6 +46,7 @@ pub fn value_hash(value: &[u8]) -> CostContext<CryptoHash> {
     })
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Hashes a key/value pair.
 ///
 /// The result is Hash(key_len, key, Hash(value_len, value))
@@ -60,6 +73,7 @@ pub fn kv_hash(key: &[u8], value: &[u8]) -> CostContext<CryptoHash> {
     hash.wrap_with_cost(cost)
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Computes the kv hash given a kv digest
 pub fn kv_digest_to_kv_hash(key: &[u8], value_hash: &CryptoHash) -> CostContext<CryptoHash> {
     let mut hasher = blake3::Hasher::new();
@@ -81,6 +95,7 @@ pub fn kv_digest_to_kv_hash(key: &[u8], value_hash: &CryptoHash) -> CostContext<
     })
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Hashes a node based on the hash of its key/value pair, the hash of its left
 /// child (if any), and the hash of its right child (if any).
 pub fn node_hash(
@@ -106,6 +121,7 @@ pub fn node_hash(
     })
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Combines two hash values into one
 pub fn combine_hash(hash_one: &CryptoHash, hash_two: &CryptoHash) -> CostContext<CryptoHash> {
     let mut hasher = blake3::Hasher::new();

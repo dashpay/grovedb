@@ -1,31 +1,39 @@
+#[cfg(feature = "full")]
 use std::{
     collections::VecDeque,
     iter::{empty, once},
 };
 
+#[cfg(feature = "full")]
 use merk::{
     proofs::{Node, Op},
-    Merk,
+    Merk, TreeFeatureType,
 };
+#[cfg(feature = "full")]
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
 
+#[cfg(feature = "full")]
 use crate::{Element, Error, GroveDb, Hash};
 
+#[cfg(feature = "full")]
 const OPS_PER_CHUNK: usize = 128;
 
+#[cfg(feature = "full")]
 impl GroveDb {
     /// Creates a chunk producer to replicate GroveDb.
     pub fn chunks(&self) -> SubtreeChunkProducer {
-        SubtreeChunkProducer::new(&self)
+        SubtreeChunkProducer::new(self)
     }
 }
 
+#[cfg(feature = "full")]
 /// Subtree chunks producer.
 pub struct SubtreeChunkProducer<'db> {
     grove_db: &'db GroveDb,
     cache: Option<SubtreeChunkProducerCache<'db>>,
 }
 
+#[cfg(feature = "full")]
 struct SubtreeChunkProducerCache<'db> {
     current_merk_path: Vec<Vec<u8>>,
     current_merk: Merk<PrefixedRocksDbStorageContext<'db>>,
@@ -35,6 +43,7 @@ struct SubtreeChunkProducerCache<'db> {
     current_chunk_producer: Option<merk::ChunkProducer<'db, PrefixedRocksDbStorageContext<'db>>>,
 }
 
+#[cfg(feature = "full")]
 impl<'db> SubtreeChunkProducer<'db> {
     fn new(storage: &'db GroveDb) -> Self {
         SubtreeChunkProducer {
@@ -46,8 +55,7 @@ impl<'db> SubtreeChunkProducer<'db> {
     pub fn chunks_in_current_producer(&self) -> usize {
         self.cache
             .as_ref()
-            .map(|c| c.current_chunk_producer.as_ref().map(|p| p.len()))
-            .flatten()
+            .and_then(|c| c.current_chunk_producer.as_ref().map(|p| p.len()))
             .unwrap_or(0)
     }
 
@@ -100,20 +108,24 @@ impl<'db> SubtreeChunkProducer<'db> {
     }
 }
 
+#[cfg(feature = "full")]
 // TODO: make generic over storage_cost context
 type MerkRestorer<'db> = merk::Restorer<PrefixedRocksDbStorageContext<'db>>;
 
+#[cfg(feature = "full")]
 type Path = Vec<Vec<u8>>;
 
+#[cfg(feature = "full")]
 /// Structure to drive GroveDb restore process.
 pub struct Restorer<'db> {
     current_merk_restorer: Option<MerkRestorer<'db>>,
     current_merk_chunk_index: usize,
     current_merk_path: Path,
-    queue: VecDeque<(Path, Vec<u8>, Hash)>,
+    queue: VecDeque<(Path, Vec<u8>, Hash, TreeFeatureType)>,
     grove_db: &'db GroveDb,
 }
 
+#[cfg(feature = "full")]
 /// Indicates what next piece of information `Restorer` expects or wraps a
 /// successful result.
 #[derive(Debug)]
@@ -122,9 +134,11 @@ pub enum RestorerResponse {
     Ready,
 }
 
+#[cfg(feature = "full")]
 #[derive(Debug)]
 pub struct RestorerError(String);
 
+#[cfg(feature = "full")]
 impl<'db> Restorer<'db> {
     /// Create a GroveDb restorer using a backing storage_cost and root hash.
     pub fn new(
@@ -134,7 +148,7 @@ impl<'db> Restorer<'db> {
     ) -> Result<Self, RestorerError> {
         Ok(Restorer {
             current_merk_restorer: Some(MerkRestorer::new(
-                Merk::open_base(grove_db.db.get_storage_context(empty()).unwrap())
+                Merk::open_base(grove_db.db.get_storage_context(empty()).unwrap(), false)
                     .unwrap()
                     .map_err(|e| RestorerError(e.to_string()))?,
                 None,
@@ -162,10 +176,21 @@ impl<'db> Restorer<'db> {
         for op in chunk_ops {
             ops.push(op);
             match ops.last().expect("just inserted") {
-                Op::Push(Node::KVValueHash(key, value_bytes, value_hash))
-                | Op::PushInverted(Node::KVValueHash(key, value_bytes, value_hash)) => {
-                    if let Element::Tree(root_key, _) = Element::deserialize(value_bytes)
-                        .map_err(|e| RestorerError(e.to_string()))?
+                Op::Push(Node::KVValueHashFeatureType(
+                    key,
+                    value_bytes,
+                    value_hash,
+                    feature_type,
+                ))
+                | Op::PushInverted(Node::KVValueHashFeatureType(
+                    key,
+                    value_bytes,
+                    value_hash,
+                    feature_type,
+                )) => {
+                    if let Element::Tree(root_key, _) | Element::SumTree(root_key, ..) =
+                        Element::deserialize(value_bytes)
+                            .map_err(|e| RestorerError(e.to_string()))?
                     {
                         if root_key.is_none() || self.current_merk_path.last() == Some(key) {
                             // We add only subtrees of the current subtree to queue, skipping
@@ -175,8 +200,12 @@ impl<'db> Restorer<'db> {
                         let mut path = self.current_merk_path.clone();
                         path.push(key.clone());
                         // The value hash is the root tree hash
-                        self.queue
-                            .push_back((path, value_bytes.to_owned(), value_hash.clone()));
+                        self.queue.push_back((
+                            path,
+                            value_bytes.to_owned(),
+                            *value_hash,
+                            *feature_type,
+                        ));
                     }
                 }
                 _ => {}
@@ -201,7 +230,7 @@ impl<'db> Restorer<'db> {
                 .expect("restorer exists at this point")
                 .finalize()
                 .map_err(|e| RestorerError(e.to_string()))?;
-            if let Some((next_path, combining_value, expected_hash)) = self.queue.pop_front() {
+            if let Some((next_path, combining_value, expected_hash, _)) = self.queue.pop_front() {
                 // Process next subtree.
                 let merk: Merk<PrefixedRocksDbStorageContext> = self
                     .grove_db
@@ -233,6 +262,7 @@ impl<'db> Restorer<'db> {
     }
 }
 
+#[cfg(feature = "full")]
 /// Chunk producer wrapper which uses bigger messages that may include chunks of
 /// requested subtree with its right siblings.
 ///
@@ -243,11 +273,13 @@ pub struct SiblingsChunkProducer<'db> {
     chunk_producer: SubtreeChunkProducer<'db>,
 }
 
+#[cfg(feature = "full")]
 #[derive(Debug)]
 pub struct GroveChunk {
     subtree_chunks: Vec<(usize, Vec<Op>)>,
 }
 
+#[cfg(feature = "full")]
 impl<'db> SiblingsChunkProducer<'db> {
     pub fn new(chunk_producer: SubtreeChunkProducer<'db>) -> Self {
         SiblingsChunkProducer { chunk_producer }
@@ -275,7 +307,7 @@ impl<'db> SiblingsChunkProducer<'db> {
 
         let mut siblings_keys: VecDeque<Vec<u8>> = VecDeque::new();
 
-        let mut parent_path = path_iter.clone();
+        let mut parent_path = path_iter;
         let requested_key = parent_path.next_back();
 
         let parent_ctx = self
@@ -290,8 +322,8 @@ impl<'db> SiblingsChunkProducer<'db> {
             siblings_iter.fast_forward(key)?;
         }
 
-        while let Some(element) = siblings_iter.next().unwrap()? {
-            if let (key, Element::Tree(..)) = element {
+        while let Some(element) = siblings_iter.next_element().unwrap()? {
+            if let (key, Element::Tree(..)) | (key, Element::SumTree(..)) = element {
                 siblings_keys.push_back(key);
             }
         }
@@ -299,9 +331,10 @@ impl<'db> SiblingsChunkProducer<'db> {
         let mut current_index = index;
         // Process each subtree
         while let Some(subtree_key) = siblings_keys.pop_front() {
+            #[allow(clippy::map_identity)]
             let subtree_path = parent_path
                 .clone()
-                .map(|x| x.as_ref())
+                .map(|x| x)
                 .chain(once(subtree_key.as_slice()));
 
             self.process_subtree_chunks(&mut result, &mut ops_count, subtree_path, current_index)?;
@@ -354,6 +387,7 @@ impl<'db> SiblingsChunkProducer<'db> {
     }
 }
 
+#[cfg(feature = "full")]
 /// `Restorer` wrapper that applies multiple chunks at once and eventually
 /// returns less requests. It is named by analogy with IO types that do less
 /// syscalls.
@@ -361,16 +395,14 @@ pub struct BufferedRestorer<'db> {
     restorer: Restorer<'db>,
 }
 
+#[cfg(feature = "full")]
 impl<'db> BufferedRestorer<'db> {
     pub fn new(restorer: Restorer<'db>) -> Self {
         BufferedRestorer { restorer }
     }
 
     /// Process next chunk and receive instruction on what to do next.
-    pub fn process_grove_chunks<'a, I>(
-        &'a mut self,
-        chunks: I,
-    ) -> Result<RestorerResponse, RestorerError>
+    pub fn process_grove_chunks<I>(&mut self, chunks: I) -> Result<RestorerResponse, RestorerError>
     where
         I: IntoIterator<Item = GroveChunk> + ExactSizeIterator,
     {
@@ -378,7 +410,9 @@ impl<'db> BufferedRestorer<'db> {
 
         for c in chunks.into_iter() {
             for ops in c.subtree_chunks.into_iter().map(|x| x.1) {
-                response = self.restorer.process_chunk(ops)?;
+                if !ops.is_empty() {
+                    response = self.restorer.process_chunk(ops)?;
+                }
             }
         }
 
@@ -386,6 +420,7 @@ impl<'db> BufferedRestorer<'db> {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
     use rand::RngCore;
@@ -453,6 +488,7 @@ mod test {
                 let chunks = chunk_producer
                     .get_chunk(next_chunk.0.iter().map(|x| x.as_slice()), next_chunk.1)
                     .expect("cannot get next chunk");
+                // dbg!(chunks.len());
                 match restorer
                     .process_grove_chunks(chunks.into_iter())
                     .expect("cannot process chunk")
@@ -631,6 +667,113 @@ mod test {
             [ANOTHER_TEST_LEAF, b"key2"].as_ref(),
             [ANOTHER_TEST_LEAF, b"key2", b"key3"].as_ref(),
             [ANOTHER_TEST_LEAF, b"key2", b"key3", b"key4"].as_ref(),
+        ];
+        test_replication(&db, to_compare.into_iter());
+    }
+
+    #[test]
+    fn replicate_nested_grovedb_with_sum_trees() {
+        let db = make_test_grovedb();
+        db.insert(
+            [TEST_LEAF],
+            b"key1",
+            Element::new_item(b"ayya".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+        db.insert(
+            [TEST_LEAF],
+            b"key2",
+            Element::new_reference(ReferencePathType::SiblingReference(b"key1".to_vec())),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert reference");
+        db.insert(
+            [ANOTHER_TEST_LEAF],
+            b"key2",
+            Element::empty_sum_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+        db.insert(
+            [ANOTHER_TEST_LEAF, b"key2"],
+            b"sumitem",
+            Element::new_sum_item(15),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+        db.insert(
+            [ANOTHER_TEST_LEAF, b"key2"],
+            b"key3",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+        db.insert(
+            [ANOTHER_TEST_LEAF, b"key2", b"key3"],
+            b"key4",
+            Element::new_item(b"ayyb".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+
+        let to_compare = [
+            [TEST_LEAF].as_ref(),
+            [TEST_LEAF, b"key1"].as_ref(),
+            [TEST_LEAF, b"key2"].as_ref(),
+            [ANOTHER_TEST_LEAF].as_ref(),
+            [ANOTHER_TEST_LEAF, b"key2"].as_ref(),
+            [ANOTHER_TEST_LEAF, b"key2", b"sumitem"].as_ref(),
+            [ANOTHER_TEST_LEAF, b"key2", b"key3"].as_ref(),
+            [ANOTHER_TEST_LEAF, b"key2", b"key3", b"key4"].as_ref(),
+        ];
+        test_replication(&db, to_compare.into_iter());
+    }
+
+    // TODO: Highlights a bug in replication
+    #[test]
+    fn replicate_grovedb_with_sum_tree() {
+        let db = make_test_grovedb();
+        db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
+            .unwrap()
+            .expect("cannot insert an element");
+        db.insert(
+            [TEST_LEAF, b"key1"],
+            b"key2",
+            Element::new_item(vec![4]),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+        db.insert(
+            [TEST_LEAF, b"key1"],
+            b"key3",
+            Element::new_item(vec![10]),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("cannot insert an element");
+
+        let to_compare = [
+            [TEST_LEAF].as_ref(),
+            [ANOTHER_TEST_LEAF].as_ref(),
+            [TEST_LEAF, b"key1"].as_ref(),
+            [TEST_LEAF, b"key1", b"key2"].as_ref(),
+            [TEST_LEAF, b"key1", b"key3"].as_ref(),
         ];
         test_replication(&db, to_compare.into_iter());
     }

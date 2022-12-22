@@ -102,8 +102,8 @@ impl RocksDbStorage {
         (res, segments_count)
     }
 
-    fn worst_case_body_size<L: WorstKeyLength>(path: &Vec<L>) -> usize {
-        path.len() + path.iter().map(|a| a.len() as usize).sum::<usize>()
+    fn worst_case_body_size<L: WorstKeyLength>(path: &[L]) -> usize {
+        path.len() + path.iter().map(|a| a.max_length() as usize).sum::<usize>()
     }
 
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
@@ -129,7 +129,6 @@ impl RocksDbStorage {
 impl<'db> Storage<'db> for RocksDbStorage {
     type BatchStorageContext = PrefixedRocksDbBatchStorageContext<'db>;
     type BatchTransactionalStorageContext = PrefixedRocksDbBatchTransactionContext<'db>;
-    type Error = Error;
     type StorageContext = PrefixedRocksDbStorageContext<'db>;
     type Transaction = Tx<'db>;
     type TransactionalStorageContext = PrefixedRocksDbTransactionContext<'db>;
@@ -138,10 +137,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         self.db.transaction()
     }
 
-    fn commit_transaction(
-        &self,
-        transaction: Self::Transaction,
-    ) -> CostContext<Result<(), Self::Error>> {
+    fn commit_transaction(&self, transaction: Self::Transaction) -> CostResult<(), Error> {
         // All transaction costs were provided on method calls
         transaction
             .commit()
@@ -149,11 +145,11 @@ impl<'db> Storage<'db> for RocksDbStorage {
             .wrap_with_cost(Default::default())
     }
 
-    fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Self::Error> {
+    fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Error> {
         transaction.rollback().map_err(RocksDBError)
     }
 
-    fn flush(&self) -> Result<(), Self::Error> {
+    fn flush(&self) -> Result<(), Error> {
         self.db.flush().map_err(RocksDBError)
     }
 
@@ -206,7 +202,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         &self,
         batch: StorageBatch,
         transaction: Option<&'db Self::Transaction>,
-    ) -> CostResult<(), Self::Error> {
+    ) -> CostResult<(), Error> {
         let mut db_batch = WriteBatchWithTransaction::<true>::default();
 
         let mut cost = OperationCost::default();
@@ -371,7 +367,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
                         )
                         .map(|x| x.len() as u32)
                         .unwrap_or(0);
-                        cost.storage_loaded_bytes += value_len as u32;
+                        cost.storage_loaded_bytes += value_len;
 
                         let key_len = key.len() as u32;
                         // todo: improve deletion
@@ -426,7 +422,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         result.map_err(RocksDBError).wrap_with_cost(cost)
     }
 
-    fn get_storage_context_cost<L: WorstKeyLength>(path: &Vec<L>) -> OperationCost {
+    fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost {
         if path.is_empty() {
             OperationCost::default()
         } else {
@@ -437,7 +433,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         }
     }
 
-    fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Self::Error> {
+    fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
         Checkpoint::new(&self.db)
             .and_then(|x| x.create_checkpoint(path))
             .map_err(RocksDBError)

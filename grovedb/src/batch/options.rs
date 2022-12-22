@@ -1,7 +1,10 @@
+#[cfg(feature = "full")]
 use merk::MerkOptions;
 
+#[cfg(feature = "full")]
 use crate::operations::{delete::DeleteOptions, insert::InsertOptions};
 
+#[cfg(feature = "full")]
 #[derive(Debug, Clone)]
 pub struct BatchApplyOptions {
     pub validate_insertion_does_not_override: bool,
@@ -12,6 +15,7 @@ pub struct BatchApplyOptions {
     pub base_root_storage_is_free: bool,
 }
 
+#[cfg(feature = "full")]
 impl Default for BatchApplyOptions {
     fn default() -> Self {
         BatchApplyOptions {
@@ -25,6 +29,7 @@ impl Default for BatchApplyOptions {
     }
 }
 
+#[cfg(feature = "full")]
 impl BatchApplyOptions {
     pub(crate) fn as_insert_options(&self) -> InsertOptions {
         InsertOptions {
@@ -40,6 +45,7 @@ impl BatchApplyOptions {
             allow_deleting_non_empty_trees: self.allow_deleting_non_empty_trees,
             deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
             base_root_storage_is_free: self.base_root_storage_is_free,
+            validate_tree_at_path_exists: false,
         }
     }
 

@@ -1,13 +1,17 @@
 //! Provides `Restorer`, which can create a replica of a Merk instance by
 //! receiving chunk proofs.
 
+#[cfg(feature = "full")]
 use std::{iter::Peekable, u8};
 
-use anyhow::{anyhow, Error};
+#[cfg(feature = "full")]
 use storage::{Batch, StorageContext};
 
+#[cfg(feature = "full")]
 use super::Merk;
+#[cfg(feature = "full")]
 use crate::{
+    error::Error,
     merk::MerkSource,
     proofs::{
         chunk::{verify_leaf, verify_trunk, MIN_TRUNK_HEIGHT},
@@ -16,8 +20,11 @@ use crate::{
     },
     tree::{combine_hash, value_hash, Link, RefWalker, Tree},
     CryptoHash,
+    Error::{CostsError, EdError, StorageError},
+    TreeFeatureType::BasicMerk,
 };
 
+#[cfg(feature = "full")]
 /// A `Restorer` handles decoding, verifying, and storing chunk proofs to
 /// replicate an entire Merk tree. It expects the chunks to be processed in
 /// order, retrying the last chunk if verification fails.
@@ -30,6 +37,7 @@ pub struct Restorer<S> {
     combining_value: Option<Vec<u8>>,
 }
 
+#[cfg(feature = "full")]
 impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// Creates a new `Restorer`, which will initialize a new Merk at the given
     /// file path. The first chunk (the "trunk") will be compared against
@@ -57,8 +65,6 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     ///
     /// Once there are no remaining chunks to be processed, `finalize` should
     /// be called.
-    ///
-    /// TODO: `anyhow::Error` is too vague
     pub fn process_chunk(&mut self, ops: impl IntoIterator<Item = Op>) -> Result<usize, Error> {
         match self.leaf_hashes {
             None => self.process_trunk(ops),
@@ -72,7 +78,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// to 0).
     pub fn finalize(mut self) -> Result<Merk<S>, Error> {
         if self.remaining_chunks().unwrap_or(0) != 0 {
-            return Err(anyhow!("Called finalize before all chunks were processed"));
+            return Err(Error::ChunkRestoringError(
+                "Called finalize before all chunks were processed".to_string(),
+            ));
         }
 
         if self.trunk_height.unwrap() >= MIN_TRUNK_HEIGHT {
@@ -98,10 +106,23 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
         tree.visit_refs(&mut |proof_node| {
             if let Some((mut node, key)) = match &proof_node.node {
-                Node::KV(key, value) => Some((Tree::new(key.clone(), value.clone()).unwrap(), key)),
+                Node::KV(key, value) => Some((
+                    Tree::new(key.clone(), value.clone(), BasicMerk).unwrap(),
+                    key,
+                )),
                 Node::KVValueHash(key, value, value_hash) => Some((
-                    Tree::new_with_value_hash(key.clone(), value.clone(), value_hash.clone())
+                    Tree::new_with_value_hash(key.clone(), value.clone(), *value_hash, BasicMerk)
                         .unwrap(),
+                    key,
+                )),
+                Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => Some((
+                    Tree::new_with_value_hash(
+                        key.clone(),
+                        value.clone(),
+                        *value_hash,
+                        *feature_type,
+                    )
+                    .unwrap(),
                     key,
                 )),
                 _ => None,
@@ -111,14 +132,17 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 *node.slot_mut(false) = proof_node.right.as_ref().map(Child::as_link);
 
                 let bytes = node.encode();
-                batch.put(key, &bytes, None, None).map_err(|e| e.into())
+                batch.put(key, &bytes, None, None).map_err(CostsError)
             } else {
                 Ok(())
             }
         })?;
 
-        self.merk.storage.commit_batch(batch).unwrap()?;
-        Ok(())
+        self.merk
+            .storage
+            .commit_batch(batch)
+            .unwrap()
+            .map_err(StorageError)
     }
 
     /// Verifies the trunk then writes its data to the RocksDB.
@@ -136,11 +160,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         };
 
         if root_hash != self.expected_root_hash {
-            return Err(anyhow!(
+            return Err(Error::ChunkRestoringError(format!(
                 "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
                 self.expected_root_hash,
                 trunk.hash()
-            ));
+            )));
         }
 
         let root_key = trunk.key().to_vec();
@@ -226,7 +250,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         self.merk
             .storage
             .put(parent_key, &parent_bytes, None, None)
-            .unwrap()?;
+            .unwrap()
+            .map_err(StorageError)?;
 
         if !is_left_child {
             let parent_keys = self.parent_keys.as_mut().unwrap();
@@ -247,7 +272,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             }
 
             let mut cloned_node =
-                Tree::decode(node.tree().key().to_vec(), node.tree().encode().as_slice())?;
+                Tree::decode(node.tree().key().to_vec(), node.tree().encode().as_slice())
+                    .map_err(EdError)?;
 
             let left_child = node.walk(true).unwrap()?.unwrap();
             let left_child_heights = recurse(left_child, remaining_depth - 1, batch)?;
@@ -260,7 +286,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             *cloned_node.link_mut(false).unwrap().child_heights_mut() = right_child_heights;
 
             let bytes = cloned_node.encode();
-            batch.put(node.tree().key(), &bytes, None, None)?;
+            batch
+                .put(node.tree().key(), &bytes, None, None)
+                .map_err(CostsError)?;
 
             Ok((left_height, right_height))
         }
@@ -276,9 +304,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             recurse(walker, depth, &mut batch)
         })?;
 
-        self.merk.storage.commit_batch(batch).unwrap()?;
-
-        Ok(())
+        self.merk
+            .storage
+            .commit_batch(batch)
+            .unwrap()
+            .map_err(StorageError)
     }
 
     /// Returns the number of remaining chunks to be processed. This method will
@@ -289,6 +319,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     }
 }
 
+#[cfg(feature = "full")]
 impl<'db, S: StorageContext<'db>> Merk<S> {
     /// Creates a new `Restorer`, which can be used to verify chunk proofs to
     /// replicate an entire Merk tree. A new Merk instance will be initialized
@@ -298,6 +329,7 @@ impl<'db, S: StorageContext<'db>> Merk<S> {
     }
 }
 
+#[cfg(feature = "full")]
 impl ProofTree {
     fn child_heights(&self) -> (u8, u8) {
         (
@@ -307,10 +339,13 @@ impl ProofTree {
     }
 }
 
+#[cfg(feature = "full")]
 impl Child {
     fn as_link(&self) -> Link {
         let key = match &self.tree.node {
-            Node::KV(key, _) | Node::KVValueHash(key, ..) => key.as_slice(),
+            Node::KV(key, _)
+            | Node::KVValueHash(key, ..)
+            | Node::KVValueHashFeatureType(key, ..) => key.as_slice(),
             // for the connection between the trunk and leaf chunks, we don't
             // have the child key so we must first write in an empty one. once
             // the leaf gets verified, we can write in this key to its parent
@@ -319,12 +354,14 @@ impl Child {
 
         Link::Reference {
             hash: self.hash,
+            sum: None,
             child_heights: self.tree.child_heights(),
             key: key.to_vec(),
         }
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use std::iter::empty;
@@ -350,7 +387,7 @@ mod tests {
 
         let storage = TempStorage::default();
         let ctx = storage.get_storage_context(empty()).unwrap();
-        let merk = Merk::open_base(ctx).unwrap().unwrap();
+        let merk = Merk::open_base(ctx, false).unwrap().unwrap();
         let mut restorer = Merk::restore(merk, original.root_hash().unwrap());
 
         assert_eq!(restorer.remaining_chunks(), None);
@@ -383,7 +420,10 @@ mod tests {
     #[test]
     fn restore_2_left_heavy() {
         restore_test(
-            &[&[(vec![0], Op::Put(vec![]))], &[(vec![1], Op::Put(vec![]))]],
+            &[
+                &[(vec![0], Op::Put(vec![], BasicMerk))],
+                &[(vec![1], Op::Put(vec![], BasicMerk))],
+            ],
             2,
         );
     }
@@ -391,7 +431,10 @@ mod tests {
     #[test]
     fn restore_2_right_heavy() {
         restore_test(
-            &[&[(vec![1], Op::Put(vec![]))], &[(vec![0], Op::Put(vec![]))]],
+            &[
+                &[(vec![1], Op::Put(vec![], BasicMerk))],
+                &[(vec![0], Op::Put(vec![], BasicMerk))],
+            ],
             2,
         );
     }

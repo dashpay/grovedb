@@ -1,9 +1,15 @@
+#[cfg(feature = "full")]
 use std::collections::HashSet;
 
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
+use integer_encoding::VarInt;
+#[cfg(feature = "full")]
 use merk::Merk;
+#[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{
         PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext, RocksDbStorage,
@@ -11,6 +17,7 @@ use storage::{
     StorageContext,
 };
 
+#[cfg(feature = "full")]
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
@@ -21,9 +28,11 @@ use crate::{
     Element, Error, GroveDb, PathQuery, Transaction, TransactionArg,
 };
 
+#[cfg(feature = "full")]
 /// Limit of possible indirections
 pub const MAX_REFERENCE_HOPS: usize = 10;
 
+#[cfg(feature = "full")]
 impl GroveDb {
     pub fn get<'p, P>(
         &self,
@@ -209,7 +218,7 @@ impl GroveDb {
             )
         );
         let results_wrapped = elements
-            .into_iter()
+            .into_iterator()
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(Element::Reference(reference_path, ..)) => {
                     match reference_path {
@@ -222,10 +231,12 @@ impl GroveDb {
                                 .follow_reference(absolute_path, transaction)
                                 .unwrap_add_cost(&mut cost)?;
 
-                            if let Element::Item(item, _) = maybe_item {
-                                Ok(item)
-                            } else {
-                                Err(Error::InvalidQuery("the reference must result in an item"))
+                            match maybe_item {
+                                Element::Item(item, _) => Ok(item),
+                                Element::SumItem(value, _) => Ok(value.encode_var_vec()),
+                                _ => {
+                                    Err(Error::InvalidQuery("the reference must result in an item"))
+                                }
                             }
                         }
                         _ => Err(Error::CorruptedCodeExecution(
@@ -289,7 +300,7 @@ where {
         );
 
         let results_wrapped = elements
-            .into_iter()
+            .into_iterator()
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(element) => {
                     match element {
@@ -305,12 +316,12 @@ where {
                                         .follow_reference(absolute_path, transaction)
                                         .unwrap_add_cost(&mut cost)?;
 
-                                    if let Element::Item(item, _) = maybe_item {
-                                        Ok(item)
-                                    } else {
-                                        Err(Error::InvalidQuery(
+                                    match maybe_item {
+                                        Element::Item(item, _) => Ok(item),
+                                        Element::SumItem(item, _) => Ok(item.encode_var_vec()),
+                                        _ => Err(Error::InvalidQuery(
                                             "the reference must result in an item",
-                                        ))
+                                        )),
                                     }
                                 }
                                 _ => Err(Error::CorruptedCodeExecution(
@@ -319,7 +330,8 @@ where {
                             }
                         }
                         Element::Item(item, _) => Ok(item),
-                        Element::Tree(..) => Err(Error::InvalidQuery(
+                        Element::SumItem(item, _) => Ok(item.encode_var_vec()),
+                        Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items and references",
                         )),
                     }
@@ -329,6 +341,71 @@ where {
                 )),
             })
             .collect::<Result<Vec<Vec<u8>>, Error>>();
+
+        let results = cost_return_on_error_no_add!(&cost, results_wrapped);
+        Ok((results, skipped)).wrap_with_cost(cost)
+    }
+
+    pub fn query_sums(
+        &self,
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+    ) -> CostResult<(Vec<i64>, u16), Error> {
+        let mut cost = OperationCost::default();
+
+        let (elements, skipped) = cost_return_on_error!(
+            &mut cost,
+            self.query_raw(
+                path_query,
+                QueryResultType::QueryElementResultType,
+                transaction
+            )
+        );
+
+        let results_wrapped = elements
+            .into_iterator()
+            .map(|result_item| match result_item {
+                QueryResultElement::ElementResultItem(element) => {
+                    match element {
+                        Element::Reference(reference_path, ..) => {
+                            match reference_path {
+                                ReferencePathType::AbsolutePathReference(absolute_path) => {
+                                    // While `map` on iterator is lazy, we should accumulate costs
+                                    // even if `collect` will
+                                    // end in `Err`, so we'll use
+                                    // external costs accumulator instead of
+                                    // returning costs from `map` call.
+                                    let maybe_item = self
+                                        .follow_reference(absolute_path, transaction)
+                                        .unwrap_add_cost(&mut cost)?;
+
+                                    if let Element::SumItem(item, _) = maybe_item {
+                                        Ok(item)
+                                    } else {
+                                        Err(Error::InvalidQuery(
+                                            "the reference must result in a sum item",
+                                        ))
+                                    }
+                                }
+                                _ => Err(Error::CorruptedCodeExecution(
+                                    "reference after query must have absolute paths",
+                                )),
+                            }
+                        }
+                        Element::SumItem(item, _) => Ok(item),
+                        Element::Tree(..) | Element::SumTree(..) | Element::Item(..) => {
+                            Err(Error::InvalidQuery(
+                                "path_queries over sum items can only refer to sum items and \
+                                 references",
+                            ))
+                        }
+                    }
+                }
+                _ => Err(Error::CorruptedCodeExecution(
+                    "query returned incorrect result type",
+                )),
+            })
+            .collect::<Result<Vec<i64>, Error>>();
 
         let results = cost_return_on_error_no_add!(&cost, results_wrapped);
         Ok((results, skipped)).wrap_with_cost(cost)
@@ -379,7 +456,7 @@ where {
         }
         .unwrap_add_cost(&mut cost);
         match element {
-            Ok(Element::Tree(..)) => Ok(()).wrap_with_cost(cost),
+            Ok(Element::Tree(..)) | Ok(Element::SumTree(..)) => Ok(()).wrap_with_cost(cost),
             Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error).wrap_with_cost(cost),
             Err(e) => Err(e).wrap_with_cost(cost),
         }
@@ -400,7 +477,7 @@ where {
             transaction,
             Error::PathNotFound(format!(
                 "subtree doesn't exist at path {:?}",
-                path_iter.map(|k| hex::encode(k)).collect::<Vec<String>>()
+                path_iter.map(hex::encode).collect::<Vec<String>>()
             )),
         )
     }
@@ -425,6 +502,7 @@ where {
         path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
+        in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
         GroveDb::add_worst_case_has_raw_cost::<RocksDbStorage>(
@@ -432,6 +510,7 @@ where {
             path,
             key,
             max_element_size,
+            in_parent_tree_using_sums,
         );
         cost
     }
@@ -440,6 +519,7 @@ where {
         path: &KeyInfoPath,
         key: &KeyInfo,
         max_element_size: u32,
+        in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
         GroveDb::add_worst_case_get_raw_cost::<RocksDbStorage>(
@@ -447,6 +527,7 @@ where {
             path,
             key,
             max_element_size,
+            in_parent_tree_using_sums,
         );
         cost
     }
@@ -456,6 +537,7 @@ where {
         key: &KeyInfo,
         max_element_size: u32,
         max_references_sizes: Vec<u32>,
+        in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
         GroveDb::add_worst_case_get_cost::<RocksDbStorage>(
@@ -463,15 +545,19 @@ where {
             path,
             key,
             max_element_size,
+            in_parent_tree_using_sums,
             max_references_sizes,
         );
         cost
     }
 
+    /// Get the Operation Cost for a has query that doesn't follow
+    /// references with the following parameters
     pub fn average_case_for_has_raw(
         path: &KeyInfoPath,
         key: &KeyInfo,
         estimated_element_size: u32,
+        in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
         GroveDb::add_average_case_has_raw_cost::<RocksDbStorage>(
@@ -479,14 +565,39 @@ where {
             path,
             key,
             estimated_element_size,
+            in_parent_tree_using_sums,
         );
         cost
     }
 
+    /// Get the Operation Cost for a has query where we estimate that we
+    /// would get a tree with the following parameters
+    pub fn average_case_for_has_raw_tree(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        estimated_flags_size: u32,
+        is_sum_tree: bool,
+        in_parent_tree_using_sums: bool,
+    ) -> OperationCost {
+        let mut cost = OperationCost::default();
+        GroveDb::add_average_case_has_raw_tree_cost::<RocksDbStorage>(
+            &mut cost,
+            path,
+            key,
+            estimated_flags_size,
+            is_sum_tree,
+            in_parent_tree_using_sums,
+        );
+        cost
+    }
+
+    /// Get the Operation Cost for a get query that doesn't follow
+    /// references with the following parameters
     pub fn average_case_for_get_raw(
         path: &KeyInfoPath,
         key: &KeyInfo,
         estimated_element_size: u32,
+        in_parent_tree_using_sums: bool,
     ) -> OperationCost {
         let mut cost = OperationCost::default();
         GroveDb::add_average_case_get_raw_cost::<RocksDbStorage>(
@@ -494,13 +605,16 @@ where {
             path,
             key,
             estimated_element_size,
+            in_parent_tree_using_sums,
         );
         cost
     }
 
+    /// Get the Operation Cost for a get query with the following parameters
     pub fn average_case_for_get(
         path: &KeyInfoPath,
         key: &KeyInfo,
+        in_parent_tree_using_sums: bool,
         estimated_element_size: u32,
         estimated_references_sizes: Vec<u32>,
     ) -> OperationCost {
@@ -509,8 +623,29 @@ where {
             &mut cost,
             path,
             key,
+            in_parent_tree_using_sums,
             estimated_element_size,
             estimated_references_sizes,
+        );
+        cost
+    }
+
+    /// Get the Operation Cost for a get query with the following parameters
+    pub fn average_case_for_get_tree(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        estimated_flags_size: u32,
+        is_sum_tree: bool,
+        in_parent_tree_using_sums: bool,
+    ) -> OperationCost {
+        let mut cost = OperationCost::default();
+        GroveDb::add_average_case_get_raw_tree_cost::<RocksDbStorage>(
+            &mut cost,
+            path,
+            key,
+            estimated_flags_size,
+            is_sum_tree,
+            in_parent_tree_using_sums,
         );
         cost
     }

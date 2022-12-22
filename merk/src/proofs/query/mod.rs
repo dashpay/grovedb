@@ -1,5 +1,7 @@
+#[cfg(feature = "full")]
 mod map;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use std::{
     cmp,
     cmp::{max, min, Ordering},
@@ -8,26 +10,32 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-use anyhow::{anyhow, bail, Result};
-use costs::{cost_return_on_error, CostContext, CostsExt, OperationCost};
+#[cfg(any(feature = "full", feature = "verify"))]
+use costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
+#[cfg(any(feature = "full", feature = "verify"))]
 use indexmap::IndexMap;
+#[cfg(feature = "full")]
 pub use map::*;
+#[cfg(any(feature = "full", feature = "verify"))]
 use storage::RawIterator;
 #[cfg(feature = "full")]
 use {super::Op, std::collections::LinkedList};
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use super::{tree::execute, Decoder, Node};
-use crate::{
-    tree::{value_hash, CryptoHash as MerkHash, Fetch, Link, RefWalker},
-    CryptoHash,
-};
+#[cfg(feature = "full")]
+use crate::tree::{Fetch, Link, RefWalker};
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::{error::Error, tree::value_hash, CryptoHash as MerkHash, CryptoHash};
 
+#[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct SubqueryBranch {
     pub subquery_key: Option<Vec<u8>>,
     pub subquery: Option<Box<Query>>,
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all of the requested values.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -38,8 +46,10 @@ pub struct Query {
     pub left_to_right: bool,
 }
 
+#[cfg(feature = "full")]
 type ProofAbsenceLimitOffset = (LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>);
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl Query {
     /// Creates a new query which contains no items.
     pub fn new() -> Self {
@@ -267,9 +277,9 @@ impl Query {
 
     pub fn has_subquery(&self) -> bool {
         // checks if a query has subquery items
-        if self.default_subquery_branch.subquery != None
-            || self.default_subquery_branch.subquery_key != None
-            || self.conditional_subquery_branches.len() != 0
+        if self.default_subquery_branch.subquery.is_some()
+            || self.default_subquery_branch.subquery_key.is_some()
+            || !self.conditional_subquery_branches.is_empty()
         {
             return true;
         }
@@ -277,6 +287,7 @@ impl Query {
     }
 }
 
+#[cfg(feature = "full")]
 impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
     fn from(other: Vec<Q>) -> Self {
         let items = other.into_iter().map(Into::into).collect();
@@ -292,12 +303,14 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
     }
 }
 
+#[cfg(feature = "full")]
 impl From<Query> for Vec<QueryItem> {
     fn from(q: Query) -> Self {
         q.into_iter().collect()
     }
 }
 
+#[cfg(feature = "full")]
 impl IntoIterator for Query {
     type IntoIter = <BTreeSet<QueryItem> as IntoIterator>::IntoIter;
     type Item = QueryItem;
@@ -307,6 +320,7 @@ impl IntoIterator for Query {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// A `QueryItem` represents a key or range of keys to be included in a proof.
 #[derive(Clone, Debug)]
 pub enum QueryItem {
@@ -322,6 +336,7 @@ pub enum QueryItem {
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl Hash for QueryItem {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.enum_value().hash(state);
@@ -329,6 +344,7 @@ impl Hash for QueryItem {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl QueryItem {
     pub fn processing_footprint(&self) -> u32 {
         match self {
@@ -693,20 +709,24 @@ impl QueryItem {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl PartialEq for QueryItem {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl PartialEq<&[u8]> for QueryItem {
     fn eq(&self, other: &&[u8]) -> bool {
         matches!(self.partial_cmp(other), Some(Ordering::Equal))
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl Eq for QueryItem {}
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl Ord for QueryItem {
     fn cmp(&self, other: &Self) -> Ordering {
         let cmp_lu = if self.lower_unbounded() {
@@ -762,12 +782,14 @@ impl Ord for QueryItem {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl PartialOrd for QueryItem {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl PartialOrd<&[u8]> for QueryItem {
     fn partial_cmp(&self, other: &&[u8]) -> Option<Ordering> {
         let other = Self::Key(other.to_vec());
@@ -775,12 +797,14 @@ impl PartialOrd<&[u8]> for QueryItem {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl From<Vec<u8>> for QueryItem {
     fn from(key: Vec<u8>) -> Self {
         Self::Key(key)
     }
 }
 
+#[cfg(feature = "full")]
 impl Link {
     /// Creates a `Node::Hash` from this link. Panics if the link is of variant
     /// `Link::Modified` since its hash has not yet been computed.
@@ -798,6 +822,7 @@ impl Link {
     }
 }
 
+#[cfg(feature = "full")]
 impl<'a, S> RefWalker<'a, S>
 where
     S: Fetch + Sized + Clone,
@@ -816,7 +841,18 @@ where
         Node::KVValueHash(
             self.tree().key().to_vec(),
             self.tree().value_ref().to_vec(),
-            self.tree().value_hash().clone(),
+            *self.tree().value_hash(),
+        )
+    }
+
+    /// Creates a `Node::KVValueHashFeatureType` from the key/value pair of the
+    /// root node
+    pub(crate) fn to_kv_value_hash_feature_type_node(&self) -> Node {
+        Node::KVValueHashFeatureType(
+            self.tree().key().to_vec(),
+            self.tree().value_ref().to_vec(),
+            *self.tree().value_hash(),
+            self.tree().feature_type(),
         )
     }
 
@@ -845,7 +881,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostContext<Result<ProofAbsenceLimitOffset>> {
+    ) -> CostResult<ProofAbsenceLimitOffset, Error> {
         self.create_proof(query, limit, offset, left_to_right)
     }
 
@@ -862,7 +898,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostContext<Result<ProofAbsenceLimitOffset>> {
+    ) -> CostResult<ProofAbsenceLimitOffset, Error> {
         let mut cost = OperationCost::default();
 
         // TODO: don't copy into vec, support comparing QI to byte slice
@@ -893,7 +929,7 @@ where
 
                 // if range starts before this node's key, include it in left
                 // child's query
-                let left_query = if left_bound == None || left_bound < Some(self.tree().key()) {
+                let left_query = if left_bound.is_none() || left_bound < Some(self.tree().key()) {
                     &query[..=index]
                 } else {
                     &query[..index]
@@ -901,7 +937,8 @@ where
 
                 // if range ends after this node's key, include it in right
                 // child's query
-                let right_query = if right_bound == None || right_bound > Some(self.tree().key()) {
+                let right_query = if right_bound.is_none() || right_bound > Some(self.tree().key())
+                {
                     &query[index..]
                 } else {
                     &query[index + 1..]
@@ -915,7 +952,7 @@ where
             }
         };
 
-        if offset == None || offset == Some(0) {
+        if offset.is_none() || offset == Some(0) {
             // when the limit hits zero, the rest of the query batch should be cleared
             // so empty the left, right query batch, and set the current node to not found
             if let Some(current_limit) = limit {
@@ -949,7 +986,7 @@ where
             }
         }
 
-        if !skip_current_node && (new_offset == None || new_offset == Some(0)) {
+        if !skip_current_node && (new_offset.is_none() || new_offset == Some(0)) {
             if let Some(current_limit) = new_limit {
                 // if after generating proof for the left subtree, the limit becomes 0
                 // clear the current node and clear the right batch
@@ -1069,7 +1106,7 @@ where
         limit: Option<u16>,
         offset: Option<u16>,
         left_to_right: bool,
-    ) -> CostContext<Result<ProofAbsenceLimitOffset>> {
+    ) -> CostResult<ProofAbsenceLimitOffset, Error> {
         if !query.is_empty() {
             self.walk(left).flat_map_ok(|child_opt| {
                 if let Some(mut child) = child_opt {
@@ -1094,25 +1131,27 @@ where
     }
 }
 
-pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostContext<Result<Map>> {
+#[cfg(feature = "full")]
+pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
     let ops = Decoder::new(bytes);
     let mut map_builder = MapBuilder::new();
 
     execute(ops, true, |node| map_builder.insert(node)).flat_map_ok(|root| {
         root.hash().map(|hash| {
             if hash != expected_hash {
-                bail!(
+                Err(Error::InvalidProofError(format!(
                     "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
                     expected_hash,
                     root.hash()
-                );
+                )))
+            } else {
+                Ok(map_builder.build())
             }
-
-            Ok(map_builder.build())
         })
     })
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Verifies the encoded proof with the given query
 ///
 /// Every key in `keys` is checked to either have a key/value pair in the proof,
@@ -1129,7 +1168,7 @@ pub fn execute_proof(
     limit: Option<u16>,
     offset: Option<u16>,
     left_to_right: bool,
-) -> CostContext<Result<(MerkHash, ProofVerificationResult)>> {
+) -> CostResult<(MerkHash, ProofVerificationResult), Error> {
     let mut cost = OperationCost::default();
 
     let mut output = Vec::with_capacity(query.len());
@@ -1143,7 +1182,7 @@ pub fn execute_proof(
 
     let root_wrapped = execute(ops, true, |node| {
         let mut execute_node =
-            |key: &Vec<u8>, value: Option<&Vec<u8>>, value_hash: CryptoHash| -> Result<_> {
+            |key: &Vec<u8>, value: Option<&Vec<u8>>, value_hash: CryptoHash| -> Result<_, Error> {
                 while let Some(item) = query.peek() {
                     // get next item in query
                     let query_item = *item;
@@ -1195,7 +1234,9 @@ pub fn execute_proof(
                                 // cannot verify lower bound - we have an abridged
                                 // tree so we cannot tell what the preceding key was
                                 Some(_) => {
-                                    bail!("Cannot verify lower bound of queried range");
+                                    return Err(Error::InvalidProofError(
+                                        "Cannot verify lower bound of queried range".to_string(),
+                                    ));
                                 }
                             }
                         } else {
@@ -1221,14 +1262,16 @@ pub fn execute_proof(
                                 // cannot verify upper bound - we have an abridged
                                 // tree so we cannot tell what the previous key was
                                 Some(_) => {
-                                    bail!("Cannot verify upper bound of queried range");
+                                    return Err(Error::InvalidProofError(
+                                        "Cannot verify upper bound of queried range".to_string(),
+                                    ));
                                 }
                             }
                         }
                     }
 
                     if left_to_right {
-                        if query_item.upper_bound().0 != None
+                        if query_item.upper_bound().0.is_some()
                             && Some(key.as_slice()) >= query_item.upper_bound().0
                         {
                             // at or past upper bound of range (or this was an exact
@@ -1242,7 +1285,7 @@ pub fn execute_proof(
                             // unabridged until we reach end of range)
                             in_range = true;
                         }
-                    } else if query_item.lower_bound().0 != None
+                    } else if query_item.lower_bound().0.is_some()
                         && Some(key.as_slice()) <= query_item.lower_bound().0
                     {
                         // at or before lower bound of range (or this was an exact
@@ -1263,12 +1306,14 @@ pub fn execute_proof(
                         // reduce the offset counter
                         // also, verify that a kv node was not pushed before offset is exhausted
                         if let Some(offset) = current_offset {
-                            if offset > 0 && value == None {
+                            if offset > 0 && value.is_none() {
                                 current_offset = Some(offset - 1);
                                 break;
-                            } else if offset > 0 && value != None {
+                            } else if offset > 0 && value.is_some() {
                                 // inserting a kv node before exhausting offset
-                                bail!("Proof returns data before offset is exhausted");
+                                return Err(Error::InvalidProofError(
+                                    "Proof returns data before offset is exhausted".to_string(),
+                                ));
                             }
                         }
 
@@ -1276,7 +1321,9 @@ pub fn execute_proof(
                         if let Some(val) = value {
                             if let Some(limit) = current_limit {
                                 if limit == 0 {
-                                    bail!("Proof returns more data than limit");
+                                    return Err(Error::InvalidProofError(
+                                        "Proof returns more data than limit".to_string(),
+                                    ));
                                 } else {
                                     current_limit = Some(limit - 1);
                                     if current_limit == Some(0) {
@@ -1290,7 +1337,9 @@ pub fn execute_proof(
                             // continue to next push
                             break;
                         } else {
-                            bail!("Proof is missing data for query");
+                            return Err(Error::InvalidProofError(
+                                "Proof is missing data for query".to_string(),
+                            ));
                         }
                     }
                     {}
@@ -1310,7 +1359,9 @@ pub fn execute_proof(
         } else if in_range {
             // we encountered a queried range but the proof was abridged (saw a
             // non-KV push), we are missing some part of the range
-            bail!("Proof is missing data for query");
+            return Err(Error::InvalidProofError(
+                "Proof is missing data for query for range".to_string(),
+            ));
         }
 
         last_push = Some(node.clone());
@@ -1334,7 +1385,12 @@ pub fn execute_proof(
 
                 // proof contains abridged data so we cannot verify absence of
                 // remaining query items
-                _ => return Err(anyhow!("Proof is missing data for query")).wrap_with_cost(cost),
+                _ => {
+                    return Err(Error::InvalidProofError(
+                        "Proof is missing data for query".to_string(),
+                    ))
+                    .wrap_with_cost(cost)
+                }
             }
         }
     }
@@ -1350,6 +1406,7 @@ pub fn execute_proof(
     .wrap_with_cost(cost)
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 #[derive(PartialEq, Eq, Debug)]
 pub struct ProofVerificationResult {
     pub result_set: Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,
@@ -1357,6 +1414,7 @@ pub struct ProofVerificationResult {
     pub offset: Option<u16>,
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Verifies the encoded proof with the given query and expected hash
 pub fn verify_query(
     bytes: &[u8],
@@ -1365,21 +1423,22 @@ pub fn verify_query(
     offset: Option<u16>,
     left_to_right: bool,
     expected_hash: MerkHash,
-) -> CostContext<Result<ProofVerificationResult>> {
+) -> CostResult<ProofVerificationResult, Error> {
     execute_proof(bytes, query, limit, offset, left_to_right)
         .map_ok(|(root_hash, verification_result)| {
-            if root_hash != expected_hash {
-                bail!(
-                    "Proof did not match expected hash\n\tExpected: {:?}\n\tActual: {:?}",
-                    expected_hash,
-                    root_hash
-                );
-            };
-            Ok(verification_result)
+            if root_hash == expected_hash {
+                Ok(verification_result)
+            } else {
+                Err(Error::InvalidProofError(format!(
+                    "Proof did not match expected hash\n\tExpected: {expected_hash:?}\n\tActual: \
+                     {root_hash:?}"
+                )))
+            }
         })
         .flatten()
 }
 
+#[cfg(feature = "full")]
 #[allow(deprecated)]
 #[cfg(test)]
 mod test {
@@ -1393,6 +1452,7 @@ mod test {
         proofs::query::QueryItem::RangeAfter,
         test_utils::make_tree_seq,
         tree::{NoopCommit, PanicSource, RefWalker, Tree},
+        TreeFeatureType::BasicMerk,
     };
 
     fn compare_result_tuples(
@@ -1407,10 +1467,10 @@ mod test {
     }
 
     fn make_3_node_tree() -> Tree {
-        let mut tree = Tree::new(vec![5], vec![5])
+        let mut tree = Tree::new(vec![5], vec![5], BasicMerk)
             .unwrap()
-            .attach(true, Some(Tree::new(vec![3], vec![3]).unwrap()))
-            .attach(false, Some(Tree::new(vec![7], vec![7]).unwrap()));
+            .attach(true, Some(Tree::new(vec![3], vec![3], BasicMerk).unwrap()))
+            .attach(false, Some(Tree::new(vec![7], vec![7], BasicMerk).unwrap()));
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),
@@ -1423,9 +1483,9 @@ mod test {
     }
 
     fn make_6_node_tree() -> Tree {
-        let two_tree = Tree::new(vec![2], vec![2]).unwrap();
-        let four_tree = Tree::new(vec![4], vec![4]).unwrap();
-        let mut three_tree = Tree::new(vec![3], vec![3])
+        let two_tree = Tree::new(vec![2], vec![2], BasicMerk).unwrap();
+        let four_tree = Tree::new(vec![4], vec![4], BasicMerk).unwrap();
+        let mut three_tree = Tree::new(vec![3], vec![3], BasicMerk)
             .unwrap()
             .attach(true, Some(two_tree))
             .attach(false, Some(four_tree));
@@ -1439,8 +1499,8 @@ mod test {
             .unwrap()
             .expect("commit failed");
 
-        let seven_tree = Tree::new(vec![7], vec![7]).unwrap();
-        let mut eight_tree = Tree::new(vec![8], vec![8])
+        let seven_tree = Tree::new(vec![7], vec![7], BasicMerk).unwrap();
+        let mut eight_tree = Tree::new(vec![8], vec![8], BasicMerk)
             .unwrap()
             .attach(true, Some(seven_tree));
         eight_tree
@@ -1453,7 +1513,7 @@ mod test {
             .unwrap()
             .expect("commit failed");
 
-        let mut root_tree = Tree::new(vec![5], vec![5])
+        let mut root_tree = Tree::new(vec![5], vec![5], BasicMerk)
             .unwrap()
             .attach(true, Some(three_tree))
             .attach(false, Some(eight_tree));
@@ -2135,45 +2195,49 @@ mod test {
 
     #[test]
     fn doc_proof() {
-        let mut tree = Tree::new(vec![5], vec![5])
+        let mut tree = Tree::new(vec![5], vec![5], BasicMerk)
             .unwrap()
             .attach(
                 true,
                 Some(
-                    Tree::new(vec![2], vec![2])
+                    Tree::new(vec![2], vec![2], BasicMerk)
                         .unwrap()
-                        .attach(true, Some(Tree::new(vec![1], vec![1]).unwrap()))
+                        .attach(true, Some(Tree::new(vec![1], vec![1], BasicMerk).unwrap()))
                         .attach(
                             false,
-                            Some(
-                                Tree::new(vec![4], vec![4])
-                                    .unwrap()
-                                    .attach(true, Some(Tree::new(vec![3], vec![3]).unwrap())),
-                            ),
+                            Some(Tree::new(vec![4], vec![4], BasicMerk).unwrap().attach(
+                                true,
+                                Some(Tree::new(vec![3], vec![3], BasicMerk).unwrap()),
+                            )),
                         ),
                 ),
             )
             .attach(
                 false,
                 Some(
-                    Tree::new(vec![9], vec![9])
+                    Tree::new(vec![9], vec![9], BasicMerk)
                         .unwrap()
                         .attach(
                             true,
                             Some(
-                                Tree::new(vec![7], vec![7])
+                                Tree::new(vec![7], vec![7], BasicMerk)
                                     .unwrap()
-                                    .attach(true, Some(Tree::new(vec![6], vec![6]).unwrap()))
-                                    .attach(false, Some(Tree::new(vec![8], vec![8]).unwrap())),
+                                    .attach(
+                                        true,
+                                        Some(Tree::new(vec![6], vec![6], BasicMerk).unwrap()),
+                                    )
+                                    .attach(
+                                        false,
+                                        Some(Tree::new(vec![8], vec![8], BasicMerk).unwrap()),
+                                    ),
                             ),
                         )
                         .attach(
                             false,
-                            Some(
-                                Tree::new(vec![11], vec![11])
-                                    .unwrap()
-                                    .attach(true, Some(Tree::new(vec![10], vec![10]).unwrap())),
-                            ),
+                            Some(Tree::new(vec![11], vec![11], BasicMerk).unwrap().attach(
+                                true,
+                                Some(Tree::new(vec![10], vec![10], BasicMerk).unwrap()),
+                            )),
                         ),
                 ),
             );
@@ -4845,13 +4909,11 @@ mod test {
             .expect("create_proof errored");
 
         let mut iter = proof.iter();
-        (
-            iter.next(),
-            Some(&Op::Push(Node::Hash([
-                121, 235, 207, 195, 143, 58, 159, 120, 166, 33, 151, 45, 178, 124, 91, 233, 201, 4,
-                241, 127, 41, 198, 197, 228, 19, 190, 36, 173, 183, 73, 104, 30,
-            ]))),
-        );
+        iter.next();
+        Some(&Op::Push(Node::Hash([
+            121, 235, 207, 195, 143, 58, 159, 120, 166, 33, 151, 45, 178, 124, 91, 233, 201, 4,
+            241, 127, 41, 198, 197, 228, 19, 190, 36, 173, 183, 73, 104, 30,
+        ])));
         assert_eq!(
             iter.next(),
             Some(&Op::Push(Node::KVDigest(
@@ -6121,7 +6183,7 @@ mod test {
 
     #[test]
     fn verify_ops() {
-        let mut tree = Tree::new(vec![5], vec![5]).unwrap();
+        let mut tree = Tree::new(vec![5], vec![5], BasicMerk).unwrap();
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),
@@ -6152,7 +6214,7 @@ mod test {
     #[test]
     #[should_panic(expected = "verify failed")]
     fn verify_ops_mismatched_hash() {
-        let mut tree = Tree::new(vec![5], vec![5]).unwrap();
+        let mut tree = Tree::new(vec![5], vec![5], BasicMerk).unwrap();
         tree.commit(
             &mut NoopCommit {},
             &|_, _| Ok(0),

@@ -29,7 +29,7 @@ fn insert_1m_10k_rand_memonly(c: &mut Criterion) {
     let batch_size = 10_000;
     let n_batches = initial_size / batch_size;
 
-    let mut tree = Owner::new(make_tree_rand(initial_size, batch_size, 0));
+    let mut tree = Owner::new(make_tree_rand(initial_size, batch_size, 0, false));
 
     let mut batches = Vec::new();
     for i in 0..n_batches {
@@ -77,7 +77,7 @@ fn update_1m_10k_rand_memonly(c: &mut Criterion) {
     let batch_size = 10_000;
     let n_batches = initial_size / batch_size;
 
-    let mut tree = Owner::new(make_tree_rand(initial_size, batch_size, 0));
+    let mut tree = Owner::new(make_tree_rand(initial_size, batch_size, 0, false));
 
     let mut batches = Vec::new();
     for i in 0..n_batches {

@@ -1,16 +1,22 @@
+#[cfg(feature = "full")]
 use std::{collections::HashMap, option::Option::None};
 
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use merk::{tree::NULL_HASH, Merk, MerkOptions};
+#[cfg(feature = "full")]
 use storage::rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext};
 
+#[cfg(feature = "full")]
 use crate::{
     reference_path::path_from_reference_path_type, Element, Error, GroveDb, Transaction,
     TransactionArg,
 };
 
+#[cfg(feature = "full")]
 #[derive(Clone)]
 pub struct InsertOptions {
     pub validate_insertion_does_not_override: bool,
@@ -18,6 +24,7 @@ pub struct InsertOptions {
     pub base_root_storage_is_free: bool,
 }
 
+#[cfg(feature = "full")]
 impl Default for InsertOptions {
     fn default() -> Self {
         InsertOptions {
@@ -28,6 +35,7 @@ impl Default for InsertOptions {
     }
 }
 
+#[cfg(feature = "full")]
 impl InsertOptions {
     fn checks_for_override(&self) -> bool {
         self.validate_insertion_does_not_override_tree || self.validate_insertion_does_not_override
@@ -40,6 +48,7 @@ impl InsertOptions {
     }
 }
 
+#[cfg(feature = "full")]
 impl GroveDb {
     pub fn insert<'p, P>(
         &self,
@@ -170,7 +179,7 @@ impl GroveDb {
                             Error::CorruptedData(String::from("unable to deserialize element"))
                         })
                     );
-                    if matches!(element, Element::Tree(..)) {
+                    if element.is_tree() {
                         return Err(Error::OverrideNotAllowed(
                             "insertion not allowed to override tree",
                         ))
@@ -206,7 +215,7 @@ impl GroveDb {
                         .ok_or({
                             let reference_string = reference_path
                                 .iter()
-                                .map(|a| hex::encode(a))
+                                .map(hex::encode)
                                 .collect::<Vec<String>>()
                                 .join("/");
                             Error::MissingReference(format!(
@@ -228,7 +237,7 @@ impl GroveDb {
                     )
                 );
             }
-            Element::Tree(ref value, _) => {
+            Element::Tree(ref value, _) | Element::SumTree(ref value, ..) => {
                 if value.is_some() {
                     return Err(Error::InvalidCodeExecution(
                         "a tree should be empty at the moment of insertion when not using batches",
@@ -305,7 +314,7 @@ impl GroveDb {
                             Error::CorruptedData(String::from("unable to deserialize element"))
                         })
                     );
-                    if matches!(element, Element::Tree(..)) {
+                    if element.is_tree() {
                         return Err(Error::OverrideNotAllowed(
                             "insertion not allowed to override tree",
                         ))
@@ -341,7 +350,7 @@ impl GroveDb {
                         .ok_or({
                             let reference_string = reference_path
                                 .iter()
-                                .map(|a| hex::encode(a))
+                                .map(hex::encode)
                                 .collect::<Vec<String>>()
                                 .join("/");
                             Error::MissingReference(format!(
@@ -363,7 +372,7 @@ impl GroveDb {
                     )
                 );
             }
-            Element::Tree(ref value, _) => {
+            Element::Tree(ref value, _) | Element::SumTree(ref value, ..) => {
                 if value.is_some() {
                     return Err(Error::InvalidCodeExecution(
                         "a tree should be empty at the moment of insertion when not using batches",
@@ -420,6 +429,7 @@ impl GroveDb {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use costs::{
@@ -587,7 +597,8 @@ mod tests {
                 None,
                 Some(&tx),
             )
-            .cost;
+            .cost_as_result()
+            .expect("should insert");
         // Explanation for 183 storage_written_bytes
 
         // Key -> 37 bytes
@@ -595,22 +606,24 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 71
+        // Value -> 72
         //   1 for the flag option (but no flags)
         //   1 for the enum type item
         //   3 for "cat"
         //   1 for cat length
         // 32 for node hash
         // 32 for value hash (trees have this for free)
+        // 1 for Basic merk
         // 1 byte for the value_size (required space for 70)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
+        // Basic Merk 1
         // Child Heights 2
 
-        // Total 37 + 71 + 39 = 147
+        // Total 37 + 72 + 40 = 149
 
         // Hash node calls
         // 1 for the kv_digest_to_kv_hash hash
@@ -620,12 +633,207 @@ mod tests {
             OperationCost {
                 seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
                 storage_cost: StorageCost {
-                    added_bytes: 147,
+                    added_bytes: 149,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_insert_sum_item_in_sum_tree_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"s", Element::empty_sum_tree(), None, Some(&tx))
+            .unwrap()
+            .expect("expected to add upper tree");
+
+        let cost = db
+            .insert(
+                vec![b"s".as_slice()],
+                b"key1",
+                Element::new_sum_item(5),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("should insert");
+        // Explanation for 183 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 78
+        //   1 for the enum type item
+        //   1 for the value (encoded var vec)
+        //   1 for the flag option (but no flags)
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 9 for Summed merk
+        // 1 byte for the value_size (required space for 77)
+
+        // Parent Hook -> 48
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Summed Merk 9
+        // Child Heights 2
+
+        // Total 37 + 78 + 48 = 163
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 5,
+                storage_cost: StorageCost {
+                    added_bytes: 162,
+                    replaced_bytes: 83, // todo: verify
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 143,
+                hash_node_calls: 8,
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_insert_sum_item_under_sum_item_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"s", Element::empty_sum_tree(), None, Some(&tx))
+            .unwrap()
+            .expect("expected to add upper tree");
+
+        db.insert(
+            vec![b"s".as_slice()],
+            b"key1",
+            Element::new_sum_item(5),
+            None,
+            Some(&tx),
+        )
+        .unwrap()
+        .expect("should insert");
+
+        let cost = db
+            .insert(
+                vec![b"s".as_slice()],
+                b"key2",
+                Element::new_sum_item(6),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("should insert");
+        // Explanation for 183 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 77
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type item
+        //   1 for the value (encoded var vec)
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 9 for Summed merk
+        // 1 byte for the value_size (required space for 77)
+
+        // Parent Hook -> 48
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Summed Merk 9
+        // Child Heights 2
+
+        // Total 37 + 77 + 48 = 162
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 7,
+                storage_cost: StorageCost {
+                    added_bytes: 162,
+                    replaced_bytes: 208, // todo: verify
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 224,
+                hash_node_calls: 10,
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_insert_bigger_sum_item_under_sum_item_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(vec![], b"s", Element::empty_sum_tree(), None, Some(&tx))
+            .unwrap()
+            .expect("expected to add upper tree");
+
+        db.insert(
+            vec![b"s".as_slice()],
+            b"key1",
+            Element::new_sum_item(126),
+            None,
+            Some(&tx),
+        )
+        .unwrap()
+        .expect("should insert");
+
+        // the cost of the varint goes up by 2 after 126 and another 2 at 32768
+        let cost = db
+            .insert(
+                vec![b"s".as_slice()],
+                b"key2",
+                Element::new_sum_item(32768),
+                None,
+                Some(&tx),
+            )
+            .cost_as_result()
+            .expect("should insert");
+        // Explanation for 183 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 81
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type item
+        //   5 for the value (encoded var vec)
+        // 32 for node hash
+        // 32 for value hash (trees have this for free)
+        // 9 for Summed merk
+        // 1 byte for the value_size (required space for 81)
+
+        // Parent Hook -> 48
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Summed Merk 9
+        // Child Heights 2
+
+        // Total 37 + 81 + 48 = 166
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 7,
+                storage_cost: StorageCost {
+                    added_bytes: 166,
+                    replaced_bytes: 210, // todo: verify
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 231,
+                hash_node_calls: 10,
             }
         );
     }
@@ -651,24 +859,25 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 75
+        // Value -> 76
         //   1 for the flag option
         //   3 for flags
         //   1 for flags length
         //   1 for the enum type item
         //   3 for "cat"
         //   1 for cat length
+        //   1 for basic merk
         // 32 for node hash
         // 32 for value hash (trees have this for free)
         // 1 byte for the value_size (required space for 70)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
-        // Total 37 + 75 + 39 = 151
+        // Sum 1
+        // Total 37 + 76 + 40 = 153
 
         // Hash node calls
         // 1 for the kv_digest_to_kv_hash hash
@@ -678,7 +887,7 @@ mod tests {
             OperationCost {
                 seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
                 storage_cost: StorageCost {
-                    added_bytes: 151,
+                    added_bytes: 153,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },
@@ -703,22 +912,24 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 37
+        // Value -> 38
         //   1 for the flag option (but no flags)
         //   1 for the enum type tree
         //   1 for empty option
+        //   1 for no sum feature
         // 32 for node hash
         // 0 for value hash (trees have this for free)
         // 2 byte for the value_size (required space for 98 + x where x can be up to
         // 256)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // Total 37 + 37 + 39 = 113
+        // Total 37 + 38 + 40 = 115
 
         // Hash node calls
         // 1 for the node hash
@@ -728,7 +939,60 @@ mod tests {
             OperationCost {
                 seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
                 storage_cost: StorageCost {
-                    added_bytes: 113,
+                    added_bytes: 115,
+                    replaced_bytes: 0,
+                    removed_bytes: NoStorageRemoval
+                },
+                storage_loaded_bytes: 0,
+                hash_node_calls: 3, // todo: verify this
+            }
+        );
+    }
+
+    #[test]
+    fn test_one_insert_empty_sum_tree_cost() {
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let cost = db
+            .insert(vec![], b"key1", Element::empty_sum_tree(), None, Some(&tx))
+            .cost;
+        // Explanation for 183 storage_written_bytes
+
+        // Key -> 37 bytes
+        // 32 bytes for the key prefix
+        // 4 bytes for the key
+        // 1 byte for key_size (required space for 36)
+
+        // Value -> 46
+        //   1 for the flag option (but no flags)
+        //   1 for the enum type tree
+        //   1 for empty option
+        //   1 for no sum feature
+        //   8 bytes for sum
+        // 32 for node hash
+        // 0 for value hash (trees have this for free)
+        // 2 byte for the value_size (required space for 98 + x where x can be up to
+        // 256)
+
+        // Parent Hook -> 40
+        // Key Bytes 4
+        // Hash Size 32
+        // Key Length 1
+        // Child Heights 2
+        // Sum 1
+
+        // Total 37 + 46 + 40 = 123
+
+        // Hash node calls
+        // 1 for the node hash
+        // 1 for the value hash
+        assert_eq!(
+            cost,
+            OperationCost {
+                seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
+                storage_cost: StorageCost {
+                    added_bytes: 123,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },
@@ -759,24 +1023,26 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 41
+        // Value -> 42
         //   1 for the flag option
         //   1 byte for flag size
         //   3 bytes for flags
         //   1 for the enum type tree
         //   1 for empty option
+        //   1 for no sum feature
         // 32 for node hash
         // 0 for value hash (trees have this for free)
         // 2 byte for the value_size (required space for 98 + x where x can be up to
         // 256)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // Total 37 + 41 + 39 = 149
+        // Total 37 + 42 + 40 = 119
 
         // Hash node calls
         // 1 for the kv_digest_to_kv_hash hash
@@ -788,7 +1054,7 @@ mod tests {
             OperationCost {
                 seek_count: 3, // 1 to get tree, 1 to insert, 1 to insert into root tree
                 storage_cost: StorageCost {
-                    added_bytes: 117,
+                    added_bytes: 119,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },
@@ -825,42 +1091,45 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 72
+        // Value -> 73
         //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for size of test bytes
         //   4 for test bytes
+        //   1 for a basic merk
         // 32 for node hash
         // 32 for value hash
-        // 1 byte for the value_size (required space for 98)
+        // 1 byte for the value_size (required space for 72)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // Total 37 + 72 + 39 = 148
+        // Total 37 + 73 + 40 = 150
 
         // Explanation for replaced bytes
 
-        // Replaced parent Value -> 76
+        // Replaced parent Value -> 78
         //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for an empty option
+        //   1 for a basic merk
         // 32 for node hash
-        // 32 for value hash
-        // 1 byte for the value_size (required space for 75)
+        // 40 for the parent hook
+        // 2 byte for the value_size
         assert_eq!(
             cost,
             OperationCost {
                 seek_count: 5, // todo: verify this
                 storage_cost: StorageCost {
-                    added_bytes: 148,
-                    replaced_bytes: 76,
+                    added_bytes: 150,
+                    replaced_bytes: 78,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 142, // todo: verify this
+                storage_loaded_bytes: 144, // todo: verify this
                 hash_node_calls: 8,        // todo: verify this
             }
         );
@@ -889,24 +1158,26 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 78
+        // Value -> 79
         //   1 for the flag option
         //   1 for flags byte size
         //   5 for flags bytes
         //   1 for the enum type
         //   1 for size of test bytes
         //   4 for test bytes
+        //   1 for a basic merk
         // 32 for node hash
         // 32 for value hash
         // 1 byte for the value_size (required space for 77)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // Total 37 + 78 + 39 = 154
+        // Total 37 + 79 + 40 = 156
 
         // Hash node calls
         // 1 for the kv_digest_to_kv_hash hash
@@ -917,7 +1188,7 @@ mod tests {
             OperationCost {
                 seek_count: 3, // todo: verify this
                 storage_cost: StorageCost {
-                    added_bytes: 154,
+                    added_bytes: 156,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval
                 },
@@ -954,36 +1225,37 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 78
+        // Value -> 79
         //   1 for the flag option
         //   1 for flags byte size
         //   5 for flags bytes
         //   1 for the enum type
         //   1 for size of test bytes
         //   4 for test bytes
+        //   1 for the basic merk
         // 32 for node hash
         // 32 for value hash
-        // 1 byte for the value_size (required space for 98)
+        // 1 byte for the value_size (required space for 78)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // Total 37 + 76 + 39 = 152
+        // Total 37 + 79 + 40 = 156
 
         // Explanation for replaced bytes
 
-        // Replaced parent Value -> 76
-        //   1 for the flag option
-        //   3 bytes for flags
-        //   1 for flags size
+        // Replaced parent Value -> 78
+        //   1 for the flag option (but no flags)
         //   1 for the enum type
         //   1 for an empty option
+        //   1 for a basic merk
         // 32 for node hash
-        // 32 for value hash
-        // 1 byte for the value_size (required space for 75)
+        // 40 for the parent hook
+        // 2 byte for the value_size
 
         // Hash node calls
         // 1 for getting the merk
@@ -1001,11 +1273,11 @@ mod tests {
             OperationCost {
                 seek_count: 5, // todo: verify this
                 storage_cost: StorageCost {
-                    added_bytes: 154,
-                    replaced_bytes: 76,
+                    added_bytes: 156,
+                    replaced_bytes: 78,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 142, // todo: verify this
+                storage_loaded_bytes: 144, // todo: verify this
                 hash_node_calls: 8,
             }
         );
@@ -1044,36 +1316,39 @@ mod tests {
         // 4 bytes for the key
         // 1 byte for key_size (required space for 36)
 
-        // Value -> 78
+        // Value -> 79
         //   1 for the flag option
         //   1 for flags byte size
         //   5 for flags bytes
         //   1 for the enum type
         //   1 for size of test bytes
         //   4 for test bytes
+        //   1 for basic merk
         // 32 for node hash
         // 32 for value hash
-        // 1 byte for the value_size (required space for 98)
+        // 1 byte for the value_size (required space for 78)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
-
-        // Total 37 + 76 + 39 = 152
+        // Sum 1
+        // Total 37 + 79 + 40 = 156
 
         // Explanation for replaced bytes
 
-        // Replaced parent Value -> 76
+        // Replaced parent Value -> 82
         //   1 for the flag option
         //   3 bytes for flags
         //   1 for flags size
         //   1 for the enum type
         //   1 for an empty option
+        //   1 for basic merk
         // 32 for node hash
-        // 32 for value hash
-        // 1 byte for the value_size (required space for 75)
+        // 0 for value hash (trees have this for free)
+        // 40 for the child to parent hook
+        // 2 byte for the value_size (required space)
 
         // Hash node calls
         // 1 for getting the merk
@@ -1091,11 +1366,11 @@ mod tests {
             OperationCost {
                 seek_count: 5, // todo: verify this
                 storage_cost: StorageCost {
-                    added_bytes: 154,
-                    replaced_bytes: 80,
+                    added_bytes: 156,
+                    replaced_bytes: 82,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 150, // todo: verify this
+                storage_loaded_bytes: 152, // todo: verify this
                 hash_node_calls: 8,
             }
         );
@@ -1128,22 +1403,24 @@ mod tests {
 
         // Explanation for 110 replaced bytes
 
-        // Value -> 71
+        // Value -> 72
         //   1 for the flag option (but no flags)
         //   1 for the enum type item
         //   3 for "cat"
         //   1 for cat length
+        //   1 for basic merk
         // 32 for node hash
         // 32 for value hash (trees have this for free)
-        // 1 byte for the value_size (required space for 70)
+        // 1 byte for the value_size (required space for 71)
 
-        // Parent Hook -> 39
+        // Parent Hook -> 40
         // Key Bytes 4
         // Hash Size 32
         // Key Length 1
         // Child Heights 2
+        // Sum 1
 
-        // 71 + 39 = 110
+        // 72 + 40 = 112
 
         // Hash node calls
         // 1 for the kv_digest_to_kv_hash hash
@@ -1155,10 +1432,10 @@ mod tests {
                 seek_count: 3, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
-                    replaced_bytes: 110,
+                    replaced_bytes: 112,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 76,
+                storage_loaded_bytes: 77,
                 hash_node_calls: 2,
             }
         );
@@ -1197,10 +1474,10 @@ mod tests {
                 seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 0,
-                    replaced_bytes: 186,
+                    replaced_bytes: 190,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 224,
+                storage_loaded_bytes: 227, // todo verify this
                 hash_node_calls: 8,
             }
         );
@@ -1239,10 +1516,10 @@ mod tests {
                 seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 1,
-                    replaced_bytes: 187, // todo: verify this
+                    replaced_bytes: 191, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 225,
+                storage_loaded_bytes: 228,
                 hash_node_calls: 8,
             }
         );
@@ -1287,21 +1564,25 @@ mod tests {
 
         // Explanation for replaced bytes
 
-        // Replaced parent Value -> 76
+        // Replaced parent Value -> 78
         //   1 for the flag option (but no flags)
         //   1 for the enum type tree
         //   1 for empty option
+        //   1 for Basic Merk
         // 32 for node hash
         // 0 for value hash (trees have this for free)
+        // 40 for child to parent hook
         // 2 byte for the value_size (required space for 98 + x where x can be up to
         // 256)
 
-        // Replaced current tree -> 76
+        // Replaced current tree -> 78
         //   1 for the flag option (but no flags)
         //   1 for the enum type tree
         //   1 for empty option
+        //   1 for Basic Merk
         // 32 for node hash
         // 0 for value hash (trees have this for free)
+        // 40 for child to parent hook
         // 2 byte for the value_size (required space for 98 + x where x can be up to
         // 256)
 
@@ -1311,10 +1592,10 @@ mod tests {
                 seek_count: 6, // todo: verify this
                 storage_cost: StorageCost {
                     added_bytes: 4,
-                    replaced_bytes: 152, // todo: verify this
+                    replaced_bytes: 156,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 221,
+                storage_loaded_bytes: 224,
                 hash_node_calls: 9, // todo: verify this
             }
         );

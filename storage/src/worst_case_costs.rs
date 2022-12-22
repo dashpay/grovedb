@@ -4,5 +4,5 @@
 /// for get_storage_context_cost path items
 pub trait WorstKeyLength {
     /// the max length of the key
-    fn len(&self) -> u8;
+    fn max_length(&self) -> u8;
 }

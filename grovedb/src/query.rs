@@ -1,8 +1,12 @@
-use costs::{CostContext, CostsExt, OperationCost};
+#[cfg(any(feature = "full", feature = "verify"))]
+use costs::{CostResult, CostsExt, OperationCost};
+#[cfg(any(feature = "full", feature = "verify"))]
 use merk::proofs::{query::QueryItem, Query};
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use crate::Error;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Clone)]
 pub struct PathQuery {
     // TODO: Make generic over path type
@@ -10,6 +14,7 @@ pub struct PathQuery {
     pub query: SizedQuery,
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Clone)]
 pub struct SizedQuery {
     pub query: Query,
@@ -17,6 +22,7 @@ pub struct SizedQuery {
     pub offset: Option<u16>,
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl SizedQuery {
     pub const fn new(query: Query, limit: Option<u16>, offset: Option<u16>) -> Self {
         Self {
@@ -27,6 +33,7 @@ impl SizedQuery {
     }
 }
 
+#[cfg(any(feature = "full", feature = "verify"))]
 impl PathQuery {
     pub const fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> Self {
         Self { path, query }
@@ -46,7 +53,7 @@ impl PathQuery {
     /// TODO: Currently not allowing unlimited depth queries when paths are
     /// equal     this is possible, should handle later.
     /// [a] + [b] (valid, unique and non subset)
-    pub fn merge(path_queries: Vec<&PathQuery>) -> CostContext<Result<Self, Error>> {
+    pub fn merge(path_queries: Vec<&PathQuery>) -> CostResult<Self, Error> {
         let cost = OperationCost::default();
 
         if path_queries.len() < 2 {
@@ -215,6 +222,7 @@ impl PathQuery {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use merk::proofs::Query;

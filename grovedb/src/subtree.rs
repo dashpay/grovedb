@@ -2,48 +2,75 @@
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
 
+#[cfg(feature = "full")]
 use core::fmt;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use bincode::Options;
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, storage_cost::removal::StorageRemovedBytes,
     CostContext, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
+#[cfg(any(feature = "full", feature = "verify"))]
+use merk::proofs::Query;
+#[cfg(feature = "full")]
 use merk::{
-    anyhow,
     ed::Decode,
-    estimated_costs::LAYER_COST_SIZE,
-    proofs::{query::QueryItem, Query},
+    estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE},
+    proofs::query::QueryItem,
     tree::{kv::KV, Tree, TreeInner},
-    BatchEntry, MerkOptions, Op,
+    BatchEntry, Error as MerkError, MerkOptions, Op, TreeFeatureType,
+    TreeFeatureType::{BasicMerk, SummedMerk},
 };
+#[cfg(any(feature = "full", feature = "verify"))]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "full")]
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+#[cfg(feature = "full")]
 use visualize::visualize_to_vec;
 
+#[cfg(feature = "full")]
 use crate::{
     query_result_type::{
         KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType,
         QueryResultType::QueryElementResultType,
     },
-    reference_path::{path_from_reference_path_type, ReferencePathType},
+    reference_path::path_from_reference_path_type,
     util::{
         merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
     },
-    Error, Hash, Merk, PathQuery, SizedQuery, TransactionArg,
+    Hash, Merk, PathQuery, TransactionArg,
 };
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::{reference_path::ReferencePathType, Error, SizedQuery};
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Optional meta-data to be stored per element
 pub type ElementFlags = Vec<u8>;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Optional single byte to represent the maximum number of reference hop to
 /// base element
 pub type MaxReferenceHop = Option<u8>;
 
+#[cfg(feature = "full")]
 /// The cost of a tree
 pub const TREE_COST_SIZE: u32 = LAYER_COST_SIZE; // 3
+#[cfg(feature = "full")]
+/// The cost of a tree
+pub const SUM_ITEM_COST_SIZE: u32 = 10;
+#[cfg(feature = "full")]
+/// The cost of a sum tree
+pub const SUM_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 11
 
+#[cfg(any(feature = "full", feature = "verify"))]
+/// int 64 sum value
+pub type SumValue = i64;
+
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Variants of GroveDB stored entities
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
@@ -56,8 +83,14 @@ pub enum Element {
     /// A subtree, contains the a prefixed key representing the root of the
     /// subtree.
     Tree(Option<Vec<u8>>, Option<ElementFlags>),
+    /// Signed integer value that can be totaled in a sum tree
+    SumItem(SumValue, Option<ElementFlags>),
+    /// Same as Element::Tree but underlying Merk sums value of it's summable
+    /// nodes
+    SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
 }
 
+#[cfg(feature = "full")]
 impl fmt::Debug for Element {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut v = Vec::new();
@@ -67,6 +100,7 @@ impl fmt::Debug for Element {
     }
 }
 
+#[cfg(feature = "full")]
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>
 where
     'db: 'ctx,
@@ -87,27 +121,53 @@ where
 }
 
 impl Element {
+    #[cfg(feature = "full")]
     // TODO: improve API to avoid creation of Tree elements with uncertain state
     pub fn empty_tree() -> Self {
         Element::new_tree(Default::default())
     }
 
+    #[cfg(feature = "full")]
     pub fn empty_tree_with_flags(flags: Option<ElementFlags>) -> Self {
         Element::new_tree_with_flags(Default::default(), flags)
     }
 
+    #[cfg(feature = "full")]
+    pub fn empty_sum_tree() -> Self {
+        Element::new_sum_tree(Default::default())
+    }
+
+    #[cfg(feature = "full")]
+    pub fn empty_sum_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::new_sum_tree_with_flags(Default::default(), flags)
+    }
+
+    #[cfg(feature = "full")]
     pub fn new_item(item_value: Vec<u8>) -> Self {
         Element::Item(item_value, None)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_item_with_flags(item_value: Vec<u8>, flags: Option<ElementFlags>) -> Self {
         Element::Item(item_value, flags)
     }
 
+    #[cfg(feature = "full")]
+    pub fn new_sum_item(value: i64) -> Self {
+        Element::SumItem(value, None)
+    }
+
+    #[cfg(feature = "full")]
+    pub fn new_sum_item_with_flags(value: i64, flags: Option<ElementFlags>) -> Self {
+        Element::SumItem(value, flags)
+    }
+
+    #[cfg(feature = "full")]
     pub fn new_reference(reference_path: ReferencePathType) -> Self {
         Element::Reference(reference_path, None, None)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_reference_with_flags(
         reference_path: ReferencePathType,
         flags: Option<ElementFlags>,
@@ -115,6 +175,7 @@ impl Element {
         Element::Reference(reference_path, None, flags)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_reference_with_hops(
         reference_path: ReferencePathType,
         max_reference_hop: MaxReferenceHop,
@@ -122,6 +183,7 @@ impl Element {
         Element::Reference(reference_path, max_reference_hop, None)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_reference_with_max_hops_and_flags(
         reference_path: ReferencePathType,
         max_reference_hop: MaxReferenceHop,
@@ -130,10 +192,12 @@ impl Element {
         Element::Reference(reference_path, max_reference_hop, flags)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
         Element::Tree(maybe_root_key, None)
     }
 
+    #[cfg(feature = "full")]
     pub fn new_tree_with_flags(
         maybe_root_key: Option<Vec<u8>>,
         flags: Option<ElementFlags>,
@@ -141,34 +205,108 @@ impl Element {
         Element::Tree(maybe_root_key, flags)
     }
 
+    #[cfg(feature = "full")]
+    pub fn new_sum_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
+        Element::SumTree(maybe_root_key, 0, None)
+    }
+
+    #[cfg(feature = "full")]
+    pub fn new_sum_tree_with_flags(
+        maybe_root_key: Option<Vec<u8>>,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::SumTree(maybe_root_key, 0, flags)
+    }
+
+    #[cfg(feature = "full")]
+    pub fn new_sum_tree_with_flags_and_sum_value(
+        maybe_root_key: Option<Vec<u8>>,
+        sum_value: SumValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::SumTree(maybe_root_key, sum_value, flags)
+    }
+
+    #[cfg(feature = "full")]
+    /// Decoded the integer value in the SumItem element type, returns 0 for
+    /// everything else
+    pub fn sum_value(&self) -> Option<i64> {
+        match self {
+            Element::SumItem(sum_value, _) | Element::SumTree(_, sum_value, _) => Some(*sum_value),
+            _ => Some(0),
+        }
+    }
+
+    #[cfg(feature = "full")]
+    pub fn is_sum_tree(&self) -> bool {
+        matches!(self, Element::SumTree(..))
+    }
+
+    #[cfg(feature = "full")]
+    pub fn is_tree(&self) -> bool {
+        matches!(self, Element::SumTree(..) | Element::Tree(..))
+    }
+
+    #[cfg(feature = "full")]
+    pub fn is_sum_item(&self) -> bool {
+        matches!(self, Element::SumItem(..))
+    }
+
+    #[cfg(feature = "full")]
+    pub fn get_feature_type(&self, parent_is_sum_tree: bool) -> Result<TreeFeatureType, Error> {
+        match parent_is_sum_tree {
+            true => {
+                let sum_value = self.sum_value();
+                match sum_value {
+                    Some(sum) => Ok(SummedMerk(sum)),
+                    None => Err(Error::CorruptedData(String::from(
+                        "cannot decode sum item to i64",
+                    ))),
+                }
+            }
+            false => Ok(BasicMerk),
+        }
+    }
+
+    #[cfg(feature = "full")]
     /// Grab the optional flag stored in an element
     pub fn get_flags(&self) -> &Option<ElementFlags> {
         match self {
-            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
-                flags
-            }
+            Element::Tree(_, flags)
+            | Element::Item(_, flags)
+            | Element::Reference(_, _, flags)
+            | Element::SumTree(.., flags)
+            | Element::SumItem(_, flags) => flags,
         }
     }
 
+    #[cfg(feature = "full")]
     /// Grab the optional flag stored in an element
     pub fn get_flags_owned(self) -> Option<ElementFlags> {
         match self {
-            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
-                flags
-            }
+            Element::Tree(_, flags)
+            | Element::Item(_, flags)
+            | Element::Reference(_, _, flags)
+            | Element::SumTree(.., flags)
+            | Element::SumItem(_, flags) => flags,
         }
     }
 
+    #[cfg(feature = "full")]
     /// Grab the optional flag stored in an element as mutable
     pub fn get_flags_mut(&mut self) -> &mut Option<ElementFlags> {
         match self {
-            Element::Tree(_, flags) | Element::Item(_, flags) | Element::Reference(_, _, flags) => {
-                flags
-            }
+            Element::Tree(_, flags)
+            | Element::Item(_, flags)
+            | Element::Reference(_, _, flags)
+            | Element::SumTree(.., flags)
+            | Element::SumItem(_, flags) => flags,
         }
     }
 
+    #[cfg(feature = "full")]
     /// Get the size of an element in bytes
+    #[deprecated]
     pub fn byte_size(&self) -> u32 {
         match self {
             Element::Item(item, element_flag) => {
@@ -178,8 +316,15 @@ impl Element {
                     item.len() as u32
                 }
             }
+            Element::SumItem(item, element_flag) => {
+                if let Some(flag) = element_flag {
+                    flag.len() as u32 + item.required_space() as u32
+                } else {
+                    item.required_space() as u32
+                }
+            }
             Element::Reference(path_reference, _, element_flag) => {
-                let path_length = path_reference.encoding_length() as u32;
+                let path_length = path_reference.serialized_size() as u32;
 
                 if let Some(flag) = element_flag {
                     flag.len() as u32 + path_length
@@ -194,79 +339,108 @@ impl Element {
                     32
                 }
             }
+            Element::SumTree(_, _, element_flag) => {
+                if let Some(flag) = element_flag {
+                    flag.len() as u32 + 32 + 8
+                } else {
+                    32 + 8
+                }
+            }
         }
     }
 
+    #[cfg(feature = "full")]
     pub fn required_item_space(len: u32, flag_len: u32) -> u32 {
         len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1
     }
 
-    /// Get the size that the element will occupy on disk
-    pub fn node_byte_size(&self, key_len: u32) -> u32 {
-        let serialized_value_size = self.serialized_size() as u32; // this includes the flags
-        KV::node_byte_cost_size_for_key_and_value_lengths(key_len, serialized_value_size)
-    }
-
+    #[cfg(feature = "full")]
     /// Delete an element from Merk under a key
     pub fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
         key: K,
         merk_options: Option<MerkOptions>,
         is_layered: bool,
+        is_sum: bool,
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
         let op = if is_layered {
-            Op::DeleteLayered
+            if is_sum {
+                Op::DeleteLayeredHavingSum
+            } else {
+                Op::DeleteLayered
+            }
         } else {
             Op::Delete
         };
         let batch = [(key, op)];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch, &[], merk_options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
+    #[cfg(feature = "full")]
     /// Delete an element from Merk under a key
     pub fn delete_with_sectioned_removal_bytes<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &mut Merk<S>,
         key: K,
         merk_options: Option<MerkOptions>,
         is_layered: bool,
+        is_sum: bool,
         sectioned_removal: &mut impl FnMut(
             &Vec<u8>,
             u32,
             u32,
-        )
-            -> anyhow::Result<(StorageRemovedBytes, StorageRemovedBytes)>,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            MerkError,
+        >,
     ) -> CostResult<(), Error> {
         // TODO: delete references on this element
         let op = if is_layered {
-            Op::DeleteLayered
+            if is_sum {
+                Op::DeleteLayeredHavingSum
+            } else {
+                Op::DeleteLayered
+            }
         } else {
             Op::Delete
         };
         let batch = [(key, op)];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_costs_just_in_time_value_update::<_, Vec<u8>>(
             &batch,
             &[],
             merk_options,
-            &|key, value| Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg),
+            &|key, value| {
+                Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+            },
             &mut |_costs, _old_value, _value| Ok((false, None)),
             sectioned_removal,
         )
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
+    #[cfg(feature = "full")]
     /// Delete an element from Merk under a key to batch operations
     pub fn delete_into_batch_operations<K: AsRef<[u8]>>(
         key: K,
         is_layered: bool,
+        is_sum: bool,
         batch_operations: &mut Vec<BatchEntry<K>>,
     ) -> CostResult<(), Error> {
         let op = if is_layered {
-            Op::DeleteLayered
+            if is_sum {
+                Op::DeleteLayeredHavingSum
+            } else {
+                Op::DeleteLayered
+            }
         } else {
+            // non layered doesn't matter for sum trees
             Op::Delete
         };
         let entry = (key, op);
@@ -274,6 +448,7 @@ impl Element {
         Ok(()).wrap_with_cost(Default::default())
     }
 
+    #[cfg(feature = "full")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
     pub fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -304,6 +479,7 @@ impl Element {
         Ok(element).wrap_with_cost(cost)
     }
 
+    #[cfg(feature = "full")]
     /// Get an element directly from storage under a key
     /// Merk does not need to be loaded
     pub fn get_from_storage<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -339,6 +515,7 @@ impl Element {
         Ok(element).wrap_with_cost(cost)
     }
 
+    #[cfg(feature = "full")]
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment
     pub fn get_with_absolute_refs<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -358,6 +535,7 @@ impl Element {
         Ok(absolute_element).wrap_with_cost(cost)
     }
 
+    #[cfg(feature = "full")]
     /// Get an element's value hash from Merk under a key
     pub fn get_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
@@ -374,6 +552,7 @@ impl Element {
         Ok(value_hash).wrap_with_cost(cost)
     }
 
+    #[cfg(feature = "full")]
     pub fn get_query(
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
@@ -386,6 +565,7 @@ impl Element {
             .map_ok(|(elements, _)| elements)
     }
 
+    #[cfg(feature = "full")]
     pub fn get_query_values(
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
@@ -413,6 +593,7 @@ impl Element {
         })
     }
 
+    #[cfg(feature = "full")]
     fn convert_if_reference_to_absolute_reference(
         self,
         path: &[&[u8]],
@@ -428,7 +609,7 @@ impl Element {
                 _ => {
                     // Element is a reference and is not absolute.
                     // build the stored path for this reference
-                    let current_path = path.clone().to_vec();
+                    let current_path = <&[&[u8]]>::clone(&path).to_vec();
                     let absolute_path = path_from_reference_path_type(
                         reference_path_type.clone(),
                         current_path,
@@ -446,6 +627,7 @@ impl Element {
         })
     }
 
+    #[cfg(feature = "full")]
     fn basic_push(args: PathQueryPushArgs) -> Result<(), Error> {
         let PathQueryPushArgs {
             path,
@@ -491,6 +673,7 @@ impl Element {
         Ok(())
     }
 
+    #[cfg(feature = "full")]
     fn path_query_push(args: PathQueryPushArgs) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -509,55 +692,96 @@ impl Element {
             limit,
             offset,
         } = args;
-        match element {
-            Element::Tree(..) => {
-                let mut path_vec = path.to_vec();
-                let key = cost_return_on_error_no_add!(
-                    &cost,
-                    key.ok_or(Error::MissingParameter(
-                        "the key must be provided when using a subquery key",
-                    ))
+        if element.is_tree() {
+            let mut path_vec = path.to_vec();
+            let key = cost_return_on_error_no_add!(
+                &cost,
+                key.ok_or(Error::MissingParameter(
+                    "the key must be provided when using a subquery key",
+                ))
+            );
+            path_vec.push(key);
+
+            if let Some(subquery) = subquery {
+                if let Some(subquery_key) = &subquery_key {
+                    path_vec.push(subquery_key.as_slice());
+                }
+
+                let inner_query = SizedQuery::new(subquery, *limit, *offset);
+                let path_vec_owned = path_vec.iter().map(|x| x.to_vec()).collect();
+                let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
+
+                let (mut sub_elements, skipped) = cost_return_on_error!(
+                    &mut cost,
+                    Element::get_path_query(storage, &inner_path_query, result_type, transaction)
                 );
-                path_vec.push(key);
 
-                if let Some(subquery) = subquery {
-                    if let Some(subquery_key) = &subquery_key {
-                        path_vec.push(subquery_key.as_slice());
-                    }
-
-                    let inner_query = SizedQuery::new(subquery, *limit, *offset);
-                    let path_vec_owned = path_vec.iter().map(|x| x.to_vec()).collect();
-                    let inner_path_query = PathQuery::new(path_vec_owned, inner_query);
-
-                    let (mut sub_elements, skipped) = cost_return_on_error!(
-                        &mut cost,
-                        Element::get_path_query(
-                            storage,
-                            &inner_path_query,
-                            result_type,
-                            transaction
-                        )
-                    );
-
-                    if let Some(limit) = limit {
-                        *limit -= sub_elements.len() as u16;
-                    }
-                    if let Some(offset) = offset {
-                        *offset -= skipped;
-                    }
-                    results.append(&mut sub_elements.elements);
-                } else if let Some(subquery_key) = subquery_key {
-                    if offset.unwrap_or(0) == 0 {
-                        match result_type {
-                            QueryResultType::QueryElementResultType => {
-                                merk_optional_tx!(
-                                    &mut cost,
-                                    storage,
-                                    path_vec.iter().copied(),
-                                    transaction,
-                                    subtree,
-                                    {
-                                        results.push(QueryResultElement::ElementResultItem(
+                if let Some(limit) = limit {
+                    *limit -= sub_elements.len() as u16;
+                }
+                if let Some(offset) = offset {
+                    *offset -= skipped;
+                }
+                results.append(&mut sub_elements.elements);
+            } else if let Some(subquery_key) = subquery_key {
+                if offset.unwrap_or(0) == 0 {
+                    match result_type {
+                        QueryResultType::QueryElementResultType => {
+                            merk_optional_tx!(
+                                &mut cost,
+                                storage,
+                                path_vec.iter().copied(),
+                                transaction,
+                                subtree,
+                                {
+                                    results.push(QueryResultElement::ElementResultItem(
+                                        cost_return_on_error!(
+                                            &mut cost,
+                                            Element::get_with_absolute_refs(
+                                                &subtree,
+                                                path_vec.as_slice(),
+                                                subquery_key.as_slice()
+                                            )
+                                        ),
+                                    ));
+                                }
+                            );
+                        }
+                        QueryResultType::QueryKeyElementPairResultType => {
+                            merk_optional_tx!(
+                                &mut cost,
+                                storage,
+                                path_vec.iter().copied(),
+                                transaction,
+                                subtree,
+                                {
+                                    results.push(QueryResultElement::KeyElementPairResultItem((
+                                        subquery_key.clone(),
+                                        cost_return_on_error!(
+                                            &mut cost,
+                                            Element::get_with_absolute_refs(
+                                                &subtree,
+                                                path_vec.as_slice(),
+                                                subquery_key.as_slice()
+                                            )
+                                        ),
+                                    )));
+                                }
+                            );
+                        }
+                        QueryResultType::QueryPathKeyElementTrioResultType => {
+                            let original_path_vec = path.iter().map(|a| a.to_vec()).collect();
+                            merk_optional_tx!(
+                                &mut cost,
+                                storage,
+                                path_vec.iter().copied(),
+                                transaction,
+                                subtree,
+                                {
+                                    results.push(QueryResultElement::PathKeyElementTrioResultItem(
+                                        (
+                                            original_path_vec,
+                                            subquery_key.clone(),
                                             cost_return_on_error!(
                                                 &mut cost,
                                                 Element::get_with_absolute_refs(
@@ -566,104 +790,25 @@ impl Element {
                                                     subquery_key.as_slice()
                                                 )
                                             ),
-                                        ));
-                                    }
-                                );
-                            }
-                            QueryResultType::QueryKeyElementPairResultType => {
-                                merk_optional_tx!(
-                                    &mut cost,
-                                    storage,
-                                    path_vec.iter().copied(),
-                                    transaction,
-                                    subtree,
-                                    {
-                                        results.push(QueryResultElement::KeyElementPairResultItem(
-                                            (
-                                                subquery_key.clone(),
-                                                cost_return_on_error!(
-                                                    &mut cost,
-                                                    Element::get_with_absolute_refs(
-                                                        &subtree,
-                                                        path_vec.as_slice(),
-                                                        subquery_key.as_slice()
-                                                    )
-                                                ),
-                                            ),
-                                        ));
-                                    }
-                                );
-                            }
-                            QueryResultType::QueryPathKeyElementTrioResultType => {
-                                let original_path_vec = path.iter().map(|a| a.to_vec()).collect();
-                                merk_optional_tx!(
-                                    &mut cost,
-                                    storage,
-                                    path_vec.iter().copied(),
-                                    transaction,
-                                    subtree,
-                                    {
-                                        results.push(
-                                            QueryResultElement::PathKeyElementTrioResultItem((
-                                                original_path_vec,
-                                                subquery_key.clone(),
-                                                cost_return_on_error!(
-                                                    &mut cost,
-                                                    Element::get_with_absolute_refs(
-                                                        &subtree,
-                                                        path_vec.as_slice(),
-                                                        subquery_key.as_slice()
-                                                    )
-                                                ),
-                                            )),
-                                        );
-                                    }
-                                );
-                            }
+                                        ),
+                                    ));
+                                }
+                            );
                         }
-                        if let Some(limit) = limit {
-                            *limit -= 1;
-                        }
-                    } else if let Some(offset) = offset {
-                        *offset -= 1;
                     }
-                } else {
-                    if allow_get_raw {
-                        cost_return_on_error_no_add!(
-                            &cost,
-                            Element::basic_push(PathQueryPushArgs {
-                                storage,
-                                transaction,
-                                key: Some(key),
-                                element,
-                                path,
-                                subquery_key,
-                                subquery,
-                                left_to_right,
-                                allow_get_raw,
-                                result_type,
-                                results,
-                                limit,
-                                offset,
-                            })
-                        );
-                    } else {
-                        return Err(Error::InvalidPath(
-                            "you must provide a subquery or a subquery_key when interacting with \
-                             a Tree of trees"
-                                .to_owned(),
-                        ))
-                        .wrap_with_cost(cost);
+                    if let Some(limit) = limit {
+                        *limit -= 1;
                     }
+                } else if let Some(offset) = offset {
+                    *offset -= 1;
                 }
-            }
-            _ => {
+            } else if allow_get_raw {
                 cost_return_on_error_no_add!(
                     &cost,
                     Element::basic_push(PathQueryPushArgs {
                         storage,
                         transaction,
-                        key,
+                        key: Some(key),
                         element,
                         path,
                         subquery_key,
@@ -676,11 +821,38 @@ impl Element {
                         offset,
                     })
                 );
+            } else {
+                return Err(Error::InvalidPath(
+                    "you must provide a subquery or a subquery_key when interacting with a Tree \
+                     of trees"
+                        .to_owned(),
+                ))
+                .wrap_with_cost(cost);
             }
+        } else {
+            cost_return_on_error_no_add!(
+                &cost,
+                Element::basic_push(PathQueryPushArgs {
+                    storage,
+                    transaction,
+                    key,
+                    element,
+                    path,
+                    subquery_key,
+                    subquery,
+                    left_to_right,
+                    allow_get_raw,
+                    result_type,
+                    results,
+                    limit,
+                    offset,
+                })
+            );
         }
         Ok(()).wrap_with_cost(cost)
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub fn subquery_paths_for_sized_query(
         sized_query: &SizedQuery,
         key: &[u8],
@@ -709,6 +881,7 @@ impl Element {
         (subquery_key, subquery)
     }
 
+    #[cfg(feature = "full")]
     // TODO: refactor
     #[allow(clippy::too_many_arguments)]
     fn query_item(
@@ -824,6 +997,7 @@ impl Element {
         .wrap_with_cost(cost)
     }
 
+    #[cfg(feature = "full")]
     pub fn get_query_apply_function(
         storage: &RocksDbStorage,
         path: &[&[u8]],
@@ -895,6 +1069,7 @@ impl Element {
         Ok((QueryResultElements::from_elements(results), skipped)).wrap_with_cost(cost)
     }
 
+    #[cfg(feature = "full")]
     // Returns a vector of elements excluding trees, and the number of skipped
     // elements
     pub fn get_path_query(
@@ -919,6 +1094,7 @@ impl Element {
         )
     }
 
+    #[cfg(feature = "full")]
     // Returns a vector of elements including trees, and the number of skipped
     // elements
     pub fn get_raw_path_query(
@@ -943,6 +1119,7 @@ impl Element {
         )
     }
 
+    #[cfg(feature = "full")]
     /// Returns a vector of elements, and the number of skipped elements
     pub fn get_sized_query(
         storage: &RocksDbStorage,
@@ -962,6 +1139,7 @@ impl Element {
         )
     }
 
+    #[cfg(feature = "full")]
     /// Helper function that returns whether an element at the key for the
     /// element already exists.
     pub fn element_at_key_already_exists<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
@@ -973,6 +1151,7 @@ impl Element {
             .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
+    #[cfg(feature = "full")]
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -984,19 +1163,33 @@ impl Element {
         key: K,
         options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
-        let serialized = match self.serialize() {
-            Ok(s) => s,
-            Err(e) => return Err(e).wrap_with_cost(Default::default()),
-        };
+        let cost = OperationCost::default();
 
-        let batch_operations = [(key, Op::Put(serialized))];
+        let serialized = cost_return_on_error_no_add!(&cost, self.serialize());
+
+        if !merk.is_sum_tree && self.is_sum_item() {
+            return Err(Error::InvalidInput("cannot add sum item to non sum tree"))
+                .wrap_with_cost(Default::default());
+        }
+
+        let merk_feature_type =
+            cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
+
+        let batch_operations = [(key, Op::Put(serialized, merk_feature_type))];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    pub fn tree_costs_for_key_value(key: &Vec<u8>, value: &Vec<u8>) -> Result<u32, Error> {
+    #[cfg(feature = "full")]
+    pub fn tree_costs_for_key_value(
+        key: &Vec<u8>,
+        value: &[u8],
+        is_sum_node: bool,
+    ) -> Result<u32, Error> {
         let element = Element::deserialize(value)?;
         match element {
             Element::Tree(_, flags) => {
@@ -1007,7 +1200,22 @@ impl Element {
                 let value_len = TREE_COST_SIZE + flags_len;
                 let key_len = key.len() as u32;
                 Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
-                    key_len, value_len,
+                    key_len,
+                    value_len,
+                    is_sum_node,
+                ))
+            }
+            Element::SumTree(_, _sum_value, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = TREE_COST_SIZE + flags_len + 8;
+                let key_len = key.len() as u32;
+                Ok(KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len,
+                    value_len,
+                    is_sum_node,
                 ))
             }
             _ => Err(Error::CorruptedCodeExecution(
@@ -1016,21 +1224,24 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     pub fn insert_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let entry = (key, Op::Put(serialized));
+        let entry = (key, Op::Put(serialized, feature_type));
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
 
+    #[cfg(feature = "full")]
     /// Insert an element in Merk under a key if it doesn't yet exist; path
     /// should be resolved and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -1053,6 +1264,7 @@ impl Element {
         }
     }
 
+    #[cfg(feature = "full")]
     pub fn insert_if_not_exists_into_batch_operations<
         'db,
         S: StorageContext<'db>,
@@ -1062,6 +1274,7 @@ impl Element {
         merk: &mut Merk<S>,
         key: K,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
         let exists = cost_return_on_error!(
@@ -1073,12 +1286,13 @@ impl Element {
         } else {
             cost_return_on_error!(
                 &mut cost,
-                self.insert_into_batch_operations(key, batch_operations)
+                self.insert_into_batch_operations(key, batch_operations, feature_type)
             );
             Ok(true).wrap_with_cost(cost)
         }
     }
 
+    #[cfg(feature = "full")]
     /// Insert a reference element in Merk under a key; path should be resolved
     /// and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -1096,28 +1310,58 @@ impl Element {
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
-        let batch_operations = [(key, Op::PutCombinedReference(serialized, referenced_value))];
+        let mut cost = OperationCost::default();
+        let merk_feature_type = cost_return_on_error!(
+            &mut cost,
+            self.get_feature_type(merk.is_sum_tree)
+                .wrap_with_cost(OperationCost::default())
+        );
+
+        let batch_operations = [(
+            key,
+            Op::PutCombinedReference(serialized, referenced_value, merk_feature_type),
+        )];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
+    #[cfg(feature = "full")]
     pub fn insert_reference_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
         referenced_value: Hash,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
-        let entry = (key, Op::PutCombinedReference(serialized, referenced_value));
+
+        let entry = (
+            key,
+            Op::PutCombinedReference(serialized, referenced_value, feature_type),
+        );
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
 
+    #[cfg(feature = "full")]
+    pub fn get_tree_cost(&self) -> Result<u32, Error> {
+        match self {
+            Element::Tree(..) => Ok(TREE_COST_SIZE),
+            Element::SumTree(..) => Ok(SUM_TREE_COST_SIZE),
+            _ => Err(Error::CorruptedCodeExecution(
+                "trying to get tree cost from non tree element",
+            )),
+        }
+    }
+
+    #[cfg(feature = "full")]
     /// Insert a tree element in Merk under a key; path should be resolved
     /// and proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -1130,32 +1374,42 @@ impl Element {
         subtree_root_hash: Hash,
         options: Option<MerkOptions>,
     ) -> CostResult<(), Error> {
-        let cost = TREE_COST_SIZE
-            + self.get_flags().as_ref().map_or(0, |flags| {
-                let flags_len = flags.len() as u32;
-                flags_len + flags_len.required_space() as u32
-            });
         let serialized = match self.serialize() {
             Ok(s) => s,
             Err(e) => return Err(e).wrap_with_cost(Default::default()),
         };
 
+        let cost = OperationCost::default();
+        let merk_feature_type =
+            cost_return_on_error_no_add!(&cost, self.get_feature_type(merk.is_sum_tree));
+
+        let tree_cost = cost_return_on_error_no_add!(&cost, self.get_tree_cost());
+
+        let cost = tree_cost
+            + self.get_flags().as_ref().map_or(0, |flags| {
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
         let batch_operations = [(
             key,
-            Op::PutLayeredReference(serialized, cost, subtree_root_hash),
+            Op::PutLayeredReference(serialized, cost, subtree_root_hash, merk_feature_type),
         )];
+        let uses_sum_nodes = merk.is_sum_tree;
         merk.apply_with_tree_costs::<_, Vec<u8>>(&batch_operations, &[], options, &|key, value| {
-            Self::tree_costs_for_key_value(key, value).map_err(anyhow::Error::msg)
+            Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
+                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
+    #[cfg(feature = "full")]
     pub fn insert_subtree_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
         subtree_root_hash: Hash,
         is_replace: bool,
         batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
     ) -> CostResult<(), Error> {
         let serialized = match self.serialize() {
             Ok(s) => s,
@@ -1166,22 +1420,24 @@ impl Element {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32
             });
+
         // Replacing is more efficient, but should lead to the same costs
         let entry = if is_replace {
             (
                 key,
-                Op::ReplaceLayeredReference(serialized, cost, subtree_root_hash),
+                Op::ReplaceLayeredReference(serialized, cost, subtree_root_hash, feature_type),
             )
         } else {
             (
                 key,
-                Op::PutLayeredReference(serialized, cost, subtree_root_hash),
+                Op::PutLayeredReference(serialized, cost, subtree_root_hash, feature_type),
             )
         };
         batch_operations.push(entry);
         Ok(()).wrap_with_cost(Default::default())
     }
 
+    #[cfg(feature = "full")]
     pub fn serialize(&self) -> Result<Vec<u8>, Error> {
         bincode::DefaultOptions::default()
             .with_varint_encoding()
@@ -1190,6 +1446,7 @@ impl Element {
             .map_err(|_| Error::CorruptedData(String::from("unable to serialize element")))
     }
 
+    #[cfg(feature = "full")]
     pub fn serialized_size(&self) -> usize {
         bincode::DefaultOptions::default()
             .with_varint_encoding()
@@ -1198,6 +1455,7 @@ impl Element {
             .unwrap() as usize // this should not be able to error
     }
 
+    #[cfg(any(feature = "full", feature = "verify"))]
     pub fn deserialize(bytes: &[u8]) -> Result<Self, Error> {
         bincode::DefaultOptions::default()
             .with_varint_encoding()
@@ -1206,6 +1464,7 @@ impl Element {
             .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
     }
 
+    #[cfg(feature = "full")]
     pub fn iterator<I: RawIterator>(mut raw_iter: I) -> CostContext<ElementsIterator<I>> {
         let mut cost = OperationCost::default();
         raw_iter.seek_to_first().unwrap_add_cost(&mut cost);
@@ -1213,22 +1472,25 @@ impl Element {
     }
 }
 
+#[cfg(feature = "full")]
 pub struct ElementsIterator<I: RawIterator> {
     raw_iter: I,
 }
 
+#[cfg(feature = "full")]
 pub fn raw_decode(bytes: &[u8]) -> Result<Element, Error> {
     let tree = Tree::decode_raw(bytes, vec![]).map_err(|e| Error::CorruptedData(e.to_string()))?;
     let element: Element = Element::deserialize(tree.value_as_slice())?;
     Ok(element)
 }
 
+#[cfg(feature = "full")]
 impl<I: RawIterator> ElementsIterator<I> {
     pub fn new(raw_iter: I) -> Self {
         ElementsIterator { raw_iter }
     }
 
-    pub fn next(&mut self) -> CostResult<Option<KeyElementPair>, Error> {
+    pub fn next_element(&mut self) -> CostResult<Option<KeyElementPair>, Error> {
         let mut cost = OperationCost::default();
 
         Ok(if self.raw_iter.valid().unwrap_add_cost(&mut cost) {
@@ -1263,6 +1525,7 @@ impl<I: RawIterator> ElementsIterator<I> {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use merk::test_utils::TempMerk;
@@ -1317,6 +1580,15 @@ mod tests {
         assert_eq!(serialized.len(), item.serialized_size());
         // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
         assert_eq!(hex::encode(serialized), "0003abcdef00");
+
+        assert_eq!(hex::encode(5.encode_var_vec()), "0a");
+
+        let item = Element::new_sum_item(5);
+        let serialized = item.serialize().expect("expected to serialize");
+        assert_eq!(serialized.len(), 3);
+        assert_eq!(serialized.len(), item.serialized_size());
+        // The item is variable length 3 bytes, so it's enum 2 then 32 bytes of zeroes
+        assert_eq!(hex::encode(serialized), "030a00");
 
         let item = Element::new_item_with_flags(
             hex::decode("abcdef").expect("expected to decode"),
@@ -1570,7 +1842,7 @@ mod tests {
         .expect("expected successful get_query");
 
         let elements: Vec<KeyElementPair> = elements
-            .into_iter()
+            .into_iterator()
             .filter_map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(_element) => None,
                 QueryResultElement::KeyElementPairResultItem(key_element_pair) => {
@@ -1603,7 +1875,7 @@ mod tests {
         .expect("expected successful get_query");
 
         let elements: Vec<KeyElementPair> = elements
-            .into_iter()
+            .into_iterator()
             .filter_map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(_element) => None,
                 QueryResultElement::KeyElementPairResultItem(key_element_pair) => {

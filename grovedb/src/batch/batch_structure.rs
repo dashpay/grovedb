@@ -1,21 +1,28 @@
+#[cfg(feature = "full")]
 use std::{collections::BTreeMap, fmt};
 
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error,
     storage_cost::{removal::StorageRemovedBytes, StorageCost},
     CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use nohash_hasher::IntMap;
+#[cfg(feature = "full")]
 use visualize::{DebugByteVectors, DebugBytes};
 
+#[cfg(feature = "full")]
 use crate::{
     batch::{key_info::KeyInfo, GroveDbOp, KeyInfoPath, Op, TreeCache},
     Element, ElementFlags, Error,
 };
 
+#[cfg(feature = "full")]
 ///                          LEVEL           PATH                   KEY      OP
 type OpsByLevelPath = IntMap<u32, BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>>>;
 
+#[cfg(feature = "full")]
 pub(super) struct BatchStructure<C, F, SR> {
     /// Operations by level path
     pub(super) ops_by_level_paths: OpsByLevelPath,
@@ -33,6 +40,7 @@ pub(super) struct BatchStructure<C, F, SR> {
     pub(super) last_level: u32,
 }
 
+#[cfg(feature = "full")]
 impl<F, SR, S: fmt::Debug> fmt::Debug for BatchStructure<S, F, SR> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut fmt_int_map = IntMap::default();
@@ -58,6 +66,7 @@ impl<F, SR, S: fmt::Debug> fmt::Debug for BatchStructure<S, F, SR> {
     }
 }
 
+#[cfg(feature = "full")]
 impl<C, F, SR> BatchStructure<C, F, SR>
 where
     C: TreeCache<F, SR>,
@@ -88,13 +97,15 @@ where
             ops_by_qualified_paths.insert(path.to_path_consume(), op.op.clone());
             let op_cost = OperationCost::default();
             let op_result = match &op.op {
-                Op::Insert { element } => {
+                Op::Insert { element } | Op::Replace { element } => {
                     if let Element::Tree(..) = element {
-                        cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op));
+                        cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op, false));
+                    } else if let Element::SumTree(..) = element {
+                        cost_return_on_error!(&mut cost, merk_tree_cache.insert(&op, true));
                     }
                     Ok(())
                 }
-                Op::Delete | Op::DeleteTree => Ok(()),
+                Op::Delete | Op::DeleteTree | Op::DeleteSumTree => Ok(()),
                 Op::ReplaceTreeRootKey { .. } | Op::InsertTreeWithRootHash { .. } => {
                     Err(Error::InvalidBatchOperation(
                         "replace and insert tree hash are internal operations only",

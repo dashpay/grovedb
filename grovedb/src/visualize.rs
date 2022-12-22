@@ -1,21 +1,31 @@
+#[cfg(feature = "full")]
 use std::io::{Result, Write};
 
+#[cfg(feature = "full")]
 use bincode::Options;
+#[cfg(feature = "full")]
 use merk::{Merk, VisualizeableMerk};
+#[cfg(feature = "full")]
 use storage::StorageContext;
+#[cfg(feature = "full")]
 use visualize::{visualize_stdout, Drawer, Visualize};
 
+#[cfg(feature = "full")]
 use crate::{
     reference_path::ReferencePathType, subtree::Element, util::storage_context_optional_tx,
     GroveDb, TransactionArg,
 };
 
+#[cfg(feature = "full")]
 impl Visualize for Element {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
         match self {
             Element::Item(value, _) => {
                 drawer.write(b"item: ")?;
                 drawer = value.visualize(drawer)?;
+            }
+            Element::SumItem(value, _) => {
+                drawer.write(format!("sum_item: {}", value).as_bytes())?;
             }
             Element::Reference(_ref, ..) => {
                 drawer.write(b"ref")?;
@@ -34,11 +44,16 @@ impl Visualize for Element {
                 drawer.write(b"tree: ")?;
                 drawer = root_key.as_deref().visualize(drawer)?;
             }
+            Element::SumTree(root_key, ..) => {
+                drawer.write(b"sum_tree: ")?;
+                drawer = root_key.as_deref().visualize(drawer)?;
+            }
         }
         Ok(drawer)
     }
 }
 
+#[cfg(feature = "full")]
 impl Visualize for ReferencePathType {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
         match self {
@@ -46,7 +61,7 @@ impl Visualize for ReferencePathType {
                 drawer.write(b"absolute path reference: ")?;
                 drawer.write(
                     path.iter()
-                        .map(|a| hex::encode(a))
+                        .map(hex::encode)
                         .collect::<Vec<String>>()
                         .join("/")
                         .as_bytes(),
@@ -58,7 +73,7 @@ impl Visualize for ReferencePathType {
                 drawer.write(
                     end_path
                         .iter()
-                        .map(|a| hex::encode(a))
+                        .map(hex::encode)
                         .collect::<Vec<String>>()
                         .join("/")
                         .as_bytes(),
@@ -70,7 +85,7 @@ impl Visualize for ReferencePathType {
                 drawer.write(
                     end_path
                         .iter()
-                        .map(|a| hex::encode(a))
+                        .map(hex::encode)
                         .collect::<Vec<String>>()
                         .join("/")
                         .as_bytes(),
@@ -79,6 +94,17 @@ impl Visualize for ReferencePathType {
             ReferencePathType::CousinReference(key) => {
                 drawer.write(b"cousin reference: ")?;
                 drawer = key.visualize(drawer)?;
+            }
+            ReferencePathType::RemovedCousinReference(middle_path) => {
+                drawer.write(b"removed cousin reference: ")?;
+                drawer.write(
+                    middle_path
+                        .iter()
+                        .map(hex::encode)
+                        .collect::<Vec<String>>()
+                        .join("/")
+                        .as_bytes(),
+                )?;
             }
             ReferencePathType::SiblingReference(key) => {
                 drawer.write(b"sibling reference: ")?;
@@ -89,6 +115,7 @@ impl Visualize for ReferencePathType {
     }
 }
 
+#[cfg(feature = "full")]
 impl GroveDb {
     fn draw_subtree<W: Write>(
         &self,
@@ -105,8 +132,10 @@ impl GroveDb {
             storage,
             {
                 let mut iter = Element::iterator(storage.unwrap().raw_iter()).unwrap();
-                while let Some((key, element)) =
-                    iter.next().unwrap().expect("cannot get next element")
+                while let Some((key, element)) = iter
+                    .next_element()
+                    .unwrap()
+                    .expect("cannot get next element")
                 {
                     drawer.write(b"\n[key: ")?;
                     drawer = key.visualize(drawer)?;
@@ -158,12 +187,14 @@ impl GroveDb {
     }
 }
 
+#[cfg(feature = "full")]
 impl Visualize for GroveDb {
     fn visualize<W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>> {
         self.visualize_start(drawer, None)
     }
 }
 
+#[cfg(feature = "full")]
 #[allow(dead_code)]
 pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
     visualize_stdout(&VisualizeableMerk::new(merk, |bytes: &[u8]| {
@@ -175,6 +206,7 @@ pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
     }));
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use visualize::to_hex;

@@ -52,17 +52,17 @@ impl Add for StorageRemovedBytes {
                 BasicStorageRemoval(r) => BasicStorageRemoval(s + r),
                 SectionedStorageRemoval(mut map) => {
                     let default = Identifier::default();
-                    if map.contains_key(&default) {
+                    if let std::collections::btree_map::Entry::Vacant(e) = map.entry(default) {
+                        let mut new_map = IntMap::new();
+                        new_map.insert(UNKNOWN_EPOCH, s);
+                        e.insert(new_map);
+                    } else {
                         let mut old_section_map = map.remove(&default).unwrap_or_default();
                         if let Some(old_value) = old_section_map.remove(UNKNOWN_EPOCH) {
                             old_section_map.insert(UNKNOWN_EPOCH, old_value + s);
                         } else {
                             old_section_map.insert(UNKNOWN_EPOCH, s);
                         }
-                    } else {
-                        let mut new_map = IntMap::new();
-                        new_map.insert(UNKNOWN_EPOCH, s);
-                        map.insert(default, new_map);
                     }
                     SectionedStorageRemoval(map)
                 }
@@ -71,17 +71,17 @@ impl Add for StorageRemovedBytes {
                 NoStorageRemoval => SectionedStorageRemoval(smap),
                 BasicStorageRemoval(r) => {
                     let default = Identifier::default();
-                    if smap.contains_key(&default) {
+                    if let std::collections::btree_map::Entry::Vacant(e) = smap.entry(default) {
+                        let mut new_map = IntMap::new();
+                        new_map.insert(UNKNOWN_EPOCH, r);
+                        e.insert(new_map);
+                    } else {
                         let mut old_section_map = smap.remove(&default).unwrap_or_default();
                         if let Some(old_value) = old_section_map.remove(UNKNOWN_EPOCH) {
                             old_section_map.insert(UNKNOWN_EPOCH, old_value + r);
                         } else {
                             old_section_map.insert(UNKNOWN_EPOCH, r);
                         }
-                    } else {
-                        let mut new_map = IntMap::new();
-                        new_map.insert(UNKNOWN_EPOCH, r);
-                        smap.insert(default, new_map);
                     }
                     SectionedStorageRemoval(smap)
                 }

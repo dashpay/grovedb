@@ -1,26 +1,34 @@
-use anyhow::{anyhow, Error};
+#[cfg(feature = "full")]
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use ed::{Decode, Encode};
+#[cfg(feature = "full")]
 use storage::StorageContext;
 
+#[cfg(feature = "full")]
 use super::Tree;
-use crate::tree::TreeInner;
+#[cfg(feature = "full")]
+use crate::{
+    error::{Error, Error::EdError},
+    tree::TreeInner,
+    Error::StorageError,
+};
 
+#[cfg(feature = "full")]
 impl Tree {
     pub fn decode_raw(bytes: &[u8], key: Vec<u8>) -> Result<Self, Error> {
-        Tree::decode(key, bytes).map_err(|e| anyhow!("failed to decode a Tree structure ({})", e))
+        Tree::decode(key, bytes).map_err(EdError)
     }
 
-    pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> CostContext<Result<Option<Self>, Error>>
+    pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> CostResult<Option<Self>, Error>
     where
         S: StorageContext<'db>,
         K: AsRef<[u8]>,
-        Error: From<S::Error>,
     {
         let mut cost = OperationCost::default();
-        let tree_bytes = cost_return_on_error!(&mut cost, storage.get(&key).map_err(|e| e.into()));
+        let tree_bytes = cost_return_on_error!(&mut cost, storage.get(&key).map_err(StorageError));
 
         let tree_opt = cost_return_on_error_no_add!(
             &cost,
@@ -33,6 +41,7 @@ impl Tree {
     }
 }
 
+#[cfg(feature = "full")]
 impl Tree {
     #[inline]
     pub fn encode(&self) -> Vec<u8> {
@@ -78,25 +87,27 @@ impl Tree {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use super::{super::Link, *};
+    use crate::TreeFeatureType::{BasicMerk, SummedMerk};
 
     #[test]
     fn encode_leaf_tree() {
-        let tree = Tree::from_fields(vec![0], vec![1], [55; 32], None, None).unwrap();
-        assert_eq!(tree.encoding_length(), 67);
+        let tree = Tree::from_fields(vec![0], vec![1], [55; 32], None, None, BasicMerk).unwrap();
+        assert_eq!(tree.encoding_length(), 68);
         assert_eq!(
             tree.value_encoding_length_with_parent_to_child_reference(),
-            102
+            104
         );
         assert_eq!(
             tree.encode(),
             vec![
-                0, 0, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
-                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27, 167,
-                116, 207, 158, 131, 208, 25, 73, 98, 245, 209, 227, 170, 26, 72, 212, 134, 166,
-                126, 39, 98, 166, 199, 149, 144, 21, 1,
+                0, 0, 0, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
+                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27,
+                167, 116, 207, 158, 131, 208, 25, 73, 98, 245, 209, 227, 170, 26, 72, 212, 134,
+                166, 126, 39, 98, 166, 199, 149, 144, 21, 1
             ]
         );
     }
@@ -111,9 +122,10 @@ mod tests {
             Some(Link::Modified {
                 pending_writes: 1,
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3]).unwrap(),
+                tree: Tree::new(vec![2], vec![3], BasicMerk).unwrap(),
             }),
             None,
+            BasicMerk,
         )
         .unwrap();
         tree.encode();
@@ -127,21 +139,23 @@ mod tests {
             [55; 32],
             Some(Link::Loaded {
                 hash: [66; 32],
+                sum: None,
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3]).unwrap(),
+                tree: Tree::new(vec![2], vec![3], BasicMerk).unwrap(),
             }),
             None,
+            BasicMerk,
         )
         .unwrap();
         assert_eq!(
             tree.encode(),
             vec![
                 1, 1, 2, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66,
-                66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 123, 124, 0, 55, 55, 55,
+                66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 123, 124, 0, 0, 0, 55, 55,
                 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
-                55, 55, 55, 55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158, 131,
-                208, 25, 73, 98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199,
-                149, 144, 21, 1
+                55, 55, 55, 55, 55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158,
+                131, 208, 25, 73, 98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166,
+                199, 149, 144, 21, 1
             ]
         );
     }
@@ -154,21 +168,23 @@ mod tests {
             [55; 32],
             Some(Link::Uncommitted {
                 hash: [66; 32],
+                sum: Some(10),
                 child_heights: (123, 124),
-                tree: Tree::new(vec![2], vec![3]).unwrap(),
+                tree: Tree::new(vec![2], vec![3], BasicMerk).unwrap(),
             }),
             None,
+            SummedMerk(5),
         )
         .unwrap();
         assert_eq!(
             tree.encode(),
             vec![
                 1, 1, 2, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66,
-                66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 123, 124, 0, 55, 55, 55,
+                66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 123, 124, 1, 20, 0, 1, 10,
                 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
-                55, 55, 55, 55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158, 131,
-                208, 25, 73, 98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199,
-                149, 144, 21, 1
+                55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27, 167, 116,
+                207, 158, 131, 208, 25, 73, 98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39,
+                98, 166, 199, 149, 144, 21, 1
             ]
         );
     }
@@ -181,30 +197,32 @@ mod tests {
             [55; 32],
             Some(Link::Reference {
                 hash: [66; 32],
+                sum: None,
                 child_heights: (123, 124),
                 key: vec![2],
             }),
             None,
+            BasicMerk,
         )
         .unwrap();
         assert_eq!(
             tree.encoding_length(), /* this does not have the key encoded, just value and
                                      * left/right */
-            103
+            105
         );
         assert_eq!(
             tree.value_encoding_length_with_parent_to_child_reference(),
-            102 // This is 1 less, because the right "Option" byte was not paid for
+            104 // This is 1 less, because the right "Option" byte was not paid for
         );
         assert_eq!(
             tree.encode(),
             vec![
                 1, 1, 2, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66,
-                66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 123, 124, 0, 55, 55, 55,
+                66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 123, 124, 0, 0, 0, 55, 55,
                 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
-                55, 55, 55, 55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158, 131,
-                208, 25, 73, 98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199,
-                149, 144, 21, 1
+                55, 55, 55, 55, 55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158,
+                131, 208, 25, 73, 98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166,
+                199, 149, 144, 21, 1
             ]
         );
     }
@@ -212,24 +230,25 @@ mod tests {
     #[test]
     fn decode_leaf_tree() {
         let bytes = vec![
-            0, 0, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
-            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158, 131,
-            208, 25, 73, 98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199, 149,
-            144, 21, 1,
+            0, 0, 0, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
+            55, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158,
+            131, 208, 25, 73, 98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199,
+            149, 144, 21, 1,
         ];
         let tree = Tree::decode(vec![0], bytes.as_slice()).expect("should decode correctly");
         assert_eq!(tree.key(), &[0]);
         assert_eq!(tree.value_as_slice(), &[1]);
+        assert_eq!(tree.inner.kv.feature_type, BasicMerk);
     }
 
     #[test]
     fn decode_reference_tree() {
         let bytes = vec![
             1, 1, 2, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66,
-            66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 123, 124, 0, 55, 55, 55, 55, 55,
+            66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 66, 123, 124, 0, 0, 0, 55, 55, 55, 55,
             55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55, 55,
-            55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158, 131, 208, 25, 73, 98,
-            245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199, 149, 144, 21, 1,
+            55, 55, 55, 55, 55, 55, 32, 34, 236, 157, 87, 27, 167, 116, 207, 158, 131, 208, 25, 73,
+            98, 245, 209, 227, 170, 26, 72, 212, 134, 166, 126, 39, 98, 166, 199, 149, 144, 21, 1,
         ];
         let tree = Tree::decode(vec![0], bytes.as_slice()).expect("should decode correctly");
         assert_eq!(tree.key(), &[0]);
@@ -238,6 +257,7 @@ mod tests {
             key,
             child_heights,
             hash,
+            sum: _,
         }) = tree.link(true)
         {
             assert_eq!(*key, [2]);

@@ -1,35 +1,38 @@
 //! Provides `ChunkProducer`, which creates chunk proofs for full replication of
 //! a Merk.
-use std::error::Error;
 
-use anyhow::{anyhow, Result};
+#[cfg(feature = "full")]
 use costs::CostsExt;
+#[cfg(feature = "full")]
 use storage::{RawIterator, StorageContext};
 
+#[cfg(feature = "full")]
 use super::Merk;
-use crate::proofs::{chunk::get_next_chunk, Node, Op};
+#[cfg(feature = "full")]
+use crate::{
+    error::Error,
+    proofs::{chunk::get_next_chunk, Node, Op},
+};
 
+#[cfg(feature = "full")]
 /// A `ChunkProducer` allows the creation of chunk proofs, used for trustlessly
 /// replicating entire Merk trees. Chunks can be generated on the fly in a
 /// random order, or iterated in order for slightly better performance.
-pub struct ChunkProducer<'db, S: StorageContext<'db>>
-where
-    <S as StorageContext<'db>>::Error: Error + Sync + Send + 'static,
-{
+pub struct ChunkProducer<'db, S: StorageContext<'db>> {
     trunk: Vec<Op>,
     chunk_boundaries: Vec<Vec<u8>>,
     raw_iter: S::RawIterator,
     index: usize,
 }
 
+#[cfg(feature = "full")]
 impl<'db, S> ChunkProducer<'db, S>
 where
     S: StorageContext<'db>,
-    <S as StorageContext<'db>>::Error: Error + Sync + Send + 'static,
 {
     /// Creates a new `ChunkProducer` for the given `Merk` instance. In the
     /// constructor, the first chunk (the "trunk") will be created.
-    pub fn new(merk: &Merk<S>) -> Result<Self> {
+    pub fn new(merk: &Merk<S>) -> Result<Self, Error> {
         let (trunk, has_more) = merk
             .walk(|maybe_walker| match maybe_walker {
                 Some(mut walker) => walker.create_trunk_proof(),
@@ -41,7 +44,7 @@ where
             trunk
                 .iter()
                 .filter_map(|op| match op {
-                    Op::Push(Node::KVValueHash(key, ..)) => Some(key.clone()),
+                    Op::Push(Node::KVValueHashFeatureType(key, ..)) => Some(key.clone()),
                     _ => None,
                 })
                 .collect()
@@ -63,9 +66,9 @@ where
     /// Gets the chunk with the given index. Errors if the index is out of
     /// bounds or the tree is empty - the number of chunks can be checked by
     /// calling `producer.len()`.
-    pub fn chunk(&mut self, index: usize) -> Result<Vec<Op>> {
+    pub fn chunk(&mut self, index: usize) -> Result<Vec<Op>, Error> {
         if index >= self.len() {
-            return Err(anyhow!("Chunk index out-of-bounds"));
+            return Err(Error::ChunkingError("Chunk index out-of-bounds"));
         }
 
         self.index = index;
@@ -95,10 +98,12 @@ where
     /// Gets the next chunk based on the `ChunkProducer`'s internal index state.
     /// This is mostly useful for letting `ChunkIter` yield the chunks in order,
     /// optimizing throughput compared to random access.
-    fn next_chunk(&mut self) -> Result<Vec<Op>> {
+    fn next_chunk(&mut self) -> Result<Vec<Op>, Error> {
         if self.index == 0 {
             if self.trunk.is_empty() {
-                return Err(anyhow!("Attempted to fetch chunk on empty tree"));
+                return Err(Error::ChunkingError(
+                    "Attempted to fetch chunk on empty tree",
+                ));
             }
             self.index += 1;
             return Ok(self.trunk.clone());
@@ -117,10 +122,10 @@ where
     }
 }
 
+#[cfg(feature = "full")]
 impl<'db, S> IntoIterator for ChunkProducer<'db, S>
 where
     S: StorageContext<'db>,
-    <S as StorageContext<'db>>::Error: Error + Sync + Send + 'static,
 {
     type IntoIter = ChunkIter<'db, S>;
     type Item = <ChunkIter<'db, S> as Iterator>::Item;
@@ -130,20 +135,20 @@ where
     }
 }
 
+#[cfg(feature = "full")]
 /// A `ChunkIter` iterates through all the chunks for the underlying `Merk`
 /// instance in order (the first chunk is the "trunk" chunk). Yields `None`
 /// after all chunks have been yielded.
 pub struct ChunkIter<'db, S>(ChunkProducer<'db, S>)
 where
-    S: StorageContext<'db>,
-    <S as StorageContext<'db>>::Error: Error + Sync + Send + 'static;
+    S: StorageContext<'db>;
 
+#[cfg(feature = "full")]
 impl<'db, S> Iterator for ChunkIter<'db, S>
 where
     S: StorageContext<'db>,
-    <S as StorageContext<'db>>::Error: Error + Sync + Send + 'static,
 {
-    type Item = Result<Vec<Op>>;
+    type Item = Result<Vec<Op>, Error>;
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.0.len(), Some(self.0.len()))
@@ -158,18 +163,19 @@ where
     }
 }
 
+#[cfg(feature = "full")]
 impl<'db, S> Merk<S>
 where
     S: StorageContext<'db>,
-    <S as StorageContext<'db>>::Error: Error + Sync + Send + 'static,
 {
     /// Creates a `ChunkProducer` which can return chunk proofs for replicating
     /// the entire Merk tree.
-    pub fn chunks(&self) -> Result<ChunkProducer<'db, S>> {
+    pub fn chunks(&self) -> Result<ChunkProducer<'db, S>, Error> {
         ChunkProducer::new(self)
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use std::iter::empty;
@@ -234,7 +240,7 @@ mod tests {
             let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
                 .expect("cannot open rocksdb storage");
 
-            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+            let mut merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
                 .unwrap()
                 .unwrap();
             let batch = make_batch_seq(1..10);
@@ -249,7 +255,7 @@ mod tests {
         };
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
-        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap())
+        let merk = Merk::open_base(storage.get_storage_context(empty()).unwrap(), false)
             .unwrap()
             .unwrap();
         let reopen_chunks = merk.chunks().unwrap().into_iter().map(|x| x.unwrap());

@@ -1,31 +1,38 @@
+#[cfg(feature = "full")]
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
 };
 
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use itertools::Itertools;
-use merk::{
-    estimated_costs::worst_case_costs::{worst_case_merk_propagate, WorstCaseLayerInformation},
-    CryptoHash,
+#[cfg(feature = "full")]
+use merk::estimated_costs::worst_case_costs::{
+    worst_case_merk_propagate, WorstCaseLayerInformation,
 };
+use merk::RootHashKeyAndSum;
+#[cfg(feature = "full")]
 use storage::rocksdb_storage::RocksDbStorage;
 
+#[cfg(feature = "full")]
 use crate::{
     batch::{
-        key_info::KeyInfo,
-        mode::{BatchRunMode, BatchRunMode::WorstCaseMode},
-        BatchApplyOptions, GroveDbOp, KeyInfoPath, Op, TreeCache,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveDbOp, KeyInfoPath, Op,
+        TreeCache,
     },
     Error, GroveDb,
 };
 
+#[cfg(feature = "full")]
 impl Op {
     fn worst_case_cost(
         &self,
         key: &KeyInfo,
+        is_in_parent_sum_tree: bool,
         worst_case_layer_element_estimates: &WorstCaseLayerInformation,
         propagate: bool,
     ) -> CostResult<(), Error> {
@@ -37,17 +44,32 @@ impl Op {
             }
         };
         match self {
-            Op::ReplaceTreeRootKey { .. } => GroveDb::worst_case_merk_replace_tree(
+            Op::ReplaceTreeRootKey { sum, .. } => GroveDb::worst_case_merk_replace_tree(
                 key,
+                sum.is_some(),
+                is_in_parent_sum_tree,
                 worst_case_layer_element_estimates,
                 propagate,
             ),
-            Op::InsertTreeWithRootHash { flags, .. } => {
-                GroveDb::worst_case_merk_insert_tree(key, flags, propagate_if_input())
-            }
-            Op::Insert { element } => {
-                GroveDb::worst_case_merk_insert_element(key, &element, propagate_if_input())
-            }
+            Op::InsertTreeWithRootHash { flags, sum, .. } => GroveDb::worst_case_merk_insert_tree(
+                key,
+                flags,
+                sum.is_some(),
+                is_in_parent_sum_tree,
+                propagate_if_input(),
+            ),
+            Op::Insert { element } => GroveDb::worst_case_merk_insert_element(
+                key,
+                element,
+                is_in_parent_sum_tree,
+                propagate_if_input(),
+            ),
+            Op::Replace { element } => GroveDb::worst_case_merk_replace_element(
+                key,
+                element,
+                is_in_parent_sum_tree,
+                propagate_if_input(),
+            ),
             Op::Delete => GroveDb::worst_case_merk_delete_element(
                 key,
                 worst_case_layer_element_estimates,
@@ -55,6 +77,13 @@ impl Op {
             ),
             Op::DeleteTree => GroveDb::worst_case_merk_delete_tree(
                 key,
+                false,
+                worst_case_layer_element_estimates,
+                propagate,
+            ),
+            Op::DeleteSumTree => GroveDb::worst_case_merk_delete_tree(
+                key,
+                true,
                 worst_case_layer_element_estimates,
                 propagate,
             ),
@@ -62,6 +91,7 @@ impl Op {
     }
 }
 
+#[cfg(feature = "full")]
 /// Cache for subtree paths for worst case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
@@ -69,6 +99,7 @@ pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
     cached_merks: HashSet<KeyInfoPath>,
 }
 
+#[cfg(feature = "full")]
 impl WorstCaseTreeCacheKnownPaths {
     pub(in crate::batch) fn new_with_worst_case_layer_information(
         paths: HashMap<KeyInfoPath, WorstCaseLayerInformation>,
@@ -80,14 +111,16 @@ impl WorstCaseTreeCacheKnownPaths {
     }
 }
 
+#[cfg(feature = "full")]
 impl fmt::Debug for WorstCaseTreeCacheKnownPaths {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheKnownPaths").finish()
     }
 }
 
+#[cfg(feature = "full")]
 impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
-    fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
+    fn insert(&mut self, op: &GroveDbOp, _is_sum_tree: bool) -> CostResult<(), Error> {
         let mut worst_case_cost = OperationCost::default();
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
@@ -100,7 +133,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     }
 
     fn get_batch_run_mode(&self) -> BatchRunMode {
-        WorstCaseMode(self.paths.clone())
+        BatchRunMode::WorstCase(self.paths.clone())
     }
 
     fn execute_ops_on_path(
@@ -111,29 +144,29 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
-    ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error> {
+    ) -> CostResult<RootHashKeyAndSum, Error> {
         let mut cost = OperationCost::default();
 
         let worst_case_layer_element_estimates = cost_return_on_error_no_add!(
             &cost,
             self.paths
                 .get(path)
-                .ok_or(Error::PathNotFoundInCacheForEstimatedCosts(format!(
+                .ok_or_else(|| Error::PathNotFoundInCacheForEstimatedCosts(format!(
                     "inserting into worst case costs path: {}",
                     path.0.iter().map(|k| hex::encode(k.as_slice())).join("/")
                 )))
         );
 
         // Then we have to get the tree
-        if self.cached_merks.get(&path).is_none() {
-            GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, path);
+        if self.cached_merks.get(path).is_none() {
+            GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, path, false);
             self.cached_merks.insert(path.clone());
         }
 
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost_return_on_error!(
                 &mut cost,
-                op.worst_case_cost(&key, worst_case_layer_element_estimates, false)
+                op.worst_case_cost(&key, false, worst_case_layer_element_estimates, false)
             );
         }
 
@@ -141,7 +174,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
             &mut cost,
             worst_case_merk_propagate(worst_case_layer_element_estimates).map_err(Error::MerkError)
         );
-        Ok(([0u8; 32], None)).wrap_with_cost(cost)
+        Ok(([0u8; 32], None, None)).wrap_with_cost(cost)
     }
 
     fn update_base_merk_root_key(&mut self, _root_key: Option<Vec<u8>>) -> CostResult<(), Error> {
@@ -151,7 +184,9 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         if let Some(_estimated_layer_info) = self.paths.get(&base_path) {
             // Then we have to get the tree
             if self.cached_merks.get(&base_path).is_none() {
-                GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(&mut cost, &base_path);
+                GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
+                    &mut cost, &base_path, false,
+                );
                 self.cached_merks.insert(base_path);
             }
         }
@@ -159,6 +194,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -221,7 +257,7 @@ mod tests {
             OperationCost {
                 seek_count: 5,
                 storage_cost: StorageCost {
-                    added_bytes: 113,
+                    added_bytes: 115,
                     replaced_bytes: 65535, // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
@@ -274,7 +310,7 @@ mod tests {
             OperationCost {
                 seek_count: 4,
                 storage_cost: StorageCost {
-                    added_bytes: 117,
+                    added_bytes: 119,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -327,7 +363,7 @@ mod tests {
             OperationCost {
                 seek_count: 4,
                 storage_cost: StorageCost {
-                    added_bytes: 147,
+                    added_bytes: 149,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -384,7 +420,7 @@ mod tests {
             OperationCost {
                 seek_count: 38,
                 storage_cost: StorageCost {
-                    added_bytes: 113,
+                    added_bytes: 115,
                     replaced_bytes: 2228190, // todo: verify
                     removed_bytes: NoStorageRemoval,
                 },
@@ -439,11 +475,11 @@ mod tests {
             OperationCost {
                 seek_count: 7,
                 storage_cost: StorageCost {
-                    added_bytes: 113,
-                    replaced_bytes: 81994,
+                    added_bytes: 115,
+                    replaced_bytes: 81996,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 65961,
+                storage_loaded_bytes: 65964,
                 hash_node_calls: 266,
             }
         );

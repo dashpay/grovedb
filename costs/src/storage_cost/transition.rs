@@ -33,12 +33,10 @@ impl StorageCost {
         if self.added_bytes > 0 {
             if self.removed_bytes.has_removal() {
                 OperationReplace
+            } else if self.replaced_bytes > 0 {
+                OperationUpdateBiggerSize
             } else {
-                if self.replaced_bytes > 0 {
-                    OperationUpdateBiggerSize
-                } else {
-                    OperationInsertNew
-                }
+                OperationInsertNew
             }
         } else if self.removed_bytes.has_removal() {
             if self.replaced_bytes > 0 {

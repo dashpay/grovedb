@@ -1,11 +1,15 @@
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error_no_add, storage_cost::key_value_cost::KeyValueStorageCost, CostResult,
     CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use storage::StorageContext;
 
+#[cfg(feature = "full")]
 use crate::{util::meta_storage_context_optional_tx, Error, GroveDb, TransactionArg};
 
+#[cfg(feature = "full")]
 impl GroveDb {
     pub fn put_aux<K: AsRef<[u8]>>(
         &self,

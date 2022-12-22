@@ -1,19 +1,45 @@
+#[cfg(feature = "full")]
 use std::{
     cmp::Ordering,
     hash::{Hash, Hasher},
 };
 
+#[cfg(feature = "full")]
 use storage::worst_case_costs::WorstKeyLength;
+#[cfg(feature = "full")]
 use visualize::{Drawer, Visualize};
 
+#[cfg(feature = "full")]
 use crate::batch::key_info::KeyInfo::{KnownKey, MaxKeySize};
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[cfg(feature = "full")]
+#[derive(Clone, Eq, Debug)]
 pub enum KeyInfo {
     KnownKey(Vec<u8>),
     MaxKeySize { unique_id: Vec<u8>, max_size: u8 },
 }
 
+#[cfg(feature = "full")]
+impl PartialEq for KeyInfo {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (KnownKey(..), MaxKeySize { .. }) | (MaxKeySize { .. }, KnownKey(..)) => false,
+            (KnownKey(a), KnownKey(b)) => a == b,
+            (
+                MaxKeySize {
+                    unique_id: unique_id_a,
+                    max_size: max_size_a,
+                },
+                MaxKeySize {
+                    unique_id: unique_id_b,
+                    max_size: max_size_b,
+                },
+            ) => unique_id_a == unique_id_b && max_size_a == max_size_b,
+        }
+    }
+}
+
+#[cfg(feature = "full")]
 impl PartialOrd<Self> for KeyInfo {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match self.as_slice().partial_cmp(other.as_slice()) {
@@ -21,8 +47,8 @@ impl PartialOrd<Self> for KeyInfo {
             Some(ord) => match ord {
                 Ordering::Less => Some(Ordering::Less),
                 Ordering::Equal => {
-                    let other_len = other.len();
-                    match self.len().partial_cmp(&other_len) {
+                    let other_len = other.max_length();
+                    match self.max_length().partial_cmp(&other_len) {
                         None => Some(Ordering::Equal),
                         Some(ord) => Some(ord),
                     }
@@ -33,19 +59,21 @@ impl PartialOrd<Self> for KeyInfo {
     }
 }
 
+#[cfg(feature = "full")]
 impl Ord for KeyInfo {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.as_slice().cmp(other.as_slice()) {
             Ordering::Less => Ordering::Less,
             Ordering::Equal => {
-                let other_len = other.len();
-                self.len().cmp(&other_len)
+                let other_len = other.max_length();
+                self.max_length().cmp(&other_len)
             }
             Ordering::Greater => Ordering::Greater,
         }
     }
 }
 
+#[cfg(feature = "full")]
 impl Hash for KeyInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
@@ -61,8 +89,9 @@ impl Hash for KeyInfo {
     }
 }
 
+#[cfg(feature = "full")]
 impl WorstKeyLength for KeyInfo {
-    fn len(&self) -> u8 {
+    fn max_length(&self) -> u8 {
         match self {
             Self::KnownKey(key) => key.len() as u8,
             Self::MaxKeySize { max_size, .. } => *max_size,
@@ -70,6 +99,7 @@ impl WorstKeyLength for KeyInfo {
     }
 }
 
+#[cfg(feature = "full")]
 impl KeyInfo {
     pub fn as_slice(&self) -> &[u8] {
         match self {
@@ -93,6 +123,7 @@ impl KeyInfo {
     }
 }
 
+#[cfg(feature = "full")]
 impl Visualize for KeyInfo {
     fn visualize<W: std::io::Write>(&self, mut drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
         match self {

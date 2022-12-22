@@ -1,11 +1,17 @@
+#[cfg(feature = "full")]
 use std::fmt;
 
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
+#[cfg(any(feature = "full", feature = "verify"))]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "full")]
 use visualize::visualize_to_vec;
 
+#[cfg(feature = "full")]
 use crate::Error;
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Reference path variants
 #[derive(Hash, Eq, PartialEq, Serialize, Deserialize, Clone)]
 pub enum ReferencePathType {
@@ -29,11 +35,18 @@ pub enum ReferencePathType {
     /// the cousin reference to swap m with c to get [a, b, c, d]
     CousinReference(Vec<u8>),
 
+    /// This swaps the immediate parent of the stored path with a path,
+    /// retaining the key value. e.g. current path = [a, b, c, d] you can use
+    /// the removed cousin reference to swap c with m and n to get [a, b, m, n,
+    /// d]
+    RemovedCousinReference(Vec<Vec<u8>>),
+
     /// This swaps the key with a new value, you use this to point to an element
     /// in the same tree.
     SiblingReference(Vec<u8>),
 }
 
+#[cfg(feature = "full")]
 impl fmt::Debug for ReferencePathType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut v = Vec::new();
@@ -43,6 +56,7 @@ impl fmt::Debug for ReferencePathType {
     }
 }
 
+#[cfg(feature = "full")]
 /// Given the reference path type and the current qualified path (path+key),
 /// this computes the absolute path of the item the reference is pointing to.
 pub fn path_from_reference_qualified_path_type(
@@ -50,11 +64,9 @@ pub fn path_from_reference_qualified_path_type(
     current_qualified_path: &[Vec<u8>],
 ) -> Result<Vec<Vec<u8>>, Error> {
     match current_qualified_path.split_last() {
-        None => {
-            return Err(Error::CorruptedPath(
-                "qualified path should always have an element",
-            ));
-        }
+        None => Err(Error::CorruptedPath(
+            "qualified path should always have an element",
+        )),
         Some((key, path)) => {
             let path_iter = path.iter().map(|k| k.as_slice());
             path_from_reference_path_type(reference_path_type, path_iter, Some(key.as_slice()))
@@ -62,6 +74,7 @@ pub fn path_from_reference_qualified_path_type(
     }
 }
 
+#[cfg(feature = "full")]
 /// Given the reference path type, the current path and the terminal key, this
 /// computes the absolute path of the item the reference is pointing to.
 pub fn path_from_reference_path_type<'p, P>(
@@ -73,7 +86,7 @@ where
     P: IntoIterator<Item = &'p [u8]>,
     <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
 {
-    return match reference_path_type {
+    match reference_path_type {
         // No computation required, we already know the absolute path
         ReferencePathType::AbsolutePathReference(path) => Ok(path),
 
@@ -136,6 +149,28 @@ where
             Ok(current_path_as_vec)
         }
 
+        // Pop child, swap parent, reattach child
+        ReferencePathType::RemovedCousinReference(mut cousin_path) => {
+            let mut current_path_as_vec = current_path
+                .into_iter()
+                .map(|p| p.to_vec())
+                .collect::<Vec<Vec<u8>>>();
+            if current_path_as_vec.is_empty() {
+                return Err(Error::InvalidInput(
+                    "reference stored path cannot satisfy reference constraints",
+                ));
+            }
+            let current_key = match current_key {
+                None => Err(Error::InvalidInput("cousin reference must supply a key")),
+                Some(k) => Ok(k.to_vec()),
+            }?;
+
+            current_path_as_vec.pop();
+            current_path_as_vec.append(&mut cousin_path);
+            current_path_as_vec.push(current_key);
+            Ok(current_path_as_vec)
+        }
+
         // Pop child, attach new child
         ReferencePathType::SiblingReference(sibling_key) => {
             let mut current_path_as_vec = current_path
@@ -145,27 +180,15 @@ where
             current_path_as_vec.push(sibling_key);
             Ok(current_path_as_vec)
         }
-    };
+    }
 }
 
+#[cfg(feature = "full")]
 impl ReferencePathType {
-    pub fn encoding_length(&self) -> usize {
-        match self {
-            ReferencePathType::AbsolutePathReference(path) => {
-                1 + path.iter().map(|inner| inner.len()).sum::<usize>()
-            }
-            ReferencePathType::UpstreamRootHeightReference(_, path)
-            | ReferencePathType::UpstreamFromElementHeightReference(_, path) => {
-                1 + 1 + path.iter().map(|inner| inner.len()).sum::<usize>()
-            }
-            ReferencePathType::CousinReference(path)
-            | ReferencePathType::SiblingReference(path) => 1 + path.len(),
-        }
-    }
-
     pub fn serialized_size(&self) -> usize {
         match self {
-            ReferencePathType::AbsolutePathReference(path) => {
+            ReferencePathType::AbsolutePathReference(path)
+            | ReferencePathType::RemovedCousinReference(path) => {
                 1 + path
                     .iter()
                     .map(|inner| {
@@ -193,6 +216,7 @@ impl ReferencePathType {
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use merk::proofs::Query;
@@ -250,6 +274,28 @@ mod tests {
         assert_eq!(
             final_path,
             vec![b"a".to_vec(), b"c".to_vec(), b"m".to_vec()]
+        );
+    }
+
+    #[test]
+    fn test_removed_cousin_reference_no_key() {
+        let stored_path = vec![b"a".as_ref(), b"b".as_ref(), b"m".as_ref()];
+        // Replaces the immediate parent (in this case b) with the given key (c)
+        let ref1 = ReferencePathType::RemovedCousinReference(vec![b"c".to_vec(), b"d".to_vec()]);
+        let final_path = path_from_reference_path_type(ref1, stored_path, None);
+        assert!(final_path.is_err());
+    }
+
+    #[test]
+    fn test_removed_cousin_reference() {
+        let stored_path = vec![b"a".as_ref(), b"b".as_ref()];
+        let key = b"m".as_ref();
+        // Replaces the immediate parent (in this case b) with the given key (c)
+        let ref1 = ReferencePathType::RemovedCousinReference(vec![b"c".to_vec(), b"d".to_vec()]);
+        let final_path = path_from_reference_path_type(ref1, stored_path, Some(key)).unwrap();
+        assert_eq!(
+            final_path,
+            vec![b"a".to_vec(), b"c".to_vec(), b"d".to_vec(), b"m".to_vec()]
         );
     }
 

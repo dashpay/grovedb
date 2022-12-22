@@ -1,27 +1,34 @@
+#[cfg(feature = "full")]
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     fmt,
 };
 
+#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "full")]
 use itertools::Itertools;
+use merk::RootHashKeyAndSum;
+#[cfg(feature = "full")]
 use merk::{
     estimated_costs::average_case_costs::{average_case_merk_propagate, EstimatedLayerInformation},
-    CryptoHash,
+    IsSumTree,
 };
+#[cfg(feature = "full")]
 use storage::rocksdb_storage::RocksDbStorage;
 
+#[cfg(feature = "full")]
 use crate::{
     batch::{
-        key_info::KeyInfo,
-        mode::{BatchRunMode, BatchRunMode::AverageCaseMode},
-        BatchApplyOptions, GroveDbOp, KeyInfoPath, Op, TreeCache,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveDbOp, KeyInfoPath, Op,
+        TreeCache,
     },
     Error, GroveDb,
 };
 
+#[cfg(feature = "full")]
 impl Op {
     fn average_case_cost(
         &self,
@@ -29,6 +36,7 @@ impl Op {
         layer_element_estimates: &EstimatedLayerInformation,
         propagate: bool,
     ) -> CostResult<(), Error> {
+        let in_tree_using_sums = layer_element_estimates.is_sum_tree;
         let propagate_if_input = || {
             if propagate {
                 Some(layer_element_estimates)
@@ -37,51 +45,82 @@ impl Op {
             }
         };
         match self {
-            Op::ReplaceTreeRootKey { .. } => {
-                GroveDb::average_case_merk_replace_tree(key, layer_element_estimates, propagate)
+            Op::ReplaceTreeRootKey { sum, .. } => GroveDb::average_case_merk_replace_tree(
+                key,
+                layer_element_estimates,
+                sum.is_some(),
+                propagate,
+            ),
+            Op::InsertTreeWithRootHash { flags, sum, .. } => {
+                GroveDb::average_case_merk_insert_tree(
+                    key,
+                    flags,
+                    sum.is_some(),
+                    in_tree_using_sums,
+                    propagate_if_input(),
+                )
             }
-            Op::InsertTreeWithRootHash { flags, .. } => {
-                GroveDb::average_case_merk_insert_tree(key, flags, propagate_if_input())
-            }
-            Op::Insert { element } => {
-                GroveDb::average_case_merk_insert_element(key, &element, propagate_if_input())
-            }
+            Op::Insert { element } => GroveDb::average_case_merk_insert_element(
+                key,
+                element,
+                in_tree_using_sums,
+                propagate_if_input(),
+            ),
+            Op::Replace { element } => GroveDb::average_case_merk_replace_element(
+                key,
+                element,
+                in_tree_using_sums,
+                propagate_if_input(),
+            ),
             Op::Delete => {
                 GroveDb::average_case_merk_delete_element(key, layer_element_estimates, propagate)
             }
-            Op::DeleteTree => {
-                GroveDb::average_case_merk_delete_tree(key, layer_element_estimates, propagate)
-            }
+            Op::DeleteTree => GroveDb::average_case_merk_delete_tree(
+                key,
+                false,
+                layer_element_estimates,
+                propagate,
+            ),
+            Op::DeleteSumTree => GroveDb::average_case_merk_delete_tree(
+                key,
+                true,
+                layer_element_estimates,
+                propagate,
+            ),
         }
     }
 }
 
+#[cfg(feature = "full")]
 /// Cache for subtree paths for average case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
     paths: HashMap<KeyInfoPath, EstimatedLayerInformation>,
-    cached_merks: HashSet<KeyInfoPath>,
+    cached_merks: HashMap<KeyInfoPath, IsSumTree>,
 }
 
+#[cfg(feature = "full")]
 impl AverageCaseTreeCacheKnownPaths {
     pub(in crate::batch) fn new_with_estimated_layer_information(
         paths: HashMap<KeyInfoPath, EstimatedLayerInformation>,
     ) -> Self {
         AverageCaseTreeCacheKnownPaths {
             paths,
-            cached_merks: HashSet::default(),
+            cached_merks: HashMap::default(),
         }
     }
 }
 
+#[cfg(feature = "full")]
 impl fmt::Debug for AverageCaseTreeCacheKnownPaths {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheKnownPaths").finish()
     }
 }
 
+#[cfg(feature = "full")]
 impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
-    fn insert(&mut self, op: &GroveDbOp) -> CostResult<(), Error> {
+    fn insert(&mut self, op: &GroveDbOp, is_sum_tree: bool) -> CostResult<(), Error> {
         let mut average_case_cost = OperationCost::default();
         let mut inserted_path = op.path.clone();
         inserted_path.push(op.key.clone());
@@ -89,12 +128,12 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         // empty at this point.
         // There is however a hash call that creates the prefix
         average_case_cost.hash_node_calls += 1;
-        self.cached_merks.insert(inserted_path);
+        self.cached_merks.insert(inserted_path, is_sum_tree);
         Ok(()).wrap_with_cost(average_case_cost)
     }
 
     fn get_batch_run_mode(&self) -> BatchRunMode {
-        AverageCaseMode(self.paths.clone())
+        BatchRunMode::AverageCase(self.paths.clone())
     }
 
     fn execute_ops_on_path(
@@ -105,7 +144,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         _batch_apply_options: &BatchApplyOptions,
         _flags_update: &mut G,
         _split_removal_bytes: &mut SR,
-    ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error> {
+    ) -> CostResult<RootHashKeyAndSum, Error> {
         let mut cost = OperationCost::default();
 
         let layer_element_estimates = cost_return_on_error_no_add!(
@@ -124,16 +163,35 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             })
         );
 
-        let layer_should_be_empty = layer_element_estimates.estimated_to_be_empty();
+        let layer_should_be_empty = layer_element_estimates
+            .estimated_layer_count
+            .estimated_to_be_empty();
 
         // Then we have to get the tree
-        if self.cached_merks.get(&path).is_none() {
+        if self.cached_merks.get(path).is_none() {
+            let layer_info = cost_return_on_error_no_add!(
+                &cost,
+                self.paths.get(path).ok_or_else(|| {
+                    let paths = self
+                        .paths
+                        .iter()
+                        .map(|(k, _v)| k.0.iter().map(|k| hex::encode(k.as_slice())).join("/"))
+                        .join(" | ");
+                    Error::PathNotFoundInCacheForEstimatedCosts(format!(
+                        "required path for estimated merk caching {} not found in paths {}",
+                        path.0.iter().map(|k| hex::encode(k.as_slice())).join("/"),
+                        paths
+                    ))
+                })
+            );
             GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
                 &mut cost,
                 path,
                 layer_should_be_empty,
+                layer_info.is_sum_tree,
             );
-            self.cached_merks.insert(path.clone());
+            self.cached_merks
+                .insert(path.clone(), layer_info.is_sum_tree);
         }
 
         for (key, op) in ops_at_path_by_key.into_iter() {
@@ -147,7 +205,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             &mut cost,
             average_case_merk_propagate(layer_element_estimates).map_err(Error::MerkError)
         );
-        Ok(([0u8; 32], None)).wrap_with_cost(cost)
+        Ok(([0u8; 32], None, None)).wrap_with_cost(cost)
     }
 
     fn update_base_merk_root_key(&mut self, _root_key: Option<Vec<u8>>) -> CostResult<(), Error> {
@@ -160,15 +218,20 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                 GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
                     &mut cost,
                     &base_path,
-                    estimated_layer_info.estimated_to_be_empty(),
+                    estimated_layer_info
+                        .estimated_layer_count
+                        .estimated_to_be_empty(),
+                    estimated_layer_info.is_sum_tree,
                 );
-                self.cached_merks.insert(base_path);
+                self.cached_merks
+                    .insert(base_path, estimated_layer_info.is_sum_tree);
             }
         }
         Ok(()).wrap_with_cost(cost)
     }
 }
 
+#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -178,8 +241,10 @@ mod tests {
         OperationCost,
     };
     use merk::estimated_costs::average_case_costs::{
-        EstimatedLayerInformation::{ApproximateElements, EstimatedLevel},
+        EstimatedLayerCount::{ApproximateElements, EstimatedLevel, PotentiallyAtMaxElements},
+        EstimatedLayerInformation,
         EstimatedLayerSizes::{AllItems, AllSubtrees},
+        EstimatedSumTrees::{NoSumTrees, SomeSumTrees},
     };
 
     use crate::{
@@ -204,7 +269,11 @@ mod tests {
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
-            ApproximateElements(0, AllSubtrees(4, None)),
+            EstimatedLayerInformation {
+                is_sum_tree: false,
+                estimated_layer_count: ApproximateElements(0),
+                estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+            },
         );
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
@@ -244,7 +313,7 @@ mod tests {
             OperationCost {
                 seek_count: 3,
                 storage_cost: StorageCost {
-                    added_bytes: 113,
+                    added_bytes: 115,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -267,11 +336,19 @@ mod tests {
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
-            EstimatedLevel(0, true, AllSubtrees(4, Some(3))),
+            EstimatedLayerInformation {
+                is_sum_tree: false,
+                estimated_layer_count: EstimatedLevel(0, true),
+                estimated_layer_sizes: AllSubtrees(4, NoSumTrees, Some(3)),
+            },
         );
         paths.insert(
             KeyInfoPath(vec![KeyInfo::KnownKey(b"key1".to_vec())]),
-            EstimatedLevel(0, true, AllSubtrees(4, None)),
+            EstimatedLayerInformation {
+                is_sum_tree: false,
+                estimated_layer_count: EstimatedLevel(0, true),
+                estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+            },
         );
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
@@ -301,7 +378,7 @@ mod tests {
             OperationCost {
                 seek_count: 3,
                 storage_cost: StorageCost {
-                    added_bytes: 117,
+                    added_bytes: 119,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -324,7 +401,11 @@ mod tests {
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
-            EstimatedLevel(0, true, AllItems(4, 3, None)),
+            EstimatedLayerInformation {
+                is_sum_tree: false,
+                estimated_layer_count: EstimatedLevel(0, true),
+                estimated_layer_sizes: AllItems(4, 3, None),
+            },
         );
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
@@ -357,7 +438,7 @@ mod tests {
             OperationCost {
                 seek_count: 3,
                 storage_cost: StorageCost {
-                    added_bytes: 147,
+                    added_bytes: 149,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
@@ -384,7 +465,11 @@ mod tests {
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
-            EstimatedLevel(1, false, AllSubtrees(1, None)),
+            EstimatedLayerInformation {
+                is_sum_tree: false,
+                estimated_layer_count: EstimatedLevel(1, false),
+                estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
+            },
         );
 
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
@@ -430,11 +515,11 @@ mod tests {
             OperationCost {
                 seek_count: 5, // todo: why is this 5
                 storage_cost: StorageCost {
-                    added_bytes: 113,
-                    replaced_bytes: 104,
+                    added_bytes: 115,
+                    replaced_bytes: 106,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 107,
+                storage_loaded_bytes: 109,
                 hash_node_calls: 8,
             }
         );
@@ -457,12 +542,22 @@ mod tests {
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
-            EstimatedLevel(0, false, AllSubtrees(1, None)),
+            EstimatedLayerInformation {
+                is_sum_tree: false,
+                estimated_layer_count: EstimatedLevel(0, false),
+                estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
+            },
         );
+
         paths.insert(
             KeyInfoPath(vec![KeyInfo::KnownKey(b"0".to_vec())]),
-            EstimatedLevel(0, true, AllSubtrees(4, None)),
+            EstimatedLayerInformation {
+                is_sum_tree: false,
+                estimated_layer_count: EstimatedLevel(0, true),
+                estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+            },
         );
+
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
@@ -504,12 +599,75 @@ mod tests {
             OperationCost {
                 seek_count: 6,
                 storage_cost: StorageCost {
-                    added_bytes: 113,
-                    replaced_bytes: 73,
+                    added_bytes: 115,
+                    replaced_bytes: 75,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 170,
+                storage_loaded_bytes: 173,
                 hash_node_calls: 12,
+            }
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_sum_item_replace_op_average_case_costs() {
+        let ops = vec![GroveDbOp::replace_op(
+            vec![vec![7]],
+            hex::decode("46447a3b4c8939fd4cf8b610ba7da3d3f6b52b39ab2549bf91503b9b07814055")
+                .unwrap(),
+            Element::new_sum_item(500),
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                is_sum_tree: false,
+                estimated_layer_count: EstimatedLevel(1, false),
+                estimated_layer_sizes: AllSubtrees(
+                    1,
+                    SomeSumTrees {
+                        sum_trees_weight: 1,
+                        non_sum_trees_weight: 1,
+                    },
+                    None,
+                ),
+            },
+        );
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            EstimatedLayerInformation {
+                is_sum_tree: true,
+                estimated_layer_count: PotentiallyAtMaxElements,
+                estimated_layer_sizes: AllItems(32, 8, None),
+            },
+        );
+        let average_case_cost = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops.clone(),
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+        )
+        .cost_as_result()
+        .expect("expected to get average case costs");
+
+        // because we know the object we are inserting we can know the average
+        // case cost if it doesn't already exist
+        assert_eq!(average_case_cost.storage_cost.added_bytes, 0);
+
+        assert_eq!(
+            average_case_cost,
+            OperationCost {
+                seek_count: 41,
+                storage_cost: StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 5624,
+                    removed_bytes: NoStorageRemoval,
+                },
+                storage_loaded_bytes: 7669,
+                hash_node_calls: 79,
             }
         );
     }
@@ -531,12 +689,22 @@ mod tests {
         let mut paths = HashMap::new();
         paths.insert(
             KeyInfoPath(vec![]),
-            EstimatedLevel(1, false, AllSubtrees(4, None)),
+            EstimatedLayerInformation {
+                is_sum_tree: false,
+                estimated_layer_count: EstimatedLevel(1, false),
+                estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+            },
         );
+
         paths.insert(
-            KeyInfoPath(vec![KeyInfo::KnownKey(b"key1".to_vec())]),
-            EstimatedLevel(0, true, AllSubtrees(4, None)),
+            KeyInfoPath(vec![KeyInfo::KnownKey(b"0".to_vec())]),
+            EstimatedLayerInformation {
+                is_sum_tree: false,
+                estimated_layer_count: EstimatedLevel(0, true),
+                estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+            },
         );
+
         let average_case_cost = GroveDb::estimated_case_operations_for_batch(
             AverageCaseCostsType(paths),
             ops.clone(),
