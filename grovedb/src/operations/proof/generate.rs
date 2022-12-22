@@ -12,10 +12,11 @@ use merk::{
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, StorageContext};
 
 #[cfg(feature = "full")]
+use crate::element::helpers::raw_decode;
+#[cfg(feature = "full")]
 use crate::{
     operations::proof::util::{write_to_vec, ProofType, EMPTY_TREE_HASH},
     reference_path::path_from_reference_path_type,
-    subtree::raw_decode,
     Element, Error, GroveDb, PathQuery, Query,
 };
 

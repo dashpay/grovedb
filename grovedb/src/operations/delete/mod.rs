@@ -1,4 +1,11 @@
 #[cfg(feature = "full")]
+mod average_case;
+#[cfg(feature = "full")]
+mod delete_up_tree;
+#[cfg(feature = "full")]
+mod worst_case;
+
+#[cfg(feature = "full")]
 use std::collections::{BTreeSet, HashMap};
 
 #[cfg(feature = "full")]
@@ -8,33 +15,19 @@ use costs::{
     CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
-use intmap::IntMap;
-#[cfg(feature = "full")]
-use merk::{
-    estimated_costs::{
-        average_case_costs::EstimatedLayerInformation,
-        worst_case_costs::{
-            add_average_case_cost_for_is_empty_tree_except,
-            add_worst_case_cost_for_is_empty_tree_except,
-        },
-    },
-    tree::kv::KV,
-    Error as MerkError, Merk, MerkOptions, HASH_LENGTH_U32,
-};
+use merk::{Error as MerkError, Merk, MerkOptions};
 #[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{
         PrefixedRocksDbBatchTransactionContext, PrefixedRocksDbStorageContext,
         PrefixedRocksDbTransactionContext,
     },
-    worst_case_costs::WorstKeyLength,
     Storage, StorageBatch, StorageContext,
 };
 
 #[cfg(feature = "full")]
 use crate::{
-    batch::{key_info::KeyInfo, GroveDbOp, KeyInfoPath, Op},
-    subtree::SUM_TREE_COST_SIZE,
+    batch::{GroveDbOp, Op},
     util::{
         merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
     },
@@ -72,225 +65,11 @@ impl DeleteOptions {
 }
 
 #[cfg(feature = "full")]
-#[derive(Clone)]
-pub struct DeleteUpTreeOptions {
-    pub allow_deleting_non_empty_trees: bool,
-    pub deleting_non_empty_trees_returns_error: bool,
-    pub base_root_storage_is_free: bool,
-    pub validate_tree_at_path_exists: bool,
-    pub stop_path_height: Option<u16>,
-}
-
-#[cfg(feature = "full")]
-impl Default for DeleteUpTreeOptions {
-    fn default() -> Self {
-        DeleteUpTreeOptions {
-            allow_deleting_non_empty_trees: false,
-            deleting_non_empty_trees_returns_error: true,
-            base_root_storage_is_free: true,
-            validate_tree_at_path_exists: false,
-            stop_path_height: None,
-        }
-    }
-}
-
-#[cfg(feature = "full")]
-impl DeleteUpTreeOptions {
-    fn to_delete_options(&self) -> DeleteOptions {
-        DeleteOptions {
-            allow_deleting_non_empty_trees: self.allow_deleting_non_empty_trees,
-            deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
-            base_root_storage_is_free: self.base_root_storage_is_free,
-            validate_tree_at_path_exists: self.validate_tree_at_path_exists,
-        }
-    }
-}
-
-#[cfg(feature = "full")]
 /// 0 represents key size, 1 represents element size
 type EstimatedKeyAndElementSize = (u32, u32);
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    /// Delete up tree while empty will delete nodes while they are empty up a
-    /// tree.
-    pub fn delete_up_tree_while_empty<'p, P>(
-        &self,
-        path: P,
-        key: &'p [u8],
-        options: &DeleteUpTreeOptions,
-        transaction: TransactionArg,
-    ) -> CostResult<u16, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
-        self.delete_up_tree_while_empty_with_sectional_storage(
-            path,
-            key,
-            options,
-            transaction,
-            |_, removed_key_bytes, removed_value_bytes| {
-                Ok((
-                    BasicStorageRemoval(removed_key_bytes),
-                    (BasicStorageRemoval(removed_value_bytes)),
-                ))
-            },
-        )
-    }
-
-    /// Delete up tree while empty will delete nodes while they are empty up a
-    /// tree.
-    pub fn delete_up_tree_while_empty_with_sectional_storage<'p, P>(
-        &self,
-        path: P,
-        key: &'p [u8],
-        options: &DeleteUpTreeOptions,
-        transaction: TransactionArg,
-        split_removal_bytes_function: impl FnMut(
-            &mut ElementFlags,
-            u32, // key removed bytes
-            u32, // value removed bytes
-        ) -> Result<
-            (StorageRemovedBytes, StorageRemovedBytes),
-            Error,
-        >,
-    ) -> CostResult<u16, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
-        let mut cost = OperationCost::default();
-        let mut batch_operations: Vec<GroveDbOp> = Vec::new();
-        let path_iter = path.into_iter();
-        let path_len = path_iter.len();
-        let maybe_ops = cost_return_on_error!(
-            &mut cost,
-            self.add_delete_operations_for_delete_up_tree_while_empty(
-                path_iter,
-                key,
-                options,
-                None,
-                &mut batch_operations,
-                transaction,
-            )
-        );
-
-        let ops = cost_return_on_error_no_add!(
-            &cost,
-            if let Some(stop_path_height) = options.stop_path_height {
-                maybe_ops.ok_or_else(|| {
-                    Error::DeleteUpTreeStopHeightMoreThanInitialPathSize(format!(
-                        "stop path height {} more than path size of {}",
-                        stop_path_height, path_len
-                    ))
-                })
-            } else {
-                maybe_ops.ok_or(Error::CorruptedCodeExecution(
-                    "stop path height not set, but still not deleting element",
-                ))
-            }
-        );
-        let ops_len = ops.len();
-        self.apply_batch_with_element_flags_update(
-            ops,
-            None,
-            |_, _, _| Ok(false),
-            split_removal_bytes_function,
-            transaction,
-        )
-        .map_ok(|_| ops_len as u16)
-    }
-
-    pub fn delete_operations_for_delete_up_tree_while_empty<'p, P>(
-        &self,
-        path: P,
-        key: &'p [u8],
-        options: &DeleteUpTreeOptions,
-        is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
-        mut current_batch_operations: Vec<GroveDbOp>,
-        transaction: TransactionArg,
-    ) -> CostResult<Vec<GroveDbOp>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
-        self.add_delete_operations_for_delete_up_tree_while_empty(
-            path,
-            key,
-            options,
-            is_known_to_be_subtree_with_sum,
-            &mut current_batch_operations,
-            transaction,
-        )
-        .map_ok(|ops| ops.unwrap_or_default())
-    }
-
-    pub fn add_delete_operations_for_delete_up_tree_while_empty<'p, P>(
-        &self,
-        path: P,
-        key: &'p [u8],
-        options: &DeleteUpTreeOptions,
-        is_known_to_be_subtree_with_sum: Option<(bool, bool)>,
-        current_batch_operations: &mut Vec<GroveDbOp>,
-        transaction: TransactionArg,
-    ) -> CostResult<Option<Vec<GroveDbOp>>, Error>
-    where
-        P: IntoIterator<Item = &'p [u8]>,
-        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
-    {
-        let mut cost = OperationCost::default();
-
-        let mut path_iter = path.into_iter();
-        if let Some(stop_path_height) = options.stop_path_height {
-            if stop_path_height == path_iter.clone().len() as u16 {
-                return Ok(None).wrap_with_cost(cost);
-            }
-        }
-        if options.validate_tree_at_path_exists {
-            cost_return_on_error!(
-                &mut cost,
-                self.check_subtree_exists_path_not_found(path_iter.clone(), transaction)
-            );
-        }
-        if let Some(delete_operation_this_level) = cost_return_on_error!(
-            &mut cost,
-            self.delete_operation_for_delete_internal(
-                path_iter.clone(),
-                key,
-                &options.to_delete_options(),
-                is_known_to_be_subtree_with_sum,
-                current_batch_operations,
-                transaction,
-            )
-        ) {
-            let mut delete_operations = vec![delete_operation_this_level.clone()];
-            if let Some(last) = path_iter.next_back() {
-                current_batch_operations.push(delete_operation_this_level);
-                let mut new_options = options.clone();
-                // we should not give an error from now on
-                new_options.allow_deleting_non_empty_trees = false;
-                new_options.deleting_non_empty_trees_returns_error = false;
-                if let Some(mut delete_operations_upper_level) = cost_return_on_error!(
-                    &mut cost,
-                    self.add_delete_operations_for_delete_up_tree_while_empty(
-                        path_iter,
-                        last,
-                        &new_options,
-                        None, // todo: maybe we can know this?
-                        current_batch_operations,
-                        transaction,
-                    )
-                ) {
-                    delete_operations.append(&mut delete_operations_upper_level);
-                }
-            }
-            Ok(Some(delete_operations)).wrap_with_cost(cost)
-        } else {
-            Ok(None).wrap_with_cost(cost)
-        }
-    }
-
     pub fn delete<'p, P>(
         &self,
         path: P,
@@ -555,258 +334,6 @@ impl GroveDb {
                 .wrap_with_cost(cost)
             }
         }
-    }
-
-    pub fn worst_case_delete_operations_for_delete_up_tree_while_empty<'db, S: Storage<'db>>(
-        path: &KeyInfoPath,
-        key: &KeyInfo,
-        stop_path_height: Option<u16>,
-        validate: bool,
-        intermediate_tree_info: IntMap<(bool, u32)>,
-        max_element_size: u32,
-    ) -> CostResult<Vec<GroveDbOp>, Error> {
-        let mut cost = OperationCost::default();
-
-        let stop_path_height = stop_path_height.unwrap_or_default();
-
-        if (path.len() as u16) < stop_path_height {
-            // Attempt to delete a root tree leaf
-            Err(Error::InvalidParameter(
-                "path length need to be greater or equal to stop path height",
-            ))
-            .wrap_with_cost(cost)
-        } else {
-            let mut used_path = path.0.as_slice();
-            let mut ops = vec![];
-            let path_len = path.len() as u16;
-            for height in (stop_path_height..(path_len as u16)).rev() {
-                let (
-                    path_at_level,
-                    key_at_level,
-                    check_if_tree,
-                    except_keys_count,
-                    max_element_size,
-                    is_sum_tree,
-                ) = cost_return_on_error_no_add!(
-                    &cost,
-                    if height == path_len {
-                        if let Some((is_in_sum_tree, _)) = intermediate_tree_info.get(height as u64)
-                        {
-                            Ok((used_path, key, true, 0, max_element_size, *is_in_sum_tree))
-                        } else {
-                            Err(Error::InvalidParameter(
-                                "intermediate flag size missing for height at path length",
-                            ))
-                        }
-                    } else {
-                        let (last_key, smaller_path) = used_path.split_last().unwrap();
-                        used_path = smaller_path;
-                        if let Some((is_in_sum_tree, flags_size_at_level)) =
-                            intermediate_tree_info.get(height as u64)
-                        {
-                            // the worst case is that we are only in sum trees
-                            let value_len = SUM_TREE_COST_SIZE + flags_size_at_level;
-                            let max_tree_size =
-                                KV::layered_node_byte_cost_size_for_key_and_value_lengths(
-                                    last_key.max_length() as u32,
-                                    value_len,
-                                    *is_in_sum_tree,
-                                );
-                            Ok((
-                                used_path,
-                                last_key,
-                                false,
-                                1,
-                                max_tree_size,
-                                *is_in_sum_tree,
-                            ))
-                        } else {
-                            Err(Error::InvalidParameter("intermediate flag size missing"))
-                        }
-                    }
-                );
-                let op = cost_return_on_error!(
-                    &mut cost,
-                    Self::worst_case_delete_operation_for_delete_internal::<S>(
-                        &KeyInfoPath::from_vec(path_at_level.to_vec()),
-                        key_at_level,
-                        is_sum_tree,
-                        validate,
-                        check_if_tree,
-                        except_keys_count,
-                        max_element_size
-                    )
-                );
-                ops.push(op);
-            }
-            Ok(ops).wrap_with_cost(cost)
-        }
-    }
-
-    pub fn worst_case_delete_operation_for_delete_internal<'db, S: Storage<'db>>(
-        path: &KeyInfoPath,
-        key: &KeyInfo,
-        parent_tree_is_sum_tree: bool,
-        validate: bool,
-        check_if_tree: bool,
-        except_keys_count: u16,
-        max_element_size: u32,
-    ) -> CostResult<GroveDbOp, Error> {
-        let mut cost = OperationCost::default();
-
-        if validate {
-            GroveDb::add_worst_case_get_merk_at_path::<S>(&mut cost, path, parent_tree_is_sum_tree);
-        }
-        if check_if_tree {
-            GroveDb::add_worst_case_get_raw_cost::<S>(
-                &mut cost,
-                path,
-                key,
-                max_element_size,
-                parent_tree_is_sum_tree,
-            );
-        }
-        // in the worst case this is a tree
-        add_worst_case_cost_for_is_empty_tree_except(&mut cost, except_keys_count);
-
-        Ok(GroveDbOp::delete_estimated_op(path.clone(), key.clone())).wrap_with_cost(cost)
-    }
-
-    // todo finish this
-    pub fn average_case_delete_operations_for_delete_up_tree_while_empty<'db, S: Storage<'db>>(
-        path: &KeyInfoPath,
-        key: &KeyInfo,
-        stop_path_height: Option<u16>,
-        validate: bool,
-        estimated_layer_info: IntMap<EstimatedLayerInformation>,
-    ) -> CostResult<Vec<GroveDbOp>, Error> {
-        let mut cost = OperationCost::default();
-
-        let stop_path_height = stop_path_height.unwrap_or_default();
-
-        if (path.len() as u16) < stop_path_height {
-            // Attempt to delete a root tree leaf
-            Err(Error::InvalidParameter(
-                "path length need to be greater or equal to stop path height",
-            ))
-            .wrap_with_cost(cost)
-        } else {
-            let mut used_path = path.0.as_slice();
-            let mut ops = vec![];
-            let path_len = path.len() as u16;
-            for height in (stop_path_height..(path_len as u16)).rev() {
-                let (
-                    path_at_level,
-                    key_at_level,
-                    check_if_tree,
-                    except_keys_count,
-                    key_len,
-                    estimated_element_size,
-                    is_sum_tree,
-                ) = cost_return_on_error_no_add!(
-                    &cost,
-                    if height == path_len - 1 {
-                        if let Some(layer_info) = estimated_layer_info.get(height as u64) {
-                            let estimated_value_len = cost_return_on_error_no_add!(
-                                &cost,
-                                layer_info
-                                    .estimated_layer_sizes
-                                    .value_with_feature_and_flags_size()
-                                    .map_err(Error::MerkError)
-                            );
-                            Ok((
-                                used_path,
-                                key,
-                                true,
-                                0,
-                                key.max_length() as u32,
-                                estimated_value_len,
-                                layer_info.is_sum_tree,
-                            ))
-                        } else {
-                            Err(Error::InvalidParameter(
-                                "intermediate flag size missing for height at path length",
-                            ))
-                        }
-                    } else {
-                        let (last_key, smaller_path) = used_path.split_last().unwrap();
-                        used_path = smaller_path;
-                        if let Some(layer_info) = estimated_layer_info.get(height as u64) {
-                            let estimated_value_len = cost_return_on_error_no_add!(
-                                &cost,
-                                layer_info
-                                    .estimated_layer_sizes
-                                    .subtree_with_feature_and_flags_size()
-                                    .map_err(Error::MerkError)
-                            );
-                            Ok((
-                                used_path,
-                                last_key,
-                                false,
-                                1,
-                                last_key.max_length() as u32,
-                                estimated_value_len,
-                                layer_info.is_sum_tree,
-                            ))
-                        } else {
-                            Err(Error::InvalidParameter("intermediate layer info missing"))
-                        }
-                    }
-                );
-                let op = cost_return_on_error!(
-                    &mut cost,
-                    Self::average_case_delete_operation_for_delete_internal::<S>(
-                        &KeyInfoPath::from_vec(path_at_level.to_vec()),
-                        key_at_level,
-                        is_sum_tree,
-                        validate,
-                        check_if_tree,
-                        except_keys_count,
-                        (key_len, estimated_element_size)
-                    )
-                );
-                ops.push(op);
-            }
-            Ok(ops).wrap_with_cost(cost)
-        }
-    }
-
-    pub fn average_case_delete_operation_for_delete_internal<'db, S: Storage<'db>>(
-        path: &KeyInfoPath,
-        key: &KeyInfo,
-        parent_tree_is_sum_tree: bool,
-        validate: bool,
-        check_if_tree: bool,
-        except_keys_count: u16,
-        estimated_key_element_size: EstimatedKeyAndElementSize,
-    ) -> CostResult<GroveDbOp, Error> {
-        let mut cost = OperationCost::default();
-
-        if validate {
-            GroveDb::add_average_case_get_merk_at_path::<S>(
-                &mut cost,
-                path,
-                false,
-                parent_tree_is_sum_tree,
-            );
-        }
-        if check_if_tree {
-            GroveDb::add_average_case_get_raw_cost::<S>(
-                &mut cost,
-                path,
-                key,
-                estimated_key_element_size.1,
-                parent_tree_is_sum_tree,
-            );
-        }
-        // in the worst case this is a tree
-        add_average_case_cost_for_is_empty_tree_except(
-            &mut cost,
-            except_keys_count,
-            estimated_key_element_size.0 + HASH_LENGTH_U32,
-        );
-
-        Ok(GroveDbOp::delete_estimated_op(path.clone(), key.clone())).wrap_with_cost(cost)
     }
 
     fn delete_internal<'p, P>(
@@ -1192,7 +719,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use crate::{
-        operations::delete::{DeleteOptions, DeleteUpTreeOptions},
+        operations::delete::{delete_up_tree::DeleteUpTreeOptions, DeleteOptions},
         tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
         Element, Error,
     };
