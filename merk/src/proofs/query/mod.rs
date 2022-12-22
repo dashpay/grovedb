@@ -651,11 +651,11 @@ impl QueryItem {
                         "distinct keys are not available for ranges using more or less than 1 byte",
                     ));
                 }
-                let start = *start.get(0).unwrap_or_else(|| {
+                let start = *start.first().unwrap_or_else(|| {
                     keys.push(vec![]);
                     &0
                 });
-                if let Some(end) = end.get(0) {
+                if let Some(end) = end.first() {
                     let end = *end;
                     for i in start..end {
                         keys.push(vec![i]);
@@ -672,11 +672,11 @@ impl QueryItem {
                         "distinct keys are not available for ranges using more or less than 1 byte",
                     ));
                 }
-                let start = *start.get(0).unwrap_or_else(|| {
+                let start = *start.first().unwrap_or_else(|| {
                     keys.push(vec![]);
                     &0
                 });
-                if let Some(end) = end.get(0) {
+                if let Some(end) = end.first() {
                     let end = *end;
                     for i in start..=end {
                         keys.push(vec![i]);
@@ -700,11 +700,11 @@ impl QueryItem {
                         "distinct keys are not available for ranges using more or less than 1 byte",
                     ));
                 }
-                let start = *start.get(0).unwrap_or_else(|| {
+                let start = *start.first().unwrap_or_else(|| {
                     keys.push(vec![]);
                     &0
                 });
-                if let Some(end) = end.get(0) {
+                if let Some(end) = end.first() {
                     let end = *end;
                     for i in start..end {
                         keys.push(vec![i]);
@@ -721,11 +721,11 @@ impl QueryItem {
                         "distinct keys are not available for ranges using more or less than 1 byte",
                     ));
                 }
-                let start = *start.get(0).unwrap_or_else(|| {
+                let start = *start.first().unwrap_or_else(|| {
                     keys.push(vec![]);
                     &0
                 });
-                if let Some(end) = end.get(0) {
+                if let Some(end) = end.first() {
                     let end = *end;
                     for i in start..=end {
                         keys.push(vec![i]);
@@ -6379,12 +6379,12 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         assert_eq!(
-            query_vec.get(0).unwrap().lower_bound(),
-            expected.get(0).unwrap().lower_bound()
+            query_vec.first().unwrap().lower_bound(),
+            expected.first().unwrap().lower_bound()
         );
         assert_eq!(
-            query_vec.get(0).unwrap().upper_bound(),
-            expected.get(0).unwrap().upper_bound()
+            query_vec.first().unwrap().upper_bound(),
+            expected.first().unwrap().upper_bound()
         );
     }
 
