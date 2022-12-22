@@ -4,6 +4,7 @@ use std::vec::IntoIter;
 
 #[cfg(feature = "full")]
 use crate::Element;
+use crate::Error;
 
 #[cfg(feature = "full")]
 #[derive(Copy, Clone)]
@@ -112,6 +113,19 @@ impl QueryResultElements {
             })
             .collect()
     }
+
+    pub fn to_path_key_elements_btree_map(self) -> BTreeMap<PathKey, Element> {
+        self.elements
+            .into_iter()
+            .filter_map(|result_item| match result_item {
+                QueryResultElement::ElementResultItem(_) => None,
+                QueryResultElement::KeyElementPairResultItem(_) => None,
+                QueryResultElement::PathKeyElementTrioResultItem((path, key, element)) => {
+                    Some(((path, key), element))
+                }
+            })
+            .collect()
+    }
 }
 
 #[cfg(feature = "full")]
@@ -129,13 +143,53 @@ pub enum QueryResultElement {
 }
 
 #[cfg(feature = "full")]
+impl QueryResultElement {
+    pub fn map_element(
+        self,
+        map_function: impl FnOnce(Element) -> Result<Element, Error>,
+    ) -> Result<Self, Error> {
+        Ok(match self {
+            QueryResultElement::ElementResultItem(element) => {
+                QueryResultElement::ElementResultItem(map_function(element)?)
+            }
+            QueryResultElement::KeyElementPairResultItem((key, element)) => {
+                QueryResultElement::KeyElementPairResultItem((key, map_function(element)?))
+            }
+            QueryResultElement::PathKeyElementTrioResultItem((path, key, element)) => {
+                QueryResultElement::PathKeyElementTrioResultItem((
+                    path,
+                    key,
+                    map_function(element)?,
+                ))
+            }
+        })
+    }
+}
+
+#[cfg(feature = "full")]
+/// Type alias for a path.
+pub type Path = Vec<Vec<u8>>;
+
+#[cfg(feature = "full")]
+/// Type alias for a Key.
+pub type Key = Vec<u8>;
+
+#[cfg(feature = "full")]
 /// Type alias for key-element common pattern.
-pub type KeyElementPair = (Vec<u8>, Element);
+pub type KeyElementPair = (Key, Element);
 
 #[cfg(feature = "full")]
 /// Type alias for key optional_element common pattern.
-pub type KeyOptionalElementPair = (Vec<u8>, Option<Element>);
+pub type KeyOptionalElementPair = (Key, Option<Element>);
+
+#[cfg(feature = "full")]
+/// Type alias for path-key common pattern.
+pub type PathKey = (Path, Key);
 
 #[cfg(feature = "full")]
 /// Type alias for path-key-element common pattern.
-pub type PathKeyElementTrio = (Vec<Vec<u8>>, Vec<u8>, Element);
+pub type PathKeyElementTrio = (Path, Key, Element);
+
+#[cfg(feature = "full")]
+/// Type alias for path - key - optional_element common pattern.
+pub type PathKeyOptionalElementTrio = (Path, Key, Option<Element>);

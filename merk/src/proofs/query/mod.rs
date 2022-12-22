@@ -1,6 +1,7 @@
 #[cfg(feature = "full")]
 mod map;
 
+use std::collections::HashSet;
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::{
     cmp,
@@ -61,6 +62,107 @@ impl Query {
             left_to_right,
             ..Self::default()
         }
+    }
+
+    pub fn terminal_keys(
+        &self,
+        current_path: Vec<Vec<u8>>,
+        max_results: usize,
+        result: &mut Vec<(Vec<Vec<u8>>, Vec<u8>)>,
+    ) -> Result<usize, Error> {
+        let current_len = result.len();
+        let mut added = 0;
+        let mut already_added_keys = HashSet::new();
+        for (conditional_query_item, subquery_branch) in &self.conditional_subquery_branches {
+            // unbounded ranges can not be supported
+            if conditional_query_item.is_unbounded_range() {
+                return Err(Error::NotSupported(
+                    "terminal keys are not supported with conditional unbounded ranges",
+                ));
+            }
+            let conditional_keys = conditional_query_item.keys()?;
+            if current_len + conditional_keys.len() > max_results {
+                return Err(Error::RequestAmountExceeded(format!(
+                    "terminal keys limit exceeded, set max is {}",
+                    max_results
+                )));
+            }
+            for key in conditional_keys.into_iter() {
+                already_added_keys.insert(key.clone());
+                let mut path = current_path.clone();
+                if let Some(subquery_key) = &subquery_branch.subquery_key {
+                    if let Some(subquery) = &subquery_branch.subquery {
+                        // a subquery key with a subquery
+                        // push the key to the path
+                        path.push(key);
+                        // push the subquery key to the path
+                        path.push(subquery_key.clone());
+                        // recurse onto the lower level
+                        added += subquery.terminal_keys(path, max_results, result)?;
+                    } else {
+                        // a subquery key but no subquery
+                        // push the key to the path, and set the subquery key as the terminal key
+                        path.push(key);
+                        result.push((path, subquery_key.clone()));
+                        added += 1;
+                    }
+                } else if let Some(subquery) = &subquery_branch.subquery {
+                    // a subquery without a subquery key
+                    // push the key to the path
+                    path.push(key);
+                    // recurse onto the lower level
+                    added += subquery.terminal_keys(path, max_results, result)?;
+                }
+            }
+        }
+        for item in self.items.iter() {
+            if item.is_unbounded_range() {
+                return Err(Error::NotSupported(
+                    "terminal keys are not supported with unbounded ranges",
+                ));
+            }
+            let keys = item.keys()?;
+            if current_len + keys.len() > max_results {
+                return Err(Error::RequestAmountExceeded(format!(
+                    "terminal keys limit exceeded, set max is {}",
+                    max_results
+                )));
+            }
+            for key in keys.into_iter() {
+                if already_added_keys.contains(&key) {
+                    // we already had this key in the conditional subqueries
+                    continue; // skip this key
+                }
+                let mut path = current_path.clone();
+                if let Some(subquery_key) = &self.default_subquery_branch.subquery_key {
+                    if let Some(subquery) = &self.default_subquery_branch.subquery {
+                        // a subquery key with a subquery
+                        // push the key to the path
+                        path.push(key);
+                        // push the subquery key to the path
+                        path.push(subquery_key.clone());
+                        // recurse onto the lower level
+                        subquery.terminal_keys(path, max_results, result)?;
+                        added += 1;
+                    } else {
+                        // a subquery key but no subquery
+                        // push the key to the path, and set the subquery key as the terminal key
+                        path.push(key);
+                        result.push((path, subquery_key.clone()));
+                        added += 1;
+                    }
+                } else if let Some(subquery) = &self.default_subquery_branch.subquery {
+                    // a subquery without a subquery key
+                    // push the key to the path
+                    path.push(key);
+                    // recurse onto the lower level
+                    subquery.terminal_keys(path, max_results, result)?;
+                } else {
+                    result.push((path, key));
+                }
+            }
+        }
+        Ok(added)
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -530,6 +632,111 @@ impl QueryItem {
 
     pub const fn is_range(&self) -> bool {
         !matches!(self, QueryItem::Key(_))
+    }
+
+    pub const fn is_unbounded_range(&self) -> bool {
+        !matches!(
+            self,
+            QueryItem::Key(_) | QueryItem::Range(_) | QueryItem::RangeInclusive(_)
+        )
+    }
+
+    pub fn keys(&self) -> Result<Vec<Vec<u8>>, Error> {
+        match self {
+            QueryItem::Key(key) => Ok(vec![key.clone()]),
+            QueryItem::Range(Range { start, end }) => {
+                let mut keys = vec![];
+                if start.len() != 1 || end.len() != 1 {
+                    return Err(Error::InvalidOperation(
+                        "distinct keys are not available for ranges using more or less than 1 byte",
+                    ));
+                }
+                let start = *start.get(0).unwrap_or_else(|| {
+                    keys.push(vec![]);
+                    &0
+                });
+                if let Some(end) = end.get(0) {
+                    let end = *end;
+                    for i in start..end {
+                        keys.push(vec![i]);
+                    }
+                }
+                Ok(keys)
+            }
+            QueryItem::RangeInclusive(range_inclusive) => {
+                let start = range_inclusive.start();
+                let end = range_inclusive.end();
+                let mut keys = vec![];
+                if start.len() != 1 || end.len() != 1 {
+                    return Err(Error::InvalidOperation(
+                        "distinct keys are not available for ranges using more or less than 1 byte",
+                    ));
+                }
+                let start = *start.get(0).unwrap_or_else(|| {
+                    keys.push(vec![]);
+                    &0
+                });
+                if let Some(end) = end.get(0) {
+                    let end = *end;
+                    for i in start..=end {
+                        keys.push(vec![i]);
+                    }
+                }
+                Ok(keys)
+            }
+            _ => Err(Error::InvalidOperation(
+                "distinct keys are not available for unbounded ranges",
+            )),
+        }
+    }
+
+    pub fn keys_consume(self) -> Result<Vec<Vec<u8>>, Error> {
+        match self {
+            QueryItem::Key(key) => Ok(vec![key]),
+            QueryItem::Range(Range { start, end }) => {
+                let mut keys = vec![];
+                if start.len() != 1 || end.len() != 1 {
+                    return Err(Error::InvalidOperation(
+                        "distinct keys are not available for ranges using more or less than 1 byte",
+                    ));
+                }
+                let start = *start.get(0).unwrap_or_else(|| {
+                    keys.push(vec![]);
+                    &0
+                });
+                if let Some(end) = end.get(0) {
+                    let end = *end;
+                    for i in start..end {
+                        keys.push(vec![i]);
+                    }
+                }
+                Ok(keys)
+            }
+            QueryItem::RangeInclusive(range_inclusive) => {
+                let start = range_inclusive.start();
+                let end = range_inclusive.end();
+                let mut keys = vec![];
+                if start.len() != 1 || end.len() != 1 {
+                    return Err(Error::InvalidOperation(
+                        "distinct keys are not available for ranges using more or less than 1 byte",
+                    ));
+                }
+                let start = *start.get(0).unwrap_or_else(|| {
+                    keys.push(vec![]);
+                    &0
+                });
+                if let Some(end) = end.get(0) {
+                    let end = *end;
+                    for i in start..=end {
+                        keys.push(vec![i]);
+                    }
+                }
+                Ok(keys)
+            }
+            _ => Err(Error::InvalidOperation(
+                "distinct keys are not available for unbounded ranges",
+            )),
+        }
     }
 
     pub fn seek_for_iter<I: RawIterator>(

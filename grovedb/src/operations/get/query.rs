@@ -6,7 +6,7 @@ use costs::{
 use integer_encoding::VarInt;
 use merk::proofs::query::QueryItem;
 
-use crate::query_result_type::KeyOptionalElementPair;
+use crate::query_result_type::{KeyOptionalElementPair, PathKeyOptionalElementTrio};
 #[cfg(feature = "full")]
 use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
@@ -16,7 +16,7 @@ use crate::{
 
 #[cfg(feature = "full")]
 impl GroveDb {
-    pub fn query_many(
+    pub fn query_encoded_many(
         &self,
         path_queries: &[&PathQuery],
         transaction: TransactionArg,
@@ -97,7 +97,71 @@ where {
         }
     }
 
+    fn follow_element(
+        &self,
+        element: Element,
+        cost: &mut OperationCost,
+        transaction: TransactionArg,
+    ) -> Result<Element, Error> {
+        match element {
+            Element::Reference(reference_path, ..) => {
+                match reference_path {
+                    ReferencePathType::AbsolutePathReference(absolute_path) => {
+                        // While `map` on iterator is lazy, we should accumulate costs
+                        // even if `collect` will
+                        // end in `Err`, so we'll use
+                        // external costs accumulator instead of
+                        // returning costs from `map` call.
+                        let maybe_item = self
+                            .follow_reference(absolute_path, transaction)
+                            .unwrap_add_cost(cost)?;
+
+                        if maybe_item.is_item() {
+                            Ok(maybe_item)
+                        } else {
+                            Err(Error::InvalidQuery("the reference must result in an item"))
+                        }
+                    }
+                    _ => Err(Error::CorruptedCodeExecution(
+                        "reference after query must have absolute paths",
+                    )),
+                }
+            }
+            Element::Item(..) | Element::SumItem(..) => Ok(element),
+            Element::Tree(..) | Element::SumTree(..) => Err(Error::InvalidQuery(
+                "path_queries can only refer to items and references",
+            )),
+        }
+    }
+
     pub fn query(
+        &self,
+        path_query: &PathQuery,
+        result_type: QueryResultType,
+        transaction: TransactionArg,
+    ) -> CostResult<(QueryResultElements, u16), Error> {
+        let mut cost = OperationCost::default();
+
+        let (elements, skipped) = cost_return_on_error!(
+            &mut cost,
+            self.query_raw(path_query, result_type, transaction)
+        );
+
+        let results_wrapped = elements
+            .into_iterator()
+            .map(|result_item| {
+                result_item
+                    .map_element(|element| self.follow_element(element, &mut cost, transaction))
+            })
+            .collect::<Result<Vec<QueryResultElement>, Error>>();
+
+        let results = cost_return_on_error_no_add!(&cost, results_wrapped);
+        Ok((QueryResultElements { elements: results }, skipped)).wrap_with_cost(cost)
+    }
+
+    /// Queries the backing store and returns element items by their value,
+    /// Sum Items are encoded as var vec
+    pub fn query_item_value(
         &self,
         path_query: &PathQuery,
         transaction: TransactionArg,
@@ -234,11 +298,13 @@ where {
         Element::get_raw_path_query(&self.db, path_query, result_type, transaction)
     }
 
+    /// If max_results is exceeded we return an error
     pub fn query_raw_keys_optional(
         &self,
         path_query: &PathQuery,
+        max_results: usize,
         transaction: TransactionArg,
-    ) -> CostResult<Vec<KeyOptionalElementPair>, Error> {
+    ) -> CostResult<Vec<PathKeyOptionalElementTrio>, Error> {
         if path_query.query.query.has_subquery() {
             return Err(Error::NotSupported(
                 "subqueries are not supported in query_raw_keys_optional",
@@ -261,26 +327,23 @@ where {
 
         let (elements, _) = cost_return_on_error!(
             &mut cost,
-            self.query_raw(
+            self.query(
                 path_query,
-                QueryResultType::QueryKeyElementPairResultType,
+                QueryResultType::QueryPathKeyElementTrioResultType,
                 transaction
             )
         );
 
-        let mut elements_map = elements.to_key_elements_hash_map();
+        let mut elements_map = elements.to_path_key_elements_btree_map();
 
-        Ok(path_query
-            .query
-            .query
-            .items
-            .iter()
-            .filter_map(|item| {
-                if let QueryItem::Key(key) = item {
-                    Some((key.clone(), elements_map.remove(key)))
-                } else {
-                    None
-                }
+        let terminal_keys =
+            cost_return_on_error_no_add!(&cost, path_query.terminal_keys(max_results));
+
+        Ok(terminal_keys
+            .into_iter()
+            .map(|path_key| {
+                let element = elements_map.remove(&path_key);
+                (path_key.0, path_key.1, element)
             })
             .collect())
         .wrap_with_cost(cost)
@@ -336,20 +399,23 @@ mod tests {
         query.insert_key(b"1".to_vec());
         query.insert_key(b"2".to_vec());
         query.insert_key(b"5".to_vec());
-        let path_query =
-            PathQuery::new(vec![TEST_LEAF.to_vec()], SizedQuery::new(query, None, None));
+        let path = vec![TEST_LEAF.to_vec()];
+        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, None, None));
         let raw_result = db
-            .query_raw_keys_optional(&path_query, None)
+            .query_raw_keys_optional(&path_query, 5, None)
             .unwrap()
             .expect("should get successfully");
 
-        let raw_result: HashMap<_, _> = raw_result.into_iter().collect();
+        let raw_result: HashMap<_, _> = raw_result
+            .into_iter()
+            .map(|(path, key, element)| ((path, key), element))
+            .collect();
 
         assert_eq!(raw_result.len(), 3);
-        assert_eq!(raw_result.get(b"4".to_vec().as_slice()), None);
-        assert_eq!(raw_result.get(b"2".to_vec().as_slice()), Some(&None));
+        assert_eq!(raw_result.get(&(path.clone(), b"4".to_vec())), None);
+        assert_eq!(raw_result.get(&(path.clone(), b"2".to_vec())), Some(&None));
         assert_eq!(
-            raw_result.get(b"5".to_vec().as_slice()),
+            raw_result.get(&(path.clone(), b"5".to_vec())),
             Some(&Some(Element::new_item(b"bye".to_vec())))
         )
     }
