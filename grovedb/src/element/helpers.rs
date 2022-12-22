@@ -1,13 +1,18 @@
-
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
-use merk::tree::kv::KV;
-use merk::tree::Tree;
-use merk::TreeFeatureType;
-use merk::TreeFeatureType::{BasicMerk, SummedMerk};
+#[cfg(feature = "full")]
+use merk::{
+    tree::{kv::KV, Tree},
+    TreeFeatureType,
+    TreeFeatureType::{BasicMerk, SummedMerk},
+};
 
-use crate::{Element, ElementFlags, Error};
-use crate::element::{SUM_TREE_COST_SIZE, TREE_COST_SIZE};
-use crate::reference_path::{path_from_reference_path_type, ReferencePathType};
+#[cfg(feature = "full")]
+use crate::{
+    element::{SUM_TREE_COST_SIZE, TREE_COST_SIZE},
+    reference_path::{path_from_reference_path_type, ReferencePathType},
+    Element, ElementFlags, Error,
+};
 
 impl Element {
     #[cfg(feature = "full")]

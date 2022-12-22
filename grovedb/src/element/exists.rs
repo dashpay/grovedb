@@ -1,6 +1,11 @@
+#[cfg(feature = "full")]
 use costs::CostResult;
+#[cfg(feature = "full")]
 use merk::Merk;
+#[cfg(feature = "full")]
 use storage::StorageContext;
+
+#[cfg(feature = "full")]
 use crate::{Element, Error};
 
 impl Element {

@@ -1,18 +1,28 @@
-use costs::{cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt, OperationCost};
-use merk::proofs::Query;
-use merk::proofs::query::QueryItem;
-use storage::rocksdb_storage::RocksDbStorage;
-use storage::{RawIterator, StorageContext};
-use crate::{Element, Error, PathQuery, SizedQuery, TransactionArg};
-use crate::element::helpers::raw_decode;
-use crate::query_result_type::{KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType};
-use crate::query_result_type::QueryResultType::QueryElementResultType;
-use crate::util::{merk_optional_tx, storage_context_optional_tx};
+#[cfg(feature = "full")]
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
+    OperationCost,
+};
+#[cfg(feature = "full")]
+use merk::proofs::{query::QueryItem, Query};
+#[cfg(feature = "full")]
+use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+
+#[cfg(feature = "full")]
+use crate::{
+    element::helpers::raw_decode,
+    query_result_type::{
+        KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType,
+        QueryResultType::QueryElementResultType,
+    },
+    util::{merk_optional_tx, storage_context_optional_tx},
+    Element, Error, PathQuery, SizedQuery, TransactionArg,
+};
 
 #[cfg(feature = "full")]
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>
-    where
-        'db: 'ctx,
+where
+    'db: 'ctx,
 {
     pub storage: &'db RocksDbStorage,
     pub transaction: TransactionArg<'db, 'ctx>,
@@ -57,20 +67,19 @@ impl Element {
             QueryElementResultType,
             transaction,
         )
-            .flat_map_ok(|result_items| {
-                let elements: Vec<Element> = result_items
-                    .elements
-                    .into_iter()
-                    .filter_map(|result_item| match result_item {
-                        QueryResultElement::ElementResultItem(element) => Some(element),
-                        QueryResultElement::KeyElementPairResultItem(_) => None,
-                        QueryResultElement::PathKeyElementTrioResultItem(_) => None,
-                    })
-                    .collect();
-                Ok(elements).wrap_with_cost(OperationCost::default())
-            })
+        .flat_map_ok(|result_items| {
+            let elements: Vec<Element> = result_items
+                .elements
+                .into_iter()
+                .filter_map(|result_item| match result_item {
+                    QueryResultElement::ElementResultItem(element) => Some(element),
+                    QueryResultElement::KeyElementPairResultItem(_) => None,
+                    QueryResultElement::PathKeyElementTrioResultItem(_) => None,
+                })
+                .collect();
+            Ok(elements).wrap_with_cost(OperationCost::default())
+        })
     }
-
 
     #[cfg(feature = "full")]
     pub fn get_query_apply_function(
@@ -368,7 +377,7 @@ impl Element {
                      of trees"
                         .to_owned(),
                 ))
-                    .wrap_with_cost(cost);
+                .wrap_with_cost(cost);
             }
         } else {
             cost_return_on_error_no_add!(
@@ -470,7 +479,7 @@ impl Element {
                             limit,
                             offset,
                         })
-                            .unwrap_add_cost(&mut cost)
+                        .unwrap_add_cost(&mut cost)
                     }
                     Err(Error::PathKeyNotFound(_)) => Ok(()),
                     Err(e) => Err(e),
@@ -535,7 +544,7 @@ impl Element {
                 Ok(())
             })
         }
-            .wrap_with_cost(cost)
+        .wrap_with_cost(cost)
     }
 
     #[cfg(feature = "full")]
@@ -595,15 +604,17 @@ impl Element {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    
+    use merk::{proofs::Query, Merk};
     use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
 
-    use crate::element::*;
     use crate::{
-        element::QueryResultType::{
-            QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType,
+        element::*,
+        query_result_type::{
+            KeyElementPair, QueryResultElement, QueryResultElements,
+            QueryResultType::{QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType},
         },
         tests::{make_test_grovedb, TEST_LEAF},
+        SizedQuery,
     };
 
     #[test]

@@ -1,4 +1,7 @@
+#[cfg(any(feature = "full", feature = "verify"))]
 use bincode::Options;
+
+#[cfg(any(feature = "full", feature = "verify"))]
 use crate::{Element, Error};
 
 impl Element {
@@ -34,11 +37,8 @@ impl Element {
 #[cfg(test)]
 mod tests {
     use integer_encoding::VarInt;
-    
-    
 
     use super::*;
-    
     use crate::reference_path::ReferencePathType;
 
     #[test]

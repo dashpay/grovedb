@@ -4,6 +4,8 @@ extern crate core;
 #[cfg(feature = "full")]
 pub mod batch;
 #[cfg(any(feature = "full", feature = "verify"))]
+pub mod element;
+#[cfg(any(feature = "full", feature = "verify"))]
 pub mod error;
 #[cfg(feature = "full")]
 mod estimated_costs;
@@ -17,8 +19,6 @@ pub mod query_result_type;
 pub mod reference_path;
 #[cfg(feature = "full")]
 mod replication;
-#[cfg(any(feature = "full", feature = "verify"))]
-pub mod element;
 #[cfg(test)]
 mod tests;
 #[cfg(feature = "full")]
@@ -36,10 +36,16 @@ use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
+use element::helpers::raw_decode;
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use element::Element;
+#[cfg(feature = "full")]
+pub use element::ElementFlags;
+#[cfg(feature = "full")]
 use merk::{
     self,
-    BatchEntry,
-    CryptoHash, KVIterator, Merk, tree::{combine_hash, value_hash},
+    tree::{combine_hash, value_hash},
+    BatchEntry, CryptoHash, KVIterator, Merk,
 };
 #[cfg(feature = "full")]
 pub use merk::{
@@ -49,7 +55,7 @@ pub use merk::{
         },
         worst_case_costs::WorstCaseLayerInformation,
     },
-    proofs::{Query, query::QueryItem},
+    proofs::{query::QueryItem, Query},
 };
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use query::{PathQuery, SizedQuery};
@@ -70,19 +76,11 @@ use storage::{
     },
     StorageBatch,
 };
-#[cfg(any(feature = "full", feature = "verify"))]
-pub use element::Element;
-#[cfg(feature = "full")]
-pub use element::ElementFlags;
-#[cfg(feature = "full")]
-use element::helpers::raw_decode;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use crate::error::Error;
 #[cfg(feature = "full")]
-use crate::{
-    util::{root_merk_optional_tx, storage_context_optional_tx},
-};
+use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
 
 #[cfg(feature = "full")]
 type Hash = [u8; 32];

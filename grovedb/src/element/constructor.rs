@@ -1,6 +1,9 @@
-use crate::{Element, ElementFlags};
-use crate::element::{MaxReferenceHop, SumValue};
-use crate::reference_path::ReferencePathType;
+#[cfg(feature = "full")]
+use crate::{
+    element::{MaxReferenceHop, SumValue},
+    reference_path::ReferencePathType,
+    Element, ElementFlags,
+};
 
 impl Element {
     #[cfg(feature = "full")]

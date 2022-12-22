@@ -1,7 +1,7 @@
 #[cfg(feature = "full")]
-mod delete_up_tree;
-#[cfg(feature = "full")]
 mod average_case;
+#[cfg(feature = "full")]
+mod delete_up_tree;
 #[cfg(feature = "full")]
 mod worst_case;
 
@@ -11,32 +11,27 @@ use std::collections::{BTreeSet, HashMap};
 #[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
-    CostResult,
-    CostsExt, OperationCost, storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+    storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+    CostResult, CostsExt, OperationCost,
 };
-
 #[cfg(feature = "full")]
-use merk::{
-    Error as MerkError, Merk, MerkOptions,
-};
+use merk::{Error as MerkError, Merk, MerkOptions};
 #[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{
         PrefixedRocksDbBatchTransactionContext, PrefixedRocksDbStorageContext,
         PrefixedRocksDbTransactionContext,
     },
-    Storage,
-    StorageBatch, StorageContext,
+    Storage, StorageBatch, StorageContext,
 };
 
 #[cfg(feature = "full")]
 use crate::{
     batch::{GroveDbOp, Op},
-    Element,
-    ElementFlags,
-    Error, GroveDb, Transaction, TransactionArg, util::{
+    util::{
         merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
     },
+    Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
 #[cfg(feature = "full")]
@@ -718,17 +713,16 @@ impl GroveDb {
 #[cfg(test)]
 mod tests {
     use costs::{
-        OperationCost,
         storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
+        OperationCost,
     };
     use pretty_assertions::assert_eq;
 
     use crate::{
-        Element,
-        Error,
-        operations::delete::DeleteOptions, tests::{ANOTHER_TEST_LEAF, make_empty_grovedb, make_test_grovedb, TEST_LEAF},
+        operations::delete::{delete_up_tree::DeleteUpTreeOptions, DeleteOptions},
+        tests::{make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
+        Element, Error,
     };
-    use crate::operations::delete::delete_up_tree::DeleteUpTreeOptions;
 
     #[test]
     fn test_empty_subtree_deletion_without_transaction() {

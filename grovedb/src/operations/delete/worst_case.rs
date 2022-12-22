@@ -1,17 +1,20 @@
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 use intmap::IntMap;
-use costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
-use merk::estimated_costs::worst_case_costs::add_worst_case_cost_for_is_empty_tree_except;
-use merk::tree::kv::KV;
-use storage::Storage;
-use storage::worst_case_costs::WorstKeyLength;
-use crate::batch::key_info::KeyInfo;
-use crate::batch::{GroveDbOp, KeyInfoPath};
-use crate::{Error, GroveDb};
-use crate::element::SUM_TREE_COST_SIZE;
+use merk::{
+    estimated_costs::worst_case_costs::add_worst_case_cost_for_is_empty_tree_except, tree::kv::KV,
+};
+use storage::{worst_case_costs::WorstKeyLength, Storage};
+
+use crate::{
+    batch::{key_info::KeyInfo, GroveDbOp, KeyInfoPath},
+    element::SUM_TREE_COST_SIZE,
+    Error, GroveDb,
+};
 
 #[cfg(feature = "full")]
 impl GroveDb {
-
     pub fn worst_case_delete_operations_for_delete_up_tree_while_empty<'db, S: Storage<'db>>(
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -29,7 +32,7 @@ impl GroveDb {
             Err(Error::InvalidParameter(
                 "path length need to be greater or equal to stop path height",
             ))
-                .wrap_with_cost(cost)
+            .wrap_with_cost(cost)
         } else {
             let mut used_path = path.0.as_slice();
             let mut ops = vec![];

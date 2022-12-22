@@ -1,8 +1,13 @@
+#[cfg(feature = "full")]
 use costs::OperationCost;
+#[cfg(feature = "full")]
 use storage::rocksdb_storage::RocksDbStorage;
-use crate::batch::key_info::KeyInfo;
-use crate::batch::KeyInfoPath;
-use crate::GroveDb;
+
+#[cfg(feature = "full")]
+use crate::{
+    batch::{key_info::KeyInfo, KeyInfoPath},
+    GroveDb,
+};
 
 #[cfg(feature = "full")]
 impl GroveDb {

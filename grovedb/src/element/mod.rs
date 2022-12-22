@@ -3,43 +3,33 @@
 //! Merk API to GroveDB needs.
 
 #[cfg(feature = "full")]
-mod insert;
+mod constructor;
 #[cfg(feature = "full")]
 mod delete;
-#[cfg(any(feature = "full", feature = "verify"))]
-mod serialize;
+#[cfg(feature = "full")]
+mod exists;
 #[cfg(feature = "full")]
 mod get;
 #[cfg(feature = "full")]
-mod query;
-#[cfg(feature = "full")]
-mod constructor;
-#[cfg(feature = "full")]
 pub(crate) mod helpers;
 #[cfg(feature = "full")]
-mod exists;
-
+mod insert;
+#[cfg(feature = "full")]
+mod query;
+#[cfg(any(feature = "full", feature = "verify"))]
+mod serialize;
 #[cfg(feature = "full")]
 use core::fmt;
 
-
-
-
-
 #[cfg(feature = "full")]
-use merk::{
-    estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE},
-};
+use merk::estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE};
 #[cfg(any(feature = "full", feature = "verify"))]
 use serde::{Deserialize, Serialize};
-
 #[cfg(feature = "full")]
 use visualize::visualize_to_vec;
 
-
 #[cfg(any(feature = "full", feature = "verify"))]
-use crate::{reference_path::ReferencePathType};
-
+use crate::reference_path::ReferencePathType;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Optional meta-data to be stored per element

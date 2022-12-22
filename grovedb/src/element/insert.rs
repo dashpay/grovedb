@@ -1,9 +1,16 @@
-use costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
+#[cfg(feature = "full")]
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
+#[cfg(feature = "full")]
 use merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op, TreeFeatureType};
+#[cfg(feature = "full")]
 use storage::StorageContext;
-use crate::{Element, Error, Hash};
-use crate::element::TREE_COST_SIZE;
+
+#[cfg(feature = "full")]
+use crate::{element::TREE_COST_SIZE, Element, Error, Hash};
 
 impl Element {
     #[cfg(feature = "full")]
@@ -36,7 +43,7 @@ impl Element {
             Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
                 .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     #[cfg(feature = "full")]
@@ -141,7 +148,7 @@ impl Element {
             Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
                 .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     #[cfg(feature = "full")]
@@ -191,9 +198,9 @@ impl Element {
 
         let cost = tree_cost
             + self.get_flags().as_ref().map_or(0, |flags| {
-            let flags_len = flags.len() as u32;
-            flags_len + flags_len.required_space() as u32
-        });
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
         let batch_operations = [(
             key,
             Op::PutLayeredReference(serialized, cost, subtree_root_hash, merk_feature_type),
@@ -203,7 +210,7 @@ impl Element {
             Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
                 .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     #[cfg(feature = "full")]
@@ -221,9 +228,9 @@ impl Element {
         };
         let cost = TREE_COST_SIZE
             + self.get_flags().as_ref().map_or(0, |flags| {
-            let flags_len = flags.len() as u32;
-            flags_len + flags_len.required_space() as u32
-        });
+                let flags_len = flags.len() as u32;
+                flags_len + flags_len.required_space() as u32
+            });
 
         // Replacing is more efficient, but should lead to the same costs
         let entry = if is_replace {
@@ -246,10 +253,8 @@ impl Element {
 #[cfg(test)]
 mod tests {
     use merk::test_utils::TempMerk;
-    
 
     use super::*;
-    
 
     #[test]
     fn test_success_insert() {

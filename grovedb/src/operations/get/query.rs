@@ -1,8 +1,16 @@
-use costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
+#[cfg(feature = "full")]
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
+#[cfg(feature = "full")]
 use integer_encoding::VarInt;
-use crate::{Element, Error, GroveDb, PathQuery, TransactionArg};
-use crate::query_result_type::{QueryResultElement, QueryResultElements, QueryResultType};
-use crate::reference_path::ReferencePathType;
+
+#[cfg(feature = "full")]
+use crate::{
+    query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
+    reference_path::ReferencePathType,
+    Element, Error, GroveDb, PathQuery, TransactionArg,
+};
 
 #[cfg(feature = "full")]
 impl GroveDb {
@@ -63,7 +71,7 @@ impl GroveDb {
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<QueryResultElements, Error>
-        where {
+where {
         let mut cost = OperationCost::default();
 
         let query = cost_return_on_error!(&mut cost, PathQuery::merge(path_queries.to_vec()));
@@ -81,7 +89,7 @@ impl GroveDb {
             Err(Error::NotSupported(
                 "transactions are not currently supported",
             ))
-                .wrap_with_cost(Default::default())
+            .wrap_with_cost(Default::default())
         } else {
             self.prove_query(path_query)
         }

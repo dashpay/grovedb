@@ -1,9 +1,13 @@
-use costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
-use costs::storage_cost::removal::StorageRemovedBytes;
-use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
-use crate::{ElementFlags, Error, GroveDb, TransactionArg};
-use crate::batch::GroveDbOp;
-use crate::operations::delete::DeleteOptions;
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+    CostResult, CostsExt, OperationCost,
+};
+
+use crate::{
+    batch::GroveDbOp, operations::delete::DeleteOptions, ElementFlags, Error, GroveDb,
+    TransactionArg,
+};
 
 #[cfg(feature = "full")]
 #[derive(Clone)]
@@ -51,9 +55,9 @@ impl GroveDb {
         options: &DeleteUpTreeOptions,
         transaction: TransactionArg,
     ) -> CostResult<u16, Error>
-        where
-            P: IntoIterator<Item = &'p [u8]>,
-            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         self.delete_up_tree_while_empty_with_sectional_storage(
             path,
@@ -86,9 +90,9 @@ impl GroveDb {
             Error,
         >,
     ) -> CostResult<u16, Error>
-        where
-            P: IntoIterator<Item = &'p [u8]>,
-            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let mut cost = OperationCost::default();
         let mut batch_operations: Vec<GroveDbOp> = Vec::new();
@@ -129,7 +133,7 @@ impl GroveDb {
             split_removal_bytes_function,
             transaction,
         )
-            .map_ok(|_| ops_len as u16)
+        .map_ok(|_| ops_len as u16)
     }
 
     pub fn delete_operations_for_delete_up_tree_while_empty<'p, P>(
@@ -141,9 +145,9 @@ impl GroveDb {
         mut current_batch_operations: Vec<GroveDbOp>,
         transaction: TransactionArg,
     ) -> CostResult<Vec<GroveDbOp>, Error>
-        where
-            P: IntoIterator<Item = &'p [u8]>,
-            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         self.add_delete_operations_for_delete_up_tree_while_empty(
             path,
@@ -153,7 +157,7 @@ impl GroveDb {
             &mut current_batch_operations,
             transaction,
         )
-            .map_ok(|ops| ops.unwrap_or_default())
+        .map_ok(|ops| ops.unwrap_or_default())
     }
 
     pub fn add_delete_operations_for_delete_up_tree_while_empty<'p, P>(
@@ -165,9 +169,9 @@ impl GroveDb {
         current_batch_operations: &mut Vec<GroveDbOp>,
         transaction: TransactionArg,
     ) -> CostResult<Option<Vec<GroveDbOp>>, Error>
-        where
-            P: IntoIterator<Item = &'p [u8]>,
-            <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
+    where
+        P: IntoIterator<Item = &'p [u8]>,
+        <P as IntoIterator>::IntoIter: DoubleEndedIterator + ExactSizeIterator + Clone,
     {
         let mut cost = OperationCost::default();
 

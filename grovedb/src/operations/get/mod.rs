@@ -1,35 +1,28 @@
 #[cfg(feature = "full")]
+mod average_case;
+#[cfg(feature = "full")]
 mod query;
 #[cfg(feature = "full")]
 mod worst_case;
-#[cfg(feature = "full")]
-mod average_case;
 
 #[cfg(feature = "full")]
 use std::collections::HashSet;
 
 #[cfg(feature = "full")]
-use costs::{
-    cost_return_on_error, CostResult, CostsExt, OperationCost,
-};
-
+use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 #[cfg(feature = "full")]
 use merk::Merk;
 #[cfg(feature = "full")]
 use storage::{
-    rocksdb_storage::{
-        PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
-    },
+    rocksdb_storage::{PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext},
     StorageContext,
 };
 
 #[cfg(feature = "full")]
 use crate::{
-    Element,
-    Error,
-    GroveDb, reference_path::{
-        path_from_reference_path_type, path_from_reference_qualified_path_type,
-    }, Transaction, TransactionArg, util::storage_context_optional_tx,
+    reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
+    util::storage_context_optional_tx,
+    Element, Error, GroveDb, Transaction, TransactionArg,
 };
 
 #[cfg(feature = "full")]

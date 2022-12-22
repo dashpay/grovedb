@@ -1,7 +1,11 @@
-use costs::{CostResult, CostsExt};
-use costs::storage_cost::removal::StorageRemovedBytes;
+#[cfg(feature = "full")]
+use costs::{storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt};
+#[cfg(feature = "full")]
 use merk::{BatchEntry, Error as MerkError, Merk, MerkOptions, Op};
+#[cfg(feature = "full")]
 use storage::StorageContext;
+
+#[cfg(feature = "full")]
 use crate::{Element, Error};
 
 impl Element {
@@ -30,7 +34,7 @@ impl Element {
             Self::tree_costs_for_key_value(key, value, uses_sum_nodes)
                 .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
         })
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     #[cfg(feature = "full")]
@@ -73,7 +77,7 @@ impl Element {
             &mut |_costs, _old_value, _value| Ok((false, None)),
             sectioned_removal,
         )
-            .map_err(|e| Error::CorruptedData(e.to_string()))
+        .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
     #[cfg(feature = "full")]

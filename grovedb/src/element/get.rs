@@ -1,12 +1,16 @@
-use costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
+#[cfg(feature = "full")]
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
+#[cfg(feature = "full")]
 use merk::Merk;
+#[cfg(feature = "full")]
+use merk::{ed::Decode, tree::TreeInner};
+#[cfg(feature = "full")]
 use storage::StorageContext;
-use crate::{Element, Error, Hash};
 
 #[cfg(feature = "full")]
-use merk::{
-    ed::Decode, tree::{TreeInner},
-};
+use crate::{Element, Error, Hash};
 
 impl Element {
     #[cfg(feature = "full")]

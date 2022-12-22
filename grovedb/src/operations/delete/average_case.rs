@@ -1,14 +1,21 @@
+use costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 use intmap::IntMap;
-use costs::{cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost};
-use merk::estimated_costs::average_case_costs::EstimatedLayerInformation;
-use merk::estimated_costs::worst_case_costs::add_average_case_cost_for_is_empty_tree_except;
-use merk::HASH_LENGTH_U32;
-use storage::Storage;
-use storage::worst_case_costs::WorstKeyLength;
-use crate::batch::key_info::KeyInfo;
-use crate::batch::{GroveDbOp, KeyInfoPath};
-use crate::{Error, GroveDb};
-use crate::operations::delete::EstimatedKeyAndElementSize;
+use merk::{
+    estimated_costs::{
+        average_case_costs::EstimatedLayerInformation,
+        worst_case_costs::add_average_case_cost_for_is_empty_tree_except,
+    },
+    HASH_LENGTH_U32,
+};
+use storage::{worst_case_costs::WorstKeyLength, Storage};
+
+use crate::{
+    batch::{key_info::KeyInfo, GroveDbOp, KeyInfoPath},
+    operations::delete::EstimatedKeyAndElementSize,
+    Error, GroveDb,
+};
 
 #[cfg(feature = "full")]
 impl GroveDb {
@@ -29,7 +36,7 @@ impl GroveDb {
             Err(Error::InvalidParameter(
                 "path length need to be greater or equal to stop path height",
             ))
-                .wrap_with_cost(cost)
+            .wrap_with_cost(cost)
         } else {
             let mut used_path = path.0.as_slice();
             let mut ops = vec![];
