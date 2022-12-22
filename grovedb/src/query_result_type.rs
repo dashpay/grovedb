@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashMap};
 #[cfg(feature = "full")]
 use std::vec::IntoIter;
 
@@ -69,6 +70,36 @@ impl QueryResultElements {
             .collect()
     }
 
+    pub fn to_key_elements_btree_map(self) -> BTreeMap<Vec<u8>, Element> {
+        self.elements
+            .into_iter()
+            .filter_map(|result_item| match result_item {
+                QueryResultElement::ElementResultItem(_) => None,
+                QueryResultElement::KeyElementPairResultItem(key_element_pair) => {
+                    Some(key_element_pair)
+                }
+                QueryResultElement::PathKeyElementTrioResultItem(path_key_element_trio) => {
+                    Some((path_key_element_trio.1, path_key_element_trio.2))
+                }
+            })
+            .collect()
+    }
+
+    pub fn to_key_elements_hash_map(self) -> HashMap<Vec<u8>, Element> {
+        self.elements
+            .into_iter()
+            .filter_map(|result_item| match result_item {
+                QueryResultElement::ElementResultItem(_) => None,
+                QueryResultElement::KeyElementPairResultItem(key_element_pair) => {
+                    Some(key_element_pair)
+                }
+                QueryResultElement::PathKeyElementTrioResultItem(path_key_element_trio) => {
+                    Some((path_key_element_trio.1, path_key_element_trio.2))
+                }
+            })
+            .collect()
+    }
+
     pub fn to_path_key_elements(self) -> Vec<PathKeyElementTrio> {
         self.elements
             .into_iter()
@@ -100,6 +131,10 @@ pub enum QueryResultElement {
 #[cfg(feature = "full")]
 /// Type alias for key-element common pattern.
 pub type KeyElementPair = (Vec<u8>, Element);
+
+#[cfg(feature = "full")]
+/// Type alias for key optional_element common pattern.
+pub type KeyOptionalElementPair = (Vec<u8>, Option<Element>);
 
 #[cfg(feature = "full")]
 /// Type alias for path-key-element common pattern.

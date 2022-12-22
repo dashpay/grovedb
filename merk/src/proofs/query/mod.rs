@@ -285,6 +285,11 @@ impl Query {
         }
         false
     }
+
+    pub fn has_only_keys(&self) -> bool {
+        // checks if all searched for items are keys
+        self.items.iter().all(|a| a.is_key())
+    }
 }
 
 #[cfg(feature = "full")]
@@ -517,6 +522,10 @@ impl QueryItem {
             QueryItem::RangeAfterTo(range) => range.hash(state),
             QueryItem::RangeAfterToInclusive(range) => range.hash(state),
         }
+    }
+
+    pub const fn is_key(&self) -> bool {
+        matches!(self, QueryItem::Key(_))
     }
 
     pub const fn is_range(&self) -> bool {

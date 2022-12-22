@@ -4,7 +4,9 @@ use costs::{
 };
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
+use merk::proofs::query::QueryItem;
 
+use crate::query_result_type::KeyOptionalElementPair;
 #[cfg(feature = "full")]
 use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
@@ -230,5 +232,135 @@ where {
         transaction: TransactionArg,
     ) -> CostResult<(QueryResultElements, u16), Error> {
         Element::get_raw_path_query(&self.db, path_query, result_type, transaction)
+    }
+
+    pub fn query_raw_keys_optional(
+        &self,
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+    ) -> CostResult<Vec<KeyOptionalElementPair>, Error> {
+        if path_query.query.query.has_subquery() {
+            return Err(Error::NotSupported(
+                "subqueries are not supported in query_raw_keys_optional",
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
+        if path_query.query.limit.is_some() {
+            return Err(Error::NotSupported(
+                "limits are not supported in query_raw_keys_optional",
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
+        if path_query.query.offset.is_some() {
+            return Err(Error::NotSupported(
+                "offsets are not supported in query_raw_keys_optional",
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
+        if path_query.query.query.has_only_keys() {
+            return Err(Error::NotSupported(
+                "ranges are not supported in query_raw_keys_optional",
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
+        let mut cost = OperationCost::default();
+
+        let (elements, _) = cost_return_on_error!(
+            &mut cost,
+            self.query_raw(
+                path_query,
+                QueryResultType::QueryKeyElementPairResultType,
+                transaction
+            )
+        );
+
+        let mut elements_map = elements.to_key_elements_hash_map();
+
+        Ok(path_query
+            .query
+            .query
+            .items
+            .iter()
+            .filter_map(|item| {
+                if let QueryItem::Key(key) = item {
+                    Some((key.clone(), elements_map.remove(key)))
+                } else {
+                    None
+                }
+            })
+            .collect())
+        .wrap_with_cost(cost)
+    }
+}
+
+#[cfg(feature = "full")]
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use costs::{
+        storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
+        OperationCost,
+    };
+    use merk::proofs::Query;
+    use pretty_assertions::assert_eq;
+
+    use crate::{
+        operations::insert::InsertOptions,
+        tests::{make_empty_grovedb, make_test_grovedb, TEST_LEAF},
+        Element, Error, PathQuery, SizedQuery,
+    };
+
+    fn test_query_raw_keys_options() {
+        let db = make_test_grovedb();
+
+        db.insert(
+            [TEST_LEAF],
+            b"1",
+            Element::new_item(b"hello".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF],
+            b"2",
+            Element::new_item(b"hello too".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF],
+            b"5",
+            Element::new_item(b"bye".to_vec()),
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("should insert subtree successfully");
+
+        let mut query = Query::new();
+        query.insert_key(b"1".to_vec());
+        query.insert_key(b"2".to_vec());
+        query.insert_key(b"3".to_vec());
+        let path_query =
+            PathQuery::new(vec![TEST_LEAF.to_vec()], SizedQuery::new(query, None, None));
+        let raw_result = db
+            .query_raw_keys_optional(&path_query, None)
+            .unwrap()
+            .expect("should get successfully");
+
+        let raw_result: HashMap<_, _> = raw_result.into_iter().collect();
+
+        assert_eq!(raw_result.len(), 3);
+        assert_eq!(raw_result.get(b"4".to_vec().as_slice()), None);
+        assert_eq!(raw_result.get(b"3".to_vec().as_slice()), Some(&None));
+        assert_eq!(
+            raw_result.get(b"5".to_vec().as_slice()),
+            Some(&Some(Element::new_item(b"bye".to_vec())))
+        )
     }
 }
