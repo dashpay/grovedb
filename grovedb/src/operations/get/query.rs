@@ -298,7 +298,6 @@ where {
 mod tests {
     use std::collections::HashMap;
 
-    
     use merk::proofs::Query;
     use pretty_assertions::assert_eq;
 

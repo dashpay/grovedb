@@ -15,6 +15,8 @@ use costs::{
     CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "full")]
+pub use delete_up_tree::DeleteUpTreeOptions;
+#[cfg(feature = "full")]
 use merk::{Error as MerkError, Merk, MerkOptions};
 #[cfg(feature = "full")]
 use storage::{
@@ -24,9 +26,6 @@ use storage::{
     },
     Storage, StorageBatch, StorageContext,
 };
-
-#[cfg(feature = "full")]
-pub use delete_up_tree::DeleteUpTreeOptions;
 
 #[cfg(feature = "full")]
 use crate::{
