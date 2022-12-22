@@ -26,6 +26,9 @@ use storage::{
 };
 
 #[cfg(feature = "full")]
+pub use delete_up_tree::DeleteUpTreeOptions;
+
+#[cfg(feature = "full")]
 use crate::{
     batch::{GroveDbOp, Op},
     util::{
