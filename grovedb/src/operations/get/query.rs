@@ -298,19 +298,16 @@ where {
 mod tests {
     use std::collections::HashMap;
 
-    use costs::{
-        storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
-        OperationCost,
-    };
+    
     use merk::proofs::Query;
     use pretty_assertions::assert_eq;
 
     use crate::{
-        operations::insert::InsertOptions,
-        tests::{make_empty_grovedb, make_test_grovedb, TEST_LEAF},
-        Element, Error, PathQuery, SizedQuery,
+        tests::{make_test_grovedb, TEST_LEAF},
+        Element, PathQuery, SizedQuery,
     };
 
+    #[test]
     fn test_query_raw_keys_options() {
         let db = make_test_grovedb();
 
