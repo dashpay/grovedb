@@ -34,16 +34,11 @@ impl Element {
 #[cfg(test)]
 mod tests {
     use integer_encoding::VarInt;
-    use merk::test_utils::TempMerk;
-    use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
+    
+    
 
     use super::*;
-    use crate::{
-        element::QueryResultType::{
-            QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType,
-        },
-        tests::{make_test_grovedb, TEST_LEAF},
-    };
+    
     use crate::reference_path::ReferencePathType;
 
     #[test]

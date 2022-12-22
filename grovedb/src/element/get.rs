@@ -5,12 +5,7 @@ use crate::{Element, Error, Hash};
 
 #[cfg(feature = "full")]
 use merk::{
-    BatchEntry,
-    ed::Decode,
-    Error as MerkError,
-    estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE},
-    MerkOptions, Op, proofs::query::QueryItem, tree::{kv::KV, Tree, TreeInner}, TreeFeatureType,
-    TreeFeatureType::{BasicMerk, SummedMerk},
+    ed::Decode, tree::{TreeInner},
 };
 
 impl Element {

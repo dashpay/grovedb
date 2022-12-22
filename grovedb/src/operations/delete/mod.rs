@@ -14,19 +14,10 @@ use costs::{
     CostResult,
     CostsExt, OperationCost, storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
 };
-#[cfg(feature = "full")]
-use intmap::IntMap;
+
 #[cfg(feature = "full")]
 use merk::{
-    Error as MerkError,
-    estimated_costs::{
-        average_case_costs::EstimatedLayerInformation,
-        worst_case_costs::{
-            add_average_case_cost_for_is_empty_tree_except,
-            add_worst_case_cost_for_is_empty_tree_except,
-        },
-    },
-    HASH_LENGTH_U32, Merk, MerkOptions, tree::kv::KV,
+    Error as MerkError, Merk, MerkOptions,
 };
 #[cfg(feature = "full")]
 use storage::{
@@ -35,15 +26,15 @@ use storage::{
         PrefixedRocksDbTransactionContext,
     },
     Storage,
-    StorageBatch, StorageContext, worst_case_costs::WorstKeyLength,
+    StorageBatch, StorageContext,
 };
 
 #[cfg(feature = "full")]
 use crate::{
-    batch::{GroveDbOp, key_info::KeyInfo, KeyInfoPath, Op},
+    batch::{GroveDbOp, Op},
     Element,
     ElementFlags,
-    Error, GroveDb, element::SUM_TREE_COST_SIZE, Transaction, TransactionArg, util::{
+    Error, GroveDb, Transaction, TransactionArg, util::{
         merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
     },
 };

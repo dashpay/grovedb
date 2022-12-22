@@ -22,48 +22,24 @@ mod exists;
 #[cfg(feature = "full")]
 use core::fmt;
 
-#[cfg(any(feature = "full", feature = "verify"))]
-use bincode::Options;
-#[cfg(feature = "full")]
-use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext,
-    CostResult, CostsExt, OperationCost, storage_cost::removal::StorageRemovedBytes,
-};
-#[cfg(feature = "full")]
-use integer_encoding::VarInt;
-#[cfg(any(feature = "full", feature = "verify"))]
-use merk::proofs::Query;
+
+
+
+
 #[cfg(feature = "full")]
 use merk::{
-    BatchEntry,
-    ed::Decode,
-    Error as MerkError,
     estimated_costs::{LAYER_COST_SIZE, SUM_LAYER_COST_SIZE},
-    MerkOptions, Op, proofs::query::QueryItem, tree::{kv::KV, Tree, TreeInner}, TreeFeatureType,
-    TreeFeatureType::{BasicMerk, SummedMerk},
 };
 #[cfg(any(feature = "full", feature = "verify"))]
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "full")]
-use storage::{RawIterator, rocksdb_storage::RocksDbStorage, StorageContext};
+
 #[cfg(feature = "full")]
 use visualize::visualize_to_vec;
 
-#[cfg(feature = "full")]
-use crate::{
-    Hash,
-    Merk,
-    PathQuery,
-    query_result_type::{
-        KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType,
-        QueryResultType::QueryElementResultType,
-    }, reference_path::path_from_reference_path_type, TransactionArg, util::{
-        merk_optional_tx, storage_context_optional_tx, storage_context_with_parent_optional_tx,
-    },
-};
+
 #[cfg(any(feature = "full", feature = "verify"))]
-use crate::{Error, reference_path::ReferencePathType, SizedQuery};
-use crate::element::helpers::raw_decode;
+use crate::{reference_path::ReferencePathType};
+
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Optional meta-data to be stored per element

@@ -10,28 +10,25 @@ use std::collections::HashSet;
 
 #[cfg(feature = "full")]
 use costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+    cost_return_on_error, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
-use integer_encoding::VarInt;
+
 #[cfg(feature = "full")]
 use merk::Merk;
 #[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{
-        PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext, RocksDbStorage,
+        PrefixedRocksDbStorageContext, PrefixedRocksDbTransactionContext,
     },
     StorageContext,
 };
 
 #[cfg(feature = "full")]
 use crate::{
-    batch::{key_info::KeyInfo, KeyInfoPath},
     Element,
     Error,
-    GroveDb,
-    PathQuery, query_result_type::{QueryResultElement, QueryResultElements, QueryResultType}, reference_path::{
-        path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
+    GroveDb, reference_path::{
+        path_from_reference_path_type, path_from_reference_qualified_path_type,
     }, Transaction, TransactionArg, util::storage_context_optional_tx,
 };
 

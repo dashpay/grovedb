@@ -595,7 +595,7 @@ impl Element {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use merk::test_utils::TempMerk;
+    
     use storage::rocksdb_storage::PrefixedRocksDbStorageContext;
 
     use crate::element::*;
