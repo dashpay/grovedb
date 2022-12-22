@@ -4,9 +4,9 @@ use costs::{
 };
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
-use merk::proofs::query::QueryItem;
 
-use crate::query_result_type::{KeyOptionalElementPair, PathKeyOptionalElementTrio};
+
+use crate::query_result_type::{PathKeyOptionalElementTrio};
 #[cfg(feature = "full")]
 use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
