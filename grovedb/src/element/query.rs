@@ -3,16 +3,12 @@ use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
-
-#[cfg(any(feature = "full", feature = "verify"))]
-use merk::proofs::{Query};
 #[cfg(feature = "full")]
-use merk::proofs::{query::QueryItem};
+use merk::proofs::query::QueryItem;
+#[cfg(any(feature = "full", feature = "verify"))]
+use merk::proofs::Query;
 #[cfg(feature = "full")]
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
-
-#[cfg(any(feature = "full", feature = "verify"))]
-use crate::{Element, SizedQuery};
 
 #[cfg(feature = "full")]
 use crate::{
@@ -24,6 +20,8 @@ use crate::{
     util::{merk_optional_tx, storage_context_optional_tx},
     Error, PathQuery, TransactionArg,
 };
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::{Element, SizedQuery};
 
 #[cfg(feature = "full")]
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>
