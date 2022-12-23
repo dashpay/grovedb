@@ -1,3 +1,4 @@
+use costs::cost_return_on_error_default;
 #[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -26,9 +27,8 @@ type LimitOffset = (Option<u16>, Option<u16>);
 #[cfg(feature = "full")]
 impl GroveDb {
     pub fn prove_query_many(&self, query: Vec<&PathQuery>) -> CostResult<Vec<u8>, Error> {
-        let mut cost = OperationCost::default();
         if query.len() > 1 {
-            let query = cost_return_on_error!(&mut cost, PathQuery::merge(query));
+            let query = cost_return_on_error_default!(PathQuery::merge(query));
             self.prove_query(&query)
         } else {
             self.prove_query(query[0])

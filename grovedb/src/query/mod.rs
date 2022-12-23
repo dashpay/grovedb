@@ -1,6 +1,4 @@
 #[cfg(any(feature = "full", feature = "verify"))]
-use costs::{CostResult, CostsExt, OperationCost};
-#[cfg(any(feature = "full", feature = "verify"))]
 use merk::proofs::{query::QueryItem, Query};
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -65,21 +63,17 @@ impl PathQuery {
     /// TODO: Currently not allowing unlimited depth queries when paths are
     /// equal     this is possible, should handle later.
     /// [a] + [b] (valid, unique and non subset)
-    pub fn merge(path_queries: Vec<&PathQuery>) -> CostResult<Self, Error> {
-        let cost = OperationCost::default();
-
+    pub fn merge(path_queries: Vec<&PathQuery>) -> Result<Self, Error> {
         if path_queries.len() < 2 {
             return Err(Error::InvalidInput(
                 "merge function requires at least 2 path queries",
-            ))
-            .wrap_with_cost(cost);
+            ));
         }
 
         if Self::has_subpaths(&path_queries) {
             return Err(Error::InvalidInput(
                 "path query path's should be non subset",
-            ))
-            .wrap_with_cost(cost);
+            ));
         }
 
         let (common_path, next_index) = PathQuery::get_common_path(&path_queries);
@@ -99,7 +93,7 @@ impl PathQuery {
                 acc
             });
 
-        Ok(PathQuery::new_unsized(common_path, merged_query)).wrap_with_cost(cost)
+        Ok(PathQuery::new_unsized(common_path, merged_query))
     }
 
     /// Checks if any path query is a subset of another by path
@@ -306,7 +300,6 @@ mod tests {
         assert_eq!(result_set_two.len(), 1);
 
         let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .unwrap()
             .expect("should merge path queries");
 
         let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
@@ -343,7 +336,6 @@ mod tests {
         assert_eq!(result_set_two.len(), 1);
 
         let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .unwrap()
             .expect("expect to merge path queries");
         assert_eq!(merged_path_query.path, vec![TEST_LEAF.to_vec()]);
         assert_eq!(merged_path_query.query.query.items.len(), 2);
@@ -412,7 +404,6 @@ mod tests {
 
         let merged_path_query =
             PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three])
-                .unwrap()
                 .expect("expect to merge path queries");
         assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec()]);
         assert_eq!(merged_path_query.query.query.items.len(), 2);
@@ -484,7 +475,6 @@ mod tests {
         assert_eq!(result_set_two.len(), 2);
 
         let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .unwrap()
             .expect("expect to merge path queries");
         assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec()]);
 
@@ -556,7 +546,6 @@ mod tests {
 
         let merged_path_query =
             PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three])
-                .unwrap()
                 .expect("should merge three queries");
 
         let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
@@ -594,7 +583,6 @@ mod tests {
         assert_eq!(result_set.len(), 1);
 
         let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-            .unwrap()
             .expect("should merge three queries");
 
         let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
@@ -634,7 +622,7 @@ mod tests {
             GroveDb::verify_query(proof.as_slice(), &path_query_two).expect("should execute proof");
         assert_eq!(result_set.len(), 3);
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two]).unwrap();
+        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two]);
 
         assert!(matches!(
             merged_path_query,

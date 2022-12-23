@@ -76,7 +76,7 @@ impl GroveDb {
 where {
         let mut cost = OperationCost::default();
 
-        let query = cost_return_on_error!(&mut cost, PathQuery::merge(path_queries.to_vec()));
+        let query = cost_return_on_error_no_add!(&cost, PathQuery::merge(path_queries.to_vec()));
         let (result, _) =
             cost_return_on_error!(&mut cost, self.query_raw(&query, result_type, transaction));
         Ok(result).wrap_with_cost(cost)
