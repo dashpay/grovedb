@@ -1,26 +1,18 @@
-
 mod crash_merk;
 
 mod temp_merk;
 
-
 use std::{convert::TryInto, ops::Range};
 
-
 use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
-
 pub use crash_merk::CrashMerk;
-
 use rand::prelude::*;
-
 pub use temp_merk::TempMerk;
-
 
 use crate::{
     tree::{kv::KV, BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker},
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
-
 
 pub fn assert_tree_invariants(tree: &Tree) {
     assert!(tree.balance_factor().abs() < 2);
@@ -44,7 +36,6 @@ pub fn assert_tree_invariants(tree: &Tree) {
         assert_tree_invariants(right);
     }
 }
-
 
 pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     let is_sum_node = tree.is_sum_node();
@@ -94,13 +85,11 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     tree
 }
 
-
 pub fn apply_memonly(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     let tree = apply_memonly_unchecked(tree, batch);
     assert_tree_invariants(&tree);
     tree
 }
-
 
 pub fn apply_to_memonly(
     maybe_tree: Option<Tree>,
@@ -156,21 +145,17 @@ pub fn apply_to_memonly(
     })
 }
 
-
 pub const fn seq_key(n: u64) -> [u8; 8] {
     n.to_be_bytes()
 }
-
 
 pub fn put_entry(n: u64) -> BatchEntry<Vec<u8>> {
     (seq_key(n).to_vec(), Op::Put(vec![123; 60], BasicMerk))
 }
 
-
 pub fn del_entry(n: u64) -> BatchEntry<Vec<u8>> {
     (seq_key(n).to_vec(), Op::Delete)
 }
-
 
 pub fn make_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     let mut batch = Vec::with_capacity((range.end - range.start).try_into().unwrap());
@@ -180,7 +165,6 @@ pub fn make_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     batch
 }
 
-
 pub fn make_del_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     let mut batch = Vec::with_capacity((range.end - range.start).try_into().unwrap());
     for n in range {
@@ -188,7 +172,6 @@ pub fn make_del_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     }
     batch
 }
-
 
 pub fn make_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(seed);
@@ -201,7 +184,6 @@ pub fn make_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     batch
 }
 
-
 pub fn make_del_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(seed);
     let mut batch = Vec::with_capacity(size.try_into().unwrap());
@@ -212,7 +194,6 @@ pub fn make_del_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     batch.sort_by(|a, b| a.0.cmp(&b.0));
     batch
 }
-
 
 pub fn make_tree_rand(
     node_count: u64,
@@ -242,7 +223,6 @@ pub fn make_tree_rand(
 
     tree
 }
-
 
 pub fn make_tree_seq(node_count: u64) -> Tree {
     let batch_size = if node_count >= 10_000 {

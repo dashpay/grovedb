@@ -1,6 +1,4 @@
-
 use std::ops::{Deref, DerefMut};
-
 
 /// A container type which holds a value that may be temporarily owned by a
 /// consumer.
@@ -8,7 +6,6 @@ use std::ops::{Deref, DerefMut};
 pub struct Owner<T> {
     inner: Option<T>,
 }
-
 
 impl<T> Owner<T> {
     /// Creates a new `Owner` which holds the given value.
@@ -70,7 +67,6 @@ impl<T> Owner<T> {
     }
 }
 
-
 impl<T> Deref for Owner<T> {
     type Target = T;
 
@@ -79,13 +75,11 @@ impl<T> Deref for Owner<T> {
     }
 }
 
-
 impl<T> DerefMut for Owner<T> {
     fn deref_mut(&mut self) -> &mut T {
         unwrap(self.inner.as_mut())
     }
 }
-
 
 fn unwrap<T>(option: Option<T>) -> T {
     match option {

@@ -1,20 +1,14 @@
-
 use std::io::{Result, Write};
 
-
 use storage::StorageContext;
-
 use visualize::{Drawer, Visualize};
 
-
 use crate::{tree::Tree, Merk};
-
 
 pub struct VisualizeableMerk<'a, S, F> {
     merk: &'a Merk<S>,
     deserialize_fn: F,
 }
-
 
 impl<'a, S, F> VisualizeableMerk<'a, S, F> {
     pub fn new(merk: &'a Merk<S>, deserialize_fn: F) -> Self {
@@ -25,12 +19,10 @@ impl<'a, S, F> VisualizeableMerk<'a, S, F> {
     }
 }
 
-
 struct VisualizableTree<'a, F> {
     tree: &'a Tree,
     deserialize_fn: F,
 }
-
 
 impl<'a, F> VisualizableTree<'a, F> {
     fn new(tree: &'a Tree, deserialize_fn: F) -> Self {
@@ -40,7 +32,6 @@ impl<'a, F> VisualizableTree<'a, F> {
         }
     }
 }
-
 
 impl<'a, 'db, S: StorageContext<'db>, T: Visualize, F: Fn(&[u8]) -> T + Copy> Visualize
     for VisualizeableMerk<'a, S, F>
@@ -60,7 +51,6 @@ impl<'a, 'db, S: StorageContext<'db>, T: Visualize, F: Fn(&[u8]) -> T + Copy> Vi
         Ok(drawer)
     }
 }
-
 
 impl<'a, T: Visualize, F: Fn(&[u8]) -> T + Copy> Visualize for VisualizableTree<'a, F> {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
