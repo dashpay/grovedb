@@ -1,24 +1,18 @@
-#[cfg(feature = "full")]
 use std::{
     collections::VecDeque,
     iter::{empty, once},
 };
 
-#[cfg(feature = "full")]
 use merk::{
     proofs::{Node, Op},
     Merk, TreeFeatureType,
 };
-#[cfg(feature = "full")]
 use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, Storage, StorageContext};
 
-#[cfg(feature = "full")]
 use crate::{Element, Error, GroveDb, Hash};
 
-#[cfg(feature = "full")]
 const OPS_PER_CHUNK: usize = 128;
 
-#[cfg(feature = "full")]
 impl GroveDb {
     /// Creates a chunk producer to replicate GroveDb.
     pub fn chunks(&self) -> SubtreeChunkProducer {
@@ -26,14 +20,12 @@ impl GroveDb {
     }
 }
 
-#[cfg(feature = "full")]
 /// Subtree chunks producer.
 pub struct SubtreeChunkProducer<'db> {
     grove_db: &'db GroveDb,
     cache: Option<SubtreeChunkProducerCache<'db>>,
 }
 
-#[cfg(feature = "full")]
 struct SubtreeChunkProducerCache<'db> {
     current_merk_path: Vec<Vec<u8>>,
     current_merk: Merk<PrefixedRocksDbStorageContext<'db>>,
@@ -43,7 +35,6 @@ struct SubtreeChunkProducerCache<'db> {
     current_chunk_producer: Option<merk::ChunkProducer<'db, PrefixedRocksDbStorageContext<'db>>>,
 }
 
-#[cfg(feature = "full")]
 impl<'db> SubtreeChunkProducer<'db> {
     fn new(storage: &'db GroveDb) -> Self {
         SubtreeChunkProducer {
@@ -108,14 +99,11 @@ impl<'db> SubtreeChunkProducer<'db> {
     }
 }
 
-#[cfg(feature = "full")]
 // TODO: make generic over storage_cost context
 type MerkRestorer<'db> = merk::Restorer<PrefixedRocksDbStorageContext<'db>>;
 
-#[cfg(feature = "full")]
 type Path = Vec<Vec<u8>>;
 
-#[cfg(feature = "full")]
 /// Structure to drive GroveDb restore process.
 pub struct Restorer<'db> {
     current_merk_restorer: Option<MerkRestorer<'db>>,
@@ -125,7 +113,6 @@ pub struct Restorer<'db> {
     grove_db: &'db GroveDb,
 }
 
-#[cfg(feature = "full")]
 /// Indicates what next piece of information `Restorer` expects or wraps a
 /// successful result.
 #[derive(Debug)]
@@ -134,11 +121,9 @@ pub enum RestorerResponse {
     Ready,
 }
 
-#[cfg(feature = "full")]
 #[derive(Debug)]
 pub struct RestorerError(String);
 
-#[cfg(feature = "full")]
 impl<'db> Restorer<'db> {
     /// Create a GroveDb restorer using a backing storage_cost and root hash.
     pub fn new(
@@ -262,7 +247,6 @@ impl<'db> Restorer<'db> {
     }
 }
 
-#[cfg(feature = "full")]
 /// Chunk producer wrapper which uses bigger messages that may include chunks of
 /// requested subtree with its right siblings.
 ///
@@ -273,13 +257,11 @@ pub struct SiblingsChunkProducer<'db> {
     chunk_producer: SubtreeChunkProducer<'db>,
 }
 
-#[cfg(feature = "full")]
 #[derive(Debug)]
 pub struct GroveChunk {
     subtree_chunks: Vec<(usize, Vec<Op>)>,
 }
 
-#[cfg(feature = "full")]
 impl<'db> SiblingsChunkProducer<'db> {
     pub fn new(chunk_producer: SubtreeChunkProducer<'db>) -> Self {
         SiblingsChunkProducer { chunk_producer }
@@ -387,7 +369,6 @@ impl<'db> SiblingsChunkProducer<'db> {
     }
 }
 
-#[cfg(feature = "full")]
 /// `Restorer` wrapper that applies multiple chunks at once and eventually
 /// returns less requests. It is named by analogy with IO types that do less
 /// syscalls.
@@ -395,7 +376,6 @@ pub struct BufferedRestorer<'db> {
     restorer: Restorer<'db>,
 }
 
-#[cfg(feature = "full")]
 impl<'db> BufferedRestorer<'db> {
     pub fn new(restorer: Restorer<'db>) -> Self {
         BufferedRestorer { restorer }
@@ -420,7 +400,6 @@ impl<'db> BufferedRestorer<'db> {
     }
 }
 
-#[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
     use rand::RngCore;

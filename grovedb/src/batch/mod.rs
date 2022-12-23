@@ -1,25 +1,22 @@
 //! GroveDB batch operations support
 
-#[cfg(feature = "full")]
 mod batch_structure;
-#[cfg(feature = "full")]
+
 pub mod estimated_costs;
-#[cfg(feature = "full")]
+
 pub mod key_info;
-#[cfg(feature = "full")]
+
 mod mode;
 #[cfg(test)]
 mod multi_insert_cost_tests;
-#[cfg(feature = "full")]
+
 mod options;
 #[cfg(test)]
 mod single_deletion_cost_tests;
 #[cfg(test)]
 mod single_insert_cost_tests;
 
-#[cfg(feature = "full")]
 use core::fmt;
-#[cfg(feature = "full")]
 use std::{
     cmp::Ordering,
     collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap},
@@ -29,7 +26,6 @@ use std::{
     vec::IntoIter,
 };
 
-#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
@@ -38,34 +34,24 @@ use costs::{
     },
     CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "full")]
 use estimated_costs::{
     average_case_costs::AverageCaseTreeCacheKnownPaths,
     worst_case_costs::WorstCaseTreeCacheKnownPaths,
 };
-#[cfg(feature = "full")]
 use integer_encoding::VarInt;
-#[cfg(feature = "full")]
 use itertools::Itertools;
-#[cfg(feature = "full")]
 use key_info::{KeyInfo, KeyInfo::KnownKey};
-use merk::RootHashKeyAndSum;
-#[cfg(feature = "full")]
 use merk::{
     tree::{kv::KV, value_hash, NULL_HASH},
-    CryptoHash, Error as MerkError, Merk, MerkType,
+    CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum,
 };
-#[cfg(feature = "full")]
 pub use options::BatchApplyOptions;
-#[cfg(feature = "full")]
 use storage::{
     rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
-#[cfg(feature = "full")]
 use visualize::{Drawer, Visualize};
 
-#[cfg(feature = "full")]
 use crate::{
     batch::{
         batch_structure::BatchStructure, estimated_costs::EstimatedCostsType, mode::BatchRunMode,
@@ -76,7 +62,6 @@ use crate::{
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
-#[cfg(feature = "full")]
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
     ReplaceTreeRootKey {
@@ -101,7 +86,6 @@ pub enum Op {
     DeleteSumTree,
 }
 
-#[cfg(feature = "full")]
 impl PartialOrd for Op {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
@@ -114,64 +98,54 @@ impl PartialOrd for Op {
     }
 }
 
-#[cfg(feature = "full")]
 impl Ord for Op {
     fn cmp(&self, other: &Self) -> Ordering {
         self.partial_cmp(other).expect("all ops have order")
     }
 }
 
-#[cfg(feature = "full")]
 #[derive(Eq, Clone, Debug)]
 pub struct KnownKeysPath(Vec<Vec<u8>>);
 
-#[cfg(feature = "full")]
 impl Hash for KnownKeysPath {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state)
     }
 }
 
-#[cfg(feature = "full")]
 impl PartialEq for KnownKeysPath {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
 
-#[cfg(feature = "full")]
 impl PartialEq<KeyInfoPath> for KnownKeysPath {
     fn eq(&self, other: &KeyInfoPath) -> bool {
         self.0 == other.to_path_refs()
     }
 }
 
-#[cfg(feature = "full")]
 impl PartialEq<Vec<Vec<u8>>> for KnownKeysPath {
     fn eq(&self, other: &Vec<Vec<u8>>) -> bool {
         self.0 == other.as_slice()
     }
 }
 
-#[cfg(feature = "full")]
 #[derive(PartialOrd, Ord, Eq, Clone, Debug, Default)]
 pub struct KeyInfoPath(pub Vec<KeyInfo>);
 
-#[cfg(feature = "full")]
 impl Hash for KeyInfoPath {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state)
     }
 }
 
-#[cfg(feature = "full")]
 impl PartialEq for KeyInfoPath {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
 
-#[cfg(feature = "full")]
 impl Visualize for KeyInfoPath {
     fn visualize<W: std::io::Write>(&self, mut drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
         drawer.write(b"path: ")?;
@@ -186,7 +160,6 @@ impl Visualize for KeyInfoPath {
     }
 }
 
-#[cfg(feature = "full")]
 impl KeyInfoPath {
     pub fn from_vec(vec: Vec<KeyInfo>) -> Self {
         KeyInfoPath(vec)
@@ -253,7 +226,6 @@ impl KeyInfoPath {
     }
 }
 
-#[cfg(feature = "full")]
 /// Batch operation
 #[derive(Clone, PartialEq, Eq)]
 pub struct GroveDbOp {
@@ -265,7 +237,6 @@ pub struct GroveDbOp {
     pub op: Op,
 }
 
-#[cfg(feature = "full")]
 impl fmt::Debug for GroveDbOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut path_out = Vec::new();
@@ -305,7 +276,6 @@ impl fmt::Debug for GroveDbOp {
     }
 }
 
-#[cfg(feature = "full")]
 impl GroveDbOp {
     pub fn insert_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
@@ -481,7 +451,6 @@ impl GroveDbOp {
     }
 }
 
-#[cfg(feature = "full")]
 #[derive(Debug)]
 pub struct GroveDbOpConsistencyResults {
     repeated_ops: Vec<(GroveDbOp, u16)>, // the u16 is count
@@ -490,7 +459,6 @@ pub struct GroveDbOpConsistencyResults {
                                                                      * then inserts under */
 }
 
-#[cfg(feature = "full")]
 impl GroveDbOpConsistencyResults {
     pub fn is_empty(&self) -> bool {
         self.repeated_ops.is_empty()
@@ -499,21 +467,18 @@ impl GroveDbOpConsistencyResults {
     }
 }
 
-#[cfg(feature = "full")]
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F> {
     merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
     get_merk_fn: F,
 }
 
-#[cfg(feature = "full")]
 impl<S, F> fmt::Debug for TreeCacheMerkByPath<S, F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheMerkByPath").finish()
     }
 }
 
-#[cfg(feature = "full")]
 trait TreeCache<G, SR> {
     fn insert(&mut self, op: &GroveDbOp, is_sum_tree: bool) -> CostResult<(), Error>;
 
@@ -533,7 +498,6 @@ trait TreeCache<G, SR> {
     fn update_base_merk_root_key(&mut self, root_key: Option<Vec<u8>>) -> CostResult<(), Error>;
 }
 
-#[cfg(feature = "full")]
 impl<'db, S, F> TreeCacheMerkByPath<S, F>
 where
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
@@ -697,7 +661,6 @@ where
     }
 }
 
-#[cfg(feature = "full")]
 impl<'db, S, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F>
 where
     G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
@@ -1052,7 +1015,6 @@ where
     }
 }
 
-#[cfg(feature = "full")]
 impl GroveDb {
     /// Method to propagate updated subtree root hashes up to GroveDB root
     fn apply_batch_structure<C: TreeCache<F, SR>, F, SR>(
@@ -1632,7 +1594,6 @@ impl GroveDb {
     }
 }
 
-#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;

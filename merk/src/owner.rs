@@ -1,7 +1,5 @@
-#[cfg(feature = "full")]
 use std::ops::{Deref, DerefMut};
 
-#[cfg(feature = "full")]
 /// A container type which holds a value that may be temporarily owned by a
 /// consumer.
 #[derive(Debug)]
@@ -9,7 +7,6 @@ pub struct Owner<T> {
     inner: Option<T>,
 }
 
-#[cfg(feature = "full")]
 impl<T> Owner<T> {
     /// Creates a new `Owner` which holds the given value.
     pub const fn new(value: T) -> Self {
@@ -70,7 +67,6 @@ impl<T> Owner<T> {
     }
 }
 
-#[cfg(feature = "full")]
 impl<T> Deref for Owner<T> {
     type Target = T;
 
@@ -79,14 +75,12 @@ impl<T> Deref for Owner<T> {
     }
 }
 
-#[cfg(feature = "full")]
 impl<T> DerefMut for Owner<T> {
     fn deref_mut(&mut self) -> &mut T {
         unwrap(self.inner.as_mut())
     }
 }
 
-#[cfg(feature = "full")]
 fn unwrap<T>(option: Option<T>) -> T {
     match option {
         Some(value) => value,

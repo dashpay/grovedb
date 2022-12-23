@@ -1,12 +1,10 @@
-use std::collections::{BTreeMap, HashMap};
-#[cfg(feature = "full")]
-use std::vec::IntoIter;
+use std::{
+    collections::{BTreeMap, HashMap},
+    vec::IntoIter,
+};
 
-#[cfg(feature = "full")]
-use crate::Element;
-use crate::Error;
+use crate::{Element, Error};
 
-#[cfg(feature = "full")]
 #[derive(Copy, Clone)]
 pub enum QueryResultType {
     QueryElementResultType,
@@ -14,12 +12,10 @@ pub enum QueryResultType {
     QueryPathKeyElementTrioResultType,
 }
 
-#[cfg(feature = "full")]
 pub struct QueryResultElements {
     pub elements: Vec<QueryResultElement>,
 }
 
-#[cfg(feature = "full")]
 impl QueryResultElements {
     pub fn new() -> Self {
         QueryResultElements { elements: vec![] }
@@ -128,14 +124,12 @@ impl QueryResultElements {
     }
 }
 
-#[cfg(feature = "full")]
 impl Default for QueryResultElements {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(feature = "full")]
 pub enum QueryResultElement {
     ElementResultItem(Element),
     KeyElementPairResultItem(KeyElementPair),
@@ -166,27 +160,25 @@ impl QueryResultElement {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for a path.
 pub type Path = Vec<Vec<u8>>;
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for a Key.
 pub type Key = Vec<u8>;
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for key-element common pattern.
 pub type KeyElementPair = (Key, Element);
 
-#[cfg(feature = "full")]
 /// Type alias for key optional_element common pattern.
 pub type KeyOptionalElementPair = (Key, Option<Element>);
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for path-key common pattern.
 pub type PathKey = (Path, Key);
 
-#[cfg(feature = "full")]
 /// Type alias for path-key-element common pattern.
 pub type PathKeyElementTrio = (Path, Key, Element);
 

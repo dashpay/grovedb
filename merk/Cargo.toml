@@ -54,7 +54,7 @@ features = ["disable_initial_exec_tls"]
 optional = true
 
 [features]
-default = ["verify"]
+default = ["full"]
 full = ["rand",
         "time",
         "hex",

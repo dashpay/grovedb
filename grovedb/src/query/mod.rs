@@ -3,6 +3,7 @@ use costs::{CostResult, CostsExt, OperationCost};
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::proofs::{query::QueryItem, Query};
 
+#[cfg(any(feature = "full", feature = "verify"))]
 use crate::query_result_type::PathKey;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::Error;
