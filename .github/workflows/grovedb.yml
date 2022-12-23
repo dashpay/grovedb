@@ -30,8 +30,6 @@ jobs:
 
       - run: cargo test --workspace --all-features
 
-      - name: Build proof verification feature
-        run: cargo build --no-default-features --features verify -p grovedb
 
   linting:
     name: Linting
@@ -104,6 +102,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - run: cargo check
+
+      - name: Compile proof verification feature
+        run: cargo build --no-default-features --features verify -p grovedb
 
   security:
     name: Dependencies security audit
