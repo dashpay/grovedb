@@ -70,7 +70,7 @@ impl Query {
         max_results: usize,
         result: &mut Vec<(Vec<Vec<u8>>, Vec<u8>)>,
     ) -> Result<usize, Error> {
-        let current_len = result.len();
+        let mut current_len = result.len();
         let mut added = 0;
         let mut already_added_keys = HashSet::new();
         for (conditional_query_item, subquery_branch) in &self.conditional_subquery_branches {
@@ -81,13 +81,13 @@ impl Query {
                 ));
             }
             let conditional_keys = conditional_query_item.keys()?;
-            if current_len + conditional_keys.len() > max_results {
-                return Err(Error::RequestAmountExceeded(format!(
-                    "terminal keys limit exceeded, set max is {}",
-                    max_results
-                )));
-            }
             for key in conditional_keys.into_iter() {
+                if current_len > max_results {
+                    return Err(Error::RequestAmountExceeded(format!(
+                        "terminal keys limit exceeded, set max is {}",
+                        max_results
+                    )));
+                }
                 already_added_keys.insert(key.clone());
                 let mut path = current_path.clone();
                 if let Some(subquery_key) = &subquery_branch.subquery_key {
@@ -98,20 +98,32 @@ impl Query {
                         // push the subquery key to the path
                         path.push(subquery_key.clone());
                         // recurse onto the lower level
-                        added += subquery.terminal_keys(path, max_results, result)?;
+                        let added_here =
+                            subquery.terminal_keys(path, max_results - current_len, result)?;
+                        added += added_here;
+                        current_len += added_here;
                     } else {
+                        if current_len == max_results {
+                            return Err(Error::RequestAmountExceeded(format!(
+                                "terminal keys limit exceeded, set max is {}",
+                                max_results
+                            )));
+                        }
                         // a subquery key but no subquery
                         // push the key to the path, and set the subquery key as the terminal key
                         path.push(key);
                         result.push((path, subquery_key.clone()));
                         added += 1;
+                        current_len += 1;
                     }
                 } else if let Some(subquery) = &subquery_branch.subquery {
                     // a subquery without a subquery key
                     // push the key to the path
                     path.push(key);
                     // recurse onto the lower level
-                    added += subquery.terminal_keys(path, max_results, result)?;
+                    let added_here = subquery.terminal_keys(path, max_results, result)?;
+                    added += added_here;
+                    current_len += added_here;
                 }
             }
         }
@@ -122,16 +134,16 @@ impl Query {
                 ));
             }
             let keys = item.keys()?;
-            if current_len + keys.len() > max_results {
-                return Err(Error::RequestAmountExceeded(format!(
-                    "terminal keys limit exceeded, set max is {}",
-                    max_results
-                )));
-            }
             for key in keys.into_iter() {
                 if already_added_keys.contains(&key) {
                     // we already had this key in the conditional subqueries
                     continue; // skip this key
+                }
+                if current_len > max_results {
+                    return Err(Error::RequestAmountExceeded(format!(
+                        "terminal keys limit exceeded, set max is {}",
+                        max_results
+                    )));
                 }
                 let mut path = current_path.clone();
                 if let Some(subquery_key) = &self.default_subquery_branch.subquery_key {
@@ -142,23 +154,43 @@ impl Query {
                         // push the subquery key to the path
                         path.push(subquery_key.clone());
                         // recurse onto the lower level
-                        subquery.terminal_keys(path, max_results, result)?;
-                        added += 1;
+                        let added_here =
+                            subquery.terminal_keys(path, max_results - current_len, result)?;
+                        added += added_here;
+                        current_len += added_here;
                     } else {
+                        if current_len == max_results {
+                            return Err(Error::RequestAmountExceeded(format!(
+                                "terminal keys limit exceeded, set max is {}",
+                                max_results
+                            )));
+                        }
                         // a subquery key but no subquery
                         // push the key to the path, and set the subquery key as the terminal key
                         path.push(key);
                         result.push((path, subquery_key.clone()));
                         added += 1;
+                        current_len += 1;
                     }
                 } else if let Some(subquery) = &self.default_subquery_branch.subquery {
                     // a subquery without a subquery key
                     // push the key to the path
                     path.push(key);
                     // recurse onto the lower level
-                    subquery.terminal_keys(path, max_results, result)?;
+                    let added_here =
+                        subquery.terminal_keys(path, max_results - current_len, result)?;
+                    added += added_here;
+                    current_len += added_here;
                 } else {
+                    if current_len == max_results {
+                        return Err(Error::RequestAmountExceeded(format!(
+                            "terminal keys limit exceeded, set max is {}",
+                            max_results
+                        )));
+                    }
                     result.push((path, key));
+                    added += 1;
+                    current_len += 1;
                 }
             }
         }
@@ -646,7 +678,7 @@ impl QueryItem {
             QueryItem::Key(key) => Ok(vec![key.clone()]),
             QueryItem::Range(Range { start, end }) => {
                 let mut keys = vec![];
-                if start.len() != 1 || end.len() != 1 {
+                if start.len() > 1 || end.len() != 1 {
                     return Err(Error::InvalidOperation(
                         "distinct keys are not available for ranges using more or less than 1 byte",
                     ));
@@ -667,7 +699,7 @@ impl QueryItem {
                 let start = range_inclusive.start();
                 let end = range_inclusive.end();
                 let mut keys = vec![];
-                if start.len() != 1 || end.len() != 1 {
+                if start.len() > 1 || end.len() != 1 {
                     return Err(Error::InvalidOperation(
                         "distinct keys are not available for ranges using more or less than 1 byte",
                     ));
@@ -695,7 +727,7 @@ impl QueryItem {
             QueryItem::Key(key) => Ok(vec![key]),
             QueryItem::Range(Range { start, end }) => {
                 let mut keys = vec![];
-                if start.len() != 1 || end.len() != 1 {
+                if start.len() > 1 || end.len() != 1 {
                     return Err(Error::InvalidOperation(
                         "distinct keys are not available for ranges using more or less than 1 byte",
                     ));
@@ -716,7 +748,7 @@ impl QueryItem {
                 let start = range_inclusive.start();
                 let end = range_inclusive.end();
                 let mut keys = vec![];
-                if start.len() != 1 || end.len() != 1 {
+                if start.len() > 1 || end.len() != 1 {
                     return Err(Error::InvalidOperation(
                         "distinct keys are not available for ranges using more or less than 1 byte",
                     ));
