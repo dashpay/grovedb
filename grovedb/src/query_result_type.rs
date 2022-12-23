@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
-#[cfg(feature = "full")]
+
 use std::vec::IntoIter;
 
-#[cfg(feature = "full")]
+
 use crate::Element;
 
-#[cfg(feature = "full")]
+
 #[derive(Copy, Clone)]
 pub enum QueryResultType {
     QueryElementResultType,
@@ -13,12 +13,12 @@ pub enum QueryResultType {
     QueryPathKeyElementTrioResultType,
 }
 
-#[cfg(feature = "full")]
+
 pub struct QueryResultElements {
     pub elements: Vec<QueryResultElement>,
 }
 
-#[cfg(feature = "full")]
+
 impl QueryResultElements {
     pub fn new() -> Self {
         QueryResultElements { elements: vec![] }
@@ -114,28 +114,28 @@ impl QueryResultElements {
     }
 }
 
-#[cfg(feature = "full")]
+
 impl Default for QueryResultElements {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(feature = "full")]
+
 pub enum QueryResultElement {
     ElementResultItem(Element),
     KeyElementPairResultItem(KeyElementPair),
     PathKeyElementTrioResultItem(PathKeyElementTrio),
 }
 
-#[cfg(feature = "full")]
+
 /// Type alias for key-element common pattern.
 pub type KeyElementPair = (Vec<u8>, Element);
 
-#[cfg(feature = "full")]
+
 /// Type alias for key optional_element common pattern.
 pub type KeyOptionalElementPair = (Vec<u8>, Option<Element>);
 
-#[cfg(feature = "full")]
+
 /// Type alias for path-key-element common pattern.
 pub type PathKeyElementTrio = (Vec<Vec<u8>>, Vec<u8>, Element);
