@@ -538,7 +538,6 @@ impl GroveDb {
     /// ## Examples:
     /// ```
     /// # use grovedb::{Element, Error, GroveDb};
-    /// # use rs_merkle::{MerkleTree, MerkleProof, algorithms::Sha256, Hasher, utils};
     /// # use std::convert::TryFrom;
     /// # use tempfile::TempDir;
     /// #
