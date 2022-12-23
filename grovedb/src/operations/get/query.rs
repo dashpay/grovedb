@@ -4,6 +4,7 @@ use costs::{
 };
 #[cfg(feature = "full")]
 use integer_encoding::VarInt;
+use costs::cost_return_on_error_default;
 
 use crate::query_result_type::PathKeyOptionalElementTrio;
 #[cfg(feature = "full")]
@@ -301,21 +302,15 @@ where {
     pub fn query_raw_keys_optional(
         &self,
         path_query: &PathQuery,
-        max_results: usize,
         transaction: TransactionArg,
     ) -> CostResult<Vec<PathKeyOptionalElementTrio>, Error> {
-        if path_query.query.query.has_subquery() {
-            return Err(Error::NotSupported(
-                "subqueries are not supported in query_raw_keys_optional",
+        let max_results =
+            cost_return_on_error_default!(
+            path_query.query.limit.ok_or(
+            Error::NotSupported(
+                "limits must be set in query_raw_keys_optional",
             ))
-            .wrap_with_cost(OperationCost::default());
-        }
-        if path_query.query.limit.is_some() {
-            return Err(Error::NotSupported(
-                "limits are not supported in query_raw_keys_optional",
-            ))
-            .wrap_with_cost(OperationCost::default());
-        }
+                ) as usize;
         if path_query.query.offset.is_some() {
             return Err(Error::NotSupported(
                 "offsets are not supported in query_raw_keys_optional",
@@ -323,6 +318,9 @@ where {
             .wrap_with_cost(OperationCost::default());
         }
         let mut cost = OperationCost::default();
+
+        let terminal_keys =
+            cost_return_on_error_no_add!(&cost, path_query.terminal_keys(max_results));
 
         let (elements, _) = cost_return_on_error!(
             &mut cost,
@@ -335,9 +333,7 @@ where {
 
         let mut elements_map = elements.to_path_key_elements_btree_map();
 
-        let terminal_keys =
-            cost_return_on_error_no_add!(&cost, path_query.terminal_keys(max_results));
-
+        dbg!(&elements_map);
         Ok(terminal_keys
             .into_iter()
             .map(|path_key| {
@@ -399,9 +395,9 @@ mod tests {
         query.insert_key(b"2".to_vec());
         query.insert_key(b"5".to_vec());
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, None, None));
+        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(5), None));
         let raw_result = db
-            .query_raw_keys_optional(&path_query, 5, None)
+            .query_raw_keys_optional(&path_query, None)
             .unwrap()
             .expect("should get successfully");
 
@@ -455,9 +451,9 @@ mod tests {
         query.insert_range(b"1".to_vec()..b"3".to_vec());
         query.insert_key(b"5".to_vec());
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, None, None));
+        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(5), None));
         let raw_result = db
-            .query_raw_keys_optional(&path_query, 5, None)
+            .query_raw_keys_optional(&path_query, None)
             .unwrap()
             .expect("should get successfully");
 
@@ -512,9 +508,9 @@ mod tests {
         query.insert_range_inclusive(b"1".to_vec()..=b"3".to_vec());
         query.insert_key(b"5".to_vec());
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, None, None));
+        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(5), None));
         let raw_result = db
-            .query_raw_keys_optional(&path_query, 5, None)
+            .query_raw_keys_optional(&path_query, None)
             .unwrap()
             .expect("should get successfully");
 
@@ -581,9 +577,9 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"g".to_vec());
 
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, None, None));
-        let raw_result = db
-            .query_raw_keys_optional(&path_query, 4, None)
+        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(4),  None));
+        db
+            .query_raw_keys_optional(&path_query, None)
             .unwrap()
             .expect_err("range a should error");
 
@@ -591,9 +587,9 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"c".to_vec()); // 2
         query.insert_key(b"5".to_vec()); // 3
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, None, None));
-        let raw_result = db
-            .query_raw_keys_optional(&path_query, 3, None)
+        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(3), None));
+        db
+            .query_raw_keys_optional(&path_query,  None)
             .unwrap()
             .expect("range b should not error");
 
@@ -601,9 +597,9 @@ mod tests {
         query.insert_range_inclusive(b"a".to_vec()..=b"c".to_vec()); // 3
         query.insert_key(b"5".to_vec()); // 4
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, None, None));
-        let raw_result = db
-            .query_raw_keys_optional(&path_query, 3, None)
+        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(3), None));
+        db
+            .query_raw_keys_optional(&path_query,  None)
             .unwrap()
             .expect_err("range c should error");
 
@@ -611,18 +607,18 @@ mod tests {
         query.insert_range(b"a".to_vec()..b"c".to_vec()); // 2
         query.insert_key(b"5".to_vec()); // 3
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, None, None));
-        let raw_result = db
-            .query_raw_keys_optional(&path_query, 2, None)
+        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(2), None));
+        db
+            .query_raw_keys_optional(&path_query,  None)
             .unwrap()
             .expect_err("range d should error");
 
         let mut query = Query::new();
         query.insert_range(b"z".to_vec()..b"10".to_vec());
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, None, None));
-        let raw_result = db
-            .query_raw_keys_optional(&path_query, 1000, None)
+        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
+        db
+            .query_raw_keys_optional(&path_query,  None)
             .unwrap()
             .expect_err("range using 2 bytes should error");
     }
@@ -671,9 +667,9 @@ mod tests {
         let mut query = Query::new();
         query.insert_range(b"".to_vec()..b"c".to_vec());
         let path = vec![TEST_LEAF.to_vec()];
-        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, None, None));
+        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
         let raw_result = db
-            .query_raw_keys_optional(&path_query, 1000, None)
+            .query_raw_keys_optional(&path_query, None)
             .unwrap()
             .expect("range starting with null should not error");
 
@@ -697,5 +693,197 @@ mod tests {
             raw_result.get(&(path.clone(), b"".to_vec())),
             Some(&Some(Element::new_item(b"empty".to_vec())))
         );
+    }
+
+    #[test]
+    fn test_query_raw_keys_options_with_subquery_key() {
+        let db = make_test_grovedb();
+
+        db.insert(
+            [TEST_LEAF],
+            b"",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+            .unwrap()
+            .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b""],
+            b"",
+            Element::new_item(b"null in null".to_vec()),
+            None,
+            None,
+        )
+            .unwrap()
+            .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b""],
+            b"1",
+            Element::new_item(b"1 in null".to_vec()),
+            None,
+            None,
+        )
+            .unwrap()
+            .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF],
+            b"2",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+            .unwrap()
+            .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2"],
+            b"1",
+            Element::new_item(b"1 in 2".to_vec()),
+            None,
+            None,
+        )
+            .unwrap()
+            .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2"],
+            b"5",
+            Element::new_item(b"5 in 2".to_vec()),
+            None,
+            None,
+        )
+            .unwrap()
+            .expect("should insert subtree successfully");
+
+        let mut query = Query::new();
+        query.insert_range(b"".to_vec()..b"c".to_vec());
+        let path = vec![TEST_LEAF.to_vec()];
+        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
+        let raw_result = db
+            .query_raw_keys_optional(&path_query, None)
+            .unwrap()
+            .expect_err("range should error because we didn't subquery");
+
+        let mut query = Query::new();
+        query.insert_range(b"".to_vec()..b"c".to_vec());
+        query.set_subquery_key(b"1".to_vec());
+        let path = vec![TEST_LEAF.to_vec()];
+        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
+        let raw_result = db
+            .query_raw_keys_optional(&path_query, None)
+            .unwrap()
+            .expect("query with subquery should not error");
+
+        let raw_result: HashMap<_, _> = raw_result
+            .into_iter()
+            .map(|(path, key, element)| ((path, key), element))
+            .collect();
+
+        assert_eq!(raw_result.len(), 100); // because is 99 ascii, and we have empty too
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec()], b"4".to_vec())), None);
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec(), b"".to_vec()], b"4".to_vec())), None);
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec(), b"4".to_vec()], b"1".to_vec())), Some(&None)); //because we are subquerying 1
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec(), b"4".to_vec()], b"4".to_vec())), None);
+
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec(), b"".to_vec()], b"1".to_vec())), Some(&Some(Element::new_item(b"1 in null".to_vec()))));
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec(), b"2".to_vec()], b"1".to_vec())), Some(&Some(Element::new_item(b"1 in 2".to_vec()))));
+    }
+
+    #[test]
+    fn test_query_raw_keys_options_with_subquery() {
+        let db = make_test_grovedb();
+
+        db.insert(
+            [TEST_LEAF],
+            b"",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+            .unwrap()
+            .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b""],
+            b"",
+            Element::new_item(b"null in null".to_vec()),
+            None,
+            None,
+        )
+            .unwrap()
+            .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b""],
+            b"1",
+            Element::new_item(b"1 in null".to_vec()),
+            None,
+            None,
+        )
+            .unwrap()
+            .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF],
+            b"2",
+            Element::empty_tree(),
+            None,
+            None,
+        )
+            .unwrap()
+            .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2"],
+            b"1",
+            Element::new_item(b"1 in 2".to_vec()),
+            None,
+            None,
+        )
+            .unwrap()
+            .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2"],
+            b"5",
+            Element::new_item(b"5 in 2".to_vec()),
+            None,
+            None,
+        )
+            .unwrap()
+            .expect("should insert subtree successfully");
+        db.insert(
+            [TEST_LEAF, b"2"],
+            b"2",
+            Element::new_item(b"2 in 2".to_vec()),
+            None,
+            None,
+        )
+            .unwrap()
+            .expect("should insert subtree successfully");
+
+        let mut sub_query = Query::new();
+        sub_query.insert_key(b"1".to_vec());
+        sub_query.insert_key(b"2".to_vec());
+        let mut query = Query::new();
+        query.insert_range(b"".to_vec()..b"c".to_vec());
+        query.set_subquery(sub_query);
+        let path = vec![TEST_LEAF.to_vec()];
+        let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
+        let raw_result = db
+            .query_raw_keys_optional(&path_query, None)
+            .unwrap()
+            .expect("query with subquery should not error");
+
+        let raw_result: HashMap<_, _> = raw_result
+            .into_iter()
+            .map(|(path, key, element)| ((path, key), element))
+            .collect();
+
+        assert_eq!(raw_result.len(), 200); // because is 99 ascii, and we have empty too = 100 then x 2
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec()], b"4".to_vec())), None);
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec(), b"".to_vec()], b"4".to_vec())), None);
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec(), b"4".to_vec()], b"1".to_vec())), Some(&None)); //because we are subquerying 1
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec(), b"4".to_vec()], b"2".to_vec())), Some(&None)); //because we are subquerying 1
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec(), b"4".to_vec()], b"4".to_vec())), None);
+
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec(), b"".to_vec()], b"1".to_vec())), Some(&Some(Element::new_item(b"1 in null".to_vec()))));
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec(), b"2".to_vec()], b"1".to_vec())), Some(&Some(Element::new_item(b"1 in 2".to_vec()))));
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec(), b"2".to_vec()], b"2".to_vec())), Some(&Some(Element::new_item(b"2 in 2".to_vec()))));
+        assert_eq!(raw_result.get(&(vec![TEST_LEAF.to_vec(), b"2".to_vec()], b"5".to_vec())), None); //because we didn't query for it
     }
 }

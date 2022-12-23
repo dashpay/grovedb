@@ -320,7 +320,6 @@ impl Element {
                             );
                         }
                         QueryResultType::QueryPathKeyElementTrioResultType => {
-                            let original_path_vec = path.iter().map(|a| a.to_vec()).collect();
                             merk_optional_tx!(
                                 &mut cost,
                                 storage,
@@ -330,7 +329,7 @@ impl Element {
                                 {
                                     results.push(QueryResultElement::PathKeyElementTrioResultItem(
                                         (
-                                            original_path_vec,
+                                            path_vec.iter().map(|p| p.to_vec()).collect(),
                                             subquery_key.clone(),
                                             cost_return_on_error!(
                                                 &mut cost,
