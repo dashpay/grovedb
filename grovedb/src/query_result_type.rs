@@ -3,7 +3,7 @@ use std::{
     vec::IntoIter,
 };
 
-use crate::Element;
+use crate::{Element, Error};
 
 #[derive(Copy, Clone)]
 pub enum QueryResultType {
