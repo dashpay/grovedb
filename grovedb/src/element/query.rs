@@ -4,7 +4,9 @@ use costs::{
     OperationCost,
 };
 #[cfg(feature = "full")]
-use merk::proofs::{query::QueryItem, Query};
+use merk::proofs::query::QueryItem;
+#[cfg(any(feature = "full", feature = "verify"))]
+use merk::proofs::Query;
 #[cfg(feature = "full")]
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
@@ -16,8 +18,10 @@ use crate::{
         QueryResultType::QueryElementResultType,
     },
     util::{merk_optional_tx, storage_context_optional_tx},
-    Element, Error, PathQuery, SizedQuery, TransactionArg,
+    Error, PathQuery, TransactionArg,
 };
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::{Element, SizedQuery};
 
 #[cfg(feature = "full")]
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>

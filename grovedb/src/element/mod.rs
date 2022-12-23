@@ -14,7 +14,7 @@ mod get;
 pub(crate) mod helpers;
 #[cfg(feature = "full")]
 mod insert;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 mod query;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod serialize;
