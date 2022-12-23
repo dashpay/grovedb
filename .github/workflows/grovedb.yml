@@ -30,6 +30,9 @@ jobs:
 
       - run: cargo test --workspace --all-features
 
+      - name: Build proof verification feature
+        run: cargo build --no-default-features --features verify -p grovedb
+
   linting:
     name: Linting
     runs-on: ubuntu-latest
