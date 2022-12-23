@@ -3,10 +3,16 @@ use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
     OperationCost,
 };
+
+#[cfg(any(feature = "full", feature = "verify"))]
+use merk::proofs::{Query};
 #[cfg(feature = "full")]
-use merk::proofs::{query::QueryItem, Query};
+use merk::proofs::{query::QueryItem};
 #[cfg(feature = "full")]
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+
+#[cfg(any(feature = "full", feature = "verify"))]
+use crate::{Element, SizedQuery};
 
 #[cfg(feature = "full")]
 use crate::{
@@ -16,7 +22,7 @@ use crate::{
         QueryResultType::QueryElementResultType,
     },
     util::{merk_optional_tx, storage_context_optional_tx},
-    Element, Error, PathQuery, SizedQuery, TransactionArg,
+    Error, PathQuery, TransactionArg,
 };
 
 #[cfg(feature = "full")]
