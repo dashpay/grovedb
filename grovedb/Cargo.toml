@@ -34,6 +34,6 @@ name = "insertion_benchmark"
 harness = false
 
 [features]
-default = ["verify"]
+default = ["full"]
 full = ["merk/full"]
 verify = ["merk/verify"]
