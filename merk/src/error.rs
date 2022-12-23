@@ -41,6 +41,12 @@ pub enum Error {
     #[error("cyclic error {0}")]
     CyclicError(&'static str),
 
+    #[error("not supported error {0}")]
+    NotSupported(&'static str),
+
+    #[error("request amount exceeded error {0}")]
+    RequestAmountExceeded(String),
+
     #[error("invalid operation error {0}")]
     InvalidOperation(&'static str),
 

@@ -3,6 +3,7 @@ use costs::{CostResult, CostsExt, OperationCost};
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::proofs::{query::QueryItem, Query};
 
+use crate::query_result_type::PathKey;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::Error;
 
@@ -42,6 +43,16 @@ impl PathQuery {
     pub const fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> Self {
         let query = SizedQuery::new(query, None, None);
         Self { path, query }
+    }
+
+    /// Gets the path of all terminal keys
+    pub fn terminal_keys(&self, max_results: usize) -> Result<Vec<PathKey>, Error> {
+        let mut result: Vec<(Vec<Vec<u8>>, Vec<u8>)> = vec![];
+        self.query
+            .query
+            .terminal_keys(self.path.clone(), max_results, &mut result)
+            .map_err(Error::MerkError)?;
+        Ok(result)
     }
 
     /// Combines multiple path queries into one equivalent path query
