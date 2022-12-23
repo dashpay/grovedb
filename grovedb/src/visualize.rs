@@ -1,21 +1,14 @@
-
 use std::io::{Result, Write};
 
-
 use bincode::Options;
-
 use merk::{Merk, VisualizeableMerk};
-
 use storage::StorageContext;
-
 use visualize::{visualize_stdout, Drawer, Visualize};
-
 
 use crate::{
     element::Element, reference_path::ReferencePathType, util::storage_context_optional_tx,
     GroveDb, TransactionArg,
 };
-
 
 impl Visualize for Element {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
@@ -52,7 +45,6 @@ impl Visualize for Element {
         Ok(drawer)
     }
 }
-
 
 impl Visualize for ReferencePathType {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
@@ -114,7 +106,6 @@ impl Visualize for ReferencePathType {
         Ok(drawer)
     }
 }
-
 
 impl GroveDb {
     fn draw_subtree<W: Write>(
@@ -187,13 +178,11 @@ impl GroveDb {
     }
 }
 
-
 impl Visualize for GroveDb {
     fn visualize<W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>> {
         self.visualize_start(drawer, None)
     }
 }
-
 
 #[allow(dead_code)]
 pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
@@ -205,7 +194,6 @@ pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
             .expect("unable to deserialize Element")
     }));
 }
-
 
 #[cfg(test)]
 mod tests {

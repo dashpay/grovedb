@@ -1,8 +1,5 @@
-
 use costs::{CostResult, CostsExt, OperationCost};
-
 use integer_encoding::VarInt;
-
 use merk::{
     estimated_costs::{
         add_cost_case_merk_insert, add_cost_case_merk_insert_layered, add_cost_case_merk_replace,
@@ -17,9 +14,7 @@ use merk::{
     tree::Tree,
     HASH_LENGTH,
 };
-
 use storage::{worst_case_costs::WorstKeyLength, Storage};
-
 
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
@@ -27,9 +22,7 @@ use crate::{
     Element, ElementFlags, Error, GroveDb,
 };
 
-
 pub const WORST_CASE_FLAGS_LEN: u32 = 16386; // 2 bytes to represent this number for varint
-
 
 impl GroveDb {
     /// Add worst case for getting a merk tree
@@ -330,7 +323,6 @@ impl GroveDb {
         *cost += S::get_storage_context_cost(path.as_vec());
     }
 }
-
 
 #[cfg(test)]
 mod test {

@@ -1,6 +1,5 @@
 //! GroveDB batch operations support
 
-
 mod batch_structure;
 
 pub mod estimated_costs;
@@ -17,9 +16,7 @@ mod single_deletion_cost_tests;
 #[cfg(test)]
 mod single_insert_cost_tests;
 
-
 use core::fmt;
-
 use std::{
     cmp::Ordering,
     collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap},
@@ -29,7 +26,6 @@ use std::{
     vec::IntoIter,
 };
 
-
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
@@ -38,33 +34,23 @@ use costs::{
     },
     CostResult, CostsExt, OperationCost,
 };
-
 use estimated_costs::{
     average_case_costs::AverageCaseTreeCacheKnownPaths,
     worst_case_costs::WorstCaseTreeCacheKnownPaths,
 };
-
 use integer_encoding::VarInt;
-
 use itertools::Itertools;
-
 use key_info::{KeyInfo, KeyInfo::KnownKey};
-use merk::RootHashKeyAndSum;
-
 use merk::{
     tree::{kv::KV, value_hash, NULL_HASH},
-    CryptoHash, Error as MerkError, Merk, MerkType,
+    CryptoHash, Error as MerkError, Merk, MerkType, RootHashKeyAndSum,
 };
-
 pub use options::BatchApplyOptions;
-
 use storage::{
     rocksdb_storage::{PrefixedRocksDbBatchStorageContext, PrefixedRocksDbBatchTransactionContext},
     Storage, StorageBatch, StorageContext,
 };
-
 use visualize::{Drawer, Visualize};
-
 
 use crate::{
     batch::{
@@ -75,7 +61,6 @@ use crate::{
     reference_path::{path_from_reference_path_type, path_from_reference_qualified_path_type},
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
-
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -101,7 +86,6 @@ pub enum Op {
     DeleteSumTree,
 }
 
-
 impl PartialOrd for Op {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
@@ -114,17 +98,14 @@ impl PartialOrd for Op {
     }
 }
 
-
 impl Ord for Op {
     fn cmp(&self, other: &Self) -> Ordering {
         self.partial_cmp(other).expect("all ops have order")
     }
 }
 
-
 #[derive(Eq, Clone, Debug)]
 pub struct KnownKeysPath(Vec<Vec<u8>>);
-
 
 impl Hash for KnownKeysPath {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -132,13 +113,11 @@ impl Hash for KnownKeysPath {
     }
 }
 
-
 impl PartialEq for KnownKeysPath {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
-
 
 impl PartialEq<KeyInfoPath> for KnownKeysPath {
     fn eq(&self, other: &KeyInfoPath) -> bool {
@@ -146,17 +125,14 @@ impl PartialEq<KeyInfoPath> for KnownKeysPath {
     }
 }
 
-
 impl PartialEq<Vec<Vec<u8>>> for KnownKeysPath {
     fn eq(&self, other: &Vec<Vec<u8>>) -> bool {
         self.0 == other.as_slice()
     }
 }
 
-
 #[derive(PartialOrd, Ord, Eq, Clone, Debug, Default)]
 pub struct KeyInfoPath(pub Vec<KeyInfo>);
-
 
 impl Hash for KeyInfoPath {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -164,13 +140,11 @@ impl Hash for KeyInfoPath {
     }
 }
 
-
 impl PartialEq for KeyInfoPath {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
-
 
 impl Visualize for KeyInfoPath {
     fn visualize<W: std::io::Write>(&self, mut drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
@@ -185,7 +159,6 @@ impl Visualize for KeyInfoPath {
         Ok(drawer)
     }
 }
-
 
 impl KeyInfoPath {
     pub fn from_vec(vec: Vec<KeyInfo>) -> Self {
@@ -253,7 +226,6 @@ impl KeyInfoPath {
     }
 }
 
-
 /// Batch operation
 #[derive(Clone, PartialEq, Eq)]
 pub struct GroveDbOp {
@@ -264,7 +236,6 @@ pub struct GroveDbOp {
     /// Operation to perform on the key
     pub op: Op,
 }
-
 
 impl fmt::Debug for GroveDbOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -304,7 +275,6 @@ impl fmt::Debug for GroveDbOp {
             .finish()
     }
 }
-
 
 impl GroveDbOp {
     pub fn insert_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
@@ -481,7 +451,6 @@ impl GroveDbOp {
     }
 }
 
-
 #[derive(Debug)]
 pub struct GroveDbOpConsistencyResults {
     repeated_ops: Vec<(GroveDbOp, u16)>, // the u16 is count
@@ -489,7 +458,6 @@ pub struct GroveDbOpConsistencyResults {
     insert_ops_below_deleted_ops: Vec<(GroveDbOp, Vec<GroveDbOp>)>, /* the deleted op first,
                                                                      * then inserts under */
 }
-
 
 impl GroveDbOpConsistencyResults {
     pub fn is_empty(&self) -> bool {
@@ -499,20 +467,17 @@ impl GroveDbOpConsistencyResults {
     }
 }
 
-
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F> {
     merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
     get_merk_fn: F,
 }
 
-
 impl<S, F> fmt::Debug for TreeCacheMerkByPath<S, F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheMerkByPath").finish()
     }
 }
-
 
 trait TreeCache<G, SR> {
     fn insert(&mut self, op: &GroveDbOp, is_sum_tree: bool) -> CostResult<(), Error>;
@@ -532,7 +497,6 @@ trait TreeCache<G, SR> {
 
     fn update_base_merk_root_key(&mut self, root_key: Option<Vec<u8>>) -> CostResult<(), Error>;
 }
-
 
 impl<'db, S, F> TreeCacheMerkByPath<S, F>
 where
@@ -696,7 +660,6 @@ where
         }
     }
 }
-
 
 impl<'db, S, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F>
 where
@@ -1051,7 +1014,6 @@ where
         BatchRunMode::Execute
     }
 }
-
 
 impl GroveDb {
     /// Method to propagate updated subtree root hashes up to GroveDB root
@@ -1631,7 +1593,6 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 }
-
 
 #[cfg(test)]
 mod tests {

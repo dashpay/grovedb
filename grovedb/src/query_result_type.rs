@@ -1,10 +1,9 @@
-use std::collections::{BTreeMap, HashMap};
-
-use std::vec::IntoIter;
-
+use std::{
+    collections::{BTreeMap, HashMap},
+    vec::IntoIter,
+};
 
 use crate::Element;
-
 
 #[derive(Copy, Clone)]
 pub enum QueryResultType {
@@ -13,11 +12,9 @@ pub enum QueryResultType {
     QueryPathKeyElementTrioResultType,
 }
 
-
 pub struct QueryResultElements {
     pub elements: Vec<QueryResultElement>,
 }
-
 
 impl QueryResultElements {
     pub fn new() -> Self {
@@ -114,13 +111,11 @@ impl QueryResultElements {
     }
 }
 
-
 impl Default for QueryResultElements {
     fn default() -> Self {
         Self::new()
     }
 }
-
 
 pub enum QueryResultElement {
     ElementResultItem(Element),
@@ -128,14 +123,11 @@ pub enum QueryResultElement {
     PathKeyElementTrioResultItem(PathKeyElementTrio),
 }
 
-
 /// Type alias for key-element common pattern.
 pub type KeyElementPair = (Vec<u8>, Element);
 
-
 /// Type alias for key optional_element common pattern.
 pub type KeyOptionalElementPair = (Vec<u8>, Option<Element>);
-
 
 /// Type alias for path-key-element common pattern.
 pub type PathKeyElementTrio = (Vec<Vec<u8>>, Vec<u8>, Element);
