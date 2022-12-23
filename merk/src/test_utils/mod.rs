@@ -1,27 +1,27 @@
-#[cfg(feature = "full")]
+
 mod crash_merk;
-#[cfg(feature = "full")]
+
 mod temp_merk;
 
-#[cfg(feature = "full")]
+
 use std::{convert::TryInto, ops::Range};
 
-#[cfg(feature = "full")]
+
 use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
-#[cfg(feature = "full")]
+
 pub use crash_merk::CrashMerk;
-#[cfg(feature = "full")]
+
 use rand::prelude::*;
-#[cfg(feature = "full")]
+
 pub use temp_merk::TempMerk;
 
-#[cfg(feature = "full")]
+
 use crate::{
     tree::{kv::KV, BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker},
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
 
-#[cfg(feature = "full")]
+
 pub fn assert_tree_invariants(tree: &Tree) {
     assert!(tree.balance_factor().abs() < 2);
 
@@ -45,7 +45,7 @@ pub fn assert_tree_invariants(tree: &Tree) {
     }
 }
 
-#[cfg(feature = "full")]
+
 pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     let is_sum_node = tree.is_sum_node();
     let walker = Walker::<PanicSource>::new(tree, PanicSource {});
@@ -94,14 +94,14 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     tree
 }
 
-#[cfg(feature = "full")]
+
 pub fn apply_memonly(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     let tree = apply_memonly_unchecked(tree, batch);
     assert_tree_invariants(&tree);
     tree
 }
 
-#[cfg(feature = "full")]
+
 pub fn apply_to_memonly(
     maybe_tree: Option<Tree>,
     batch: &MerkBatch<Vec<u8>>,
@@ -156,22 +156,22 @@ pub fn apply_to_memonly(
     })
 }
 
-#[cfg(feature = "full")]
+
 pub const fn seq_key(n: u64) -> [u8; 8] {
     n.to_be_bytes()
 }
 
-#[cfg(feature = "full")]
+
 pub fn put_entry(n: u64) -> BatchEntry<Vec<u8>> {
     (seq_key(n).to_vec(), Op::Put(vec![123; 60], BasicMerk))
 }
 
-#[cfg(feature = "full")]
+
 pub fn del_entry(n: u64) -> BatchEntry<Vec<u8>> {
     (seq_key(n).to_vec(), Op::Delete)
 }
 
-#[cfg(feature = "full")]
+
 pub fn make_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     let mut batch = Vec::with_capacity((range.end - range.start).try_into().unwrap());
     for n in range {
@@ -180,7 +180,7 @@ pub fn make_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     batch
 }
 
-#[cfg(feature = "full")]
+
 pub fn make_del_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     let mut batch = Vec::with_capacity((range.end - range.start).try_into().unwrap());
     for n in range {
@@ -189,7 +189,7 @@ pub fn make_del_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     batch
 }
 
-#[cfg(feature = "full")]
+
 pub fn make_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(seed);
     let mut batch = Vec::with_capacity(size.try_into().unwrap());
@@ -201,7 +201,7 @@ pub fn make_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     batch
 }
 
-#[cfg(feature = "full")]
+
 pub fn make_del_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(seed);
     let mut batch = Vec::with_capacity(size.try_into().unwrap());
@@ -213,7 +213,7 @@ pub fn make_del_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     batch
 }
 
-#[cfg(feature = "full")]
+
 pub fn make_tree_rand(
     node_count: u64,
     batch_size: u64,
@@ -243,7 +243,7 @@ pub fn make_tree_rand(
     tree
 }
 
-#[cfg(feature = "full")]
+
 pub fn make_tree_seq(node_count: u64) -> Tree {
     let batch_size = if node_count >= 10_000 {
         assert_eq!(node_count % 10_000, 0);

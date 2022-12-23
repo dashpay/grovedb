@@ -34,7 +34,7 @@ name = "insertion_benchmark"
 harness = false
 
 [features]
-default = ["full"]
+default = ["verify"]
 full = [
     "rs_merkle",
     "merk/full",
