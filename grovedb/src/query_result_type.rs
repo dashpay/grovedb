@@ -3,7 +3,7 @@ use std::{
     vec::IntoIter,
 };
 
-use crate::{Element, Error};
+use crate::Element;
 
 #[derive(Copy, Clone)]
 pub enum QueryResultType {
@@ -160,22 +160,22 @@ impl QueryResultElement {
     }
 }
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for a path.
 pub type Path = Vec<Vec<u8>>;
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for a Key.
 pub type Key = Vec<u8>;
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for key-element common pattern.
 pub type KeyElementPair = (Key, Element);
 
 /// Type alias for key optional_element common pattern.
 pub type KeyOptionalElementPair = (Key, Option<Element>);
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for path-key common pattern.
 pub type PathKey = (Path, Key);
 

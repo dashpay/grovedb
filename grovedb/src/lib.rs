@@ -13,7 +13,7 @@ mod estimated_costs;
 pub mod operations;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod query;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub mod query_result_type;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod reference_path;
