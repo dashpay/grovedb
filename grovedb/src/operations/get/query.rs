@@ -778,8 +778,7 @@ mod tests {
         query.insert_range(b"".to_vec()..b"c".to_vec());
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
-        let raw_result = db
-            .query_raw_keys_optional(&path_query, None)
+        db.query_keys_optional(&path_query, None)
             .unwrap()
             .expect_err("range should error because we didn't subquery");
 
