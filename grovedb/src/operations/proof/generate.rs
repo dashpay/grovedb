@@ -213,9 +213,8 @@ impl GroveDb {
                     } else {
                         if let Some(subquery_path) = subquery_path {
                             if subquery_path.is_empty() {
-                                return Err(Error::CorruptedPath(
-                                    "subquery_path can not be empty",
-                                )).wrap_with_cost(cost);
+                                return Err(Error::CorruptedPath("subquery_path can not be empty"))
+                                    .wrap_with_cost(cost);
                             }
                             // prove the subquery path first
                             for i in 0..subquery_path.len() - 1 {
@@ -248,7 +247,8 @@ impl GroveDb {
                         } else {
                             return Err(Error::CorruptedCodeExecution(
                                 "subquery_path must exist to be in this function",
-                            )).wrap_with_cost(cost);
+                            ))
+                            .wrap_with_cost(cost);
                         }
                     }
 

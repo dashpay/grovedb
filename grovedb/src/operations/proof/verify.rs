@@ -1,3 +1,4 @@
+use merk::proofs::query::ProvedKeyValue;
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::{
     proofs::Query,
@@ -12,9 +13,7 @@ use crate::{
 };
 
 #[cfg(any(feature = "full", feature = "verify"))]
-type ProofKeyValue = (Vec<u8>, Vec<u8>, CryptoHash);
-#[cfg(any(feature = "full", feature = "verify"))]
-type Proof = Vec<(Vec<u8>, Vec<u8>, CryptoHash)>;
+type Proof = Vec<ProvedKeyValue>;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl GroveDb {
@@ -123,7 +122,12 @@ impl ProofVerifier {
                     .1
                     .expect("MERK_PROOF always returns a result set");
 
-                for (key, value_bytes, value_hash) in children {
+                for proved_key_value in children {
+                    let ProvedKeyValue {
+                        key,
+                        value: value_bytes,
+                        proof: value_hash,
+                    } = proved_key_value;
                     let child_element = Element::deserialize(value_bytes.as_slice())?;
                     match child_element {
                         Element::Tree(expected_root_key, _)
@@ -244,16 +248,15 @@ impl ProofVerifier {
     fn update_root_key_from_subquery_path_element(
         expected_child_hash: &mut CryptoHash,
         current_value_bytes: &mut Vec<u8>,
-        subquery_path_result_set: &[ProofKeyValue],
+        subquery_path_result_set: &[ProvedKeyValue],
     ) -> Result<(), Error> {
-        let elem_value = &subquery_path_result_set[0].1;
+        let elem_value = &subquery_path_result_set[0].value;
         let subquery_path_element = Element::deserialize(elem_value)
             .map_err(|_| Error::CorruptedData("failed to deserialize element".to_string()))?;
         match subquery_path_element {
-            // TODO: Add sum trees here
             Element::Tree(..) | Element::SumTree(..) => {
-                *expected_child_hash = subquery_path_result_set[0].2;
-                *current_value_bytes = subquery_path_result_set[0].1.to_owned();
+                *expected_child_hash = subquery_path_result_set[0].proof;
+                *current_value_bytes = subquery_path_result_set[0].value.to_owned();
             }
             _ => {
                 // the means that the subquery path pointed to a non tree
@@ -323,7 +326,7 @@ impl ProofVerifier {
                 root_key_hash = Some(proof_result.0);
             } else {
                 let combined_hash = combine_hash(
-                    value_hash_fn(last_result_set[0].1.as_slice()).value(),
+                    value_hash_fn(last_result_set[0].value.as_slice()).value(),
                     &proof_result.0,
                 )
                 .value()
@@ -341,9 +344,9 @@ impl ProofVerifier {
                 break;
             }
 
-            let elem = Element::deserialize(last_result_set[0].1.as_slice())?;
+            let elem = Element::deserialize(last_result_set[0].value.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(..) | Element::SumTree(..) => Ok(Some(last_result_set[0].2)),
+                Element::Tree(..) | Element::SumTree(..) => Ok(Some(last_result_set[0].proof)),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),
@@ -390,22 +393,24 @@ impl ProofVerifier {
             let result_set = proof_result
                 .1
                 .expect("MERK_PROOF always returns a result set");
-            if result_set.is_empty() || &result_set[0].0 != key {
+            if result_set.is_empty() || &result_set[0].key != key {
                 return Err(Error::InvalidProof("proof invalid: invalid parent"));
             }
 
-            let elem = Element::deserialize(result_set[0].1.as_slice())?;
+            let elem = Element::deserialize(result_set[0].value.as_slice())?;
             let child_hash = match elem {
-                Element::Tree(..) | Element::SumTree(..) => Ok(result_set[0].2),
+                Element::Tree(..) | Element::SumTree(..) => Ok(result_set[0].proof),
                 _ => Err(Error::InvalidProof(
                     "intermediate proofs should be for trees",
                 )),
             }?;
 
-            let combined_root_hash =
-                combine_hash(value_hash_fn(&result_set[0].1).value(), expected_root_hash)
-                    .value()
-                    .to_owned();
+            let combined_root_hash = combine_hash(
+                value_hash_fn(&result_set[0].value).value(),
+                expected_root_hash,
+            )
+            .value()
+            .to_owned();
             if child_hash != combined_root_hash {
                 return Err(Error::InvalidProof(
                     "Bad path: tree hash does not have expected hash",

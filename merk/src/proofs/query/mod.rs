@@ -1618,7 +1618,11 @@ pub fn execute_proof(
                                 }
                             }
                             // add data to output
-                            output.push((key.clone(), val.clone(), value_hash));
+                            output.push(ProvedKeyValue {
+                                key: key.clone(),
+                                value: val.clone(),
+                                proof: value_hash,
+                            });
 
                             // continue to next push
                             break;
@@ -1694,8 +1698,16 @@ pub fn execute_proof(
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(PartialEq, Eq, Debug)]
+pub struct ProvedKeyValue {
+    pub key: Vec<u8>,
+    pub value: Vec<u8>,
+    pub proof: CryptoHash,
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+#[derive(PartialEq, Eq, Debug)]
 pub struct ProofVerificationResult {
-    pub result_set: Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,
+    pub result_set: Vec<ProvedKeyValue>,
     pub limit: Option<u16>,
     pub offset: Option<u16>,
 }
@@ -1742,13 +1754,13 @@ mod test {
     };
 
     fn compare_result_tuples(
-        result_set: Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,
+        result_set: Vec<ProvedKeyValue>,
         expected_result_set: Vec<(Vec<u8>, Vec<u8>)>,
     ) {
         assert_eq!(expected_result_set.len(), result_set.len());
         for i in 0..expected_result_set.len() {
-            assert_eq!(expected_result_set[i].0, result_set[i].0);
-            assert_eq!(expected_result_set[i].1, result_set[i].1);
+            assert_eq!(expected_result_set[i].0, result_set[i].key);
+            assert_eq!(expected_result_set[i].1, result_set[i].value);
         }
     }
 
