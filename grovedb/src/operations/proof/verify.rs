@@ -142,54 +142,54 @@ impl ProofVerifier {
                                 break;
                             }
 
-                            let (subquery_key, subquery_value) =
+                            let (subquery_path, subquery_value) =
                                 Element::subquery_paths_for_sized_query(
                                     &query.query,
                                     key.as_slice(),
                                 );
 
-                            if subquery_value.is_none() && subquery_key.is_none() {
+                            if subquery_value.is_none() && subquery_path.is_none() {
                                 continue;
                             }
 
-                            if subquery_key.is_some() {
+                            if subquery_path.is_some() {
                                 if subquery_value.is_none() {
-                                    self.verify_subquery_key(
+                                    self.verify_subquery_path(
                                         proof_reader,
                                         ProofType::SizedMerk,
-                                        subquery_key,
+                                        subquery_path,
                                     )?;
                                     continue;
                                 } else {
-                                    let verification_result = self.verify_subquery_key(
+                                    let verification_result = self.verify_subquery_path(
                                         proof_reader,
                                         ProofType::Merk,
-                                        subquery_key,
+                                        subquery_path,
                                     )?;
-                                    let subquery_key_result_set = verification_result.1;
-                                    if subquery_key_result_set.is_none() {
+                                    let subquery_path_result_set = verification_result.1;
+                                    if subquery_path_result_set.is_none() {
                                         // this means a sized proof was generated for the subquery
                                         // key
                                         // which is invalid as there exists a subquery value
                                         return Err(Error::InvalidProof(
-                                            "expected unsized proof for subquery key as subquery \
+                                            "expected unsized proof for subquery path as subquery \
                                              value exists",
                                         ));
                                     }
-                                    let subquery_key_result_set =
-                                        subquery_key_result_set.expect("confirmed exists above");
+                                    let subquery_path_result_set =
+                                        subquery_path_result_set.expect("confirmed exists above");
 
-                                    if subquery_key_result_set.is_empty() {
+                                    if subquery_path_result_set.is_empty() {
                                         // we have a valid proof that shows the absence of the
-                                        // subquery key in the tree, hence the subquery value
+                                        // subquery path in the tree, hence the subquery value
                                         // cannot be applied, move on to the next.
                                         continue;
                                     }
 
-                                    Self::update_root_key_from_subquery_key_element(
+                                    Self::update_root_key_from_subquery_path_element(
                                         &mut expected_combined_child_hash,
                                         &mut current_value_bytes,
-                                        &subquery_key_result_set,
+                                        &subquery_path_result_set,
                                     )?;
                                 }
                             }
@@ -241,26 +241,26 @@ impl ProofVerifier {
 
     /// Deserialize subkey_element and update expected root hash and element
     /// value
-    fn update_root_key_from_subquery_key_element(
+    fn update_root_key_from_subquery_path_element(
         expected_child_hash: &mut CryptoHash,
         current_value_bytes: &mut Vec<u8>,
-        subquery_key_result_set: &[ProofKeyValue],
+        subquery_path_result_set: &[ProofKeyValue],
     ) -> Result<(), Error> {
-        let elem_value = &subquery_key_result_set[0].1;
-        let subquery_key_element = Element::deserialize(elem_value)
+        let elem_value = &subquery_path_result_set[0].1;
+        let subquery_path_element = Element::deserialize(elem_value)
             .map_err(|_| Error::CorruptedData("failed to deserialize element".to_string()))?;
-        match subquery_key_element {
+        match subquery_path_element {
             // TODO: Add sum trees here
             Element::Tree(..) | Element::SumTree(..) => {
-                *expected_child_hash = subquery_key_result_set[0].2;
-                *current_value_bytes = subquery_key_result_set[0].1.to_owned();
+                *expected_child_hash = subquery_path_result_set[0].2;
+                *current_value_bytes = subquery_path_result_set[0].1.to_owned();
             }
             _ => {
-                // the means that the subquery key pointed to a non tree
+                // the means that the subquery path pointed to a non tree
                 // element, this is not valid as you cannot apply the
                 // the subquery value to non tree items
                 return Err(Error::InvalidProof(
-                    "subquery key cannot point to non tree element",
+                    "subquery path cannot point to non tree element",
                 ));
             }
         }
@@ -268,25 +268,25 @@ impl ProofVerifier {
     }
 
     /// Checks that a valid proof showing the existence or absence of the
-    /// subquery key is present
-    fn verify_subquery_key(
+    /// subquery path is present
+    fn verify_subquery_path(
         &mut self,
         proof_reader: &mut ProofReader,
         expected_proof_type: ProofType,
-        subquery_key: Option<Vec<u8>>,
+        subquery_path: Option<Vec<u8>>,
     ) -> Result<(CryptoHash, Option<Proof>), Error> {
         let (proof_type, subkey_proof) = proof_reader.read_proof()?;
 
         if proof_type != expected_proof_type {
             return Err(Error::InvalidProof(
-                "unexpected proof type for subquery key",
+                "unexpected proof type for subquery path",
             ));
         }
 
         match proof_type {
             ProofType::Merk | ProofType::SizedMerk => {
                 let mut key_as_query = Query::new();
-                key_as_query.insert_key(subquery_key.unwrap());
+                key_as_query.insert_key(subquery_path.unwrap());
 
                 let verification_result = self.execute_merk_proof(
                     proof_type,
@@ -297,7 +297,7 @@ impl ProofVerifier {
 
                 Ok(verification_result)
             }
-            _ => Err(Error::InvalidProof("expected merk proof for subquery key")),
+            _ => Err(Error::InvalidProof("expected merk proof for subquery path")),
         }
     }
 

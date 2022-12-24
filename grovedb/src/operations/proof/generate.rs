@@ -147,10 +147,10 @@ impl GroveDb {
         let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query)
             .unwrap_add_cost(&mut cost);
         while let Some((key, value_bytes)) = kv_iterator.next_kv().unwrap_add_cost(&mut cost) {
-            let (subquery_key, subquery_value) =
+            let (subquery_path, subquery_value) =
                 Element::subquery_paths_for_sized_query(&query.query, &key);
 
-            if subquery_value.is_none() && subquery_key.is_none() {
+            if subquery_value.is_none() && subquery_path.is_none() {
                 continue;
             }
 
@@ -183,15 +183,15 @@ impl GroveDb {
                     let mut query = subquery_value;
 
                     if query.is_some() {
-                        if subquery_key.is_some() {
-                            // prove the subquery key first
+                        if let Some(subquery_path) = subquery_path {
+                            // prove the subquery path first
                             let inner_subtree = cost_return_on_error!(
                                 &mut cost,
                                 self.open_subtree(new_path.iter().copied())
                             );
 
                             let mut key_as_query = Query::new();
-                            key_as_query.insert_key(subquery_key.clone().unwrap());
+                            key_as_query.insert_key(subquery_path.clone());
 
                             cost_return_on_error!(
                                 &mut cost,
@@ -205,11 +205,11 @@ impl GroveDb {
                                 )
                             );
 
-                            new_path.push(subquery_key.as_ref().unwrap());
+                            new_path.push(subquery_path.as_ref().unwrap());
                         }
                     } else {
                         let mut key_as_query = Query::new();
-                        key_as_query.insert_key(subquery_key.unwrap());
+                        key_as_query.insert_key(subquery_path.unwrap());
                         query = Some(key_as_query);
                     }
 

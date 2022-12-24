@@ -861,7 +861,9 @@ where
 
         self.use_tree_mut(|maybe_tree| {
             maybe_tree
-                .ok_or(Error::CorruptionError("Cannot create proof for empty tree"))
+                .ok_or(Error::CorruptedCodeExecutionError(
+                    "Cannot create proof for empty tree",
+                ))
                 .wrap_with_cost(Default::default())
                 .flat_map_ok(|tree| {
                     let mut ref_walker = RefWalker::new(tree, self.source());

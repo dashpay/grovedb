@@ -1526,7 +1526,7 @@ fn test_path_query_proofs_with_default_subquery() {
 
 #[cfg(feature = "full")]
 #[test]
-fn test_path_query_proofs_with_subquery_key() {
+fn test_path_query_proofs_with_subquery_path() {
     let temp_db = make_deep_tree();
 
     let mut query = Query::new();
@@ -1703,7 +1703,6 @@ fn test_path_query_proofs_with_sized_query() {
         Some(final_conditional_subquery),
     );
     subquery.set_subquery(final_default_subquery);
-    // subquery.set_subquery_key(b"key3".to_vec());
 
     query.set_subquery(subquery);
 

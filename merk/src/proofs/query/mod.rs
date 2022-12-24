@@ -30,9 +30,21 @@ use crate::tree::{Fetch, Link, RefWalker};
 use crate::{error::Error, tree::value_hash, CryptoHash as MerkHash, CryptoHash};
 
 #[cfg(any(feature = "full", feature = "verify"))]
+/// Type alias for a path.
+pub type Path = Vec<Vec<u8>>;
+
+#[cfg(any(feature = "full", feature = "verify"))]
+/// Type alias for a Key.
+pub type Key = Vec<u8>;
+
+#[cfg(any(feature = "full", feature = "verify"))]
+/// Type alias for path-key common pattern.
+pub type PathKey = (Path, Key);
+
+#[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct SubqueryBranch {
-    pub subquery_key: Option<Vec<u8>>,
+    pub subquery_path: Option<Path>,
     pub subquery: Option<Box<Query>>,
 }
 
@@ -90,13 +102,13 @@ impl Query {
                 }
                 already_added_keys.insert(key.clone());
                 let mut path = current_path.clone();
-                if let Some(subquery_key) = &subquery_branch.subquery_key {
+                if let Some(subquery_path) = &subquery_branch.subquery_path {
                     if let Some(subquery) = &subquery_branch.subquery {
-                        // a subquery key with a subquery
+                        // a subquery path with a subquery
                         // push the key to the path
                         path.push(key);
-                        // push the subquery key to the path
-                        path.push(subquery_key.clone());
+                        // push the subquery path to the path
+                        path.extend(subquery_path.into_iter().cloned());
                         // recurse onto the lower level
                         let added_here =
                             subquery.terminal_keys(path, max_results - current_len, result)?;
@@ -109,15 +121,25 @@ impl Query {
                                 max_results
                             )));
                         }
-                        // a subquery key but no subquery
-                        // push the key to the path, and set the subquery key as the terminal key
+                        // a subquery path but no subquery
+                        // split the subquery path and remove the last element
+                        // push the key to the path with the front elements,
+                        // and set the tail of the subquery path as the terminal key
                         path.push(key);
-                        result.push((path, subquery_key.clone()));
+                        if let Some((last_key, front_keys)) = subquery_path.split_last() {
+                            path.extend(front_keys.into_iter().cloned());
+                            result.push((path, last_key.clone()));
+                        } else {
+                            return Err(Error::CorruptedCodeExecutionError(
+                                "subquery_path set but doesn't contain any values",
+                            ));
+                        }
+
                         added += 1;
                         current_len += 1;
                     }
                 } else if let Some(subquery) = &subquery_branch.subquery {
-                    // a subquery without a subquery key
+                    // a subquery without a subquery path
                     // push the key to the path
                     path.push(key);
                     // recurse onto the lower level
@@ -146,13 +168,13 @@ impl Query {
                     )));
                 }
                 let mut path = current_path.clone();
-                if let Some(subquery_key) = &self.default_subquery_branch.subquery_key {
+                if let Some(subquery_path) = &self.default_subquery_branch.subquery_path {
                     if let Some(subquery) = &self.default_subquery_branch.subquery {
-                        // a subquery key with a subquery
+                        // a subquery path with a subquery
                         // push the key to the path
                         path.push(key);
-                        // push the subquery key to the path
-                        path.push(subquery_key.clone());
+                        // push the subquery path to the path
+                        path.extend(subquery_path.into_iter().cloned());
                         // recurse onto the lower level
                         let added_here =
                             subquery.terminal_keys(path, max_results - current_len, result)?;
@@ -165,15 +187,24 @@ impl Query {
                                 max_results
                             )));
                         }
-                        // a subquery key but no subquery
-                        // push the key to the path, and set the subquery key as the terminal key
+                        // a subquery path but no subquery
+                        // split the subquery path and remove the last element
+                        // push the key to the path with the front elements,
+                        // and set the tail of the subquery path as the terminal key
                         path.push(key);
-                        result.push((path, subquery_key.clone()));
+                        if let Some((last_key, front_keys)) = subquery_path.split_last() {
+                            path.extend(front_keys.into_iter().cloned());
+                            result.push((path, last_key.clone()));
+                        } else {
+                            return Err(Error::CorruptedCodeExecutionError(
+                                "subquery_path set but doesn't contain any values",
+                            ));
+                        }
                         added += 1;
                         current_len += 1;
                     }
                 } else if let Some(subquery) = &self.default_subquery_branch.subquery {
-                    // a subquery without a subquery key
+                    // a subquery without a subquery path
                     // push the key to the path
                     path.push(key);
                     // recurse onto the lower level
@@ -220,33 +251,40 @@ impl Query {
         }
     }
 
-    /// Sets the subquery_key for the query. This causes every element that is
-    /// returned by the query to be subqueried to the subquery_key.
-    pub fn set_subquery_key(&mut self, key: Vec<u8>) {
-        self.default_subquery_branch.subquery_key = Some(key);
+    /// Sets the subquery_path for the query with one key. This causes every
+    /// element that is returned by the query to be subqueried one level to
+    /// the subquery_path.
+    pub fn set_subquery_key(&mut self, key: Key) {
+        self.default_subquery_branch.subquery_path = Some(vec![key]);
+    }
+
+    /// Sets the subquery_path for the query. This causes every element that is
+    /// returned by the query to be subqueried to the subquery_path.
+    pub fn set_subquery_path(&mut self, path: Path) {
+        self.default_subquery_branch.subquery_path = Some(path);
     }
 
     /// Sets the subquery for the query. This causes every element that is
     /// returned by the query to be subqueried or subqueried to the
-    /// subquery_key/subquery if a subquery is present.
+    /// subquery_path/subquery if a subquery is present.
     pub fn set_subquery(&mut self, subquery: Self) {
         self.default_subquery_branch.subquery = Some(Box::new(subquery));
     }
 
     /// Adds a conditional subquery. A conditional subquery replaces the default
-    /// subquery and subquery_key if the item matches for the key. If
+    /// subquery and subquery_path if the item matches for the key. If
     /// multiple conditional subquery items match, then the first one that
     /// matches is used (in order that they were added).
     pub fn add_conditional_subquery(
         &mut self,
         item: QueryItem,
-        subquery_key: Option<Vec<u8>>,
+        subquery_path: Option<Path>,
         subquery: Option<Self>,
     ) {
         self.conditional_subquery_branches.insert(
             item,
             SubqueryBranch {
-                subquery_key,
+                subquery_path,
                 subquery: subquery.map(Box::new),
             },
         );
@@ -412,7 +450,7 @@ impl Query {
     pub fn has_subquery(&self) -> bool {
         // checks if a query has subquery items
         if self.default_subquery_branch.subquery.is_some()
-            || self.default_subquery_branch.subquery_key.is_some()
+            || self.default_subquery_branch.subquery_path.is_some()
             || !self.conditional_subquery_branches.is_empty()
         {
             return true;
@@ -433,7 +471,7 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
         Self {
             items,
             default_subquery_branch: SubqueryBranch {
-                subquery_key: None,
+                subquery_path: None,
                 subquery: None,
             },
             conditional_subquery_branches: IndexMap::new(),
