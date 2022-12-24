@@ -13,14 +13,14 @@ use crate::{
 };
 
 #[cfg(any(feature = "full", feature = "verify"))]
-type Proof = Vec<ProvedKeyValue>;
+type ProvedKeyValues = Vec<ProvedKeyValue>;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl GroveDb {
     pub fn verify_query_many(
         proof: &[u8],
         query: Vec<&PathQuery>,
-    ) -> Result<([u8; 32], Proof), Error> {
+    ) -> Result<([u8; 32], ProvedKeyValues), Error> {
         if query.len() > 1 {
             let query = PathQuery::merge(query)?;
             GroveDb::verify_query(proof, &query)
@@ -29,7 +29,7 @@ impl GroveDb {
         }
     }
 
-    pub fn verify_query(proof: &[u8], query: &PathQuery) -> Result<([u8; 32], Proof), Error> {
+    pub fn verify_query(proof: &[u8], query: &PathQuery) -> Result<([u8; 32], ProvedKeyValues), Error> {
         let mut verifier = ProofVerifier::new(query);
         let hash = verifier.execute_proof(proof, query)?;
 
@@ -41,7 +41,7 @@ impl GroveDb {
 struct ProofVerifier {
     limit: Option<u16>,
     offset: Option<u16>,
-    result_set: Proof,
+    result_set: ProvedKeyValues,
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -277,7 +277,7 @@ impl ProofVerifier {
         proof_reader: &mut ProofReader,
         expected_proof_type: ProofType,
         subquery_path: Option<Vec<u8>>,
-    ) -> Result<(CryptoHash, Option<Proof>), Error> {
+    ) -> Result<(CryptoHash, Option<ProvedKeyValues>), Error> {
         let (proof_type, subkey_proof) = proof_reader.read_proof()?;
 
         if proof_type != expected_proof_type {
@@ -311,7 +311,7 @@ impl ProofVerifier {
     ) -> Result<[u8; 32], Error> {
         let mut root_key_hash = None;
         let mut expected_child_hash = None;
-        let mut last_result_set: Proof = vec![];
+        let mut last_result_set: ProvedKeyValues = vec![];
 
         for key in path_slices {
             let merk_proof = proof_reader.read_proof_of_type(ProofType::Merk.into())?;
@@ -433,7 +433,7 @@ impl ProofVerifier {
         proof: &[u8],
         query: &Query,
         left_to_right: bool,
-    ) -> Result<(CryptoHash, Option<Proof>), Error> {
+    ) -> Result<(CryptoHash, Option<ProvedKeyValues>), Error> {
         let is_sized_proof = proof_type == ProofType::SizedMerk;
         let mut limit = None;
         let mut offset = None;
