@@ -861,7 +861,7 @@ where
 
         self.use_tree_mut(|maybe_tree| {
             maybe_tree
-                .ok_or(Error::CorruptedCodeExecutionError(
+                .ok_or(Error::CorruptedCodeExecution(
                     "Cannot create proof for empty tree",
                 ))
                 .wrap_with_cost(Default::default())

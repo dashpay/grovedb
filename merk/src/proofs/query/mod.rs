@@ -130,7 +130,7 @@ impl Query {
                             path.extend(front_keys.into_iter().cloned());
                             result.push((path, last_key.clone()));
                         } else {
-                            return Err(Error::CorruptedCodeExecutionError(
+                            return Err(Error::CorruptedCodeExecution(
                                 "subquery_path set but doesn't contain any values",
                             ));
                         }
@@ -196,7 +196,7 @@ impl Query {
                             path.extend(front_keys.into_iter().cloned());
                             result.push((path, last_key.clone()));
                         } else {
-                            return Err(Error::CorruptedCodeExecutionError(
+                            return Err(Error::CorruptedCodeExecution(
                                 "subquery_path set but doesn't contain any values",
                             ));
                         }

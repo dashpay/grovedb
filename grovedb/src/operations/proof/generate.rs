@@ -185,32 +185,71 @@ impl GroveDb {
                     if query.is_some() {
                         if let Some(subquery_path) = subquery_path {
                             // prove the subquery path first
-                            let inner_subtree = cost_return_on_error!(
-                                &mut cost,
-                                self.open_subtree(new_path.iter().copied())
-                            );
+                            for i in 0..subquery_path.len() {
+                                let first_key = subquery_path.get(i).unwrap();
+                                let inner_subtree = cost_return_on_error!(
+                                    &mut cost,
+                                    self.open_subtree(new_path.iter().copied())
+                                );
 
-                            let mut key_as_query = Query::new();
-                            key_as_query.insert_key(subquery_path.clone());
+                                let mut key_as_query = Query::new();
+                                key_as_query.insert_key(first_key.clone());
 
-                            cost_return_on_error!(
-                                &mut cost,
-                                self.generate_and_store_merk_proof(
-                                    new_path.iter().copied(),
-                                    &inner_subtree,
-                                    &key_as_query,
-                                    (None, None),
-                                    ProofType::Merk,
-                                    proofs,
-                                )
-                            );
+                                cost_return_on_error!(
+                                    &mut cost,
+                                    self.generate_and_store_merk_proof(
+                                        new_path.iter().copied(),
+                                        &inner_subtree,
+                                        &key_as_query,
+                                        (None, None),
+                                        ProofType::Merk,
+                                        proofs,
+                                    )
+                                );
 
-                            new_path.push(subquery_path.as_ref().unwrap());
+                                new_path.push(first_key.as_slice());
+                            }
                         }
                     } else {
-                        let mut key_as_query = Query::new();
-                        key_as_query.insert_key(subquery_path.unwrap());
-                        query = Some(key_as_query);
+                        if let Some(subquery_path) = subquery_path {
+                            if subquery_path.is_empty() {
+                                return Err(Error::CorruptedPath(
+                                    "subquery_path can not be empty",
+                                )).wrap_with_cost(cost);
+                            }
+                            // prove the subquery path first
+                            for i in 0..subquery_path.len() - 1 {
+                                let first_key = subquery_path.get(i).unwrap();
+                                let inner_subtree = cost_return_on_error!(
+                                    &mut cost,
+                                    self.open_subtree(new_path.iter().copied())
+                                );
+
+                                let mut key_as_query = Query::new();
+                                key_as_query.insert_key(first_key.clone());
+
+                                cost_return_on_error!(
+                                    &mut cost,
+                                    self.generate_and_store_merk_proof(
+                                        new_path.iter().copied(),
+                                        &inner_subtree,
+                                        &key_as_query,
+                                        (None, None),
+                                        ProofType::Merk,
+                                        proofs,
+                                    )
+                                );
+
+                                new_path.push(first_key);
+                            }
+                            let mut key_as_query = Query::new();
+                            key_as_query.insert_key(subquery_path.last().unwrap().to_owned());
+                            query = Some(key_as_query);
+                        } else {
+                            return Err(Error::CorruptedCodeExecution(
+                                "subquery_path must exist to be in this function",
+                            )).wrap_with_cost(cost);
+                        }
                     }
 
                     let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
