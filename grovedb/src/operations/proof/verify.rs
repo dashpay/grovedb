@@ -1,4 +1,4 @@
-use merk::proofs::query::ProvedKeyValue;
+use merk::proofs::query::{Path, ProvedKeyValue};
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::{
     proofs::Query,
@@ -29,7 +29,10 @@ impl GroveDb {
         }
     }
 
-    pub fn verify_query(proof: &[u8], query: &PathQuery) -> Result<([u8; 32], ProvedKeyValues), Error> {
+    pub fn verify_query(
+        proof: &[u8],
+        query: &PathQuery,
+    ) -> Result<([u8; 32], ProvedKeyValues), Error> {
         let mut verifier = ProofVerifier::new(query);
         let hash = verifier.execute_proof(proof, query)?;
 
@@ -110,17 +113,17 @@ impl ProofVerifier {
                 // for non leaf subtrees, we want to prove that all the queried keys
                 // have an accompanying proof as long as the limit is non zero
                 // and their child subtree is not empty
-                let verification_result = self.execute_merk_proof(
+                let (proof_root_hash, children) = self.execute_merk_proof(
                     ProofType::Merk,
                     &proof,
                     &query.query.query,
                     query.query.query.left_to_right,
                 )?;
 
-                last_root_hash = verification_result.0;
-                let children = verification_result
-                    .1
-                    .expect("MERK_PROOF always returns a result set");
+                last_root_hash = proof_root_hash;
+                let children = children.ok_or(Error::InvalidProof(
+                    "MERK_PROOF always returns a result set",
+                ))?;
 
                 for proved_key_value in children {
                     let ProvedKeyValue {
@@ -276,7 +279,41 @@ impl ProofVerifier {
         &mut self,
         proof_reader: &mut ProofReader,
         expected_proof_type: ProofType,
-        subquery_path: Option<Vec<u8>>,
+        subquery_path: Option<Path>,
+    ) -> Result<(CryptoHash, Option<ProvedKeyValues>), Error> {
+        let (proof_type, subkey_proof) = proof_reader.read_proof()?;
+
+        if proof_type != expected_proof_type {
+            return Err(Error::InvalidProof(
+                "unexpected proof type for subquery path",
+            ));
+        }
+
+        match proof_type {
+            ProofType::Merk | ProofType::SizedMerk => {
+                let mut key_as_query = Query::new();
+                key_as_query.insert_key(subquery_path.unwrap());
+
+                let verification_result = self.execute_merk_proof(
+                    proof_type,
+                    &subkey_proof,
+                    &key_as_query,
+                    key_as_query.left_to_right,
+                )?;
+
+                Ok(verification_result)
+            }
+            _ => Err(Error::InvalidProof("expected merk proof for subquery path")),
+        }
+    }
+
+    /// Checks that a valid proof showing the existence or absence of the
+    /// subquery key is present
+    fn verify_subquery_key(
+        &mut self,
+        proof_reader: &mut ProofReader,
+        expected_proof_type: ProofType,
+        subquery_path: Option<Path>,
     ) -> Result<(CryptoHash, Option<ProvedKeyValues>), Error> {
         let (proof_type, subkey_proof) = proof_reader.read_proof()?;
 
