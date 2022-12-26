@@ -70,25 +70,7 @@ impl Query {
         }
     }
 
-
     pub fn merge_multiple(queries : Vec<Query>) -> Self {
-        let mut merged_query = Query::new();
-        for query in queries {
-            // merge query items as they point to the same context
-            for item in &query.items {
-                merged_query.insert_item(item.clone());
-            }
-            for (item, conditional_subquery_branch) in query.conditional_subquery_branches {
-                merged_query.merge_conditional_subquery(item.clone(), conditional_subquery_branch.subquery_path, conditional_subquery_branch.subquery
-                    .as_ref()
-                    .map(|query| *query.clone()))
-            }
-            merged_query.merge_default_subquery_branch(query.default_subquery_branch);
-        }
-        merged_query
-    }
-
-    pub fn merge_multiple_owned(queries : Vec<Query>) -> Self {
         let mut merged_query = Query::new();
         for query in queries {
             let Query {
@@ -98,12 +80,12 @@ impl Query {
             for item in items {
                 merged_query.insert_item(item);
             }
+            merged_query.merge_default_subquery_branch(default_subquery_branch);
             for (item, conditional_subquery_branch) in conditional_subquery_branches {
                 merged_query.merge_conditional_subquery(item.clone(), conditional_subquery_branch.subquery_path.clone(), conditional_subquery_branch.subquery
                     .as_ref()
                     .map(|query| *query.clone()))
             }
-            merged_query.merge_default_subquery_branch(default_subquery_branch);
         }
         merged_query
     }
