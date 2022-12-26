@@ -160,7 +160,7 @@ impl ProofVerifier {
                             }
 
                             if subquery_path.is_some() {
-                                if subquery_path.expect("confirmed is some above").is_empty() {
+                                if subquery_path.as_ref().expect("confirmed is some above").is_empty() {
                                     // subquery path has no value hence not
                                     // translation will occur
                                     // do nothing
@@ -351,9 +351,9 @@ impl ProofVerifier {
                     )?;
 
                     // should always be some as we force the proof type to be MERK
-                    debug_assert!(result_set.is_some(), true);
+                    debug_assert!(result_set.is_some(), "{}", true);
 
-                    if result_set
+                    if result_set.as_ref()
                         .expect("result set should always be some for merk proof type")
                         .is_empty()
                     {
@@ -374,7 +374,7 @@ impl ProofVerifier {
                     .value()
                     .to_owned();
 
-                    if combined_child_hash != expected_root_hash {
+                    if combined_child_hash != *expected_root_hash {
                         return Err(Error::InvalidProof(
                             "child hash doesn't match the expected hash",
                         ));
@@ -393,9 +393,11 @@ impl ProofVerifier {
                     // after updating we can continue the loop;
                     // read the next proof, verify again e.t.c.
                 }
-                _ => Err(Error::InvalidProof(
-                    "expected merk of sized merk proof type for subquery path",
-                )),
+                _ => {
+                    return Err(Error::InvalidProof(
+                        "expected merk of sized merk proof type for subquery path",
+                    ));
+                }
             }
         }
 

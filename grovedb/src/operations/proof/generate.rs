@@ -3,7 +3,6 @@ use costs::cost_return_on_error_default;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use merk::proofs::query::Path;
 #[cfg(feature = "full")]
 use merk::{
     proofs::{encode_into, Node, Op},
@@ -368,9 +367,11 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         // TODO: How do you handle mixed tree types?
+        // TODO implement costs
         let mut proof_result = subtree
             .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
-            .unwrap()?;
+            .unwrap()
+            .expect("should generate proof");
 
         cost_return_on_error!(&mut cost, self.post_process_proof(path, &mut proof_result));
 
