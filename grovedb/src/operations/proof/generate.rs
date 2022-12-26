@@ -60,6 +60,7 @@ impl GroveDb {
         match subtree_exists {
             Ok(_) => {}
             Err(_) => {
+                // subtree at the given path doesn't exists, prove the absent path
                 write_to_vec(&mut proof_result, &[ProofType::AbsentPath.into()]);
                 let mut current_path: Vec<&[u8]> = vec![];
 
@@ -219,6 +220,7 @@ impl GroveDb {
 
                             let last_key = subquery_path.remove(subquery_path.len() - 1);
                             // prove the subquery path first
+                            // TODO: Handle subquery path not pointing to valid subtree
                             for first_key in subquery_path.into_iter() {
                                 let inner_subtree = cost_return_on_error!(
                                     &mut cost,
@@ -242,6 +244,7 @@ impl GroveDb {
 
                                 new_path.push(first_key);
                             }
+
                             let mut key_as_query = Query::new();
                             key_as_query.insert_key(last_key);
                             query = Some(key_as_query);
@@ -365,11 +368,9 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         // TODO: How do you handle mixed tree types?
-        // TODO implement costs
         let mut proof_result = subtree
             .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
-            .unwrap()
-            .expect("should generate proof");
+            .unwrap()?;
 
         cost_return_on_error!(&mut cost, self.post_process_proof(path, &mut proof_result));
 
