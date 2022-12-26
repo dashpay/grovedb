@@ -1,5 +1,7 @@
 #[cfg(feature = "full")]
-use merk::proofs::{query::QueryItem, Query};
+use merk::proofs::query::query_item::QueryItem;
+#[cfg(feature = "full")]
+use merk::proofs::Query;
 #[cfg(feature = "full")]
 use rand::Rng;
 #[cfg(feature = "full")]

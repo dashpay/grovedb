@@ -342,7 +342,7 @@ pub fn prove_1m_2k_rand(c: &mut Criterion) {
         .expect("apply failed");
         let mut prove_keys = Vec::with_capacity(batch_size);
         for (key, _) in batch.iter() {
-            prove_keys.push(merk::proofs::query::QueryItem::Key(key.clone()));
+            prove_keys.push(merk::proofs::query::query_item::QueryItem::Key(key.clone()));
         }
         prove_keys_per_batch.push(prove_keys);
         batches.push(batch);

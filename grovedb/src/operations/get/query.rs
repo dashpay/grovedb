@@ -386,7 +386,7 @@ where {
 mod tests {
     use std::collections::HashMap;
 
-    use merk::proofs::{query::QueryItem, Query};
+    use merk::proofs::{query::query_item::QueryItem, Query};
     use pretty_assertions::assert_eq;
 
     use crate::{

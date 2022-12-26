@@ -14,31 +14,32 @@ use std::{
 };
 
 use costs::{
-    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
-    storage_cost::{
+    ChildrenSizesWithValue, cost_return_on_error, cost_return_on_error_default,
+    cost_return_on_error_no_add,
+    CostContext, CostResult, CostsExt, FeatureSumLength, OperationCost, storage_cost::{
         key_value_cost::KeyValueStorageCost,
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
     },
-    ChildrenSizesWithValue, CostContext, CostResult, CostsExt, FeatureSumLength, OperationCost,
 };
 use storage::{self, Batch, RawIterator, StorageContext};
 
 use crate::{
+    Error::{CostsError, EdError, StorageError},
     error::Error,
     merk::{
         defaults::{MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES, ROOT_KEY_KEY},
         options::MerkOptions,
     },
-    proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
-    tree::{
-        kv::KV, AuxMerkBatch, Commit, CryptoHash, Fetch, Link, MerkBatch, Op, RefWalker, Tree,
-        Walker, NULL_HASH,
-    },
-    Error::{CostsError, EdError, StorageError},
     MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
+    proofs::{encode_into, Op as ProofOp, Query},
+    tree::{
+        AuxMerkBatch, Commit, CryptoHash, Fetch, kv::KV, Link, MerkBatch, NULL_HASH, Op, RefWalker,
+        Tree, Walker,
+    },
     TreeFeatureType,
 };
+use crate::proofs::query::query_item::QueryItem;
 
 type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
 
@@ -1297,13 +1298,13 @@ mod test {
 
     use costs::OperationCost;
     use storage::{
-        rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage},
-        RawIterator, Storage, StorageContext,
+        RawIterator,
+        rocksdb_storage::{PrefixedRocksDbStorageContext, RocksDbStorage}, Storage, StorageContext,
     };
     use tempfile::TempDir;
 
     use super::{Merk, MerkSource, RefWalker};
-    use crate::{test_utils::*, Op, TreeFeatureType::BasicMerk};
+    use crate::{Op, test_utils::*, TreeFeatureType::BasicMerk};
 
     // TODO: Close and then reopen test
 

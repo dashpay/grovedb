@@ -1,5 +1,8 @@
+use itertools::Itertools;
 #[cfg(any(feature = "full", feature = "verify"))]
-use merk::proofs::{query::QueryItem, Query};
+use merk::proofs::query::query_item::QueryItem;
+#[cfg(any(feature = "full", feature = "verify"))]
+use merk::proofs::Query;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::query_result_type::PathKey;
@@ -12,6 +15,14 @@ pub struct PathQuery {
     // TODO: Make generic over path type
     pub path: Vec<Vec<u8>>,
     pub query: SizedQuery,
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+#[derive(Debug, Clone)]
+pub struct UnsizedPathQuery {
+    // TODO: Make generic over path type
+    pub path: Vec<Vec<u8>>,
+    pub query: Query,
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -63,35 +74,43 @@ impl PathQuery {
     /// TODO: Currently not allowing unlimited depth queries when paths are
     /// equal     this is possible, should handle later.
     /// [a] + [b] (valid, unique and non subset)
-    pub fn merge(path_queries: Vec<&PathQuery>) -> Result<Self, Error> {
-        if path_queries.len() < 2 {
+    pub fn merge(mut path_queries: Vec<&PathQuery>) -> Result<Self, Error> {
+        if path_queries.is_empty() {
             return Err(Error::InvalidInput(
-                "merge function requires at least 2 path queries",
+                "merge function requires at least 1 path query",
             ));
         }
-
-        if Self::has_subpaths(&path_queries) {
-            return Err(Error::InvalidInput(
-                "path query path's should be non subset",
-            ));
+        if path_queries.len() == 1 {
+            return Ok(path_queries.remove(0).clone());
         }
 
         let (common_path, next_index) = PathQuery::get_common_path(&path_queries);
 
-        // convert all the paths after the common path to queries
-        let queries_for_common_path: Vec<Query> = path_queries
-            .iter()
-            .map(|path_query| Self::convert_path_to_query(path_query, next_index))
-            .collect();
+        let mut queries_for_common_path_this_level: Vec<Query> = vec![];
 
-        // merge the queries into one
-        let mut merged_query = Query::new();
-        queries_for_common_path
-            .iter()
-            .fold(&mut merged_query, |acc, curr| {
-                acc.merge(curr);
-                acc
-            });
+        let mut queries_for_common_path_sub_level: Vec<UnsizedPathQuery> = vec![];
+
+        // convert all the paths after the common path to queries
+        path_queries.into_iter().try_for_each(|path_query| {
+            path_query
+                .to_unsized_path_query_with_offset_start_index(next_index)
+                .map(|unsized_path_query| {
+                    if unsized_path_query.path.is_empty() {
+                        queries_for_common_path_this_level.push(unsized_path_query.query);
+                    } else {
+                        queries_for_common_path_sub_level.push(unsized_path_query);
+                    }
+                })
+        })?;
+
+        let mut merged_query = Query::merge_multiple(queries_for_common_path_this_level);
+        // add conditional subqueries
+        for mut sub_path_query in queries_for_common_path_sub_level {
+            let UnsizedPathQuery { mut path, query } = sub_path_query;
+            let key = path.remove(0);
+            let rest_of_path = if path.is_empty() { None } else { Some(path) };
+            merged_query.add_conditional_subquery(QueryItem::Key(key), rest_of_path, Some(query))
+        }
 
         Ok(PathQuery::new_unsized(common_path, merged_query))
     }
@@ -196,35 +215,22 @@ impl PathQuery {
     ///             query b
     ///                 cond b
     ///                    query c
-    fn convert_path_to_query(path_query: &PathQuery, start_index: usize) -> Query {
-        let path = &path_query.path;
-        let mut last_query = None;
-
-        for i in (start_index..path.len()).rev() {
-            let mut current_query = Query::new();
-            current_query.insert_key(path[i].clone());
-            if last_query.is_none() {
-                // add the path queries query as condition
-                current_query.add_conditional_subquery(
-                    QueryItem::Key(path[i].clone()),
-                    None,
-                    Some(path_query.query.query.clone()),
-                )
-            } else {
-                current_query.add_conditional_subquery(
-                    QueryItem::Key(path[i].clone()),
-                    None,
-                    last_query,
-                )
-            }
-            last_query = Some(current_query)
+    fn to_unsized_path_query_with_offset_start_index(
+        &self,
+        start_index: usize,
+    ) -> Result<UnsizedPathQuery, Error> {
+        let path = &self.path;
+        if path.len() <= start_index {
+            return Err(Error::CorruptedCodeExecution(
+                "invalid start index for path query merge",
+            ));
         }
+        let (_, remainder) = path.split_at(start_index);
 
-        if let Some(final_query) = last_query {
-            final_query
-        } else {
-            path_query.query.query.clone()
-        }
+        Ok(UnsizedPathQuery {
+            path: remainder.to_vec(),
+            query: self.query.query.clone(),
+        })
     }
 }
 

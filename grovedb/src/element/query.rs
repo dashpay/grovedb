@@ -4,7 +4,7 @@ use costs::{
     OperationCost,
 };
 #[cfg(feature = "full")]
-use merk::proofs::query::QueryItem;
+use merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::proofs::Query;
 #[cfg(feature = "full")]
