@@ -44,13 +44,6 @@ impl GroveDb {
         let mut offset: Option<u16> = query.query.offset;
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
-        // TODO: get rid of this error once root tree is also of type merk
-        if path_slices.is_empty() {
-            return Err(Error::InvalidPath(
-                "can't generate proof for empty path".to_owned(),
-            ))
-            .wrap_with_cost(cost);
-        }
 
         let subtree_exists = self
             .check_subtree_exists_path_not_found(path_slices.clone(), None)
@@ -148,6 +141,7 @@ impl GroveDb {
         let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query)
             .unwrap_add_cost(&mut cost);
         while let Some((key, value_bytes)) = kv_iterator.next_kv().unwrap_add_cost(&mut cost) {
+            let mut encountered_absence = false;
             let (mut subquery_path, subquery_value) =
                 Element::subquery_paths_for_sized_query(&query.query, &key);
 
@@ -178,14 +172,20 @@ impl GroveDb {
                         );
                     }
 
+                    // the key exists cause we use the iter to get it
+                    // hence new_path must exist
                     let mut new_path = path.clone();
                     new_path.push(key.as_ref());
 
                     let mut query = subquery_value;
 
+                    // query has a value
                     if query.is_some() {
+                        // and subquery path also has a value
                         if let Some(subquery_path) = &subquery_path {
                             // prove the subquery path first
+                            // we need to be sure that the new path exists
+                            // if it does not exist, then we continue as there is no need for continuous proof
                             for first_key in subquery_path.into_iter() {
                                 let inner_subtree = cost_return_on_error!(
                                     &mut cost,
@@ -207,7 +207,21 @@ impl GroveDb {
                                     )
                                 );
 
+                                // we need to check if this new path exists
                                 new_path.push(first_key);
+
+                                if self
+                                    .check_subtree_exists_path_not_found(new_path.clone(), None)
+                                    .unwrap_add_cost(&mut cost)
+                                    .is_err()
+                                {
+                                    encountered_absence = true;
+                                    break;
+                                }
+                            }
+
+                            if encountered_absence {
+                                continue
                             }
                         }
                     } else {
@@ -242,6 +256,19 @@ impl GroveDb {
                                 );
 
                                 new_path.push(first_key);
+
+                                if self
+                                    .check_subtree_exists_path_not_found(new_path.clone(), None)
+                                    .unwrap_add_cost(&mut cost)
+                                    .is_err()
+                                {
+                                    encountered_absence = true;
+                                    break;
+                                }
+                            }
+
+                            if encountered_absence {
+                                continue
                             }
 
                             let mut key_as_query = Query::new();
@@ -291,6 +318,7 @@ impl GroveDb {
                 }
             }
         }
+        dbg!("done with the while loop");
 
         if is_leaf_tree {
             // if no useful subtree, then we care about the result set of this subtree.
