@@ -3,7 +3,6 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-// convert every query item to a range set
 use crate::proofs::query::query_item::QueryItem;
 use crate::proofs::query::query_item::{
     intersect2::RangeSetItem::{Exclusive, Inclusive, Unbounded},
@@ -11,6 +10,7 @@ use crate::proofs::query::query_item::{
 };
 
 // TODO: Refactor into nice units
+
 pub struct RangeSetIntersection {
     left: Option<RangeSet>,
     common: Option<RangeSet>,
@@ -71,23 +71,20 @@ impl RangeSet {
     }
 
     pub fn intersect(&self, other: RangeSet) -> RangeSetIntersection {
-        // Current version assumes that the range set does not overlap
-
         // how to detect non-overlapping sets??
         // the end of one of the sets is smaller than the start of another
-        // need some kind of ordering function, this is not pretty
         if self.end < other.start || other.end < self.start {
             // the sets do not overlap
             // no common element
             if self.end < other.start  {
                 // self is at the left
-                return RangeSetIntersection {
+                RangeSetIntersection {
                     left: Some(self.clone()),
                     common: None,
                     right: Some(other.clone())
                 }
             } else {
-                return RangeSetIntersection {
+                RangeSetIntersection {
                     left: Some(other.clone()),
                     common: None,
                     right: Some(self.clone())
@@ -174,6 +171,7 @@ impl RangeSetItem {
 }
 
 impl PartialOrd for RangeSetItem {
+    // TODO: hmm, this is wrong, could be equal right??
     fn partial_cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Unbounded, _) => Ordering::Less,
