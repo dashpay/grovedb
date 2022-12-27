@@ -123,34 +123,63 @@ impl RangeSetItem {
         }
     }
 
-    // TODO: maybe compare start and compare end??
-    pub fn compare(
-        item_one: &RangeSetItem,
-        item_two: &RangeSetItem,
-        direction_is_left: bool,
-    ) -> (&RangeSetItem, &RangeSetItem) {
-        // returns a tuple (smaller, bigger)
-        match (item_one, item_two, direction_is_left) {
-            // since direction is left, unbounded is the smaller one
-            (Unbounded, _, true) => (item_one, item_two),
-            (_, Unbounded, true) => (item_two, item_one),
-            // since direction is right, unbounded is the larger one
-            (Unbounded, _, false) => (item_two, item_one),
-            (_, Unbounded, false) => (item_one, item_two),
-            (Inclusive(v1), Inclusive(v2), _) => {
-                // TODO: maybe change to match with cmp??
+    // TODO: combine start and end in one function by using ordering to abstract difference
+    pub fn compare_start(item_one: &RangeSetItem, item_two: &RangeSetItem) -> (&RangeSetItem, &RangeSetItem) {
+        // TODO: add proper comments
+        match (item_one, item_two) {
+            (Unbounded, _) => (item_one, item_two),
+            (_, Unbounded) => (item_two, item_one),
+            (Inclusive(v1), Inclusive(v2)) | (Exclusive(v1), Exclusive(v2)) => {
                 if v1 < v2 {
                     (item_one, item_two)
                 } else {
                     (item_two, item_one)
                 }
             }
-            (Inclusive(v1), Exclusive(v2), true) => {
-                // if we are in the start direction, inclusive is less that exclusive
-                // what if v1 and v2 are equal
+            (Inclusive(v1), Exclusive(v2)) => {
+               if v1 < v2 || v1 == v2{
+                   (item_one, item_two)
+               } else {
+                   (item_two, item_one)
+               }
+            }
+            (Exclusive(v1), Inclusive(v2)) => {
                 if v1 < v2 {
                     (item_one, item_two)
-                } else if {
+                } else {
+                    // they are equal of v2 is less
+                    // inclusive always wins
+                    (item_two, item_one)
+                }
+            }
+        }
+    }
+
+    pub fn compare_end(item_one: &RangeSetItem, item_two: &RangeSetItem) -> (&RangeSetItem, &RangeSetItem) {
+        // TODO: add proper comments
+        match (item_one, item_two) {
+            (Unbounded, _) => (item_one, item_two),
+            (_, Unbounded) => (item_two, item_one),
+            (Inclusive(v1), Inclusive(v2)) | (Exclusive(v1), Exclusive(v2)) => {
+                if v1 > v2 {
+                    (item_one, item_two)
+                } else {
+                    (item_two, item_one)
+                }
+            }
+            (Inclusive(v1), Exclusive(v2)) => {
+                if v1 > v2 || v1 == v2{
+                    (item_one, item_two)
+                } else {
+                    (item_two, item_one)
+                }
+            }
+            (Exclusive(v1), Inclusive(v2)) => {
+                if v1 > v2 {
+                    (item_one, item_two)
+                } else {
+                    // they are equal of v2 is greater
+                    // inclusive always wins
                     (item_two, item_one)
                 }
             }
