@@ -74,6 +74,8 @@ impl RangeSet {
     pub fn intersect(&self, other: RangeSet) -> RangeSetIntersection {
         // Current version assumes that the range set does not overlap
         // TODO: Handle non overlapping range sets
+        let (smaller_start, bigger_start) = RangeSetItem::compare_start(&self.start, &other.start);
+        let (larger_end, smaller_end) = RangeSetItem::compare_end(&self.end, &other.end);
 
         // need to get 3 things, 3 range sets to be precise, optional range sets
         // how to we perform this intersection
@@ -91,15 +93,22 @@ impl RangeSet {
         if self.start != other.start {
             // now we need to know the smaller one, basically perform an
             // ordering and invert the other one
-
+            intersection_result.left = Some(RangeSet{
+                start: smaller_start.clone(),
+                end: bigger_start.invert()
+            });
+            intersection_result.common.expect("set above").start = bigger_start.clone();
         }
 
         if self.end != other.end {
             // now we need to know the bigger one and basically perform an
             // inversion of the other one
+            intersection_result.right = Some(RangeSet{
+                start: smaller_end.invert(),
+                end: larger_end.clone()
+            });
+            intersection_result.common.expect("set above").end = smaller_end.clone()
         }
-
-        // the common part is the bigger and smaller side of the two
 
         intersection_result
     }
