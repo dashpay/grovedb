@@ -294,7 +294,6 @@ impl ProofVerifier {
         expected_root_hash: &mut CryptoHash,
         current_value_bytes: &mut Vec<u8>,
     ) -> Result<(CryptoHash, Option<ProvedKeyValues>, EncounteredAbsence), Error> {
-
         // the subquery path contains at least one item.
         let last_key = subquery_path.remove(subquery_path.len() - 1);
 
