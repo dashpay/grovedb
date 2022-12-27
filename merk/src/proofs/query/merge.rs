@@ -5,7 +5,7 @@ use crate::proofs::{
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl Query {
-    fn merge_default_branch_subquery(&mut self, other_default_branch_subquery: Option<Box<Query>>) {
+    fn merge_default_subquerys_branch_subquery(&mut self, other_default_branch_subquery: Option<Box<Query>>) {
         if let Some(current_subquery) = self.default_subquery_branch.subquery.as_mut() {
             if let Some(other_subquery) = other_default_branch_subquery {
                 current_subquery.merge_with(*other_subquery);
@@ -22,71 +22,130 @@ impl Query {
     /// present. Merging involves creating conditional subqueries in the
     /// subqueries subqueries and paths.
     pub fn merge_default_subquery_branch(&mut self, other_default_subquery_branch: SubqueryBranch) {
-        if self.default_subquery_branch.subquery_path.is_none()
-            && other_default_subquery_branch.subquery_path.is_none()
-        {
-            // they both just have subqueries
-            self.merge_default_branch_subquery(other_default_subquery_branch.subquery);
-        } else if let Some(our_subquery_path) = &self.default_subquery_branch.subquery_path {
-            if let Some(their_subquery_path) = &other_default_subquery_branch.subquery_path {
-                // if they are the same
+        match (&self.default_subquery_branch.subquery_path, &other_default_subquery_branch.subquery_path) {
+            (None, None) => {
+                // they both just have subqueries without paths
+                self.merge_default_subquerys_branch_subquery(other_default_subquery_branch.subquery);
+            }
+            (Some(our_subquery_path), Some(their_subquery_path)) => {
+                // They both have subquery paths
+
                 if our_subquery_path.eq(their_subquery_path) {
-                    self.merge_default_branch_subquery(other_default_subquery_branch.subquery);
+                    // The subquery paths are the same
+                    // We just need to merge the subqueries together
+                    self.merge_default_subquerys_branch_subquery(other_default_subquery_branch.subquery);
                 } else {
+                    // We need to find the common path between the two subqueries
                     let CommonPathResult {
                         common_path,
                         mut left_path_leftovers,
                         mut right_path_leftovers,
                     } = CommonPathResult::from_paths(our_subquery_path, their_subquery_path);
+
                     if common_path.is_empty() {
+                        // There is no common path
+                        // We set the subquery path to be None
                         self.default_subquery_branch.subquery_path = None;
                     } else {
+                        // There is a common path
+                        // We can use this common path as a common root
                         self.default_subquery_branch.subquery_path = Some(common_path)
                     }
+
                     if !left_path_leftovers.is_empty() && !right_path_leftovers.is_empty() {
-                        // we split
-                        let first_key = left_path_leftovers.remove(0);
-                        // our subquery stays the same as we didn't change level
-                        // add a conditional subquery for other
+                        // Both left and right split but still have paths below them
+                        // We take the top element from the left path leftovers and add a
+                        // conditional subquery for each key
+                        // The key is also removed from the path as it is no needed in the subquery
+                        let left_top_key = left_path_leftovers.remove(0);
+                        let maybe_left_path_leftovers = if left_path_leftovers.is_empty() { None } else { Some(left_path_leftovers)};
                         self.add_conditional_boxed_subquery(
-                            QueryItem::Key(first_key),
-                            Some(left_path_leftovers),
+                            QueryItem::Key(left_top_key),
+                            maybe_left_path_leftovers,
                             self.default_subquery_branch.subquery.clone(),
                         );
-                        let other_first = right_path_leftovers.remove(0);
-                        // our subquery stays the same as we didn't change level
-                        // add a conditional subquery for other
+                        let right_top_key = right_path_leftovers.remove(0);
+                        let maybe_right_path_leftovers = if right_path_leftovers.is_empty() { None } else { Some(right_path_leftovers)};
+
                         self.add_conditional_boxed_subquery(
-                            QueryItem::Key(other_first),
-                            Some(right_path_leftovers),
+                            QueryItem::Key(right_top_key),
+                            maybe_right_path_leftovers,
                             other_default_subquery_branch.subquery.clone(),
                         );
                     } else if right_path_leftovers.is_empty() {
+
+                        let left_subquery = self.default_subquery_branch.subquery.clone();
                         // this means our subquery path was longer
                         // which means we need to set the default to the right (other)
                         self.default_subquery_branch.subquery =
                             other_default_subquery_branch.subquery.clone();
                         let first_key = left_path_leftovers.remove(0);
+                        let maybe_left_path_leftovers = if left_path_leftovers.is_empty() { None } else { Some(left_path_leftovers)};
+
                         // our subquery stays the same as we didn't change level
                         // add a conditional subquery for other
                         self.add_conditional_boxed_subquery(
                             QueryItem::Key(first_key),
-                            Some(left_path_leftovers),
-                            self.default_subquery_branch.subquery.clone(),
+                            maybe_left_path_leftovers,
+                            left_subquery,
                         );
                     } else if left_path_leftovers.is_empty() {
                         // this means our subquery path shorter
                         // we should keep our subquery
                         let other_first = right_path_leftovers.remove(0);
+
+                        let maybe_right_path_leftovers = if right_path_leftovers.is_empty() { None } else { Some(right_path_leftovers)};
                         // our subquery stays the same as we didn't change level
                         // add a conditional subquery for other
                         self.add_conditional_boxed_subquery(
                             QueryItem::Key(other_first),
-                            Some(right_path_leftovers),
+                            maybe_right_path_leftovers,
                             other_default_subquery_branch.subquery.clone(),
                         );
+                    } else {
+                        unreachable!("Unreachable as both paths being equal already covered");
                     }
                 }
+            }
+            (Some(our_subquery_path), None) => {
+                // Ours has a subquery path, theirs does not.
+                // We set the subquery path to None
+
+                let mut our_subquery_path = our_subquery_path.clone();
+
+                self.default_subquery_branch.subquery_path = None;
+                self.default_subquery_branch.subquery = other_default_subquery_branch.subquery.clone();
+                // We need to add a conditional subquery for ours
+
+                let our_top_key = our_subquery_path.remove(0);
+
+                let maybe_our_subquery_path = if our_subquery_path.is_empty() { None } else { Some(our_subquery_path)};
+                // our subquery stays the same as we didn't change level
+                // add a conditional subquery for other
+                self.add_conditional_boxed_subquery(
+                    QueryItem::Key(our_top_key),
+                    maybe_our_subquery_path,
+                    other_default_subquery_branch.subquery.clone(),
+                );
+            }
+            (None, Some(their_subquery_path)) => {
+                // They have a subquery path, we does not.
+                // We set the subquery path to None
+
+                let mut their_subquery_path = their_subquery_path.clone();
+
+                // The subquery_path is already set to None, no need to set it again
+
+                let their_top_key = their_subquery_path.remove(0);
+
+                let maybe_their_subquery_path = if their_subquery_path.is_empty() { None } else { Some(their_subquery_path)};
+                // our subquery stays the same as we didn't change level
+                // add a conditional subquery for other
+                self.add_conditional_boxed_subquery(
+                    QueryItem::Key(their_top_key),
+                    maybe_their_subquery_path,
+                    other_default_subquery_branch.subquery.clone(),
+                );
             }
         }
     }

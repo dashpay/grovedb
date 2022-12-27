@@ -41,11 +41,13 @@ pub use ed;
 #[cfg(feature = "full")]
 pub use error::Error;
 #[cfg(any(feature = "full", feature = "verify"))]
-pub use proofs::query::{execute_proof, verify_query};
+pub use proofs::query::verify::execute_proof;
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use proofs::query::verify::verify_query;
 #[cfg(feature = "full")]
 pub use tree::{
-    BatchEntry, Link, MerkBatch, Op, PanicSource, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32,
-    HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
+    BatchEntry, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2, Link,
+    MerkBatch, Op, PanicSource,
 };
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use tree::{CryptoHash, TreeFeatureType};
