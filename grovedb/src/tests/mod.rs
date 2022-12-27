@@ -1552,6 +1552,89 @@ fn test_path_query_proofs_with_subquery_path() {
     let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
     compare_result_tuples(result_set, expected_result_set);
+
+    // test subquery path with valid n > 1 valid translation
+    let mut query = Query::new();
+    query.insert_all();
+
+    let mut subq = Query::new();
+    subq.insert_all();
+
+    query.set_subquery_path(vec![b"deep_node_1".to_vec(), b"deeper_node_1".to_vec()]);
+    query.set_subquery(subq);
+
+    let path_query = PathQuery::new_unsized(vec![], query);
+    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) =
+        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 3);
+
+    let keys = [b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()];
+    let values = [b"value1".to_vec(), b"value2".to_vec(), b"value3".to_vec()];
+    let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+    let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
+    compare_result_tuples(result_set, expected_result_set);
+
+    // test subquery path with empty subquery path
+    let mut query = Query::new();
+    query.insert_all();
+
+    let mut subq = Query::new();
+    subq.insert_all();
+
+    query.set_subquery_path(vec![]);
+    query.set_subquery(subq);
+
+    let path_query =
+        PathQuery::new_unsized(vec![b"deep_leaf".to_vec(), b"deep_node_1".to_vec()], query);
+    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) =
+        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 6);
+
+    let keys = [
+        b"key1".to_vec(),
+        b"key2".to_vec(),
+        b"key3".to_vec(),
+        b"key4".to_vec(),
+        b"key5".to_vec(),
+        b"key6".to_vec(),
+    ];
+    let values = [
+        b"value1".to_vec(),
+        b"value2".to_vec(),
+        b"value3".to_vec(),
+        b"value4".to_vec(),
+        b"value5".to_vec(),
+        b"value6".to_vec(),
+    ];
+    let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+    let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
+    compare_result_tuples(result_set, expected_result_set);
+
+    // test subquery path with an invalid translation
+    // should generate a valid absence proof with an empty result set
+    let mut query = Query::new();
+    query.insert_all();
+
+    let mut subq = Query::new();
+    subq.insert_all();
+
+    query.set_subquery_path(vec![
+        b"deep_node_1".to_vec(),
+        b"deeper_node_10".to_vec(),
+        b"another_invalid_key".to_vec(),
+    ]);
+    query.set_subquery(subq);
+
+    let path_query = PathQuery::new_unsized(vec![], query);
+    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) =
+        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 0);
 }
 
 #[cfg(feature = "full")]
