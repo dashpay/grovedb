@@ -469,18 +469,97 @@ impl QueryItem {
                     }
                 }
             }
-            QueryItem::RangeAfterTo(range) => {
-
+            QueryItem::RangeAfterTo(our_range) => {
+                if their_range_to.end <= our_range.start {
+                    // there is no overlap, their end is not inclusive
+                    QueryItemIntersectionResult {
+                        in_both: None,
+                        ours_left: None,
+                        ours_right: Some(self.clone()),
+                        theirs_left: Some(QueryItem::RangeTo(their_range_to)),
+                        theirs_right: None,
+                    }
+                } else if their_range_to.end >= our_range.end {
+                    // complete overlap for us
+                    let theirs_left = Some(QueryItem::RangeToInclusive(RangeToInclusive { end: our_range.start.clone() }));
+                    let theirs_right = Some(QueryItem::Range(Range { start: their_range_to.end, end: our_range.end.clone() }));
+                    QueryItemIntersectionResult {
+                        in_both: Some(self.clone()),
+                        ours_left: None,
+                        ours_right: None,
+                        theirs_left,
+                        theirs_right,
+                    }
+                } else {
+                    // partial overlap
+                    let in_both = Some(QueryItem::RangeAfterTo(Range { start: our_range.start.clone(), end: their_range_to.end.clone() }));
+                    let theirs_left = Some(QueryItem::RangeToInclusive(RangeToInclusive { end: our_range.start.clone() }));
+                    let ours_right = Some(QueryItem::Range(Range { start: their_range_to.end, end: our_range.end.clone()}));
+                    QueryItemIntersectionResult {
+                        in_both,
+                        ours_left: None,
+                        ours_right,
+                        theirs_left,
+                        theirs_right: None,
+                    }
+                }
             }
-            QueryItem::RangeAfterToInclusive(range_inclusive) => {
-
-            }
-            QueryItem::RangeFrom(range_from) => {
-
+            QueryItem::RangeAfterToInclusive(our_range_after_to_inclusive) => {
+                if &their_range_to.end <= our_range_after_to_inclusive.start() {
+                    // there is no overlap, their end is not inclusive
+                    QueryItemIntersectionResult {
+                        in_both: None,
+                        ours_left: None,
+                        ours_right: Some(self.clone()),
+                        theirs_left: Some(QueryItem::RangeTo(their_range_to)),
+                        theirs_right: None,
+                    }
+                } else if their_range_to.end == our_range_after_to_inclusive.end() {
+                    // complete overlap for us, except last element
+                    let in_both = Some(QueryItem::RangeAfterTo(Range { start: our_range_after_to_inclusive.start().clone(), end: our_range_after_to_inclusive.end().clone() }));
+                    let theirs_left = Some(QueryItem::RangeToInclusive(RangeToInclusive { end: our_range.start.clone() }));
+                    let theirs_right = Some(QueryItem::Key(their_range_to.end));
+                    QueryItemIntersectionResult {
+                        in_both,
+                        ours_left: None,
+                        ours_right: None,
+                        theirs_left,
+                        theirs_right,
+                    }
+                } else if &their_range_to.end > our_range_after_to_inclusive.end() {
+                    // complete overlap for us
+                    let theirs_left = Some(QueryItem::RangeTo(RangeTo { end: our_range.start.clone() }));
+                    let theirs_right = Some(QueryItem::RangeAfterTo(Range { start: their_range_to.end, end: our_range.end.clone() }));
+                    QueryItemIntersectionResult {
+                        in_both: Some(self.clone()),
+                        ours_left: None,
+                        ours_right: None,
+                        theirs_left,
+                        theirs_right,
+                    }
+                } else {
+                    // partial overlap
+                    let in_both = Some(QueryItem::RangeAfterTo(Range { start: our_range.start.clone(), end: their_range_to.end.clone() }));
+                    let theirs_left = Some(QueryItem::RangeTo(RangeTo { end: our_range.start.clone() }));
+                    let ours_right = Some(QueryItem::RangeInclusive(RangeInclusive::new(their_range_to.end, our_range.end.clone())));
+                    QueryItemIntersectionResult {
+                        in_both,
+                        ours_left: None,
+                        ours_right,
+                        theirs_left,
+                        theirs_right: None,
+                    }
+                }
             }
             QueryItem::RangeAfter(range_after) => {
 
             }
+
+
+            QueryItem::RangeFrom(range_from) => {
+
+            }
+
             QueryItem::RangeTo(range_to) => {
 
             }
@@ -496,10 +575,13 @@ impl QueryItem {
             QueryItem::RangeFull(_) => {
                 self.intersect_with_range_full()
             }
+            QueryItem::RangeTo(range_to) => {
+                self.intersect_with_range_to(range_to.clone())
+            }
             QueryItem::Range(_) => {}
             QueryItem::RangeInclusive(_) => {}
             QueryItem::RangeFrom(_) => {}
-            QueryItem::RangeTo(_) => {}
+
             QueryItem::RangeToInclusive(_) => {}
             QueryItem::RangeAfter(_) => {}
             QueryItem::RangeAfterTo(_) => {}
