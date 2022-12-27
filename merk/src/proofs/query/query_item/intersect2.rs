@@ -3,9 +3,9 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-use crate::proofs::query::query_item::QueryItem;
 use crate::proofs::query::query_item::{
     intersect2::RangeSetItem::{Exclusive, Inclusive, Unbounded},
+    QueryItem,
     QueryItem::Range,
 };
 
@@ -76,18 +76,18 @@ impl RangeSet {
         if self.end < other.start || other.end < self.start {
             // the sets do not overlap
             // no common element
-            if self.end < other.start  {
+            if self.end < other.start {
                 // self is at the left
                 RangeSetIntersection {
                     left: Some(self.clone()),
                     common: None,
-                    right: Some(other.clone())
+                    right: Some(other.clone()),
                 }
             } else {
                 RangeSetIntersection {
                     left: Some(other.clone()),
                     common: None,
-                    right: Some(self.clone())
+                    right: Some(self.clone()),
                 }
             }
         }
@@ -121,11 +121,8 @@ impl RangeSet {
         }
 
         if self.end != other.end {
-            let (smaller_end, larger_end) = RangeSetItem::order_items(
-                &self.end,
-                &other.end,
-                self.end.partial_cmp(&other.end)
-            );
+            let (smaller_end, larger_end) =
+                RangeSetItem::order_items(&self.end, &other.end, self.end.partial_cmp(&other.end));
             // now we need to know the bigger one and basically perform an
             // inversion of the other one
             intersection_result.right = Some(RangeSet {
@@ -172,6 +169,7 @@ impl RangeSetItem {
 
 impl PartialOrd for RangeSetItem {
     // TODO: hmm, this is wrong, could be equal right??
+    //  but then equal returns the same other as less or greater than.
     fn partial_cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Unbounded, _) => Ordering::Less,
