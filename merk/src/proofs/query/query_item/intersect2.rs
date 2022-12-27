@@ -6,7 +6,6 @@ use std::{
 use crate::proofs::query::query_item::{
     intersect2::RangeSetItem::{Exclusive, Inclusive, Unbounded},
     QueryItem,
-    QueryItem::Range,
 };
 
 // TODO: Refactor into nice units
@@ -53,7 +52,7 @@ impl RangeSet {
                 })
             }
             (RangeSetItem::Exclusive(start), RangeSetItem::Inclusive(end)) => {
-                QueryItem::RangeAfterToInclusive(RangeInclusive::new(start.clone, end.clone()))
+                QueryItem::RangeAfterToInclusive(RangeInclusive::new(start.clone(), end.clone()))
             }
             (RangeSetItem::Exclusive(start), RangeSetItem::Unbounded) => {
                 QueryItem::RangeAfter(RangeFrom {
@@ -78,19 +77,28 @@ impl RangeSet {
             // no common element
             if self.end < other.start {
                 // self is at the left
-                RangeSetIntersection {
+                return RangeSetIntersection {
                     left: Some(self.clone()),
                     common: None,
                     right: Some(other.clone()),
-                }
+                };
             } else {
-                RangeSetIntersection {
+                return RangeSetIntersection {
                     left: Some(other.clone()),
                     common: None,
                     right: Some(self.clone()),
-                }
+                };
             }
         }
+
+        let (smaller_start, bigger_start) = RangeSetItem::order_items(
+            &self.start,
+            &other.start,
+            self.start.cmp(&other.start),
+        );
+
+        let (smaller_end, larger_end) =
+            RangeSetItem::order_items(&self.end, &other.end, self.end.cmp(&other.end));
 
         // need to get 3 things, 3 range sets to be precise, optional range sets
         // how to we perform this intersection
@@ -106,38 +114,36 @@ impl RangeSet {
 
         // if the comparison of the start are not equal then we have value for left
         if self.start != other.start {
-            let (smaller_start, bigger_start) = RangeSetItem::order_items(
-                &self.start,
-                &other.start,
-                self.start.partial_cmp(&other.start),
-            );
             // now we need to know the smaller one, basically perform an
             // ordering and invert the other one
             intersection_result.left = Some(RangeSet {
                 start: smaller_start.clone(),
                 end: bigger_start.invert(),
             });
-            intersection_result.common.expect("set above").start = bigger_start.clone();
+            // intersection_result.common.expect("set above").start = bigger_start.clone();
         }
 
         if self.end != other.end {
-            let (smaller_end, larger_end) =
-                RangeSetItem::order_items(&self.end, &other.end, self.end.partial_cmp(&other.end));
             // now we need to know the bigger one and basically perform an
             // inversion of the other one
             intersection_result.right = Some(RangeSet {
                 start: smaller_end.invert(),
                 end: larger_end.clone(),
             });
-            intersection_result.common.expect("set above").end = smaller_end.clone()
+            // intersection_result.common.expect("set above").end = smaller_end.clone()
         }
+
+        intersection_result.common = Some(RangeSet {
+            start: bigger_start.clone(),
+            end: smaller_end.clone()
+        });
 
         intersection_result
     }
 }
 
 /// Represents all possible value types in a range set
-#[derive(Eq, PartialEq, Clone)]
+#[derive(Eq, PartialEq, Ord, Clone)]
 pub enum RangeSetItem {
     Unbounded,
     Inclusive(Vec<u8>),
@@ -155,11 +161,11 @@ impl RangeSetItem {
 
     // need to create a new function that takes an ordering and returns a tuple with
     // the elements
-    pub fn order_items(
-        item_one: &RangeSetItem,
-        item_two: &RangeSetItem,
+    pub fn order_items<'a>(
+        item_one: &'a RangeSetItem,
+        item_two: &'a RangeSetItem,
         order: Ordering,
-    ) -> (&RangeSetItem, &RangeSetItem) {
+    ) -> (&'a RangeSetItem, &'a RangeSetItem) {
         match order {
             Ordering::Less => (item_one, item_two),
             _ => (item_two, item_one),
@@ -170,31 +176,31 @@ impl RangeSetItem {
 impl PartialOrd for RangeSetItem {
     // TODO: hmm, this is wrong, could be equal right??
     //  but then equal returns the same other as less or greater than.
-    fn partial_cmp(&self, other: &Self) -> Ordering {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
-            (Unbounded, _) => Ordering::Less,
-            (_, Unbounded) => Ordering::Greater,
+            (Unbounded, _) => Some(Ordering::Less),
+            (_, Unbounded) => Some(Ordering::Greater),
             (Inclusive(v1), Inclusive(v2)) | (Exclusive(v1), Exclusive(v2)) => {
                 if v1 < v2 {
-                    Ordering::Less
+                    Some(Ordering::Less)
                 } else {
-                    Ordering::Greater
+                    Some(Ordering::Greater)
                 }
             }
             (Inclusive(v1), Exclusive(v2)) => {
                 if v1 < v2 || v1 == v2 {
-                    Ordering::Less
+                    Some(Ordering::Less)
                 } else {
-                    Ordering::Greater
+                    Some(Ordering::Greater)
                 }
             }
             (Exclusive(v1), Inclusive(v2)) => {
                 if v1 < v2 {
-                    Ordering::Less
+                    Some(Ordering::Less)
                 } else {
                     // they are equal of v2 is less
                     // inclusive always wins
-                    Ordering::Greater
+                    Some(Ordering::Greater)
                 }
             }
         }
@@ -206,14 +212,14 @@ impl PartialOrd for RangeSetItem {
 impl QueryItem {
     // TODO: convert to impl of From/To trait
     pub fn to_range_set(&self) -> RangeSet {
-        match QueryItem {
+        match self{
             QueryItem::Key(start) => RangeSet {
-                start: RangeSetItem::Inclusive(start),
+                start: RangeSetItem::Inclusive(start.clone()),
                 end: RangeSetItem::Inclusive(start.clone()),
             },
             QueryItem::Range(range) => RangeSet {
-                start: RangeSetItem::Inclusive(range.start),
-                end: RangeSetItem::Exclusive(range.end),
+                start: RangeSetItem::Inclusive(range.start.clone()),
+                end: RangeSetItem::Exclusive(range.end.clone()),
             },
             QueryItem::RangeInclusive(range) => RangeSet {
                 start: RangeSetItem::Inclusive(range.start().clone()),
@@ -224,24 +230,24 @@ impl QueryItem {
                 end: RangeSetItem::Unbounded,
             },
             QueryItem::RangeFrom(range) => RangeSet {
-                start: RangeSetItem::Inclusive(range.start),
+                start: RangeSetItem::Inclusive(range.start.clone()),
                 end: RangeSetItem::Unbounded,
             },
             QueryItem::RangeTo(range) => RangeSet {
                 start: RangeSetItem::Unbounded,
-                end: RangeSetItem::Exclusive(range.end),
+                end: RangeSetItem::Exclusive(range.end.clone()),
             },
             QueryItem::RangeToInclusive(range) => RangeSet {
                 start: RangeSetItem::Unbounded,
-                end: RangeSetItem::Inclusive(range.end),
+                end: RangeSetItem::Inclusive(range.end.clone()),
             },
             QueryItem::RangeAfter(range) => RangeSet {
-                start: RangeSetItem::Exclusive(range.start),
+                start: RangeSetItem::Exclusive(range.start.clone()),
                 end: RangeSetItem::Unbounded,
             },
             QueryItem::RangeAfterTo(range) => RangeSet {
-                start: RangeSetItem::Exclusive(range.start),
-                end: RangeSetItem::Exclusive(range.end),
+                start: RangeSetItem::Exclusive(range.start.clone()),
+                end: RangeSetItem::Exclusive(range.end.clone()),
             },
             QueryItem::RangeAfterToInclusive(range) => RangeSet {
                 start: RangeSetItem::Exclusive(range.start().clone()),

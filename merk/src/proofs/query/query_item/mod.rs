@@ -1,5 +1,4 @@
 #[cfg(any(feature = "full", feature = "verify"))]
-mod intersect;
 mod merge;
 // TODO: potentially rename
 mod intersect2;
