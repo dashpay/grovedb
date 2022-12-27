@@ -1,13 +1,19 @@
 #[cfg(any(feature = "full", feature = "verify"))]
 mod intersect;
 mod merge;
+// TODO: potentially rename
+mod intersect2;
 
-use std::cmp::{max, min, Ordering};
-use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
+use std::{
+    cmp,
+    cmp::{max, min, Ordering},
+    hash::Hash,
+    ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
+};
+
 use costs::{CostContext, CostsExt, OperationCost};
-use std::cmp;
-use std::hash::Hash;
 use storage::RawIterator;
+
 use crate::Error;
 
 #[cfg(any(feature = "full", feature = "verify"))]

@@ -1,7 +1,8 @@
 use crate::proofs::query::Path;
 
 #[cfg(any(feature = "full", feature = "verify"))]
-/// CommonPathResult is the result of trying to find the common path between two paths
+/// CommonPathResult is the result of trying to find the common path between two
+/// paths
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CommonPathResult {
     pub common_path: Path,

@@ -2,13 +2,13 @@
 mod map;
 
 #[cfg(any(feature = "full", feature = "verify"))]
-mod merge;
-#[cfg(any(feature = "full", feature = "verify"))]
 mod common_path;
 #[cfg(any(feature = "full", feature = "verify"))]
-pub mod query_item;
-#[cfg(any(feature = "full", feature = "verify"))]
 mod insert;
+#[cfg(any(feature = "full", feature = "verify"))]
+mod merge;
+#[cfg(any(feature = "full", feature = "verify"))]
+pub mod query_item;
 
 use std::collections::HashSet;
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -26,18 +26,18 @@ use costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCo
 use indexmap::IndexMap;
 #[cfg(feature = "full")]
 pub use map::*;
+use query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
 use storage::RawIterator;
 #[cfg(feature = "full")]
-use {std::collections::LinkedList, super::Op};
-use query_item::QueryItem;
+use {super::Op, std::collections::LinkedList};
 
 #[cfg(any(feature = "full", feature = "verify"))]
-use super::{Decoder, Node, tree::execute};
+use super::{tree::execute, Decoder, Node};
 #[cfg(feature = "full")]
 use crate::tree::{Fetch, Link, RefWalker};
 #[cfg(any(feature = "full", feature = "verify"))]
-use crate::{CryptoHash as MerkHash, CryptoHash, error::Error, tree::value_hash};
+use crate::{error::Error, tree::value_hash, CryptoHash as MerkHash, CryptoHash};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for a path.
@@ -1022,15 +1022,15 @@ mod test {
     use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
 
     use super::{
+        super::{encoding::encode_into, *},
         *,
-        super::{*, encoding::encode_into},
     };
     use crate::{
+        proofs::query::query_item::QueryItem::RangeAfter,
         test_utils::make_tree_seq,
         tree::{NoopCommit, PanicSource, RefWalker, Tree},
         TreeFeatureType::BasicMerk,
     };
-    use crate::proofs::query::query_item::QueryItem::RangeAfter;
 
     fn compare_result_tuples(
         result_set: Vec<ProvedKeyValue>,
