@@ -180,7 +180,7 @@ impl ProofVerifier {
                                         )?;
 
                                     if encountered_absence {
-                                        // we hit an absence on the path
+                                        // we hit an absence proof while verifying the subquery path
                                         continue;
                                     }
 
@@ -327,7 +327,6 @@ impl ProofVerifier {
                         .expect("result set should always be some for merk proof type")
                         .is_empty()
                     {
-                        // TODO: rename the third parameter to absent value
                         return Ok((proof_root_hash, None, true));
                     }
 
@@ -361,9 +360,6 @@ impl ProofVerifier {
             }
         }
 
-        // now we need to deal with the last key
-        // this will probably have duplicated code, that can be extracted into the
-        // verify key we start by reading the proof again
         let (proof_type, subkey_proof) = proof_reader.read_proof()?;
         if proof_type != expected_proof_type {
             return Err(Error::InvalidProof(
