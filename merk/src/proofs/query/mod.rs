@@ -12,7 +12,8 @@ pub mod query_item;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod verify;
 
-pub use verify::{ProvedKeyValue, ProofVerificationResult};
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use verify::{ProvedKeyValue, ProofVerificationResult, verify_query, execute_proof};
 
 use std::collections::HashSet;
 #[cfg(any(feature = "full", feature = "verify"))]

@@ -5,7 +5,7 @@ use merk::{
     proofs::Query,
     tree::{combine_hash, value_hash as value_hash_fn},
 };
-use merk::proofs::query::verify::ProvedKeyValue;
+use merk::proofs::query::ProvedKeyValue;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{

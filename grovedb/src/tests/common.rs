@@ -1,5 +1,5 @@
 #[cfg(feature = "full")]
-use merk::proofs::query::verify::ProvedKeyValue;
+use merk::proofs::query::ProvedKeyValue;
 
 #[cfg(feature = "full")]
 use crate::{Element, Error};
