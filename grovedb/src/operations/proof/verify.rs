@@ -149,16 +149,20 @@ impl ProofVerifier {
                                     key.as_slice(),
                                 );
 
-                            if subquery_value.is_none() && subquery_path.is_none() {
+                            // if there is no subquery value and the subquery path is either empty
+                            // of none then continue
+                            if subquery_value.is_none()
+                                && (subquery_path.is_none()
+                                    || subquery_path.as_ref().unwrap().is_empty())
+                            {
                                 continue;
                             }
 
-                            if subquery_path.is_some() {
-                                if subquery_path.as_ref().expect("confirmed is some above").is_empty() {
-                                    // subquery path has no value hence not
-                                    // translation will occur
-                                    // do nothing
-                                } else if subquery_value.is_none() {
+                            // at this point the subquery path must not be empty right
+                            if subquery_path.is_some()
+                                && !subquery_path.as_ref().unwrap().is_empty()
+                            {
+                                if subquery_value.is_none() {
                                     self.verify_subquery_path(
                                         proof_reader,
                                         ProofType::SizedMerk,
@@ -347,7 +351,8 @@ impl ProofVerifier {
                     // should always be some as we force the proof type to be MERK
                     debug_assert!(result_set.is_some(), "{}", true);
 
-                    if result_set.as_ref()
+                    if result_set
+                        .as_ref()
                         .expect("result set should always be some for merk proof type")
                         .is_empty()
                     {

@@ -185,7 +185,8 @@ impl GroveDb {
                         if let Some(subquery_path) = &subquery_path {
                             // prove the subquery path first
                             // we need to be sure that the new path exists
-                            // if it does not exist, then we continue as there is no need for continuous proof
+                            // if it does not exist, then we continue as there is no need for
+                            // continuous proof
                             for first_key in subquery_path.into_iter() {
                                 let inner_subtree = cost_return_on_error!(
                                     &mut cost,
@@ -221,14 +222,16 @@ impl GroveDb {
                             }
 
                             if encountered_absence {
-                                continue
+                                continue;
                             }
                         }
                     } else {
                         if let Some(subquery_path) = &mut subquery_path {
                             if subquery_path.is_empty() {
-                                return Err(Error::CorruptedPath("subquery_path can not be empty"))
-                                    .wrap_with_cost(cost);
+                                continue;
+                                // return Err(Error::CorruptedPath("
+                                // subquery_path can not be empty"))
+                                //     .wrap_with_cost(cost);
                             }
 
                             let last_key = subquery_path.remove(subquery_path.len() - 1);
@@ -268,7 +271,7 @@ impl GroveDb {
                             }
 
                             if encountered_absence {
-                                continue
+                                continue;
                             }
 
                             let mut key_as_query = Query::new();
@@ -318,7 +321,6 @@ impl GroveDb {
                 }
             }
         }
-        dbg!("done with the while loop");
 
         if is_leaf_tree {
             // if no useful subtree, then we care about the result set of this subtree.
