@@ -74,6 +74,8 @@ impl RangeSet {
     pub fn intersect(&self, other: RangeSet) -> RangeSetIntersection {
         // Current version assumes that the range set does not overlap
         // TODO: Handle non overlapping range sets
+        let (smaller_start, bigger_start) = RangeSetItem::compare_start(&self.start, &other.start);
+        let (larger_end, smaller_end) = RangeSetItem::compare_end(&self.end, &other.end);
 
         // need to get 3 things, 3 range sets to be precise, optional range sets
         // how to we perform this intersection
@@ -91,15 +93,22 @@ impl RangeSet {
         if self.start != other.start {
             // now we need to know the smaller one, basically perform an
             // ordering and invert the other one
-
+            intersection_result.left = Some(RangeSet{
+                start: smaller_start.clone(),
+                end: bigger_start.invert()
+            });
+            intersection_result.common.expect("set above").start = bigger_start.clone();
         }
 
         if self.end != other.end {
             // now we need to know the bigger one and basically perform an
             // inversion of the other one
+            intersection_result.right = Some(RangeSet{
+                start: smaller_end.invert(),
+                end: larger_end.clone()
+            });
+            intersection_result.common.expect("set above").end = smaller_end.clone()
         }
-
-        // the common part is the bigger and smaller side of the two
 
         intersection_result
     }
@@ -123,34 +132,63 @@ impl RangeSetItem {
         }
     }
 
-    // TODO: maybe compare start and compare end??
-    pub fn compare(
-        item_one: &RangeSetItem,
-        item_two: &RangeSetItem,
-        direction_is_left: bool,
-    ) -> (&RangeSetItem, &RangeSetItem) {
-        // returns a tuple (smaller, bigger)
-        match (item_one, item_two, direction_is_left) {
-            // since direction is left, unbounded is the smaller one
-            (Unbounded, _, true) => (item_one, item_two),
-            (_, Unbounded, true) => (item_two, item_one),
-            // since direction is right, unbounded is the larger one
-            (Unbounded, _, false) => (item_two, item_one),
-            (_, Unbounded, false) => (item_one, item_two),
-            (Inclusive(v1), Inclusive(v2), _) => {
-                // TODO: maybe change to match with cmp??
+    // TODO: combine start and end in one function by using ordering to abstract difference
+    pub fn compare_start(item_one: &RangeSetItem, item_two: &RangeSetItem) -> (&RangeSetItem, &RangeSetItem) {
+        // TODO: add proper comments
+        match (item_one, item_two) {
+            (Unbounded, _) => (item_one, item_two),
+            (_, Unbounded) => (item_two, item_one),
+            (Inclusive(v1), Inclusive(v2)) | (Exclusive(v1), Exclusive(v2)) => {
                 if v1 < v2 {
                     (item_one, item_two)
                 } else {
                     (item_two, item_one)
                 }
             }
-            (Inclusive(v1), Exclusive(v2), true) => {
-                // if we are in the start direction, inclusive is less that exclusive
-                // what if v1 and v2 are equal
+            (Inclusive(v1), Exclusive(v2)) => {
+               if v1 < v2 || v1 == v2{
+                   (item_one, item_two)
+               } else {
+                   (item_two, item_one)
+               }
+            }
+            (Exclusive(v1), Inclusive(v2)) => {
                 if v1 < v2 {
                     (item_one, item_two)
-                } else if {
+                } else {
+                    // they are equal of v2 is less
+                    // inclusive always wins
+                    (item_two, item_one)
+                }
+            }
+        }
+    }
+
+    pub fn compare_end(item_one: &RangeSetItem, item_two: &RangeSetItem) -> (&RangeSetItem, &RangeSetItem) {
+        // TODO: add proper comments
+        match (item_one, item_two) {
+            (Unbounded, _) => (item_one, item_two),
+            (_, Unbounded) => (item_two, item_one),
+            (Inclusive(v1), Inclusive(v2)) | (Exclusive(v1), Exclusive(v2)) => {
+                if v1 > v2 {
+                    (item_one, item_two)
+                } else {
+                    (item_two, item_one)
+                }
+            }
+            (Inclusive(v1), Exclusive(v2)) => {
+                if v1 > v2 || v1 == v2{
+                    (item_one, item_two)
+                } else {
+                    (item_two, item_one)
+                }
+            }
+            (Exclusive(v1), Inclusive(v2)) => {
+                if v1 > v2 {
+                    (item_one, item_two)
+                } else {
+                    // they are equal of v2 is greater
+                    // inclusive always wins
                     (item_two, item_one)
                 }
             }
