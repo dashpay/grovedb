@@ -16,6 +16,9 @@ use crate::{
 type ProvedKeyValues = Vec<ProvedKeyValue>;
 
 #[cfg(any(feature = "full", feature = "verify"))]
+type EncounteredAbsence = bool;
+
+#[cfg(any(feature = "full", feature = "verify"))]
 impl GroveDb {
     pub fn verify_query_many(
         proof: &[u8],
@@ -149,16 +152,10 @@ impl ProofVerifier {
                                     key.as_slice(),
                                 );
 
-                            // if there is no subquery value and the subquery path is either empty
-                            // of none then continue
-                            if subquery_value.is_none()
-                                && (subquery_path.is_none()
-                                    || subquery_path.as_ref().unwrap().is_empty())
-                            {
+                            if subquery_value.is_none() && subquery_path.is_none() {
                                 continue;
                             }
 
-                            // at this point the subquery path must not be empty right
                             if subquery_path.is_some()
                                 && !subquery_path.as_ref().unwrap().is_empty()
                             {
@@ -172,38 +169,22 @@ impl ProofVerifier {
                                     )?;
                                     continue;
                                 } else {
-                                    // here we care about the verification result because we
-                                    // potentially have more things
-                                    // to prove after it.
-                                    // this will be the normal for every case now. What is going on
-                                    // here. we verify the
-                                    // subquery key, check that the result set is not none
-                                    // if the result set if empty we skip as we have a valid absence
-                                    // proof if it is not empty,
-                                    // then we update the value hash and value bytes with the new
-                                    // values
+                                    let (_, result_set_opt, encountered_absence) = self
+                                        .verify_subquery_path(
+                                            proof_reader,
+                                            ProofType::Merk,
+                                            &mut subquery_path
+                                                .expect("confirmed it has a value above"),
+                                            &mut expected_combined_child_hash,
+                                            &mut current_value_bytes,
+                                        )?;
 
-                                    // we use those values to verify that the root hash of the next
-                                    // proof is correct. we will
-                                    // need to do this verification in verify_subquery_path actually
-                                    // verify subquery path needs to keep track of the current root
-                                    // hash and value bytes
-                                    // so we can check as we go
-                                    let verification_result = self.verify_subquery_path(
-                                        proof_reader,
-                                        ProofType::Merk,
-                                        &mut subquery_path.expect("confirmed it has a value above"),
-                                        &mut expected_combined_child_hash,
-                                        &mut current_value_bytes,
-                                    )?;
-
-                                    // TODO: make the absence name more explicit
-                                    if verification_result.2 == true {
+                                    if encountered_absence {
                                         // we hit an absence on the path
                                         continue;
                                     }
 
-                                    let subquery_path_result_set = verification_result.1;
+                                    let subquery_path_result_set = result_set_opt;
                                     if subquery_path_result_set.is_none() {
                                         // this means a sized proof was generated for the subquery
                                         // key
@@ -312,35 +293,23 @@ impl ProofVerifier {
         subquery_path: &mut Path,
         expected_root_hash: &mut CryptoHash,
         current_value_bytes: &mut Vec<u8>,
-    ) -> Result<(CryptoHash, Option<ProvedKeyValues>, bool), Error> {
+    ) -> Result<(CryptoHash, Option<ProvedKeyValues>, EncounteredAbsence), Error> {
         // the subquery path contains at least one item.
-        // need to extract the last item, that is the one we'd apply the expected proof
-        // type to TODO: what are the effects of this mut??
         let last_key = subquery_path.remove(subquery_path.len() - 1);
 
-        // now we loop through the rest of the keys
         for subquery_key in subquery_path.into_iter() {
-            // we read the proof for that key
             let (proof_type, subkey_proof) = proof_reader.read_proof()?;
-            // do we care about the proof type, I guess we only allow a merk proof not sized
+            // intermediate proofs are all going to be unsized merk proofs
             if proof_type != ProofType::Merk {
                 return Err(Error::InvalidProof(
                     "expected MERK proof type for intermediate subquery path keys",
                 ));
             }
-            // since the proof is what we expect, we should actually run the proof
             match proof_type {
                 ProofType::Merk => {
                     let mut key_as_query = Query::new();
                     key_as_query.insert_key(subquery_key.to_owned());
 
-                    // actually verify the proof, this tells us if the proof is valid for the query
-                    // if valid it tells is if the query returned an output or just an absence proof
-                    // also tell us the root hash of the merk that the proof was generated from
-                    // this root hash should be the same as that in the element, so we need to
-                    // verify that hence this function needs to take a root hash
-                    // from the source. what does it mean for the result set to
-                    // be none??
                     let (proof_root_hash, result_set) = self.execute_merk_proof(
                         proof_type,
                         &subkey_proof,
@@ -351,21 +320,18 @@ impl ProofVerifier {
                     // should always be some as we force the proof type to be MERK
                     debug_assert!(result_set.is_some(), "{}", true);
 
+                    // result_set being empty means we could not find the given key in the subtree
+                    // which essentially means an absence proof
                     if result_set
                         .as_ref()
                         .expect("result set should always be some for merk proof type")
                         .is_empty()
                     {
-                        // we have an absence proof, for absence proofs we should go no further
-                        // right?? hence we cannot perform any further
-                        // query, this information has to be passed to the
-                        // calling function so they also call continue.
                         // TODO: rename the third parameter to absent value
                         return Ok((proof_root_hash, None, true));
                     }
 
-                    // at this point it is not absent, we just have to check that the merk root hash
-                    // is the same as the expected root hash
+                    // verify that the elements in the subquery path are linked by root hashes.
                     let combined_child_hash = combine_hash(
                         value_hash_fn(&current_value_bytes).value(),
                         &proof_root_hash,
@@ -379,18 +345,13 @@ impl ProofVerifier {
                         ));
                     }
 
-                    // what next, the link has been established, we need to update the expected root
-                    // hash and the current value bytes.
-                    // TODO: dicey, does this work??
+                    // after confirming they are linked use the latest hash values for subsequent
+                    // checks
                     Self::update_root_key_from_subquery_path_element(
                         expected_root_hash,
                         current_value_bytes,
-                        // TODO: move this unwrap above
-                        &result_set.unwrap(),
+                        &result_set.expect("confirmed is some"),
                     )?;
-
-                    // after updating we can continue the loop;
-                    // read the next proof, verify again e.t.c.
                 }
                 _ => {
                     return Err(Error::InvalidProof(
