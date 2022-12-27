@@ -297,7 +297,7 @@ impl ProofVerifier {
         // the subquery path contains at least one item.
         let last_key = subquery_path.remove(subquery_path.len() - 1);
 
-        for subquery_key in subquery_path.into_iter() {
+        for subquery_key in subquery_path.iter() {
             let (proof_type, subkey_proof) = proof_reader.read_proof()?;
             // intermediate proofs are all going to be unsized merk proofs
             if proof_type != ProofType::Merk {
@@ -331,12 +331,10 @@ impl ProofVerifier {
                     }
 
                     // verify that the elements in the subquery path are linked by root hashes.
-                    let combined_child_hash = combine_hash(
-                        value_hash_fn(&current_value_bytes).value(),
-                        &proof_root_hash,
-                    )
-                    .value()
-                    .to_owned();
+                    let combined_child_hash =
+                        combine_hash(value_hash_fn(current_value_bytes).value(), &proof_root_hash)
+                            .value()
+                            .to_owned();
 
                     if combined_child_hash != *expected_root_hash {
                         return Err(Error::InvalidProof(
@@ -384,40 +382,6 @@ impl ProofVerifier {
             _ => Err(Error::InvalidProof(
                 "expected merk or sized merk proof type for subquery path",
             )),
-        }
-    }
-
-    /// Checks that a valid proof showing the existence or absence of the
-    /// subquery key is present
-    fn verify_subquery_key(
-        &mut self,
-        proof_reader: &mut ProofReader,
-        expected_proof_type: ProofType,
-        subquery_key: Vec<u8>,
-    ) -> Result<(CryptoHash, Option<ProvedKeyValues>), Error> {
-        let (proof_type, subkey_proof) = proof_reader.read_proof()?;
-
-        if proof_type != expected_proof_type {
-            return Err(Error::InvalidProof(
-                "unexpected proof type for subquery path",
-            ));
-        }
-
-        match proof_type {
-            ProofType::Merk | ProofType::SizedMerk => {
-                let mut key_as_query = Query::new();
-                key_as_query.insert_key(subquery_key);
-
-                let verification_result = self.execute_merk_proof(
-                    proof_type,
-                    &subkey_proof,
-                    &key_as_query,
-                    key_as_query.left_to_right,
-                )?;
-
-                Ok(verification_result)
-            }
-            _ => Err(Error::InvalidProof("expected merk proof for subquery path")),
         }
     }
 

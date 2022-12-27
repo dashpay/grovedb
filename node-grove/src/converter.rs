@@ -174,7 +174,8 @@ fn js_object_to_query<'a, C: Context<'a>>(
     }
 
     let subquery_path = js_value_to_option::<JsArray, _>(js_object.get(cx, "subqueryPath")?, cx)?
-        .map(|x| js_array_of_buffers_to_vec(x, cx)).transpose();
+        .map(|x| js_array_of_buffers_to_vec(x, cx))
+        .transpose();
     let subquery = js_value_to_option::<JsObject, _>(js_object.get(cx, "subquery")?, cx)?
         .map(|x| js_object_to_query(x, cx))
         .transpose()?;

@@ -181,7 +181,7 @@ impl GroveDb {
 
                     if query.is_some() {
                         if let Some(subquery_path) = &subquery_path {
-                            for first_key in subquery_path.into_iter() {
+                            for first_key in subquery_path.iter() {
                                 let inner_subtree = cost_return_on_error!(
                                     &mut cost,
                                     self.open_subtree(new_path.iter().copied())
@@ -218,64 +218,62 @@ impl GroveDb {
                                 continue;
                             }
                         }
-                    } else {
-                        if let Some(subquery_path) = &mut subquery_path {
-                            if subquery_path.is_empty() {
-                                // nothing to do on this path, since subquery path is empty
-                                // and there is no consecutive subquery value
-                                continue;
-                            }
+                    } else if let Some(subquery_path) = &mut subquery_path {
+                        if subquery_path.is_empty() {
+                            // nothing to do on this path, since subquery path is empty
+                            // and there is no consecutive subquery value
+                            continue;
+                        }
 
-                            let last_key = subquery_path.remove(subquery_path.len() - 1);
+                        let last_key = subquery_path.remove(subquery_path.len() - 1);
 
-                            for subkey in subquery_path.into_iter() {
-                                let inner_subtree = cost_return_on_error!(
-                                    &mut cost,
-                                    self.open_subtree(new_path.iter().copied())
-                                );
-
-                                let mut key_as_query = Query::new();
-                                key_as_query.insert_key(subkey.clone());
-
-                                cost_return_on_error!(
-                                    &mut cost,
-                                    self.generate_and_store_merk_proof(
-                                        new_path.iter().copied(),
-                                        &inner_subtree,
-                                        &key_as_query,
-                                        (None, None),
-                                        ProofType::Merk,
-                                        proofs,
-                                    )
-                                );
-
-                                new_path.push(subkey);
-
-                                // check if the new path points to a valid subtree
-                                // if it does not, we should stop proof generation on this path
-                                if self
-                                    .check_subtree_exists_path_not_found(new_path.clone(), None)
-                                    .unwrap_add_cost(&mut cost)
-                                    .is_err()
-                                {
-                                    encountered_absence = true;
-                                    break;
-                                }
-                            }
-
-                            if encountered_absence {
-                                continue;
-                            }
+                        for subkey in subquery_path.iter() {
+                            let inner_subtree = cost_return_on_error!(
+                                &mut cost,
+                                self.open_subtree(new_path.iter().copied())
+                            );
 
                             let mut key_as_query = Query::new();
-                            key_as_query.insert_key(last_key);
-                            query = Some(key_as_query);
-                        } else {
-                            return Err(Error::CorruptedCodeExecution(
-                                "subquery_path must exist to be in this function",
-                            ))
-                            .wrap_with_cost(cost);
+                            key_as_query.insert_key(subkey.clone());
+
+                            cost_return_on_error!(
+                                &mut cost,
+                                self.generate_and_store_merk_proof(
+                                    new_path.iter().copied(),
+                                    &inner_subtree,
+                                    &key_as_query,
+                                    (None, None),
+                                    ProofType::Merk,
+                                    proofs,
+                                )
+                            );
+
+                            new_path.push(subkey);
+
+                            // check if the new path points to a valid subtree
+                            // if it does not, we should stop proof generation on this path
+                            if self
+                                .check_subtree_exists_path_not_found(new_path.clone(), None)
+                                .unwrap_add_cost(&mut cost)
+                                .is_err()
+                            {
+                                encountered_absence = true;
+                                break;
+                            }
                         }
+
+                        if encountered_absence {
+                            continue;
+                        }
+
+                        let mut key_as_query = Query::new();
+                        key_as_query.insert_key(last_key);
+                        query = Some(key_as_query);
+                    } else {
+                        return Err(Error::CorruptedCodeExecution(
+                            "subquery_path must exist to be in this function",
+                        ))
+                        .wrap_with_cost(cost);
                     }
 
                     let new_path_owned = new_path.iter().map(|a| a.to_vec()).collect();
