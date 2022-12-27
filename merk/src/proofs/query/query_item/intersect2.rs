@@ -6,12 +6,11 @@ use std::{
 // convert every query item to a range set
 use crate::proofs::query::query_item::QueryItem;
 use crate::proofs::query::query_item::{
-    intersect2::RangeSetItem::{Inclusive, Unbounded, Exclusive},
+    intersect2::RangeSetItem::{Exclusive, Inclusive, Unbounded},
     QueryItem::Range,
 };
 
 // TODO: Refactor into nice units
-
 pub struct RangeSetIntersection {
     left: Option<RangeSet>,
     common: Option<RangeSet>,
@@ -73,9 +72,28 @@ impl RangeSet {
 
     pub fn intersect(&self, other: RangeSet) -> RangeSetIntersection {
         // Current version assumes that the range set does not overlap
-        // TODO: Handle non overlapping range sets
-        let (smaller_start, bigger_start) = RangeSetItem::compare_start(&self.start, &other.start);
-        let (larger_end, smaller_end) = RangeSetItem::compare_end(&self.end, &other.end);
+
+        // how to detect non-overlapping sets??
+        // the end of one of the sets is smaller than the start of another
+        // need some kind of ordering function, this is not pretty
+        if self.end < other.start || other.end < self.start {
+            // the sets do not overlap
+            // no common element
+            if self.end < other.start  {
+                // self is at the left
+                return RangeSetIntersection {
+                    left: Some(self.clone()),
+                    common: None,
+                    right: Some(other.clone())
+                }
+            } else {
+                return RangeSetIntersection {
+                    left: Some(other.clone()),
+                    common: None,
+                    right: Some(self.clone())
+                }
+            }
+        }
 
         // need to get 3 things, 3 range sets to be precise, optional range sets
         // how to we perform this intersection
@@ -91,21 +109,31 @@ impl RangeSet {
 
         // if the comparison of the start are not equal then we have value for left
         if self.start != other.start {
+            let (smaller_start, bigger_start) = RangeSetItem::order_items(
+                &self.start,
+                &other.start,
+                self.start.partial_cmp(&other.start),
+            );
             // now we need to know the smaller one, basically perform an
             // ordering and invert the other one
-            intersection_result.left = Some(RangeSet{
+            intersection_result.left = Some(RangeSet {
                 start: smaller_start.clone(),
-                end: bigger_start.invert()
+                end: bigger_start.invert(),
             });
             intersection_result.common.expect("set above").start = bigger_start.clone();
         }
 
         if self.end != other.end {
+            let (smaller_end, larger_end) = RangeSetItem::order_items(
+                &self.end,
+                &other.end,
+                self.end.partial_cmp(&other.end)
+            );
             // now we need to know the bigger one and basically perform an
             // inversion of the other one
-            intersection_result.right = Some(RangeSet{
+            intersection_result.right = Some(RangeSet {
                 start: smaller_end.invert(),
-                end: larger_end.clone()
+                end: larger_end.clone(),
             });
             intersection_result.common.expect("set above").end = smaller_end.clone()
         }
@@ -115,7 +143,6 @@ impl RangeSet {
 }
 
 /// Represents all possible value types in a range set
-// TODO: need specific unbounded values??
 #[derive(Eq, PartialEq, Clone)]
 pub enum RangeSetItem {
     Unbounded,
@@ -132,64 +159,46 @@ impl RangeSetItem {
         }
     }
 
-    // TODO: combine start and end in one function by using ordering to abstract difference
-    pub fn compare_start(item_one: &RangeSetItem, item_two: &RangeSetItem) -> (&RangeSetItem, &RangeSetItem) {
-        // TODO: add proper comments
-        match (item_one, item_two) {
-            (Unbounded, _) => (item_one, item_two),
-            (_, Unbounded) => (item_two, item_one),
+    // need to create a new function that takes an ordering and returns a tuple with
+    // the elements
+    pub fn order_items(
+        item_one: &RangeSetItem,
+        item_two: &RangeSetItem,
+        order: Ordering,
+    ) -> (&RangeSetItem, &RangeSetItem) {
+        match order {
+            Ordering::Less => (item_one, item_two),
+            _ => (item_two, item_one),
+        }
+    }
+}
+
+impl PartialOrd for RangeSetItem {
+    fn partial_cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Unbounded, _) => Ordering::Less,
+            (_, Unbounded) => Ordering::Greater,
             (Inclusive(v1), Inclusive(v2)) | (Exclusive(v1), Exclusive(v2)) => {
                 if v1 < v2 {
-                    (item_one, item_two)
+                    Ordering::Less
                 } else {
-                    (item_two, item_one)
+                    Ordering::Greater
                 }
             }
             (Inclusive(v1), Exclusive(v2)) => {
-               if v1 < v2 || v1 == v2{
-                   (item_one, item_two)
-               } else {
-                   (item_two, item_one)
-               }
+                if v1 < v2 || v1 == v2 {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
             }
             (Exclusive(v1), Inclusive(v2)) => {
                 if v1 < v2 {
-                    (item_one, item_two)
+                    Ordering::Less
                 } else {
                     // they are equal of v2 is less
                     // inclusive always wins
-                    (item_two, item_one)
-                }
-            }
-        }
-    }
-
-    pub fn compare_end(item_one: &RangeSetItem, item_two: &RangeSetItem) -> (&RangeSetItem, &RangeSetItem) {
-        // TODO: add proper comments
-        match (item_one, item_two) {
-            (Unbounded, _) => (item_one, item_two),
-            (_, Unbounded) => (item_two, item_one),
-            (Inclusive(v1), Inclusive(v2)) | (Exclusive(v1), Exclusive(v2)) => {
-                if v1 > v2 {
-                    (item_one, item_two)
-                } else {
-                    (item_two, item_one)
-                }
-            }
-            (Inclusive(v1), Exclusive(v2)) => {
-                if v1 > v2 || v1 == v2{
-                    (item_one, item_two)
-                } else {
-                    (item_two, item_one)
-                }
-            }
-            (Exclusive(v1), Inclusive(v2)) => {
-                if v1 > v2 {
-                    (item_one, item_two)
-                } else {
-                    // they are equal of v2 is greater
-                    // inclusive always wins
-                    (item_two, item_one)
+                    Ordering::Greater
                 }
             }
         }
