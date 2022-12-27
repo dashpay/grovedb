@@ -394,7 +394,7 @@ fn test_get_range_query_with_unique_subquery_with_non_unique_null_values() {
 
     query.add_conditional_subquery(
         QueryItem::Key(b"".to_vec()),
-        Some(b"\0".to_vec()),
+        Some(vec![b"\0".to_vec()]),
         Some(subquery),
     );
 
@@ -438,7 +438,7 @@ fn test_get_range_query_with_unique_subquery_ignore_non_unique_null_values() {
 
     query.add_conditional_subquery(
         QueryItem::Key(b"".to_vec()),
-        Some(b"\0".to_vec()),
+        Some(vec![b"\0".to_vec()]),
         Some(subquery),
     );
 

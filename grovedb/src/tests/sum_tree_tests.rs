@@ -76,7 +76,7 @@ fn test_sum_tree_behaves_like_regular_tree() {
     assert_eq!(root_hash, db.grove_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 1);
     assert_eq!(
-        Element::deserialize(&result_set[0].1).expect("should deserialize element"),
+        Element::deserialize(&result_set[0].value).expect("should deserialize element"),
         Element::new_item(vec![3])
     );
 }
@@ -143,7 +143,7 @@ fn test_sum_item_behaves_like_regular_item() {
     assert_eq!(root_hash, db.grove_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 1);
     let element_from_proof =
-        Element::deserialize(&result_set[0].1).expect("should deserialize element");
+        Element::deserialize(&result_set[0].value).expect("should deserialize element");
     assert_eq!(element_from_proof, Element::new_sum_item(5));
     assert_eq!(element_from_proof.sum_value(), Some(5));
 }

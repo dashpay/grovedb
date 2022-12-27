@@ -3,6 +3,7 @@ use costs::cost_return_on_error_default;
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+use merk::proofs::query::Path;
 #[cfg(feature = "full")]
 use merk::{
     proofs::{encode_into, Node, Op},
@@ -147,10 +148,10 @@ impl GroveDb {
         let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query)
             .unwrap_add_cost(&mut cost);
         while let Some((key, value_bytes)) = kv_iterator.next_kv().unwrap_add_cost(&mut cost) {
-            let (subquery_key, subquery_value) =
+            let (mut subquery_path, subquery_value) =
                 Element::subquery_paths_for_sized_query(&query.query, &key);
 
-            if subquery_value.is_none() && subquery_key.is_none() {
+            if subquery_value.is_none() && subquery_path.is_none() {
                 continue;
             }
 
@@ -183,37 +184,77 @@ impl GroveDb {
                     let mut query = subquery_value;
 
                     if query.is_some() {
-                        if subquery_key.is_some() {
-                            // prove the subquery key first
-                            let inner_subtree = cost_return_on_error!(
-                                &mut cost,
-                                self.open_subtree(new_path.iter().copied())
-                            );
+                        if let Some(subquery_path) = &subquery_path {
+                            // prove the subquery path first
+                            for first_key in subquery_path.into_iter() {
+                                let inner_subtree = cost_return_on_error!(
+                                    &mut cost,
+                                    self.open_subtree(new_path.iter().copied())
+                                );
 
-                            let mut key_as_query = Query::new();
-                            key_as_query.insert_key(subquery_key.clone().unwrap());
+                                let mut key_as_query = Query::new();
+                                key_as_query.insert_key(first_key.clone());
 
-                            cost_return_on_error!(
-                                &mut cost,
-                                self.generate_and_store_merk_proof(
-                                    new_path.iter().copied(),
-                                    &inner_subtree,
-                                    &key_as_query,
-                                    (None, None),
-                                    ProofType::Merk,
-                                    proofs,
-                                )
-                            );
+                                cost_return_on_error!(
+                                    &mut cost,
+                                    self.generate_and_store_merk_proof(
+                                        new_path.iter().copied(),
+                                        &inner_subtree,
+                                        &key_as_query,
+                                        (None, None),
+                                        ProofType::Merk,
+                                        proofs,
+                                    )
+                                );
 
-                            new_path.push(subquery_key.as_ref().unwrap());
+                                new_path.push(first_key);
+                            }
                         }
                     } else {
-                        let mut key_as_query = Query::new();
-                        key_as_query.insert_key(subquery_key.unwrap());
-                        query = Some(key_as_query);
+                        if let Some(subquery_path) = &mut subquery_path {
+                            if subquery_path.is_empty() {
+                                return Err(Error::CorruptedPath("subquery_path can not be empty"))
+                                    .wrap_with_cost(cost);
+                            }
+
+                            let last_key = subquery_path.remove(subquery_path.len() - 1);
+                            // prove the subquery path first
+                            for first_key in subquery_path.into_iter() {
+                                let inner_subtree = cost_return_on_error!(
+                                    &mut cost,
+                                    self.open_subtree(new_path.iter().copied())
+                                );
+
+                                let mut key_as_query = Query::new();
+                                key_as_query.insert_key(first_key.clone());
+
+                                cost_return_on_error!(
+                                    &mut cost,
+                                    self.generate_and_store_merk_proof(
+                                        new_path.iter().copied(),
+                                        &inner_subtree,
+                                        &key_as_query,
+                                        (None, None),
+                                        ProofType::Merk,
+                                        proofs,
+                                    )
+                                );
+
+                                new_path.push(first_key);
+                            }
+                            let mut key_as_query = Query::new();
+                            key_as_query.insert_key(last_key);
+                            query = Some(key_as_query);
+                        } else {
+                            return Err(Error::CorruptedCodeExecution(
+                                "subquery_path must exist to be in this function",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
                     }
 
-                    let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
+                    let new_path_owned = new_path.iter().map(|a| a.to_vec()).collect();
+
                     let new_path_query = PathQuery::new_unsized(new_path_owned, query.unwrap());
 
                     if self

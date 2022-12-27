@@ -728,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn test_query_raw_keys_options_with_subquery_key() {
+    fn test_query_raw_keys_options_with_subquery_path() {
         let db = make_test_grovedb();
 
         db.insert([TEST_LEAF], b"", Element::empty_tree(), None, None)
@@ -941,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn test_query_raw_keys_options_with_subquery_and_subquery_key() {
+    fn test_query_raw_keys_options_with_subquery_and_subquery_path() {
         let db = make_test_grovedb();
 
         db.insert([TEST_LEAF], b"", Element::empty_tree(), None, None)
@@ -1151,7 +1151,7 @@ mod tests {
         query.set_subquery(sub_query);
         query.add_conditional_subquery(
             QueryItem::Key(b"2".to_vec()),
-            Some(b"1".to_vec()),
+            Some(vec![b"1".to_vec()]),
             Some(conditional_sub_query),
         );
         let path = vec![TEST_LEAF.to_vec()];
@@ -1307,7 +1307,7 @@ mod tests {
         query.set_subquery(sub_query);
         query.add_conditional_subquery(
             QueryItem::Key(b"2".to_vec()),
-            Some(b"1".to_vec()),
+            Some(vec![b"1".to_vec()]),
             Some(conditional_sub_query),
         );
         let path = vec![TEST_LEAF.to_vec()];

@@ -158,7 +158,7 @@ impl Tree {
         let mut cost = OperationCost::default();
 
         if self.child(left).is_some() {
-            return Err(Error::CorruptionError(
+            return Err(Error::CorruptedCodeExecution(
                 "Tried to attach to left child, but it is already Some",
             ))
             .wrap_with_cost(cost);

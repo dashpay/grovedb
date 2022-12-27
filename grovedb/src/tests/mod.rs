@@ -559,15 +559,15 @@ fn test_element_with_flags() {
     assert_eq!(root_hash, db.grove_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
     assert_eq!(
-        Element::deserialize(&result_set[0].1).expect("should deserialize element"),
+        Element::deserialize(&result_set[0].value).expect("should deserialize element"),
         Element::Item(b"flagless".to_vec(), None)
     );
     assert_eq!(
-        Element::deserialize(&result_set[1].1).expect("should deserialize element"),
+        Element::deserialize(&result_set[1].value).expect("should deserialize element"),
         Element::Item(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec()))
     );
     assert_eq!(
-        Element::deserialize(&result_set[2].1)
+        Element::deserialize(&result_set[2].value)
             .expect("should deserialize element")
             .get_flags(),
         &Some([1].to_vec())
@@ -1526,7 +1526,7 @@ fn test_path_query_proofs_with_default_subquery() {
 
 #[cfg(feature = "full")]
 #[test]
-fn test_path_query_proofs_with_subquery_key() {
+fn test_path_query_proofs_with_subquery_path() {
     let temp_db = make_deep_tree();
 
     let mut query = Query::new();
@@ -1623,7 +1623,7 @@ fn test_path_query_proofs_with_conditional_subquery() {
 
     // TODO: Is this defined behaviour
     for (index, key) in keys.iter().enumerate() {
-        assert_eq!(&result_set[index].0, key);
+        assert_eq!(&result_set[index].key, key);
     }
 
     // Default + Conditional subquery
@@ -1703,7 +1703,6 @@ fn test_path_query_proofs_with_sized_query() {
         Some(final_conditional_subquery),
     );
     subquery.set_subquery(final_default_subquery);
-    // subquery.set_subquery_key(b"key3".to_vec());
 
     query.set_subquery(subquery);
 

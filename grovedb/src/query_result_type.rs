@@ -3,6 +3,8 @@ use std::{
     vec::IntoIter,
 };
 
+pub use merk::proofs::query::{Key, Path, PathKey};
+
 use crate::{Element, Error};
 
 #[derive(Copy, Clone)]
@@ -161,24 +163,14 @@ impl QueryResultElement {
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
-/// Type alias for a path.
-pub type Path = Vec<Vec<u8>>;
-
-#[cfg(any(feature = "full", feature = "verify"))]
-/// Type alias for a Key.
-pub type Key = Vec<u8>;
-
-#[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for key-element common pattern.
 pub type KeyElementPair = (Key, Element);
 
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for key optional_element common pattern.
 pub type KeyOptionalElementPair = (Key, Option<Element>);
 
 #[cfg(any(feature = "full", feature = "verify"))]
-/// Type alias for path-key common pattern.
-pub type PathKey = (Path, Key);
-
 /// Type alias for path-key-element common pattern.
 pub type PathKeyElementTrio = (Path, Key, Element);
 

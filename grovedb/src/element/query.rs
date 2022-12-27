@@ -10,12 +10,16 @@ use merk::proofs::Query;
 #[cfg(feature = "full")]
 use storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 
+use crate::query_result_type::Path;
 #[cfg(feature = "full")]
 use crate::{
     element::helpers::raw_decode,
     query_result_type::{
         KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType,
-        QueryResultType::QueryElementResultType,
+        QueryResultType::{
+            QueryElementResultType, QueryKeyElementPairResultType,
+            QueryPathKeyElementTrioResultType,
+        },
     },
     util::{merk_optional_tx, storage_context_optional_tx},
     Error, PathQuery, TransactionArg,
@@ -33,7 +37,7 @@ where
     pub key: Option<&'a [u8]>,
     pub element: Element,
     pub path: &'a [&'a [u8]],
-    pub subquery_key: Option<Vec<u8>>,
+    pub subquery_path: Option<Path>,
     pub subquery: Option<Query>,
     pub left_to_right: bool,
     pub allow_get_raw: bool,
@@ -237,7 +241,7 @@ impl Element {
             key,
             element,
             path,
-            subquery_key,
+            subquery_path,
             subquery,
             left_to_right,
             allow_get_raw,
@@ -251,14 +255,14 @@ impl Element {
             let key = cost_return_on_error_no_add!(
                 &cost,
                 key.ok_or(Error::MissingParameter(
-                    "the key must be provided when using a subquery key",
+                    "the key must be provided when using a subquery path",
                 ))
             );
             path_vec.push(key);
 
             if let Some(subquery) = subquery {
-                if let Some(subquery_key) = &subquery_key {
-                    path_vec.push(subquery_key.as_slice());
+                if let Some(subquery_path) = &subquery_path {
+                    path_vec.extend(subquery_path.iter().map(|k| k.as_slice()));
                 }
 
                 let inner_query = SizedQuery::new(subquery, *limit, *offset);
@@ -277,78 +281,91 @@ impl Element {
                     *offset -= skipped;
                 }
                 results.append(&mut sub_elements.elements);
-            } else if let Some(subquery_key) = subquery_key {
+            } else if let Some(subquery_path) = subquery_path {
                 if offset.unwrap_or(0) == 0 {
-                    match result_type {
-                        QueryResultType::QueryElementResultType => {
-                            merk_optional_tx!(
-                                &mut cost,
-                                storage,
-                                path_vec.iter().copied(),
-                                transaction,
-                                subtree,
-                                {
-                                    results.push(QueryResultElement::ElementResultItem(
-                                        cost_return_on_error!(
-                                            &mut cost,
-                                            Element::get_with_absolute_refs(
-                                                &subtree,
-                                                path_vec.as_slice(),
-                                                subquery_key.as_slice()
-                                            )
-                                        ),
-                                    ));
-                                }
-                            );
-                        }
-                        QueryResultType::QueryKeyElementPairResultType => {
-                            merk_optional_tx!(
-                                &mut cost,
-                                storage,
-                                path_vec.iter().copied(),
-                                transaction,
-                                subtree,
-                                {
-                                    results.push(QueryResultElement::KeyElementPairResultItem((
-                                        subquery_key.clone(),
-                                        cost_return_on_error!(
-                                            &mut cost,
-                                            Element::get_with_absolute_refs(
-                                                &subtree,
-                                                path_vec.as_slice(),
-                                                subquery_key.as_slice()
-                                            )
-                                        ),
-                                    )));
-                                }
-                            );
-                        }
-                        QueryResultType::QueryPathKeyElementTrioResultType => {
-                            merk_optional_tx!(
-                                &mut cost,
-                                storage,
-                                path_vec.iter().copied(),
-                                transaction,
-                                subtree,
-                                {
-                                    results.push(QueryResultElement::PathKeyElementTrioResultItem(
-                                        (
-                                            path_vec.iter().map(|p| p.to_vec()).collect(),
-                                            subquery_key.clone(),
+                    if let Some((subquery_path_last_key, subquery_path_front_keys)) =
+                        &subquery_path.split_last()
+                    {
+                        path_vec.extend(subquery_path_front_keys.iter().map(|k| k.as_slice()));
+                        match result_type {
+                            QueryElementResultType => {
+                                merk_optional_tx!(
+                                    &mut cost,
+                                    storage,
+                                    path_vec.iter().copied(),
+                                    transaction,
+                                    subtree,
+                                    {
+                                        results.push(QueryResultElement::ElementResultItem(
                                             cost_return_on_error!(
                                                 &mut cost,
                                                 Element::get_with_absolute_refs(
                                                     &subtree,
                                                     path_vec.as_slice(),
-                                                    subquery_key.as_slice()
+                                                    subquery_path_last_key.as_slice()
                                                 )
                                             ),
-                                        ),
-                                    ));
-                                }
-                            );
+                                        ));
+                                    }
+                                );
+                            }
+                            QueryKeyElementPairResultType => {
+                                merk_optional_tx!(
+                                    &mut cost,
+                                    storage,
+                                    path_vec.iter().copied(),
+                                    transaction,
+                                    subtree,
+                                    {
+                                        results.push(QueryResultElement::KeyElementPairResultItem(
+                                            (
+                                                subquery_path_last_key.to_vec(),
+                                                cost_return_on_error!(
+                                                    &mut cost,
+                                                    Element::get_with_absolute_refs(
+                                                        &subtree,
+                                                        path_vec.as_slice(),
+                                                        subquery_path_last_key.as_slice()
+                                                    )
+                                                ),
+                                            ),
+                                        ));
+                                    }
+                                );
+                            }
+                            QueryPathKeyElementTrioResultType => {
+                                merk_optional_tx!(
+                                    &mut cost,
+                                    storage,
+                                    path_vec.iter().copied(),
+                                    transaction,
+                                    subtree,
+                                    {
+                                        results.push(
+                                            QueryResultElement::PathKeyElementTrioResultItem((
+                                                path_vec.iter().map(|p| p.to_vec()).collect(),
+                                                subquery_path_last_key.to_vec(),
+                                                cost_return_on_error!(
+                                                    &mut cost,
+                                                    Element::get_with_absolute_refs(
+                                                        &subtree,
+                                                        path_vec.as_slice(),
+                                                        subquery_path_last_key.as_slice()
+                                                    )
+                                                ),
+                                            )),
+                                        );
+                                    }
+                                );
+                            }
                         }
-                    }
+                    } else {
+                        return Err(Error::CorruptedCodeExecution(
+                            "subquery_paths can not be empty",
+                        ))
+                        .wrap_with_cost(cost);
+                    };
+
                     if let Some(limit) = limit {
                         *limit -= 1;
                     }
@@ -364,7 +381,7 @@ impl Element {
                         key: Some(key),
                         element,
                         path,
-                        subquery_key,
+                        subquery_path,
                         subquery,
                         left_to_right,
                         allow_get_raw,
@@ -376,7 +393,7 @@ impl Element {
                 );
             } else {
                 return Err(Error::InvalidPath(
-                    "you must provide a subquery or a subquery_key when interacting with a Tree \
+                    "you must provide a subquery or a subquery_path when interacting with a Tree \
                      of trees"
                         .to_owned(),
                 ))
@@ -391,7 +408,7 @@ impl Element {
                     key,
                     element,
                     path,
-                    subquery_key,
+                    subquery_path,
                     subquery,
                     left_to_right,
                     allow_get_raw,
@@ -409,21 +426,21 @@ impl Element {
     pub fn subquery_paths_for_sized_query(
         sized_query: &SizedQuery,
         key: &[u8],
-    ) -> (Option<Vec<u8>>, Option<Query>) {
+    ) -> (Option<Path>, Option<Query>) {
         for (query_item, subquery_branch) in &sized_query.query.conditional_subquery_branches {
             if query_item.contains(key) {
-                let subquery_key = subquery_branch.subquery_key.clone();
+                let subquery_path = subquery_branch.subquery_path.clone();
                 let subquery = subquery_branch
                     .subquery
                     .as_ref()
                     .map(|query| *query.clone());
-                return (subquery_key, subquery);
+                return (subquery_path, subquery);
             }
         }
-        let subquery_key = sized_query
+        let subquery_path = sized_query
             .query
             .default_subquery_branch
-            .subquery_key
+            .subquery_path
             .clone();
         let subquery = sized_query
             .query
@@ -431,7 +448,7 @@ impl Element {
             .subquery
             .as_ref()
             .map(|query| *query.clone());
-        (subquery_key, subquery)
+        (subquery_path, subquery)
     }
 
     #[cfg(feature = "full")]
@@ -465,7 +482,7 @@ impl Element {
                 );
                 match element_res {
                     Ok(element) => {
-                        let (subquery_key, subquery) =
+                        let (subquery_path, subquery) =
                             Self::subquery_paths_for_sized_query(sized_query, key);
                         add_element_function(PathQueryPushArgs {
                             storage,
@@ -473,7 +490,7 @@ impl Element {
                             key: Some(key.as_slice()),
                             element,
                             path,
-                            subquery_key,
+                            subquery_path,
                             subquery,
                             left_to_right: sized_query.query.left_to_right,
                             allow_get_raw,
@@ -517,7 +534,7 @@ impl Element {
                         .key()
                         .unwrap_add_cost(&mut cost)
                         .expect("key should exist");
-                    let (subquery_key, subquery) =
+                    let (subquery_path, subquery) =
                         Self::subquery_paths_for_sized_query(sized_query, key);
                     cost_return_on_error!(
                         &mut cost,
@@ -527,7 +544,7 @@ impl Element {
                             key: Some(key),
                             element,
                             path,
-                            subquery_key,
+                            subquery_path,
                             subquery,
                             left_to_right: sized_query.query.left_to_right,
                             allow_get_raw,

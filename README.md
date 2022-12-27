@@ -101,7 +101,7 @@ The ```PathQuery``` allows for more complex queries with optional restrictions o
             query: Query
                 items: [query_item_1, query_item_2, ...],
                 default_subquery_branch: SubqueryBranch
-                    subquery_key: Optional<key>
+                    subquery_path: Optional<key>
                     subquery_value: Optional<Query>
                 conditional_subquery_branches: Map<QueryItem, SubqueryBranch>
                         
@@ -123,18 +123,18 @@ Before describing ```default_subquery_branch``` and ```conditional_subquery_bran
 
 #### Subquery Branches
 ```
-    subquery_key: Optional<Key>
+    subquery_path: Optional<Key>
     subquery_value: Optional<Query>
 ```
 **Cases**  
-- ```subquery_key: true```, ```subquery_value: false```  
-The node with the subquery key is selected and returned as the result set.
+- ```subquery_path: true```, ```subquery_value: false```  
+The node with the subquery path is selected and returned as the result set.
 
-- ```subquery_key: false```, ```subquery_value: true```  
+- ```subquery_path: false```, ```subquery_value: true```  
 The query held in subquery_value is applied directly to the subtree, and the result is returned as the result set.
 
-- ```subquery_key: true```, ```subquery_value: true``` 
-First the node with the subquery key is selected and set as new context.  
+- ```subquery_path: true```, ```subquery_value: true``` 
+First the node with the subquery path is selected and set as new context.  
 Then, the subquery value is applied to this new context, and the result is returned as the result set.
 
 The subquery branch is used on a single node but can be applied to the result set of a previous query with the use of **default_subquery_branch** and **conditional_subquery_branches**:

@@ -17,8 +17,8 @@ pub enum Error {
     #[error("invalid input error {0}")]
     InvalidInputError(&'static str),
 
-    #[error("corruption error {0}")]
-    CorruptionError(&'static str),
+    #[error("corrupted code execution error {0}")]
+    CorruptedCodeExecution(&'static str),
 
     #[error("chunking error {0}")]
     ChunkingError(&'static str),

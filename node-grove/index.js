@@ -241,7 +241,7 @@ class GroveDB {
 /**
  * @typedef Query
  * @property {Array} items
- * @property {Buffer|null} subqueryKey
+ * @property {Array} subqueryPath
  * @property {Query|null} subquery
  * @property {boolean| null} leftToRight
  */
