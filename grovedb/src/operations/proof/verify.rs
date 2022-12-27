@@ -1,15 +1,16 @@
-use merk::proofs::query::{Path, ProvedKeyValue};
+use merk::proofs::query::Path;
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::{
+    CryptoHash,
     proofs::Query,
     tree::{combine_hash, value_hash as value_hash_fn},
-    CryptoHash,
 };
+use merk::proofs::query::verify::ProvedKeyValue;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{
-    operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
-    Element, Error, GroveDb, PathQuery,
+    Element,
+    Error, GroveDb, operations::proof::util::{EMPTY_TREE_HASH, ProofReader, ProofType, ProofType::AbsentPath}, PathQuery,
 };
 
 #[cfg(any(feature = "full", feature = "verify"))]
