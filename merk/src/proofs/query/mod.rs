@@ -108,7 +108,7 @@ impl Query {
                         // push the key to the path
                         path.push(key);
                         // push the subquery path to the path
-                        path.extend(subquery_path.into_iter().cloned());
+                        path.extend(subquery_path.iter().cloned());
                         // recurse onto the lower level
                         let added_here =
                             subquery.terminal_keys(path, max_results - current_len, result)?;
@@ -127,7 +127,7 @@ impl Query {
                         // and set the tail of the subquery path as the terminal key
                         path.push(key);
                         if let Some((last_key, front_keys)) = subquery_path.split_last() {
-                            path.extend(front_keys.into_iter().cloned());
+                            path.extend(front_keys.iter().cloned());
                             result.push((path, last_key.clone()));
                         } else {
                             return Err(Error::CorruptedCodeExecution(
@@ -174,7 +174,7 @@ impl Query {
                         // push the key to the path
                         path.push(key);
                         // push the subquery path to the path
-                        path.extend(subquery_path.into_iter().cloned());
+                        path.extend(subquery_path.iter().cloned());
                         // recurse onto the lower level
                         let added_here =
                             subquery.terminal_keys(path, max_results - current_len, result)?;
@@ -193,7 +193,7 @@ impl Query {
                         // and set the tail of the subquery path as the terminal key
                         path.push(key);
                         if let Some((last_key, front_keys)) = subquery_path.split_last() {
-                            path.extend(front_keys.into_iter().cloned());
+                            path.extend(front_keys.iter().cloned());
                             result.push((path, last_key.clone()));
                         } else {
                             return Err(Error::CorruptedCodeExecution(
@@ -1863,8 +1863,10 @@ mod test {
             .expect("verify failed");
 
         let mut values = std::collections::HashMap::new();
-        for (key, value, _) in result.result_set {
-            assert!(values.insert(key, value).is_none());
+        for proved_value in result.result_set {
+            assert!(values
+                .insert(proved_value.key, proved_value.value)
+                .is_none());
         }
 
         for (key, expected_value) in keys.iter().zip(expected_result.iter()) {
