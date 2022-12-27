@@ -52,7 +52,8 @@ impl GroveDb {
         match subtree_exists {
             Ok(_) => {}
             Err(_) => {
-                // subtree at the given path doesn't exists, prove the absent path
+                // subtree at the given path doesn't exists, prove that this path
+                // doesn't point to a valid subtree
                 write_to_vec(&mut proof_result, &[ProofType::AbsentPath.into()]);
                 let mut current_path: Vec<&[u8]> = vec![];
 
@@ -140,6 +141,7 @@ impl GroveDb {
 
         let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query)
             .unwrap_add_cost(&mut cost);
+
         while let Some((key, value_bytes)) = kv_iterator.next_kv().unwrap_add_cost(&mut cost) {
             let mut encountered_absence = false;
             let (mut subquery_path, subquery_value) =
@@ -172,21 +174,13 @@ impl GroveDb {
                         );
                     }
 
-                    // the key exists cause we use the iter to get it
-                    // hence new_path must exist
                     let mut new_path = path.clone();
                     new_path.push(key.as_ref());
 
                     let mut query = subquery_value;
 
-                    // query has a value
                     if query.is_some() {
-                        // and subquery path also has a value
                         if let Some(subquery_path) = &subquery_path {
-                            // prove the subquery path first
-                            // we need to be sure that the new path exists
-                            // if it does not exist, then we continue as there is no need for
-                            // continuous proof
                             for first_key in subquery_path.into_iter() {
                                 let inner_subtree = cost_return_on_error!(
                                     &mut cost,
@@ -208,7 +202,6 @@ impl GroveDb {
                                     )
                                 );
 
-                                // we need to check if this new path exists
                                 new_path.push(first_key);
 
                                 if self
@@ -228,23 +221,21 @@ impl GroveDb {
                     } else {
                         if let Some(subquery_path) = &mut subquery_path {
                             if subquery_path.is_empty() {
+                                // nothing to do on this path, since subquery path is empty
+                                // and there is no consecutive subquery value
                                 continue;
-                                // return Err(Error::CorruptedPath("
-                                // subquery_path can not be empty"))
-                                //     .wrap_with_cost(cost);
                             }
 
                             let last_key = subquery_path.remove(subquery_path.len() - 1);
-                            // prove the subquery path first
-                            // TODO: Handle subquery path not pointing to valid subtree
-                            for first_key in subquery_path.into_iter() {
+
+                            for subkey in subquery_path.into_iter() {
                                 let inner_subtree = cost_return_on_error!(
                                     &mut cost,
                                     self.open_subtree(new_path.iter().copied())
                                 );
 
                                 let mut key_as_query = Query::new();
-                                key_as_query.insert_key(first_key.clone());
+                                key_as_query.insert_key(subkey.clone());
 
                                 cost_return_on_error!(
                                     &mut cost,
@@ -258,8 +249,10 @@ impl GroveDb {
                                     )
                                 );
 
-                                new_path.push(first_key);
+                                new_path.push(subkey);
 
+                                // check if the new path points to a valid subtree
+                                // if it does not, we should stop proof generation on this path
                                 if self
                                     .check_subtree_exists_path_not_found(new_path.clone(), None)
                                     .unwrap_add_cost(&mut cost)
