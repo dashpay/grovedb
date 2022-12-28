@@ -17,17 +17,17 @@ pub struct RangeSetIntersection {
     theirs_right: Option<RangeSet>,
 }
 
-impl RangeSetIntersection {
-    pub fn to_query_item_intersection_result(&self) -> QueryItemIntersectionResult {
-        QueryItemIntersectionResult {
-            in_both: self.in_both.as_ref().map(|a| a.to_query_item()),
-            ours_left: self.ours_left.as_ref().map(|a| a.to_query_item()),
-            ours_right: self.ours_right.as_ref().map(|a| a.to_query_item()),
-            theirs_left: self.theirs_left.as_ref().map(|a| a.to_query_item()),
-            theirs_right: self.theirs_right.as_ref().map(|a| a.to_query_item()),
-        }
-    }
-}
+// impl RangeSetIntersection {
+//     pub fn to_query_item_intersection_result(&self) -> QueryItemIntersectionResult {
+//         QueryItemIntersectionResult {
+//             in_both: self.in_both.as_ref().map(|a| a.to_query_item()),
+//             ours_left: self.ours_left.as_ref().map(|a| a.to_query_item()),
+//             ours_right: self.ours_right.as_ref().map(|a| a.to_query_item()),
+//             theirs_left: self.theirs_left.as_ref().map(|a| a.to_query_item()),
+//             theirs_right: self.theirs_right.as_ref().map(|a| a.to_query_item()),
+//         }
+//     }
+// }
 
 /// Concise query item representation
 #[derive(Clone)]
@@ -42,6 +42,18 @@ pub struct QueryItemIntersectionResult {
     pub ours_right: Option<QueryItem>,
     pub theirs_left: Option<QueryItem>,
     pub theirs_right: Option<QueryItem>,
+}
+
+impl From<RangeSetIntersection> for QueryItemIntersectionResult {
+    fn from(range_set_intersection: RangeSetIntersection) -> Self {
+        Self {
+            in_both: range_set_intersection.in_both.map(|a| a.to_query_item()),
+            ours_left: range_set_intersection.ours_left.map(|a| a.to_query_item()),
+            ours_right: range_set_intersection.ours_right.map(|a| a.to_query_item()),
+            theirs_left: range_set_intersection.theirs_left.map(|a| a.to_query_item()),
+            theirs_right: range_set_intersection.theirs_right.map(|a| a.to_query_item()),
+        }
+    }
 }
 
 impl QueryItemIntersectionResult {
