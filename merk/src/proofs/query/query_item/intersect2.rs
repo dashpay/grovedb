@@ -9,11 +9,24 @@ use crate::proofs::query::query_item::{
 };
 
 // TODO: Refactor into nice units
-
 pub struct RangeSetIntersection {
-    left: Option<RangeSet>,
-    common: Option<RangeSet>,
-    right: Option<RangeSet>,
+    in_both: Option<RangeSet>,
+    ours_left: Option<RangeSet>,
+    ours_right: Option<RangeSet>,
+    theirs_left: Option<RangeSet>,
+    theirs_right: Option<RangeSet>,
+}
+
+impl RangeSetIntersection {
+    pub fn to_query_item_intersection_result(&self) -> QueryItemIntersectionResult {
+        QueryItemIntersectionResult {
+            in_both: self.in_both.map(|a| a.to_query_item()),
+            ours_left: self.ours_left.map(|a| a.to_query_item()),
+            ours_right: self.ours_right.map(|a| a.to_query_item()),
+            theirs_left: self.theirs_left.map(|a| a.to_query_item()),
+            theirs_right: self.theirs_right.map(|a| a.to_query_item()),
+        }
+    }
 }
 
 /// Concise query item representation
@@ -98,24 +111,25 @@ impl RangeSet {
             if self.end < other.start {
                 // self is at the left
                 return RangeSetIntersection {
-                    left: Some(self.clone()),
-                    common: None,
-                    right: Some(other.clone()),
+                    in_both: None,
+                    ours_left: Some(self.clone()),
+                    ours_right: None,
+                    theirs_right: Some(other.clone()),
+                    theirs_left: None,
                 };
             } else {
                 return RangeSetIntersection {
-                    left: Some(other.clone()),
-                    common: None,
-                    right: Some(self.clone()),
+                    in_both: None,
+                    ours_left: None,
+                    ours_right: Some(self.clone()),
+                    theirs_left: Some(other.clone()),
+                    theirs_right: None,
                 };
             }
         }
 
-        let (smaller_start, bigger_start) = RangeSetItem::order_items(
-            &self.start,
-            &other.start,
-            self.start.cmp(&other.start),
-        );
+        let (smaller_start, bigger_start) =
+            RangeSetItem::order_items(&self.start, &other.start, self.start.cmp(&other.start));
 
         let (smaller_end, larger_end) =
             RangeSetItem::order_items(&self.end, &other.end, self.end.cmp(&other.end));
@@ -127,35 +141,53 @@ impl RangeSet {
 
         // assume they are equal and progressively update the common boundary
         let mut intersection_result = RangeSetIntersection {
-            left: None,
-            common: Some(self.clone()),
-            right: None,
+            in_both: Some(self.clone()),
+            ours_left: None,
+            ours_right: None,
+            theirs_left: None,
+            theirs_right: None,
         };
 
         // if the comparison of the start are not equal then we have value for left
         if self.start != other.start {
-            // now we need to know the smaller one, basically perform an
-            // ordering and invert the other one
-            intersection_result.left = Some(RangeSet {
-                start: smaller_start.clone(),
-                end: bigger_start.invert(),
-            });
-            // intersection_result.common.expect("set above").start = bigger_start.clone();
+            if self.start == smaller_start {
+                // ours left
+                intersection_result.ours_left = Some(RangeSet {
+                    start: smaller_start.clone(),
+                    end: bigger_start.invert(),
+                });
+            } else {
+                intersection_result.theirs_left = Some(RangeSet {
+                    start: smaller_start.clone(),
+                    end: bigger_start.invert(),
+                });
+            }
+            // intersection_result.common.expect("set above").start =
+            // bigger_start.clone();
         }
 
         if self.end != other.end {
+            if self.end > other.end {
+                // ours right
+                intersection_result.ours_right = Some(RangeSet {
+                    start: smaller_end.invert(),
+                    end: larger_end.clone(),
+                });
+            } else {
+                intersection_result.theirs_right = Some(RangeSet {
+                    start: smaller_end.invert(),
+                    end: larger_end.clone(),
+                });
+            }
             // now we need to know the bigger one and basically perform an
             // inversion of the other one
-            intersection_result.right = Some(RangeSet {
-                start: smaller_end.invert(),
-                end: larger_end.clone(),
-            });
-            // intersection_result.common.expect("set above").end = smaller_end.clone()
+            // intersection_result.common.expect("set above").end =
+            // smaller_end.clone()
         }
 
-        intersection_result.common = Some(RangeSet {
+        intersection_result.in_both = Some(RangeSet {
             start: bigger_start.clone(),
-            end: smaller_end.clone()
+            end: smaller_end.clone(),
         });
 
         intersection_result
@@ -231,11 +263,13 @@ impl PartialOrd for RangeSetItem {
 // TODO: remove clones
 impl QueryItem {
     pub fn intersect(&self, other: &Self) -> QueryItemIntersectionResult {
-        todo!()
+        let range_set_intersection = self.to_range_set().intersect(other.to_range_set());
+        range_set_intersection.to_query_item_intersection_result()
     }
+
     // TODO: convert to impl of From/To trait
     pub fn to_range_set(&self) -> RangeSet {
-        match self{
+        match self {
             QueryItem::Key(start) => RangeSet {
                 start: RangeSetItem::Inclusive(start.clone()),
                 end: RangeSetItem::Inclusive(start.clone()),

@@ -1,10 +1,16 @@
-use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use std::collections::LinkedList;
-use crate::{CryptoHash as MerkHash, CryptoHash, Error};
-use crate::proofs::{Decoder, Node, Op, Query};
-use crate::proofs::query::{Map, MapBuilder};
-use crate::proofs::tree::execute;
-use crate::tree::value_hash;
+
+use costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+
+use crate::{
+    proofs::{
+        query::{Map, MapBuilder},
+        tree::execute,
+        Decoder, Node, Op, Query,
+    },
+    tree::value_hash,
+    CryptoHash as MerkHash, CryptoHash, Error,
+};
 
 #[cfg(feature = "full")]
 pub type ProofAbsenceLimitOffset = (LinkedList<Op>, (bool, bool), Option<u16>, Option<u16>);

@@ -12,13 +12,6 @@ pub mod query_item;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod verify;
 
-#[cfg(any(feature = "full", feature = "verify"))]
-pub use verify::{ProvedKeyValue, ProofVerificationResult, verify_query, execute_proof};
-
-#[cfg(any(feature = "full", feature = "verify"))]
-pub use query_item::intersect2::{QueryItemIntersectionResult};
-
-
 use std::collections::HashSet;
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::{
@@ -35,19 +28,23 @@ use costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCo
 use indexmap::IndexMap;
 #[cfg(feature = "full")]
 pub use map::*;
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use query_item::intersect2::QueryItemIntersectionResult;
 use query_item::QueryItem;
 #[cfg(any(feature = "full", feature = "verify"))]
 use storage::RawIterator;
-#[cfg(feature = "full")]
-use {std::collections::LinkedList, super::Op};
 use verify::ProofAbsenceLimitOffset;
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use verify::{execute_proof, verify_query, ProofVerificationResult, ProvedKeyValue};
+#[cfg(feature = "full")]
+use {super::Op, std::collections::LinkedList};
 
 #[cfg(any(feature = "full", feature = "verify"))]
-use super::{Decoder, Node, tree::execute};
+use super::{tree::execute, Decoder, Node};
 #[cfg(feature = "full")]
 use crate::tree::{Fetch, Link, RefWalker};
 #[cfg(any(feature = "full", feature = "verify"))]
-use crate::{CryptoHash as MerkHash, CryptoHash, error::Error, tree::value_hash};
+use crate::{error::Error, tree::value_hash, CryptoHash as MerkHash, CryptoHash};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for a path.
@@ -705,17 +702,19 @@ mod test {
     use costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;
 
     use super::{
+        super::{encoding::encode_into, *},
         *,
-        super::{*, encoding::encode_into},
     };
     use crate::{
-        proofs::query::query_item::QueryItem::RangeAfter,
+        proofs::query::{
+            query_item::QueryItem::RangeAfter,
+            verify,
+            verify::{verify_query, ProvedKeyValue},
+        },
         test_utils::make_tree_seq,
         tree::{NoopCommit, PanicSource, RefWalker, Tree},
         TreeFeatureType::BasicMerk,
     };
-    use crate::proofs::query::verify;
-    use crate::proofs::query::verify::{ProvedKeyValue, verify_query};
 
     fn compare_result_tuples(
         result_set: Vec<ProvedKeyValue>,
@@ -5498,7 +5497,9 @@ mod test {
 
         encode_into(proof.iter(), &mut bytes);
 
-        let _map = verify::verify(&bytes, [42; 32]).unwrap().expect("verify failed");
+        let _map = verify::verify(&bytes, [42; 32])
+            .unwrap()
+            .expect("verify failed");
     }
 
     #[test]
