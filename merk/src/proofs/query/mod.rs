@@ -308,6 +308,16 @@ impl Query {
                     subquery: subquery.map(Box::new),
                 },
             );
+        } else {
+            let mut conditional_subquery_branches = IndexMap::new();
+            conditional_subquery_branches.insert(
+                item,
+                SubqueryBranch {
+                    subquery_path,
+                    subquery: subquery.map(Box::new),
+                },
+            );
+            self.conditional_subquery_branches = Some(conditional_subquery_branches);
         }
     }
 
