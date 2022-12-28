@@ -237,17 +237,17 @@ impl GroveDb {
                             let mut key_as_query = Query::new();
                             key_as_query.insert_key(subkey.clone());
 
-                                cost_return_on_error!(
-                                    &mut cost,
-                                    self.generate_and_store_merk_proof(
-                                        new_path.iter().copied(),
-                                        &inner_subtree,
-                                        &key_as_query,
-                                        (None, None),
-                                        ProofType::Merk,
-                                        proofs,
-                                    )
-                                );
+                            cost_return_on_error!(
+                                &mut cost,
+                                self.generate_and_store_merk_proof(
+                                    new_path.iter().copied(),
+                                    &inner_subtree,
+                                    &key_as_query,
+                                    (None, None),
+                                    ProofType::Merk,
+                                    proofs,
+                                )
+                            );
 
                             new_path.push(subkey);
 

@@ -427,14 +427,18 @@ impl Element {
         sized_query: &SizedQuery,
         key: &[u8],
     ) -> (Option<Path>, Option<Query>) {
-        for (query_item, subquery_branch) in &sized_query.query.conditional_subquery_branches {
-            if query_item.contains(key) {
-                let subquery_path = subquery_branch.subquery_path.clone();
-                let subquery = subquery_branch
-                    .subquery
-                    .as_ref()
-                    .map(|query| *query.clone());
-                return (subquery_path, subquery);
+        if let Some(conditional_subquery_branches) =
+            &sized_query.query.conditional_subquery_branches
+        {
+            for (query_item, subquery_branch) in conditional_subquery_branches {
+                if query_item.contains(key) {
+                    let subquery_path = subquery_branch.subquery_path.clone();
+                    let subquery = subquery_branch
+                        .subquery
+                        .as_ref()
+                        .map(|query| *query.clone());
+                    return (subquery_path, subquery);
+                }
             }
         }
         let subquery_path = sized_query

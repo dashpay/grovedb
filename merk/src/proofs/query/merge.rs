@@ -1,7 +1,9 @@
+use indexmap::IndexMap;
 use crate::proofs::{
     query::{common_path::CommonPathResult, query_item::QueryItem, Path, SubqueryBranch},
     Query,
 };
+use crate::proofs::query::QueryItemIntersectionResult;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl Query {
@@ -59,18 +61,22 @@ impl Query {
                         // The key is also removed from the path as it is no needed in the subquery
                         let left_top_key = left_path_leftovers.remove(0);
                         let maybe_left_path_leftovers = if left_path_leftovers.is_empty() { None } else { Some(left_path_leftovers)};
-                        self.add_conditional_boxed_subquery(
+                        self.merge_conditional_boxed_subquery(
                             QueryItem::Key(left_top_key),
-                            maybe_left_path_leftovers,
-                            self.default_subquery_branch.subquery.clone(),
+                            SubqueryBranch {
+                                subquery_path: maybe_left_path_leftovers,
+                                subquery: self.default_subquery_branch.subquery.clone(),
+                            }
                         );
                         let right_top_key = right_path_leftovers.remove(0);
                         let maybe_right_path_leftovers = if right_path_leftovers.is_empty() { None } else { Some(right_path_leftovers)};
 
-                        self.add_conditional_boxed_subquery(
+                        self.merge_conditional_boxed_subquery(
                             QueryItem::Key(right_top_key),
-                            maybe_right_path_leftovers,
-                            other_default_subquery_branch.subquery.clone(),
+                            SubqueryBranch {
+                                subquery_path: maybe_right_path_leftovers,
+                                subquery: other_default_subquery_branch.subquery.clone(),
+                            }
                         );
                     } else if right_path_leftovers.is_empty() {
 
@@ -84,10 +90,12 @@ impl Query {
 
                         // our subquery stays the same as we didn't change level
                         // add a conditional subquery for other
-                        self.add_conditional_boxed_subquery(
+                        self.merge_conditional_boxed_subquery(
                             QueryItem::Key(first_key),
-                            maybe_left_path_leftovers,
-                            left_subquery,
+                            SubqueryBranch {
+                                subquery_path: maybe_left_path_leftovers,
+                                subquery: left_subquery,
+                            }
                         );
                     } else if left_path_leftovers.is_empty() {
                         // this means our subquery path shorter
@@ -97,10 +105,12 @@ impl Query {
                         let maybe_right_path_leftovers = if right_path_leftovers.is_empty() { None } else { Some(right_path_leftovers)};
                         // our subquery stays the same as we didn't change level
                         // add a conditional subquery for other
-                        self.add_conditional_boxed_subquery(
+                        self.merge_conditional_boxed_subquery(
                             QueryItem::Key(other_first),
-                            maybe_right_path_leftovers,
-                            other_default_subquery_branch.subquery.clone(),
+                            SubqueryBranch {
+                                subquery_path: maybe_right_path_leftovers,
+                                subquery: other_default_subquery_branch.subquery.clone(),
+                            }
                         );
                     } else {
                         unreachable!("Unreachable as both paths being equal already covered");
@@ -122,10 +132,12 @@ impl Query {
                 let maybe_our_subquery_path = if our_subquery_path.is_empty() { None } else { Some(our_subquery_path)};
                 // our subquery stays the same as we didn't change level
                 // add a conditional subquery for other
-                self.add_conditional_boxed_subquery(
+                self.merge_conditional_boxed_subquery(
                     QueryItem::Key(our_top_key),
-                    maybe_our_subquery_path,
-                    other_default_subquery_branch.subquery.clone(),
+                    SubqueryBranch {
+                        subquery_path: maybe_our_subquery_path,
+                        subquery: other_default_subquery_branch.subquery.clone(),
+                    }
                 );
             }
             (None, Some(their_subquery_path)) => {
@@ -141,10 +153,12 @@ impl Query {
                 let maybe_their_subquery_path = if their_subquery_path.is_empty() { None } else { Some(their_subquery_path)};
                 // our subquery stays the same as we didn't change level
                 // add a conditional subquery for other
-                self.add_conditional_boxed_subquery(
+                self.merge_conditional_boxed_subquery(
                     QueryItem::Key(their_top_key),
-                    maybe_their_subquery_path,
-                    other_default_subquery_branch.subquery.clone(),
+                    SubqueryBranch {
+                        subquery_path: maybe_their_subquery_path,
+                        subquery: other_default_subquery_branch.subquery.clone(),
+                    }
                 );
             }
         }
@@ -164,15 +178,13 @@ impl Query {
                 merged_query.insert_item(item);
             }
             merged_query.merge_default_subquery_branch(default_subquery_branch);
-            for (item, conditional_subquery_branch) in conditional_subquery_branches {
-                merged_query.merge_conditional_subquery(
-                    item.clone(),
-                    conditional_subquery_branch.subquery_path.clone(),
-                    conditional_subquery_branch
-                        .subquery
-                        .as_ref()
-                        .map(|query| *query.clone()),
-                )
+            if let Some(conditional_subquery_branches) = conditional_subquery_branches {
+                for (item, conditional_subquery_branch) in conditional_subquery_branches {
+                    merged_query.merge_conditional_boxed_subquery(
+                        item.clone(),
+                        conditional_subquery_branch,
+                    )
+                }
             }
         }
         merged_query
@@ -183,29 +195,20 @@ impl Query {
             items,
             default_subquery_branch,
             conditional_subquery_branches,
-            left_to_right,
+            ..
         } = other;
         // merge query items as they point to the same context
         for item in items {
             self.insert_item(item)
         }
 
-        // TODO: deal with default subquery branch
-        //  this is not needed currently for path_query merge as we enforce
-        //  non-subset paths, but might be useful in the future
-        //  Need to create a stretching function for queries that expands default
-        //  subqueries  to conditional subqueries.
-
-        // merge conditional query branches.
-        for (query_item, subquery_branch) in conditional_subquery_branches.into_iter() {
-            let subquery_branch_option = self.conditional_subquery_branches.get_mut(&query_item);
-            if let Some(subquery_branch_old) = subquery_branch_option {
-                (subquery_branch_old.subquery.as_mut().unwrap())
-                    .merge_with(*subquery_branch.subquery.unwrap());
-            } else {
-                // we don't have that branch just assign the query
-                self.conditional_subquery_branches
-                    .insert(query_item, subquery_branch);
+        self.merge_default_subquery_branch(default_subquery_branch);
+        if let Some(conditional_subquery_branches) = conditional_subquery_branches {
+            for (item, conditional_subquery_branch) in conditional_subquery_branches {
+                self.merge_conditional_boxed_subquery(
+                    item.clone(),
+                    conditional_subquery_branch,
+                )
             }
         }
     }
@@ -214,18 +217,111 @@ impl Query {
     /// subquery and subquery_path if the item matches for the key. If
     /// multiple conditional subquery items match, then the first one that
     /// matches is used (in order that they were added).
-    pub fn merge_conditional_subquery(
+    pub fn merge_conditional_boxed_subquery(
         &mut self,
-        item: QueryItem,
-        subquery_path: Option<Path>,
-        subquery: Option<Self>,
+        query_item_merging_in: QueryItem,
+        subquery_branch_merging_in: SubqueryBranch,
     ) {
-        self.conditional_subquery_branches.insert(
-            item,
-            SubqueryBranch {
-                subquery_path,
-                subquery: subquery.map(Box::new),
-            },
-        );
+        self.conditional_subquery_branches = Some(Self::merge_conditional_subquery_branches_with_new_at_query_item(
+            self.conditional_subquery_branches.take(),
+            query_item_merging_in,
+            subquery_branch_merging_in,
+        ));
+    }
+
+    /// Adds a conditional subquery. A conditional subquery replaces the default
+    /// subquery and subquery_path if the item matches for the key. If
+    /// multiple conditional subquery items match, then the first one that
+    /// matches is used (in order that they were added).
+    pub fn merge_conditional_subquery_branches_with_new_at_query_item(
+        conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
+        query_item_merging_in: QueryItem,
+        subquery_branch_merging_in: SubqueryBranch,
+    ) -> IndexMap<QueryItem, SubqueryBranch> {
+        let mut merged_items: IndexMap<QueryItem, SubqueryBranch> = IndexMap::new();
+        if let Some(conditional_subquery_branches) = conditional_subquery_branches {
+            for (query_item, subquery_branch) in conditional_subquery_branches {
+                let QueryItemIntersectionResult {
+                    in_both, ours_left, ours_right, theirs_left, theirs_right
+                } = query_item.intersect(&query_item_merging_in);
+                if let Some(in_both) = in_both {
+                    //todo: for the part that they are in both we need to construct a common conditional subquery
+
+                    match (ours_left, ours_right, theirs_left, theirs_right) {
+                        (None, None, None, None) => {},
+                        (Some(ours_left), None, None, None) => {
+                            merged_items.insert(ours_left, subquery_branch);
+                        }
+                        (None, Some(ours_right), None, None) => {
+                            merged_items.insert(ours_right, subquery_branch);
+                        }
+                        (Some(ours_left), Some(ours_right), None, None) => {
+                            merged_items.insert(ours_left, subquery_branch.clone());
+                            merged_items.insert(ours_right, subquery_branch);
+                        }
+                        (None, None, Some(theirs_left), None) => {
+                            merged_items.insert(theirs_left, subquery_branch_merging_in.clone());
+                        }
+                        (Some(ours_left), None, Some(theirs_left), None) => {
+                            merged_items.insert(ours_left, subquery_branch);
+                            merged_items.insert(theirs_left, subquery_branch_merging_in.clone());
+                        }
+                        (None, Some(ours_right), Some(theirs_left), None) => {
+                            merged_items.insert(ours_right, subquery_branch);
+                            merged_items.insert(theirs_left, subquery_branch_merging_in.clone());
+                        }
+                        (Some(ours_left), Some(ours_right), Some(theirs_left), None) => {
+                            merged_items.insert(ours_left, subquery_branch.clone());
+                            merged_items.insert(ours_right, subquery_branch);
+                            merged_items.insert(theirs_left, subquery_branch_merging_in.clone());
+                        }
+                        (None, None, None, Some(theirs_right)) => {
+                            merged_items.insert(theirs_right, subquery_branch_merging_in.clone());
+                        }
+                        (Some(ours_left), None, None, Some(theirs_right)) => {
+                            merged_items.insert(ours_left, subquery_branch.clone());
+                            merged_items.insert(theirs_right, subquery_branch_merging_in.clone());
+                        }
+                        (None, Some(ours_right), None, Some(theirs_right)) => {
+                            merged_items.insert(ours_right, subquery_branch);
+                            merged_items.insert(theirs_right, subquery_branch_merging_in.clone());
+                        }
+                        (Some(ours_left), Some(ours_right), None, Some(theirs_right)) => {
+                            merged_items.insert(ours_left, subquery_branch.clone());
+                            merged_items.insert(ours_right, subquery_branch);
+                            merged_items.insert(theirs_right, subquery_branch_merging_in.clone());
+                        }
+                        (None, None, Some(theirs_left), Some(theirs_right)) => {
+                            merged_items.insert(theirs_left, subquery_branch_merging_in.clone());
+                            merged_items.insert(theirs_right, subquery_branch_merging_in.clone());
+                        }
+
+                        (Some(ours_left), None, Some(theirs_left), Some(theirs_right)) => {
+                            merged_items.insert(ours_left, subquery_branch);
+                            merged_items.insert(theirs_left, subquery_branch_merging_in.clone());
+                            merged_items.insert(theirs_right, subquery_branch_merging_in.clone());
+                        }
+                        (None, Some(ours_right), Some(theirs_left), Some(theirs_right)) => {
+                            merged_items.insert(ours_right, subquery_branch);
+                            merged_items.insert(theirs_left, subquery_branch_merging_in.clone());
+                            merged_items.insert(theirs_right, subquery_branch_merging_in.clone());
+                        }
+                        (Some(ours_left), Some(ours_right), Some(theirs_left), Some(theirs_right)) => {
+                            merged_items.insert(ours_left, subquery_branch.clone());
+                            merged_items.insert(ours_right, subquery_branch);
+                            merged_items.insert(theirs_left, subquery_branch_merging_in.clone());
+                            merged_items.insert(theirs_right, subquery_branch_merging_in.clone());
+                        }
+                    }
+                } else {
+                    //there was no overlap
+                    //readd to merged_items
+                    merged_items.insert(query_item, subquery_branch);
+                }
+            }
+        } else {
+            merged_items.insert(query_item_merging_in, subquery_branch_merging_in);
+        }
+        merged_items
     }
 }

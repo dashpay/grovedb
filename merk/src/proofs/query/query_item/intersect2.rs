@@ -23,6 +23,26 @@ pub struct RangeSet {
     end: RangeSetItem,
 }
 
+pub struct QueryItemIntersectionResult {
+    pub in_both: Option<QueryItem>,
+    pub ours_left: Option<QueryItem>,
+    pub ours_right: Option<QueryItem>,
+    pub theirs_left: Option<QueryItem>,
+    pub theirs_right: Option<QueryItem>,
+}
+
+impl QueryItemIntersectionResult {
+    fn flip(self) -> Self {
+        QueryItemIntersectionResult {
+            in_both: self.in_both,
+            ours_left: self.theirs_left,
+            ours_right: self.theirs_right,
+            theirs_left: self.ours_left,
+            theirs_right: self.ours_right,
+        }
+    }
+}
+
 impl RangeSet {
     // TODO: convert to impl of From/To trait
     pub fn to_query_item(&self) -> QueryItem {
@@ -210,6 +230,9 @@ impl PartialOrd for RangeSetItem {
 // need to convert from a query item to a range set
 // TODO: remove clones
 impl QueryItem {
+    pub fn intersect(&self, other: &Self) -> QueryItemIntersectionResult {
+        todo!()
+    }
     // TODO: convert to impl of From/To trait
     pub fn to_range_set(&self) -> RangeSet {
         match self{

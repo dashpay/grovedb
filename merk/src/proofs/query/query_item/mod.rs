@@ -1,7 +1,7 @@
 #[cfg(any(feature = "full", feature = "verify"))]
 mod merge;
 // TODO: potentially rename
-mod intersect2;
+pub mod intersect2;
 
 use std::{
     cmp,

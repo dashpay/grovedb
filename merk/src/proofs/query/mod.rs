@@ -15,6 +15,10 @@ mod verify;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub use verify::{ProvedKeyValue, ProofVerificationResult, verify_query, execute_proof};
 
+#[cfg(any(feature = "full", feature = "verify"))]
+pub use query_item::intersect2::{QueryItemIntersectionResult};
+
+
 use std::collections::HashSet;
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::{
@@ -71,7 +75,7 @@ pub struct SubqueryBranch {
 pub struct Query {
     pub items: BTreeSet<QueryItem>,
     pub default_subquery_branch: SubqueryBranch,
-    pub conditional_subquery_branches: IndexMap<QueryItem, SubqueryBranch>,
+    pub conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
     pub left_to_right: bool,
 }
 
@@ -98,67 +102,69 @@ impl Query {
         let mut current_len = result.len();
         let mut added = 0;
         let mut already_added_keys = HashSet::new();
-        for (conditional_query_item, subquery_branch) in &self.conditional_subquery_branches {
-            // unbounded ranges can not be supported
-            if conditional_query_item.is_unbounded_range() {
-                return Err(Error::NotSupported(
-                    "terminal keys are not supported with conditional unbounded ranges",
-                ));
-            }
-            let conditional_keys = conditional_query_item.keys()?;
-            for key in conditional_keys.into_iter() {
-                if current_len > max_results {
-                    return Err(Error::RequestAmountExceeded(format!(
-                        "terminal keys limit exceeded, set max is {}",
-                        max_results
-                    )));
+        if let Some(conditional_subquery_branches) = &self.conditional_subquery_branches {
+            for (conditional_query_item, subquery_branch) in conditional_subquery_branches {
+                // unbounded ranges can not be supported
+                if conditional_query_item.is_unbounded_range() {
+                    return Err(Error::NotSupported(
+                        "terminal keys are not supported with conditional unbounded ranges",
+                    ));
                 }
-                already_added_keys.insert(key.clone());
-                let mut path = current_path.clone();
-                if let Some(subquery_path) = &subquery_branch.subquery_path {
-                    if let Some(subquery) = &subquery_branch.subquery {
-                        // a subquery path with a subquery
+                let conditional_keys = conditional_query_item.keys()?;
+                for key in conditional_keys.into_iter() {
+                    if current_len > max_results {
+                        return Err(Error::RequestAmountExceeded(format!(
+                            "terminal keys limit exceeded, set max is {}",
+                            max_results
+                        )));
+                    }
+                    already_added_keys.insert(key.clone());
+                    let mut path = current_path.clone();
+                    if let Some(subquery_path) = &subquery_branch.subquery_path {
+                        if let Some(subquery) = &subquery_branch.subquery {
+                            // a subquery path with a subquery
+                            // push the key to the path
+                            path.push(key);
+                            // push the subquery path to the path
+                            path.extend(subquery_path.iter().cloned());
+                            // recurse onto the lower level
+                            let added_here =
+                                subquery.terminal_keys(path, max_results - current_len, result)?;
+                            added += added_here;
+                            current_len += added_here;
+                        } else {
+                            if current_len == max_results {
+                                return Err(Error::RequestAmountExceeded(format!(
+                                    "terminal keys limit exceeded, set max is {}",
+                                    max_results
+                                )));
+                            }
+                            // a subquery path but no subquery
+                            // split the subquery path and remove the last element
+                            // push the key to the path with the front elements,
+                            // and set the tail of the subquery path as the terminal key
+                            path.push(key);
+                            if let Some((last_key, front_keys)) = subquery_path.split_last() {
+                                path.extend(front_keys.iter().cloned());
+                                result.push((path, last_key.clone()));
+                            } else {
+                                return Err(Error::CorruptedCodeExecution(
+                                    "subquery_path set but doesn't contain any values",
+                                ));
+                            }
+
+                            added += 1;
+                            current_len += 1;
+                        }
+                    } else if let Some(subquery) = &subquery_branch.subquery {
+                        // a subquery without a subquery path
                         // push the key to the path
                         path.push(key);
-                        // push the subquery path to the path
-                        path.extend(subquery_path.iter().cloned());
                         // recurse onto the lower level
-                        let added_here =
-                            subquery.terminal_keys(path, max_results - current_len, result)?;
+                        let added_here = subquery.terminal_keys(path, max_results, result)?;
                         added += added_here;
                         current_len += added_here;
-                    } else {
-                        if current_len == max_results {
-                            return Err(Error::RequestAmountExceeded(format!(
-                                "terminal keys limit exceeded, set max is {}",
-                                max_results
-                            )));
-                        }
-                        // a subquery path but no subquery
-                        // split the subquery path and remove the last element
-                        // push the key to the path with the front elements,
-                        // and set the tail of the subquery path as the terminal key
-                        path.push(key);
-                        if let Some((last_key, front_keys)) = subquery_path.split_last() {
-                            path.extend(front_keys.iter().cloned());
-                            result.push((path, last_key.clone()));
-                        } else {
-                            return Err(Error::CorruptedCodeExecution(
-                                "subquery_path set but doesn't contain any values",
-                            ));
-                        }
-
-                        added += 1;
-                        current_len += 1;
                     }
-                } else if let Some(subquery) = &subquery_branch.subquery {
-                    // a subquery without a subquery path
-                    // push the key to the path
-                    path.push(key);
-                    // recurse onto the lower level
-                    let added_here = subquery.terminal_keys(path, max_results, result)?;
-                    added += added_here;
-                    current_len += added_here;
                 }
             }
         }
@@ -294,39 +300,22 @@ impl Query {
         subquery_path: Option<Path>,
         subquery: Option<Self>,
     ) {
-        self.conditional_subquery_branches.insert(
-            item,
-            SubqueryBranch {
-                subquery_path,
-                subquery: subquery.map(Box::new),
-            },
-        );
-    }
-
-    /// Adds a conditional subquery. A conditional subquery replaces the default
-    /// subquery and subquery_path if the item matches for the key. If
-    /// multiple conditional subquery items match, then the first one that
-    /// matches is used (in order that they were added).
-    pub fn add_conditional_boxed_subquery(
-        &mut self,
-        item: QueryItem,
-        subquery_path: Option<Path>,
-        subquery: Option<Box<Self>>,
-    ) {
-        self.conditional_subquery_branches.insert(
-            item,
-            SubqueryBranch {
-                subquery_path,
-                subquery,
-            },
-        );
+        if let Some(conditional_subquery_branches) = &mut self.conditional_subquery_branches {
+            conditional_subquery_branches.insert(
+                item,
+                SubqueryBranch {
+                    subquery_path,
+                    subquery: subquery.map(Box::new),
+                },
+            );
+        }
     }
 
     pub fn has_subquery(&self) -> bool {
         // checks if a query has subquery items
         if self.default_subquery_branch.subquery.is_some()
             || self.default_subquery_branch.subquery_path.is_some()
-            || !self.conditional_subquery_branches.is_empty()
+            || self.conditional_subquery_branches.is_some()
         {
             return true;
         }
@@ -349,7 +338,7 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
                 subquery_path: None,
                 subquery: None,
             },
-            conditional_subquery_branches: IndexMap::new(),
+            conditional_subquery_branches: None,
             left_to_right: true,
         }
     }
