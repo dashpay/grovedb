@@ -20,11 +20,11 @@ pub struct RangeSetIntersection {
 impl RangeSetIntersection {
     pub fn to_query_item_intersection_result(&self) -> QueryItemIntersectionResult {
         QueryItemIntersectionResult {
-            in_both: self.in_both.map(|a| a.to_query_item()),
-            ours_left: self.ours_left.map(|a| a.to_query_item()),
-            ours_right: self.ours_right.map(|a| a.to_query_item()),
-            theirs_left: self.theirs_left.map(|a| a.to_query_item()),
-            theirs_right: self.theirs_right.map(|a| a.to_query_item()),
+            in_both: self.in_both.as_ref().map(|a| a.to_query_item()),
+            ours_left: self.ours_left.as_ref().map(|a| a.to_query_item()),
+            ours_right: self.ours_right.as_ref().map(|a| a.to_query_item()),
+            theirs_left: self.theirs_left.as_ref().map(|a| a.to_query_item()),
+            theirs_right: self.theirs_right.as_ref().map(|a| a.to_query_item()),
         }
     }
 }
@@ -150,7 +150,7 @@ impl RangeSet {
 
         // if the comparison of the start are not equal then we have value for left
         if self.start != other.start {
-            if self.start == smaller_start {
+            if &self.start == smaller_start {
                 // ours left
                 intersection_result.ours_left = Some(RangeSet {
                     start: smaller_start.clone(),
