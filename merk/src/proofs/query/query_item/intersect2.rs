@@ -17,18 +17,6 @@ pub struct RangeSetIntersection {
     theirs_right: Option<RangeSet>,
 }
 
-// impl RangeSetIntersection {
-//     pub fn to_query_item_intersection_result(&self) -> QueryItemIntersectionResult {
-//         QueryItemIntersectionResult {
-//             in_both: self.in_both.as_ref().map(|a| a.to_query_item()),
-//             ours_left: self.ours_left.as_ref().map(|a| a.to_query_item()),
-//             ours_right: self.ours_right.as_ref().map(|a| a.to_query_item()),
-//             theirs_left: self.theirs_left.as_ref().map(|a| a.to_query_item()),
-//             theirs_right: self.theirs_right.as_ref().map(|a| a.to_query_item()),
-//         }
-//     }
-// }
-
 /// Concise query item representation
 #[derive(Clone)]
 pub struct RangeSet {
@@ -275,8 +263,7 @@ impl PartialOrd for RangeSetItem {
 // TODO: remove clones
 impl QueryItem {
     pub fn intersect(&self, other: &Self) -> QueryItemIntersectionResult {
-        let range_set_intersection = self.to_range_set().intersect(other.to_range_set());
-        range_set_intersection.to_query_item_intersection_result()
+        self.to_range_set().intersect(other.to_range_set()).into()
     }
 
     // TODO: convert to impl of From/To trait
