@@ -146,6 +146,24 @@ impl PartialEq for KeyInfoPath {
     }
 }
 
+impl PartialEq<Vec<Vec<u8>>> for KeyInfoPath {
+    fn eq(&self, other: &Vec<Vec<u8>>) -> bool {
+        if self.len() != other.len() as u32 {
+            return false;
+        }
+        self.0.iter().zip(other.iter()).all(|(a, b)| a == b)
+    }
+}
+
+impl PartialEq<Vec<&[u8]>> for KeyInfoPath {
+    fn eq(&self, other: &Vec<&[u8]>) -> bool {
+        if self.len() != other.len() as u32 {
+            return false;
+        }
+        self.0.iter().zip(other.iter()).all(|(a, b)| a == b)
+    }
+}
+
 impl Visualize for KeyInfoPath {
     fn visualize<W: std::io::Write>(&self, mut drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
         drawer.write(b"path: ")?;
