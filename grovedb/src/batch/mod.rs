@@ -164,6 +164,15 @@ impl PartialEq<Vec<&[u8]>> for KeyInfoPath {
     }
 }
 
+impl<const N: usize> PartialEq<[&[u8]; N]> for KeyInfoPath {
+    fn eq(&self, other: &[&[u8]; N]) -> bool {
+        if self.len() != N as u32 {
+            return false;
+        }
+        self.0.iter().zip(other.iter()).all(|(a, b)| a == b)
+    }
+}
+
 impl Visualize for KeyInfoPath {
     fn visualize<W: std::io::Write>(&self, mut drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
         drawer.write(b"path: ")?;
