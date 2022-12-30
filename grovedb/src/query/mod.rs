@@ -1,9 +1,9 @@
 use itertools::Itertools;
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::proofs::query::query_item::QueryItem;
+use merk::proofs::query::SubqueryBranch;
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::proofs::Query;
-use merk::proofs::query::SubqueryBranch;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::query_result_type::PathKey;
@@ -100,7 +100,8 @@ impl PathQuery {
             }
             if path_query.query.limit.is_some() {
                 return Err(Error::NotSupported(
-                    "can not merge pathqueries with limits, consider setting the limit after the merge",
+                    "can not merge pathqueries with limits, consider setting the limit after the \
+                     merge",
                 ));
             }
             path_query
@@ -121,8 +122,11 @@ impl PathQuery {
             let key = path.remove(0);
             merged_query.items.insert(QueryItem::Key(key.clone()));
             let rest_of_path = if path.is_empty() { None } else { Some(path) };
-            let subquery_branch = SubqueryBranch { subquery_path: rest_of_path, subquery: Some(Box::new(query)) };
-            merged_query.merge_conditional_boxed_subquery(QueryItem::Key(key),subquery_branch);
+            let subquery_branch = SubqueryBranch {
+                subquery_path: rest_of_path,
+                subquery: Some(Box::new(query)),
+            };
+            merged_query.merge_conditional_boxed_subquery(QueryItem::Key(key), subquery_branch);
         }
 
         Ok(PathQuery::new_unsized(common_path, merged_query))
@@ -354,20 +358,21 @@ mod tests {
             GroveDb::verify_query(proof.as_slice(), &path_query_two).expect("should execute proof");
         assert_eq!(result_set_two.len(), 1);
 
-        // let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
-        //     .expect("expect to merge path queries");
+        // let merged_path_query = PathQuery::merge(vec![&path_query_one,
+        // &path_query_two])     .expect("expect to merge path queries");
         // assert_eq!(merged_path_query.path, vec![TEST_LEAF.to_vec()]);
         // assert_eq!(merged_path_query.query.query.items.len(), 2);
         //
         // let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
-        // let (_, result_set_merged) = GroveDb::verify_query(proof.as_slice(), &merged_path_query)
-        //     .expect("should execute proof");
+        // let (_, result_set_merged) = GroveDb::verify_query(proof.as_slice(),
+        // &merged_path_query)     .expect("should execute proof");
         // assert_eq!(result_set_merged.len(), 2);
         //
         // let keys = [b"key1".to_vec(), b"key4".to_vec()];
         // let values = [b"value1".to_vec(), b"value4".to_vec()];
         // let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
-        // let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
+        // let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> =
+        // keys.into_iter().zip(elements).collect();
         // compare_result_tuples(result_set_merged, expected_result_set);
 
         // longer length path queries
@@ -421,27 +426,32 @@ mod tests {
             .expect("should execute proof");
         assert_eq!(result_set_two.len(), 2);
 
-        // Tree Structure
-        //                                   root
-        //              /                      |                       \ (not representing Merk)
-        // -----------------------------------------------------------------------------------------
-        //         test_leaf            another_test_leaf                deep_leaf
-        //       /           \             /         \              /                 \
-        // -----------------------------------------------------------------------------------------
-        //   innertree     innertree4  innertree2  innertree3  deep_node_1          deep_node_2
-        //       |             |           |           |      /          \         /         \
-        // -----------------------------------------------------------------------------------------
-        //      k2,v2        k4,v4       k3,v3      k4,v4   deeper_1   deeper_2  deeper_3   deeper_4
-        //     /     \         |                           |            |         |          |
-        //  k1,v1    k3,v3   k5,v5                        /            /          |          |
-        // -----------------------------------------------------------------------------------------
-        //                                            k2,v2         k5,v5        k8,v8     k10,v10
-        //                                           /     \        /    \       /    \       \
-        //                                       k1,v1    k3,v3  k4,v4   k6,v6 k7,v7  k9,v9  k11,v11
-        //                                                            ↑ (all 3)   ↑     (all 2) ↑
-        //                                                      path_query_one    ↑   path_query_two
-        //                                                                 path_query_three (2)
-        //                                                                   (after 7, so {8,9})
+        #[rustfmt::skip]
+        mod explanation {
+
+    // Tree Structure
+    //                                   root
+    //              /                      |                       \ (not representing Merk)
+    // -----------------------------------------------------------------------------------------
+    //         test_leaf            another_test_leaf                deep_leaf
+    //       /           \             /         \              /                 \
+    // -----------------------------------------------------------------------------------------
+    //   innertree     innertree4  innertree2  innertree3  deep_node_1          deep_node_2
+    //       |             |           |           |      /          \         /         \
+    // -----------------------------------------------------------------------------------------
+    //      k2,v2        k4,v4       k3,v3      k4,v4   deeper_1   deeper_2  deeper_3   deeper_4
+    //     /     \         |                           |            |         |          |
+    //  k1,v1    k3,v3   k5,v5                        /            /          |          |
+    // -----------------------------------------------------------------------------------------
+    //                                            k2,v2         k5,v5        k8,v8     k10,v10
+    //                                           /     \        /    \       /    \       \
+    //                                       k1,v1    k3,v3  k4,v4   k6,v6 k7,v7  k9,v9  k11,v11
+    //                                                            ↑ (all 3)   ↑     (all 2) ↑
+    //                                                      path_query_one    ↑   path_query_two
+    //                                                                 path_query_three (2)
+    //                                                                   (after 7, so {8,9})
+
+        }
 
         let merged_path_query =
             PathQuery::merge(vec![&path_query_one, &path_query_two, &path_query_three])

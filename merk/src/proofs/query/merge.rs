@@ -13,17 +13,19 @@ impl SubqueryBranch {
         &self,
         other_default_branch_subquery: Option<Box<Query>>,
     ) -> Option<Box<Query>> {
-        if let Some(current_subquery) = self.subquery {
-            if let Some(other_subquery) = other_default_branch_subquery {
-                current_subquery.merge_with(*other_subquery);
+        match (&self.subquery, other_default_branch_subquery) {
+            (None, None) => { None},
+            (Some(subquery), None) => { Some(subquery.clone())}
+            (None, Some(subquery)) => { Some(subquery)}
+            (Some(subquery), Some(other_subquery)) => {
+                let mut merged_subquery = subquery.clone();
+                merged_subquery.merge_with(*other_subquery);
+                Some(merged_subquery)
             }
-        } else {
-            // None existed yet
-            self.default_subquery_branch.subquery = other_default_branch_subquery.clone();
         }
     }
 
-    pub fn merge(&self, other: Self) -> Self {
+    pub fn merge(&self, other: &Self) -> Self {
         match (
             &self.subquery_path,
             &other.subquery_path,
@@ -31,7 +33,7 @@ impl SubqueryBranch {
             (None, None) => {
                 // they both just have subqueries without paths
                 let subquery = self.merge_subquery(
-                    other_default_subquery_branch.subquery,
+                    other.subquery.clone(),
                 );
                 SubqueryBranch {
                     subquery_path: None,
@@ -45,10 +47,10 @@ impl SubqueryBranch {
                     // The subquery paths are the same
                     // We just need to merge the subqueries together
                     let subquery = self.merge_subquery(
-                        other_default_subquery_branch.subquery,
+                        other.subquery.clone(),
                     );
                     SubqueryBranch {
-                        subquery_path: None,
+                        subquery_path: Some(our_subquery_path.clone()),
                         subquery,
                     }
                 } else {
@@ -59,20 +61,24 @@ impl SubqueryBranch {
                         mut right_path_leftovers,
                     } = CommonPathResult::from_paths(our_subquery_path, their_subquery_path);
 
-                    if common_path.is_empty() {
+                    let subquery_path = if common_path.is_empty() {
                         // There is no common path
                         // We set the subquery path to be None
-                        self.default_subquery_branch.subquery_path = None;
+                        None
                     } else {
                         // There is a common path
                         // We can use this common path as a common root
-                        self.default_subquery_branch.subquery_path = Some(common_path)
-                    }
+                        Some(common_path)
+                    };
 
                     if !left_path_leftovers.is_empty() && !right_path_leftovers.is_empty() {
                         // Both left and right split but still have paths below them
                         // We take the top element from the left path leftovers and add a
                         // conditional subquery for each key
+
+                        // We need to create a new subquery that will hold the conditional subqueries
+                        let mut merged_query = Query::new();
+
                         // The key is also removed from the path as it is no needed in the subquery
                         let left_top_key = left_path_leftovers.remove(0);
                         let maybe_left_path_leftovers = if left_path_leftovers.is_empty() {
@@ -80,11 +86,11 @@ impl SubqueryBranch {
                         } else {
                             Some(left_path_leftovers)
                         };
-                        self.merge_conditional_boxed_subquery(
+                        merged_query.merge_conditional_boxed_subquery(
                             QueryItem::Key(left_top_key),
                             SubqueryBranch {
                                 subquery_path: maybe_left_path_leftovers,
-                                subquery: self.default_subquery_branch.subquery.clone(),
+                                subquery: self.subquery.clone(),
                             },
                         );
                         let right_top_key = right_path_leftovers.remove(0);
@@ -94,19 +100,21 @@ impl SubqueryBranch {
                             Some(right_path_leftovers)
                         };
 
-                        self.merge_conditional_boxed_subquery(
+                        merged_query.merge_conditional_boxed_subquery(
                             QueryItem::Key(right_top_key),
                             SubqueryBranch {
                                 subquery_path: maybe_right_path_leftovers,
-                                subquery: other_default_subquery_branch.subquery.clone(),
+                                subquery: other.subquery.clone(),
                             },
                         );
+                        SubqueryBranch {
+                            subquery_path,
+                            subquery: Some(Box::new(merged_query)),
+                        }
                     } else if right_path_leftovers.is_empty() {
-                        let left_subquery = self.default_subquery_branch.subquery.clone();
                         // this means our subquery path was longer
                         // which means we need to set the default to the right (other)
-                        self.default_subquery_branch.subquery =
-                            other_default_subquery_branch.subquery.clone();
+                        let mut merged_query = other.subquery.clone().unwrap_or_default();
                         let first_key = left_path_leftovers.remove(0);
                         let maybe_left_path_leftovers = if left_path_leftovers.is_empty() {
                             None
@@ -116,14 +124,19 @@ impl SubqueryBranch {
 
                         // our subquery stays the same as we didn't change level
                         // add a conditional subquery for other
-                        self.merge_conditional_boxed_subquery(
+                        merged_query.merge_conditional_boxed_subquery(
                             QueryItem::Key(first_key),
                             SubqueryBranch {
                                 subquery_path: maybe_left_path_leftovers,
-                                subquery: left_subquery,
+                                subquery: self.subquery.clone(),
                             },
                         );
+                        SubqueryBranch {
+                            subquery_path,
+                            subquery: Some(merged_query),
+                        }
                     } else if left_path_leftovers.is_empty() {
+                        let mut merged_query = self.subquery.clone().unwrap_or_default();
                         // this means our subquery path shorter
                         // we should keep our subquery
                         let other_first = right_path_leftovers.remove(0);
@@ -135,13 +148,17 @@ impl SubqueryBranch {
                         };
                         // our subquery stays the same as we didn't change level
                         // add a conditional subquery for other
-                        self.merge_conditional_boxed_subquery(
+                        merged_query.merge_conditional_boxed_subquery(
                             QueryItem::Key(other_first),
                             SubqueryBranch {
                                 subquery_path: maybe_right_path_leftovers,
-                                subquery: other_default_subquery_branch.subquery.clone(),
+                                subquery: other.subquery.clone(),
                             },
                         );
+                        SubqueryBranch {
+                            subquery_path,
+                            subquery: Some(merged_query),
+                        }
                     } else {
                         unreachable!("Unreachable as both paths being equal already covered");
                     }
@@ -153,9 +170,9 @@ impl SubqueryBranch {
 
                 let mut our_subquery_path = our_subquery_path.clone();
 
-                self.default_subquery_branch.subquery_path = None;
-                self.default_subquery_branch.subquery =
-                    other_default_subquery_branch.subquery.clone();
+                // take their subquery as it will be on a topmost layer
+                let mut merged_subquery = (&other.subquery).clone().unwrap_or_default();
+
                 // We need to add a conditional subquery for ours
 
                 let our_top_key = our_subquery_path.remove(0);
@@ -167,19 +184,27 @@ impl SubqueryBranch {
                 };
                 // our subquery stays the same as we didn't change level
                 // add a conditional subquery for other
-                self.merge_conditional_boxed_subquery(
+                merged_subquery.merge_conditional_boxed_subquery( //there are no conditional subquery branches yes
                     QueryItem::Key(our_top_key),
                     SubqueryBranch {
                         subquery_path: maybe_our_subquery_path,
-                        subquery: other_default_subquery_branch.subquery.clone(),
+                        subquery: self.subquery.clone(),
                     },
                 );
+
+                SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(merged_subquery),
+                }
             }
             (None, Some(their_subquery_path)) => {
                 // They have a subquery path, we does not.
                 // We set the subquery path to None
 
                 let mut their_subquery_path = their_subquery_path.clone();
+
+                // take our subquery as it will be on a topmost layer
+                let mut merged_subquery = (&self.subquery).clone().unwrap_or_default();
 
                 // The subquery_path is already set to None, no need to set it again
 
@@ -190,15 +215,20 @@ impl SubqueryBranch {
                 } else {
                     Some(their_subquery_path)
                 };
-                // our subquery stays the same as we didn't change level
+                // their subquery stays the same as we didn't change level
                 // add a conditional subquery for other
-                self.merge_conditional_boxed_subquery(
+                merged_subquery.merge_conditional_boxed_subquery( //there are no conditional subquery branches yes
                     QueryItem::Key(their_top_key),
                     SubqueryBranch {
                         subquery_path: maybe_their_subquery_path,
-                        subquery: other_default_subquery_branch.subquery.clone(),
+                        subquery: other.subquery.clone(),
                     },
                 );
+
+                SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(merged_subquery),
+                }
             }
         }
     }
@@ -487,7 +517,7 @@ impl Query {
                             hit = true
                         }
                         //merge the subquery branches
-                        let merged_subquery_branch = subquery_branch.merge(subquery_branch_merging_in);
+                        let merged_subquery_branch = subquery_branch.merge(&subquery_branch_merging_in);
                         merged_items.insert(in_both, merged_subquery_branch);
 
                         match (ours_left, ours_right, theirs_left, theirs_right) {
@@ -576,7 +606,7 @@ impl Query {
                 merged_items.insert(split_item, subquery_branch_merging_in.clone());
             }
         } else {
-            merged_items.insert(query_item_merging_in, subquery_branch_merging_in);
+            merged_items.insert(query_item_merging_in, subquery_branch_merging_in.clone());
         }
         merged_items
     }
