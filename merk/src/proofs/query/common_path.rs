@@ -19,18 +19,12 @@ impl CommonPathResult {
                 right_path_leftovers: vec![],
             };
         }
-        let mut split_already = false;
         let mut common_path = vec![];
         let mut left_path_leftovers = vec![];
         let mut right_path_leftovers = vec![];
         for (ours_key, theirs_key) in left.iter().zip(right.iter()) {
-            if split_already {
-                left_path_leftovers.push(ours_key.clone());
-                right_path_leftovers.push(theirs_key.clone());
-            } else if ours_key != theirs_key {
-                split_already = true;
-                left_path_leftovers.push(ours_key.clone());
-                right_path_leftovers.push(theirs_key.clone());
+            if ours_key != theirs_key {
+                break;
             } else {
                 common_path.push(ours_key.clone());
             }

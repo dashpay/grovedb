@@ -254,7 +254,7 @@ impl PathQuery {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
-    use merk::proofs::Query;
+    use merk::proofs::{query::query_item::QueryItem, Query};
 
     use crate::{
         tests::{common::compare_result_tuples, make_deep_tree, TEST_LEAF},
@@ -384,7 +384,7 @@ mod tests {
                 b"deep_node_1".to_vec(),
                 b"deeper_2".to_vec(),
             ],
-            query_one,
+            query_one.clone(),
         );
 
         let proof = temp_db.prove_query(&path_query_one).unwrap().unwrap();
@@ -401,7 +401,7 @@ mod tests {
                 b"deep_node_2".to_vec(),
                 b"deeper_4".to_vec(),
             ],
-            query_two,
+            query_two.clone(),
         );
 
         let proof = temp_db.prove_query(&path_query_two).unwrap().unwrap();
@@ -418,7 +418,7 @@ mod tests {
                 b"deep_node_2".to_vec(),
                 b"deeper_3".to_vec(),
             ],
-            query_three,
+            query_three.clone(),
         );
 
         let proof = temp_db.prove_query(&path_query_three).unwrap().unwrap();
@@ -458,6 +458,97 @@ mod tests {
                 .expect("expect to merge path queries");
         assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec()]);
         assert_eq!(merged_path_query.query.query.items.len(), 2);
+        let conditional_subquery_branches = merged_path_query
+            .query
+            .query
+            .conditional_subquery_branches
+            .clone()
+            .expect("expected to have conditional subquery branches");
+        assert_eq!(conditional_subquery_branches.len(), 2);
+        let (deep_node_1_query_item, deep_node_1_subquery_branch) =
+            conditional_subquery_branches.first().unwrap().clone();
+        let (deep_node_2_query_item, deep_node_2_subquery_branch) =
+            conditional_subquery_branches.last().unwrap().clone();
+        assert_eq!(
+            deep_node_1_query_item,
+            &QueryItem::Key(b"deep_node_1".to_vec())
+        );
+        assert_eq!(
+            deep_node_2_query_item,
+            &QueryItem::Key(b"deep_node_2".to_vec())
+        );
+
+        assert_eq!(
+            deep_node_1_subquery_branch
+                .subquery_path
+                .as_ref()
+                .expect("expected a subquery_path for deep_node_1"),
+            &vec![b"deeper_2".to_vec()]
+        );
+        assert_eq!(
+            *deep_node_1_subquery_branch
+                .subquery
+                .as_ref()
+                .expect("expected a subquery for deep_node_1"),
+            Box::new(query_one)
+        );
+
+        assert!(
+            deep_node_2_subquery_branch.subquery_path.is_none(),
+            "there should be no subquery path here"
+        );
+        let deep_node_2_subquery = deep_node_2_subquery_branch
+            .subquery
+            .as_ref()
+            .expect("expected a subquery for deep_node_2")
+            .as_ref();
+        let deep_node_2_conditional_subquery_branches = deep_node_2_subquery
+            .conditional_subquery_branches
+            .as_ref()
+            .expect("expected to have conditional subquery branches");
+        assert_eq!(deep_node_2_conditional_subquery_branches.len(), 2);
+
+        // deeper 4 was query 2
+        let (deeper_4_query_item, deeper_4_subquery_branch) =
+            deep_node_2_conditional_subquery_branches
+                .first()
+                .unwrap()
+                .clone();
+        let (deeper_3_query_item, deeper_3_subquery_branch) =
+            deep_node_2_conditional_subquery_branches
+                .last()
+                .unwrap()
+                .clone();
+
+        assert_eq!(deeper_3_query_item, &QueryItem::Key(b"deeper_3".to_vec()));
+        assert_eq!(deeper_4_query_item, &QueryItem::Key(b"deeper_4".to_vec()));
+
+        assert!(
+            deeper_3_subquery_branch.subquery_path.is_none(),
+            "there should be no subquery path here"
+        );
+        assert_eq!(
+            *deeper_3_subquery_branch
+                .subquery
+                .as_ref()
+                .expect("expected a subquery for deeper_3"),
+            Box::new(query_three)
+        );
+
+        assert!(
+            deeper_4_subquery_branch.subquery_path.is_none(),
+            "there should be no subquery path here"
+        );
+        assert_eq!(
+            *deeper_4_subquery_branch
+                .subquery
+                .as_ref()
+                .expect("expected a subquery for deeper_4"),
+            Box::new(query_two)
+        );
+
+        // assert_eq!(*deep_node_2_subquery.subquery.as_ref().expect("expected a
+        // subquery for deep_node_1"), Box::new(query_one));
 
         let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
         let (_, result_set_merged) = GroveDb::verify_query(proof.as_slice(), &merged_path_query)

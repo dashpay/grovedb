@@ -499,7 +499,26 @@ impl Query {
         subquery_branch_merging_in: SubqueryBranch,
     ) -> IndexMap<QueryItem, SubqueryBranch> {
         let mut merged_items: IndexMap<QueryItem, SubqueryBranch> = IndexMap::new();
+        // first we need to check if there are already conditional subquery branches
+        // because if there are none then we just assign the new conditional subquery branch instead
+        // of merging it in
         if let Some(conditional_subquery_branches) = conditional_subquery_branches {
+            // There were conditional subquery branches
+            // We create a vector of the query item we are merging in
+            // On the first loop this is a continuous query item (for example a range)
+            // However as we find things that intersect with it, it might break
+            // Example:
+            // *On first pass:
+            // **Current Subqueries:                   -----------------      --------        -----
+            // **Conditional Subquery merging in:    ------------------------------------
+            // **After first query:                  --*****************-----------------
+            // We then feed back in
+            // *On second pass:
+            // **Current Subqueries:                   -----------------      --------        -----
+            // **Conditional Subquery merging in:    --                 -----------------
+            // Lets say M is the one we are merging in and 1, 2 and 3 are the previous conditional
+            // Suqueries
+            // In the end we will have:              MM11111111111111111MMMMMM22222222MMM     33333
             let mut sub_query_items_merging_in_vec = vec![query_item_merging_in];
             for (original_query_item, subquery_branch) in conditional_subquery_branches {
                 let mut new_query_items_merging_in_vec = vec![];
@@ -514,9 +533,9 @@ impl Query {
                     } = original_query_item.intersect(&sub_query_item_merging_in);
                     if let Some(in_both) = in_both {
                         if !hit {
-                            hit = true
+                            hit = true;
                         }
-                        //merge the subquery branches
+                        //merge the overlapping subquery branches
                         let merged_subquery_branch = subquery_branch.merge(&subquery_branch_merging_in);
                         merged_items.insert(in_both, merged_subquery_branch);
 
@@ -593,7 +612,7 @@ impl Query {
                         }
                     } else {
                         // there was no overlap
-                        // readd to merged_items
+                        // re-add to merged_items
                         new_query_items_merging_in_vec.push(sub_query_item_merging_in);
                     }
                 }
