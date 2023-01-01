@@ -7,8 +7,7 @@ use crate::proofs::query::query_item::QueryItem;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl QueryItem {
-    pub(crate) fn merge(self, other: Self) -> Self {
-        // TODO: don't copy into new vecs
+    pub(crate) fn merge(&self, other: &Self) -> Self {
         let lower_unbounded = self.lower_unbounded() || other.lower_unbounded();
         let upper_unbounded = self.upper_unbounded() || other.upper_unbounded();
 
@@ -66,5 +65,8 @@ impl QueryItem {
                 end: end.expect("end should be bounded").to_vec(),
             })
         }
+    }
+    pub(crate) fn merge_assign(&mut self, other: &Self) {
+        *self = self.merge(other);
     }
 }

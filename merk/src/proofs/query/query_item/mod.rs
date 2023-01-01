@@ -450,6 +450,11 @@ impl QueryItem {
 
         is_valid.wrap_with_cost(cost)
     }
+
+    pub fn collides_with(&self, other: &Self) -> bool {
+        self.intersect(other).in_both.is_some()
+    }
+
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -472,55 +477,89 @@ impl Eq for QueryItem {}
 #[cfg(any(feature = "full", feature = "verify"))]
 impl Ord for QueryItem {
     fn cmp(&self, other: &Self) -> Ordering {
-        let cmp_lu = if self.lower_unbounded() {
-            if other.lower_unbounded() {
-                Ordering::Equal
-            } else {
-                Ordering::Less
+        match (self.lower_unbounded(), other.lower_unbounded(), self.upper_unbounded(), other.upper_unbounded()) {
+            // all unbounded, both are range all
+            (true, true, true, true) => Ordering::Equal,
+            // we are unbounded at the bottom, they are not
+            (true, false, true, true)
+            | (true, false, false, true)
+            | (true, false, false, false)
+            | (true, false, true, false) => Ordering::Less,
+            // they are unbounded at the bottom, we are not
+            (false, true, true, true)
+            | (false, true, false, true)
+            | (false, true, false, false)
+            | (false, true, true, false) => Ordering::Greater,
+            // we are both unbounded at the beginning
+            // we are unbounded at the top, they are not (they are smaller)
+            (true, true, true, false) => Ordering::Less,
+            // we are bounded at the top, they are unbounded (they are bigger)
+            (true, true, false, true) => Ordering::Greater,
+            // we are both bounded at the top
+            (true, true, false, false) => {
+                match self.upper_bound()
+                    .0
+                    .expect("lower bound left should be bounded")
+                    .cmp(other.upper_bound().0.expect("lower bound right should be bounded")) {
+                    Ordering::Less => { Ordering::Less }
+                    Ordering::Equal => {
+                        //check inclusiveness
+                        self.upper_bound().1.cmp(&other.upper_bound().1)
+                    }
+                    Ordering::Greater => { Ordering::Greater }
+                }
             }
-        } else if other.lower_unbounded() {
-            Ordering::Greater
-        } else {
-            // confirmed the bounds are not unbounded, hence safe to unwrap
-            // as bound cannot be None
-            self.lower_bound()
-                .0
-                .expect("should be bounded")
-                .cmp(other.upper_bound().0.expect("should be bounded"))
-        };
+            // we are both bounded at the beginning
+            (false, false, true, true)
+            | (false, false, false, true)
+            | (false, false, false, false)
+            | (false, false, true, false) => {
+                match self.lower_bound()
+                    .0
+                    .expect("lower bound left should be bounded")
+                    .cmp(other.lower_bound().0.expect("lower bound right should be bounded")) {
+                    Ordering::Less => { Ordering::Less }
+                    Ordering::Equal => {
+                        match self.lower_bound().1.cmp(&other.lower_bound().1) {
+                            //true means excluded
+                            // less means:
+                            // ours excluded false
+                            // theirs excluded true
+                            // ours : [3, 4, 5, 6]
+                            // theirs: [4, 5, 6, 8]
+                            // ours here is less
+                            Ordering::Less => { Ordering::Less}
+                            Ordering::Equal => {
+                                //lower bounds were equal
+                                match (self.upper_unbounded(), other.upper_unbounded()) {
+                                    //both unbounded, equal
+                                    (true, true) => Ordering::Equal,
+                                    // they are unbounded at the top, they are greater than us
+                                    (false, true) => Ordering::Greater,
+                                    // we are unbounded at the top, they are less than us
+                                    (true, false) => Ordering::Less,
+                                    // both are bounded
+                                    (false, false) => {
+                                        match self.upper_bound()
+                                            .0
+                                            .expect("upper bound left should be bounded")
+                                            .cmp(other.upper_bound().0.expect("upper bound right should be bounded")) {
+                                            Ordering::Less => Ordering::Less,
+                                            Ordering::Equal => {
+                                                self.upper_bound().1.cmp(&other.upper_bound().1)
+                                            }
+                                            Ordering::Greater => Ordering::Greater,
+                                        }
+                                    },
+                                }
+                            }
+                            Ordering::Greater => { Ordering::Greater}
+                        }
 
-        let cmp_ul = if self.upper_unbounded() {
-            if other.upper_unbounded() {
-                Ordering::Equal
-            } else {
-                Ordering::Greater
-            }
-        } else if other.upper_unbounded() {
-            Ordering::Less
-        } else {
-            // confirmed the bounds are not unbounded, hence safe to unwrap
-            // as bound cannot be None
-            self.upper_bound()
-                .0
-                .expect("should be bounded")
-                .cmp(other.lower_bound().0.expect("should be bounded"))
-        };
-
-        let self_inclusive = self.upper_bound().1;
-        let other_inclusive = other.upper_bound().1;
-
-        match (cmp_lu, cmp_ul) {
-            (Ordering::Less, Ordering::Less) => Ordering::Less,
-            (Ordering::Less, Ordering::Equal) => match self_inclusive {
-                true => Ordering::Equal,
-                false => Ordering::Less,
+                    }
+                    Ordering::Greater => { Ordering::Greater }
+                }
             },
-            (Ordering::Less, Ordering::Greater) => Ordering::Equal,
-            (Ordering::Equal, _) => match other_inclusive {
-                true => Ordering::Equal,
-                false => Ordering::Greater,
-            },
-            (Ordering::Greater, _) => Ordering::Greater,
         }
     }
 }

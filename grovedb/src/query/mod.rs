@@ -547,9 +547,6 @@ mod tests {
             Box::new(query_two)
         );
 
-        // assert_eq!(*deep_node_2_subquery.subquery.as_ref().expect("expected a
-        // subquery for deep_node_1"), Box::new(query_one));
-
         let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
         let (_, result_set_merged) = GroveDb::verify_query(proof.as_slice(), &merged_path_query)
             .expect("should execute proof");

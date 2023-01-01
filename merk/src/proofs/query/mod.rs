@@ -1679,23 +1679,23 @@ mod test {
     fn query_item_merge() {
         let mine = QueryItem::Range(vec![10]..vec![30]);
         let other = QueryItem::Range(vec![15]..vec![20]);
-        assert_eq!(mine.merge(other), QueryItem::Range(vec![10]..vec![30]));
+        assert_eq!(mine.merge(&other), QueryItem::Range(vec![10]..vec![30]));
 
         let mine = QueryItem::RangeInclusive(vec![10]..=vec![30]);
         let other = QueryItem::Range(vec![20]..vec![30]);
         assert_eq!(
-            mine.merge(other),
+            mine.merge(&other),
             QueryItem::RangeInclusive(vec![10]..=vec![30])
         );
 
         let mine = QueryItem::Key(vec![5]);
         let other = QueryItem::Range(vec![1]..vec![10]);
-        assert_eq!(mine.merge(other), QueryItem::Range(vec![1]..vec![10]));
+        assert_eq!(mine.merge(&other), QueryItem::Range(vec![1]..vec![10]));
 
         let mine = QueryItem::Key(vec![10]);
         let other = QueryItem::RangeInclusive(vec![1]..=vec![10]);
         assert_eq!(
-            mine.merge(other),
+            mine.merge(&other),
             QueryItem::RangeInclusive(vec![1]..=vec![10])
         );
     }

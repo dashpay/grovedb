@@ -1,3 +1,4 @@
+use std::borrow::BorrowMut;
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 
 use crate::proofs::{query::query_item::QueryItem, Query};
@@ -128,9 +129,15 @@ impl Query {
         // since `QueryItem::eq` considers items equal if they collide at all
         // (including keys within ranges or ranges which partially overlap),
         // `items.take` will remove the first item which collides
-        while let Some(existing) = self.items.take(&item) {
-            item = item.merge(existing);
-        }
+
+        self.items = self.items.iter().filter_map(|our_item| {
+            if our_item.collides_with(&item) {
+                item.merge_assign(&our_item);
+                None
+            } else {
+                Some(our_item.clone()) //todo: manage this without a clone
+            }
+        }).collect();
 
         self.items.insert(item);
     }
