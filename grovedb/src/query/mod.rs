@@ -100,7 +100,8 @@ impl PathQuery {
                 .to_subquery_branch_with_offset_start_index(next_index)
                 .map(|unsized_path_query| {
                     if unsized_path_query.subquery_path.is_none() {
-                        queries_for_common_path_this_level.push(*unsized_path_query.subquery.unwrap());
+                        queries_for_common_path_this_level
+                            .push(*unsized_path_query.subquery.unwrap());
                     } else {
                         queries_for_common_path_sub_level.push(unsized_path_query);
                     }
@@ -110,11 +111,19 @@ impl PathQuery {
         let mut merged_query = Query::merge_multiple(queries_for_common_path_this_level);
         // add conditional subqueries
         for mut sub_path_query in queries_for_common_path_sub_level {
-            let SubqueryBranch { subquery_path, subquery } = sub_path_query;
-            let mut subquery_path = subquery_path.ok_or(Error::CorruptedCodeExecution("subquery path must exist"))?;
-            let key = subquery_path.remove(0); //must exist
+            let SubqueryBranch {
+                subquery_path,
+                subquery,
+            } = sub_path_query;
+            let mut subquery_path =
+                subquery_path.ok_or(Error::CorruptedCodeExecution("subquery path must exist"))?;
+            let key = subquery_path.remove(0); // must exist
             merged_query.items.insert(QueryItem::Key(key.clone()));
-            let rest_of_path = if subquery_path.is_empty() { None } else { Some(subquery_path) };
+            let rest_of_path = if subquery_path.is_empty() {
+                None
+            } else {
+                Some(subquery_path)
+            };
             let subquery_branch = SubqueryBranch {
                 subquery_path: rest_of_path,
                 subquery,
@@ -231,7 +240,6 @@ impl PathQuery {
     ) -> Result<SubqueryBranch, Error> {
         let path = &self.path;
 
-
         if path.len() == start_index {
             Ok(SubqueryBranch {
                 subquery_path: None,
@@ -249,7 +257,6 @@ impl PathQuery {
                 subquery: Some(Box::new(self.query.query.clone())),
             })
         }
-
     }
 }
 

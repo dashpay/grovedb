@@ -496,9 +496,11 @@ impl Ord for QueryItem {
             | (false, true, true, false) => Ordering::Greater,
             // we are both unbounded at the beginning
             // we are unbounded at the top, they are not (they are smaller)
-            (true, true, true, false) => Ordering::Less,
+            // since they are smaller we are greater than them
+            (true, true, true, false) => Ordering::Greater,
             // we are bounded at the top, they are unbounded (they are bigger)
-            (true, true, false, true) => Ordering::Greater,
+            // since they are bigger we are less than them
+            (true, true, false, true) => Ordering::Less,
             // we are both bounded at the top
             (true, true, false, false) => {
                 match self
@@ -511,11 +513,18 @@ impl Ord for QueryItem {
                             .0
                             .expect("lower bound right should be bounded"),
                     ) {
+                    // for example we have our upper bound at 5, they have it at 6
+                    // we are smaller than them
                     Ordering::Less => Ordering::Less,
                     Ordering::Equal => {
                         // check inclusiveness
+                        // for example we have our upper bound at 5 excluded (false)
+                        // they have it at 5 included (true)
+                        // we are smaller than them
                         self.upper_bound().1.cmp(&other.upper_bound().1)
                     }
+                    // for example we have our upper bound at 7, they have it at 6
+                    // we are bigger than them
                     Ordering::Greater => Ordering::Greater,
                 }
             }
@@ -550,10 +559,12 @@ impl Ord for QueryItem {
                                 match (self.upper_unbounded(), other.upper_unbounded()) {
                                     // both unbounded, equal
                                     (true, true) => Ordering::Equal,
-                                    // they are unbounded at the top, they are greater than us
-                                    (false, true) => Ordering::Greater,
+                                    // they are unbounded at the top, they are bigger than us
+                                    // we are smaller than then them
+                                    (false, true) => Ordering::Less,
                                     // we are unbounded at the top, they are less than us
-                                    (true, false) => Ordering::Less,
+                                    // we are bigger than them
+                                    (true, false) => Ordering::Greater,
                                     // both are bounded
                                     (false, false) => {
                                         match self
@@ -611,6 +622,41 @@ impl From<Vec<u8>> for QueryItem {
 #[cfg(test)]
 mod test {
     use crate::proofs::query::query_item::QueryItem;
+
+    #[test]
+    fn query_item_collides() {
+        assert!(!QueryItem::Key(vec![10]).collides_with(&QueryItem::Key(vec![20])));
+        assert!(QueryItem::Key(vec![10]).collides_with(&QueryItem::Key(vec![10])));
+        assert!(!QueryItem::Key(vec![20]).collides_with(&QueryItem::Key(vec![10])));
+
+        assert!(!QueryItem::Key(vec![10]).collides_with(&QueryItem::Range(vec![20]..vec![30])));
+        assert!(
+            QueryItem::Key(vec![10]).collides_with(
+            &QueryItem::Range(vec![10]..vec![20]))
+        );
+        assert!(
+            QueryItem::Key(vec![15]).collides_with(
+            &QueryItem::Range(vec![10]..vec![20]))
+        );
+        assert!(!QueryItem::Key(vec![20]).collides_with(&QueryItem::Range(vec![10]..vec![20])));
+        assert!(
+            QueryItem::Key(vec![20]).collides_with(
+            &QueryItem::RangeInclusive(vec![10]..=vec![20]))
+        );
+        assert!(!QueryItem::Key(vec![30]).collides_with(&QueryItem::Range(vec![10]..vec![20])));
+
+        assert!(!QueryItem::Range(vec![10]..vec![20]).collides_with(&QueryItem::Range(vec![30]..vec![40])));
+        assert!(!QueryItem::Range(vec![10]..vec![20]).collides_with(&QueryItem::Range(vec![20]..vec![30])));
+        assert!(
+            QueryItem::RangeInclusive(vec![10]..=vec![20]).collides_with(
+            &QueryItem::Range(vec![20]..vec![30]))
+        );
+        assert!(
+            QueryItem::Range(vec![15]..vec![25]).collides_with(
+            &QueryItem::Range(vec![20]..vec![30]))
+        );
+        assert!(!QueryItem::Range(vec![20]..vec![30]).collides_with(&QueryItem::Range(vec![10]..vec![20])));
+    }
 
     #[test]
     fn query_item_cmp() {
