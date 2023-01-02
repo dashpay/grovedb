@@ -38,8 +38,12 @@ impl From<RangeSetIntersection> for QueryItemIntersectionResult {
             in_both: range_set_intersection.in_both.map(|a| a.to_query_item()),
             ours_left: range_set_intersection.ours_left.map(|a| a.to_query_item()),
             ours_right: range_set_intersection.ours_right.map(|a| a.to_query_item()),
-            theirs_left: range_set_intersection.theirs_left.map(|a| a.to_query_item()),
-            theirs_right: range_set_intersection.theirs_right.map(|a| a.to_query_item()),
+            theirs_left: range_set_intersection
+                .theirs_left
+                .map(|a| a.to_query_item()),
+            theirs_right: range_set_intersection
+                .theirs_right
+                .map(|a| a.to_query_item()),
         }
     }
 }

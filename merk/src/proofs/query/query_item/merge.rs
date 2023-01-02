@@ -66,6 +66,7 @@ impl QueryItem {
             })
         }
     }
+
     pub(crate) fn merge_assign(&mut self, other: &Self) {
         *self = self.merge(other);
     }

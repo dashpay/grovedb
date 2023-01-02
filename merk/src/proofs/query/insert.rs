@@ -1,5 +1,7 @@
-use std::borrow::BorrowMut;
-use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
+use std::{
+    borrow::BorrowMut,
+    ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
+};
 
 use crate::proofs::{query::query_item::QueryItem, Query};
 
@@ -130,14 +132,18 @@ impl Query {
         // (including keys within ranges or ranges which partially overlap),
         // `items.take` will remove the first item which collides
 
-        self.items = self.items.iter().filter_map(|our_item| {
-            if our_item.collides_with(&item) {
-                item.merge_assign(&our_item);
-                None
-            } else {
-                Some(our_item.clone()) //todo: manage this without a clone
-            }
-        }).collect();
+        self.items = self
+            .items
+            .iter()
+            .filter_map(|our_item| {
+                if our_item.collides_with(&item) {
+                    item.merge_assign(&our_item);
+                    None
+                } else {
+                    Some(our_item.clone()) // todo: manage this without a clone
+                }
+            })
+            .collect();
 
         self.items.insert(item);
     }

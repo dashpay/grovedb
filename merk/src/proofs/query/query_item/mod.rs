@@ -454,7 +454,6 @@ impl QueryItem {
     pub fn collides_with(&self, other: &Self) -> bool {
         self.intersect(other).in_both.is_some()
     }
-
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -477,7 +476,12 @@ impl Eq for QueryItem {}
 #[cfg(any(feature = "full", feature = "verify"))]
 impl Ord for QueryItem {
     fn cmp(&self, other: &Self) -> Ordering {
-        match (self.lower_unbounded(), other.lower_unbounded(), self.upper_unbounded(), other.upper_unbounded()) {
+        match (
+            self.lower_unbounded(),
+            other.lower_unbounded(),
+            self.upper_unbounded(),
+            other.upper_unbounded(),
+        ) {
             // all unbounded, both are range all
             (true, true, true, true) => Ordering::Equal,
             // we are unbounded at the bottom, they are not
@@ -497,16 +501,22 @@ impl Ord for QueryItem {
             (true, true, false, true) => Ordering::Greater,
             // we are both bounded at the top
             (true, true, false, false) => {
-                match self.upper_bound()
+                match self
+                    .upper_bound()
                     .0
                     .expect("lower bound left should be bounded")
-                    .cmp(other.upper_bound().0.expect("lower bound right should be bounded")) {
-                    Ordering::Less => { Ordering::Less }
+                    .cmp(
+                        other
+                            .upper_bound()
+                            .0
+                            .expect("lower bound right should be bounded"),
+                    ) {
+                    Ordering::Less => Ordering::Less,
                     Ordering::Equal => {
-                        //check inclusiveness
+                        // check inclusiveness
                         self.upper_bound().1.cmp(&other.upper_bound().1)
                     }
-                    Ordering::Greater => { Ordering::Greater }
+                    Ordering::Greater => Ordering::Greater,
                 }
             }
             // we are both bounded at the beginning
@@ -514,25 +524,31 @@ impl Ord for QueryItem {
             | (false, false, false, true)
             | (false, false, false, false)
             | (false, false, true, false) => {
-                match self.lower_bound()
+                match self
+                    .lower_bound()
                     .0
                     .expect("lower bound left should be bounded")
-                    .cmp(other.lower_bound().0.expect("lower bound right should be bounded")) {
-                    Ordering::Less => { Ordering::Less }
+                    .cmp(
+                        other
+                            .lower_bound()
+                            .0
+                            .expect("lower bound right should be bounded"),
+                    ) {
+                    Ordering::Less => Ordering::Less,
                     Ordering::Equal => {
                         match self.lower_bound().1.cmp(&other.lower_bound().1) {
-                            //true means excluded
+                            // true means excluded
                             // less means:
                             // ours excluded false
                             // theirs excluded true
                             // ours : [3, 4, 5, 6]
                             // theirs: [4, 5, 6, 8]
                             // ours here is less
-                            Ordering::Less => { Ordering::Less}
+                            Ordering::Less => Ordering::Less,
                             Ordering::Equal => {
-                                //lower bounds were equal
+                                // lower bounds were equal
                                 match (self.upper_unbounded(), other.upper_unbounded()) {
-                                    //both unbounded, equal
+                                    // both unbounded, equal
                                     (true, true) => Ordering::Equal,
                                     // they are unbounded at the top, they are greater than us
                                     (false, true) => Ordering::Greater,
@@ -540,26 +556,31 @@ impl Ord for QueryItem {
                                     (true, false) => Ordering::Less,
                                     // both are bounded
                                     (false, false) => {
-                                        match self.upper_bound()
+                                        match self
+                                            .upper_bound()
                                             .0
                                             .expect("upper bound left should be bounded")
-                                            .cmp(other.upper_bound().0.expect("upper bound right should be bounded")) {
+                                            .cmp(
+                                                other
+                                                    .upper_bound()
+                                                    .0
+                                                    .expect("upper bound right should be bounded"),
+                                            ) {
                                             Ordering::Less => Ordering::Less,
                                             Ordering::Equal => {
                                                 self.upper_bound().1.cmp(&other.upper_bound().1)
                                             }
                                             Ordering::Greater => Ordering::Greater,
                                         }
-                                    },
+                                    }
                                 }
                             }
-                            Ordering::Greater => { Ordering::Greater}
+                            Ordering::Greater => Ordering::Greater,
                         }
-
                     }
-                    Ordering::Greater => { Ordering::Greater }
+                    Ordering::Greater => Ordering::Greater,
                 }
-            },
+            }
         }
     }
 }
@@ -583,5 +604,46 @@ impl PartialOrd<&[u8]> for QueryItem {
 impl From<Vec<u8>> for QueryItem {
     fn from(key: Vec<u8>) -> Self {
         Self::Key(key)
+    }
+}
+
+#[cfg(feature = "full")]
+#[cfg(test)]
+mod test {
+    use crate::proofs::query::query_item::QueryItem;
+
+    #[test]
+    fn query_item_cmp() {
+        assert!(QueryItem::Key(vec![10]) < QueryItem::Key(vec![20]));
+        assert_eq!(QueryItem::Key(vec![10]), QueryItem::Key(vec![10]));
+        assert!(QueryItem::Key(vec![20]) > QueryItem::Key(vec![10]));
+
+        assert!(QueryItem::Key(vec![10]) < QueryItem::Range(vec![20]..vec![30]));
+        // assert_eq!(
+        //     QueryItem::Key(vec![10]),
+        //     QueryItem::Range(vec![10]..vec![20])
+        // );
+        // assert_eq!(
+        //     QueryItem::Key(vec![15]),
+        //     QueryItem::Range(vec![10]..vec![20])
+        // );
+        assert!(QueryItem::Key(vec![20]) > QueryItem::Range(vec![10]..vec![20]));
+        // assert_eq!(
+        //     QueryItem::Key(vec![20]),
+        //     QueryItem::RangeInclusive(vec![10]..=vec![20])
+        // );
+        assert!(QueryItem::Key(vec![30]) > QueryItem::Range(vec![10]..vec![20]));
+
+        assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![30]..vec![40]));
+        assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![20]..vec![30]));
+        // assert_eq!(
+        //     QueryItem::RangeInclusive(vec![10]..=vec![20]),
+        //     QueryItem::Range(vec![20]..vec![30])
+        // );
+        // assert_eq!(
+        //     QueryItem::Range(vec![15]..vec![25]),
+        //     QueryItem::Range(vec![20]..vec![30])
+        // );
+        assert!(QueryItem::Range(vec![20]..vec![30]) > QueryItem::Range(vec![10]..vec![20]));
     }
 }

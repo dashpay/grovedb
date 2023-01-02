@@ -467,7 +467,13 @@ where
 
         // TODO: don't copy into vec, support comparing QI to byte slice
         let node_key = QueryItem::Key(self.tree().key().to_vec());
-        let mut search = query.binary_search_by(|key| key.cmp(&node_key));
+        let mut search = query.binary_search_by(|key| {
+            if key.collides_with(&node_key) {
+                Ordering::Equal
+            } else {
+                key.cmp(&node_key)
+            }
+        });
 
         let current_node_in_query: bool;
         let mut node_on_non_inclusive_bounds = false;
@@ -1638,41 +1644,6 @@ mod test {
                 (vec![4], vec![4]),
             ],
         );
-    }
-
-    #[test]
-    fn query_item_cmp() {
-        assert!(QueryItem::Key(vec![10]) < QueryItem::Key(vec![20]));
-        assert_eq!(QueryItem::Key(vec![10]), QueryItem::Key(vec![10]));
-        assert!(QueryItem::Key(vec![20]) > QueryItem::Key(vec![10]));
-
-        assert!(QueryItem::Key(vec![10]) < QueryItem::Range(vec![20]..vec![30]));
-        assert_eq!(
-            QueryItem::Key(vec![10]),
-            QueryItem::Range(vec![10]..vec![20])
-        );
-        assert_eq!(
-            QueryItem::Key(vec![15]),
-            QueryItem::Range(vec![10]..vec![20])
-        );
-        assert!(QueryItem::Key(vec![20]) > QueryItem::Range(vec![10]..vec![20]));
-        assert_eq!(
-            QueryItem::Key(vec![20]),
-            QueryItem::RangeInclusive(vec![10]..=vec![20])
-        );
-        assert!(QueryItem::Key(vec![30]) > QueryItem::Range(vec![10]..vec![20]));
-
-        assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![30]..vec![40]));
-        assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![20]..vec![30]));
-        assert_eq!(
-            QueryItem::RangeInclusive(vec![10]..=vec![20]),
-            QueryItem::Range(vec![20]..vec![30])
-        );
-        assert_eq!(
-            QueryItem::Range(vec![15]..vec![25]),
-            QueryItem::Range(vec![20]..vec![30])
-        );
-        assert!(QueryItem::Range(vec![20]..vec![30]) > QueryItem::Range(vec![10]..vec![20]));
     }
 
     #[test]

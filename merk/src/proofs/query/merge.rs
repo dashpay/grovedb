@@ -14,9 +14,9 @@ impl SubqueryBranch {
         other_default_branch_subquery: Option<Box<Query>>,
     ) -> Option<Box<Query>> {
         match (&self.subquery, other_default_branch_subquery) {
-            (None, None) => { None},
-            (Some(subquery), None) => { Some(subquery.clone())}
-            (None, Some(subquery)) => { Some(subquery)}
+            (None, None) => None,
+            (Some(subquery), None) => Some(subquery.clone()),
+            (None, Some(subquery)) => Some(subquery),
             (Some(subquery), Some(other_subquery)) => {
                 let mut merged_subquery = subquery.clone();
                 merged_subquery.merge_with(*other_subquery);
@@ -26,15 +26,10 @@ impl SubqueryBranch {
     }
 
     pub fn merge(&self, other: &Self) -> Self {
-        match (
-            &self.subquery_path,
-            &other.subquery_path,
-        ) {
+        match (&self.subquery_path, &other.subquery_path) {
             (None, None) => {
                 // they both just have subqueries without paths
-                let subquery = self.merge_subquery(
-                    other.subquery.clone(),
-                );
+                let subquery = self.merge_subquery(other.subquery.clone());
                 SubqueryBranch {
                     subquery_path: None,
                     subquery,
@@ -46,9 +41,7 @@ impl SubqueryBranch {
                 if our_subquery_path.eq(their_subquery_path) {
                     // The subquery paths are the same
                     // We just need to merge the subqueries together
-                    let subquery = self.merge_subquery(
-                        other.subquery.clone(),
-                    );
+                    let subquery = self.merge_subquery(other.subquery.clone());
                     SubqueryBranch {
                         subquery_path: Some(our_subquery_path.clone()),
                         subquery,
@@ -76,7 +69,8 @@ impl SubqueryBranch {
                         // We take the top element from the left path leftovers and add a
                         // conditional subquery for each key
 
-                        // We need to create a new subquery that will hold the conditional subqueries
+                        // We need to create a new subquery that will hold the conditional
+                        // subqueries
                         let mut merged_query = Query::new();
 
                         // The key is also removed from the path as it is no needed in the subquery
@@ -184,7 +178,8 @@ impl SubqueryBranch {
                 };
                 // our subquery stays the same as we didn't change level
                 // add a conditional subquery for other
-                merged_subquery.merge_conditional_boxed_subquery( //there are no conditional subquery branches yes
+                merged_subquery.merge_conditional_boxed_subquery(
+                    // there are no conditional subquery branches yes
                     QueryItem::Key(our_top_key),
                     SubqueryBranch {
                         subquery_path: maybe_our_subquery_path,
@@ -217,7 +212,8 @@ impl SubqueryBranch {
                 };
                 // their subquery stays the same as we didn't change level
                 // add a conditional subquery for other
-                merged_subquery.merge_conditional_boxed_subquery( //there are no conditional subquery branches yes
+                merged_subquery.merge_conditional_boxed_subquery(
+                    // there are no conditional subquery branches yes
                     QueryItem::Key(their_top_key),
                     SubqueryBranch {
                         subquery_path: maybe_their_subquery_path,
@@ -500,8 +496,8 @@ impl Query {
     ) -> IndexMap<QueryItem, SubqueryBranch> {
         let mut merged_items: IndexMap<QueryItem, SubqueryBranch> = IndexMap::new();
         // first we need to check if there are already conditional subquery branches
-        // because if there are none then we just assign the new conditional subquery branch instead
-        // of merging it in
+        // because if there are none then we just assign the new conditional subquery
+        // branch instead of merging it in
         if let Some(conditional_subquery_branches) = conditional_subquery_branches {
             // There were conditional subquery branches
             // We create a vector of the query item we are merging in
@@ -509,16 +505,17 @@ impl Query {
             // However as we find things that intersect with it, it might break
             // Example:
             // *On first pass:
-            // **Current Subqueries:                   -----------------      --------        -----
-            // **Conditional Subquery merging in:    ------------------------------------
-            // **After first query:                  --*****************-----------------
-            // We then feed back in
+            // **Current Subqueries:                   -----------------      --------
+            // ----- **Conditional Subquery merging in:
+            // ------------------------------------ **After first query:
+            // --*****************----------------- We then feed back in
             // *On second pass:
-            // **Current Subqueries:                   -----------------      --------        -----
-            // **Conditional Subquery merging in:    --                 -----------------
-            // Lets say M is the one we are merging in and 1, 2 and 3 are the previous conditional
-            // Suqueries
-            // In the end we will have:              MM11111111111111111MMMMMM22222222MMM     33333
+            // **Current Subqueries:                   -----------------      --------
+            // ----- **Conditional Subquery merging in:    --
+            // ----------------- Lets say M is the one we are merging in and 1,
+            // 2 and 3 are the previous conditional Suqueries
+            // In the end we will have:              MM11111111111111111MMMMMM22222222MMM
+            // 33333
             let mut sub_query_items_merging_in_vec = vec![query_item_merging_in];
             for (original_query_item, subquery_branch) in conditional_subquery_branches {
                 let mut new_query_items_merging_in_vec = vec![];
@@ -535,8 +532,9 @@ impl Query {
                         if !hit {
                             hit = true;
                         }
-                        //merge the overlapping subquery branches
-                        let merged_subquery_branch = subquery_branch.merge(&subquery_branch_merging_in);
+                        // merge the overlapping subquery branches
+                        let merged_subquery_branch =
+                            subquery_branch.merge(&subquery_branch_merging_in);
                         merged_items.insert(in_both, merged_subquery_branch);
 
                         match (ours_left, ours_right, theirs_left, theirs_right) {
