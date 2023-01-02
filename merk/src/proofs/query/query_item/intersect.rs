@@ -66,12 +66,22 @@ impl QueryItem {
                         theirs_right: None,
                     }
                 } else {
-                    QueryItemIntersectionResult {
-                        in_both: None,
-                        ours_left: Some(self.clone()),
-                        ours_right,
-                        theirs_left: Some(QueryItem::Key(their_key.clone())),
-                        theirs_right: None,
+                    if their_key < range.start {
+                        QueryItemIntersectionResult {
+                            in_both: None,
+                            ours_left: Some(self.clone()),
+                            ours_right,
+                            theirs_left: None,
+                            theirs_right: Some(QueryItem::Key(their_key.clone())),
+                        }
+                    } else {
+                        QueryItemIntersectionResult {
+                            in_both: None,
+                            ours_left: Some(self.clone()),
+                            ours_right,
+                            theirs_left: None,
+                            theirs_right: Some(QueryItem::Key(their_key.clone())),
+                        }
                     }
                 }
             }

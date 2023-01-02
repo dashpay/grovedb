@@ -496,24 +496,27 @@ impl Ord for QueryItem {
             | (false, true, true, false) => Ordering::Greater,
             // we are both unbounded at the beginning
             // we are unbounded at the top, they are not (they are smaller)
+            // TODO: potential iffy thing here
             (true, true, true, false) => Ordering::Less,
             // we are bounded at the top, they are unbounded (they are bigger)
+            // TODO: and here
             (true, true, false, true) => Ordering::Greater,
             // we are both bounded at the top
             (true, true, false, false) => {
                 match self
                     .upper_bound()
                     .0
-                    .expect("lower bound left should be bounded")
+                    .expect("upper bound left should be bounded")
                     .cmp(
                         other
                             .upper_bound()
                             .0
-                            .expect("lower bound right should be bounded"),
+                            .expect("upper bound right should be bounded"),
                     ) {
                     Ordering::Less => Ordering::Less,
                     Ordering::Equal => {
                         // check inclusiveness
+                        // TODO: unclear what is going on here
                         self.upper_bound().1.cmp(&other.upper_bound().1)
                     }
                     Ordering::Greater => Ordering::Greater,
