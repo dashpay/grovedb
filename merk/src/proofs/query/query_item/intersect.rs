@@ -1,7 +1,8 @@
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 
-use crate::proofs::query::query_item::QueryItem;
+use crate::{proofs::query::query_item::QueryItem, Op::Put};
 
+#[derive(Default)]
 pub struct QueryItemIntersectionResult {
     in_both: Option<QueryItem>,
     ours_left: Option<QueryItem>,
@@ -700,12 +701,216 @@ impl QueryItem {
                     }
                 }
             }
-            QueryItem::RangeAfter(range_after) => {}
+            QueryItem::RangeAfter(our_range_after) => {
+                // intersecting range after with range to
+                // will only overlap if a <= b
+                // a is range after, b is range to
+                // a is not inclusive, a+ is what we care about
+                // we can't have equal right as we don't know what the step size is
+                // the overlap will be from a to b, but inverted a right
+                // oh, we could also just use theirs but in a range item that doesn't care about
+                // the inclusive nature
+                if their_range_to.end <= our_range_after.start {
+                    // no overlap
+                    QueryItemIntersectionResult {
+                        in_both: None,
+                        ours_left: Some(QueryItem::RangeTo(their_range_to)),
+                        ours_right: None,
+                        theirs_left: None,
+                        theirs_right: Some(QueryItem::RangeAfter(our_range_after.to_owned())),
+                    }
+                } else {
+                    // we have an overlap,
+                    // we have a range to from left to a inclusive
+                    // then one from a non inclusive to  b non inclusive
+                    // finally one from b inclusive to right
+                    let in_both = Some(QueryItem::RangeAfterTo(Range {
+                        start: our_range_after.start.clone(),
+                        end: their_range_to.end.clone(),
+                    }));
+                    let ours_left = Some(QueryItem::RangeToInclusive(RangeToInclusive {
+                        end: our_range_after.start.clone(),
+                    }));
+                    let theirs_right = Some(QueryItem::RangeFrom(RangeFrom {
+                        start: their_range_to.end,
+                    }));
+                    QueryItemIntersectionResult {
+                        in_both,
+                        ours_left,
+                        ours_right: None,
+                        theirs_left: None,
+                        theirs_right,
+                    }
+                }
+            }
+            QueryItem::RangeFrom(our_range_from) => {
+                // intersecting range from and range to
+                // range_from has a as inclusive
+                // check for no overlap first
+                if our_range_from.start >= their_range_to.end {
+                    // no overlap
+                    QueryItemIntersectionResult {
+                        in_both: None,
+                        ours_left: Some(QueryItem::RangeTo(their_range_to)),
+                        ours_right: None,
+                        theirs_left: None,
+                        theirs_right: Some(QueryItem::RangeFrom(our_range_from.to_owned())),
+                    }
+                } else {
+                    // overlap
+                    // we have from left to non inclusive of range from start
+                    // for common, we have range_from start inclusive to range to end non inclusive
+                    // then range_to end inclusive to right
+                    let in_both = Some(QueryItem::Range(Range {
+                        start: our_range_from.start.clone(),
+                        end: their_range_to.end.clone(),
+                    }));
+                    let ours_left = Some(QueryItem::RangeTo(RangeTo {
+                        end: our_range_from.start.clone(),
+                    }));
+                    let theirs_right = Some(QueryItem::RangeFrom(RangeFrom {
+                        start: their_range_to.end.clone(),
+                    }));
+                    QueryItemIntersectionResult {
+                        in_both,
+                        ours_left,
+                        ours_right: None,
+                        theirs_left: None,
+                        theirs_right,
+                    }
+                }
+            }
+            QueryItem::RangeTo(our_range_to) => {
+                // intersecting range to with range to
+                // they both start from the same point so there should always be an intersection
+                // nothing to our left or their left as we all come from extreme left
+                // so in_both and someone's right
+                // in_both to the smaller one, then from smaller one to the bigger one
+                // in_both will be rangeTo
+                if our_range_to.end <= their_range_to.end {
+                    // our_range is the smaller one
+                    let in_both = Some(QueryItem::RangeTo(our_range_to.to_owned()));
+                    let ours_right = Some(QueryItem::Range(Range {
+                        start: our_range_to.end.clone(),
+                        end: their_range_to.end,
+                    }));
+                    QueryItemIntersectionResult {
+                        in_both,
+                        ours_left: None,
+                        ours_right,
+                        theirs_left: None,
+                        theirs_right: None,
+                    }
+                } else {
+                    // their range is the smaller one
+                    let in_both = Some(QueryItem::RangeTo(their_range_to.to_owned()));
+                    let theirs_right = Some(QueryItem::Range(Range {
+                        start: our_range_to.end.clone(),
+                        end: their_range_to.end,
+                    }));
+                    QueryItemIntersectionResult {
+                        in_both,
+                        ours_left: None,
+                        ours_right: None,
+                        theirs_left: None,
+                        theirs_right,
+                    }
+                }
+            }
+            QueryItem::RangeToInclusive(our_range_to_inclusive) => {
+                // intersecting range_to_inclusive with range_to
+                // similar to the one above, we'd just use a rangeInclusive for one
+                if our_range_to_inclusive.end < their_range_to.end {
+                    // our_range is the smaller one
+                    let in_both = Some(QueryItem::RangeToInclusive(
+                        our_range_to_inclusive.to_owned(),
+                    ));
+                    let ours_right = Some(QueryItem::RangeAfterTo(Range {
+                        start: our_range_to_inclusive.end.clone(),
+                        end: their_range_to.end,
+                    }));
+                    QueryItemIntersectionResult {
+                        in_both,
+                        ours_left: None,
+                        ours_right,
+                        theirs_left: None,
+                        theirs_right: None,
+                    }
+                } else {
+                    // their range is the smaller one
+                    let in_both = Some(QueryItem::RangeTo(their_range_to.clone()));
+                    let theirs_right = Some(QueryItem::RangeInclusive(RangeInclusive::new(
+                        their_range_to.end,
+                        our_range_to_inclusive.end.clone(),
+                    )));
+                    QueryItemIntersectionResult {
+                        in_both,
+                        ours_left: None,
+                        ours_right: None,
+                        theirs_left: None,
+                        theirs_right,
+                    }
+                }
+            }
+        }
+    }
 
-            QueryItem::RangeFrom(range_from) => {}
+    pub fn intersect_with_range(&self, their_range: Range<Vec<u8>>) -> QueryItemIntersectionResult {
+        match self {
+            QueryItem::Key(our_key) => QueryItem::Range(their_range)
+                .intersect_with_key(our_key)
+                .flip(),
+            QueryItem::RangeFull(_) => QueryItem::Range(their_range)
+                .intersect_with_range_full()
+                .flip(),
+            QueryItem::RangeTo(our_range_to) => QueryItem::Range(their_range)
+                .intersect_with_range_to(our_range_to.clone())
+                .flip(),
+            QueryItem::Range(our_range) => {
+                // intersecting a range with another range both ends not inclusive
+                // might not overlap at all
+                if our_range.end <= their_range.start || their_range.end <= our_range.start {
+                    // no overlap, determine which is smaller to know right or left
+                    if our_range.end <= their_range.start {
+                        // our range is to the left
+                        QueryItemIntersectionResult {
+                            in_both: None,
+                            ours_left: None,
+                            ours_right: Some(QueryItem::Range(their_range)),
+                            theirs_left: Some(QueryItem::Range(our_range.to_owned())),
+                            theirs_right: None,
+                        }
+                    } else {
+                        // their range is to the left
+                        QueryItemIntersectionResult {
+                            in_both: None,
+                            ours_left: Some(QueryItem::Range(their_range)),
+                            ours_right: None,
+                            theirs_left: None,
+                            theirs_right: Some(QueryItem::Range(our_range.to_owned())),
+                        }
+                    }
+                } else {
+                    // there is an overlap
+                    // get the smaller start and construct a range (non inclusive end) to other
+                    // start for common construct from start of other (ref
+                    // above) to smaller end for right construct from the
+                    // inverse of smaller end to bigger end
 
-            QueryItem::RangeTo(range_to) => {}
-            QueryItem::RangeToInclusive(range_to_inclusive) => {}
+                    let mut intersection_result = QueryItemIntersectionResult::default();
+
+                    // the starts could be equal tho, in that case nothing on the left
+                    if our_range.start < their_range.start {
+                        our_right
+                    }
+                }
+            }
+            QueryItem::RangeInclusive(_) => {}
+            QueryItem::RangeFrom(_) => {}
+            QueryItem::RangeToInclusive(_) => {}
+            QueryItem::RangeAfter(_) => {}
+            QueryItem::RangeAfterTo(_) => {}
+            QueryItem::RangeAfterToInclusive(_) => {}
         }
     }
 
@@ -714,7 +919,7 @@ impl QueryItem {
             QueryItem::Key(key) => self.intersect_with_key(key),
             QueryItem::RangeFull(_) => self.intersect_with_range_full(),
             QueryItem::RangeTo(range_to) => self.intersect_with_range_to(range_to.clone()),
-            QueryItem::Range(_) => {}
+            QueryItem::Range(range) => self.intersect_with_range(range.clone()),
             QueryItem::RangeInclusive(_) => {}
             QueryItem::RangeFrom(_) => {}
 
