@@ -105,6 +105,8 @@ impl RangeSet {
             }
             _ => {
                 // TODO: return proper error, this should be unreachable
+                //  if the range set was created from a valid query item,
+                //  actually should return None in this case
                 unreachable!()
             }
         }
@@ -346,5 +348,66 @@ impl QueryItem {
                 end: RangeSetItem::Inclusive(range.end().clone()),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::ops::{Range, RangeInclusive};
+
+    use crate::proofs::query::query_item::QueryItem;
+
+    #[test]
+    pub fn test_range_set_query_item_conversion() {
+        assert_eq!(
+            QueryItem::Key(vec![5]).to_range_set().to_query_item(),
+            QueryItem::Key(vec![5])
+        );
+        assert_eq!(
+            QueryItem::Range(Range {
+                start: vec![2],
+                end: vec![5]
+            })
+            .to_range_set()
+            .to_query_item(),
+            QueryItem::Range(Range {
+                start: vec![2],
+                end: vec![5]
+            })
+        );
+        assert_eq!(
+            QueryItem::RangeInclusive(RangeInclusive::new(vec![2], vec![5]))
+                .to_range_set()
+                .to_query_item(),
+            QueryItem::RangeInclusive(RangeInclusive::new(vec![2], vec![5]))
+        );
+        assert_eq!(
+            QueryItem::RangeFull(..).to_range_set().to_query_item(),
+            QueryItem::RangeFull(..)
+        );
+        assert_eq!(
+            QueryItem::RangeFrom(vec![5]..).to_range_set().to_query_item(),
+            QueryItem::RangeFrom(vec![5]..)
+        );
+        assert_eq!(
+            QueryItem::RangeTo(..vec![3]).to_range_set().to_query_item(),
+            QueryItem::RangeTo(..vec![3])
+        );
+        assert_eq!(
+            QueryItem::RangeToInclusive(..=vec![3]).to_range_set().to_query_item(),
+            QueryItem::RangeToInclusive(..=vec![3])
+        );
+        assert_eq!(
+            QueryItem::RangeAfter(vec![4]..).to_range_set().to_query_item(),
+            QueryItem::RangeAfter(vec![4]..)
+        );
+        assert_eq!(
+            QueryItem::RangeAfterTo(vec![3]..vec![6]).to_range_set().to_query_item(),
+            QueryItem::RangeAfterTo(vec![3]..vec![6])
+        );
+        assert_eq!(
+            QueryItem::RangeAfterToInclusive(vec![3]..=vec![7]).to_range_set().to_query_item(),
+            QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])
+        );
     }
 }
