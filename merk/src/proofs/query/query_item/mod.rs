@@ -649,6 +649,7 @@ mod test {
             .collides_with(&QueryItem::Range(vec![20]..vec![30])));
         assert!(!QueryItem::Range(vec![20]..vec![30])
             .collides_with(&QueryItem::Range(vec![10]..vec![20])));
+        assert!(QueryItem::RangeFrom(vec![2]..).collides_with(&QueryItem::Key(vec![5])));
     }
 
     #[test]

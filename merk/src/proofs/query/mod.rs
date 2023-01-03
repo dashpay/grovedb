@@ -468,7 +468,14 @@ where
         // TODO: don't copy into vec, support comparing QI to byte slice
         let node_key = QueryItem::Key(self.tree().key().to_vec());
         let mut search = query.binary_search_by(|key| {
-            if key.collides_with(&node_key) {
+            if key.collides_with(&node_key) != key.contains(self.tree().key()) {
+                dbg!("hmm");
+                dbg!(&node_key);
+                dbg!(&key);
+                dbg!(key.collides_with(&node_key));
+            }
+            // if key.collides_with(&node_key) {
+            if key.contains(self.tree().key()) {
                 Ordering::Equal
             } else {
                 key.cmp(&node_key)
