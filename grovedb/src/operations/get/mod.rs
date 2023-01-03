@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Get operations and costs
+
 #[cfg(feature = "full")]
 mod average_case;
 #[cfg(feature = "full")]
@@ -31,6 +61,7 @@ pub const MAX_REFERENCE_HOPS: usize = 10;
 
 #[cfg(feature = "full")]
 impl GroveDb {
+    /// Get op
     pub fn get<'p, P>(
         &self,
         path: P,
@@ -58,6 +89,7 @@ impl GroveDb {
         }
     }
 
+    /// Follow reference
     pub fn follow_reference(
         &self,
         mut path: Vec<Vec<u8>>,
@@ -241,6 +273,7 @@ impl GroveDb {
         }
     }
 
+    /// Check that subtree exists with path not found error
     pub fn check_subtree_exists_path_not_found<'p, P>(
         &self,
         path: P,
@@ -261,6 +294,7 @@ impl GroveDb {
         )
     }
 
+    /// Check subtree exists with invalid path error
     pub fn check_subtree_exists_invalid_path<'p, P>(
         &self,
         path: P,

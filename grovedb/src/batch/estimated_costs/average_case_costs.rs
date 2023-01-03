@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Average case costs
+
 #[cfg(feature = "full")]
 use std::{
     collections::{BTreeMap, HashMap},
@@ -30,6 +60,8 @@ use crate::{
 
 #[cfg(feature = "full")]
 impl Op {
+    /// Get the estimated average case cost of the op. Calls a lower level function
+    /// to calculate the estimate based on the type of op. Returns CostResult.
     fn average_case_cost(
         &self,
         key: &KeyInfo,
@@ -101,6 +133,7 @@ pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
 
 #[cfg(feature = "full")]
 impl AverageCaseTreeCacheKnownPaths {
+    /// Updates the cache to the default setting with the given subtree paths
     pub(in crate::batch) fn new_with_estimated_layer_information(
         paths: HashMap<KeyInfoPath, EstimatedLayerInformation>,
     ) -> Self {

@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Batch structure
+
 #[cfg(feature = "full")]
 use std::{collections::BTreeMap, fmt};
 
@@ -19,9 +49,10 @@ use crate::{
 };
 
 #[cfg(feature = "full")]
-///                          LEVEL           PATH                   KEY      OP
+/// Level, path, key, op
 type OpsByLevelPath = IntMap<u32, BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, Op>>>;
 
+/// Batch structure
 #[cfg(feature = "full")]
 pub(super) struct BatchStructure<C, F, SR> {
     /// Operations by level path
@@ -29,12 +60,11 @@ pub(super) struct BatchStructure<C, F, SR> {
     /// This is for references
     pub(super) ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, Op>,
     /// Merk trees
-    /// Very important: the type of run mode we are in is contained in this
-    /// cache
+    /// Very important: the type of run mode we are in is contained in this cache
     pub(super) merk_tree_cache: C,
     /// Flags modification function
     pub(super) flags_update: F,
-    ///
+    /// Split removal bytes
     pub(super) split_removal_bytes: SR,
     /// Last level
     pub(super) last_level: u32,
@@ -77,6 +107,7 @@ where
         u32,
     ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
 {
+    /// Create batch structure from a list of ops. Returns CostResult.
     pub(super) fn from_ops(
         ops: Vec<GroveDbOp>,
         update_element_flags_function: F,

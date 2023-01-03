@@ -1,3 +1,34 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Insert
+//! Implements functions in Element for inserting into Merk
+
 #[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -47,6 +78,8 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Add to batch operations a "Put" op with key and serialized element. 
+    /// Return CostResult.
     pub fn insert_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -87,6 +120,8 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Adds a "Put" op to batch operations with the element and key if it
+    /// doesn't exist yet. Returns CostResult.
     pub fn insert_if_not_exists_into_batch_operations<
         'db,
         S: StorageContext<'db>,
@@ -152,6 +187,7 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Adds a "Put" op to batch operations with reference and key. Returns CostResult.
     pub fn insert_reference_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -214,6 +250,7 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Adds a "Put" op to batch operations for a subtree and key
     pub fn insert_subtree_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,

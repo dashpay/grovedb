@@ -1,3 +1,31 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
 //! GroveDB batch operations support
 
 #[cfg(feature = "full")]
@@ -76,6 +104,7 @@ use crate::{
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
+/// Operations
 #[cfg(feature = "full")]
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
@@ -121,6 +150,7 @@ impl Ord for Op {
     }
 }
 
+/// Known keys path
 #[cfg(feature = "full")]
 #[derive(Eq, Clone, Debug)]
 pub struct KnownKeysPath(Vec<Vec<u8>>);
@@ -153,6 +183,7 @@ impl PartialEq<Vec<Vec<u8>>> for KnownKeysPath {
     }
 }
 
+/// Key info path
 #[cfg(feature = "full")]
 #[derive(PartialOrd, Ord, Eq, Clone, Debug, Default)]
 pub struct KeyInfoPath(pub Vec<KeyInfo>);
@@ -188,10 +219,12 @@ impl Visualize for KeyInfoPath {
 
 #[cfg(feature = "full")]
 impl KeyInfoPath {
+    /// From a vector
     pub fn from_vec(vec: Vec<KeyInfo>) -> Self {
         KeyInfoPath(vec)
     }
 
+    /// From a known path
     pub fn from_known_path<'p, P>(path: P) -> Self
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -200,6 +233,7 @@ impl KeyInfoPath {
         KeyInfoPath(path.into_iter().map(|k| KnownKey(k.to_vec())).collect())
     }
 
+    /// From a known owned path
     pub fn from_known_owned_path<P>(path: P) -> Self
     where
         P: IntoIterator<Item = Vec<u8>>,
@@ -208,46 +242,57 @@ impl KeyInfoPath {
         KeyInfoPath(path.into_iter().map(KnownKey).collect())
     }
 
+    /// To a path and consume
     pub fn to_path_consume(self) -> Vec<Vec<u8>> {
         self.0.into_iter().map(|k| k.get_key()).collect()
     }
 
+    /// To a path
     pub fn to_path(&self) -> Vec<Vec<u8>> {
         self.0.iter().map(|k| k.get_key_clone()).collect()
     }
 
+    /// To a path of refs
     pub fn to_path_refs(&self) -> Vec<&[u8]> {
         self.0.iter().map(|k| k.as_slice()).collect()
     }
 
+    /// Return the last and all the other elements split
     pub fn split_last(&self) -> Option<(&KeyInfo, &[KeyInfo])> {
         self.0.split_last()
     }
 
+    /// Return the last element
     pub fn last(&self) -> Option<&KeyInfo> {
         self.0.last()
     }
 
+    /// As vector
     pub fn as_vec(&self) -> &Vec<KeyInfo> {
         &self.0
     }
 
+    /// Check if it's empty
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    /// Return length
     pub fn len(&self) -> u32 {
         self.0.len() as u32
     }
 
+    /// Push a KeyInfo to self
     pub fn push(&mut self, k: KeyInfo) {
         self.0.push(k);
     }
 
+    /// Iterate KeyInfo
     pub fn iterator(&self) -> Iter<'_, KeyInfo> {
         self.0.iter()
     }
 
+    /// Into iterator
     pub fn into_iterator(self) -> IntoIter<KeyInfo> {
         self.0.into_iter()
     }
@@ -307,6 +352,7 @@ impl fmt::Debug for GroveDbOp {
 
 #[cfg(feature = "full")]
 impl GroveDbOp {
+    /// An insert op using a known owned path and known key
     pub fn insert_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
@@ -316,6 +362,7 @@ impl GroveDbOp {
         }
     }
 
+    /// An insert op
     pub fn insert_estimated_op(path: KeyInfoPath, key: KeyInfo, element: Element) -> Self {
         Self {
             path,
@@ -324,6 +371,7 @@ impl GroveDbOp {
         }
     }
 
+    /// A replace op using a known owned path and known key
     pub fn replace_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
@@ -333,6 +381,7 @@ impl GroveDbOp {
         }
     }
 
+    /// A replace op
     pub fn replace_estimated_op(path: KeyInfoPath, key: KeyInfo, element: Element) -> Self {
         Self {
             path,
@@ -341,6 +390,7 @@ impl GroveDbOp {
         }
     }
 
+    /// A delete op using a known owned path and known key
     pub fn delete_op(path: Vec<Vec<u8>>, key: Vec<u8>) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
@@ -350,6 +400,7 @@ impl GroveDbOp {
         }
     }
 
+    /// A delete tree op using a known owned path and known key
     pub fn delete_tree_op(path: Vec<Vec<u8>>, key: Vec<u8>, is_sum_tree: bool) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
@@ -363,6 +414,7 @@ impl GroveDbOp {
         }
     }
 
+    /// A delete op
     pub fn delete_estimated_op(path: KeyInfoPath, key: KeyInfo) -> Self {
         Self {
             path,
@@ -371,6 +423,7 @@ impl GroveDbOp {
         }
     }
 
+    /// A delete tree op
     pub fn delete_estimated_tree_op(path: KeyInfoPath, key: KeyInfo, is_sum_tree: bool) -> Self {
         Self {
             path,
@@ -383,6 +436,7 @@ impl GroveDbOp {
         }
     }
 
+    /// Verify consistency of operations
     pub fn verify_consistency_of_operations(ops: &Vec<GroveDbOp>) -> GroveDbOpConsistencyResults {
         let ops_len = ops.len();
         // operations should not have any duplicates
@@ -481,6 +535,7 @@ impl GroveDbOp {
     }
 }
 
+/// Results of a consistency check on an operation batch
 #[cfg(feature = "full")]
 #[derive(Debug)]
 pub struct GroveDbOpConsistencyResults {
@@ -492,6 +547,7 @@ pub struct GroveDbOpConsistencyResults {
 
 #[cfg(feature = "full")]
 impl GroveDbOpConsistencyResults {
+    /// Check if results are empty
     pub fn is_empty(&self) -> bool {
         self.repeated_ops.is_empty()
             && self.same_path_key_ops.is_empty()
@@ -1319,6 +1375,7 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
+    /// Applies batch on GroveDB
     pub fn apply_batch(
         &self,
         ops: Vec<GroveDbOp>,
@@ -1339,6 +1396,7 @@ impl GroveDb {
         )
     }
 
+    /// Opens transactional merk at path with given storage batch context. Returns CostResult.
     pub fn open_batch_transactional_merk_at_path<'db, 'p, P>(
         &'db self,
         storage_batch: &'db StorageBatch,
@@ -1407,6 +1465,7 @@ impl GroveDb {
         }
     }
 
+    /// Opens merk at path with given storage batch context. Returns CostResult.
     pub fn open_batch_merk_at_path<'a>(
         &'a self,
         storage_batch: &'a StorageBatch,
@@ -1566,6 +1625,7 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
+    /// Returns the estimated average or worst case cost for an entire batch of ops
     pub fn estimated_case_operations_for_batch(
         estimated_costs_type: EstimatedCostsType,
         ops: Vec<GroveDbOp>,
