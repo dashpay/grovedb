@@ -1,6 +1,37 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Merk benches ops
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use merk::{owner::Owner, test_utils::*};
 
+/// 1m sequential inserts in 10k batches, memonly
 fn insert_1m_10k_seq_memonly(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 10_000;
@@ -24,6 +55,7 @@ fn insert_1m_10k_seq_memonly(c: &mut Criterion) {
     });
 }
 
+/// 1m random inserts in 10k batches, memonly
 fn insert_1m_10k_rand_memonly(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 10_000;
@@ -47,6 +79,7 @@ fn insert_1m_10k_rand_memonly(c: &mut Criterion) {
     });
 }
 
+/// 1m sequential updates in 10k batches, memonly
 fn update_1m_10k_seq_memonly(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 10_000;
@@ -72,6 +105,7 @@ fn update_1m_10k_seq_memonly(c: &mut Criterion) {
     });
 }
 
+/// 1m random updates in 10k batches, memonly
 fn update_1m_10k_rand_memonly(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 10_000;

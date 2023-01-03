@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Merk benches
+
 use std::iter::empty;
 
 use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
@@ -6,6 +36,7 @@ use merk::{proofs::encode_into as encode_proof_into, test_utils::*, Merk};
 use rand::prelude::*;
 use storage::{rocksdb_storage::test_utils::TempStorage, Storage};
 
+/// 1 million gets in 2k batches
 pub fn get(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
@@ -49,6 +80,7 @@ pub fn get(c: &mut Criterion) {
     });
 }
 
+/// 1 million sequential inserts in 2k batches
 pub fn insert_1m_2k_seq(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
@@ -87,6 +119,7 @@ pub fn insert_1m_2k_seq(c: &mut Criterion) {
     });
 }
 
+/// 1 million random inserts in 2k batches
 pub fn insert_1m_2k_rand(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
@@ -125,6 +158,7 @@ pub fn insert_1m_2k_rand(c: &mut Criterion) {
     });
 }
 
+/// 1 million sequential updates in 2k batches
 pub fn update_1m_2k_seq(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
@@ -180,6 +214,7 @@ pub fn update_1m_2k_seq(c: &mut Criterion) {
     });
 }
 
+/// 1 million random updates in 2k batches
 pub fn update_1m_2k_rand(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
@@ -235,6 +270,7 @@ pub fn update_1m_2k_rand(c: &mut Criterion) {
     });
 }
 
+/// 1 million random deletes in 2k batches
 pub fn delete_1m_2k_rand(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
@@ -313,6 +349,7 @@ pub fn delete_1m_2k_rand(c: &mut Criterion) {
     });
 }
 
+/// 1 million random proofs in 2k batches
 pub fn prove_1m_2k_rand(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
@@ -362,6 +399,7 @@ pub fn prove_1m_2k_rand(c: &mut Criterion) {
     });
 }
 
+/// Build 1 million trunk chunks in 2k batches, random
 pub fn build_trunk_chunk_1m_2k_rand(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
@@ -402,6 +440,7 @@ pub fn build_trunk_chunk_1m_2k_rand(c: &mut Criterion) {
     });
 }
 
+/// Chunk producer random 1 million
 pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
@@ -440,6 +479,7 @@ pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
     });
 }
 
+/// Chunk iter 1 million
 pub fn chunk_iter_1m_1(c: &mut Criterion) {
     let initial_size = 1_000_000;
     let batch_size = 2_000;
@@ -484,6 +524,7 @@ pub fn chunk_iter_1m_1(c: &mut Criterion) {
     });
 }
 
+/// Restore merk of size 500
 pub fn restore_500_1(c: &mut Criterion) {
     let merk_size = 500;
 
