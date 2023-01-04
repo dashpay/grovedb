@@ -26,7 +26,7 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Average case costs
+//! Average case costs for Merk
 
 #[cfg(feature = "full")]
 use costs::{CostResult, CostsExt, OperationCost};
@@ -52,6 +52,7 @@ pub type Weight = u8;
 
 #[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
+/// Estimated number of sum trees
 pub enum EstimatedSumTrees {
     NoSumTrees,
     SomeSumTrees {
@@ -86,6 +87,7 @@ impl EstimatedSumTrees {
 
 #[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
+/// Estimated layer sizes
 pub enum EstimatedLayerSizes {
     AllSubtrees(AverageKeySize, EstimatedSumTrees, Option<AverageFlagsSize>),
     AllItems(AverageKeySize, AverageValueSize, Option<AverageFlagsSize>),
@@ -114,7 +116,7 @@ pub enum EstimatedLayerSizes {
 
 #[cfg(feature = "full")]
 impl EstimatedLayerSizes {
-    /// 
+    /// Return average flags size for layer
     pub fn layered_flags_size(&self) -> Result<&Option<AverageFlagsSize>, Error> {
         match self {
             EstimatedLayerSizes::AllSubtrees(_, _, flags_size) => Ok(flags_size),
@@ -137,8 +139,9 @@ impl EstimatedLayerSizes {
         }
     }
 
-    /// this only takes into account subtrees in the estimated layer info
-    /// only should be used when it is known to be a subtree
+    /// Returns the size of a subtree's feature and flags
+    /// This only takes into account subtrees in the estimated layer info
+    /// Only should be used when it is known to be a subtree
     pub fn subtree_with_feature_and_flags_size(&self) -> Result<u32, Error> {
         match self {
             EstimatedLayerSizes::AllSubtrees(_, estimated_sum_trees, flags_size) => {
@@ -159,6 +162,7 @@ impl EstimatedLayerSizes {
         }
     }
 
+    /// Returns the size of a value's feature and flags
     pub fn value_with_feature_and_flags_size(&self) -> Result<u32, Error> {
         match self {
             EstimatedLayerSizes::AllItems(_, average_value_size, flags_size) => {
@@ -241,6 +245,7 @@ pub type EstimatedToBeEmpty = bool;
 
 #[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
+/// Information on an estimated layer
 pub struct EstimatedLayerInformation {
     pub is_sum_tree: bool,
     pub estimated_layer_count: EstimatedLayerCount,
@@ -252,6 +257,7 @@ impl EstimatedLayerInformation {}
 
 #[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
+/// Estimated elements and level number of a layer
 pub enum EstimatedLayerCount {
     PotentiallyAtMaxElements,
     ApproximateElements(ApproximateElementCount),
@@ -288,6 +294,7 @@ impl EstimatedLayerCount {
 
 #[cfg(feature = "full")]
 impl Tree {
+    /// Return estimate of average encoded tree size
     pub fn average_case_encoded_tree_size(
         not_prefixed_key_len: u32,
         estimated_element_size: u32,
@@ -392,12 +399,14 @@ pub fn add_average_case_merk_root_hash(cost: &mut OperationCost) {
 }
 
 #[cfg(feature = "full")]
+/// Average case cost of propagating a merk
 pub fn average_case_merk_propagate(input: &EstimatedLayerInformation) -> CostResult<(), Error> {
     let mut cost = OperationCost::default();
     add_average_case_merk_propagate(&mut cost, input).wrap_with_cost(cost)
 }
 
 #[cfg(feature = "full")]
+/// Add average case cost for propagating a merk
 pub fn add_average_case_merk_propagate(
     cost: &mut OperationCost,
     input: &EstimatedLayerInformation,
