@@ -784,13 +784,40 @@ mod tests {
             GroveDb::verify_query(proof.as_slice(), &path_query_two).expect("should execute proof");
         assert_eq!(result_set.len(), 3);
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two]);
+        #[rustfmt::skip]
+        mod explanation {
 
-        assert!(matches!(
-            merged_path_query,
-            Err(Error::InvalidInput(
-                "path query path's should be non subset"
-            ))
-        ));
+    // Tree Structure
+    //                                   root
+    //              /                      |                       \ (not representing Merk)
+    // -----------------------------------------------------------------------------------------
+    //         test_leaf            another_test_leaf                deep_leaf
+    //       /           \             /         \              /                 \
+    // -----------------------------------------------------------------------------------------
+    //   innertree     innertree4  innertree2  innertree3  deep_node_1          deep_node_2
+    //       |             |           |           |      /          \         /         \
+    // -----------------------------------------------------------------------------------------
+    //      k2,v2        k4,v4       k3,v3      k4,v4   deeper_1   deeper_2  deeper_3   deeper_4
+    //     /     \         |                           |   ↑  (2)  ↑ |         |          |
+    //  k1,v1    k3,v3   k5,v5                        /path_query_1 /          |          |
+    // -----------------------------------------------------------------------------------------
+    //                                            k2,v2         k5,v5        k8,v8     k10,v10
+    //                                           /     \        /    \       /    \       \
+    //                                       k1,v1    k3,v3  k4,v4   k6,v6 k7,v7  k9,v9  k11,v11
+    //                                                                        ↑     (all 2) ↑
+    //                                                                        ↑   path_query_two
+    //                                                                 path_query_three (2)
+    //                                                                   (after 7, so {8,9})
+
+        }
+
+        // query 2 will superseed query 1
+        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two]).expect("expected to be able to merge path_query");
+
+        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
+        let (_, result_set) =
+            GroveDb::verify_query(proof.as_slice(), &merged_path_query).expect("should execute proof");
+        assert_eq!(result_set.len(), 4);
+
     }
 }
