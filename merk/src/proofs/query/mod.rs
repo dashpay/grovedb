@@ -87,6 +87,7 @@ impl Query {
         Self::new_with_direction(true)
     }
 
+    /// Creates a new query with a direction specified
     pub fn new_with_direction(left_to_right: bool) -> Self {
         Self {
             left_to_right,
@@ -94,18 +95,22 @@ impl Query {
         }
     }
 
+    /// Get number of query items
     pub(crate) fn len(&self) -> usize {
         self.items.len()
     }
 
+    /// Iterate through query items
     pub fn iter(&self) -> impl Iterator<Item = &QueryItem> {
         self.items.iter()
     }
 
+    /// Iterate through query items in reverse
     pub fn rev_iter(&self) -> impl Iterator<Item = &QueryItem> {
         self.items.iter().rev()
     }
 
+    /// Iterate with direction specified
     pub fn directional_iter(
         &self,
         left_to_right: bool,
@@ -280,6 +285,7 @@ impl Query {
         self.items.insert(item);
     }
 
+    /// Merge with another query
     pub fn merge(&mut self, other: &Query) {
         // merge query items as they point to the same context
         for item in &other.items {
@@ -306,6 +312,7 @@ impl Query {
         }
     }
 
+    /// Check if has subquery
     pub fn has_subquery(&self) -> bool {
         // checks if a query has subquery items
         if self.default_subquery_branch.subquery.is_some()
@@ -317,6 +324,7 @@ impl Query {
         false
     }
 
+    /// Check if has only keys
     pub fn has_only_keys(&self) -> bool {
         // checks if all searched for items are keys
         self.items.iter().all(|a| a.is_key())
@@ -382,6 +390,7 @@ impl Hash for QueryItem {
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl QueryItem {
+    /// Processing footprint
     pub fn processing_footprint(&self) -> u32 {
         match self {
             QueryItem::Key(key) => key.len() as u32,
@@ -393,6 +402,7 @@ impl QueryItem {
         }
     }
 
+    /// Is there a lower bound?
     pub fn lower_bound(&self) -> (Option<&[u8]>, bool) {
         match self {
             QueryItem::Key(key) => (Some(key.as_slice()), false),
@@ -408,6 +418,7 @@ impl QueryItem {
         }
     }
 
+    /// Is there no lower bound?
     pub const fn lower_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
@@ -423,6 +434,7 @@ impl QueryItem {
         }
     }
 
+    /// Is there an upper bound?
     pub fn upper_bound(&self) -> (Option<&[u8]>, bool) {
         match self {
             QueryItem::Key(key) => (Some(key.as_slice()), true),
@@ -438,6 +450,7 @@ impl QueryItem {
         }
     }
 
+    /// Is there no upper bound?
     pub const fn upper_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
@@ -453,6 +466,7 @@ impl QueryItem {
         }
     }
 
+    /// Check if contains a key
     pub fn contains(&self, key: &[u8]) -> bool {
         let (lower_bound, lower_bound_non_inclusive) = self.lower_bound();
         let (upper_bound, upper_bound_inclusive) = self.upper_bound();
@@ -555,14 +569,17 @@ impl QueryItem {
         }
     }
 
+    /// Check if is key
     pub const fn is_key(&self) -> bool {
         matches!(self, QueryItem::Key(_))
     }
 
+    /// Check if is range
     pub const fn is_range(&self) -> bool {
         !matches!(self, QueryItem::Key(_))
     }
 
+    /// Seek for iter
     pub fn seek_for_iter<I: RawIterator>(
         &self,
         iter: &mut I,
@@ -672,6 +689,7 @@ impl QueryItem {
         a.len().cmp(&b.len())
     }
 
+    /// Check if iterator is valid for the type
     pub fn iter_is_valid_for_type<I: RawIterator>(
         &self,
         iter: &I,
@@ -915,6 +933,7 @@ where
 
     #[cfg(feature = "full")]
     #[allow(dead_code)] // TODO: remove when proofs will be enabled
+    /// Create a full proof
     pub(crate) fn create_full_proof(
         &mut self,
         query: &[QueryItem],
@@ -1172,6 +1191,7 @@ where
 }
 
 #[cfg(feature = "full")]
+/// Verify proof against expected hash
 pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
     let ops = Decoder::new(bytes);
     let mut map_builder = MapBuilder::new();

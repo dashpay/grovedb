@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Converter
+
 use grovedb::{reference_path::ReferencePathType, Element, PathQuery, Query, SizedQuery};
 use neon::{prelude::*, types::buffer::TypedArray};
 
@@ -11,6 +41,7 @@ fn element_to_string(element: Element) -> String {
     }
 }
 
+/// Convert js object to element
 pub fn js_object_to_element<'a, C: Context<'a>>(
     js_object: Handle<JsObject>,
     cx: &mut C,
@@ -42,6 +73,7 @@ pub fn js_object_to_element<'a, C: Context<'a>>(
     }
 }
 
+/// Convert element to js object
 pub fn element_to_js_object<'a, C: Context<'a>>(
     element: Element,
     cx: &mut C,
@@ -66,6 +98,7 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
     NeonResult::Ok(js_object.upcast())
 }
 
+/// Convert nested vecs to js
 pub fn nested_vecs_to_js<'a, C: Context<'a>>(
     v: Vec<Vec<u8>>,
     cx: &mut C,
@@ -81,10 +114,12 @@ pub fn nested_vecs_to_js<'a, C: Context<'a>>(
     Ok(js_array.upcast())
 }
 
+/// Convert js buffer to vec
 pub fn js_buffer_to_vec_u8<'a, C: Context<'a>>(js_buffer: Handle<JsBuffer>, cx: &mut C) -> Vec<u8> {
     js_buffer.as_slice(cx).to_vec()
 }
 
+/// Convert js array of buffers to vec
 pub fn js_array_of_buffers_to_vec<'a, C: Context<'a>>(
     js_array: Handle<JsArray>,
     cx: &mut C,
@@ -100,6 +135,7 @@ pub fn js_array_of_buffers_to_vec<'a, C: Context<'a>>(
     Ok(vec)
 }
 
+/// Convert js value to option
 pub fn js_value_to_option<'a, T: Value, C: Context<'a>>(
     js_value: Handle<'a, JsValue>,
     cx: &mut C,
@@ -119,6 +155,7 @@ fn js_object_get_vec_u8<'a, C: Context<'a>>(
     Ok(js_buffer_to_vec_u8(js_object.get(cx, field)?, cx))
 }
 
+/// Convert js object to query
 fn js_object_to_query<'a, C: Context<'a>>(
     js_object: Handle<JsObject>,
     cx: &mut C,
@@ -188,6 +225,7 @@ fn js_object_to_query<'a, C: Context<'a>>(
     Ok(query)
 }
 
+/// Convert js object to sized query
 fn js_object_to_sized_query<'a, C: Context<'a>>(
     js_object: Handle<JsObject>,
     cx: &mut C,
@@ -208,6 +246,7 @@ fn js_object_to_sized_query<'a, C: Context<'a>>(
     Ok(SizedQuery::new(query, limit, offset))
 }
 
+/// Convert js path query to path query
 pub fn js_path_query_to_path_query<'a, C: Context<'a>>(
     js_path_query: Handle<JsObject>,
     cx: &mut C,

@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Merk tree encoding
+
 #[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -18,10 +48,12 @@ use crate::{
 
 #[cfg(feature = "full")]
 impl Tree {
+    /// Decode given bytes and set as Tree fields. Set key to value of given key.
     pub fn decode_raw(bytes: &[u8], key: Vec<u8>) -> Result<Self, Error> {
         Tree::decode(key, bytes).map_err(EdError)
     }
 
+    /// Get value from storage given key.
     pub(crate) fn get<'db, S, K>(storage: &S, key: K) -> CostResult<Option<Self>, Error>
     where
         S: StorageContext<'db>,
@@ -44,24 +76,28 @@ impl Tree {
 #[cfg(feature = "full")]
 impl Tree {
     #[inline]
+    /// Encode
     pub fn encode(&self) -> Vec<u8> {
         // operation is infallible so it's ok to unwrap
         Encode::encode(&self.inner).unwrap()
     }
 
     #[inline]
+    /// Encode to destination writer
     pub fn encode_into(&self, dest: &mut Vec<u8>) {
         // operation is infallible so it's ok to unwrap
         Encode::encode_into(&self.inner, dest).unwrap()
     }
 
     #[inline]
+    /// Return length of encoding
     pub fn encoding_length(&self) -> usize {
         // operation is infallible so it's ok to unwrap
         Encode::encoding_length(&self.inner).unwrap()
     }
 
     #[inline]
+    /// Get the cost (byte length) of the value including parent to child reference (or hook)
     pub fn value_encoding_length_with_parent_to_child_reference(&self) -> u32 {
         // in the case of a grovedb tree the value cost is fixed
         if let Some(value_cost) = self.inner.kv.value_defined_cost {
@@ -72,6 +108,7 @@ impl Tree {
     }
 
     #[inline]
+    /// Decode bytes from reader, set as Tree fields and set key to given key
     pub fn decode_into(&mut self, key: Vec<u8>, input: &[u8]) -> ed::Result<()> {
         let mut tree_inner: TreeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;
@@ -80,6 +117,7 @@ impl Tree {
     }
 
     #[inline]
+    /// Decode input and set as Tree fields. Set the key as the given key.
     pub fn decode(key: Vec<u8>, input: &[u8]) -> ed::Result<Self> {
         let mut tree_inner: TreeInner = Decode::decode(input)?;
         tree_inner.kv.key = key;

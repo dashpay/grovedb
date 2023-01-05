@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Merk tree feature type
+
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::io::{Read, Write};
 
@@ -13,6 +43,7 @@ use crate::tree::tree_feature_type::TreeFeatureType::{BasicMerk, SummedMerk};
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
+/// Basic or summed
 pub enum TreeFeatureType {
     BasicMerk,
     SummedMerk(i64),
@@ -21,6 +52,7 @@ pub enum TreeFeatureType {
 #[cfg(feature = "full")]
 impl TreeFeatureType {
     #[inline]
+    /// Get length of encoded SummedMerk
     pub fn sum_length(&self) -> Option<u32> {
         match self {
             BasicMerk => None,
@@ -29,11 +61,13 @@ impl TreeFeatureType {
     }
 
     #[inline]
+    /// Is sum feature?
     pub fn is_sum_feature(&self) -> bool {
         matches!(self, SummedMerk(_))
     }
 
     #[inline]
+    /// Get encoding cost of self
     pub(crate) fn encoding_cost(&self) -> usize {
         match self {
             BasicMerk => 1,
