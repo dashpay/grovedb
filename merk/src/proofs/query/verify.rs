@@ -77,19 +77,30 @@ pub fn execute_proof(
                         // we have not reached next queried part of tree
                         // or we intersect with the query_item but at the start which is non
                         // inclusive; continue to the next push
-                        *query_item > key.as_slice()
-                            || (start_non_inclusive
-                                && lower_bound.is_some()
-                                && lower_bound.unwrap() == key.as_slice())
+                        !query_item.lower_unbounded()
+                            && ((lower_bound.is_some() && lower_bound.unwrap() > key.as_slice())
+                                || (start_non_inclusive
+                                    && lower_bound.is_some()
+                                    && lower_bound.unwrap() == key.as_slice()))
+                        // *query_item > key.as_slice()
+                        //     || (start_non_inclusive
+                        //         && lower_bound.is_some()
+                        //         && lower_bound.unwrap() == key.as_slice())
                     } else {
                         // we intersect with the query_item but at the end which is non inclusive;
                         // continue to the next push
-                        *query_item < key.as_slice()
-                            || (!end_inclusive
-                                && upper_bound.is_some()
-                                && upper_bound.unwrap() == key.as_slice())
+                        !query_item.upper_unbounded()
+                            && ((upper_bound.is_some() && upper_bound.unwrap() < key.as_slice())
+                                || (!end_inclusive
+                                    && upper_bound.is_some()
+                                    && upper_bound.unwrap() == key.as_slice()))
+                        // *query_item < key.as_slice()
+                        //     || (!end_inclusive
+                        //         && upper_bound.is_some()
+                        //         && upper_bound.unwrap() == key.as_slice())
                     };
                     if terminate {
+                        dbg!("terminating");
                         break;
                     }
 

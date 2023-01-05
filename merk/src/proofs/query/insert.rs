@@ -16,8 +16,7 @@ impl Query {
     /// inclusive.
     pub fn insert_key(&mut self, key: Vec<u8>) {
         let key = QueryItem::Key(key);
-        // self.insert_item(key);
-        self.items.insert(key);
+        self.insert_item(key);
     }
 
     /// Adds a range to the query, so that all the entries in the tree with keys
