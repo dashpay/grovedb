@@ -295,7 +295,7 @@ where {
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<(QueryResultElements, u16), Error> {
-        Element::get_raw_path_query(&self.db, path_query, result_type, transaction)
+        Element::get_raw_path_query(&self.db, path_query, true, result_type, transaction)
     }
 
     /// If max_results is exceeded we return an error

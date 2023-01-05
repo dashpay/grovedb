@@ -2312,7 +2312,7 @@ fn test_get_subtree() {
             Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
                 .unwrap()
                 .expect("cannot open merk");
-        let result_element = Element::get(&subtree, b"key3").unwrap().unwrap();
+        let result_element = Element::get(&subtree, b"key3", true).unwrap().unwrap();
         assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
     }
     // Insert a new tree with transaction
@@ -2347,7 +2347,7 @@ fn test_get_subtree() {
     let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key4".to_vec()), false)
         .unwrap()
         .expect("cannot open merk");
-    let result_element = Element::get(&subtree, b"key4").unwrap().unwrap();
+    let result_element = Element::get(&subtree, b"key4", true).unwrap().unwrap();
     assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 
     // Should be able to retrieve instances created before transaction
@@ -2359,7 +2359,7 @@ fn test_get_subtree() {
     let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
         .unwrap()
         .expect("cannot open merk");
-    let result_element = Element::get(&subtree, b"key3").unwrap().unwrap();
+    let result_element = Element::get(&subtree, b"key3", true).unwrap().unwrap();
     assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 }
 

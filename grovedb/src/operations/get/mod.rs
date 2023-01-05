@@ -151,7 +151,7 @@ impl GroveDb {
                 })
         );
 
-        Element::get(&merk_to_get_from, key).add_cost(cost)
+        Element::get(&merk_to_get_from, key, true).add_cost(cost)
     }
 
     /// Get tree item without following references
@@ -177,7 +177,7 @@ impl GroveDb {
                 })
         );
 
-        Element::get(&merk_to_get_from, key).add_cost(cost)
+        Element::get(&merk_to_get_from, key, true).add_cost(cost)
     }
 
     /// Does tree element exist without following references
@@ -224,14 +224,14 @@ impl GroveDb {
                 self.open_transactional_merk_at_path(parent_iter, transaction)
             );
 
-            Element::get(&merk_to_get_from, parent_key)
+            Element::get(&merk_to_get_from, parent_key, true)
         } else {
             let merk_to_get_from: Merk<PrefixedRocksDbStorageContext> = cost_return_on_error!(
                 &mut cost,
                 self.open_non_transactional_merk_at_path(parent_iter)
             );
 
-            Element::get(&merk_to_get_from, parent_key)
+            Element::get(&merk_to_get_from, parent_key, true)
         }
         .unwrap_add_cost(&mut cost);
         match element {
