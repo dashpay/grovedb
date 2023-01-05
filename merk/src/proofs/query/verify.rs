@@ -65,187 +65,180 @@ pub fn execute_proof(
     let ops = Decoder::new(bytes);
 
     let root_wrapped = execute(ops, true, |node| {
-        let mut execute_node =
-            |key: &Vec<u8>, value: Option<&Vec<u8>>, value_hash: CryptoHash| -> Result<_, Error> {
-                while let Some(item) = query.peek() {
-                    // get next item in query
-                    let query_item = *item;
-                    let (lower_bound, start_non_inclusive) = query_item.lower_bound();
-                    let (upper_bound, end_inclusive) = query_item.upper_bound();
+        let mut execute_node = |key: &Vec<u8>,
+                                value: Option<&Vec<u8>>,
+                                value_hash: CryptoHash|
+         -> Result<_, Error> {
+            while let Some(item) = query.peek() {
+                // get next item in query
+                let query_item = *item;
+                let (lower_bound, start_non_inclusive) = query_item.lower_bound();
+                let (upper_bound, end_inclusive) = query_item.upper_bound();
 
-                    let terminate = if left_to_right {
-                        // we have not reached next queried part of tree
-                        // or we intersect with the query_item but at the start which is non
-                        // inclusive; continue to the next push
-                        !query_item.lower_unbounded()
-                            && ((lower_bound.is_some() && lower_bound.unwrap() > key.as_slice())
-                                || (start_non_inclusive
-                                    && lower_bound.is_some()
-                                    && lower_bound.unwrap() == key.as_slice()))
-                        // *query_item > key.as_slice()
-                        //     || (start_non_inclusive
-                        //         && lower_bound.is_some()
-                        //         && lower_bound.unwrap() == key.as_slice())
-                    } else {
-                        // we intersect with the query_item but at the end which is non inclusive;
-                        // continue to the next push
-                        !query_item.upper_unbounded()
-                            && ((upper_bound.is_some() && upper_bound.unwrap() < key.as_slice())
-                                || (!end_inclusive
-                                    && upper_bound.is_some()
-                                    && upper_bound.unwrap() == key.as_slice()))
-                        // *query_item < key.as_slice()
-                        //     || (!end_inclusive
-                        //         && upper_bound.is_some()
-                        //         && upper_bound.unwrap() == key.as_slice())
-                    };
-                    if terminate {
-                        dbg!("terminating");
-                        break;
-                    }
+                // terminate if we encounter a node before the current query item.
+                // this means a node less than the current query item for left to right.
+                // and a node greater than the current query item for right to left.
+                let terminate = if left_to_right {
+                    // if the query item is lower unbounded, then a node cannot be less than it.
+                    // checks that the lower bound of the query item not greater than the key
+                    // if they are equal make sure the start is inclusive
+                    !query_item.lower_unbounded()
+                        && ((lower_bound.expect("confirmed not unbounded") > key.as_slice())
+                            || (start_non_inclusive
+                                && lower_bound.expect("confirmed not unbounded") == key.as_slice()))
+                } else {
+                    !query_item.upper_unbounded()
+                        && ((upper_bound.expect("confirmed not unbounded") < key.as_slice())
+                            || (!end_inclusive
+                                && upper_bound.expect("confirmed not unbounded") == key.as_slice()))
+                };
 
-                    if !in_range {
-                        // this is the first data we have encountered for this query item
-                        if left_to_right {
-                            // ensure lower bound of query item is proven
-                            match last_push {
-                                // lower bound is proven - we have an exact match
-                                // ignoring the case when the lower bound is unbounded
-                                // as it's not possible the get an exact key match for
-                                // an unbounded value
-                                _ if Some(key.as_slice()) == query_item.lower_bound().0 => {}
+                if terminate {
+                    break;
+                }
 
-                                // lower bound is proven - this is the leftmost node
-                                // in the tree
-                                None => {}
-
-                                // lower bound is proven - the preceding tree node
-                                // is lower than the bound
-                                Some(Node::KV(..)) => {}
-                                Some(Node::KVDigest(..)) => {}
-                                Some(Node::KVRefValueHash(..)) => {}
-                                Some(Node::KVValueHash(..)) => {}
-
-                                // cannot verify lower bound - we have an abridged
-                                // tree so we cannot tell what the preceding key was
-                                Some(_) => {
-                                    return Err(Error::InvalidProofError(
-                                        "Cannot verify lower bound of queried range".to_string(),
-                                    ));
-                                }
-                            }
-                        } else {
-                            // ensure upper bound of query item is proven
-                            match last_push {
-                                // upper bound is proven - we have an exact match
-                                // ignoring the case when the upper bound is unbounded
-                                // as it's not possible the get an exact key match for
-                                // an unbounded value
-                                _ if Some(key.as_slice()) == query_item.upper_bound().0 => {}
-
-                                // lower bound is proven - this is the rightmost node
-                                // in the tree
-                                None => {}
-
-                                // upper bound is proven - the preceding tree node
-                                // is greater than the bound
-                                Some(Node::KV(..)) => {}
-                                Some(Node::KVDigest(..)) => {}
-                                Some(Node::KVRefValueHash(..)) => {}
-                                Some(Node::KVValueHash(..)) => {}
-
-                                // cannot verify upper bound - we have an abridged
-                                // tree so we cannot tell what the previous key was
-                                Some(_) => {
-                                    return Err(Error::InvalidProofError(
-                                        "Cannot verify upper bound of queried range".to_string(),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-
+                if !in_range {
+                    // this is the first data we have encountered for this query item
                     if left_to_right {
-                        if query_item.upper_bound().0.is_some()
-                            && Some(key.as_slice()) >= query_item.upper_bound().0
-                        {
-                            // at or past upper bound of range (or this was an exact
-                            // match on a single-key queryitem), advance to next query
-                            // item
-                            query.next();
-                            in_range = false;
-                        } else {
-                            // have not reached upper bound, we expect more values
-                            // to be proven in the range (and all pushes should be
-                            // unabridged until we reach end of range)
-                            in_range = true;
+                        // ensure lower bound of query item is proven
+                        match last_push {
+                            // lower bound is proven - we have an exact match
+                            // ignoring the case when the lower bound is unbounded
+                            // as it's not possible the get an exact key match for
+                            // an unbounded value
+                            _ if Some(key.as_slice()) == query_item.lower_bound().0 => {}
+
+                            // lower bound is proven - this is the leftmost node
+                            // in the tree
+                            None => {}
+
+                            // lower bound is proven - the preceding tree node
+                            // is lower than the bound
+                            Some(Node::KV(..)) => {}
+                            Some(Node::KVDigest(..)) => {}
+                            Some(Node::KVRefValueHash(..)) => {}
+                            Some(Node::KVValueHash(..)) => {}
+
+                            // cannot verify lower bound - we have an abridged
+                            // tree so we cannot tell what the preceding key was
+                            Some(_) => {
+                                return Err(Error::InvalidProofError(
+                                    "Cannot verify lower bound of queried range".to_string(),
+                                ));
+                            }
                         }
-                    } else if query_item.lower_bound().0.is_some()
-                        && Some(key.as_slice()) <= query_item.lower_bound().0
+                    } else {
+                        // ensure upper bound of query item is proven
+                        match last_push {
+                            // upper bound is proven - we have an exact match
+                            // ignoring the case when the upper bound is unbounded
+                            // as it's not possible the get an exact key match for
+                            // an unbounded value
+                            _ if Some(key.as_slice()) == query_item.upper_bound().0 => {}
+
+                            // lower bound is proven - this is the rightmost node
+                            // in the tree
+                            None => {}
+
+                            // upper bound is proven - the preceding tree node
+                            // is greater than the bound
+                            Some(Node::KV(..)) => {}
+                            Some(Node::KVDigest(..)) => {}
+                            Some(Node::KVRefValueHash(..)) => {}
+                            Some(Node::KVValueHash(..)) => {}
+
+                            // cannot verify upper bound - we have an abridged
+                            // tree so we cannot tell what the previous key was
+                            Some(_) => {
+                                return Err(Error::InvalidProofError(
+                                    "Cannot verify upper bound of queried range".to_string(),
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                if left_to_right {
+                    if query_item.upper_bound().0.is_some()
+                        && Some(key.as_slice()) >= query_item.upper_bound().0
                     {
-                        // at or before lower bound of range (or this was an exact
+                        // at or past upper bound of range (or this was an exact
                         // match on a single-key queryitem), advance to next query
                         // item
                         query.next();
                         in_range = false;
                     } else {
-                        // have not reached lower bound, we expect more values
+                        // have not reached upper bound, we expect more values
                         // to be proven in the range (and all pushes should be
                         // unabridged until we reach end of range)
                         in_range = true;
                     }
+                } else if query_item.lower_bound().0.is_some()
+                    && Some(key.as_slice()) <= query_item.lower_bound().0
+                {
+                    // at or before lower bound of range (or this was an exact
+                    // match on a single-key queryitem), advance to next query
+                    // item
+                    query.next();
+                    in_range = false;
+                } else {
+                    // have not reached lower bound, we expect more values
+                    // to be proven in the range (and all pushes should be
+                    // unabridged until we reach end of range)
+                    in_range = true;
+                }
 
-                    // this push matches the queried item
-                    if query_item.contains(key) {
-                        // if there are still offset slots, and node is of type kvdigest
-                        // reduce the offset counter
-                        // also, verify that a kv node was not pushed before offset is exhausted
-                        if let Some(offset) = current_offset {
-                            if offset > 0 && value.is_none() {
-                                current_offset = Some(offset - 1);
-                                break;
-                            } else if offset > 0 && value.is_some() {
-                                // inserting a kv node before exhausting offset
-                                return Err(Error::InvalidProofError(
-                                    "Proof returns data before offset is exhausted".to_string(),
-                                ));
-                            }
-                        }
-
-                        // offset is equal to zero or none
-                        if let Some(val) = value {
-                            if let Some(limit) = current_limit {
-                                if limit == 0 {
-                                    return Err(Error::InvalidProofError(
-                                        "Proof returns more data than limit".to_string(),
-                                    ));
-                                } else {
-                                    current_limit = Some(limit - 1);
-                                    if current_limit == Some(0) {
-                                        in_range = false;
-                                    }
-                                }
-                            }
-                            // add data to output
-                            output.push(ProvedKeyValue {
-                                key: key.clone(),
-                                value: val.clone(),
-                                proof: value_hash,
-                            });
-
-                            // continue to next push
+                // this push matches the queried item
+                if query_item.contains(key) {
+                    // if there are still offset slots, and node is of type kvdigest
+                    // reduce the offset counter
+                    // also, verify that a kv node was not pushed before offset is exhausted
+                    if let Some(offset) = current_offset {
+                        if offset > 0 && value.is_none() {
+                            current_offset = Some(offset - 1);
                             break;
-                        } else {
+                        } else if offset > 0 && value.is_some() {
+                            // inserting a kv node before exhausting offset
                             return Err(Error::InvalidProofError(
-                                "Proof is missing data for query".to_string(),
+                                "Proof returns data before offset is exhausted".to_string(),
                             ));
                         }
                     }
-                    {}
-                    // continue to next queried item
+
+                    // offset is equal to zero or none
+                    if let Some(val) = value {
+                        if let Some(limit) = current_limit {
+                            if limit == 0 {
+                                return Err(Error::InvalidProofError(
+                                    "Proof returns more data than limit".to_string(),
+                                ));
+                            } else {
+                                current_limit = Some(limit - 1);
+                                if current_limit == Some(0) {
+                                    in_range = false;
+                                }
+                            }
+                        }
+                        // add data to output
+                        output.push(ProvedKeyValue {
+                            key: key.clone(),
+                            value: val.clone(),
+                            proof: value_hash,
+                        });
+
+                        // continue to next push
+                        break;
+                    } else {
+                        return Err(Error::InvalidProofError(
+                            "Proof is missing data for query".to_string(),
+                        ));
+                    }
                 }
-                Ok(())
-            };
+                {}
+                // continue to next queried item
+            }
+            Ok(())
+        };
 
         if let Node::KV(key, value) = node {
             execute_node(key, Some(value), value_hash(value).unwrap())?;
