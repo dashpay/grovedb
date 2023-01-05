@@ -446,7 +446,7 @@ impl GroveDb {
 
                                 let referenced_elem = cost_return_on_error!(
                                     &mut cost,
-                                    self.follow_reference(absolute_path, None)
+                                    self.follow_reference(absolute_path, true, None)
                                 );
 
                                 let serialized_referenced_elem = referenced_elem.serialize();
