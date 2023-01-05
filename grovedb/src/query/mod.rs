@@ -266,6 +266,7 @@ mod tests {
     use merk::proofs::{query::query_item::QueryItem, Query};
 
     use crate::{
+        query_result_type::QueryResultType,
         tests::{common::compare_result_tuples, make_deep_tree, TEST_LEAF},
         Element, Error, GroveDb, PathQuery,
     };
@@ -367,22 +368,21 @@ mod tests {
             GroveDb::verify_query(proof.as_slice(), &path_query_two).expect("should execute proof");
         assert_eq!(result_set_two.len(), 1);
 
-        // let merged_path_query = PathQuery::merge(vec![&path_query_one,
-        // &path_query_two])     .expect("expect to merge path queries");
-        // assert_eq!(merged_path_query.path, vec![TEST_LEAF.to_vec()]);
-        // assert_eq!(merged_path_query.query.query.items.len(), 2);
-        //
-        // let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
-        // let (_, result_set_merged) = GroveDb::verify_query(proof.as_slice(),
-        // &merged_path_query)     .expect("should execute proof");
-        // assert_eq!(result_set_merged.len(), 2);
-        //
-        // let keys = [b"key1".to_vec(), b"key4".to_vec()];
-        // let values = [b"value1".to_vec(), b"value4".to_vec()];
-        // let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
-        // let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> =
-        // keys.into_iter().zip(elements).collect();
-        // compare_result_tuples(result_set_merged, expected_result_set);
+        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
+            .expect("expect to merge path queries");
+        assert_eq!(merged_path_query.path, vec![TEST_LEAF.to_vec()]);
+        assert_eq!(merged_path_query.query.query.items.len(), 2);
+
+        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
+        let (_, result_set_merged) = GroveDb::verify_query(proof.as_slice(), &merged_path_query)
+            .expect("should execute proof");
+        assert_eq!(result_set_merged.len(), 2);
+
+        let keys = [b"key1".to_vec(), b"key4".to_vec()];
+        let values = [b"value1".to_vec(), b"value4".to_vec()];
+        let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+        let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
+        compare_result_tuples(result_set_merged, expected_result_set);
 
         // longer length path queries
         let mut query_one = Query::new();
@@ -511,6 +511,9 @@ mod tests {
             .as_ref()
             .expect("expected a subquery for deep_node_2")
             .as_ref();
+
+        assert_eq!(deep_node_2_subquery.items.len(), 2);
+
         let deep_node_2_conditional_subquery_branches = deep_node_2_subquery
             .conditional_subquery_branches
             .as_ref()
@@ -556,10 +559,21 @@ mod tests {
             Box::new(query_two)
         );
 
-        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
-        let (_, result_set_merged) = GroveDb::verify_query(proof.as_slice(), &merged_path_query)
-            .expect("should execute proof");
+        let (result_set_merged, _) = temp_db
+            .query_raw(
+                &merged_path_query,
+                QueryResultType::QueryPathKeyElementTrioResultType,
+                None,
+            )
+            .value
+            .expect("expected to get results");
         assert_eq!(result_set_merged.len(), 7);
+
+        let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
+        let (_, proved_result_set_merged) =
+            GroveDb::verify_query(proof.as_slice(), &merged_path_query)
+                .expect("should execute proof");
+        assert_eq!(proved_result_set_merged.len(), 7);
 
         let keys = [
             b"key4".to_vec(),
@@ -581,7 +595,7 @@ mod tests {
         ];
         let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
         let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
-        compare_result_tuples(result_set_merged, expected_result_set);
+        compare_result_tuples(proved_result_set_merged, expected_result_set);
     }
 
     #[test]

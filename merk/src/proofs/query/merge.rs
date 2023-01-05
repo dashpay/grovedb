@@ -80,6 +80,7 @@ impl SubqueryBranch {
                         } else {
                             Some(left_path_leftovers)
                         };
+                        merged_query.insert_key(left_top_key.clone());
                         merged_query.merge_conditional_boxed_subquery(
                             QueryItem::Key(left_top_key),
                             SubqueryBranch {
@@ -94,6 +95,7 @@ impl SubqueryBranch {
                             Some(right_path_leftovers)
                         };
 
+                        merged_query.insert_key(right_top_key.clone());
                         merged_query.merge_conditional_boxed_subquery(
                             QueryItem::Key(right_top_key),
                             SubqueryBranch {
@@ -116,6 +118,7 @@ impl SubqueryBranch {
                             Some(left_path_leftovers)
                         };
 
+                        merged_query.insert_key(first_key.clone());
                         // our subquery stays the same as we didn't change level
                         // add a conditional subquery for other
                         merged_query.merge_conditional_boxed_subquery(
@@ -140,6 +143,7 @@ impl SubqueryBranch {
                         } else {
                             Some(right_path_leftovers)
                         };
+                        merged_query.insert_key(other_first.clone());
                         // our subquery stays the same as we didn't change level
                         // add a conditional subquery for other
                         merged_query.merge_conditional_boxed_subquery(
