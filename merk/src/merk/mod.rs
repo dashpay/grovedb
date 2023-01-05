@@ -1604,13 +1604,13 @@ mod test {
         let mut merk = TempMerk::new();
 
         // no root
-        assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
+        assert!(merk.get(&[1, 2, 3], true).unwrap().unwrap().is_none());
 
         // cached
         merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![], BasicMerk))], &[], None)
             .unwrap()
             .unwrap();
-        assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
+        assert!(merk.get(&[1, 2, 3], true).unwrap().unwrap().is_none());
 
         // uncached
         merk.apply::<_, Vec<_>>(
@@ -1624,7 +1624,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert!(merk.get(&[3, 3, 3]).unwrap().unwrap().is_none());
+        assert!(merk.get(&[3, 3, 3], true).unwrap().unwrap().is_none());
     }
 
     #[test]
@@ -1788,7 +1788,7 @@ mod test {
         .expect("should insert successfully");
 
         let result = merk
-            .get(b"10".as_slice())
+            .get(b"10".as_slice(), true)
             .unwrap()
             .expect("should get successfully");
         assert_eq!(result, Some(b"a".to_vec()));
@@ -1802,7 +1802,7 @@ mod test {
         .unwrap()
         .expect("should insert successfully");
         let result = merk
-            .get(b"10".as_slice())
+            .get(b"10".as_slice(), true)
             .unwrap()
             .expect("should get successfully");
         assert_eq!(result, Some(b"b".to_vec()));
@@ -1822,7 +1822,7 @@ mod test {
         .unwrap()
         .expect("should insert successfully");
         let result = merk
-            .get(b"10".as_slice())
+            .get(b"10".as_slice(), true)
             .unwrap()
             .expect("should get successfully");
         assert_eq!(result, Some(b"c".to_vec()));
