@@ -604,7 +604,7 @@ where
             if recursions_allowed == 1 {
                 let referenced_element_value_hash_opt = cost_return_on_error!(
                     &mut cost,
-                    merk.get_value_hash(key.as_ref())
+                    merk.get_value_hash(key.as_ref(), true)
                         .map_err(|e| Error::CorruptedData(e.to_string()))
                 );
 
@@ -634,7 +634,7 @@ where
                 // change in the batch.
                 let referenced_element = cost_return_on_error!(
                     &mut cost,
-                    merk.get(key.as_ref())
+                    merk.get(key.as_ref(), true)
                         .map_err(|e| Error::CorruptedData(e.to_string()))
                 );
 

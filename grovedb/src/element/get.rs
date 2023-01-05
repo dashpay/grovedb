@@ -19,12 +19,13 @@ impl Element {
     pub fn get<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
         key: K,
+        allow_cache: bool,
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
         let value_opt = cost_return_on_error!(
             &mut cost,
-            merk.get(key.as_ref())
+            merk.get(key.as_ref(), allow_cache)
                 .map_err(|e| Error::CorruptedData(e.to_string()))
         );
         let value = cost_return_on_error_no_add!(
@@ -87,10 +88,11 @@ impl Element {
         merk: &Merk<S>,
         path: &[&[u8]],
         key: K,
+        allow_cache: bool,
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
 
-        let element = cost_return_on_error!(&mut cost, Self::get(merk, key.as_ref()));
+        let element = cost_return_on_error!(&mut cost, Self::get(merk, key.as_ref(), allow_cache));
 
         let absolute_element = cost_return_on_error_no_add!(
             &cost,
@@ -105,15 +107,72 @@ impl Element {
     pub fn get_value_hash<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         merk: &Merk<S>,
         key: K,
+        allow_cache: bool,
     ) -> CostResult<Option<Hash>, Error> {
         let mut cost = OperationCost::default();
 
         let value_hash = cost_return_on_error!(
             &mut cost,
-            merk.get_value_hash(key.as_ref())
+            merk.get_value_hash(key.as_ref(), allow_cache)
                 .map_err(|e| Error::CorruptedData(e.to_string()))
         );
 
         Ok(value_hash).wrap_with_cost(cost)
+    }
+}
+
+#[cfg(feature = "full")]
+#[cfg(test)]
+mod tests {
+    use merk::test_utils::TempMerk;
+
+    use super::*;
+
+    #[test]
+    fn test_cache_changes_cost() {
+        let mut merk = TempMerk::new();
+        Element::empty_tree()
+            .insert(&mut merk, b"mykey", None)
+            .unwrap()
+            .expect("expected successful insertion");
+        Element::new_item(b"value".to_vec())
+            .insert(&mut merk, b"another-key", None)
+            .unwrap()
+            .expect("expected successful insertion 2");
+
+        assert_eq!(
+            Element::get(&merk, b"another-key", true)
+                .unwrap()
+                .expect("expected successful get"),
+            Element::new_item(b"value".to_vec()),
+        );
+
+        let cost_with_cache = Element::get(&merk, b"another-key", true)
+            .cost_as_result()
+            .expect("expected to get cost");
+        let cost_without_cache = Element::get(&merk, b"another-key", false)
+            .cost_as_result()
+            .expect("expected to get cost");
+        assert_ne!(cost_with_cache, cost_without_cache);
+
+        assert_eq!(
+            cost_with_cache,
+            OperationCost {
+                seek_count: 0,
+                storage_cost: Default::default(),
+                storage_loaded_bytes: 0,
+                hash_node_calls: 0,
+            }
+        );
+
+        assert_eq!(
+            cost_without_cache,
+            OperationCost {
+                seek_count: 1,
+                storage_cost: Default::default(),
+                storage_loaded_bytes: 75,
+                hash_node_calls: 0,
+            }
+        );
     }
 }

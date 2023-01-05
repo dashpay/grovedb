@@ -413,7 +413,7 @@ mod test {
         // 2. Left link exists
         // 3. Right link exists
         // Based on merk's avl rotation algorithm node is key 8 satisfies this
-        let node_result = merk.get(&8_u64.to_be_bytes());
+        let node_result = merk.get(&8_u64.to_be_bytes(), true);
 
         // By tweaking the max element size, we can adapt the average case function to
         // this scenario. make_batch_seq creates values that are 60 bytes in size

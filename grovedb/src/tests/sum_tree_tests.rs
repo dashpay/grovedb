@@ -221,25 +221,25 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
-        merk.get_feature_type(b"item1")
+        merk.get_feature_type(b"item1", true)
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(30))
     ));
     assert!(matches!(
-        merk.get_feature_type(b"item2")
+        merk.get_feature_type(b"item2", true)
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(10))
     ));
     assert!(matches!(
-        merk.get_feature_type(b"item3")
+        merk.get_feature_type(b"item3", true)
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(0))
     ));
     assert!(matches!(
-        merk.get_feature_type(b"item4")
+        merk.get_feature_type(b"item4", true)
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(0))
@@ -275,13 +275,13 @@ fn test_homogenous_node_type_in_sum_trees_and_regular_trees() {
         .unwrap()
         .expect("should open tree");
     assert!(matches!(
-        merk.get_feature_type(b"item1")
+        merk.get_feature_type(b"item1", true)
             .unwrap()
             .expect("node should exist"),
         Some(BasicMerk)
     ));
     assert!(matches!(
-        merk.get_feature_type(b"item2")
+        merk.get_feature_type(b"item2", true)
             .unwrap()
             .expect("node should exist"),
         Some(BasicMerk)
@@ -507,7 +507,7 @@ fn test_sum_tree_propagation() {
         .expect("should open tree");
     assert!(matches!(
         test_leaf_merk
-            .get_feature_type(b"key")
+            .get_feature_type(b"key", true)
             .unwrap()
             .expect("node should exist"),
         Some(BasicMerk)
@@ -519,7 +519,7 @@ fn test_sum_tree_propagation() {
         .expect("should open tree");
     assert!(matches!(
         parent_sum_tree
-            .get_feature_type(b"tree2")
+            .get_feature_type(b"tree2", true)
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(15)) /* 15 because the child sum tree has one sum item of
@@ -533,21 +533,21 @@ fn test_sum_tree_propagation() {
         .expect("should open tree");
     assert!(matches!(
         child_sum_tree
-            .get_feature_type(b"item1")
+            .get_feature_type(b"item1", true)
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(0))
     ));
     assert!(matches!(
         child_sum_tree
-            .get_feature_type(b"sumitem1")
+            .get_feature_type(b"sumitem1", true)
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(5))
     ));
     assert!(matches!(
         child_sum_tree
-            .get_feature_type(b"sumitem2")
+            .get_feature_type(b"sumitem2", true)
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(10))
@@ -556,7 +556,7 @@ fn test_sum_tree_propagation() {
     // TODO: should references take the sum of the referenced element??
     assert!(matches!(
         child_sum_tree
-            .get_feature_type(b"item2")
+            .get_feature_type(b"item2", true)
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(0))
@@ -595,14 +595,14 @@ fn test_sum_tree_with_batches() {
 
     assert!(matches!(
         sum_tree
-            .get_feature_type(b"a")
+            .get_feature_type(b"a", true)
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(0))
     ));
     assert!(matches!(
         sum_tree
-            .get_feature_type(b"b")
+            .get_feature_type(b"b", true)
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(10))
@@ -623,7 +623,7 @@ fn test_sum_tree_with_batches() {
         .expect("should open tree");
     assert!(matches!(
         sum_tree
-            .get_feature_type(b"c")
+            .get_feature_type(b"c", true)
             .unwrap()
             .expect("node should exist"),
         Some(SummedMerk(10))
