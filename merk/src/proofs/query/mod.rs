@@ -474,8 +474,10 @@ where
                 dbg!(&key);
                 dbg!(key.collides_with(&node_key));
             }
-            // if key.collides_with(&node_key) {
-            if key.contains(self.tree().key()) {
+
+            // TODO: change to contains
+            if key.collides_with(&node_key) {
+                // if key.contains(self.tree().key()) {
                 Ordering::Equal
             } else {
                 key.cmp(&node_key)

@@ -4,7 +4,9 @@ use std::{
 };
 
 use crate::proofs::query::query_item::{
-    intersect2::RangeSetItem::{ExclusiveEnd, ExclusiveStart, Inclusive, Unbounded},
+    intersect2::RangeSetItem::{
+        ExclusiveEnd, ExclusiveStart, Inclusive, UnboundedEnd, UnboundedStart,
+    },
     QueryItem,
 };
 
@@ -18,7 +20,7 @@ pub struct RangeSetIntersection {
 }
 
 /// Concise query item representation
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RangeSet {
     start: RangeSetItem,
     end: RangeSetItem,
@@ -77,7 +79,7 @@ impl RangeSet {
                     end: end.clone(),
                 })
             }
-            (RangeSetItem::Inclusive(start), RangeSetItem::Unbounded) => {
+            (RangeSetItem::Inclusive(start), RangeSetItem::UnboundedEnd) => {
                 QueryItem::RangeFrom(RangeFrom {
                     start: start.clone(),
                 })
@@ -91,16 +93,18 @@ impl RangeSet {
             (RangeSetItem::ExclusiveStart(start), RangeSetItem::Inclusive(end)) => {
                 QueryItem::RangeAfterToInclusive(RangeInclusive::new(start.clone(), end.clone()))
             }
-            (RangeSetItem::ExclusiveStart(start), RangeSetItem::Unbounded) => {
+            (RangeSetItem::ExclusiveStart(start), RangeSetItem::UnboundedEnd) => {
                 QueryItem::RangeAfter(RangeFrom {
                     start: start.clone(),
                 })
             }
-            (RangeSetItem::Unbounded, RangeSetItem::Unbounded) => QueryItem::RangeFull(RangeFull),
-            (RangeSetItem::Unbounded, RangeSetItem::Inclusive(end)) => {
+            (RangeSetItem::UnboundedStart, RangeSetItem::UnboundedEnd) => {
+                QueryItem::RangeFull(RangeFull)
+            }
+            (RangeSetItem::UnboundedStart, RangeSetItem::Inclusive(end)) => {
                 QueryItem::RangeToInclusive(RangeToInclusive { end: end.clone() })
             }
-            (RangeSetItem::Unbounded, RangeSetItem::ExclusiveEnd(end)) => {
+            (RangeSetItem::UnboundedStart, RangeSetItem::ExclusiveEnd(end)) => {
                 QueryItem::RangeTo(RangeTo { end: end.clone() })
             }
             _ => {
@@ -205,9 +209,10 @@ impl RangeSet {
 }
 
 /// Represents all possible value types in a range set
-#[derive(Eq, PartialEq, Clone)]
+#[derive(Eq, PartialEq, Clone, Debug)]
 pub enum RangeSetItem {
-    Unbounded,
+    UnboundedStart,
+    UnboundedEnd,
     Inclusive(Vec<u8>),
     ExclusiveStart(Vec<u8>),
     ExclusiveEnd(Vec<u8>),
@@ -216,7 +221,9 @@ pub enum RangeSetItem {
 impl RangeSetItem {
     pub fn invert(&self, is_start: bool) -> RangeSetItem {
         match &self {
-            RangeSetItem::Unbounded => RangeSetItem::Unbounded,
+            // TODO: confirm unbounded has no inversions
+            RangeSetItem::UnboundedStart => RangeSetItem::UnboundedStart,
+            RangeSetItem::UnboundedEnd => RangeSetItem::UnboundedEnd,
             RangeSetItem::Inclusive(v) => {
                 if is_start {
                     RangeSetItem::ExclusiveStart(v.clone())
@@ -255,8 +262,10 @@ impl Ord for RangeSetItem {
     //  but then equal returns the same other as less or greater than.
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
-            (Unbounded, _) => Ordering::Less,
-            (_, Unbounded) => Ordering::Greater,
+            (UnboundedStart, _) => Ordering::Less,
+            (_, UnboundedStart) => Ordering::Greater,
+            (_, UnboundedEnd) => Ordering::Less,
+            (UnboundedEnd, _) => Ordering::Greater,
 
             (Inclusive(v1), Inclusive(v2))
             | (ExclusiveStart(v1), ExclusiveStart(v2))
@@ -320,24 +329,24 @@ impl QueryItem {
                 end: RangeSetItem::Inclusive(range.end().clone()),
             },
             QueryItem::RangeFull(..) => RangeSet {
-                start: RangeSetItem::Unbounded,
-                end: RangeSetItem::Unbounded,
+                start: RangeSetItem::UnboundedStart,
+                end: RangeSetItem::UnboundedEnd,
             },
             QueryItem::RangeFrom(range) => RangeSet {
                 start: RangeSetItem::Inclusive(range.start.clone()),
-                end: RangeSetItem::Unbounded,
+                end: RangeSetItem::UnboundedEnd,
             },
             QueryItem::RangeTo(range) => RangeSet {
-                start: RangeSetItem::Unbounded,
+                start: RangeSetItem::UnboundedStart,
                 end: RangeSetItem::ExclusiveEnd(range.end.clone()),
             },
             QueryItem::RangeToInclusive(range) => RangeSet {
-                start: RangeSetItem::Unbounded,
+                start: RangeSetItem::UnboundedStart,
                 end: RangeSetItem::Inclusive(range.end.clone()),
             },
             QueryItem::RangeAfter(range) => RangeSet {
                 start: RangeSetItem::ExclusiveStart(range.start.clone()),
-                end: RangeSetItem::Unbounded,
+                end: RangeSetItem::UnboundedEnd,
             },
             QueryItem::RangeAfterTo(range) => RangeSet {
                 start: RangeSetItem::ExclusiveStart(range.start.clone()),
@@ -386,7 +395,9 @@ mod test {
             QueryItem::RangeFull(..)
         );
         assert_eq!(
-            QueryItem::RangeFrom(vec![5]..).to_range_set().to_query_item(),
+            QueryItem::RangeFrom(vec![5]..)
+                .to_range_set()
+                .to_query_item(),
             QueryItem::RangeFrom(vec![5]..)
         );
         assert_eq!(
@@ -394,19 +405,27 @@ mod test {
             QueryItem::RangeTo(..vec![3])
         );
         assert_eq!(
-            QueryItem::RangeToInclusive(..=vec![3]).to_range_set().to_query_item(),
+            QueryItem::RangeToInclusive(..=vec![3])
+                .to_range_set()
+                .to_query_item(),
             QueryItem::RangeToInclusive(..=vec![3])
         );
         assert_eq!(
-            QueryItem::RangeAfter(vec![4]..).to_range_set().to_query_item(),
+            QueryItem::RangeAfter(vec![4]..)
+                .to_range_set()
+                .to_query_item(),
             QueryItem::RangeAfter(vec![4]..)
         );
         assert_eq!(
-            QueryItem::RangeAfterTo(vec![3]..vec![6]).to_range_set().to_query_item(),
+            QueryItem::RangeAfterTo(vec![3]..vec![6])
+                .to_range_set()
+                .to_query_item(),
             QueryItem::RangeAfterTo(vec![3]..vec![6])
         );
         assert_eq!(
-            QueryItem::RangeAfterToInclusive(vec![3]..=vec![7]).to_range_set().to_query_item(),
+            QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])
+                .to_range_set()
+                .to_query_item(),
             QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])
         );
     }
