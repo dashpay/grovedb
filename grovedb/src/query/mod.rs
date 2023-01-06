@@ -263,6 +263,7 @@ impl PathQuery {
 #[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
+    use std::ops::RangeFull;
     use merk::proofs::{query::query_item::QueryItem, Query};
 
     use crate::{
@@ -804,15 +805,24 @@ mod tests {
     //                                            k2,v2         k5,v5        k8,v8     k10,v10
     //                                           /     \        /    \       /    \       \
     //                                       k1,v1    k3,v3  k4,v4   k6,v6 k7,v7  k9,v9  k11,v11
-    //                                                                        ↑     (all 2) ↑
-    //                                                                        ↑   path_query_two
-    //                                                                 path_query_three (2)
-    //                                                                   (after 7, so {8,9})
+    //                                            ↑ (3)
+    //                                       path_query_2
+
+
 
         }
 
-        // query 2 will superseed query 1
         let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two]).expect("expected to be able to merge path_query");
+
+        // we expect the common path to be the path of both before merge
+        assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec(), b"deep_node_1".to_vec()]);
+
+        // we expect all items (a range full)
+        assert_eq!(merged_path_query.query.query.items.len(), 1);
+        assert!(merged_path_query.query.query.items.iter().all(|a| a == &QueryItem::RangeFull(RangeFull)));
+
+        // we expect a conditional subquery on deeper 1 for all elements
+        let conditional_subquery_branches = merged_path_query.query.query.conditional_subquery_branches.as_ref().expect("expected conditional subquery branches");
 
         let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
         let (_, result_set) =

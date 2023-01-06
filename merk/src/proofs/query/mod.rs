@@ -70,7 +70,7 @@ pub struct SubqueryBranch {
 /// resolve a proof which will include all of the requested values.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Query {
-    pub items: BTreeSet<QueryItem>,
+    pub items: Vec<QueryItem>,
     pub default_subquery_branch: SubqueryBranch,
     pub conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
     pub left_to_right: bool,
@@ -360,7 +360,7 @@ impl From<Query> for Vec<QueryItem> {
 
 #[cfg(feature = "full")]
 impl IntoIterator for Query {
-    type IntoIter = <BTreeSet<QueryItem> as IntoIterator>::IntoIter;
+    type IntoIter = <Vec<QueryItem> as IntoIterator>::IntoIter;
     type Item = QueryItem;
 
     fn into_iter(self) -> Self::IntoIter {

@@ -145,6 +145,6 @@ impl Query {
             })
             .collect();
 
-        self.items.insert(item);
+        self.items.push(item);
     }
 }

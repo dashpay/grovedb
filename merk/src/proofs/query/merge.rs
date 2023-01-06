@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use indexmap::IndexMap;
 
 use crate::proofs::{
@@ -7,6 +8,7 @@ use crate::proofs::{
     },
     Query,
 };
+use crate::proofs::query::query_item::intersect2::QueryItemManyIntersectionResult;
 
 impl SubqueryBranch {
     fn merge_subquery(
@@ -255,7 +257,8 @@ impl Query {
     /// or subqueried to the subquery_path/subquery if a subquery is
     /// present. Merging involves creating conditional subqueries in the
     /// subqueries subqueries and paths.
-    pub fn merge_default_subquery_branch(&mut self, other_default_subquery_branch: SubqueryBranch) {
+    pub fn merge_default_subquery_branch(&mut self,
+                                         other_default_subquery_branch: SubqueryBranch) {
         match (
             &self.default_subquery_branch.subquery_path,
             &other_default_subquery_branch.subquery_path,
@@ -436,11 +439,25 @@ impl Query {
                 conditional_subquery_branches,
                 left_to_right,
             } = query;
+
+            let QueryItemManyIntersectionResult{ in_both, ours, theirs } = QueryItem::intersect_many(&mut merged_query.items, items);
+            // for the items that are in both we should set them to the merged subquery branch
+
+            // for the items that are in ours and theirs we should add conditional subqueries
+            if let Some(ours) = ours {
+                for our_item in ours {
+                    merged_query.insert_item(our_item);
+                    //todo we need to remove the default subquery branch
+                    merged_query
+                        .merge_conditional_boxed_subquery(item.clone(), conditional_subquery_branch)
+                }
+            }
+
+            //merged_query.merge_default_subquery_branch(items, default_subquery_branch);
             // merge query items as they point to the same context
             for item in items {
                 merged_query.insert_item(item);
             }
-            merged_query.merge_default_subquery_branch(default_subquery_branch);
             if let Some(conditional_subquery_branches) = conditional_subquery_branches {
                 for (item, conditional_subquery_branch) in conditional_subquery_branches {
                     merged_query
@@ -458,6 +475,8 @@ impl Query {
             conditional_subquery_branches,
             ..
         } = other;
+
+        let intersection_result = QueryItem::intersect_many(&mut self.items, items);
         // merge query items as they point to the same context
         for item in items {
             self.insert_item(item)
