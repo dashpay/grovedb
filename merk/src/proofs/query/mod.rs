@@ -847,7 +847,7 @@ mod test {
     }
 
     #[test]
-    fn test_query_merge() {
+    fn test_query_merge_single_key() {
         // single key test
         let mut query_one = Query::new();
         query_one.insert_key(b"a".to_vec());
@@ -858,7 +858,10 @@ mod test {
         expected_query.insert_key(b"a".to_vec());
         expected_query.insert_key(b"b".to_vec());
         assert_eq!(query_one, expected_query);
+    }
 
+    #[test]
+    fn test_query_merge_range() {
         // range test
         let mut query_one = Query::new();
         query_one.insert_range(b"a".to_vec()..b"c".to_vec());
@@ -868,7 +871,10 @@ mod test {
         let mut expected_query = Query::new();
         expected_query.insert_range(b"a".to_vec()..b"c".to_vec());
         assert_eq!(query_one, expected_query);
+    }
 
+    #[test]
+    fn test_query_merge_conditional_query() {
         // conditional query test
         let mut query_one = Query::new();
         query_one.insert_key(b"a".to_vec());
@@ -895,7 +901,10 @@ mod test {
             Some(insert_all_query),
         );
         assert_eq!(query_one, expected_query);
+    }
 
+    #[test]
+    fn test_query_merge_deep_conditional_query() {
         // deep conditional query
         // [a, b, c]
         // [a, c, d]
@@ -5383,8 +5392,8 @@ mod test {
         )];
         let query = Query::from(queryitems);
 
-        let mut expected = BTreeSet::new();
-        expected.insert(QueryItem::Range(
+        let mut expected = Vec::new();
+        expected.push(QueryItem::Range(
             vec![0, 0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         ));
         assert_eq!(query.items, expected);

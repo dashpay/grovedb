@@ -501,12 +501,12 @@ impl Query {
 
     pub fn merge_with(&mut self, other: Query) {
         let Query {
-            items,
+            mut items,
             default_subquery_branch,
             conditional_subquery_branches,
             ..
         } = other;
-        self.insert_items(items);
+        self.insert_items(items.clone());
 
         // let intersection_result = QueryItem::intersect_many_ordered(&mut self.items,
         // items); // merge query items as they point to the same context
@@ -515,14 +515,20 @@ impl Query {
         // }
 
         // self.merge_default_subquery_branch(default_subquery_branch);
-        self.merge_conditional_boxed_subquery(
-            QueryItem::RangeFull(RangeFull),
-            default_subquery_branch,
-        );
         if let Some(conditional_subquery_branches) = conditional_subquery_branches {
-            for (item, conditional_subquery_branch) in conditional_subquery_branches {
-                self.merge_conditional_boxed_subquery(item.clone(), conditional_subquery_branch)
+            for (conditional_item, conditional_subquery_branch) in conditional_subquery_branches {
+                self.merge_conditional_boxed_subquery(conditional_item.clone(), conditional_subquery_branch);
+
+                if !items.is_empty() {
+                    let intersection_result =
+                        QueryItem::intersect_many_ordered(&mut items, vec![conditional_item]);
+                    items = intersection_result.ours.unwrap_or_default();
+                }
             }
+        }
+        for item in items {
+            self
+                .merge_conditional_boxed_subquery(item, default_subquery_branch.clone());
         }
     }
 
@@ -535,13 +541,15 @@ impl Query {
         query_item_merging_in: QueryItem,
         subquery_branch_merging_in: SubqueryBranch,
     ) {
-        self.conditional_subquery_branches = Some(
-            Self::merge_conditional_subquery_branches_with_new_at_query_item(
-                self.conditional_subquery_branches.take(),
-                query_item_merging_in,
-                subquery_branch_merging_in,
-            ),
-        );
+        if subquery_branch_merging_in.subquery.is_some() || subquery_branch_merging_in.subquery_path.is_some() {
+            self.conditional_subquery_branches = Some(
+                Self::merge_conditional_subquery_branches_with_new_at_query_item(
+                    self.conditional_subquery_branches.take(),
+                    query_item_merging_in,
+                    subquery_branch_merging_in,
+                ),
+            );
+        }
     }
 
     /// Adds a conditional subquery. A conditional subquery replaces the default
