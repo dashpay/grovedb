@@ -476,6 +476,22 @@ impl Eq for QueryItem {}
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl Ord for QueryItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let self_as_range_set = self.to_range_set();
+        let other_as_range_set = other.to_range_set();
+
+        let compare_start = self_as_range_set.start.cmp(&other_as_range_set.start);
+
+        // if start is equal then use the size of the set to compare
+        // the smaller set is considered less
+        if compare_start == Ordering::Equal {
+            self_as_range_set.end.cmp(&other_as_range_set.end)
+        } else {
+            compare_start
+        }
+    }
+
+    /*
     // TODO: Fix this, incorrect
     fn cmp(&self, other: &Self) -> Ordering {
         match (
@@ -596,6 +612,7 @@ impl Ord for QueryItem {
             }
         }
     }
+    */
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
@@ -627,31 +644,31 @@ mod test {
 
     #[test]
     fn query_item_collides() {
-        // assert!(!QueryItem::Key(vec![10]).collides_with(&QueryItem::Key(vec![20])));
-        // assert!(QueryItem::Key(vec![10]).collides_with(&QueryItem::Key(vec![10])));
-        // assert!(!QueryItem::Key(vec![20]).collides_with(&QueryItem::Key(vec![10])));
-        //
-        // assert!(!QueryItem::Key(vec![10]).collides_with(&QueryItem::Range(vec![20]..
-        // vec![30]))); assert!(QueryItem::Key(vec![10]).collides_with(&
-        // QueryItem::Range(vec![10]..vec![20]))); assert!(QueryItem::Key(vec!
-        // [15]).collides_with(&QueryItem::Range(vec![10]..vec![20])));
-        // assert!(!QueryItem::Key(vec![20]).collides_with(&QueryItem::Range(vec![10]..
-        // vec![20]))); assert!(
-        //     QueryItem::Key(vec![20]).collides_with(&QueryItem::RangeInclusive(vec!
-        // [10]..=vec![20])) );
-        // assert!(!QueryItem::Key(vec![30]).collides_with(&QueryItem::Range(vec![10]..
-        // vec![20])));
-        //
-        // assert!(!QueryItem::Range(vec![10]..vec![20])
-        //     .collides_with(&QueryItem::Range(vec![30]..vec![40])));
-        // assert!(!QueryItem::Range(vec![10]..vec![20])
-        //     .collides_with(&QueryItem::Range(vec![20]..vec![30])));
-        // assert!(QueryItem::RangeInclusive(vec![10]..=vec![20])
-        //     .collides_with(&QueryItem::Range(vec![20]..vec![30])));
-        // assert!(QueryItem::Range(vec![15]..vec![25])
-        //     .collides_with(&QueryItem::Range(vec![20]..vec![30])));
-        // assert!(!QueryItem::Range(vec![20]..vec![30])
-        //     .collides_with(&QueryItem::Range(vec![10]..vec![20])));
+        assert!(!QueryItem::Key(vec![10]).collides_with(&QueryItem::Key(vec![20])));
+        assert!(QueryItem::Key(vec![10]).collides_with(&QueryItem::Key(vec![10])));
+        assert!(!QueryItem::Key(vec![20]).collides_with(&QueryItem::Key(vec![10])));
+
+        assert!(!QueryItem::Key(vec![10]).collides_with(&QueryItem::Range(vec![20]..
+        vec![30]))); assert!(QueryItem::Key(vec![10]).collides_with(&
+        QueryItem::Range(vec![10]..vec![20]))); assert!(QueryItem::Key(vec!
+        [15]).collides_with(&QueryItem::Range(vec![10]..vec![20])));
+        assert!(!QueryItem::Key(vec![20]).collides_with(&QueryItem::Range(vec![10]..
+        vec![20]))); assert!(
+            QueryItem::Key(vec![20]).collides_with(&QueryItem::RangeInclusive(vec!
+        [10]..=vec![20])) );
+        assert!(!QueryItem::Key(vec![30]).collides_with(&QueryItem::Range(vec![10]..
+        vec![20])));
+
+        assert!(!QueryItem::Range(vec![10]..vec![20])
+            .collides_with(&QueryItem::Range(vec![30]..vec![40])));
+        assert!(!QueryItem::Range(vec![10]..vec![20])
+            .collides_with(&QueryItem::Range(vec![20]..vec![30])));
+        assert!(QueryItem::RangeInclusive(vec![10]..=vec![20])
+            .collides_with(&QueryItem::Range(vec![20]..vec![30])));
+        assert!(QueryItem::Range(vec![15]..vec![25])
+            .collides_with(&QueryItem::Range(vec![20]..vec![30])));
+        assert!(!QueryItem::Range(vec![20]..vec![30])
+            .collides_with(&QueryItem::Range(vec![10]..vec![20])));
         assert!(QueryItem::RangeFrom(vec![2]..).collides_with(&QueryItem::Key(vec![5])));
     }
 
@@ -662,31 +679,31 @@ mod test {
         assert!(QueryItem::Key(vec![20]) > QueryItem::Key(vec![10]));
 
         assert!(QueryItem::Key(vec![10]) < QueryItem::Range(vec![20]..vec![30]));
-        // assert_eq!(
-        //     QueryItem::Key(vec![10]),
-        //     QueryItem::Range(vec![10]..vec![20])
-        // );
-        // assert_eq!(
-        //     QueryItem::Key(vec![15]),
-        //     QueryItem::Range(vec![10]..vec![20])
-        // );
+        assert_ne!(
+            QueryItem::Key(vec![10]),
+            QueryItem::Range(vec![10]..vec![20])
+        );
+        assert_ne!(
+            QueryItem::Key(vec![15]),
+            QueryItem::Range(vec![10]..vec![20])
+        );
         assert!(QueryItem::Key(vec![20]) > QueryItem::Range(vec![10]..vec![20]));
-        // assert_eq!(
-        //     QueryItem::Key(vec![20]),
-        //     QueryItem::RangeInclusive(vec![10]..=vec![20])
-        // );
+        assert_ne!(
+            QueryItem::Key(vec![20]),
+            QueryItem::RangeInclusive(vec![10]..=vec![20])
+        );
         assert!(QueryItem::Key(vec![30]) > QueryItem::Range(vec![10]..vec![20]));
 
         assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![30]..vec![40]));
         assert!(QueryItem::Range(vec![10]..vec![20]) < QueryItem::Range(vec![20]..vec![30]));
-        // assert_eq!(
-        //     QueryItem::RangeInclusive(vec![10]..=vec![20]),
-        //     QueryItem::Range(vec![20]..vec![30])
-        // );
-        // assert_eq!(
-        //     QueryItem::Range(vec![15]..vec![25]),
-        //     QueryItem::Range(vec![20]..vec![30])
-        // );
+        assert_ne!(
+            QueryItem::RangeInclusive(vec![10]..=vec![20]),
+            QueryItem::Range(vec![20]..vec![30])
+        );
+        assert_ne!(
+            QueryItem::Range(vec![15]..vec![25]),
+            QueryItem::Range(vec![20]..vec![30])
+        );
         assert!(QueryItem::Range(vec![20]..vec![30]) > QueryItem::Range(vec![10]..vec![20]));
     }
 }

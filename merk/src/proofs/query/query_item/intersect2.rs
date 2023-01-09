@@ -24,8 +24,8 @@ pub struct RangeSetIntersection {
 /// Concise query item representation
 #[derive(Clone, Debug)]
 pub struct RangeSet {
-    start: RangeSetItem,
-    end: RangeSetItem,
+    pub start: RangeSetItem,
+    pub end: RangeSetItem,
 }
 
 #[derive(Default)]
