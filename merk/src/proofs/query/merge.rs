@@ -1,14 +1,18 @@
-use std::collections::BTreeSet;
+use std::{
+    collections::{BTreeSet, VecDeque},
+    ops::RangeFull,
+};
+
 use indexmap::IndexMap;
 
 use crate::proofs::{
     query::{
-        common_path::CommonPathResult, query_item::QueryItem, Path, QueryItemIntersectionResult,
-        SubqueryBranch,
+        common_path::CommonPathResult,
+        query_item::{intersect2::QueryItemManyIntersectionResult, QueryItem},
+        Path, QueryItemIntersectionResult, SubqueryBranch,
     },
     Query,
 };
-use crate::proofs::query::query_item::intersect2::QueryItemManyIntersectionResult;
 
 impl SubqueryBranch {
     fn merge_subquery(
@@ -257,8 +261,7 @@ impl Query {
     /// or subqueried to the subquery_path/subquery if a subquery is
     /// present. Merging involves creating conditional subqueries in the
     /// subqueries subqueries and paths.
-    pub fn merge_default_subquery_branch(&mut self,
-                                         other_default_subquery_branch: SubqueryBranch) {
+    pub fn merge_default_subquery_branch(&mut self, other_default_subquery_branch: SubqueryBranch) {
         match (
             &self.default_subquery_branch.subquery_path,
             &other_default_subquery_branch.subquery_path,
@@ -430,39 +433,67 @@ impl Query {
         }
     }
 
-    pub fn merge_multiple(queries: Vec<Query>) -> Self {
-        let mut merged_query = Query::new();
+    pub fn merge_multiple(mut queries: Vec<Query>) -> Self {
+        if queries.is_empty() {
+            return Query::new();
+        }
+        // slight performance increase with swap remove as we don't care about the
+        // ordering
+        let mut merged_query = queries.swap_remove(0);
         for query in queries {
             let Query {
-                items,
+                mut items,
                 default_subquery_branch,
                 conditional_subquery_branches,
-                left_to_right,
+                ..
             } = query;
+            // the searched for items are the union of all items
+            merged_query.insert_items(items.clone());
 
-            let QueryItemManyIntersectionResult{ in_both, ours, theirs } = QueryItem::intersect_many(&mut merged_query.items, items);
-            // for the items that are in both we should set them to the merged subquery branch
+            // // We now need to deal with subqueries
+            // let QueryItemManyIntersectionResult{ in_both, ours, theirs } =
+            // QueryItem::intersect_many_ordered(&mut merged_query.items, items);
+            // // for the items that are in both we should set them to the merged subquery
+            // branch
+            //
+            // // for the items that are in ours and theirs we should add conditional
+            // subqueries if let Some(ours) = ours {
+            //     for our_item in ours {
+            //         merged_query
+            //             .merge_conditional_boxed_subquery(our_item,
+            // conditional_subquery_branch)     }
+            // }
+            //
+            // if let Some(theirs) = theirs {
+            //     for their_item in theirs {
+            //         merged_query
+            //             .merge_conditional_boxed_subquery(their_item,
+            // conditional_subquery_branch)     }
+            // }
 
-            // for the items that are in ours and theirs we should add conditional subqueries
-            if let Some(ours) = ours {
-                for our_item in ours {
-                    merged_query.insert_item(our_item);
-                    //todo we need to remove the default subquery branch
-                    merged_query
-                        .merge_conditional_boxed_subquery(item.clone(), conditional_subquery_branch)
-                }
-            }
-
-            //merged_query.merge_default_subquery_branch(items, default_subquery_branch);
-            // merge query items as they point to the same context
-            for item in items {
-                merged_query.insert_item(item);
-            }
             if let Some(conditional_subquery_branches) = conditional_subquery_branches {
-                for (item, conditional_subquery_branch) in conditional_subquery_branches {
-                    merged_query
-                        .merge_conditional_boxed_subquery(item.clone(), conditional_subquery_branch)
+                // if there are conditional subqueries
+                // we need to remove from our items the conditional items
+
+                for (conditional_item, conditional_subquery_branch) in conditional_subquery_branches
+                {
+                    merged_query.merge_conditional_boxed_subquery(
+                        conditional_item.clone(),
+                        conditional_subquery_branch,
+                    );
+                    if !items.is_empty() {
+                        let intersection_result =
+                            QueryItem::intersect_many_ordered(&mut items, vec![conditional_item]);
+                        items = intersection_result.ours.unwrap();
+                    }
                 }
+            }
+            // if there are no conditional subquery items then things are easy
+            // we create a conditional subquery item for all our items and add it to the
+            // query
+            for item in items {
+                merged_query
+                    .merge_conditional_boxed_subquery(item, default_subquery_branch.clone());
             }
         }
         merged_query
@@ -475,14 +506,19 @@ impl Query {
             conditional_subquery_branches,
             ..
         } = other;
+        self.insert_items(items);
 
-        let intersection_result = QueryItem::intersect_many(&mut self.items, items);
-        // merge query items as they point to the same context
-        for item in items {
-            self.insert_item(item)
-        }
+        // let intersection_result = QueryItem::intersect_many_ordered(&mut self.items,
+        // items); // merge query items as they point to the same context
+        // for item in items {
+        //     self.insert_item(item)
+        // }
 
-        self.merge_default_subquery_branch(default_subquery_branch);
+        // self.merge_default_subquery_branch(default_subquery_branch);
+        self.merge_conditional_boxed_subquery(
+            QueryItem::RangeFull(RangeFull),
+            default_subquery_branch,
+        );
         if let Some(conditional_subquery_branches) = conditional_subquery_branches {
             for (item, conditional_subquery_branch) in conditional_subquery_branches {
                 self.merge_conditional_boxed_subquery(item.clone(), conditional_subquery_branch)

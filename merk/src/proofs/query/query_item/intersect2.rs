@@ -1,9 +1,9 @@
 use std::{
     cmp::Ordering,
+    collections::{btree_set, BTreeSet},
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
+    option::IntoIter,
 };
-use std::collections::{btree_set, BTreeSet};
-use std::option::IntoIter;
 
 use crate::proofs::query::query_item::{
     intersect2::RangeSetItem::{
@@ -35,21 +35,32 @@ pub struct QueryItemManyIntersectionResult {
     pub theirs: Option<Vec<QueryItem>>,
 }
 
-impl QueryItemManyIntersectionResult {
+pub struct QueryItemIntersectionResultTheirsLeftovers {
+    pub theirs_left: Option<QueryItem>,
+    pub theirs_right: Option<QueryItem>,
+}
 
-    fn push_ours(&mut self, our_query_item: QueryItem)  {
+impl QueryItemManyIntersectionResult {
+    fn push_ours(&mut self, our_query_item: QueryItem) {
         let ours_vec = self.ours.get_or_insert(vec![]);
         ours_vec.push(our_query_item);
     }
 
-    fn push_theirs(&mut self, their_query_item: QueryItem)  {
+    fn push_theirs(&mut self, their_query_item: QueryItem) {
         let theirs_vec = self.theirs.get_or_insert(vec![]);
         theirs_vec.push(their_query_item);
     }
 
-    fn push(&mut self, query_item_intersection_result: QueryItemIntersectionResult) {
+    fn push_ours_and_in_both_from_result(
+        &mut self,
+        query_item_intersection_result: QueryItemIntersectionResult,
+    ) -> QueryItemIntersectionResultTheirsLeftovers {
         let QueryItemIntersectionResult {
-            in_both, ours_left, ours_right, theirs_left, theirs_right
+            in_both,
+            ours_left,
+            ours_right,
+            theirs_left,
+            theirs_right,
         } = query_item_intersection_result;
         if let Some(in_both) = in_both {
             let in_both_vec = self.in_both.get_or_insert(vec![]);
@@ -63,6 +74,21 @@ impl QueryItemManyIntersectionResult {
             let ours_vec = self.ours.get_or_insert(vec![]);
             ours_vec.push(ours_right);
         }
+
+        QueryItemIntersectionResultTheirsLeftovers {
+            theirs_left,
+            theirs_right,
+        }
+    }
+
+    fn push_theirs_from_result(
+        &mut self,
+        query_item_intersection_result: QueryItemIntersectionResultTheirsLeftovers,
+    ) {
+        let QueryItemIntersectionResultTheirsLeftovers {
+            theirs_left,
+            theirs_right,
+        } = query_item_intersection_result;
         if let Some(theirs_left) = theirs_left {
             let theirs_vec = self.theirs.get_or_insert(vec![]);
             theirs_vec.push(theirs_left);
@@ -75,7 +101,9 @@ impl QueryItemManyIntersectionResult {
 
     fn merge_in(&mut self, query_item_many_intersection_result: Self) {
         let QueryItemManyIntersectionResult {
-            mut in_both, mut ours, mut theirs
+            mut in_both,
+            mut ours,
+            mut theirs,
         } = query_item_many_intersection_result;
         if let Some(mut in_both) = in_both {
             let in_both_vec = self.in_both.get_or_insert(vec![]);
@@ -375,28 +403,51 @@ impl Ord for RangeSetItem {
 // need to convert from a query item to a range set
 // TODO: remove clones
 impl QueryItem {
-    pub fn intersect_many(ours: &mut Vec<Self>, theirs: Vec<Self>) -> QueryItemManyIntersectionResult {
+    /// For this intersection to work ours and theirs must be ordered
+    pub fn intersect_many_ordered(
+        ours: &mut Vec<Self>,
+        theirs: Vec<Self>,
+    ) -> QueryItemManyIntersectionResult {
         let mut result = QueryItemManyIntersectionResult::default();
         for our_item in ours.drain(..) {
             // We create an intersection result for this one item
-            let mut our_item_intersections = QueryItemManyIntersectionResult::default();
+            let mut one_item_pair_intersections = QueryItemManyIntersectionResult::default();
             // We add our item
             // In the end the item might be split up
-            our_item_intersections.push_ours(our_item);
-            for their_item in theirs {
+            one_item_pair_intersections.push_ours(our_item);
+            for their_item in theirs.clone() {
                 // We take the vector of our item
                 // It might be empty if it has already been completely consumed
                 // Meaning that all the item was inside of their items
-                if let Some(our_item_split_sections) = our_item_intersections.ours.take() {
+                if let Some(our_item_split_sections) = one_item_pair_intersections.ours.take() {
+                    let mut maybe_temp_their_item = Some(their_item);
                     for our_partial_item in our_item_split_sections {
-                        let intersection_result = our_partial_item.intersect(&their_item);
-                        our_item_intersections.push(intersection_result);
+                        if let Some(temp_their_item) = maybe_temp_their_item {
+                            let intersection_result = our_partial_item.intersect(&temp_their_item);
+                            // ours and in both are guaranteed to be unique
+                            let theirs_leftovers = one_item_pair_intersections
+                                .push_ours_and_in_both_from_result(intersection_result);
+                            // if we assume theirs is ordered
+                            // then we can push the left leftover
+                            if let Some(theirs_left) = theirs_leftovers.theirs_left {
+                                one_item_pair_intersections.push_theirs(theirs_left)
+                            }
+                            maybe_temp_their_item = theirs_leftovers.theirs_right
+                        } else {
+                            // there is no more of their item left
+                            // just push our partial item
+                            one_item_pair_intersections.push_ours(our_partial_item)
+                        }
+                    }
+                    // we need to add the end theirs leftovers
+                    if let Some(theirs_left) = maybe_temp_their_item {
+                        one_item_pair_intersections.push_theirs(theirs_left)
                     }
                 } else {
-                    our_item_intersections.push_theirs(their_item)
+                    one_item_pair_intersections.push_theirs(their_item)
                 }
             }
-            result.merge_in(our_item_intersections)
+            result.merge_in(one_item_pair_intersections)
         }
         result
     }

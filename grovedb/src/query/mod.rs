@@ -118,7 +118,7 @@ impl PathQuery {
             let mut subquery_path =
                 subquery_path.ok_or(Error::CorruptedCodeExecution("subquery path must exist"))?;
             let key = subquery_path.remove(0); // must exist
-            merged_query.items.insert(QueryItem::Key(key.clone()));
+            merged_query.insert_item(QueryItem::Key(key.clone()));
             let rest_of_path = if subquery_path.is_empty() {
                 None
             } else {
@@ -264,6 +264,7 @@ impl PathQuery {
 #[cfg(test)]
 mod tests {
     use std::ops::RangeFull;
+
     use merk::proofs::{query::query_item::QueryItem, Query};
 
     use crate::{
@@ -773,7 +774,7 @@ mod tests {
 
         let mut subq = Query::new();
         subq.insert_all();
-        query_one.set_subquery(subq);
+        query_one.set_subquery(subq.clone());
 
         let path_query_two = PathQuery::new_unsized(
             vec![b"deep_leaf".to_vec(), b"deep_node_1".to_vec()],
@@ -812,22 +813,47 @@ mod tests {
 
         }
 
-        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two]).expect("expected to be able to merge path_query");
+        let merged_path_query = PathQuery::merge(vec![&path_query_one, &path_query_two])
+            .expect("expected to be able to merge path_query");
 
         // we expect the common path to be the path of both before merge
-        assert_eq!(merged_path_query.path, vec![b"deep_leaf".to_vec(), b"deep_node_1".to_vec()]);
+        assert_eq!(
+            merged_path_query.path,
+            vec![b"deep_leaf".to_vec(), b"deep_node_1".to_vec()]
+        );
 
         // we expect all items (a range full)
         assert_eq!(merged_path_query.query.query.items.len(), 1);
-        assert!(merged_path_query.query.query.items.iter().all(|a| a == &QueryItem::RangeFull(RangeFull)));
+        assert!(merged_path_query
+            .query
+            .query
+            .items
+            .iter()
+            .all(|a| a == &QueryItem::RangeFull(RangeFull)));
 
         // we expect a conditional subquery on deeper 1 for all elements
-        let conditional_subquery_branches = merged_path_query.query.query.conditional_subquery_branches.as_ref().expect("expected conditional subquery branches");
+        let conditional_subquery_branches = merged_path_query
+            .query
+            .query
+            .conditional_subquery_branches
+            .as_ref()
+            .expect("expected conditional subquery branches");
+
+        assert_eq!(conditional_subquery_branches.len(), 1);
+        let (conditional_query_item, conditional_subquery_branch) =
+            conditional_subquery_branches.first().unwrap().clone();
+        assert_eq!(
+            conditional_query_item,
+            &QueryItem::Key(b"deeper_1".to_vec())
+        );
+
+        assert_eq!(conditional_subquery_branch.subquery, Some(Box::new(subq)));
+
+        assert_eq!(conditional_subquery_branch.subquery_path, None);
 
         let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
-        let (_, result_set) =
-            GroveDb::verify_query(proof.as_slice(), &merged_path_query).expect("should execute proof");
+        let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &merged_path_query)
+            .expect("should execute proof");
         assert_eq!(result_set.len(), 4);
-
     }
 }
