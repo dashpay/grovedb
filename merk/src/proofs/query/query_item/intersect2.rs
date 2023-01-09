@@ -12,7 +12,6 @@ use crate::proofs::query::query_item::{
     QueryItem,
 };
 
-// TODO: Refactor into nice units
 pub struct RangeSetIntersection {
     in_both: Option<RangeSet>,
     ours_left: Option<RangeSet>,
@@ -211,8 +210,7 @@ impl RangeSet {
     }
 
     pub fn intersect(&self, other: RangeSet) -> RangeSetIntersection {
-        // how to detect non-overlapping sets??
-        // the end of one of the sets is smaller than the start of another
+        // check if the range sets do not overlap
         if self.end < other.start || other.end < self.start {
             // the sets do not overlap
             // no common element
@@ -236,16 +234,12 @@ impl RangeSet {
             }
         }
 
+        // sets overlap
         let (smaller_start, bigger_start) =
             RangeSetItem::order_items(&self.start, &other.start, self.start.cmp(&other.start));
 
         let (smaller_end, larger_end) =
             RangeSetItem::order_items(&self.end, &other.end, self.end.cmp(&other.end));
-
-        // need to get 3 things, 3 range sets to be precise, optional range sets
-        // how to we perform this intersection
-        // need to check both starts and see which is smaller, hence need to implement
-        // ord for range set item
 
         // assume they are equal and progressively update the common boundary
         let mut intersection_result = RangeSetIntersection {
@@ -270,10 +264,9 @@ impl RangeSet {
                     end: bigger_start.invert(false),
                 });
             }
-            // intersection_result.common.expect("set above").start =
-            // bigger_start.clone();
         }
 
+        // if the comparison of the end is not equal then we have value for right
         if self.end != other.end {
             if self.end > other.end {
                 // ours right
@@ -287,10 +280,6 @@ impl RangeSet {
                     end: larger_end.clone(),
                 });
             }
-            // now we need to know the bigger one and basically perform an
-            // inversion of the other one
-            // intersection_result.common.expect("set above").end =
-            // smaller_end.clone()
         }
 
         intersection_result.in_both = Some(RangeSet {
@@ -315,9 +304,6 @@ pub enum RangeSetItem {
 impl RangeSetItem {
     pub fn invert(&self, is_start: bool) -> RangeSetItem {
         match &self {
-            // TODO: confirm unbounded has no inversions
-            RangeSetItem::UnboundedStart => RangeSetItem::UnboundedStart,
-            RangeSetItem::UnboundedEnd => RangeSetItem::UnboundedEnd,
             RangeSetItem::Inclusive(v) => {
                 if is_start {
                     RangeSetItem::ExclusiveStart(v.clone())
@@ -328,11 +314,12 @@ impl RangeSetItem {
             RangeSetItem::ExclusiveStart(v) | RangeSetItem::ExclusiveEnd(v) => {
                 RangeSetItem::Inclusive(v.clone())
             }
+            RangeSetItem::UnboundedStart => RangeSetItem::UnboundedStart,
+            RangeSetItem::UnboundedEnd => RangeSetItem::UnboundedEnd,
         }
     }
 
-    // need to create a new function that takes an ordering and returns a tuple with
-    // the elements
+    /// Given som ordering and two items, this returns the items orders
     pub fn order_items<'a>(
         item_one: &'a RangeSetItem,
         item_two: &'a RangeSetItem,
@@ -352,16 +339,18 @@ impl PartialOrd for RangeSetItem {
 }
 
 impl Ord for RangeSetItem {
-    // TODO: hmm, this is wrong, could be equal right??
-    //  but then equal returns the same order as less or greater than.
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (UnboundedStart, UnboundedStart) => Ordering::Equal,
             (UnboundedEnd, UnboundedEnd) => Ordering::Equal,
+
+            // unbounded start begins at negative infinity so it's smaller than all other values
             (UnboundedStart, _) => Ordering::Less,
             (_, UnboundedStart) => Ordering::Greater,
-            (_, UnboundedEnd) => Ordering::Less,
+
+            // unbounded end stops at positive infinity so larger than all other values
             (UnboundedEnd, _) => Ordering::Greater,
+            (_, UnboundedEnd) => Ordering::Less,
 
             (Inclusive(v1), Inclusive(v2))
             | (ExclusiveStart(v1), ExclusiveStart(v2))
@@ -404,58 +393,7 @@ impl Ord for RangeSetItem {
     }
 }
 
-// need to convert from a query item to a range set
-// TODO: remove clones
 impl QueryItem {
-    /// For this intersection to work ours and theirs must be ordered
-    pub fn intersect_many_ordered(
-        ours: &mut Vec<Self>,
-        theirs: Vec<Self>,
-    ) -> QueryItemManyIntersectionResult {
-        let mut result = QueryItemManyIntersectionResult::default();
-        for our_item in ours.drain(..) {
-            // We create an intersection result for this one item
-            let mut one_item_pair_intersections = QueryItemManyIntersectionResult::default();
-            // We add our item
-            // In the end the item might be split up
-            one_item_pair_intersections.push_ours(our_item);
-            for their_item in theirs.clone() {
-                // We take the vector of our item
-                // It might be empty if it has already been completely consumed
-                // Meaning that all the item was inside of their items
-                if let Some(our_item_split_sections) = one_item_pair_intersections.ours.take() {
-                    let mut maybe_temp_their_item = Some(their_item);
-                    for our_partial_item in our_item_split_sections {
-                        if let Some(temp_their_item) = maybe_temp_their_item {
-                            let intersection_result = our_partial_item.intersect(&temp_their_item);
-                            // ours and in both are guaranteed to be unique
-                            let theirs_leftovers = one_item_pair_intersections
-                                .push_ours_and_in_both_from_result(intersection_result);
-                            // if we assume theirs is ordered
-                            // then we can push the left leftover
-                            if let Some(theirs_left) = theirs_leftovers.theirs_left {
-                                one_item_pair_intersections.push_theirs(theirs_left)
-                            }
-                            maybe_temp_their_item = theirs_leftovers.theirs_right
-                        } else {
-                            // there is no more of their item left
-                            // just push our partial item
-                            one_item_pair_intersections.push_ours(our_partial_item)
-                        }
-                    }
-                    // we need to add the end theirs leftovers
-                    if let Some(theirs_left) = maybe_temp_their_item {
-                        one_item_pair_intersections.push_theirs(theirs_left)
-                    }
-                } else {
-                    one_item_pair_intersections.push_theirs(their_item)
-                }
-            }
-            result.merge_in(one_item_pair_intersections)
-        }
-        result
-    }
-
     pub fn intersect(&self, other: &Self) -> QueryItemIntersectionResult {
         self.to_range_set().intersect(other.to_range_set()).into()
     }
@@ -504,6 +442,55 @@ impl QueryItem {
                 end: RangeSetItem::Inclusive(range.end().clone()),
             },
         }
+    }
+
+    /// For this intersection to work ours and theirs must be ordered
+    pub fn intersect_many_ordered(
+        ours: &mut Vec<Self>,
+        theirs: Vec<Self>,
+    ) -> QueryItemManyIntersectionResult {
+        let mut result = QueryItemManyIntersectionResult::default();
+        for our_item in ours.drain(..) {
+            // We create an intersection result for this one item
+            let mut one_item_pair_intersections = QueryItemManyIntersectionResult::default();
+            // We add our item
+            // In the end the item might be split up
+            one_item_pair_intersections.push_ours(our_item);
+            for their_item in theirs.clone() {
+                // We take the vector of our item
+                // It might be empty if it has already been completely consumed
+                // Meaning that all the item was inside of their items
+                if let Some(our_item_split_sections) = one_item_pair_intersections.ours.take() {
+                    let mut maybe_temp_their_item = Some(their_item);
+                    for our_partial_item in our_item_split_sections {
+                        if let Some(temp_their_item) = maybe_temp_their_item {
+                            let intersection_result = our_partial_item.intersect(&temp_their_item);
+                            // ours and in both are guaranteed to be unique
+                            let theirs_leftovers = one_item_pair_intersections
+                                .push_ours_and_in_both_from_result(intersection_result);
+                            // if we assume theirs is ordered
+                            // then we can push the left leftover
+                            if let Some(theirs_left) = theirs_leftovers.theirs_left {
+                                one_item_pair_intersections.push_theirs(theirs_left)
+                            }
+                            maybe_temp_their_item = theirs_leftovers.theirs_right
+                        } else {
+                            // there is no more of their item left
+                            // just push our partial item
+                            one_item_pair_intersections.push_ours(our_partial_item)
+                        }
+                    }
+                    // we need to add the end theirs leftovers
+                    if let Some(theirs_left) = maybe_temp_their_item {
+                        one_item_pair_intersections.push_theirs(theirs_left)
+                    }
+                } else {
+                    one_item_pair_intersections.push_theirs(their_item)
+                }
+            }
+            result.merge_in(one_item_pair_intersections)
+        }
+        result
     }
 }
 
