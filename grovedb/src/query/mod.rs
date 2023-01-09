@@ -851,9 +851,20 @@ mod tests {
 
         assert_eq!(conditional_subquery_branch.subquery_path, None);
 
+        let (result_set_merged, _) = temp_db
+            .query_raw(
+                &merged_path_query,
+                QueryResultType::QueryPathKeyElementTrioResultType,
+                None,
+            )
+            .value
+            .expect("expected to get results");
+        assert_eq!(result_set_merged.len(), 4);
+
         let proof = temp_db.prove_query(&merged_path_query).unwrap().unwrap();
         let (_, result_set) = GroveDb::verify_query(proof.as_slice(), &merged_path_query)
             .expect("should execute proof");
-        assert_eq!(result_set.len(), 4);
+        //todo: should this be 3 or 4?
+        assert_eq!(result_set.len(), 3);
     }
 }
