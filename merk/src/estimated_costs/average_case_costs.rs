@@ -42,23 +42,32 @@ use crate::{
 };
 
 #[cfg(feature = "full")]
+/// Average key size
 pub type AverageKeySize = u8;
 #[cfg(feature = "full")]
+/// Average value size
 pub type AverageValueSize = u32;
 #[cfg(feature = "full")]
+/// Average flags size
 pub type AverageFlagsSize = u32;
 #[cfg(feature = "full")]
+/// Weight
 pub type Weight = u8;
 
 #[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
 /// Estimated number of sum trees
 pub enum EstimatedSumTrees {
+    /// No sum trees
     NoSumTrees,
+    /// Some sum trees
     SomeSumTrees {
+        /// Sum trees weight
         sum_trees_weight: Weight,
+        /// Non sum trees weight
         non_sum_trees_weight: Weight,
     },
+    /// All sum trees
     AllSumTrees,
 }
 
@@ -89,22 +98,29 @@ impl EstimatedSumTrees {
 #[derive(Clone, PartialEq, Eq, Debug)]
 /// Estimated layer sizes
 pub enum EstimatedLayerSizes {
+    /// All subtrees
     AllSubtrees(AverageKeySize, EstimatedSumTrees, Option<AverageFlagsSize>),
+    /// All items
     AllItems(AverageKeySize, AverageValueSize, Option<AverageFlagsSize>),
+    /// References
     AllReference(AverageKeySize, AverageValueSize, Option<AverageFlagsSize>),
+    /// Mix
     Mix {
+        /// Subtrees size
         subtrees_size: Option<(
             AverageKeySize,
             EstimatedSumTrees,
             Option<AverageFlagsSize>,
             Weight,
         )>,
+        /// Items size
         items_size: Option<(
             AverageKeySize,
             AverageValueSize,
             Option<AverageFlagsSize>,
             Weight,
         )>,
+        /// References size
         references_size: Option<(
             AverageKeySize,
             AverageValueSize,
@@ -237,18 +253,24 @@ impl EstimatedLayerSizes {
 }
 
 #[cfg(feature = "full")]
+/// Approximate element count
 pub type ApproximateElementCount = u32;
 #[cfg(feature = "full")]
+/// Estimated level number
 pub type EstimatedLevelNumber = u32;
 #[cfg(feature = "full")]
+/// Estimated to be empty
 pub type EstimatedToBeEmpty = bool;
 
 #[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
 /// Information on an estimated layer
 pub struct EstimatedLayerInformation {
+    /// Is sum tree?
     pub is_sum_tree: bool,
+    /// Estimated layer count
     pub estimated_layer_count: EstimatedLayerCount,
+    /// Estimated layer sizes
     pub estimated_layer_sizes: EstimatedLayerSizes,
 }
 
@@ -259,8 +281,11 @@ impl EstimatedLayerInformation {}
 #[derive(Clone, PartialEq, Eq, Debug)]
 /// Estimated elements and level number of a layer
 pub enum EstimatedLayerCount {
+    /// Potentially at max elements
     PotentiallyAtMaxElements,
+    /// Approximate elements
     ApproximateElements(ApproximateElementCount),
+    /// Estimated level
     EstimatedLevel(EstimatedLevelNumber, EstimatedToBeEmpty),
 }
 

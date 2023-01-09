@@ -108,25 +108,41 @@ use crate::{
 #[cfg(feature = "full")]
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Op {
+    /// Replace tree root key
     ReplaceTreeRootKey {
+        /// Hash
         hash: [u8; 32],
+        /// Root key
         root_key: Option<Vec<u8>>,
+        /// Sum
         sum: Option<i64>,
     },
+    /// Insert
     Insert {
+        /// Element
         element: Element,
     },
+    /// Replace
     Replace {
+        /// Element
         element: Element,
     },
+    /// Insert tree with root hash
     InsertTreeWithRootHash {
+        /// Hash
         hash: [u8; 32],
+        /// Root key
         root_key: Option<Vec<u8>>,
+        /// Flags
         flags: Option<ElementFlags>,
+        /// Sum
         sum: Option<i64>,
     },
+    /// Delete
     Delete,
+    /// Delete tree
     DeleteTree,
+    /// Delete sum tree
     DeleteSumTree,
 }
 

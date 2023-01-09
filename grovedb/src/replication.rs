@@ -313,6 +313,7 @@ pub struct GroveChunk {
 
 #[cfg(feature = "full")]
 impl<'db> SiblingsChunkProducer<'db> {
+    /// New
     pub fn new(chunk_producer: SubtreeChunkProducer<'db>) -> Self {
         SiblingsChunkProducer { chunk_producer }
     }
@@ -429,6 +430,7 @@ pub struct BufferedRestorer<'db> {
 
 #[cfg(feature = "full")]
 impl<'db> BufferedRestorer<'db> {
+    /// New
     pub fn new(restorer: Restorer<'db>) -> Self {
         BufferedRestorer { restorer }
     }

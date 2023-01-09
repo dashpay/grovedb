@@ -29,6 +29,7 @@
 //! Default values
 
 #[cfg(feature = "full")]
+/// Root key key
 pub const ROOT_KEY_KEY: &[u8] = b"r";
 #[cfg(feature = "full")]
 pub const MAX_UPDATE_VALUE_BASED_ON_COSTS_TIMES: u8 = 8;

@@ -47,6 +47,8 @@ pub mod worst_case_costs;
 /// Estimated costs types
 #[cfg(feature = "full")]
 pub enum EstimatedCostsType {
+    /// Average cast estimated costs type
     AverageCaseCostsType(HashMap<KeyInfoPath, EstimatedLayerInformation>),
+    /// Worst case estimated costs type
     WorstCaseCostsType(HashMap<KeyInfoPath, WorstCaseLayerInformation>),
 }

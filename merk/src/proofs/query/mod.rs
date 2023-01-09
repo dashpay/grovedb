@@ -62,7 +62,9 @@ use crate::{error::Error, tree::value_hash, CryptoHash as MerkHash, CryptoHash};
 #[derive(Debug, Default, Clone, PartialEq)]
 /// Subquery branch
 pub struct SubqueryBranch {
+    /// Subquery key
     pub subquery_key: Option<Vec<u8>>,
+    /// Subquery
     pub subquery: Option<Box<Query>>,
 }
 
@@ -71,9 +73,13 @@ pub struct SubqueryBranch {
 /// resolve a proof which will include all of the requested values.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Query {
+    /// Items
     pub items: BTreeSet<QueryItem>,
+    /// Default subquery branch
     pub default_subquery_branch: SubqueryBranch,
+    /// Conditional subquery branches
     pub conditional_subquery_branches: IndexMap<QueryItem, SubqueryBranch>,
+    /// Left to right?
     pub left_to_right: bool,
 }
 
@@ -368,15 +374,25 @@ impl IntoIterator for Query {
 /// A `QueryItem` represents a key or range of keys to be included in a proof.
 #[derive(Clone, Debug)]
 pub enum QueryItem {
+    /// Key
     Key(Vec<u8>),
+    /// Range
     Range(Range<Vec<u8>>),
+    /// Range inclusive
     RangeInclusive(RangeInclusive<Vec<u8>>),
+    /// Range full
     RangeFull(RangeFull),
+    /// Range from
     RangeFrom(RangeFrom<Vec<u8>>),
+    /// Range to
     RangeTo(RangeTo<Vec<u8>>),
+    /// Range to inclusive
     RangeToInclusive(RangeToInclusive<Vec<u8>>),
+    /// Range after
     RangeAfter(RangeFrom<Vec<u8>>),
+    /// Range after to
     RangeAfterTo(Range<Vec<u8>>),
+    /// Rand after to inclusive
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
 }
 
@@ -1468,9 +1484,13 @@ pub fn execute_proof(
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(PartialEq, Eq, Debug)]
+/// Proof verification result
 pub struct ProofVerificationResult {
+    /// Result set
     pub result_set: Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,
+    /// Limit
     pub limit: Option<u16>,
+    /// Offset
     pub offset: Option<u16>,
 }
 

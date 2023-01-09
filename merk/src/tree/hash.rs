@@ -36,14 +36,19 @@ use integer_encoding::*;
 /// The length of a `Hash` (in bytes).
 #[cfg(any(feature = "full", feature = "verify"))]
 pub const HASH_LENGTH: usize = 32;
+/// 2x length of a `Hash`
 #[cfg(feature = "full")]
 pub const HASH_LENGTH_X2: usize = 64;
+/// Length of a `Hash` as u32
 #[cfg(feature = "full")]
 pub const HASH_LENGTH_U32: u32 = 32;
+/// 2x length of a `Hash` as u32
 #[cfg(feature = "full")]
 pub const HASH_LENGTH_U32_X2: u32 = 64;
+/// Hash block size
 #[cfg(feature = "full")]
 pub const HASH_BLOCK_SIZE: usize = 64;
+/// Hash block size as u32
 #[cfg(feature = "full")]
 pub const HASH_BLOCK_SIZE_U32: u32 = 64;
 

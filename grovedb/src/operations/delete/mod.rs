@@ -70,9 +70,13 @@ use crate::{
 #[derive(Clone)]
 /// Delete options
 pub struct DeleteOptions {
+    /// Allow deleting non empty trees
     pub allow_deleting_non_empty_trees: bool,
+    /// Deleting non empty trees returns error
     pub deleting_non_empty_trees_returns_error: bool,
+    /// Base root storage is free
     pub base_root_storage_is_free: bool,
+    /// Validate tree at path exists
     pub validate_tree_at_path_exists: bool,
 }
 

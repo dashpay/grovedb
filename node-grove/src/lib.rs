@@ -28,6 +28,8 @@
 
 //! GroveDB binding for Node.JS
 
+#![deny(missing_docs)]
+
 mod converter;
 
 use std::{option::Option::None, path::Path, sync::mpsc, thread};

@@ -52,9 +52,13 @@ pub enum Link {
     /// retaining a reference to it (its key). The child node can always be
     /// fetched from the backing store by this key when necessary.
     Reference {
+        /// Hash
         hash: CryptoHash,
+        /// Child heights
         child_heights: (u8, u8),
+        /// Key
         key: Vec<u8>,
+        /// Sum
         sum: Option<i64>,
     },
 
@@ -63,8 +67,11 @@ pub enum Link {
     /// been recomputed. The child's `Tree` instance is stored in the link.
     #[rustfmt::skip]
     Modified {
+        /// Pending writes
         pending_writes: usize, // TODO: rename to `pending_hashes`
+        /// Child heights
         child_heights: (u8, u8),
+        /// Tree
         tree: Tree
     },
 
@@ -72,18 +79,26 @@ pub enum Link {
     /// commit, but which has an up-to-date hash. The child's `Tree` instance is
     /// stored in the link.
     Uncommitted {
+        /// Hash
         hash: CryptoHash,
+        /// Child heights
         child_heights: (u8, u8),
+        /// Tree
         tree: Tree,
+        /// Sum
         sum: Option<i64>,
     },
 
     /// Represents a tree node which has not been modified, has an up-to-date
     /// hash, and which is being retained in memory.
     Loaded {
+        /// Hash
         hash: CryptoHash,
+        /// Child heights
         child_heights: (u8, u8),
+        /// Tree
         tree: Tree,
+        /// Sum
         sum: Option<i64>,
     },
 }
@@ -263,6 +278,7 @@ impl Link {
 
     // Costs for operations within a single merk
     #[inline]
+    /// Encoded link size
     pub const fn encoded_link_size(not_prefixed_key_len: u32, is_sum_tree: bool) -> u32 {
         let sum_tree_cost = if is_sum_tree { 8 } else { 0 };
         // Links are optional values that represent the right or left node for a given
@@ -275,7 +291,7 @@ impl Link {
         not_prefixed_key_len + HASH_LENGTH_U32 + 4 + sum_tree_cost
     }
 
-    /// the encoding cost is always 8 bytes for the sum instead of a varint
+    /// The encoding cost is always 8 bytes for the sum instead of a varint
     #[inline]
     pub fn encoding_cost(&self) -> Result<usize> {
         debug_assert!(self.key().len() < 256, "Key length must be less than 256");

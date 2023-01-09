@@ -28,6 +28,8 @@
 
 //! A hierarchical "grove" of trees with proofs and secondary indexes.
 
+#![deny(missing_docs)]
+
 #[cfg(feature = "full")]
 extern crate core;
 

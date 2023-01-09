@@ -49,7 +49,9 @@ use crate::{error::Error, tree::CryptoHash};
 /// be up-to-date.
 #[derive(Debug)]
 pub struct Child {
+    /// Tree
     pub tree: Box<Tree>,
+    /// Hash
     pub hash: CryptoHash,
 }
 
@@ -58,9 +60,13 @@ pub struct Child {
 /// when verifying Merkle proofs.
 #[derive(Debug)]
 pub struct Tree {
+    /// Node
     pub node: Node,
+    /// Left
     pub left: Option<Child>,
+    /// Right
     pub right: Option<Child>,
+    /// Height
     pub height: usize,
 }
 

@@ -27,6 +27,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 #![deny(missing_docs)]
+
 //! Interface crate to unify how operations' costs are passed and retrieved.
 
 /// Cost Contexts

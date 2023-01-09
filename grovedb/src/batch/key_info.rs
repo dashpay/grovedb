@@ -46,8 +46,15 @@ use crate::batch::key_info::KeyInfo::{KnownKey, MaxKeySize};
 #[cfg(feature = "full")]
 #[derive(Clone, Eq, Debug)]
 pub enum KeyInfo {
+    /// Known key
     KnownKey(Vec<u8>),
-    MaxKeySize { unique_id: Vec<u8>, max_size: u8 },
+    /// Max key size
+    MaxKeySize {
+        /// Unique ID
+        unique_id: Vec<u8>,
+        /// Max size
+        max_size: u8
+    },
 }
 
 #[cfg(feature = "full")]

@@ -29,7 +29,9 @@
 //! Merk options
 
 #[cfg(feature = "full")]
+/// Merk options
 pub struct MerkOptions {
+    /// Base root storage is free?
     pub base_root_storage_is_free: bool,
 }
 

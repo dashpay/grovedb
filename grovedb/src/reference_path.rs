@@ -215,6 +215,7 @@ where
 
 #[cfg(feature = "full")]
 impl ReferencePathType {
+    /// Serialized size
     pub fn serialized_size(&self) -> usize {
         match self {
             ReferencePathType::AbsolutePathReference(path)

@@ -38,11 +38,17 @@ use crate::operations::{delete::DeleteOptions, insert::InsertOptions};
 #[cfg(feature = "full")]
 #[derive(Debug, Clone)]
 pub struct BatchApplyOptions {
+    /// Validate insertion does not override
     pub validate_insertion_does_not_override: bool,
+    /// Validate insertion does not override tree
     pub validate_insertion_does_not_override_tree: bool,
+    /// Allow deleting non empty trees
     pub allow_deleting_non_empty_trees: bool,
+    /// Deleting non empty trees returns error
     pub deleting_non_empty_trees_returns_error: bool,
+    /// Disable operation consistency check
     pub disable_operation_consistency_check: bool,
+    /// Base root storage is free
     pub base_root_storage_is_free: bool,
 }
 

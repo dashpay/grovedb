@@ -81,8 +81,11 @@ type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
 #[cfg(feature = "full")]
 /// Proof construction result
 pub struct ProofConstructionResult {
+    /// Proof
     pub proof: Vec<u8>,
+    /// Limit
     pub limit: Option<u16>,
+    /// Offset
     pub offset: Option<u16>,
 }
 
@@ -101,8 +104,11 @@ impl ProofConstructionResult {
 #[cfg(feature = "full")]
 /// Proof without encoding result
 pub struct ProofWithoutEncodingResult {
+    /// Proof
     pub proof: LinkedList<ProofOp>,
+    /// Limit
     pub limit: Option<u16>,
+    /// Offset
     pub offset: Option<u16>,
 }
 
@@ -158,6 +164,7 @@ pub type BatchValue = (
 /// A bool type
 pub type IsSumTree = bool;
 #[cfg(feature = "full")]
+/// Root hash key and sum
 pub type RootHashKeyAndSum = (CryptoHash, Option<Vec<u8>>, Option<i64>);
 
 #[cfg(feature = "full")]
@@ -286,8 +293,11 @@ impl MerkType {
 pub struct Merk<S> {
     pub(crate) tree: Cell<Option<Tree>>,
     pub(crate) root_tree_key: Cell<Option<Vec<u8>>>,
+    /// Storage
     pub storage: S,
+    /// Merk type
     pub merk_type: MerkType,
+    /// Is sum tree?
     pub is_sum_tree: bool,
 }
 

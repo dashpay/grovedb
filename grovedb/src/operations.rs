@@ -26,6 +26,8 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+//! Operations
+
 #[cfg(feature = "full")]
 pub(crate) mod auxiliary;
 #[cfg(feature = "full")]

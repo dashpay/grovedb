@@ -40,8 +40,10 @@ use crate::Error;
 #[derive(Debug, Clone)]
 /// Path query
 pub struct PathQuery {
+    /// Path
     // TODO: Make generic over path type
     pub path: Vec<Vec<u8>>,
+    /// Query
     pub query: SizedQuery,
 }
 
@@ -49,8 +51,11 @@ pub struct PathQuery {
 #[derive(Debug, Clone)]
 /// Sized query
 pub struct SizedQuery {
+    /// Query
     pub query: Query,
+    /// Limit
     pub limit: Option<u16>,
+    /// Offset
     pub offset: Option<u16>,
 }
 

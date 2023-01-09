@@ -28,6 +28,8 @@
 
 //! Visualize
 
+#![deny(missing_docs)]
+
 use core::fmt;
 use std::io::{Result, Write};
 
@@ -39,6 +41,7 @@ static INDENT_SPACES: usize = 4;
 
 /// Pretty visualization of GroveDB components.
 pub trait Visualize {
+    /// Visualize
     fn visualize<W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>>;
 }
 
@@ -86,18 +89,22 @@ pub struct Drawer<W: Write> {
 }
 
 impl<W: Write> Drawer<W> {
+    /// New
     pub fn new(write: W) -> Self {
         Drawer { level: 0, write }
     }
 
+    /// Down
     pub fn down(&mut self) {
         self.level += 1;
     }
 
+    /// Up
     pub fn up(&mut self) {
         self.level -= 1;
     }
 
+    /// Write
     pub fn write(&mut self, buf: &[u8]) -> Result<()> {
         let lines_iter = buf.split(|c| *c == b'\n');
         let sep = if self.level > 0 {
@@ -114,6 +121,7 @@ impl<W: Write> Drawer<W> {
         Ok(())
     }
 
+    /// Flush
     pub fn flush(&mut self) -> Result<()> {
         self.write.write_all(b"\n")?;
         self.write.flush()?;
@@ -121,6 +129,7 @@ impl<W: Write> Drawer<W> {
     }
 }
 
+/// To hex
 pub fn to_hex(bytes: &[u8]) -> String {
     let encoded = hex::encode(bytes);
     let remaining = encoded.len().saturating_sub(HEX_LEN);

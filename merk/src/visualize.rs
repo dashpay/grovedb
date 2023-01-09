@@ -39,6 +39,7 @@ use visualize::{Drawer, Visualize};
 #[cfg(feature = "full")]
 use crate::{tree::Tree, Merk};
 
+/// Visualizeable Merk
 #[cfg(feature = "full")]
 pub struct VisualizeableMerk<'a, S, F> {
     merk: &'a Merk<S>,
@@ -47,6 +48,7 @@ pub struct VisualizeableMerk<'a, S, F> {
 
 #[cfg(feature = "full")]
 impl<'a, S, F> VisualizeableMerk<'a, S, F> {
+    /// New
     pub fn new(merk: &'a Merk<S>, deserialize_fn: F) -> Self {
         Self {
             merk,

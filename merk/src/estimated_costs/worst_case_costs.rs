@@ -43,8 +43,11 @@ use crate::{
 
 #[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
+/// Worst case layer info
 pub enum WorstCaseLayerInformation {
+    /// Max elements number
     MaxElementsNumber(u32),
+    /// Number of levels
     NumberOfLevels(u32),
 }
 
@@ -155,8 +158,10 @@ pub fn add_worst_case_merk_root_hash(cost: &mut OperationCost) {
 }
 
 #[cfg(feature = "full")]
+/// Merk biggest value size
 pub const MERK_BIGGEST_VALUE_SIZE: u32 = u16::MAX as u32;
 #[cfg(feature = "full")]
+/// Merk biggest key size
 pub const MERK_BIGGEST_KEY_SIZE: u32 = 256;
 
 #[cfg(feature = "full")]

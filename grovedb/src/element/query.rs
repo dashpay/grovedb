@@ -190,8 +190,8 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    // Returns a vector of elements excluding trees, and the number of skipped
-    // elements
+    /// Returns a vector of elements excluding trees, and the number of skipped
+    /// elements
     pub fn get_path_query(
         storage: &RocksDbStorage,
         path_query: &PathQuery,
@@ -215,8 +215,8 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    // Returns a vector of elements including trees, and the number of skipped
-    // elements
+    /// Returns a vector of elements including trees, and the number of skipped
+    /// elements
     pub fn get_raw_path_query(
         storage: &RocksDbStorage,
         path_query: &PathQuery,

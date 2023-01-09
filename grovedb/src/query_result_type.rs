@@ -37,14 +37,20 @@ use crate::Element;
 
 #[cfg(feature = "full")]
 #[derive(Copy, Clone)]
+/// Query result type
 pub enum QueryResultType {
+    /// Query element result type
     QueryElementResultType,
+    /// Query key element pair result type
     QueryKeyElementPairResultType,
+    /// Query path key element trio result type
     QueryPathKeyElementTrioResultType,
 }
 
 #[cfg(feature = "full")]
+/// Query result elements
 pub struct QueryResultElements {
+    /// Elements
     pub elements: Vec<QueryResultElement>,
 }
 
@@ -162,9 +168,13 @@ impl Default for QueryResultElements {
 }
 
 #[cfg(feature = "full")]
+/// Query result element
 pub enum QueryResultElement {
+    /// Element result item
     ElementResultItem(Element),
+    /// Key element pair result item
     KeyElementPairResultItem(KeyElementPair),
+    /// Path key element trio result item
     PathKeyElementTrioResultItem(PathKeyElementTrio),
 }
 

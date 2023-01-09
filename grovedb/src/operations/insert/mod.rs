@@ -50,8 +50,11 @@ use crate::{
 #[derive(Clone)]
 /// Insert options
 pub struct InsertOptions {
+    /// Validate insertion does not override
     pub validate_insertion_does_not_override: bool,
+    /// Validate insertion does not override tree
     pub validate_insertion_does_not_override_tree: bool,
+    /// Base root storage is free
     pub base_root_storage_is_free: bool,
 }
 

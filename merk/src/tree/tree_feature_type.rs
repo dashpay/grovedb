@@ -45,7 +45,9 @@ use crate::tree::tree_feature_type::TreeFeatureType::{BasicMerk, SummedMerk};
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 /// Basic or summed
 pub enum TreeFeatureType {
+    /// Basic Merk
     BasicMerk,
+    /// Summed Merk
     SummedMerk(i64),
 }
 
