@@ -19,6 +19,7 @@ impl GroveDb {
     pub fn query_encoded_many(
         &self,
         path_queries: &[&PathQuery],
+        allow_cache: bool,
         transaction: TransactionArg,
     ) -> CostResult<Vec<Vec<u8>>, Error> {
         let mut cost = OperationCost::default();
@@ -27,6 +28,7 @@ impl GroveDb {
             &mut cost,
             self.query_many_raw(
                 path_queries,
+                allow_cache,
                 QueryResultType::QueryElementResultType,
                 transaction
             )
@@ -42,7 +44,7 @@ impl GroveDb {
                             // external costs accumulator instead of
                             // returning costs from `map` call.
                             let maybe_item = self
-                                .follow_reference(absolute_path, transaction)
+                                .follow_reference(absolute_path, allow_cache, transaction)
                                 .unwrap_add_cost(&mut cost)?;
 
                             match maybe_item {
@@ -70,6 +72,7 @@ impl GroveDb {
     pub fn query_many_raw(
         &self,
         path_queries: &[&PathQuery],
+        allow_cache: bool,
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<QueryResultElements, Error>
@@ -77,8 +80,10 @@ where {
         let mut cost = OperationCost::default();
 
         let query = cost_return_on_error_no_add!(&cost, PathQuery::merge(path_queries.to_vec()));
-        let (result, _) =
-            cost_return_on_error!(&mut cost, self.query_raw(&query, result_type, transaction));
+        let (result, _) = cost_return_on_error!(
+            &mut cost,
+            self.query_raw(&query, allow_cache, result_type, transaction)
+        );
         Ok(result).wrap_with_cost(cost)
     }
 
@@ -100,6 +105,7 @@ where {
     fn follow_element(
         &self,
         element: Element,
+        allow_cache: bool,
         cost: &mut OperationCost,
         transaction: TransactionArg,
     ) -> Result<Element, Error> {
@@ -113,7 +119,7 @@ where {
                         // external costs accumulator instead of
                         // returning costs from `map` call.
                         let maybe_item = self
-                            .follow_reference(absolute_path, transaction)
+                            .follow_reference(absolute_path, allow_cache, transaction)
                             .unwrap_add_cost(cost)?;
 
                         if maybe_item.is_item() {
@@ -137,6 +143,7 @@ where {
     pub fn query(
         &self,
         path_query: &PathQuery,
+        allow_cache: bool,
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<(QueryResultElements, u16), Error> {
@@ -144,14 +151,15 @@ where {
 
         let (elements, skipped) = cost_return_on_error!(
             &mut cost,
-            self.query_raw(path_query, result_type, transaction)
+            self.query_raw(path_query, allow_cache, result_type, transaction)
         );
 
         let results_wrapped = elements
             .into_iterator()
             .map(|result_item| {
-                result_item
-                    .map_element(|element| self.follow_element(element, &mut cost, transaction))
+                result_item.map_element(|element| {
+                    self.follow_element(element, allow_cache, &mut cost, transaction)
+                })
             })
             .collect::<Result<Vec<QueryResultElement>, Error>>();
 
@@ -164,6 +172,7 @@ where {
     pub fn query_item_value(
         &self,
         path_query: &PathQuery,
+        allow_cache: bool,
         transaction: TransactionArg,
     ) -> CostResult<(Vec<Vec<u8>>, u16), Error> {
         let mut cost = OperationCost::default();
@@ -172,6 +181,7 @@ where {
             &mut cost,
             self.query_raw(
                 path_query,
+                allow_cache,
                 QueryResultType::QueryElementResultType,
                 transaction
             )
@@ -191,7 +201,7 @@ where {
                                     // external costs accumulator instead of
                                     // returning costs from `map` call.
                                     let maybe_item = self
-                                        .follow_reference(absolute_path, transaction)
+                                        .follow_reference(absolute_path, allow_cache, transaction)
                                         .unwrap_add_cost(&mut cost)?;
 
                                     match maybe_item {
@@ -227,6 +237,7 @@ where {
     pub fn query_sums(
         &self,
         path_query: &PathQuery,
+        allow_cache: bool,
         transaction: TransactionArg,
     ) -> CostResult<(Vec<i64>, u16), Error> {
         let mut cost = OperationCost::default();
@@ -235,6 +246,7 @@ where {
             &mut cost,
             self.query_raw(
                 path_query,
+                allow_cache,
                 QueryResultType::QueryElementResultType,
                 transaction
             )
@@ -254,7 +266,7 @@ where {
                                     // external costs accumulator instead of
                                     // returning costs from `map` call.
                                     let maybe_item = self
-                                        .follow_reference(absolute_path, transaction)
+                                        .follow_reference(absolute_path, allow_cache, transaction)
                                         .unwrap_add_cost(&mut cost)?;
 
                                     if let Element::SumItem(item, _) = maybe_item {
@@ -292,16 +304,18 @@ where {
     pub fn query_raw(
         &self,
         path_query: &PathQuery,
+        allow_cache: bool,
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<(QueryResultElements, u16), Error> {
-        Element::get_raw_path_query(&self.db, path_query, result_type, transaction)
+        Element::get_raw_path_query(&self.db, path_query, allow_cache, result_type, transaction)
     }
 
     /// If max_results is exceeded we return an error
     pub fn query_keys_optional(
         &self,
         path_query: &PathQuery,
+        allow_cache: bool,
         transaction: TransactionArg,
     ) -> CostResult<Vec<PathKeyOptionalElementTrio>, Error> {
         let max_results = cost_return_on_error_default!(path_query.query.limit.ok_or(
@@ -322,6 +336,7 @@ where {
             &mut cost,
             self.query(
                 path_query,
+                allow_cache,
                 QueryResultType::QueryPathKeyElementTrioResultType,
                 transaction
             )
@@ -343,6 +358,7 @@ where {
     pub fn query_raw_keys_optional(
         &self,
         path_query: &PathQuery,
+        allow_cache: bool,
         transaction: TransactionArg,
     ) -> CostResult<Vec<PathKeyOptionalElementTrio>, Error> {
         let max_results = cost_return_on_error_default!(path_query.query.limit.ok_or(
@@ -363,6 +379,7 @@ where {
             &mut cost,
             self.query_raw(
                 path_query,
+                allow_cache,
                 QueryResultType::QueryPathKeyElementTrioResultType,
                 transaction
             )
@@ -434,7 +451,7 @@ mod tests {
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(5), None));
         let raw_result = db
-            .query_raw_keys_optional(&path_query, None)
+            .query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect("should get successfully");
 
@@ -490,7 +507,7 @@ mod tests {
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(5), None));
         let raw_result = db
-            .query_raw_keys_optional(&path_query, None)
+            .query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect("should get successfully");
 
@@ -547,7 +564,7 @@ mod tests {
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(5), None));
         let raw_result = db
-            .query_raw_keys_optional(&path_query, None)
+            .query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect("should get successfully");
 
@@ -615,7 +632,7 @@ mod tests {
 
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(4), None));
-        db.query_raw_keys_optional(&path_query, None)
+        db.query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect_err("range a should error");
 
@@ -624,7 +641,7 @@ mod tests {
         query.insert_key(b"5".to_vec()); // 3
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(3), None));
-        db.query_raw_keys_optional(&path_query, None)
+        db.query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect("range b should not error");
 
@@ -633,7 +650,7 @@ mod tests {
         query.insert_key(b"5".to_vec()); // 4
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(3), None));
-        db.query_raw_keys_optional(&path_query, None)
+        db.query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect_err("range c should error");
 
@@ -642,7 +659,7 @@ mod tests {
         query.insert_key(b"5".to_vec()); // 3
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(2), None));
-        db.query_raw_keys_optional(&path_query, None)
+        db.query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect_err("range d should error");
 
@@ -650,7 +667,7 @@ mod tests {
         query.insert_range(b"z".to_vec()..b"10".to_vec());
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
-        db.query_raw_keys_optional(&path_query, None)
+        db.query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect_err("range using 2 bytes should error");
     }
@@ -701,7 +718,7 @@ mod tests {
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
         let raw_result = db
-            .query_raw_keys_optional(&path_query, None)
+            .query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect("range starting with null should not error");
 
@@ -778,7 +795,7 @@ mod tests {
         query.insert_range(b"".to_vec()..b"c".to_vec());
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
-        db.query_keys_optional(&path_query, None)
+        db.query_keys_optional(&path_query, true, None)
             .unwrap()
             .expect_err("range should error because we didn't subquery");
 
@@ -788,7 +805,7 @@ mod tests {
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
         let raw_result = db
-            .query_raw_keys_optional(&path_query, None)
+            .query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect("query with subquery should not error");
 
@@ -890,7 +907,7 @@ mod tests {
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
         let raw_result = db
-            .query_raw_keys_optional(&path_query, None)
+            .query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect("query with subquery should not error");
 
@@ -1014,7 +1031,7 @@ mod tests {
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
         let raw_result = db
-            .query_raw_keys_optional(&path_query, None)
+            .query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect("query with subquery should not error");
 
@@ -1157,7 +1174,7 @@ mod tests {
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
         let raw_result = db
-            .query_raw_keys_optional(&path_query, None)
+            .query_raw_keys_optional(&path_query, true, None)
             .unwrap()
             .expect("query with subquery should not error");
 
@@ -1313,7 +1330,7 @@ mod tests {
         let path = vec![TEST_LEAF.to_vec()];
         let path_query = PathQuery::new(path.clone(), SizedQuery::new(query, Some(1000), None));
         let result = db
-            .query_keys_optional(&path_query, None)
+            .query_keys_optional(&path_query, true, None)
             .unwrap()
             .expect("query with subquery should not error");
 

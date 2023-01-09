@@ -500,7 +500,7 @@ impl GroveDb {
         key: K,
     ) -> CostResult<Element, Error> {
         subtree
-            .get(key.as_ref())
+            .get(key.as_ref(), true)
             .map_err(|_| {
                 Error::InvalidPath("can't find subtree in parent during propagation".to_owned())
             })
@@ -642,7 +642,7 @@ impl GroveDb {
             let element = raw_decode(&element_value).unwrap();
             if element.is_tree() {
                 let (kv_value, element_value_hash) = merk
-                    .get_value_and_value_hash(&key)
+                    .get_value_and_value_hash(&key, true)
                     .unwrap()
                     .unwrap()
                     .unwrap();

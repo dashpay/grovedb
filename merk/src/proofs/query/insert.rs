@@ -145,6 +145,19 @@ impl Query {
             })
             .collect();
 
-        self.items.push(item);
+        /// since we need items to be sorted we do
+        match self.items.binary_search(&item) {
+            Ok(_) => {
+                unreachable!("this shouldn't be possible")
+            }
+            Err(pos) => self.items.insert(pos, item),
+        }
+    }
+
+    /// Performs an insert_item on each item in the vector.
+    pub fn insert_items(&mut self, items: Vec<QueryItem>) {
+        for item in items {
+            self.insert_item(item)
+        }
     }
 }

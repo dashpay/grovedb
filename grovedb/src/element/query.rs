@@ -41,6 +41,7 @@ where
     pub subquery: Option<Query>,
     pub left_to_right: bool,
     pub allow_get_raw: bool,
+    pub allow_cache: bool,
     pub result_type: QueryResultType,
     pub results: &'a mut Vec<QueryResultElement>,
     pub limit: &'a mut Option<u16>,
@@ -57,8 +58,15 @@ impl Element {
         transaction: TransactionArg,
     ) -> CostResult<QueryResultElements, Error> {
         let sized_query = SizedQuery::new(query.clone(), None, None);
-        Element::get_sized_query(storage, merk_path, &sized_query, result_type, transaction)
-            .map_ok(|(elements, _)| elements)
+        Element::get_sized_query(
+            storage,
+            merk_path,
+            &sized_query,
+            true,
+            result_type,
+            transaction,
+        )
+        .map_ok(|(elements, _)| elements)
     }
 
     #[cfg(feature = "full")]
@@ -95,6 +103,7 @@ impl Element {
         path: &[&[u8]],
         sized_query: &SizedQuery,
         allow_get_raw: bool,
+        allow_cache: bool,
         result_type: QueryResultType,
         transaction: TransactionArg,
         add_element_function: fn(PathQueryPushArgs) -> CostResult<(), Error>,
@@ -121,6 +130,7 @@ impl Element {
                         &mut limit,
                         &mut offset,
                         allow_get_raw,
+                        allow_cache,
                         result_type,
                         add_element_function,
                     )
@@ -143,6 +153,7 @@ impl Element {
                         &mut limit,
                         &mut offset,
                         allow_get_raw,
+                        allow_cache,
                         result_type,
                         add_element_function,
                     )
@@ -167,6 +178,7 @@ impl Element {
     pub fn get_path_query(
         storage: &RocksDbStorage,
         path_query: &PathQuery,
+        allow_cache: bool,
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<(QueryResultElements, u16), Error> {
@@ -180,6 +192,7 @@ impl Element {
             path_slices.as_slice(),
             &path_query.query,
             false,
+            allow_cache,
             result_type,
             transaction,
             Element::path_query_push,
@@ -192,6 +205,7 @@ impl Element {
     pub fn get_raw_path_query(
         storage: &RocksDbStorage,
         path_query: &PathQuery,
+        allow_cache: bool,
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<(QueryResultElements, u16), Error> {
@@ -205,6 +219,7 @@ impl Element {
             path_slices.as_slice(),
             &path_query.query,
             true,
+            allow_cache,
             result_type,
             transaction,
             Element::path_query_push,
@@ -217,6 +232,7 @@ impl Element {
         storage: &RocksDbStorage,
         path: &[&[u8]],
         sized_query: &SizedQuery,
+        allow_cache: bool,
         result_type: QueryResultType,
         transaction: TransactionArg,
     ) -> CostResult<(QueryResultElements, u16), Error> {
@@ -225,6 +241,7 @@ impl Element {
             path,
             sized_query,
             false,
+            allow_cache,
             result_type,
             transaction,
             Element::path_query_push,
@@ -245,6 +262,7 @@ impl Element {
             subquery,
             left_to_right,
             allow_get_raw,
+            allow_cache,
             result_type,
             results,
             limit,
@@ -271,7 +289,13 @@ impl Element {
 
                 let (mut sub_elements, skipped) = cost_return_on_error!(
                     &mut cost,
-                    Element::get_path_query(storage, &inner_path_query, result_type, transaction)
+                    Element::get_path_query(
+                        storage,
+                        &inner_path_query,
+                        allow_cache,
+                        result_type,
+                        transaction
+                    )
                 );
 
                 if let Some(limit) = limit {
@@ -302,7 +326,8 @@ impl Element {
                                                 Element::get_with_absolute_refs(
                                                     &subtree,
                                                     path_vec.as_slice(),
-                                                    subquery_path_last_key.as_slice()
+                                                    subquery_path_last_key.as_slice(),
+                                                    allow_cache,
                                                 )
                                             ),
                                         ));
@@ -325,7 +350,8 @@ impl Element {
                                                     Element::get_with_absolute_refs(
                                                         &subtree,
                                                         path_vec.as_slice(),
-                                                        subquery_path_last_key.as_slice()
+                                                        subquery_path_last_key.as_slice(),
+                                                        allow_cache,
                                                     )
                                                 ),
                                             ),
@@ -350,7 +376,8 @@ impl Element {
                                                     Element::get_with_absolute_refs(
                                                         &subtree,
                                                         path_vec.as_slice(),
-                                                        subquery_path_last_key.as_slice()
+                                                        subquery_path_last_key.as_slice(),
+                                                        allow_cache,
                                                     )
                                                 ),
                                             )),
@@ -385,6 +412,7 @@ impl Element {
                         subquery,
                         left_to_right,
                         allow_get_raw,
+                        allow_cache,
                         result_type,
                         results,
                         limit,
@@ -412,6 +440,7 @@ impl Element {
                     subquery,
                     left_to_right,
                     allow_get_raw,
+                    allow_cache,
                     result_type,
                     results,
                     limit,
@@ -468,6 +497,7 @@ impl Element {
         limit: &mut Option<u16>,
         offset: &mut Option<u16>,
         allow_get_raw: bool,
+        allow_cache: bool,
         result_type: QueryResultType,
         add_element_function: fn(PathQueryPushArgs) -> CostResult<(), Error>,
     ) -> CostResult<(), Error> {
@@ -482,7 +512,7 @@ impl Element {
                     path.iter().copied(),
                     transaction,
                     subtree,
-                    { Element::get(&subtree, key).unwrap_add_cost(&mut cost) }
+                    { Element::get(&subtree, key, allow_cache).unwrap_add_cost(&mut cost) }
                 );
                 match element_res {
                     Ok(element) => {
@@ -498,6 +528,7 @@ impl Element {
                             subquery,
                             left_to_right: sized_query.query.left_to_right,
                             allow_get_raw,
+                            allow_cache,
                             result_type,
                             results,
                             limit,
@@ -552,6 +583,7 @@ impl Element {
                             subquery,
                             left_to_right: sized_query.query.left_to_right,
                             allow_get_raw,
+                            allow_cache,
                             result_type,
                             results,
                             limit,
@@ -851,6 +883,7 @@ mod tests {
             &storage,
             &[TEST_LEAF],
             &ascending_query,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -884,6 +917,7 @@ mod tests {
             &storage,
             &[TEST_LEAF],
             &backwards_query,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -965,6 +999,7 @@ mod tests {
                 &storage,
                 &[TEST_LEAF],
                 &ascending_query,
+                true,
                 QueryKeyElementPairResultType,
                 None,
             )
@@ -981,6 +1016,7 @@ mod tests {
                 &storage,
                 &[TEST_LEAF],
                 &backwards_query,
+                true,
                 QueryKeyElementPairResultType,
                 None,
             )
@@ -1000,6 +1036,7 @@ mod tests {
                 &storage,
                 &[TEST_LEAF],
                 &backwards_query,
+                true,
                 QueryKeyElementPairResultType,
                 None,
             )
@@ -1061,6 +1098,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &backwards_query,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -1086,6 +1124,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &backwards_query,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -1106,6 +1145,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_query,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -1126,6 +1166,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_query,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -1145,6 +1186,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_offset_query,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -1169,6 +1211,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_offset_backwards_query,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -1192,6 +1235,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_full_query,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -1216,6 +1260,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_offset_backwards_query,
+            true,
             QueryKeyElementPairResultType,
             None,
         )
@@ -1240,6 +1285,7 @@ mod tests {
             &db.db,
             &[TEST_LEAF],
             &limit_backwards_query,
+            true,
             QueryKeyElementPairResultType,
             None,
         )

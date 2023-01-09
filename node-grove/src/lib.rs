@@ -619,18 +619,22 @@ impl GroveDbWrapper {
 
     fn js_get_path_query(mut cx: FunctionContext) -> JsResult<JsUndefined> {
         let js_path_query = cx.argument::<JsObject>(0)?;
-        let js_using_transaction = cx.argument::<JsBoolean>(1)?;
-        let js_callback = cx.argument::<JsFunction>(2)?.root(&mut cx);
+        let js_allows_cache = cx.argument::<JsBoolean>(1)?;
+        let js_using_transaction = cx.argument::<JsBoolean>(2)?;
+
+        let js_callback = cx.argument::<JsFunction>(3)?.root(&mut cx);
 
         let path_query = converter::js_path_query_to_path_query(js_path_query, &mut cx)?;
 
         let db = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
+        let allows_cache = js_allows_cache.value(&mut cx);
         let using_transaction = js_using_transaction.value(&mut cx);
 
         db.send_to_db_thread(move |grove_db: &GroveDb, transaction, channel| {
             let result = grove_db
                 .query_item_value(
                     &path_query,
+                    allows_cache,
                     using_transaction.then_some(transaction).flatten(),
                 )
                 .unwrap(); // Todo: Costs;
