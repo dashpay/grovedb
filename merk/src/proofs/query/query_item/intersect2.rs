@@ -356,6 +356,8 @@ impl Ord for RangeSetItem {
     //  but then equal returns the same order as less or greater than.
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
+            (UnboundedStart, UnboundedStart) => Ordering::Equal,
+            (UnboundedEnd, UnboundedEnd) => Ordering::Equal,
             (UnboundedStart, _) => Ordering::Less,
             (_, UnboundedStart) => Ordering::Greater,
             (_, UnboundedEnd) => Ordering::Less,
@@ -364,7 +366,9 @@ impl Ord for RangeSetItem {
             (Inclusive(v1), Inclusive(v2))
             | (ExclusiveStart(v1), ExclusiveStart(v2))
             | (ExclusiveEnd(v1), ExclusiveEnd(v2)) => {
-                if v1 < v2 {
+                if v1 == v2 {
+                    Ordering::Equal
+                } else if v1 < v2 {
                     Ordering::Less
                 } else {
                     Ordering::Greater
@@ -505,9 +509,15 @@ impl QueryItem {
 
 #[cfg(test)]
 mod test {
-    use std::ops::{Range, RangeInclusive};
+    use std::{
+        cmp::Ordering,
+        ops::{Range, RangeInclusive},
+    };
 
-    use crate::proofs::query::query_item::QueryItem;
+    use crate::proofs::query::query_item::{
+        intersect2::{RangeSet, RangeSetItem},
+        QueryItem,
+    };
 
     #[test]
     pub fn test_range_set_query_item_conversion() {
@@ -570,6 +580,144 @@ mod test {
                 .to_range_set()
                 .to_query_item(),
             QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])
+        );
+    }
+
+    #[test]
+    pub fn test_range_set_item_compare() {
+        // doing a pyramid compare, to prevent repeated test
+        // if we compare A and B, we don't compare B and A further down
+
+        // test equality
+        assert_eq!(
+            RangeSetItem::Inclusive(vec![1]).cmp(&RangeSetItem::Inclusive(vec![1])),
+            Ordering::Equal
+        );
+        assert_eq!(
+            RangeSetItem::ExclusiveStart(vec![1]).cmp(&RangeSetItem::ExclusiveStart(vec![1])),
+            Ordering::Equal
+        );
+        assert_eq!(
+            RangeSetItem::ExclusiveEnd(vec![1]).cmp(&RangeSetItem::ExclusiveEnd(vec![1])),
+            Ordering::Equal
+        );
+        assert_eq!(
+            RangeSetItem::UnboundedStart.cmp(&RangeSetItem::UnboundedStart),
+            Ordering::Equal
+        );
+        assert_eq!(
+            RangeSetItem::UnboundedEnd.cmp(&RangeSetItem::UnboundedEnd),
+            Ordering::Equal
+        );
+
+        // test same item but less value
+        assert_eq!(
+            RangeSetItem::Inclusive(vec![1]).cmp(&RangeSetItem::Inclusive(vec![2])),
+            Ordering::Less
+        );
+        assert_eq!(
+            RangeSetItem::ExclusiveStart(vec![1]).cmp(&RangeSetItem::ExclusiveStart(vec![2])),
+            Ordering::Less
+        );
+        assert_eq!(
+            RangeSetItem::ExclusiveEnd(vec![1]).cmp(&RangeSetItem::ExclusiveEnd(vec![2])),
+            Ordering::Less
+        );
+
+        // test same item but greater value
+        assert_eq!(
+            RangeSetItem::Inclusive(vec![3]).cmp(&RangeSetItem::Inclusive(vec![2])),
+            Ordering::Greater
+        );
+        assert_eq!(
+            RangeSetItem::ExclusiveStart(vec![3]).cmp(&RangeSetItem::ExclusiveStart(vec![2])),
+            Ordering::Greater
+        );
+        assert_eq!(
+            RangeSetItem::ExclusiveEnd(vec![3]).cmp(&RangeSetItem::ExclusiveEnd(vec![2])),
+            Ordering::Greater
+        );
+
+        // unbounded end is greater than everything
+        // tried creating the maximum possible vector with vec![u8::MAX; isize::MAX as
+        // usize])) but got memory allocation problems
+        assert_eq!(
+            RangeSetItem::UnboundedEnd.cmp(&RangeSetItem::Inclusive(vec![u8::MAX; 1000])),
+            Ordering::Greater
+        );
+        assert_eq!(
+            RangeSetItem::UnboundedEnd.cmp(&RangeSetItem::ExclusiveStart(vec![u8::MAX; 1000])),
+            Ordering::Greater
+        );
+        assert_eq!(
+            RangeSetItem::UnboundedEnd.cmp(&RangeSetItem::ExclusiveEnd(vec![u8::MAX; 1000])),
+            Ordering::Greater
+        );
+        assert_eq!(
+            RangeSetItem::UnboundedEnd.cmp(&RangeSetItem::UnboundedStart),
+            Ordering::Greater
+        );
+
+        // unbounded start is less than everything
+        assert_eq!(
+            RangeSetItem::UnboundedStart.cmp(&RangeSetItem::Inclusive(vec![])),
+            Ordering::Less
+        );
+        assert_eq!(
+            RangeSetItem::UnboundedStart.cmp(&RangeSetItem::ExclusiveStart(vec![])),
+            Ordering::Less
+        );
+        assert_eq!(
+            RangeSetItem::UnboundedStart.cmp(&RangeSetItem::ExclusiveEnd(vec![])),
+            Ordering::Less
+        );
+
+        // test inclusive
+        // exclusive start represents value + step_size
+        // if step size is 1 and value is 1 then it starts at 2 (basically excluding 1)
+        // hence inclusive at 1 is less since 1 < 2
+        assert_eq!(
+            RangeSetItem::Inclusive(vec![1]).cmp(&RangeSetItem::ExclusiveStart(vec![1])),
+            Ordering::Less
+        );
+        assert_eq!(
+            RangeSetItem::Inclusive(vec![0]).cmp(&RangeSetItem::ExclusiveStart(vec![1])),
+            Ordering::Less
+        );
+        assert_eq!(
+            RangeSetItem::Inclusive(vec![2]).cmp(&RangeSetItem::ExclusiveStart(vec![1])),
+            Ordering::Greater
+        );
+        // exclusive end represents value - step_size
+        // if step size is 1 and value is 1 then it represents at 0 (includes everything
+        // before 1) hence inclusive at 1 is greater since 1 > 0
+        assert_eq!(
+            RangeSetItem::Inclusive(vec![1]).cmp(&RangeSetItem::ExclusiveEnd(vec![1])),
+            Ordering::Greater
+        );
+        assert_eq!(
+            RangeSetItem::Inclusive(vec![0]).cmp(&RangeSetItem::ExclusiveEnd(vec![1])),
+            Ordering::Less
+        );
+        assert_eq!(
+            RangeSetItem::Inclusive(vec![2]).cmp(&RangeSetItem::ExclusiveEnd(vec![1])),
+            Ordering::Greater
+        );
+
+        // test exclusive start
+        // exclusive start is greater than exclusive end for >= same value
+        assert_eq!(
+            RangeSetItem::ExclusiveStart(vec![1]).cmp(&RangeSetItem::ExclusiveEnd(vec![1])),
+            Ordering::Greater
+        );
+        assert_eq!(
+            RangeSetItem::ExclusiveStart(vec![2]).cmp(&RangeSetItem::ExclusiveEnd(vec![1])),
+            Ordering::Greater
+        );
+        // but less when the value is less
+        assert_eq!(
+            RangeSetItem::ExclusiveStart(vec![1]).cmp(&RangeSetItem::ExclusiveEnd(vec![2])),
+            Ordering::Less
         );
     }
 }
