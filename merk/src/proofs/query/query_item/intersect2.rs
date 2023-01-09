@@ -325,7 +325,7 @@ impl PartialOrd for RangeSetItem {
 
 impl Ord for RangeSetItem {
     // TODO: hmm, this is wrong, could be equal right??
-    //  but then equal returns the same other as less or greater than.
+    //  but then equal returns the same order as less or greater than.
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (UnboundedStart, _) => Ordering::Less,

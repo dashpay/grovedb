@@ -476,6 +476,7 @@ impl Eq for QueryItem {}
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl Ord for QueryItem {
+    // TODO: Fix this, incorrect
     fn cmp(&self, other: &Self) -> Ordering {
         match (
             self.lower_unbounded(),
