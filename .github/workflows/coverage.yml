@@ -16,6 +16,7 @@ jobs:
       - uses: actions/checkout@v2
       - name: Run Coverage
         run: |
+          cargo test &&
           curl -Os https://uploader.codecov.io/latest/linux/codecov &&
           chmod +x codecov &&
           ./codecov
