@@ -325,7 +325,7 @@ impl KV {
     /// Get the costs for the value with known value_len and non prefixed key
     /// len sizes, this has the parent to child hooks
     #[inline]
-    pub(crate) fn value_byte_cost_size_for_key_and_value_lengths(
+    pub fn value_byte_cost_size_for_key_and_value_lengths(
         not_prefixed_key_len: u32,
         value_len: u32,
         is_sum_node: bool,

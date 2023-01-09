@@ -2,6 +2,7 @@
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+use merk::tree::kv::KV;
 #[cfg(feature = "full")]
 use merk::Merk;
 #[cfg(feature = "full")]
@@ -53,10 +54,11 @@ impl Element {
         key: K,
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
+        let key_ref = key.as_ref();
         let node_value_opt = cost_return_on_error!(
             &mut cost,
             storage
-                .get(key.as_ref())
+                .get(key_ref)
                 .map_err(|e| Error::CorruptedData(e.to_string()))
         );
         let node_value = cost_return_on_error_no_add!(
@@ -64,7 +66,7 @@ impl Element {
             node_value_opt.ok_or_else(|| {
                 Error::PathKeyNotFound(format!(
                     "key not found in Merk for get from storage: {}",
-                    hex::encode(key)
+                    hex::encode(key_ref)
                 ))
             })
         );
@@ -78,6 +80,25 @@ impl Element {
             Self::deserialize(value.as_slice())
                 .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
         );
+        match element {
+            Element::Item(..) | Element::Reference(..) | Element::SumItem(..) => {
+                // while the loaded item might be a sum item, it is given for free
+                // as it would be very hard to know in advance
+                cost.storage_loaded_bytes = KV::value_byte_cost_size_for_key_and_value_lengths(
+                    key_ref.len() as u32,
+                    value.len() as u32,
+                    false,
+                )
+            }
+            Element::Tree(..) | Element::SumTree(..) => {
+                cost.storage_loaded_bytes =
+                    KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                        key_ref.len() as u32,
+                        value.len() as u32,
+                        false,
+                    )
+            }
+        }
         Ok(element).wrap_with_cost(cost)
     }
 

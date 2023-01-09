@@ -409,7 +409,7 @@ mod tests {
                     replaced_bytes: 75,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 141, // todo: verify and explain
+                storage_loaded_bytes: 146, // todo: verify and explain
                 hash_node_calls: 12,
             }
         );
@@ -589,7 +589,7 @@ mod tests {
                     replaced_bytes: 195, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 232, // todo: verify this
+                storage_loaded_bytes: 240, // todo: verify this
                 hash_node_calls: 10,       // todo: verify this
             }
         );
@@ -668,7 +668,7 @@ mod tests {
                     replaced_bytes: 196, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 233, // todo: verify this
+                storage_loaded_bytes: 241, // todo: verify this
                 hash_node_calls: 10,       // todo: verify this
             }
         );
@@ -723,7 +723,7 @@ mod tests {
                     replaced_bytes: 194, // todo: verify this
                     removed_bytes: BasicStorageRemoval(1)
                 },
-                storage_loaded_bytes: 232, // todo: verify this
+                storage_loaded_bytes: 240, // todo: verify this
                 hash_node_calls: 10,       // todo: verify this
             }
         );
@@ -803,7 +803,7 @@ mod tests {
                     replaced_bytes: 195, // todo: verify this
                     removed_bytes: SectionedStorageRemoval(removed_bytes)
                 },
-                storage_loaded_bytes: 233, // todo: verify this
+                storage_loaded_bytes: 241, // todo: verify this
                 hash_node_calls: 10,       // todo: verify this
             }
         );
@@ -876,7 +876,7 @@ mod tests {
                     replaced_bytes: 159, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 227, // todo: verify this
+                storage_loaded_bytes: 235, // todo: verify this
                 hash_node_calls: 12,       // todo: verify this
             }
         );
