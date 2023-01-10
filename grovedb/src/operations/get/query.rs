@@ -1306,7 +1306,7 @@ mod tests {
         .expect("should insert subtree successfully");
 
         // Our tree should be
-        //      Test_Leaf         Test_Leaf_2
+        //      Test_Leaf         ANOTHER_TEST_LEAF
         //   ""        "2"              "5": "ref result"
         //    |       /   \
         //   "1"     "1"   "2"
