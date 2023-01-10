@@ -94,7 +94,7 @@ pub enum Error {
     #[error("request amount exceeded error {0}")]
     RequestAmountExceeded(String),
 
-    /// Invalid operation error    
+    /// Invalid operation error
     #[error("invalid operation error {0}")]
     InvalidOperation(&'static str),
 
