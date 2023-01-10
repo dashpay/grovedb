@@ -28,28 +28,21 @@
 
 //! Estimated costs for Merk
 
-#[cfg(feature = "full")]
 use costs::OperationCost;
-#[cfg(feature = "full")]
 use integer_encoding::VarInt;
 
-#[cfg(feature = "full")]
 use crate::{tree::kv::KV, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32};
 
-#[cfg(feature = "full")]
 pub mod average_case_costs;
-#[cfg(feature = "full")]
+
 pub mod worst_case_costs;
 
-#[cfg(feature = "full")]
 /// The cost of a subtree layer
 pub const LAYER_COST_SIZE: u32 = 3;
 
-#[cfg(feature = "full")]
 /// The cost of a summed subtree layer
 pub const SUM_LAYER_COST_SIZE: u32 = 11;
 
-#[cfg(feature = "full")]
 impl KV {
     fn encoded_kv_node_size(element_size: u32, is_sum_node: bool) -> u32 {
         let sum_node_feature_size = if is_sum_node { 9 } else { 1 };
@@ -62,7 +55,7 @@ impl KV {
 }
 
 /// Add cost case for insertion into merk
-#[cfg(feature = "full")]
+
 pub fn add_cost_case_merk_insert(
     cost: &mut OperationCost,
     key_len: u32,
@@ -86,7 +79,7 @@ pub fn add_cost_case_merk_insert(
 }
 
 /// Add cost case for insertion into merk
-#[cfg(feature = "full")]
+
 pub fn add_cost_case_merk_insert_layered(
     cost: &mut OperationCost,
     key_len: u32,

@@ -77,6 +77,26 @@ impl PartialEq for KeyInfo {
     }
 }
 
+impl PartialEq<Vec<u8>> for KeyInfo {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        if let KnownKey(key) = self {
+            key == other
+        } else {
+            false
+        }
+    }
+}
+
+impl PartialEq<&[u8]> for KeyInfo {
+    fn eq(&self, other: &&[u8]) -> bool {
+        if let KnownKey(key) = self {
+            key == other
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(feature = "full")]
 impl PartialOrd<Self> for KeyInfo {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {

@@ -28,25 +28,19 @@
 
 //! Visualize
 
-#[cfg(feature = "full")]
 use std::io::{Result, Write};
 
-#[cfg(feature = "full")]
 use storage::StorageContext;
-#[cfg(feature = "full")]
 use visualize::{Drawer, Visualize};
 
-#[cfg(feature = "full")]
 use crate::{tree::Tree, Merk};
 
 /// Visualizeable Merk
-#[cfg(feature = "full")]
 pub struct VisualizeableMerk<'a, S, F> {
     merk: &'a Merk<S>,
     deserialize_fn: F,
 }
 
-#[cfg(feature = "full")]
 impl<'a, S, F> VisualizeableMerk<'a, S, F> {
     /// New
     pub fn new(merk: &'a Merk<S>, deserialize_fn: F) -> Self {
@@ -57,13 +51,11 @@ impl<'a, S, F> VisualizeableMerk<'a, S, F> {
     }
 }
 
-#[cfg(feature = "full")]
 struct VisualizableTree<'a, F> {
     tree: &'a Tree,
     deserialize_fn: F,
 }
 
-#[cfg(feature = "full")]
 impl<'a, F> VisualizableTree<'a, F> {
     fn new(tree: &'a Tree, deserialize_fn: F) -> Self {
         Self {
@@ -73,7 +65,6 @@ impl<'a, F> VisualizableTree<'a, F> {
     }
 }
 
-#[cfg(feature = "full")]
 impl<'a, 'db, S: StorageContext<'db>, T: Visualize, F: Fn(&[u8]) -> T + Copy> Visualize
     for VisualizeableMerk<'a, S, F>
 {
@@ -93,7 +84,6 @@ impl<'a, 'db, S: StorageContext<'db>, T: Visualize, F: Fn(&[u8]) -> T + Copy> Vi
     }
 }
 
-#[cfg(feature = "full")]
 impl<'a, T: Visualize, F: Fn(&[u8]) -> T + Copy> Visualize for VisualizableTree<'a, F> {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
         drawer.write(b"[key: ")?;

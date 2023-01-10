@@ -69,6 +69,12 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Check if the element is an item
+    pub fn is_item(&self) -> bool {
+        matches!(self, Element::Item(..) | Element::SumItem(..))
+    }
+
+    #[cfg(feature = "full")]
     /// Check if the element is a sum item
     pub fn is_sum_item(&self) -> bool {
         matches!(self, Element::SumItem(..))

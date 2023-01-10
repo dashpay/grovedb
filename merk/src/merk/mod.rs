@@ -28,16 +28,14 @@
 
 //! Merk
 
-#[cfg(feature = "full")]
 pub mod chunks;
-#[cfg(feature = "full")]
+
 pub(crate) mod defaults;
-#[cfg(feature = "full")]
+
 pub mod options;
-#[cfg(feature = "full")]
+
 pub mod restore;
 
-#[cfg(feature = "full")]
 use std::{
     cell::Cell,
     cmp::Ordering,
@@ -45,7 +43,6 @@ use std::{
     fmt,
 };
 
-#[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::{
@@ -55,10 +52,8 @@ use costs::{
     },
     ChildrenSizesWithValue, CostContext, CostResult, CostsExt, FeatureSumLength, OperationCost,
 };
-#[cfg(feature = "full")]
 use storage::{self, Batch, RawIterator, StorageContext};
 
-#[cfg(feature = "full")]
 use crate::{
     error::Error,
     merk::{
@@ -75,10 +70,8 @@ use crate::{
     TreeFeatureType,
 };
 
-#[cfg(feature = "full")]
 type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
 
-#[cfg(feature = "full")]
 /// Proof construction result
 pub struct ProofConstructionResult {
     /// Proof
@@ -89,7 +82,6 @@ pub struct ProofConstructionResult {
     pub offset: Option<u16>,
 }
 
-#[cfg(feature = "full")]
 impl ProofConstructionResult {
     /// New ProofConstructionResult
     pub fn new(proof: Vec<u8>, limit: Option<u16>, offset: Option<u16>) -> Self {
@@ -101,7 +93,6 @@ impl ProofConstructionResult {
     }
 }
 
-#[cfg(feature = "full")]
 /// Proof without encoding result
 pub struct ProofWithoutEncodingResult {
     /// Proof
@@ -112,7 +103,6 @@ pub struct ProofWithoutEncodingResult {
     pub offset: Option<u16>,
 }
 
-#[cfg(feature = "full")]
 impl ProofWithoutEncodingResult {
     /// New ProofWithoutEncodingResult
     pub fn new(proof: LinkedList<ProofOp>, limit: Option<u16>, offset: Option<u16>) -> Self {
@@ -124,7 +114,6 @@ impl ProofWithoutEncodingResult {
     }
 }
 
-#[cfg(feature = "full")]
 /// Key update types
 pub struct KeyUpdates {
     pub new_keys: BTreeSet<Vec<u8>>,
@@ -133,7 +122,6 @@ pub struct KeyUpdates {
     pub updated_root_key_from: Option<Vec<u8>>,
 }
 
-#[cfg(feature = "full")]
 impl KeyUpdates {
     /// New KeyUpdate
     pub fn new(
@@ -151,7 +139,6 @@ impl KeyUpdates {
     }
 }
 
-#[cfg(feature = "full")]
 /// Type alias for simple function signature
 pub type BatchValue = (
     Vec<u8>,
@@ -160,14 +147,12 @@ pub type BatchValue = (
     Option<KeyValueStorageCost>,
 );
 
-#[cfg(feature = "full")]
 /// A bool type
 pub type IsSumTree = bool;
-#[cfg(feature = "full")]
+
 /// Root hash key and sum
 pub type RootHashKeyAndSum = (CryptoHash, Option<Vec<u8>>, Option<i64>);
 
-#[cfg(feature = "full")]
 /// KVIterator allows you to lazily iterate over each kv pair of a subtree
 pub struct KVIterator<'a, I: RawIterator> {
     raw_iter: I,
@@ -177,7 +162,6 @@ pub struct KVIterator<'a, I: RawIterator> {
     current_query_item: Option<&'a QueryItem>,
 }
 
-#[cfg(feature = "full")]
 impl<'a, I: RawIterator> KVIterator<'a, I> {
     /// New iterator
     pub fn new(raw_iter: I, query: &'a Query) -> CostContext<Self> {
@@ -240,7 +224,6 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
     }
 }
 
-#[cfg(feature = "full")]
 // Cannot be an Iterator as it should return cost
 impl<'a, I: RawIterator> KVIterator<'a, I> {
     /// Next key-value
@@ -262,7 +245,6 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
     }
 }
 
-#[cfg(feature = "full")]
 #[derive(PartialEq, Eq)]
 /// Merk types
 pub enum MerkType {
@@ -276,7 +258,6 @@ pub enum MerkType {
     LayeredMerk,
 }
 
-#[cfg(feature = "full")]
 impl MerkType {
     /// Returns bool
     pub(crate) fn requires_root_storage_update(&self) -> bool {
@@ -288,7 +269,6 @@ impl MerkType {
     }
 }
 
-#[cfg(feature = "full")]
 /// A handle to a Merkle key/value store backed by RocksDB.
 pub struct Merk<S> {
     pub(crate) tree: Cell<Option<Tree>>,
@@ -301,14 +281,12 @@ pub struct Merk<S> {
     pub is_sum_tree: bool,
 }
 
-#[cfg(feature = "full")]
 impl<S> fmt::Debug for Merk<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Merk").finish()
     }
 }
 
-#[cfg(feature = "full")]
 // key, maybe value, maybe child reference hooks, maybe key value storage costs
 pub type UseTreeMutResult = CostResult<
     Vec<(
@@ -320,7 +298,6 @@ pub type UseTreeMutResult = CostResult<
     Error,
 >;
 
-#[cfg(feature = "full")]
 impl<'db, S> Merk<S>
 where
     S: StorageContext<'db>,
@@ -412,6 +389,16 @@ where
     /// Note that this is essentially the same as a normal RocksDB `get`, so
     /// should be a fast operation and has almost no tree overhead.
     pub fn exists(&self, key: &[u8]) -> CostResult<bool, Error> {
+        self.has_node_direct(key)
+    }
+
+    /// Returns if the value at the given key exists
+    ///
+    /// Note that this is essentially the same as a normal RocksDB `get`, so
+    /// should be a fast operation and has almost no tree overhead.
+    /// Contrary to a simple exists, this traverses the tree and can be faster
+    /// if the tree is cached, but slower if it is not
+    pub fn exists_by_traversing_tree(&self, key: &[u8]) -> CostResult<bool, Error> {
         self.has_node(key)
     }
 
@@ -420,41 +407,83 @@ where
     ///
     /// Note that this is essentially the same as a normal RocksDB `get`, so
     /// should be a fast operation and has almost no tree overhead.
-    pub fn get(&self, key: &[u8]) -> CostResult<Option<Vec<u8>>, Error> {
-        self.get_node_fn(key, |node| {
-            node.value_as_slice()
-                .to_vec()
-                .wrap_with_cost(Default::default())
-        })
+    pub fn get(&self, key: &[u8], allow_cache: bool) -> CostResult<Option<Vec<u8>>, Error> {
+        if allow_cache {
+            self.get_node_fn(key, |node| {
+                node.value_as_slice()
+                    .to_vec()
+                    .wrap_with_cost(Default::default())
+            })
+        } else {
+            self.get_node_direct_fn(key, |node| {
+                node.value_as_slice()
+                    .to_vec()
+                    .wrap_with_cost(Default::default())
+            })
+        }
     }
 
     /// Returns the feature type for the node at the given key.
-    pub fn get_feature_type(&self, key: &[u8]) -> CostResult<Option<TreeFeatureType>, Error> {
-        self.get_node_fn(key, |node| {
-            node.feature_type().wrap_with_cost(Default::default())
-        })
+    pub fn get_feature_type(
+        &self,
+        key: &[u8],
+        allow_cache: bool,
+    ) -> CostResult<Option<TreeFeatureType>, Error> {
+        if allow_cache {
+            self.get_node_fn(key, |node| {
+                node.feature_type().wrap_with_cost(Default::default())
+            })
+        } else {
+            self.get_node_direct_fn(key, |node| {
+                node.feature_type().wrap_with_cost(Default::default())
+            })
+        }
     }
 
     /// Gets a hash of a node by a given key, `None` is returned in case
     /// when node not found by the key.
-    pub fn get_hash(&self, key: &[u8]) -> CostResult<Option<CryptoHash>, Error> {
-        self.get_node_fn(key, |node| node.hash())
+    pub fn get_hash(&self, key: &[u8], allow_cache: bool) -> CostResult<Option<CryptoHash>, Error> {
+        if allow_cache {
+            self.get_node_fn(key, |node| node.hash())
+        } else {
+            self.get_node_direct_fn(key, |node| node.hash())
+        }
     }
 
     /// Gets the value hash of a node by a given key, `None` is returned in case
     /// when node not found by the key.
-    pub fn get_value_hash(&self, key: &[u8]) -> CostResult<Option<CryptoHash>, Error> {
-        self.get_node_fn(key, |node| {
-            (*node.value_hash()).wrap_with_cost(OperationCost::default())
-        })
+    pub fn get_value_hash(
+        &self,
+        key: &[u8],
+        allow_cache: bool,
+    ) -> CostResult<Option<CryptoHash>, Error> {
+        if allow_cache {
+            self.get_node_fn(key, |node| {
+                (*node.value_hash()).wrap_with_cost(OperationCost::default())
+            })
+        } else {
+            self.get_node_direct_fn(key, |node| {
+                (*node.value_hash()).wrap_with_cost(OperationCost::default())
+            })
+        }
     }
 
     /// Gets a hash of a node by a given key, `None` is returned in case
     /// when node not found by the key.
-    pub fn get_kv_hash(&self, key: &[u8]) -> CostResult<Option<CryptoHash>, Error> {
-        self.get_node_fn(key, |node| {
-            (*node.inner.kv.hash()).wrap_with_cost(OperationCost::default())
-        })
+    pub fn get_kv_hash(
+        &self,
+        key: &[u8],
+        allow_cache: bool,
+    ) -> CostResult<Option<CryptoHash>, Error> {
+        if allow_cache {
+            self.get_node_fn(key, |node| {
+                (*node.inner.kv.hash()).wrap_with_cost(OperationCost::default())
+            })
+        } else {
+            self.get_node_direct_fn(key, |node| {
+                (*node.inner.kv.hash()).wrap_with_cost(OperationCost::default())
+            })
+        }
     }
 
     /// Gets the value and value hash of a node by a given key, `None` is
@@ -462,11 +491,24 @@ where
     pub fn get_value_and_value_hash(
         &self,
         key: &[u8],
+        allow_cache: bool,
     ) -> CostResult<Option<(Vec<u8>, CryptoHash)>, Error> {
-        self.get_node_fn(key, |node| {
-            (node.value_as_slice().to_vec(), *node.value_hash())
-                .wrap_with_cost(OperationCost::default())
-        })
+        if allow_cache {
+            self.get_node_fn(key, |node| {
+                (node.value_as_slice().to_vec(), *node.value_hash())
+                    .wrap_with_cost(OperationCost::default())
+            })
+        } else {
+            self.get_node_direct_fn(key, |node| {
+                (node.value_as_slice().to_vec(), *node.value_hash())
+                    .wrap_with_cost(OperationCost::default())
+            })
+        }
+    }
+
+    /// See if a node's field exists
+    fn has_node_direct(&self, key: &[u8]) -> CostResult<bool, Error> {
+        Tree::get(&self.storage, key).map_ok(|x| x.is_some())
     }
 
     /// See if a node's field exists
@@ -492,11 +534,22 @@ where
                 match maybe_child {
                     None => {
                         // fetch from RocksDB
-                        break Tree::get(&self.storage, key).map_ok(|x| x.is_some());
+                        break self.has_node_direct(key);
                     }
                     Some(child) => cursor = child, // traverse to child
                 }
             }
+        })
+    }
+
+    /// Generic way to get a node's field
+    fn get_node_direct_fn<T, F>(&self, key: &[u8], f: F) -> CostResult<Option<T>, Error>
+    where
+        F: FnOnce(&Tree) -> CostContext<T>,
+    {
+        Tree::get(&self.storage, key).flat_map_ok(|maybe_node| {
+            let mut cost = OperationCost::default();
+            Ok(maybe_node.map(|node| f(&node).unwrap_add_cost(&mut cost))).wrap_with_cost(cost)
         })
     }
 
@@ -526,11 +579,7 @@ where
                 match maybe_child {
                     None => {
                         // fetch from RocksDB
-                        break Tree::get(&self.storage, key).flat_map_ok(|maybe_node| {
-                            let mut cost = OperationCost::default();
-                            Ok(maybe_node.map(|node| f(&node).unwrap_add_cost(&mut cost)))
-                                .wrap_with_cost(cost)
-                        });
+                        break self.get_node_direct_fn(key, f);
                     }
                     Some(child) => cursor = child, // traverse to child
                 }
@@ -938,7 +987,9 @@ where
 
         self.use_tree_mut(|maybe_tree| {
             maybe_tree
-                .ok_or(Error::CorruptionError("Cannot create proof for empty tree"))
+                .ok_or(Error::CorruptedCodeExecution(
+                    "Cannot create proof for empty tree",
+                ))
                 .wrap_with_cost(Default::default())
                 .flat_map_ok(|tree| {
                     let mut ref_walker = RefWalker::new(tree, self.source());
@@ -1210,7 +1261,6 @@ where
     }
 }
 
-#[cfg(feature = "full")]
 fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<Tree>, Error> {
     let bytes = db.get(key).unwrap().map_err(StorageError)?; // TODO: get_pinned ?
     if let Some(bytes) = bytes {
@@ -1238,14 +1288,13 @@ fn fetch_node<'db>(db: &impl StorageContext<'db>, key: &[u8]) -> Result<Option<T
 // }
 
 // // TODO: get rid of Fetch/source and use GroveDB storage_cost abstraction
-#[cfg(feature = "full")]
+
 #[derive(Debug)]
 pub struct MerkSource<'s, S> {
     storage: &'s S,
     is_sum_tree: bool,
 }
 
-#[cfg(feature = "full")]
 impl<'s, S> Clone for MerkSource<'s, S> {
     fn clone(&self) -> Self {
         MerkSource {
@@ -1255,7 +1304,6 @@ impl<'s, S> Clone for MerkSource<'s, S> {
     }
 }
 
-#[cfg(feature = "full")]
 impl<'s, 'db, S> Fetch for MerkSource<'s, S>
 where
     S: StorageContext<'db>,
@@ -1267,7 +1315,6 @@ where
     }
 }
 
-#[cfg(feature = "full")]
 struct MerkCommitter {
     /// The batch has a key, maybe a value, with the value bytes, maybe the left
     /// child size and maybe the right child size, then the
@@ -1277,7 +1324,6 @@ struct MerkCommitter {
     levels: u8,
 }
 
-#[cfg(feature = "full")]
 impl MerkCommitter {
     fn new(height: u8, levels: u8) -> Self {
         Self {
@@ -1288,7 +1334,6 @@ impl MerkCommitter {
     }
 }
 
-#[cfg(feature = "full")]
 impl Commit for MerkCommitter {
     fn write(
         &mut self,
@@ -1377,7 +1422,6 @@ impl Commit for MerkCommitter {
     }
 }
 
-#[cfg(feature = "full")]
 #[cfg(test)]
 mod test {
     use std::iter::empty;
@@ -1619,13 +1663,13 @@ mod test {
         let mut merk = TempMerk::new();
 
         // no root
-        assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
+        assert!(merk.get(&[1, 2, 3], true).unwrap().unwrap().is_none());
 
         // cached
         merk.apply::<_, Vec<_>>(&[(vec![5, 5, 5], Op::Put(vec![], BasicMerk))], &[], None)
             .unwrap()
             .unwrap();
-        assert!(merk.get(&[1, 2, 3]).unwrap().unwrap().is_none());
+        assert!(merk.get(&[1, 2, 3], true).unwrap().unwrap().is_none());
 
         // uncached
         merk.apply::<_, Vec<_>>(
@@ -1639,7 +1683,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert!(merk.get(&[3, 3, 3]).unwrap().unwrap().is_none());
+        assert!(merk.get(&[3, 3, 3], true).unwrap().unwrap().is_none());
     }
 
     #[test]
@@ -1803,7 +1847,7 @@ mod test {
         .expect("should insert successfully");
 
         let result = merk
-            .get(b"10".as_slice())
+            .get(b"10".as_slice(), true)
             .unwrap()
             .expect("should get successfully");
         assert_eq!(result, Some(b"a".to_vec()));
@@ -1817,7 +1861,7 @@ mod test {
         .unwrap()
         .expect("should insert successfully");
         let result = merk
-            .get(b"10".as_slice())
+            .get(b"10".as_slice(), true)
             .unwrap()
             .expect("should get successfully");
         assert_eq!(result, Some(b"b".to_vec()));
@@ -1837,7 +1881,7 @@ mod test {
         .unwrap()
         .expect("should insert successfully");
         let result = merk
-            .get(b"10".as_slice())
+            .get(b"10".as_slice(), true)
             .unwrap()
             .expect("should get successfully");
         assert_eq!(result, Some(b"c".to_vec()));

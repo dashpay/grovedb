@@ -28,30 +28,22 @@
 
 //! Test utils
 
-#[cfg(feature = "full")]
 mod crash_merk;
-#[cfg(feature = "full")]
+
 mod temp_merk;
 
-#[cfg(feature = "full")]
 use std::{convert::TryInto, ops::Range};
 
-#[cfg(feature = "full")]
 use costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval;
-#[cfg(feature = "full")]
 pub use crash_merk::CrashMerk;
-#[cfg(feature = "full")]
 use rand::prelude::*;
-#[cfg(feature = "full")]
 pub use temp_merk::TempMerk;
 
-#[cfg(feature = "full")]
 use crate::{
     tree::{kv::KV, BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, Tree, Walker},
     TreeFeatureType::{BasicMerk, SummedMerk},
 };
 
-#[cfg(feature = "full")]
 /// Assert tree invariants
 pub fn assert_tree_invariants(tree: &Tree) {
     assert!(tree.balance_factor().abs() < 2);
@@ -76,7 +68,6 @@ pub fn assert_tree_invariants(tree: &Tree) {
     }
 }
 
-#[cfg(feature = "full")]
 /// Apply given batch to given tree and commit using memory only.
 /// Used by `apply_memonly` which also performs checks using `assert_tree_invariants`.
 /// Return Tree.
@@ -128,7 +119,6 @@ pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     tree
 }
 
-#[cfg(feature = "full")]
 /// Apply given batch to given tree and commit using memory only.
 /// Perform checks using `assert_tree_invariants`. Return Tree.
 pub fn apply_memonly(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
@@ -137,7 +127,6 @@ pub fn apply_memonly(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     tree
 }
 
-#[cfg(feature = "full")]
 /// Applies given batch to given tree or creates a new tree to apply to and commits to memory only.
 pub fn apply_to_memonly(
     maybe_tree: Option<Tree>,
@@ -193,25 +182,21 @@ pub fn apply_to_memonly(
     })
 }
 
-#[cfg(feature = "full")]
 /// Format key to bytes
 pub const fn seq_key(n: u64) -> [u8; 8] {
     n.to_be_bytes()
 }
 
-#[cfg(feature = "full")]
 /// Create batch entry with Put op using key n and a fixed value
 pub fn put_entry(n: u64) -> BatchEntry<Vec<u8>> {
     (seq_key(n).to_vec(), Op::Put(vec![123; 60], BasicMerk))
 }
 
-#[cfg(feature = "full")]
 /// Create batch entry with Delete op using key n
 pub fn del_entry(n: u64) -> BatchEntry<Vec<u8>> {
     (seq_key(n).to_vec(), Op::Delete)
 }
 
-#[cfg(feature = "full")]
 /// Create a batch of Put ops using given sequential range as keys and fixed values
 pub fn make_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     let mut batch = Vec::with_capacity((range.end - range.start).try_into().unwrap());
@@ -221,7 +206,6 @@ pub fn make_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     batch
 }
 
-#[cfg(feature = "full")]
 /// Create a batch of Delete ops using given sequential range as keys
 pub fn make_del_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     let mut batch = Vec::with_capacity((range.end - range.start).try_into().unwrap());
@@ -231,7 +215,6 @@ pub fn make_del_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     batch
 }
 
-#[cfg(feature = "full")]
 /// Create a batch of Put ops using fixed values and random numbers as keys
 pub fn make_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(seed);
@@ -244,7 +227,6 @@ pub fn make_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     batch
 }
 
-#[cfg(feature = "full")]
 /// Create a batch of Delete ops using random numbers as keys
 pub fn make_del_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(seed);
@@ -257,7 +239,6 @@ pub fn make_del_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     batch
 }
 
-#[cfg(feature = "full")]
 /// Create tree with initial fixed values and apply `node count` Put ops with random keys
 /// using memory only
 pub fn make_tree_rand(
@@ -289,7 +270,6 @@ pub fn make_tree_rand(
     tree
 }
 
-#[cfg(feature = "full")]
 /// Create tree with initial fixed values and apply `node count` Put ops using sequential keys
 /// using memory only
 pub fn make_tree_seq(node_count: u64) -> Tree {

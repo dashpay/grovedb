@@ -54,9 +54,9 @@ pub enum Error {
     #[error("invalid input error {0}")]
     InvalidInputError(&'static str),
 
-    /// Corruption error
-    #[error("corruption error {0}")]
-    CorruptionError(&'static str),
+    /// Corrupted code execution
+    #[error("corrupted code execution error {0}")]
+    CorruptedCodeExecution(&'static str),
 
     /// Chunking error
     #[error("chunking error {0}")]
@@ -86,7 +86,15 @@ pub enum Error {
     #[error("cyclic error {0}")]
     CyclicError(&'static str),
 
-    /// Invalid operation error
+    /// Not supported error
+    #[error("not supported error {0}")]
+    NotSupported(&'static str),
+
+    /// Request amount exceeded error
+    #[error("request amount exceeded error {0}")]
+    RequestAmountExceeded(String),
+
+    /// Invalid operation error    
     #[error("invalid operation error {0}")]
     InvalidOperation(&'static str),
 

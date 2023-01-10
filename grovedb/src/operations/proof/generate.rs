@@ -28,6 +28,8 @@
 
 //! Generate proof operations
 
+use costs::cost_return_on_error_default;
+
 #[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -57,9 +59,8 @@ type LimitOffset = (Option<u16>, Option<u16>);
 impl GroveDb {
     /// Prove query many
     pub fn prove_query_many(&self, query: Vec<&PathQuery>) -> CostResult<Vec<u8>, Error> {
-        let mut cost = OperationCost::default();
         if query.len() > 1 {
-            let query = cost_return_on_error!(&mut cost, PathQuery::merge(query));
+            let query = cost_return_on_error_default!(PathQuery::merge(query));
             self.prove_query(&query)
         } else {
             self.prove_query(query[0])
@@ -76,13 +77,6 @@ impl GroveDb {
         let mut offset: Option<u16> = query.query.offset;
 
         let path_slices = query.path.iter().map(|x| x.as_slice()).collect::<Vec<_>>();
-        // TODO: get rid of this error once root tree is also of type merk
-        if path_slices.is_empty() {
-            return Err(Error::InvalidPath(
-                "can't generate proof for empty path".to_owned(),
-            ))
-            .wrap_with_cost(cost);
-        }
 
         let subtree_exists = self
             .check_subtree_exists_path_not_found(path_slices.clone(), None)
@@ -91,6 +85,8 @@ impl GroveDb {
         match subtree_exists {
             Ok(_) => {}
             Err(_) => {
+                // subtree at the given path doesn't exists, prove that this path
+                // doesn't point to a valid subtree
                 write_to_vec(&mut proof_result, &[ProofType::AbsentPath.into()]);
                 let mut current_path: Vec<&[u8]> = vec![];
 
@@ -104,9 +100,12 @@ impl GroveDb {
                         break;
                     }
 
-                    let has_item =
-                        Element::get(subtree.as_ref().expect("confirmed not error above"), key)
-                            .unwrap_add_cost(&mut cost);
+                    let has_item = Element::get(
+                        subtree.as_ref().expect("confirmed not error above"),
+                        key,
+                        true,
+                    )
+                    .unwrap_add_cost(&mut cost);
 
                     let mut next_key_query = Query::new();
                     next_key_query.insert_key(key.to_vec());
@@ -178,11 +177,13 @@ impl GroveDb {
 
         let mut kv_iterator = KVIterator::new(subtree.storage.raw_iter(), &query.query.query)
             .unwrap_add_cost(&mut cost);
+
         while let Some((key, value_bytes)) = kv_iterator.next_kv().unwrap_add_cost(&mut cost) {
-            let (subquery_key, subquery_value) =
+            let mut encountered_absence = false;
+            let (mut subquery_path, subquery_value) =
                 Element::subquery_paths_for_sized_query(&query.query, &key);
 
-            if subquery_value.is_none() && subquery_key.is_none() {
+            if subquery_value.is_none() && subquery_path.is_none() {
                 continue;
             }
 
@@ -215,15 +216,61 @@ impl GroveDb {
                     let mut query = subquery_value;
 
                     if query.is_some() {
-                        if subquery_key.is_some() {
-                            // prove the subquery key first
+                        if let Some(subquery_path) = &subquery_path {
+                            for first_key in subquery_path.iter() {
+                                let inner_subtree = cost_return_on_error!(
+                                    &mut cost,
+                                    self.open_subtree(new_path.iter().copied())
+                                );
+
+                                let mut key_as_query = Query::new();
+                                key_as_query.insert_key(first_key.clone());
+
+                                cost_return_on_error!(
+                                    &mut cost,
+                                    self.generate_and_store_merk_proof(
+                                        new_path.iter().copied(),
+                                        &inner_subtree,
+                                        &key_as_query,
+                                        (None, None),
+                                        ProofType::Merk,
+                                        proofs,
+                                    )
+                                );
+
+                                new_path.push(first_key);
+
+                                if self
+                                    .check_subtree_exists_path_not_found(new_path.clone(), None)
+                                    .unwrap_add_cost(&mut cost)
+                                    .is_err()
+                                {
+                                    encountered_absence = true;
+                                    break;
+                                }
+                            }
+
+                            if encountered_absence {
+                                continue;
+                            }
+                        }
+                    } else if let Some(subquery_path) = &mut subquery_path {
+                        if subquery_path.is_empty() {
+                            // nothing to do on this path, since subquery path is empty
+                            // and there is no consecutive subquery value
+                            continue;
+                        }
+
+                        let last_key = subquery_path.remove(subquery_path.len() - 1);
+
+                        for subkey in subquery_path.iter() {
                             let inner_subtree = cost_return_on_error!(
                                 &mut cost,
                                 self.open_subtree(new_path.iter().copied())
                             );
 
                             let mut key_as_query = Query::new();
-                            key_as_query.insert_key(subquery_key.clone().unwrap());
+                            key_as_query.insert_key(subkey.clone());
 
                             cost_return_on_error!(
                                 &mut cost,
@@ -237,15 +284,36 @@ impl GroveDb {
                                 )
                             );
 
-                            new_path.push(subquery_key.as_ref().unwrap());
+                            new_path.push(subkey);
+
+                            // check if the new path points to a valid subtree
+                            // if it does not, we should stop proof generation on this path
+                            if self
+                                .check_subtree_exists_path_not_found(new_path.clone(), None)
+                                .unwrap_add_cost(&mut cost)
+                                .is_err()
+                            {
+                                encountered_absence = true;
+                                break;
+                            }
                         }
-                    } else {
+
+                        if encountered_absence {
+                            continue;
+                        }
+
                         let mut key_as_query = Query::new();
-                        key_as_query.insert_key(subquery_key.unwrap());
+                        key_as_query.insert_key(last_key);
                         query = Some(key_as_query);
+                    } else {
+                        return Err(Error::CorruptedCodeExecution(
+                            "subquery_path must exist to be in this function",
+                        ))
+                        .wrap_with_cost(cost);
                     }
 
-                    let new_path_owned = new_path.iter().map(|x| x.to_vec()).collect();
+                    let new_path_owned = new_path.iter().map(|a| a.to_vec()).collect();
+
                     let new_path_query = PathQuery::new_unsized(new_path_owned, query.unwrap());
 
                     if self
@@ -411,7 +479,7 @@ impl GroveDb {
 
                                 let referenced_elem = cost_return_on_error!(
                                     &mut cost,
-                                    self.follow_reference(absolute_path, None)
+                                    self.follow_reference(absolute_path, true, None)
                                 );
 
                                 let serialized_referenced_elem = referenced_elem.serialize();

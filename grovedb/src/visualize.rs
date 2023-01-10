@@ -28,25 +28,18 @@
 
 //! Visualize
 
-#[cfg(feature = "full")]
 use std::io::{Result, Write};
 
-#[cfg(feature = "full")]
 use bincode::Options;
-#[cfg(feature = "full")]
 use merk::{Merk, VisualizeableMerk};
-#[cfg(feature = "full")]
 use storage::StorageContext;
-#[cfg(feature = "full")]
 use visualize::{visualize_stdout, Drawer, Visualize};
 
-#[cfg(feature = "full")]
 use crate::{
     element::Element, reference_path::ReferencePathType, util::storage_context_optional_tx,
     GroveDb, TransactionArg,
 };
 
-#[cfg(feature = "full")]
 impl Visualize for Element {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
         match self {
@@ -83,7 +76,6 @@ impl Visualize for Element {
     }
 }
 
-#[cfg(feature = "full")]
 impl Visualize for ReferencePathType {
     fn visualize<W: Write>(&self, mut drawer: Drawer<W>) -> Result<Drawer<W>> {
         match self {
@@ -145,7 +137,6 @@ impl Visualize for ReferencePathType {
     }
 }
 
-#[cfg(feature = "full")]
 impl GroveDb {
     fn draw_subtree<W: Write>(
         &self,
@@ -217,14 +208,12 @@ impl GroveDb {
     }
 }
 
-#[cfg(feature = "full")]
 impl Visualize for GroveDb {
     fn visualize<W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>> {
         self.visualize_start(drawer, None)
     }
 }
 
-#[cfg(feature = "full")]
 #[allow(dead_code)]
 pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
     visualize_stdout(&VisualizeableMerk::new(merk, |bytes: &[u8]| {
@@ -236,7 +225,6 @@ pub fn visualize_merk_stdout<'db, S: StorageContext<'db>>(merk: &Merk<S>) {
     }));
 }
 
-#[cfg(feature = "full")]
 #[cfg(test)]
 mod tests {
     use visualize::to_hex;

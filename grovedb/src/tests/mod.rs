@@ -539,7 +539,7 @@ fn test_element_with_flags() {
         SizedQuery::new(query, None, None),
     );
     let (flagged_ref_no_follow, _) = db
-        .query_raw(&path_query, QueryKeyElementPairResultType, None)
+        .query_raw(&path_query, true, QueryKeyElementPairResultType, None)
         .unwrap()
         .expect("should get successfully");
 
@@ -589,15 +589,15 @@ fn test_element_with_flags() {
     assert_eq!(root_hash, db.grove_db.root_hash(None).unwrap().unwrap());
     assert_eq!(result_set.len(), 3);
     assert_eq!(
-        Element::deserialize(&result_set[0].1).expect("should deserialize element"),
+        Element::deserialize(&result_set[0].value).expect("should deserialize element"),
         Element::Item(b"flagless".to_vec(), None)
     );
     assert_eq!(
-        Element::deserialize(&result_set[1].1).expect("should deserialize element"),
+        Element::deserialize(&result_set[1].value).expect("should deserialize element"),
         Element::Item(b"flagged".to_vec(), Some([4, 5, 6, 7, 8].to_vec()))
     );
     assert_eq!(
-        Element::deserialize(&result_set[2].1)
+        Element::deserialize(&result_set[2].value)
             .expect("should deserialize element")
             .get_flags(),
         &Some([1].to_vec())
@@ -1556,7 +1556,7 @@ fn test_path_query_proofs_with_default_subquery() {
 
 #[cfg(feature = "full")]
 #[test]
-fn test_path_query_proofs_with_subquery_key() {
+fn test_path_query_proofs_with_subquery_path() {
     let temp_db = make_deep_tree();
 
     let mut query = Query::new();
@@ -1582,6 +1582,89 @@ fn test_path_query_proofs_with_subquery_key() {
     let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
     let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
     compare_result_tuples(result_set, expected_result_set);
+
+    // test subquery path with valid n > 1 valid translation
+    let mut query = Query::new();
+    query.insert_all();
+
+    let mut subq = Query::new();
+    subq.insert_all();
+
+    query.set_subquery_path(vec![b"deep_node_1".to_vec(), b"deeper_node_1".to_vec()]);
+    query.set_subquery(subq);
+
+    let path_query = PathQuery::new_unsized(vec![], query);
+    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) =
+        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 3);
+
+    let keys = [b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()];
+    let values = [b"value1".to_vec(), b"value2".to_vec(), b"value3".to_vec()];
+    let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+    let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
+    compare_result_tuples(result_set, expected_result_set);
+
+    // test subquery path with empty subquery path
+    let mut query = Query::new();
+    query.insert_all();
+
+    let mut subq = Query::new();
+    subq.insert_all();
+
+    query.set_subquery_path(vec![]);
+    query.set_subquery(subq);
+
+    let path_query =
+        PathQuery::new_unsized(vec![b"deep_leaf".to_vec(), b"deep_node_1".to_vec()], query);
+    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) =
+        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 6);
+
+    let keys = [
+        b"key1".to_vec(),
+        b"key2".to_vec(),
+        b"key3".to_vec(),
+        b"key4".to_vec(),
+        b"key5".to_vec(),
+        b"key6".to_vec(),
+    ];
+    let values = [
+        b"value1".to_vec(),
+        b"value2".to_vec(),
+        b"value3".to_vec(),
+        b"value4".to_vec(),
+        b"value5".to_vec(),
+        b"value6".to_vec(),
+    ];
+    let elements = values.map(|x| Element::new_item(x).serialize().unwrap());
+    let expected_result_set: Vec<(Vec<u8>, Vec<u8>)> = keys.into_iter().zip(elements).collect();
+    compare_result_tuples(result_set, expected_result_set);
+
+    // test subquery path with an invalid translation
+    // should generate a valid absence proof with an empty result set
+    let mut query = Query::new();
+    query.insert_all();
+
+    let mut subq = Query::new();
+    subq.insert_all();
+
+    query.set_subquery_path(vec![
+        b"deep_node_1".to_vec(),
+        b"deeper_node_10".to_vec(),
+        b"another_invalid_key".to_vec(),
+    ]);
+    query.set_subquery(subq);
+
+    let path_query = PathQuery::new_unsized(vec![], query);
+    let proof = temp_db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) =
+        GroveDb::verify_query(proof.as_slice(), &path_query).expect("should execute proof");
+    assert_eq!(hash, temp_db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 0);
 }
 
 #[cfg(feature = "full")]
@@ -1653,7 +1736,7 @@ fn test_path_query_proofs_with_conditional_subquery() {
 
     // TODO: Is this defined behaviour
     for (index, key) in keys.iter().enumerate() {
-        assert_eq!(&result_set[index].0, key);
+        assert_eq!(&result_set[index].key, key);
     }
 
     // Default + Conditional subquery
@@ -1733,7 +1816,6 @@ fn test_path_query_proofs_with_sized_query() {
         Some(final_conditional_subquery),
     );
     subquery.set_subquery(final_default_subquery);
-    // subquery.set_subquery_key(b"key3".to_vec());
 
     query.set_subquery(subquery);
 
@@ -2260,7 +2342,7 @@ fn test_get_subtree() {
             Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
                 .unwrap()
                 .expect("cannot open merk");
-        let result_element = Element::get(&subtree, b"key3").unwrap().unwrap();
+        let result_element = Element::get(&subtree, b"key3", true).unwrap().unwrap();
         assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
     }
     // Insert a new tree with transaction
@@ -2295,7 +2377,7 @@ fn test_get_subtree() {
     let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key4".to_vec()), false)
         .unwrap()
         .expect("cannot open merk");
-    let result_element = Element::get(&subtree, b"key4").unwrap().unwrap();
+    let result_element = Element::get(&subtree, b"key4", true).unwrap().unwrap();
     assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 
     // Should be able to retrieve instances created before transaction
@@ -2307,7 +2389,7 @@ fn test_get_subtree() {
     let subtree = Merk::open_layered_with_root_key(subtree_storage, Some(b"key3".to_vec()), false)
         .unwrap()
         .expect("cannot open merk");
-    let result_element = Element::get(&subtree, b"key3").unwrap().unwrap();
+    let result_element = Element::get(&subtree, b"key3", true).unwrap().unwrap();
     assert_eq!(result_element, Element::new_item(b"ayy".to_vec()));
 }
 
@@ -2374,6 +2456,7 @@ fn test_get_full_query() {
     assert_eq!(
         db.query_many_raw(
             &[&path_query1, &path_query2],
+            true,
             QueryKeyElementPairResultType,
             None
         )

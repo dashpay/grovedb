@@ -113,6 +113,9 @@ mod tests {
 
         merk.crash();
 
-        assert_eq!(merk.get(&[1, 2, 3]).unwrap().expect("failed to get"), None);
+        assert_eq!(
+            merk.get(&[1, 2, 3], true).unwrap().expect("failed to get"),
+            None
+        );
     }
 }

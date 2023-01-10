@@ -26,7 +26,6 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-#[cfg(feature = "full")]
 /// Macro to execute same piece of code on different storage contexts
 /// (transactional or not) using path argument.
 macro_rules! storage_context_optional_tx {
@@ -46,7 +45,6 @@ macro_rules! storage_context_optional_tx {
     };
 }
 
-#[cfg(feature = "full")]
 /// Macro to execute same piece of code on different storage contexts
 /// (transactional or not) using path argument.
 macro_rules! storage_context_with_parent_optional_tx {
@@ -150,7 +148,6 @@ macro_rules! storage_context_with_parent_optional_tx {
     };
 }
 
-#[cfg(feature = "full")]
 /// Macro to execute same piece of code on different storage contexts with
 /// empty prefix.
 macro_rules! meta_storage_context_optional_tx {
@@ -170,7 +167,6 @@ macro_rules! meta_storage_context_optional_tx {
     };
 }
 
-#[cfg(feature = "full")]
 /// Macro to execute same piece of code on Merk with varying storage
 /// contexts.
 macro_rules! merk_optional_tx {
@@ -211,7 +207,6 @@ macro_rules! merk_optional_tx {
     };
 }
 
-#[cfg(feature = "full")]
 /// Macro to execute same piece of code on Merk with varying storage
 /// contexts.
 macro_rules! root_merk_optional_tx {
@@ -241,15 +236,10 @@ macro_rules! root_merk_optional_tx {
     };
 }
 
-#[cfg(feature = "full")]
 pub(crate) use merk_optional_tx;
-#[cfg(feature = "full")]
 pub(crate) use meta_storage_context_optional_tx;
-#[cfg(feature = "full")]
 pub(crate) use root_merk_optional_tx;
-#[cfg(feature = "full")]
 pub(crate) use storage_context_optional_tx;
 // pub(crate) use storage_context_with_parent_no_tx;
-#[cfg(feature = "full")]
 pub(crate) use storage_context_with_parent_optional_tx;
 // pub(crate) use storage_context_with_parent_using_tx;

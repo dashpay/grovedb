@@ -45,7 +45,7 @@ mod estimated_costs;
 pub mod operations;
 #[cfg(any(feature = "full", feature = "verify"))]
 mod query;
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub mod query_result_type;
 #[cfg(any(feature = "full", feature = "verify"))]
 pub mod reference_path;
@@ -540,7 +540,7 @@ impl GroveDb {
         key: K,
     ) -> CostResult<Element, Error> {
         subtree
-            .get(key.as_ref())
+            .get(key.as_ref(), true)
             .map_err(|_| {
                 Error::InvalidPath("can't find subtree in parent during propagation".to_owned())
             })
@@ -581,7 +581,6 @@ impl GroveDb {
     /// ## Examples:
     /// ```
     /// # use grovedb::{Element, Error, GroveDb};
-    /// # use rs_merkle::{MerkleTree, MerkleProof, algorithms::Sha256, Hasher, utils};
     /// # use std::convert::TryFrom;
     /// # use tempfile::TempDir;
     /// #
@@ -686,7 +685,7 @@ impl GroveDb {
             let element = raw_decode(&element_value).unwrap();
             if element.is_tree() {
                 let (kv_value, element_value_hash) = merk
-                    .get_value_and_value_hash(&key)
+                    .get_value_and_value_hash(&key, true)
                     .unwrap()
                     .unwrap()
                     .unwrap();

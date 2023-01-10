@@ -31,6 +31,7 @@
 #[cfg(feature = "full")]
 mod map;
 
+use std::collections::HashSet;
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::{
     cmp,
@@ -59,11 +60,23 @@ use crate::tree::{Fetch, Link, RefWalker};
 use crate::{error::Error, tree::value_hash, CryptoHash as MerkHash, CryptoHash};
 
 #[cfg(any(feature = "full", feature = "verify"))]
+/// Type alias for a path.
+pub type Path = Vec<Vec<u8>>;
+
+#[cfg(any(feature = "full", feature = "verify"))]
+/// Type alias for a Key.
+pub type Key = Vec<u8>;
+
+#[cfg(any(feature = "full", feature = "verify"))]
+/// Type alias for path-key common pattern.
+pub type PathKey = (Path, Key);
+
+#[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Default, Clone, PartialEq)]
 /// Subquery branch
 pub struct SubqueryBranch {
-    /// Subquery key
-    pub subquery_key: Option<Vec<u8>>,
+    /// Subquery path
+    pub subquery_path: Option<Path>,
     /// Subquery
     pub subquery: Option<Box<Query>>,
 }
@@ -101,6 +114,163 @@ impl Query {
         }
     }
 
+    /// Pushes terminal key paths and keys to `result`, no more than `max_results`.
+    /// Returns the number of terminal keys added.
+    /// 
+    /// Terminal keys are the keys of a path query below which there are no more subqueries.
+    /// In other words they're the keys of the terminal queries of a path query.
+    pub fn terminal_keys(
+        &self,
+        current_path: Vec<Vec<u8>>,
+        max_results: usize,
+        result: &mut Vec<(Vec<Vec<u8>>, Vec<u8>)>,
+    ) -> Result<usize, Error> {
+        let mut current_len = result.len();
+        let mut added = 0;
+        let mut already_added_keys = HashSet::new();
+        for (conditional_query_item, subquery_branch) in &self.conditional_subquery_branches {
+            // unbounded ranges can not be supported
+            if conditional_query_item.is_unbounded_range() {
+                return Err(Error::NotSupported(
+                    "terminal keys are not supported with conditional unbounded ranges",
+                ));
+            }
+            let conditional_keys = conditional_query_item.keys()?;
+            for key in conditional_keys.into_iter() {
+                if current_len > max_results {
+                    return Err(Error::RequestAmountExceeded(format!(
+                        "terminal keys limit exceeded, set max is {}",
+                        max_results
+                    )));
+                }
+                already_added_keys.insert(key.clone());
+                let mut path = current_path.clone();
+                if let Some(subquery_path) = &subquery_branch.subquery_path {
+                    if let Some(subquery) = &subquery_branch.subquery {
+                        // a subquery path with a subquery
+                        // push the key to the path
+                        path.push(key);
+                        // push the subquery path to the path
+                        path.extend(subquery_path.iter().cloned());
+                        // recurse onto the lower level
+                        let added_here =
+                            subquery.terminal_keys(path, max_results - current_len, result)?;
+                        added += added_here;
+                        current_len += added_here;
+                    } else {
+                        if current_len == max_results {
+                            return Err(Error::RequestAmountExceeded(format!(
+                                "terminal keys limit exceeded, set max is {}",
+                                max_results
+                            )));
+                        }
+                        // a subquery path but no subquery
+                        // split the subquery path and remove the last element
+                        // push the key to the path with the front elements,
+                        // and set the tail of the subquery path as the terminal key
+                        path.push(key);
+                        if let Some((last_key, front_keys)) = subquery_path.split_last() {
+                            path.extend(front_keys.iter().cloned());
+                            result.push((path, last_key.clone()));
+                        } else {
+                            return Err(Error::CorruptedCodeExecution(
+                                "subquery_path set but doesn't contain any values",
+                            ));
+                        }
+
+                        added += 1;
+                        current_len += 1;
+                    }
+                } else if let Some(subquery) = &subquery_branch.subquery {
+                    // a subquery without a subquery path
+                    // push the key to the path
+                    path.push(key);
+                    // recurse onto the lower level
+                    let added_here = subquery.terminal_keys(path, max_results, result)?;
+                    added += added_here;
+                    current_len += added_here;
+                }
+            }
+        }
+        for item in self.items.iter() {
+            if item.is_unbounded_range() {
+                return Err(Error::NotSupported(
+                    "terminal keys are not supported with unbounded ranges",
+                ));
+            }
+            let keys = item.keys()?;
+            for key in keys.into_iter() {
+                if already_added_keys.contains(&key) {
+                    // we already had this key in the conditional subqueries
+                    continue; // skip this key
+                }
+                if current_len > max_results {
+                    return Err(Error::RequestAmountExceeded(format!(
+                        "terminal keys limit exceeded, set max is {}",
+                        max_results
+                    )));
+                }
+                let mut path = current_path.clone();
+                if let Some(subquery_path) = &self.default_subquery_branch.subquery_path {
+                    if let Some(subquery) = &self.default_subquery_branch.subquery {
+                        // a subquery path with a subquery
+                        // push the key to the path
+                        path.push(key);
+                        // push the subquery path to the path
+                        path.extend(subquery_path.iter().cloned());
+                        // recurse onto the lower level
+                        let added_here =
+                            subquery.terminal_keys(path, max_results - current_len, result)?;
+                        added += added_here;
+                        current_len += added_here;
+                    } else {
+                        if current_len == max_results {
+                            return Err(Error::RequestAmountExceeded(format!(
+                                "terminal keys limit exceeded, set max is {}",
+                                max_results
+                            )));
+                        }
+                        // a subquery path but no subquery
+                        // split the subquery path and remove the last element
+                        // push the key to the path with the front elements,
+                        // and set the tail of the subquery path as the terminal key
+                        path.push(key);
+                        if let Some((last_key, front_keys)) = subquery_path.split_last() {
+                            path.extend(front_keys.iter().cloned());
+                            result.push((path, last_key.clone()));
+                        } else {
+                            return Err(Error::CorruptedCodeExecution(
+                                "subquery_path set but doesn't contain any values",
+                            ));
+                        }
+                        added += 1;
+                        current_len += 1;
+                    }
+                } else if let Some(subquery) = &self.default_subquery_branch.subquery {
+                    // a subquery without a subquery path
+                    // push the key to the path
+                    path.push(key);
+                    // recurse onto the lower level
+                    let added_here =
+                        subquery.terminal_keys(path, max_results - current_len, result)?;
+                    added += added_here;
+                    current_len += added_here;
+                } else {
+                    if current_len == max_results {
+                        return Err(Error::RequestAmountExceeded(format!(
+                            "terminal keys limit exceeded, set max is {}",
+                            max_results
+                        )));
+                    }
+                    result.push((path, key));
+                    added += 1;
+                    current_len += 1;
+                }
+            }
+        }
+        Ok(added)
+    }
+
     /// Get number of query items
     pub(crate) fn len(&self) -> usize {
         self.items.len()
@@ -128,33 +298,40 @@ impl Query {
         }
     }
 
-    /// Sets the subquery_key for the query. This causes every element that is
-    /// returned by the query to be subqueried to the subquery_key.
-    pub fn set_subquery_key(&mut self, key: Vec<u8>) {
-        self.default_subquery_branch.subquery_key = Some(key);
+    /// Sets the subquery_path for the query with one key. This causes every
+    /// element that is returned by the query to be subqueried one level to
+    /// the subquery_path.
+    pub fn set_subquery_key(&mut self, key: Key) {
+        self.default_subquery_branch.subquery_path = Some(vec![key]);
+    }
+
+    /// Sets the subquery_path for the query. This causes every element that is
+    /// returned by the query to be subqueried to the subquery_path.
+    pub fn set_subquery_path(&mut self, path: Path) {
+        self.default_subquery_branch.subquery_path = Some(path);
     }
 
     /// Sets the subquery for the query. This causes every element that is
     /// returned by the query to be subqueried or subqueried to the
-    /// subquery_key/subquery if a subquery is present.
+    /// subquery_path/subquery if a subquery is present.
     pub fn set_subquery(&mut self, subquery: Self) {
         self.default_subquery_branch.subquery = Some(Box::new(subquery));
     }
 
     /// Adds a conditional subquery. A conditional subquery replaces the default
-    /// subquery and subquery_key if the item matches for the key. If
+    /// subquery and subquery_path if the item matches for the key. If
     /// multiple conditional subquery items match, then the first one that
     /// matches is used (in order that they were added).
     pub fn add_conditional_subquery(
         &mut self,
         item: QueryItem,
-        subquery_key: Option<Vec<u8>>,
+        subquery_path: Option<Path>,
         subquery: Option<Self>,
     ) {
         self.conditional_subquery_branches.insert(
             item,
             SubqueryBranch {
-                subquery_key,
+                subquery_path,
                 subquery: subquery.map(Box::new),
             },
         );
@@ -322,7 +499,7 @@ impl Query {
     pub fn has_subquery(&self) -> bool {
         // checks if a query has subquery items
         if self.default_subquery_branch.subquery.is_some()
-            || self.default_subquery_branch.subquery_key.is_some()
+            || self.default_subquery_branch.subquery_path.is_some()
             || !self.conditional_subquery_branches.is_empty()
         {
             return true;
@@ -344,7 +521,7 @@ impl<Q: Into<QueryItem>> From<Vec<Q>> for Query {
         Self {
             items,
             default_subquery_branch: SubqueryBranch {
-                subquery_key: None,
+                subquery_path: None,
                 subquery: None,
             },
             conditional_subquery_branches: IndexMap::new(),
@@ -593,6 +770,114 @@ impl QueryItem {
     /// Check if is range
     pub const fn is_range(&self) -> bool {
         !matches!(self, QueryItem::Key(_))
+    }
+
+    /// Check if is unbounded range
+    pub const fn is_unbounded_range(&self) -> bool {
+        !matches!(
+            self,
+            QueryItem::Key(_) | QueryItem::Range(_) | QueryItem::RangeInclusive(_)
+        )
+    }
+
+    /// Gets keys in `QueryItem`
+    pub fn keys(&self) -> Result<Vec<Vec<u8>>, Error> {
+        match self {
+            QueryItem::Key(key) => Ok(vec![key.clone()]),
+            QueryItem::Range(Range { start, end }) => {
+                let mut keys = vec![];
+                if start.len() > 1 || end.len() != 1 {
+                    return Err(Error::InvalidOperation(
+                        "distinct keys are not available for ranges using more or less than 1 byte",
+                    ));
+                }
+                let start = *start.first().unwrap_or_else(|| {
+                    keys.push(vec![]);
+                    &0
+                });
+                if let Some(end) = end.first() {
+                    let end = *end;
+                    for i in start..end {
+                        keys.push(vec![i]);
+                    }
+                }
+                Ok(keys)
+            }
+            QueryItem::RangeInclusive(range_inclusive) => {
+                let start = range_inclusive.start();
+                let end = range_inclusive.end();
+                let mut keys = vec![];
+                if start.len() > 1 || end.len() != 1 {
+                    return Err(Error::InvalidOperation(
+                        "distinct keys are not available for ranges using more or less than 1 byte",
+                    ));
+                }
+                let start = *start.first().unwrap_or_else(|| {
+                    keys.push(vec![]);
+                    &0
+                });
+                if let Some(end) = end.first() {
+                    let end = *end;
+                    for i in start..=end {
+                        keys.push(vec![i]);
+                    }
+                }
+                Ok(keys)
+            }
+            _ => Err(Error::InvalidOperation(
+                "distinct keys are not available for unbounded ranges",
+            )),
+        }
+    }
+
+    /// Get and consume keys in `QueryItem`
+    pub fn keys_consume(self) -> Result<Vec<Vec<u8>>, Error> {
+        match self {
+            QueryItem::Key(key) => Ok(vec![key]),
+            QueryItem::Range(Range { start, end }) => {
+                let mut keys = vec![];
+                if start.len() > 1 || end.len() != 1 {
+                    return Err(Error::InvalidOperation(
+                        "distinct keys are not available for ranges using more or less than 1 byte",
+                    ));
+                }
+                let start = *start.first().unwrap_or_else(|| {
+                    keys.push(vec![]);
+                    &0
+                });
+                if let Some(end) = end.first() {
+                    let end = *end;
+                    for i in start..end {
+                        keys.push(vec![i]);
+                    }
+                }
+                Ok(keys)
+            }
+            QueryItem::RangeInclusive(range_inclusive) => {
+                let start = range_inclusive.start();
+                let end = range_inclusive.end();
+                let mut keys = vec![];
+                if start.len() > 1 || end.len() != 1 {
+                    return Err(Error::InvalidOperation(
+                        "distinct keys are not available for ranges using more or less than 1 byte",
+                    ));
+                }
+                let start = *start.first().unwrap_or_else(|| {
+                    keys.push(vec![]);
+                    &0
+                });
+                if let Some(end) = end.first() {
+                    let end = *end;
+                    for i in start..=end {
+                        keys.push(vec![i]);
+                    }
+                }
+                Ok(keys)
+            }
+            _ => Err(Error::InvalidOperation(
+                "distinct keys are not available for unbounded ranges",
+            )),
+        }
     }
 
     /// Seek for iter
@@ -1408,7 +1693,11 @@ pub fn execute_proof(
                                 }
                             }
                             // add data to output
-                            output.push((key.clone(), val.clone(), value_hash));
+                            output.push(ProvedKeyValue {
+                                key: key.clone(),
+                                value: val.clone(),
+                                proof: value_hash,
+                            });
 
                             // continue to next push
                             break;
@@ -1484,10 +1773,22 @@ pub fn execute_proof(
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(PartialEq, Eq, Debug)]
+/// Proved key-value
+pub struct ProvedKeyValue {
+    /// Key
+    pub key: Vec<u8>,
+    /// Value
+    pub value: Vec<u8>,
+    /// Proof
+    pub proof: CryptoHash,
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
+#[derive(PartialEq, Eq, Debug)]
 /// Proof verification result
 pub struct ProofVerificationResult {
     /// Result set
-    pub result_set: Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,
+    pub result_set: Vec<ProvedKeyValue>,
     /// Limit
     pub limit: Option<u16>,
     /// Offset
@@ -1536,13 +1837,13 @@ mod test {
     };
 
     fn compare_result_tuples(
-        result_set: Vec<(Vec<u8>, Vec<u8>, CryptoHash)>,
+        result_set: Vec<ProvedKeyValue>,
         expected_result_set: Vec<(Vec<u8>, Vec<u8>)>,
     ) {
         assert_eq!(expected_result_set.len(), result_set.len());
         for i in 0..expected_result_set.len() {
-            assert_eq!(expected_result_set[i].0, result_set[i].0);
-            assert_eq!(expected_result_set[i].1, result_set[i].1);
+            assert_eq!(expected_result_set[i].0, result_set[i].key);
+            assert_eq!(expected_result_set[i].1, result_set[i].value);
         }
     }
 
@@ -1645,8 +1946,10 @@ mod test {
             .expect("verify failed");
 
         let mut values = std::collections::HashMap::new();
-        for (key, value, _) in result.result_set {
-            assert!(values.insert(key, value).is_none());
+        for proved_value in result.result_set {
+            assert!(values
+                .insert(proved_value.key, proved_value.value)
+                .is_none());
         }
 
         for (key, expected_value) in keys.iter().zip(expected_result.iter()) {
@@ -6243,12 +6546,12 @@ mod test {
             vec![0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
         )];
         assert_eq!(
-            query_vec.get(0).unwrap().lower_bound(),
-            expected.get(0).unwrap().lower_bound()
+            query_vec.first().unwrap().lower_bound(),
+            expected.first().unwrap().lower_bound()
         );
         assert_eq!(
-            query_vec.get(0).unwrap().upper_bound(),
-            expected.get(0).unwrap().upper_bound()
+            query_vec.first().unwrap().upper_bound(),
+            expected.first().unwrap().upper_bound()
         );
     }
 

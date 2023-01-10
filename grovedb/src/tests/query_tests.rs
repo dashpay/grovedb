@@ -312,7 +312,7 @@ fn test_get_range_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -350,7 +350,7 @@ fn test_get_range_query_with_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -386,7 +386,7 @@ fn test_get_range_query_with_unique_subquery_on_references() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -424,14 +424,14 @@ fn test_get_range_query_with_unique_subquery_with_non_unique_null_values() {
 
     query.add_conditional_subquery(
         QueryItem::Key(b"".to_vec()),
-        Some(b"\0".to_vec()),
+        Some(vec![b"\0".to_vec()]),
         Some(subquery),
     );
 
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -468,14 +468,14 @@ fn test_get_range_query_with_unique_subquery_ignore_non_unique_null_values() {
 
     query.add_conditional_subquery(
         QueryItem::Key(b"".to_vec()),
-        Some(b"\0".to_vec()),
+        Some(vec![b"\0".to_vec()]),
         Some(subquery),
     );
 
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -514,7 +514,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -555,7 +555,7 @@ fn test_get_range_inclusive_query_with_non_unique_subquery_on_references() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -596,7 +596,7 @@ fn test_get_range_inclusive_query_with_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -635,7 +635,7 @@ fn test_get_range_from_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -673,7 +673,7 @@ fn test_get_range_from_query_with_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -712,7 +712,7 @@ fn test_get_range_to_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -750,7 +750,7 @@ fn test_get_range_to_query_with_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -789,7 +789,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -830,7 +830,7 @@ fn test_get_range_to_inclusive_query_with_non_unique_subquery_and_key_out_of_bou
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -868,7 +868,7 @@ fn test_get_range_to_inclusive_query_with_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -907,7 +907,7 @@ fn test_get_range_after_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -948,7 +948,7 @@ fn test_get_range_after_to_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -991,7 +991,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1034,7 +1034,7 @@ fn test_get_range_after_to_inclusive_query_with_non_unique_subquery_and_key_out_
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1083,7 +1083,7 @@ fn test_get_range_inclusive_query_with_double_non_unique_subquery() {
     let path_query = PathQuery::new_unsized(path, query.clone());
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1123,7 +1123,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(path.clone(), SizedQuery::new(query.clone(), None, None));
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1154,7 +1154,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(path.clone(), SizedQuery::new(query.clone(), None, None));
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1185,7 +1185,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(path.clone(), SizedQuery::new(query.clone(), Some(55), None));
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1216,7 +1216,7 @@ fn test_get_range_query_with_limit_and_offset() {
     );
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1254,7 +1254,7 @@ fn test_get_range_query_with_limit_and_offset() {
     );
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1289,7 +1289,7 @@ fn test_get_range_query_with_limit_and_offset() {
     );
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1310,7 +1310,7 @@ fn test_get_range_query_with_limit_and_offset() {
     );
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 
@@ -1333,7 +1333,7 @@ fn test_get_range_query_with_limit_and_offset() {
     let path_query = PathQuery::new(path, SizedQuery::new(query.clone(), Some(5), Some(2)));
 
     let (elements, _) = db
-        .query(&path_query, None)
+        .query_item_value(&path_query, true, None)
         .unwrap()
         .expect("expected successful get_path_query");
 

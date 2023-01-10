@@ -392,7 +392,7 @@ mod tests {
         let path_query =
             PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"innertree4".to_vec()], query);
         let result = db
-            .query(&path_query, None)
+            .query_item_value(&path_query, true, None)
             .unwrap()
             .expect("should query items");
         assert_eq!(result.0.len(), 5);

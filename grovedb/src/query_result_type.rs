@@ -28,14 +28,15 @@
 
 //! Query result type
 
-use std::collections::{BTreeMap, HashMap};
-#[cfg(feature = "full")]
-use std::vec::IntoIter;
+use std::{
+    collections::{BTreeMap, HashMap},
+    vec::IntoIter,
+};
 
-#[cfg(feature = "full")]
-use crate::Element;
+pub use merk::proofs::query::{Key, Path, PathKey};
 
-#[cfg(feature = "full")]
+use crate::{Element, Error};
+
 #[derive(Copy, Clone)]
 /// Query result type
 pub enum QueryResultType {
@@ -54,7 +55,6 @@ pub struct QueryResultElements {
     pub elements: Vec<QueryResultElement>,
 }
 
-#[cfg(feature = "full")]
 impl QueryResultElements {
     /// New
     pub fn new() -> Self {
@@ -158,16 +158,28 @@ impl QueryResultElements {
             })
             .collect()
     }
+
+    /// To path key elements btree map
+    pub fn to_path_key_elements_btree_map(self) -> BTreeMap<PathKey, Element> {
+        self.elements
+            .into_iter()
+            .filter_map(|result_item| match result_item {
+                QueryResultElement::ElementResultItem(_) => None,
+                QueryResultElement::KeyElementPairResultItem(_) => None,
+                QueryResultElement::PathKeyElementTrioResultItem((path, key, element)) => {
+                    Some(((path, key), element))
+                }
+            })
+            .collect()
+    }
 }
 
-#[cfg(feature = "full")]
 impl Default for QueryResultElements {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(feature = "full")]
 /// Query result element
 pub enum QueryResultElement {
     /// Element result item
@@ -179,13 +191,42 @@ pub enum QueryResultElement {
 }
 
 #[cfg(feature = "full")]
+impl QueryResultElement {
+    /// Map element
+    pub fn map_element(
+        self,
+        map_function: impl FnOnce(Element) -> Result<Element, Error>,
+    ) -> Result<Self, Error> {
+        Ok(match self {
+            QueryResultElement::ElementResultItem(element) => {
+                QueryResultElement::ElementResultItem(map_function(element)?)
+            }
+            QueryResultElement::KeyElementPairResultItem((key, element)) => {
+                QueryResultElement::KeyElementPairResultItem((key, map_function(element)?))
+            }
+            QueryResultElement::PathKeyElementTrioResultItem((path, key, element)) => {
+                QueryResultElement::PathKeyElementTrioResultItem((
+                    path,
+                    key,
+                    map_function(element)?,
+                ))
+            }
+        })
+    }
+}
+
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for key-element common pattern.
-pub type KeyElementPair = (Vec<u8>, Element);
+pub type KeyElementPair = (Key, Element);
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 /// Type alias for key optional_element common pattern.
-pub type KeyOptionalElementPair = (Vec<u8>, Option<Element>);
+pub type KeyOptionalElementPair = (Key, Option<Element>);
+
+#[cfg(any(feature = "full", feature = "verify"))]
+/// Type alias for path-key-element common pattern.
+pub type PathKeyElementTrio = (Path, Key, Element);
 
 #[cfg(feature = "full")]
-/// Type alias for path-key-element common pattern.
-pub type PathKeyElementTrio = (Vec<Vec<u8>>, Vec<u8>, Element);
+/// Type alias for path - key - optional_element common pattern.
+pub type PathKeyOptionalElementTrio = (Path, Key, Option<Element>);

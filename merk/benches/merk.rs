@@ -73,7 +73,7 @@ pub fn get(c: &mut Criterion) {
             let key_index = (i / num_batches) as usize;
 
             let key = &batches[batch_index][key_index].0;
-            merk.get(key).unwrap().expect("get failed");
+            merk.get(key, true).unwrap().expect("get failed");
 
             i = (i + 1) % initial_size;
         })

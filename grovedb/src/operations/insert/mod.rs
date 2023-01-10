@@ -197,7 +197,7 @@ impl GroveDb {
             let maybe_element_bytes = cost_return_on_error!(
                 &mut cost,
                 subtree_to_insert_into
-                    .get(key)
+                    .get(key, true)
                     .map_err(|e| Error::CorruptedData(e.to_string()))
             );
             if let Some(element_bytes) = maybe_element_bytes {
@@ -241,7 +241,7 @@ impl GroveDb {
 
                 let referenced_element_value_hash_opt = cost_return_on_error!(
                     &mut cost,
-                    Element::get_value_hash(&subtree_for_reference, referenced_key)
+                    Element::get_value_hash(&subtree_for_reference, referenced_key, true)
                 );
 
                 let referenced_element_value_hash = cost_return_on_error!(
@@ -332,7 +332,7 @@ impl GroveDb {
             let maybe_element_bytes = cost_return_on_error!(
                 &mut cost,
                 subtree_to_insert_into
-                    .get(key)
+                    .get(key, true)
                     .map_err(|e| Error::CorruptedData(e.to_string()))
             );
             if let Some(element_bytes) = maybe_element_bytes {
@@ -374,9 +374,10 @@ impl GroveDb {
                     self.open_non_transactional_merk_at_path(referenced_path_iter)
                 );
 
+                // when there is no transaction, we don't want to use caching
                 let referenced_element_value_hash_opt = cost_return_on_error!(
                     &mut cost,
-                    Element::get_value_hash(&subtree_for_reference, referenced_key)
+                    Element::get_value_hash(&subtree_for_reference, referenced_key, false)
                 );
 
                 let referenced_element_value_hash = cost_return_on_error!(

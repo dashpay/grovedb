@@ -306,7 +306,7 @@ mod tests {
             .expect("expected successful insertion 2");
 
         assert_eq!(
-            Element::get(&merk, b"another-key")
+            Element::get(&merk, b"another-key", true)
                 .unwrap()
                 .expect("expected successful get"),
             Element::new_item(b"value".to_vec()),
