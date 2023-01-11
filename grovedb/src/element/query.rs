@@ -1,3 +1,34 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Query
+//! Implements functions in Element for querying
+
 #[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
@@ -28,6 +59,7 @@ use crate::{
 use crate::{Element, SizedQuery};
 
 #[cfg(feature = "full")]
+/// Path query push arguments
 pub struct PathQueryPushArgs<'db, 'ctx, 'a>
 where
     'db: 'ctx,
@@ -50,6 +82,7 @@ where
 
 impl Element {
     #[cfg(feature = "full")]
+    /// Returns a vector of result elements based on given query
     pub fn get_query(
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
@@ -70,6 +103,7 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Get values of result elements coming from given query
     pub fn get_query_values(
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
@@ -98,6 +132,8 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Returns a vector of result elements and the number of skipped items
+    /// based on given query
     pub fn get_query_apply_function(
         storage: &RocksDbStorage,
         path: &[&[u8]],
@@ -173,8 +209,8 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    // Returns a vector of elements excluding trees, and the number of skipped
-    // elements
+    /// Returns a vector of elements excluding trees, and the number of skipped
+    /// elements
     pub fn get_path_query(
         storage: &RocksDbStorage,
         path_query: &PathQuery,
@@ -200,8 +236,8 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    // Returns a vector of elements including trees, and the number of skipped
-    // elements
+    /// Returns a vector of elements including trees, and the number of skipped
+    /// elements
     pub fn get_raw_path_query(
         storage: &RocksDbStorage,
         path_query: &PathQuery,
@@ -249,6 +285,7 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Push arguments to path query
     fn path_query_push(args: PathQueryPushArgs) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -452,6 +489,8 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
+    /// Takes a sized query and a key and returns subquery key and subquery as
+    /// tuple
     pub fn subquery_paths_for_sized_query(
         sized_query: &SizedQuery,
         key: &[u8],
@@ -646,6 +685,7 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
+    /// Iterator
     pub fn iterator<I: RawIterator>(mut raw_iter: I) -> CostContext<ElementsIterator<I>> {
         let mut cost = OperationCost::default();
         raw_iter.seek_to_first().unwrap_add_cost(&mut cost);

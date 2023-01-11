@@ -1,3 +1,35 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Visualize
+
+#![deny(missing_docs)]
+
 use core::fmt;
 use std::io::{Result, Write};
 
@@ -9,6 +41,7 @@ static INDENT_SPACES: usize = 4;
 
 /// Pretty visualization of GroveDB components.
 pub trait Visualize {
+    /// Visualize
     fn visualize<W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>>;
 }
 
@@ -56,18 +89,22 @@ pub struct Drawer<W: Write> {
 }
 
 impl<W: Write> Drawer<W> {
+    /// New
     pub fn new(write: W) -> Self {
         Drawer { level: 0, write }
     }
 
+    /// Down
     pub fn down(&mut self) {
         self.level += 1;
     }
 
+    /// Up
     pub fn up(&mut self) {
         self.level -= 1;
     }
 
+    /// Write
     pub fn write(&mut self, buf: &[u8]) -> Result<()> {
         let lines_iter = buf.split(|c| *c == b'\n');
         let sep = if self.level > 0 {
@@ -84,6 +121,7 @@ impl<W: Write> Drawer<W> {
         Ok(())
     }
 
+    /// Flush
     pub fn flush(&mut self) -> Result<()> {
         self.write.write_all(b"\n")?;
         self.write.flush()?;
@@ -91,6 +129,7 @@ impl<W: Write> Drawer<W> {
     }
 }
 
+/// To hex
 pub fn to_hex(bytes: &[u8]) -> String {
     let encoded = hex::encode(bytes);
     let remaining = encoded.len().saturating_sub(HEX_LEN);

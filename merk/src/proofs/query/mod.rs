@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Query proofs
+
 #[cfg(feature = "full")]
 mod map;
 
@@ -43,8 +73,11 @@ pub type PathKey = (Path, Key);
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, Default, Clone, PartialEq)]
+/// Subquery branch
 pub struct SubqueryBranch {
+    /// Subquery path
     pub subquery_path: Option<Path>,
+    /// Subquery
     pub subquery: Option<Box<Query>>,
 }
 
@@ -53,9 +86,13 @@ pub struct SubqueryBranch {
 /// resolve a proof which will include all of the requested values.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Query {
+    /// Items
     pub items: BTreeSet<QueryItem>,
+    /// Default subquery branch
     pub default_subquery_branch: SubqueryBranch,
+    /// Conditional subquery branches
     pub conditional_subquery_branches: IndexMap<QueryItem, SubqueryBranch>,
+    /// Left to right?
     pub left_to_right: bool,
 }
 
@@ -69,6 +106,7 @@ impl Query {
         Self::new_with_direction(true)
     }
 
+    /// Creates a new query with a direction specified
     pub fn new_with_direction(left_to_right: bool) -> Self {
         Self {
             left_to_right,
@@ -76,6 +114,12 @@ impl Query {
         }
     }
 
+    /// Pushes terminal key paths and keys to `result`, no more than
+    /// `max_results`. Returns the number of terminal keys added.
+    ///
+    /// Terminal keys are the keys of a path query below which there are no more
+    /// subqueries. In other words they're the keys of the terminal queries
+    /// of a path query.
     pub fn terminal_keys(
         &self,
         current_path: Vec<Vec<u8>>,
@@ -228,18 +272,22 @@ impl Query {
         Ok(added)
     }
 
+    /// Get number of query items
     pub(crate) fn len(&self) -> usize {
         self.items.len()
     }
 
+    /// Iterate through query items
     pub fn iter(&self) -> impl Iterator<Item = &QueryItem> {
         self.items.iter()
     }
 
+    /// Iterate through query items in reverse
     pub fn rev_iter(&self) -> impl Iterator<Item = &QueryItem> {
         self.items.iter().rev()
     }
 
+    /// Iterate with direction specified
     pub fn directional_iter(
         &self,
         left_to_right: bool,
@@ -421,6 +469,7 @@ impl Query {
         self.items.insert(item);
     }
 
+    /// Merge with another query
     pub fn merge(&mut self, other: &Query) {
         // merge query items as they point to the same context
         for item in &other.items {
@@ -447,6 +496,7 @@ impl Query {
         }
     }
 
+    /// Check if has subquery
     pub fn has_subquery(&self) -> bool {
         // checks if a query has subquery items
         if self.default_subquery_branch.subquery.is_some()
@@ -458,6 +508,7 @@ impl Query {
         false
     }
 
+    /// Check if has only keys
     pub fn has_only_keys(&self) -> bool {
         // checks if all searched for items are keys
         self.items.iter().all(|a| a.is_key())
@@ -501,15 +552,25 @@ impl IntoIterator for Query {
 /// A `QueryItem` represents a key or range of keys to be included in a proof.
 #[derive(Clone, Debug)]
 pub enum QueryItem {
+    /// Key
     Key(Vec<u8>),
+    /// Range
     Range(Range<Vec<u8>>),
+    /// Range inclusive
     RangeInclusive(RangeInclusive<Vec<u8>>),
+    /// Range full
     RangeFull(RangeFull),
+    /// Range from
     RangeFrom(RangeFrom<Vec<u8>>),
+    /// Range to
     RangeTo(RangeTo<Vec<u8>>),
+    /// Range to inclusive
     RangeToInclusive(RangeToInclusive<Vec<u8>>),
+    /// Range after
     RangeAfter(RangeFrom<Vec<u8>>),
+    /// Range after to
     RangeAfterTo(Range<Vec<u8>>),
+    /// Rand after to inclusive
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
 }
 
@@ -523,6 +584,7 @@ impl Hash for QueryItem {
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl QueryItem {
+    /// Processing footprint
     pub fn processing_footprint(&self) -> u32 {
         match self {
             QueryItem::Key(key) => key.len() as u32,
@@ -534,6 +596,7 @@ impl QueryItem {
         }
     }
 
+    /// Is there a lower bound?
     pub fn lower_bound(&self) -> (Option<&[u8]>, bool) {
         match self {
             QueryItem::Key(key) => (Some(key.as_slice()), false),
@@ -549,6 +612,7 @@ impl QueryItem {
         }
     }
 
+    /// Is there no lower bound?
     pub const fn lower_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
@@ -564,6 +628,7 @@ impl QueryItem {
         }
     }
 
+    /// Is there an upper bound?
     pub fn upper_bound(&self) -> (Option<&[u8]>, bool) {
         match self {
             QueryItem::Key(key) => (Some(key.as_slice()), true),
@@ -579,6 +644,7 @@ impl QueryItem {
         }
     }
 
+    /// Is there no upper bound?
     pub const fn upper_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
@@ -594,6 +660,7 @@ impl QueryItem {
         }
     }
 
+    /// Check if contains a key
     pub fn contains(&self, key: &[u8]) -> bool {
         let (lower_bound, lower_bound_non_inclusive) = self.lower_bound();
         let (upper_bound, upper_bound_inclusive) = self.upper_bound();
@@ -696,14 +763,17 @@ impl QueryItem {
         }
     }
 
+    /// Check if is key
     pub const fn is_key(&self) -> bool {
         matches!(self, QueryItem::Key(_))
     }
 
+    /// Check if is range
     pub const fn is_range(&self) -> bool {
         !matches!(self, QueryItem::Key(_))
     }
 
+    /// Check if is unbounded range
     pub const fn is_unbounded_range(&self) -> bool {
         !matches!(
             self,
@@ -711,6 +781,7 @@ impl QueryItem {
         )
     }
 
+    /// Gets keys in `QueryItem`
     pub fn keys(&self) -> Result<Vec<Vec<u8>>, Error> {
         match self {
             QueryItem::Key(key) => Ok(vec![key.clone()]),
@@ -760,6 +831,7 @@ impl QueryItem {
         }
     }
 
+    /// Get and consume keys in `QueryItem`
     pub fn keys_consume(self) -> Result<Vec<Vec<u8>>, Error> {
         match self {
             QueryItem::Key(key) => Ok(vec![key]),
@@ -809,6 +881,7 @@ impl QueryItem {
         }
     }
 
+    /// Seek for iter
     pub fn seek_for_iter<I: RawIterator>(
         &self,
         iter: &mut I,
@@ -918,6 +991,7 @@ impl QueryItem {
         a.len().cmp(&b.len())
     }
 
+    /// Check if iterator is valid for the type
     pub fn iter_is_valid_for_type<I: RawIterator>(
         &self,
         iter: &I,
@@ -1161,6 +1235,7 @@ where
 
     #[cfg(feature = "full")]
     #[allow(dead_code)] // TODO: remove when proofs will be enabled
+    /// Create a full proof
     pub(crate) fn create_full_proof(
         &mut self,
         query: &[QueryItem],
@@ -1418,6 +1493,7 @@ where
 }
 
 #[cfg(feature = "full")]
+/// Verify proof against expected hash
 pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
     let ops = Decoder::new(bytes);
     let mut map_builder = MapBuilder::new();
@@ -1698,17 +1774,25 @@ pub fn execute_proof(
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(PartialEq, Eq, Debug)]
+/// Proved key-value
 pub struct ProvedKeyValue {
+    /// Key
     pub key: Vec<u8>,
+    /// Value
     pub value: Vec<u8>,
+    /// Proof
     pub proof: CryptoHash,
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(PartialEq, Eq, Debug)]
+/// Proof verification result
 pub struct ProofVerificationResult {
+    /// Result set
     pub result_set: Vec<ProvedKeyValue>,
+    /// Limit
     pub limit: Option<u16>,
+    /// Offset
     pub offset: Option<u16>,
 }
 

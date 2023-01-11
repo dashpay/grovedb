@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Average case costs for Merk
+
 #[cfg(feature = "full")]
 use costs::{CostResult, CostsExt, OperationCost};
 #[cfg(feature = "full")]
@@ -12,22 +42,32 @@ use crate::{
 };
 
 #[cfg(feature = "full")]
+/// Average key size
 pub type AverageKeySize = u8;
 #[cfg(feature = "full")]
+/// Average value size
 pub type AverageValueSize = u32;
 #[cfg(feature = "full")]
+/// Average flags size
 pub type AverageFlagsSize = u32;
 #[cfg(feature = "full")]
+/// Weight
 pub type Weight = u8;
 
 #[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
+/// Estimated number of sum trees
 pub enum EstimatedSumTrees {
+    /// No sum trees
     NoSumTrees,
+    /// Some sum trees
     SomeSumTrees {
+        /// Sum trees weight
         sum_trees_weight: Weight,
+        /// Non sum trees weight
         non_sum_trees_weight: Weight,
     },
+    /// All sum trees
     AllSumTrees,
 }
 
@@ -56,23 +96,31 @@ impl EstimatedSumTrees {
 
 #[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
+/// Estimated layer sizes
 pub enum EstimatedLayerSizes {
+    /// All subtrees
     AllSubtrees(AverageKeySize, EstimatedSumTrees, Option<AverageFlagsSize>),
+    /// All items
     AllItems(AverageKeySize, AverageValueSize, Option<AverageFlagsSize>),
+    /// References
     AllReference(AverageKeySize, AverageValueSize, Option<AverageFlagsSize>),
+    /// Mix
     Mix {
+        /// Subtrees size
         subtrees_size: Option<(
             AverageKeySize,
             EstimatedSumTrees,
             Option<AverageFlagsSize>,
             Weight,
         )>,
+        /// Items size
         items_size: Option<(
             AverageKeySize,
             AverageValueSize,
             Option<AverageFlagsSize>,
             Weight,
         )>,
+        /// References size
         references_size: Option<(
             AverageKeySize,
             AverageValueSize,
@@ -84,6 +132,7 @@ pub enum EstimatedLayerSizes {
 
 #[cfg(feature = "full")]
 impl EstimatedLayerSizes {
+    /// Return average flags size for layer
     pub fn layered_flags_size(&self) -> Result<&Option<AverageFlagsSize>, Error> {
         match self {
             EstimatedLayerSizes::AllSubtrees(_, _, flags_size) => Ok(flags_size),
@@ -106,8 +155,9 @@ impl EstimatedLayerSizes {
         }
     }
 
-    /// this only takes into account subtrees in the estimated layer info
-    /// only should be used when it is known to be a subtree
+    /// Returns the size of a subtree's feature and flags
+    /// This only takes into account subtrees in the estimated layer info
+    /// Only should be used when it is known to be a subtree
     pub fn subtree_with_feature_and_flags_size(&self) -> Result<u32, Error> {
         match self {
             EstimatedLayerSizes::AllSubtrees(_, estimated_sum_trees, flags_size) => {
@@ -128,6 +178,7 @@ impl EstimatedLayerSizes {
         }
     }
 
+    /// Returns the size of a value's feature and flags
     pub fn value_with_feature_and_flags_size(&self) -> Result<u32, Error> {
         match self {
             EstimatedLayerSizes::AllItems(_, average_value_size, flags_size) => {
@@ -202,17 +253,24 @@ impl EstimatedLayerSizes {
 }
 
 #[cfg(feature = "full")]
+/// Approximate element count
 pub type ApproximateElementCount = u32;
 #[cfg(feature = "full")]
+/// Estimated level number
 pub type EstimatedLevelNumber = u32;
 #[cfg(feature = "full")]
+/// Estimated to be empty
 pub type EstimatedToBeEmpty = bool;
 
 #[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
+/// Information on an estimated layer
 pub struct EstimatedLayerInformation {
+    /// Is sum tree?
     pub is_sum_tree: bool,
+    /// Estimated layer count
     pub estimated_layer_count: EstimatedLayerCount,
+    /// Estimated layer sizes
     pub estimated_layer_sizes: EstimatedLayerSizes,
 }
 
@@ -221,9 +279,13 @@ impl EstimatedLayerInformation {}
 
 #[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
+/// Estimated elements and level number of a layer
 pub enum EstimatedLayerCount {
+    /// Potentially at max elements
     PotentiallyAtMaxElements,
+    /// Approximate elements
     ApproximateElements(ApproximateElementCount),
+    /// Estimated level
     EstimatedLevel(EstimatedLevelNumber, EstimatedToBeEmpty),
 }
 
@@ -257,6 +319,7 @@ impl EstimatedLayerCount {
 
 #[cfg(feature = "full")]
 impl Tree {
+    /// Return estimate of average encoded tree size
     pub fn average_case_encoded_tree_size(
         not_prefixed_key_len: u32,
         estimated_element_size: u32,
@@ -361,12 +424,14 @@ pub fn add_average_case_merk_root_hash(cost: &mut OperationCost) {
 }
 
 #[cfg(feature = "full")]
+/// Average case cost of propagating a merk
 pub fn average_case_merk_propagate(input: &EstimatedLayerInformation) -> CostResult<(), Error> {
     let mut cost = OperationCost::default();
     add_average_case_merk_propagate(&mut cost, input).wrap_with_cost(cost)
 }
 
 #[cfg(feature = "full")]
+/// Add average case cost for propagating a merk
 pub fn add_average_case_merk_propagate(
     cost: &mut OperationCost,
     input: &EstimatedLayerInformation,

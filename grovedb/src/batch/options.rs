@@ -1,17 +1,54 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Options
+
 #[cfg(feature = "full")]
 use merk::MerkOptions;
 
 #[cfg(feature = "full")]
 use crate::operations::{delete::DeleteOptions, insert::InsertOptions};
 
+/// Batch apply options
 #[cfg(feature = "full")]
 #[derive(Debug, Clone)]
 pub struct BatchApplyOptions {
+    /// Validate insertion does not override
     pub validate_insertion_does_not_override: bool,
+    /// Validate insertion does not override tree
     pub validate_insertion_does_not_override_tree: bool,
+    /// Allow deleting non empty trees
     pub allow_deleting_non_empty_trees: bool,
+    /// Deleting non empty trees returns error
     pub deleting_non_empty_trees_returns_error: bool,
+    /// Disable operation consistency check
     pub disable_operation_consistency_check: bool,
+    /// Base root storage is free
     pub base_root_storage_is_free: bool,
 }
 
@@ -31,6 +68,7 @@ impl Default for BatchApplyOptions {
 
 #[cfg(feature = "full")]
 impl BatchApplyOptions {
+    /// As insert options
     pub(crate) fn as_insert_options(&self) -> InsertOptions {
         InsertOptions {
             validate_insertion_does_not_override: self.validate_insertion_does_not_override,
@@ -40,6 +78,7 @@ impl BatchApplyOptions {
         }
     }
 
+    /// As delete options
     pub(crate) fn as_delete_options(&self) -> DeleteOptions where {
         DeleteOptions {
             allow_deleting_non_empty_trees: self.allow_deleting_non_empty_trees,
@@ -49,6 +88,7 @@ impl BatchApplyOptions {
         }
     }
 
+    /// As Merk options
     pub(crate) fn as_merk_options(&self) -> MerkOptions {
         MerkOptions {
             base_root_storage_is_free: self.base_root_storage_is_free,

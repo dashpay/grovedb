@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Merk
+
 pub mod chunks;
 
 pub(crate) mod defaults;
@@ -42,13 +72,18 @@ use crate::{
 
 type Proof = (LinkedList<ProofOp>, Option<u16>, Option<u16>);
 
+/// Proof construction result
 pub struct ProofConstructionResult {
+    /// Proof
     pub proof: Vec<u8>,
+    /// Limit
     pub limit: Option<u16>,
+    /// Offset
     pub offset: Option<u16>,
 }
 
 impl ProofConstructionResult {
+    /// New ProofConstructionResult
     pub fn new(proof: Vec<u8>, limit: Option<u16>, offset: Option<u16>) -> Self {
         Self {
             proof,
@@ -58,13 +93,18 @@ impl ProofConstructionResult {
     }
 }
 
+/// Proof without encoding result
 pub struct ProofWithoutEncodingResult {
+    /// Proof
     pub proof: LinkedList<ProofOp>,
+    /// Limit
     pub limit: Option<u16>,
+    /// Offset
     pub offset: Option<u16>,
 }
 
 impl ProofWithoutEncodingResult {
+    /// New ProofWithoutEncodingResult
     pub fn new(proof: LinkedList<ProofOp>, limit: Option<u16>, offset: Option<u16>) -> Self {
         Self {
             proof,
@@ -74,6 +114,7 @@ impl ProofWithoutEncodingResult {
     }
 }
 
+/// Key update types
 pub struct KeyUpdates {
     pub new_keys: BTreeSet<Vec<u8>>,
     pub updated_keys: BTreeSet<Vec<u8>>,
@@ -82,6 +123,7 @@ pub struct KeyUpdates {
 }
 
 impl KeyUpdates {
+    /// New KeyUpdate
     pub fn new(
         new_keys: BTreeSet<Vec<u8>>,
         updated_keys: BTreeSet<Vec<u8>>,
@@ -108,6 +150,7 @@ pub type BatchValue = (
 /// A bool type
 pub type IsSumTree = bool;
 
+/// Root hash key and sum
 pub type RootHashKeyAndSum = (CryptoHash, Option<Vec<u8>>, Option<i64>);
 
 /// KVIterator allows you to lazily iterate over each kv pair of a subtree
@@ -120,6 +163,7 @@ pub struct KVIterator<'a, I: RawIterator> {
 }
 
 impl<'a, I: RawIterator> KVIterator<'a, I> {
+    /// New iterator
     pub fn new(raw_iter: I, query: &'a Query) -> CostContext<Self> {
         let mut cost = OperationCost::default();
         let mut iterator = KVIterator {
@@ -182,6 +226,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
 
 // Cannot be an Iterator as it should return cost
 impl<'a, I: RawIterator> KVIterator<'a, I> {
+    /// Next key-value
     pub fn next_kv(&mut self) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
         let mut cost = OperationCost::default();
 
@@ -201,6 +246,7 @@ impl<'a, I: RawIterator> KVIterator<'a, I> {
 }
 
 #[derive(PartialEq, Eq)]
+/// Merk types
 pub enum MerkType {
     /// A StandaloneMerk has it's root key storage on a field and pays for root
     /// key updates
@@ -213,6 +259,7 @@ pub enum MerkType {
 }
 
 impl MerkType {
+    /// Returns bool
     pub(crate) fn requires_root_storage_update(&self) -> bool {
         match self {
             StandaloneMerk => true,
@@ -226,8 +273,11 @@ impl MerkType {
 pub struct Merk<S> {
     pub(crate) tree: Cell<Option<Tree>>,
     pub(crate) root_tree_key: Cell<Option<Vec<u8>>>,
+    /// Storage
     pub storage: S,
+    /// Merk type
     pub merk_type: MerkType,
+    /// Is sum tree?
     pub is_sum_tree: bool,
 }
 
@@ -252,6 +302,7 @@ impl<'db, S> Merk<S>
 where
     S: StorageContext<'db>,
 {
+    /// Open empty tree
     pub fn open_empty(storage: S, merk_type: MerkType, is_sum_tree: bool) -> Self {
         Self {
             tree: Cell::new(None),
@@ -262,6 +313,7 @@ where
         }
     }
 
+    /// Open standalone tree
     pub fn open_standalone(storage: S, is_sum_tree: bool) -> CostResult<Self, Error> {
         let mut merk = Self {
             tree: Cell::new(None),
@@ -274,6 +326,7 @@ where
         merk.load_base_root().map_ok(|_| merk)
     }
 
+    /// Open base tree
     pub fn open_base(storage: S, is_sum_tree: bool) -> CostResult<Self, Error> {
         let mut merk = Self {
             tree: Cell::new(None),
@@ -286,6 +339,7 @@ where
         merk.load_base_root().map_ok(|_| merk)
     }
 
+    /// Open layered tree with root key
     pub fn open_layered_with_root_key(
         storage: S,
         root_key: Option<Vec<u8>>,
@@ -945,6 +999,7 @@ where
         })
     }
 
+    /// Commit tree changes
     pub fn commit<K>(
         &mut self,
         key_updates: KeyUpdates,
@@ -1093,6 +1148,7 @@ where
             .add_cost(cost)
     }
 
+    /// Walk
     pub fn walk<'s, T>(&'s self, f: impl FnOnce(Option<RefWalker<MerkSource<'s, S>>>) -> T) -> T {
         let mut tree = self.tree.take();
         let maybe_walker = tree
@@ -1103,11 +1159,13 @@ where
         res
     }
 
+    /// Checks if it's an empty tree
     pub fn is_empty_tree(&self) -> CostContext<bool> {
         let mut iter = self.storage.raw_iter();
         iter.seek_to_first().flat_map(|_| iter.valid().map(|x| !x))
     }
 
+    /// Checks if it's an empty tree excluding exceptions
     pub fn is_empty_tree_except(&self, mut except_keys: BTreeSet<&[u8]>) -> CostContext<bool> {
         let mut cost = OperationCost::default();
 
@@ -1129,6 +1187,7 @@ where
         }
     }
 
+    /// Use tree
     pub(crate) fn use_tree<T>(&self, f: impl FnOnce(Option<&Tree>) -> T) -> T {
         let tree = self.tree.take();
         let res = f(tree.as_ref());

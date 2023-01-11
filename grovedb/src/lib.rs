@@ -1,3 +1,35 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! A hierarchical "grove" of trees with proofs and secondary indexes.
+
+#![deny(missing_docs)]
+
 #[cfg(feature = "full")]
 extern crate core;
 
@@ -85,23 +117,28 @@ use crate::util::{root_merk_optional_tx, storage_context_optional_tx};
 #[cfg(feature = "full")]
 type Hash = [u8; 32];
 
+/// GroveDb
 #[cfg(any(feature = "full", feature = "verify"))]
 pub struct GroveDb {
     db: RocksDbStorage,
 }
 
+/// Transaction
 #[cfg(feature = "full")]
 pub type Transaction<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
+/// TransactionArg
 #[cfg(feature = "full")]
 pub type TransactionArg<'db, 'a> = Option<&'a Transaction<'db>>;
 
 #[cfg(feature = "full")]
 impl GroveDb {
+    /// Opens a given path
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = RocksDbStorage::default_rocksdb_with_path(path)?;
         Ok(GroveDb { db })
     }
 
+    /// Opens the transactional Merk at the given path. Returns CostResult.
     pub fn open_transactional_merk_at_path<'db, 'p, P>(
         &'db self,
         path: P,
@@ -156,6 +193,7 @@ impl GroveDb {
         }
     }
 
+    /// Opens the non-transactional Merk at the given path. Returns CostResult.
     pub fn open_non_transactional_merk_at_path<'p, P>(
         &self,
         path: P,
@@ -209,6 +247,7 @@ impl GroveDb {
         }
     }
 
+    /// Creates a checkpoint
     pub fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
         self.db.create_checkpoint(path).map_err(|e| e.into())
     }
@@ -411,6 +450,7 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
+    /// Updates a tree item and preserves flags. Returns CostResult.
     pub(crate) fn update_tree_item_preserve_flag<
         'db,
         K: AsRef<[u8]> + Copy,
@@ -442,6 +482,8 @@ impl GroveDb {
         })
     }
 
+    /// Pushes to batch an operation which updates a tree item and preserves
+    /// flags. Returns CostResult.
     pub(crate) fn update_tree_item_preserve_flag_into_batch_operations<
         'db,
         K: AsRef<[u8]>,
@@ -497,6 +539,7 @@ impl GroveDb {
         })
     }
 
+    /// Get element from subtree. Return CostResult.
     fn get_element_from_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         subtree: &Merk<S>,
         key: K,
@@ -532,6 +575,7 @@ impl GroveDb {
             .flatten()
     }
 
+    /// Flush memory table to disk.
     pub fn flush(&self) -> Result<(), Error> {
         Ok(self.db.flush()?)
     }
@@ -629,6 +673,8 @@ impl GroveDb {
         self.verify_merk_and_submerks(root_merk, vec![])
     }
 
+    /// Verifies that the root hash of the given merk and all submerks match
+    /// those of the merk and submerks at the given path. Returns any issues.
     fn verify_merk_and_submerks(
         &self,
         merk: Merk<PrefixedRocksDbStorageContext>,

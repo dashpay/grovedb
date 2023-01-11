@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Worst case costs for Merk
+
 use std::cmp::Ordering;
 
 #[cfg(feature = "full")]
@@ -13,13 +43,17 @@ use crate::{
 
 #[cfg(feature = "full")]
 #[derive(Clone, PartialEq, Eq, Debug)]
+/// Worst case layer info
 pub enum WorstCaseLayerInformation {
+    /// Max elements number
     MaxElementsNumber(u32),
+    /// Number of levels
     NumberOfLevels(u32),
 }
 
 #[cfg(feature = "full")]
 impl Tree {
+    /// Return worst case size of encoded tree
     pub fn worst_case_encoded_tree_size(
         not_prefixed_key_len: u32,
         max_element_size: u32,
@@ -124,17 +158,21 @@ pub fn add_worst_case_merk_root_hash(cost: &mut OperationCost) {
 }
 
 #[cfg(feature = "full")]
+/// Merk biggest value size
 pub const MERK_BIGGEST_VALUE_SIZE: u32 = u16::MAX as u32;
 #[cfg(feature = "full")]
+/// Merk biggest key size
 pub const MERK_BIGGEST_KEY_SIZE: u32 = 256;
 
 #[cfg(feature = "full")]
+/// Worst case cost of a merk propagation
 pub fn worst_case_merk_propagate(input: &WorstCaseLayerInformation) -> CostResult<(), Error> {
     let mut cost = OperationCost::default();
     add_worst_case_merk_propagate(&mut cost, input).wrap_with_cost(cost)
 }
 
 #[cfg(feature = "full")]
+/// Add worst case cost of a merk propagation
 pub fn add_worst_case_merk_propagate(
     cost: &mut OperationCost,
     input: &WorstCaseLayerInformation,
@@ -176,6 +214,7 @@ pub fn add_worst_case_merk_propagate(
 }
 
 #[cfg(feature = "full")]
+/// Add worst case cost for is_empty_tree_except
 pub fn add_worst_case_cost_for_is_empty_tree_except(
     cost: &mut OperationCost,
     except_keys_count: u16,
@@ -184,6 +223,7 @@ pub fn add_worst_case_cost_for_is_empty_tree_except(
     cost.storage_loaded_bytes += MAX_PREFIXED_KEY_SIZE * (except_keys_count as u32 + 1);
 }
 
+/// Add average case cost for is_empty_tree_except
 #[cfg(feature = "full")]
 pub fn add_average_case_cost_for_is_empty_tree_except(
     cost: &mut OperationCost,
