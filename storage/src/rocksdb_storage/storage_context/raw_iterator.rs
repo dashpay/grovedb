@@ -26,7 +26,7 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Prefixed storage_cost raw iterator implementation for RocksDB backend. 
+//! Prefixed storage_cost raw iterator implementation for RocksDB backend.
 
 use costs::{CostContext, CostsExt, OperationCost};
 use rocksdb::DBRawIteratorWithThreadMode;

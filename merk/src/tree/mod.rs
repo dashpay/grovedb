@@ -219,7 +219,8 @@ impl Tree {
     }
 
     /// Get current value byte cost and old value byte cost and
-    /// compare and return current value byte cost with updated `KeyValueStorageCost`
+    /// compare and return current value byte cost with updated
+    /// `KeyValueStorageCost`
     pub fn kv_with_parent_hook_size_and_storage_cost(
         &self,
         old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,

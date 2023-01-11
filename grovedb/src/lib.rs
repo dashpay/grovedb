@@ -137,6 +137,7 @@ impl GroveDb {
         let db = RocksDbStorage::default_rocksdb_with_path(path)?;
         Ok(GroveDb { db })
     }
+
     /// Opens the transactional Merk at the given path. Returns CostResult.
     pub fn open_transactional_merk_at_path<'db, 'p, P>(
         &'db self,
@@ -477,8 +478,8 @@ impl GroveDb {
         })
     }
 
-    /// Pushes to batch an operation which updates a tree item and preserves flags.
-    /// Returns CostResult.
+    /// Pushes to batch an operation which updates a tree item and preserves
+    /// flags. Returns CostResult.
     pub(crate) fn update_tree_item_preserve_flag_into_batch_operations<
         'db,
         K: AsRef<[u8]>,

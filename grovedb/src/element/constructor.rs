@@ -37,7 +37,6 @@ use crate::{
 };
 
 impl Element {
-
     #[cfg(feature = "full")]
     /// Set element to default empty tree without flags
     // TODO: improve API to avoid creation of Tree elements with uncertain state

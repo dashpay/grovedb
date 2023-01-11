@@ -78,7 +78,7 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    /// Add to batch operations a "Put" op with key and serialized element. 
+    /// Add to batch operations a "Put" op with key and serialized element.
     /// Return CostResult.
     pub fn insert_into_batch_operations<K: AsRef<[u8]>>(
         &self,
@@ -187,7 +187,8 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    /// Adds a "Put" op to batch operations with reference and key. Returns CostResult.
+    /// Adds a "Put" op to batch operations with reference and key. Returns
+    /// CostResult.
     pub fn insert_reference_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,

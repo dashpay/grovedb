@@ -60,7 +60,8 @@ pub(super) struct BatchStructure<C, F, SR> {
     /// This is for references
     pub(super) ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, Op>,
     /// Merk trees
-    /// Very important: the type of run mode we are in is contained in this cache
+    /// Very important: the type of run mode we are in is contained in this
+    /// cache
     pub(super) merk_tree_cache: C,
     /// Flags modification function
     pub(super) flags_update: F,

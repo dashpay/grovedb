@@ -29,7 +29,6 @@
 //! Query operations
 
 use costs::cost_return_on_error_default;
-
 #[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,

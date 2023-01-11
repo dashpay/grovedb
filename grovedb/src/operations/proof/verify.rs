@@ -29,7 +29,6 @@
 //! Verify proof operations
 
 use merk::proofs::query::{Path, ProvedKeyValue};
-
 #[cfg(any(feature = "full", feature = "verify"))]
 use merk::{
     proofs::Query,

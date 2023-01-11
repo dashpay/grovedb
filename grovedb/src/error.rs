@@ -32,9 +32,7 @@
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-
     // Input data errors
-
     #[error("cyclic reference path")]
     /// Cyclic reference
     CyclicReference,
@@ -55,15 +53,16 @@ pub enum Error {
     InvalidInput(&'static str),
 
     // Path errors
-
-    /// The path key not found could represent a valid query, just where the path key isn't there
+    /// The path key not found could represent a valid query, just where the
+    /// path key isn't there
     #[error("path key not found: {0}")]
     PathKeyNotFound(String),
-    /// The path not found could represent a valid query, just where the path isn't there
+    /// The path not found could represent a valid query, just where the path
+    /// isn't there
     #[error("path not found: {0}")]
     PathNotFound(String),
-    /// The path not found could represent a valid query, just where the parent path merk isn't
-    /// there
+    /// The path not found could represent a valid query, just where the parent
+    /// path merk isn't there
     #[error("path parent layer not found: {0}")]
     PathParentLayerNotFound(String),
 
@@ -77,18 +76,19 @@ pub enum Error {
     #[error("corrupted referenced path key not found: {0}")]
     CorruptedReferencePathParentLayerNotFound(String),
 
-    /// The invalid parent layer path represents a logical error from the client library
+    /// The invalid parent layer path represents a logical error from the client
+    /// library
     #[error("invalid parent layer path: {0}")]
     InvalidParentLayerPath(String),
     /// The invalid path represents a logical error from the client library
     #[error("invalid path: {0}")]
     InvalidPath(String),
-    /// The corrupted path represents a consistency error in internal groveDB logic
+    /// The corrupted path represents a consistency error in internal groveDB
+    /// logic
     #[error("corrupted path: {0}")]
     CorruptedPath(&'static str),
 
     // Query errors
-
     #[error("invalid query: {0}")]
     /// Invalid query
     InvalidQuery(&'static str),
@@ -100,7 +100,6 @@ pub enum Error {
     InvalidParameter(&'static str),
 
     // Irrecoverable errors
-
     #[error("storage_cost error: {0}")]
     /// Storage error
     StorageError(#[from] storage::error::Error),
@@ -128,7 +127,6 @@ pub enum Error {
     DeletingNonEmptyTree(&'static str),
 
     // Client allowed errors
-
     #[error("just in time element flags client error: {0}")]
     /// Just in time element flags client error
     JustInTimeElementFlagsClientError(&'static str),

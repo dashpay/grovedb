@@ -40,7 +40,8 @@ use tempfile::TempDir;
 #[cfg(feature = "full")]
 const N_ITEMS: usize = 10_000;
 
-/// Benchmark function to insert '''N_ITEMS''' key-values into an empty tree without a transaction
+/// Benchmark function to insert '''N_ITEMS''' key-values into an empty tree
+/// without a transaction
 #[cfg(feature = "full")]
 pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
@@ -62,7 +63,8 @@ pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
     });
 }
 
-/// Benchmark function to insert '''N_ITEMS''' key-values into an empty tree with a transaction
+/// Benchmark function to insert '''N_ITEMS''' key-values into an empty tree
+/// with a transaction
 #[cfg(feature = "full")]
 pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
     let dir = TempDir::new().unwrap();
@@ -130,7 +132,7 @@ pub fn root_leaf_insertion_benchmark_with_transaction(c: &mut Criterion) {
     });
 }
 
-/// Benchmark function to insert a subtree nested within 10 higher subtrees 
+/// Benchmark function to insert a subtree nested within 10 higher subtrees
 /// and insert key-values into it without a transaction
 #[cfg(feature = "full")]
 pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) {
@@ -169,8 +171,7 @@ pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) 
     });
 }
 
-
-/// Benchmark function to insert a subtree nested within 10 higher subtrees 
+/// Benchmark function to insert a subtree nested within 10 higher subtrees
 /// and insert key-values into it with a transaction
 #[cfg(feature = "full")]
 pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {

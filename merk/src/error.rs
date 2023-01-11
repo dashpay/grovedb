@@ -33,7 +33,6 @@
 /// Errors
 pub enum Error {
     // Input data errors
-    
     /// Overflow
     #[error("overflow error {0}")]
     Overflow(&'static str),
@@ -111,13 +110,11 @@ pub enum Error {
     StorageError(storage::Error),
 
     // Merk errors
-    
     /// Ed error
     #[error("ed error: {0}")]
     EdError(ed::Error),
 
     // Costs errors
-    
     /// Costs errors
     #[error("costs error: {0}")]
     CostsError(costs::error::Error),

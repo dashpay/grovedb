@@ -48,7 +48,8 @@ use crate::{
 
 #[cfg(feature = "full")]
 impl Tree {
-    /// Decode given bytes and set as Tree fields. Set key to value of given key.
+    /// Decode given bytes and set as Tree fields. Set key to value of given
+    /// key.
     pub fn decode_raw(bytes: &[u8], key: Vec<u8>) -> Result<Self, Error> {
         Tree::decode(key, bytes).map_err(EdError)
     }
@@ -97,7 +98,8 @@ impl Tree {
     }
 
     #[inline]
-    /// Get the cost (byte length) of the value including parent to child reference (or hook)
+    /// Get the cost (byte length) of the value including parent to child
+    /// reference (or hook)
     pub fn value_encoding_length_with_parent_to_child_reference(&self) -> u32 {
         // in the case of a grovedb tree the value cost is fixed
         if let Some(value_cost) = self.inner.kv.value_defined_cost {

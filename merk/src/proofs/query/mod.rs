@@ -114,11 +114,12 @@ impl Query {
         }
     }
 
-    /// Pushes terminal key paths and keys to `result`, no more than `max_results`.
-    /// Returns the number of terminal keys added.
-    /// 
-    /// Terminal keys are the keys of a path query below which there are no more subqueries.
-    /// In other words they're the keys of the terminal queries of a path query.
+    /// Pushes terminal key paths and keys to `result`, no more than
+    /// `max_results`. Returns the number of terminal keys added.
+    ///
+    /// Terminal keys are the keys of a path query below which there are no more
+    /// subqueries. In other words they're the keys of the terminal queries
+    /// of a path query.
     pub fn terminal_keys(
         &self,
         current_path: Vec<Vec<u8>>,

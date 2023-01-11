@@ -1401,7 +1401,8 @@ impl GroveDb {
         )
     }
 
-    /// Opens transactional merk at path with given storage batch context. Returns CostResult.
+    /// Opens transactional merk at path with given storage batch context.
+    /// Returns CostResult.
     pub fn open_batch_transactional_merk_at_path<'db, 'p, P>(
         &'db self,
         storage_batch: &'db StorageBatch,
@@ -1630,7 +1631,8 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    /// Returns the estimated average or worst case cost for an entire batch of ops
+    /// Returns the estimated average or worst case cost for an entire batch of
+    /// ops
     pub fn estimated_case_operations_for_batch(
         estimated_costs_type: EstimatedCostsType,
         ops: Vec<GroveDbOp>,

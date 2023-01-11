@@ -60,8 +60,9 @@ use crate::{
 
 #[cfg(feature = "full")]
 impl Op {
-    /// Get the estimated average case cost of the op. Calls a lower level function
-    /// to calculate the estimate based on the type of op. Returns CostResult.
+    /// Get the estimated average case cost of the op. Calls a lower level
+    /// function to calculate the estimate based on the type of op. Returns
+    /// CostResult.
     fn average_case_cost(
         &self,
         key: &KeyInfo,

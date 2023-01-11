@@ -197,8 +197,8 @@ impl GroveDb {
         .map_ok(|ops| ops.unwrap_or_default())
     }
 
-    /// Adds operations to "delete operations" for delete up tree while empty for each level.
-    /// Returns a vector of GroveDb ops.
+    /// Adds operations to "delete operations" for delete up tree while empty
+    /// for each level. Returns a vector of GroveDb ops.
     pub fn add_delete_operations_for_delete_up_tree_while_empty<'p, P>(
         &self,
         path: P,

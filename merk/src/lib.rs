@@ -40,7 +40,8 @@ mod merk;
 #[cfg(feature = "full")]
 pub use crate::merk::{chunks::ChunkProducer, options::MerkOptions, restore::Restorer};
 
-/// Provides a container type that allows temporarily taking ownership of a value.
+/// Provides a container type that allows temporarily taking ownership of a
+/// value.
 // TODO: move this into its own crate
 #[cfg(feature = "full")]
 pub mod owner;

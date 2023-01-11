@@ -53,7 +53,7 @@ pub enum KeyInfo {
         /// Unique ID
         unique_id: Vec<u8>,
         /// Max size
-        max_size: u8
+        max_size: u8,
     },
 }
 

@@ -132,8 +132,8 @@ impl Element {
     }
 
     #[cfg(feature = "full")]
-    /// Returns a vector of result elements and the number of skipped items based
-    /// on given query
+    /// Returns a vector of result elements and the number of skipped items
+    /// based on given query
     pub fn get_query_apply_function(
         storage: &RocksDbStorage,
         path: &[&[u8]],
@@ -489,7 +489,8 @@ impl Element {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
-    /// Takes a sized query and a key and returns subquery key and subquery as tuple
+    /// Takes a sized query and a key and returns subquery key and subquery as
+    /// tuple
     pub fn subquery_paths_for_sized_query(
         sized_query: &SizedQuery,
         key: &[u8],

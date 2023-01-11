@@ -69,8 +69,8 @@ pub fn assert_tree_invariants(tree: &Tree) {
 }
 
 /// Apply given batch to given tree and commit using memory only.
-/// Used by `apply_memonly` which also performs checks using `assert_tree_invariants`.
-/// Return Tree.
+/// Used by `apply_memonly` which also performs checks using
+/// `assert_tree_invariants`. Return Tree.
 pub fn apply_memonly_unchecked(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     let is_sum_node = tree.is_sum_node();
     let walker = Walker::<PanicSource>::new(tree, PanicSource {});
@@ -127,7 +127,8 @@ pub fn apply_memonly(tree: Tree, batch: &MerkBatch<Vec<u8>>) -> Tree {
     tree
 }
 
-/// Applies given batch to given tree or creates a new tree to apply to and commits to memory only.
+/// Applies given batch to given tree or creates a new tree to apply to and
+/// commits to memory only.
 pub fn apply_to_memonly(
     maybe_tree: Option<Tree>,
     batch: &MerkBatch<Vec<u8>>,
@@ -197,7 +198,8 @@ pub fn del_entry(n: u64) -> BatchEntry<Vec<u8>> {
     (seq_key(n).to_vec(), Op::Delete)
 }
 
-/// Create a batch of Put ops using given sequential range as keys and fixed values
+/// Create a batch of Put ops using given sequential range as keys and fixed
+/// values
 pub fn make_batch_seq(range: Range<u64>) -> Vec<BatchEntry<Vec<u8>>> {
     let mut batch = Vec::with_capacity((range.end - range.start).try_into().unwrap());
     for n in range {
@@ -239,8 +241,8 @@ pub fn make_del_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     batch
 }
 
-/// Create tree with initial fixed values and apply `node count` Put ops with random keys
-/// using memory only
+/// Create tree with initial fixed values and apply `node count` Put ops with
+/// random keys using memory only
 pub fn make_tree_rand(
     node_count: u64,
     batch_size: u64,
@@ -270,8 +272,8 @@ pub fn make_tree_rand(
     tree
 }
 
-/// Create tree with initial fixed values and apply `node count` Put ops using sequential keys
-/// using memory only
+/// Create tree with initial fixed values and apply `node count` Put ops using
+/// sequential keys using memory only
 pub fn make_tree_seq(node_count: u64) -> Tree {
     let batch_size = if node_count >= 10_000 {
         assert_eq!(node_count % 10_000, 0);

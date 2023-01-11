@@ -282,7 +282,7 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    /// Add worst case cost for "has raw" into merk 
+    /// Add worst case cost for "has raw" into merk
     pub fn add_worst_case_has_raw_cost<'db, S: Storage<'db>>(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
