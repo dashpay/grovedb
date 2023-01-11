@@ -53,7 +53,7 @@ use crate::{
 /// Child key length
 pub type ChildKeyLength = u32;
 
-/// Child sum length
+/// Feature sum length
 pub type FeatureSumLength = u32;
 
 /// Child sum length

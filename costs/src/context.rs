@@ -163,12 +163,12 @@ pub trait CostsExt {
 
 impl<T> CostsExt for T {}
 
-/// Macro to achieve a kind of what `?` operator does, but with `CostContext` on
-/// top. Main properties are:
+/// Macro to achieve kind of what the `?` operator does, but with `CostContext` on top.
+/// 
+/// Main properties are:
 /// 1. Early termination on error;
-/// 2. Because of 1. `Result` is removed from the equation;
-/// 3. `CostContext` if removed too because it is added to external cost
-///    accumulator;
+/// 2. Because of 1, `Result` is removed from the equation;
+/// 3. `CostContext` is removed too because it is added to external cost accumulator;
 /// 4. Early termination uses external cost accumulator so previous
 ///    costs won't be lost.
 #[macro_export]
@@ -186,9 +186,9 @@ macro_rules! cost_return_on_error {
     };
 }
 
-/// Macro to achieve a kind of what `?` operator does, but with `CostContext` on
-/// top. The difference between this macro and `cost_return_on_error` is that it
-/// is intended to use it on `Result` rather than `CostContext<Result<..>>`, so
+/// Macro to achieve kind of what the `?` operator does, but with `CostContext` on top.
+/// The difference between this macro and `cost_return_on_error` is that it
+/// is intended to be used on `Result` rather than `CostContext<Result<..>>`, so
 /// no costs will be added except previously accumulated.
 #[macro_export]
 macro_rules! cost_return_on_error_no_add {
@@ -204,10 +204,11 @@ macro_rules! cost_return_on_error_no_add {
     };
 }
 
-/// Macro to achieve a kind of what `?` operator does, but with `CostContext` on
-/// top. The difference between this macro and `cost_return_on_error` is that it
-/// is intended to use it on `Result` rather than `CostContext<Result<..>>`, so
-/// no costs will be added except previously accumulated.
+/// Macro to achieve kind of what the `?` operator does, but with `CostContext` on top.
+/// The difference between this macro and `cost_return_on_error` is that it
+/// is intended to be used on `Result` rather than `CostContext<Result<..>>`, so
+/// no costs will be added except previously accumulated. The error case returns a default
+/// `OperationCost`.
 #[macro_export]
 macro_rules! cost_return_on_error_default {
     ( $($body:tt)+ ) => {

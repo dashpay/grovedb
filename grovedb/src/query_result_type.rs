@@ -48,7 +48,6 @@ pub enum QueryResultType {
     QueryPathKeyElementTrioResultType,
 }
 
-#[cfg(feature = "full")]
 /// Query result elements
 pub struct QueryResultElements {
     /// Elements
