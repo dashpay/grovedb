@@ -125,10 +125,13 @@ impl GroveDb {
                     .unwrap_add_cost(&mut cost);
                 let element = cost_return_on_error!(
                     &mut cost,
-                    Element::get_from_storage(&parent_storage, key).map_err(|_| {
-                        Error::InvalidParentLayerPath(
-                            "could not get key for parent of subtree".to_owned(),
-                        )
+                    Element::get_from_storage(&parent_storage, key).map_err(|e| {
+                        Error::InvalidParentLayerPath(format!(
+                            "could not get key {} for parent {:?} of subtree: {}",
+                            hex::encode(key.as_ref()),
+                            DebugByteVectors(path_iter.clone().map(|x| x.to_vec()).collect()),
+                            e
+                        ))
                     })
                 );
                 let is_sum_tree = element.is_sum_tree();
@@ -177,7 +180,8 @@ impl GroveDb {
                     &mut cost,
                     Element::get_from_storage(&parent_storage, key).map_err(|e| {
                         Error::InvalidParentLayerPath(format!(
-                            "could not get key for parent {:?} of subtree: {}",
+                            "could not get key {} for parent {:?} of subtree: {}",
+                            hex::encode(key.as_ref()),
                             DebugByteVectors(path_iter.clone().map(|x| x.to_vec()).collect()),
                             e
                         ))
