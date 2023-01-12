@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Key info
+
 #[cfg(feature = "full")]
 use std::{
     cmp::Ordering,
@@ -12,11 +42,19 @@ use visualize::{Drawer, Visualize};
 #[cfg(feature = "full")]
 use crate::batch::key_info::KeyInfo::{KnownKey, MaxKeySize};
 
+/// Key info
 #[cfg(feature = "full")]
 #[derive(Clone, Eq, Debug)]
 pub enum KeyInfo {
+    /// Known key
     KnownKey(Vec<u8>),
-    MaxKeySize { unique_id: Vec<u8>, max_size: u8 },
+    /// Max key size
+    MaxKeySize {
+        /// Unique ID
+        unique_id: Vec<u8>,
+        /// Max size
+        max_size: u8,
+    },
 }
 
 #[cfg(feature = "full")]
@@ -121,6 +159,7 @@ impl WorstKeyLength for KeyInfo {
 
 #[cfg(feature = "full")]
 impl KeyInfo {
+    /// Return self as slice
     pub fn as_slice(&self) -> &[u8] {
         match self {
             KnownKey(key) => key.as_slice(),
@@ -128,6 +167,7 @@ impl KeyInfo {
         }
     }
 
+    /// Return key
     pub fn get_key(self) -> Vec<u8> {
         match self {
             KnownKey(key) => key,
@@ -135,6 +175,7 @@ impl KeyInfo {
         }
     }
 
+    /// Return clone of self
     pub fn get_key_clone(&self) -> Vec<u8> {
         match self {
             KnownKey(key) => key.clone(),

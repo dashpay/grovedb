@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Insert operations
+
 #[cfg(feature = "full")]
 use std::{collections::HashMap, option::Option::None};
 
@@ -18,9 +48,13 @@ use crate::{
 
 #[cfg(feature = "full")]
 #[derive(Clone)]
+/// Insert options
 pub struct InsertOptions {
+    /// Validate insertion does not override
     pub validate_insertion_does_not_override: bool,
+    /// Validate insertion does not override tree
     pub validate_insertion_does_not_override_tree: bool,
+    /// Base root storage is free
     pub base_root_storage_is_free: bool,
 }
 
@@ -50,6 +84,7 @@ impl InsertOptions {
 
 #[cfg(feature = "full")]
 impl GroveDb {
+    /// Insert operation
     pub fn insert<'p, P>(
         &self,
         path: P,
@@ -406,6 +441,7 @@ impl GroveDb {
         Ok(subtree_to_insert_into).wrap_with_cost(cost)
     }
 
+    /// Insert if not exists
     pub fn insert_if_not_exists<'p, P>(
         &self,
         path: P,
@@ -696,7 +732,7 @@ mod tests {
                     replaced_bytes: 83, // todo: verify
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 143,
+                storage_loaded_bytes: 148,
                 hash_node_calls: 8,
             }
         );
@@ -764,7 +800,7 @@ mod tests {
                     replaced_bytes: 208, // todo: verify
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 224,
+                storage_loaded_bytes: 229,
                 hash_node_calls: 10,
             }
         );
@@ -833,7 +869,7 @@ mod tests {
                     replaced_bytes: 210, // todo: verify
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 231,
+                storage_loaded_bytes: 236,
                 hash_node_calls: 10,
             }
         );
@@ -1130,7 +1166,7 @@ mod tests {
                     replaced_bytes: 78,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 144, // todo: verify this
+                storage_loaded_bytes: 152, // todo: verify this
                 hash_node_calls: 8,        // todo: verify this
             }
         );
@@ -1278,7 +1314,7 @@ mod tests {
                     replaced_bytes: 78,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 144, // todo: verify this
+                storage_loaded_bytes: 152, // todo: verify this
                 hash_node_calls: 8,
             }
         );
@@ -1371,7 +1407,7 @@ mod tests {
                     replaced_bytes: 82,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 152, // todo: verify this
+                storage_loaded_bytes: 160, // todo: verify this
                 hash_node_calls: 8,
             }
         );
@@ -1478,7 +1514,7 @@ mod tests {
                     replaced_bytes: 190,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 227, // todo verify this
+                storage_loaded_bytes: 235, // todo verify this
                 hash_node_calls: 8,
             }
         );
@@ -1520,7 +1556,7 @@ mod tests {
                     replaced_bytes: 191, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 228,
+                storage_loaded_bytes: 236,
                 hash_node_calls: 8,
             }
         );
@@ -1596,7 +1632,7 @@ mod tests {
                     replaced_bytes: 156,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 224,
+                storage_loaded_bytes: 232,
                 hash_node_calls: 9, // todo: verify this
             }
         );

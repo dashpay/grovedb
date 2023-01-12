@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Replication
+
 use std::{
     collections::VecDeque,
     iter::{empty, once},
@@ -43,6 +73,7 @@ impl<'db> SubtreeChunkProducer<'db> {
         }
     }
 
+    /// Chunks in current producer
     pub fn chunks_in_current_producer(&self) -> usize {
         self.cache
             .as_ref()
@@ -50,6 +81,7 @@ impl<'db> SubtreeChunkProducer<'db> {
             .unwrap_or(0)
     }
 
+    /// Get chunk
     pub fn get_chunk<'p, P>(&mut self, path: P, index: usize) -> Result<Vec<Op>, Error>
     where
         P: IntoIterator<Item = &'p [u8]>,
@@ -263,6 +295,7 @@ pub struct GroveChunk {
 }
 
 impl<'db> SiblingsChunkProducer<'db> {
+    /// New
     pub fn new(chunk_producer: SubtreeChunkProducer<'db>) -> Self {
         SiblingsChunkProducer { chunk_producer }
     }
@@ -377,6 +410,7 @@ pub struct BufferedRestorer<'db> {
 }
 
 impl<'db> BufferedRestorer<'db> {
+    /// New
     pub fn new(restorer: Restorer<'db>) -> Self {
         BufferedRestorer { restorer }
     }

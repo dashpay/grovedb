@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Tests
+
 #[cfg(feature = "full")]
 mod tests {
     use costs::{
@@ -409,7 +439,7 @@ mod tests {
                     replaced_bytes: 75,
                     removed_bytes: NoStorageRemoval,
                 },
-                storage_loaded_bytes: 141, // todo: verify and explain
+                storage_loaded_bytes: 146, // todo: verify and explain
                 hash_node_calls: 12,
             }
         );
@@ -589,7 +619,7 @@ mod tests {
                     replaced_bytes: 195, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 232, // todo: verify this
+                storage_loaded_bytes: 240, // todo: verify this
                 hash_node_calls: 10,       // todo: verify this
             }
         );
@@ -668,7 +698,7 @@ mod tests {
                     replaced_bytes: 196, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 233, // todo: verify this
+                storage_loaded_bytes: 241, // todo: verify this
                 hash_node_calls: 10,       // todo: verify this
             }
         );
@@ -723,7 +753,7 @@ mod tests {
                     replaced_bytes: 194, // todo: verify this
                     removed_bytes: BasicStorageRemoval(1)
                 },
-                storage_loaded_bytes: 232, // todo: verify this
+                storage_loaded_bytes: 240, // todo: verify this
                 hash_node_calls: 10,       // todo: verify this
             }
         );
@@ -803,7 +833,7 @@ mod tests {
                     replaced_bytes: 195, // todo: verify this
                     removed_bytes: SectionedStorageRemoval(removed_bytes)
                 },
-                storage_loaded_bytes: 233, // todo: verify this
+                storage_loaded_bytes: 241, // todo: verify this
                 hash_node_calls: 10,       // todo: verify this
             }
         );
@@ -876,7 +906,7 @@ mod tests {
                     replaced_bytes: 159, // todo: verify this
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 227, // todo: verify this
+                storage_loaded_bytes: 235, // todo: verify this
                 hash_node_calls: 12,       // todo: verify this
             }
         );

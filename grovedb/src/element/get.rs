@@ -1,7 +1,39 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Get
+//! Implements functions in Element for getting
+
 #[cfg(feature = "full")]
 use costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+use merk::tree::kv::KV;
 #[cfg(feature = "full")]
 use merk::Merk;
 #[cfg(feature = "full")]
@@ -53,10 +85,11 @@ impl Element {
         key: K,
     ) -> CostResult<Element, Error> {
         let mut cost = OperationCost::default();
+        let key_ref = key.as_ref();
         let node_value_opt = cost_return_on_error!(
             &mut cost,
             storage
-                .get(key.as_ref())
+                .get(key_ref)
                 .map_err(|e| Error::CorruptedData(e.to_string()))
         );
         let node_value = cost_return_on_error_no_add!(
@@ -64,7 +97,7 @@ impl Element {
             node_value_opt.ok_or_else(|| {
                 Error::PathKeyNotFound(format!(
                     "key not found in Merk for get from storage: {}",
-                    hex::encode(key)
+                    hex::encode(key_ref)
                 ))
             })
         );
@@ -78,6 +111,25 @@ impl Element {
             Self::deserialize(value.as_slice())
                 .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
         );
+        match element {
+            Element::Item(..) | Element::Reference(..) | Element::SumItem(..) => {
+                // while the loaded item might be a sum item, it is given for free
+                // as it would be very hard to know in advance
+                cost.storage_loaded_bytes = KV::value_byte_cost_size_for_key_and_value_lengths(
+                    key_ref.len() as u32,
+                    value.len() as u32,
+                    false,
+                )
+            }
+            Element::Tree(..) | Element::SumTree(..) => {
+                cost.storage_loaded_bytes =
+                    KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                        key_ref.len() as u32,
+                        value.len() as u32,
+                        false,
+                    )
+            }
+        }
         Ok(element).wrap_with_cost(cost)
     }
 

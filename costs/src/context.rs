@@ -1,3 +1,31 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
 use crate::OperationCost;
 
 /// Wrapped operation result with associated cost.
@@ -135,13 +163,14 @@ pub trait CostsExt {
 
 impl<T> CostsExt for T {}
 
-/// Macro to achieve a kind of what `?` operator does, but with `CostContext` on
-/// top. Main properties are:
+/// Macro to achieve kind of what the `?` operator does, but with `CostContext`
+/// on top.
+///
+/// Main properties are:
 /// 1. Early termination on error;
-/// 2. Because of 1. `Result` is removed from the equation;
-/// 3. `CostContext` if removed too because it is added to external cost
-///    accumulator;
-/// 4. Early termination uses external cost accumulator so previous
+/// 2. Because of 1, `Result` is removed from the equation;
+/// 3. `CostContext` is removed too because it is added to external cost
+/// accumulator; 4. Early termination uses external cost accumulator so previous
 ///    costs won't be lost.
 #[macro_export]
 macro_rules! cost_return_on_error {
@@ -158,10 +187,10 @@ macro_rules! cost_return_on_error {
     };
 }
 
-/// Macro to achieve a kind of what `?` operator does, but with `CostContext` on
-/// top. The difference between this macro and `cost_return_on_error` is that it
-/// is intended to use it on `Result` rather than `CostContext<Result<..>>`, so
-/// no costs will be added except previously accumulated.
+/// Macro to achieve kind of what the `?` operator does, but with `CostContext`
+/// on top. The difference between this macro and `cost_return_on_error` is that
+/// it is intended to be used on `Result` rather than `CostContext<Result<..>>`,
+/// so no costs will be added except previously accumulated.
 #[macro_export]
 macro_rules! cost_return_on_error_no_add {
     ( &$cost:ident, $($body:tt)+ ) => {
@@ -176,10 +205,11 @@ macro_rules! cost_return_on_error_no_add {
     };
 }
 
-/// Macro to achieve a kind of what `?` operator does, but with `CostContext` on
-/// top. The difference between this macro and `cost_return_on_error` is that it
-/// is intended to use it on `Result` rather than `CostContext<Result<..>>`, so
-/// no costs will be added except previously accumulated.
+/// Macro to achieve kind of what the `?` operator does, but with `CostContext`
+/// on top. The difference between this macro and `cost_return_on_error` is that
+/// it is intended to be used on `Result` rather than `CostContext<Result<..>>`,
+/// so no costs will be added except previously accumulated. The error case
+/// returns a default `OperationCost`.
 #[macro_export]
 macro_rules! cost_return_on_error_default {
     ( $($body:tt)+ ) => {

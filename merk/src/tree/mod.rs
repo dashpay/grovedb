@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Merk trees
+
 #[cfg(feature = "full")]
 mod commit;
 #[cfg(feature = "full")]
@@ -140,10 +170,13 @@ impl Tree {
         }
     }
 
+    /// Is sum node?
     pub fn is_sum_node(&self) -> bool {
         self.inner.kv.feature_type.is_sum_feature()
     }
 
+    /// Compare current value byte cost with old cost and return
+    /// current value byte cost with updated `KeyValueStorageCost`
     pub fn kv_with_parent_hook_size_and_storage_cost_from_old_cost(
         &self,
         current_value_byte_cost: u32,
@@ -156,7 +189,7 @@ impl Tree {
             ..Default::default()
         };
 
-        // Update the value storage_cost cost
+        // Update `StorageCost` for value
         match old_cost.cmp(&current_value_byte_cost) {
             Ordering::Equal => {
                 value_storage_cost.replaced_bytes += old_cost;
@@ -185,6 +218,9 @@ impl Tree {
         Ok((current_value_byte_cost, key_value_storage_cost))
     }
 
+    /// Get current value byte cost and old value byte cost and
+    /// compare and return current value byte cost with updated
+    /// `KeyValueStorageCost`
     pub fn kv_with_parent_hook_size_and_storage_cost(
         &self,
         old_tree_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
@@ -306,6 +342,7 @@ impl Tree {
         self.inner.kv.key_as_ref()
     }
 
+    /// Set key of Tree
     pub fn set_key(&mut self, key: Vec<u8>) {
         self.inner.kv.key = key;
     }
@@ -471,6 +508,7 @@ impl Tree {
     }
 
     #[inline]
+    /// Return the child heights of self
     pub const fn child_heights(&self) -> (u8, u8) {
         (self.child_height(true), self.child_height(false))
     }
@@ -807,6 +845,7 @@ impl Tree {
 }
 
 #[cfg(feature = "full")]
+/// Convert side (left or right) to string
 pub const fn side_to_str(left: bool) -> &'static str {
     if left {
         "left"

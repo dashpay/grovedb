@@ -1,4 +1,9 @@
 # GroveDB
+| Branch | Tests                                                                                                                           | Coverage |
+|--------|---------------------------------------------------------------------------------------------------------------------------------|------|
+| master | [![Tests](https://github.com/dashevo/grovedb/workflows/CI/badge.svg?branch=master)](https://github.com/dashevo/grovedb/actions) | [![codecov](https://codecov.io/gh/dashpay/grovedb/branch/master/graph/badge.svg?token=6Z6A6FT5HV)](https://codecov.io/gh/dashpay/grovedb) |
+
+
 *Hierarchical Authenticated Data Structure with Efficient Secondary Index Queries*
 
 GroveDB is a database system designed specifically for efficient secondary index queries, proofs, speed, and reliability. It was built for use within [Dash Platform](https://dashplatform.readme.io/docs/introduction-what-is-dash-platform), but can be easily integrated into other applications for similar use.  

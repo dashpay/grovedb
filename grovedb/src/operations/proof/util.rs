@@ -1,3 +1,31 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::io::Read;
 #[cfg(feature = "full")]
@@ -11,6 +39,7 @@ pub const EMPTY_TREE_HASH: [u8; 32] = [0; 32];
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug, PartialEq, Eq)]
+/// Proof type
 pub enum ProofType {
     Merk,
     SizedMerk,
@@ -50,20 +79,24 @@ impl From<u8> for ProofType {
 
 #[cfg(any(feature = "full", feature = "verify"))]
 #[derive(Debug)]
+/// Proof reader
 pub struct ProofReader<'a> {
     proof_data: &'a [u8],
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl<'a> ProofReader<'a> {
+    /// New proof data
     pub fn new(proof_data: &'a [u8]) -> Self {
         Self { proof_data }
     }
 
+    /// Read proof
     pub fn read_proof(&mut self) -> Result<(ProofType, Vec<u8>), Error> {
         self.read_proof_with_optional_type(None)
     }
 
+    /// Read proof of type
     pub fn read_proof_of_type(&mut self, expected_data_type: u8) -> Result<Vec<u8>, Error> {
         match self.read_proof_with_optional_type(Some(expected_data_type)) {
             Ok((_, proof)) => Ok(proof),
@@ -71,6 +104,7 @@ impl<'a> ProofReader<'a> {
         }
     }
 
+    /// Read proof with optional type
     pub fn read_proof_with_optional_type(
         &mut self,
         expected_data_type_option: Option<u8>,
@@ -108,6 +142,7 @@ impl<'a> ProofReader<'a> {
 }
 
 #[cfg(feature = "full")]
+/// Write to vec
 pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
     dest.write_all(value).expect("TODO what if it fails?");
 }
