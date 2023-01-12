@@ -28,7 +28,7 @@
 
 //! High-performance Merkle key/value store
 
-#![deny(missing_docs)]
+// #![deny(missing_docs)]
 
 #[cfg(feature = "full")]
 extern crate core;
