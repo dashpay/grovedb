@@ -146,9 +146,6 @@ impl ProofVerifier {
                                     key.as_slice(),
                                 );
 
-                            dbg!("checking the subquery value and path");
-                            dbg!(&subquery_value);
-                            dbg!(&subquery_path);
                             if subquery_value.is_none() && subquery_path.is_none() {
                                 // add this element to the result set
                                 // TODO: extract limit offset  update logic to a function
@@ -579,7 +576,9 @@ impl ProofVerifier {
             offset = self.offset;
         }
 
-        // TODO implement costs
+        dbg!(&limit);
+        dbg!(&offset);
+        dbg!(&query);
         let (hash, result) = merk::execute_proof(proof, query, limit, offset, left_to_right)
             .unwrap()
             .map_err(|e| {
