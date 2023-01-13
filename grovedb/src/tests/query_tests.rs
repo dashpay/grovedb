@@ -1485,6 +1485,9 @@ fn test_mixed_level_proofs() {
     db.insert([TEST_LEAF], b"key3", Element::empty_tree(), None, None)
         .unwrap()
         .expect("successful subtree insert");
+    db.insert([TEST_LEAF], b"key4", Element::new_reference(ReferencePathType::SiblingReference(b"key2".to_vec())), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
 
     db.insert(
         [TEST_LEAF, b"key1"],
@@ -1526,13 +1529,13 @@ fn test_mixed_level_proofs() {
         .unwrap()
         .expect("successful get_path_query");
 
-    assert_eq!(elements.len(), 4);
-    assert_eq!(elements, vec![vec![2], vec![3], vec![4], vec![1],]);
+    assert_eq!(elements.len(), 5);
+    assert_eq!(elements, vec![vec![2], vec![3], vec![4], vec![1], vec![1]]);
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
-    assert_eq!(result_set.len(), 4);
+    assert_eq!(result_set.len(), 5);
     compare_result_sets(&elements, &result_set);
 
     // TODO: Test with limits
