@@ -13,6 +13,9 @@ use crate::{
     Element, GroveDb, PathQuery, SizedQuery,
 };
 
+// TODO: get rid of the cfg attribute from each test, do this at the module
+// level
+
 #[cfg(feature = "full")]
 fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb) {
     // Insert a couple of subtrees first
@@ -1467,4 +1470,70 @@ fn test_correct_child_root_hash_propagation_for_parent_in_same_batch() {
         .expect("expected successful proving");
     let (hash, _result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+}
+
+#[cfg(feature = "full")]
+#[test]
+fn test_mixed_level_proofs() {
+    let db = make_test_grovedb();
+    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert([TEST_LEAF], b"key2", Element::new_item(vec![1]), None, None)
+        .unwrap()
+        .expect("successful item insert");
+    db.insert([TEST_LEAF], b"key3", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"k1",
+        Element::new_item(vec![2]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"k2",
+        Element::new_item(vec![3]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"k3",
+        Element::new_item(vec![4]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
+
+    let mut query = Query::new();
+    query.insert_all();
+    let mut subquery = Query::new();
+    subquery.insert_all();
+    query.set_subquery(subquery);
+
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+    let (elements, _) = db
+        .query_item_value(&path_query, true, None)
+        .unwrap()
+        .expect("successful get_path_query");
+
+    assert_eq!(elements.len(), 4);
+    assert_eq!(elements, vec![vec![2], vec![3], vec![4], vec![1],]);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 4);
+    compare_result_sets(&elements, &result_set);
+
+    // TODO: Test with limits
 }

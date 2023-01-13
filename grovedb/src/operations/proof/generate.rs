@@ -146,10 +146,13 @@ impl GroveDb {
             .unwrap_add_cost(&mut cost);
 
         while let Some((key, value_bytes)) = kv_iterator.next_kv().unwrap_add_cost(&mut cost) {
+            // TODO: can probably use loop tags to break out of outer instead of this
             let mut encountered_absence = false;
+            // TODO: rename this
             let (mut subquery_path, subquery_value) =
                 Element::subquery_paths_for_sized_query(&query.query, &key);
 
+            // TODO: What is the implication of the subquery path with mixed level proofs?
             if subquery_value.is_none() && subquery_path.is_none() {
                 continue;
             }
@@ -184,14 +187,14 @@ impl GroveDb {
 
                     if query.is_some() {
                         if let Some(subquery_path) = &subquery_path {
-                            for first_key in subquery_path.iter() {
+                            for subkey in subquery_path.iter() {
                                 let inner_subtree = cost_return_on_error!(
                                     &mut cost,
                                     self.open_subtree(new_path.iter().copied())
                                 );
 
                                 let mut key_as_query = Query::new();
-                                key_as_query.insert_key(first_key.clone());
+                                key_as_query.insert_key(subkey.clone());
 
                                 cost_return_on_error!(
                                     &mut cost,
@@ -205,7 +208,7 @@ impl GroveDb {
                                     )
                                 );
 
-                                new_path.push(first_key);
+                                new_path.push(subkey);
 
                                 if self
                                     .check_subtree_exists_path_not_found(new_path.clone(), None)
@@ -273,14 +276,14 @@ impl GroveDb {
                         key_as_query.insert_key(last_key);
                         query = Some(key_as_query);
                     } else {
-                        return Err(Error::CorruptedCodeExecution(
-                            "subquery_path must exist to be in this function",
-                        ))
-                        .wrap_with_cost(cost);
+                        // TODO: might potentially change
+                        return Err(Error::CorruptedCodeExecution("subquery_path must exist"))
+                            .wrap_with_cost(cost);
                     }
 
                     let new_path_owned = new_path.iter().map(|a| a.to_vec()).collect();
 
+                    // TODO: does this change??
                     let new_path_query = PathQuery::new_unsized(new_path_owned, query.unwrap());
 
                     if self
@@ -307,10 +310,21 @@ impl GroveDb {
                     }
                 }
                 _ => {
-                    // currently not handling trees with mixed types
-                    // if a tree has been seen, we should see nothing but tree
-                    if !is_leaf_tree {
-                        return Err(Error::InvalidQuery("mixed tree types")).wrap_with_cost(cost);
+                    // TODO: refactor as a function
+                    let mut skip_limit = false;
+
+                    // TODO: should probably break if the limit hits 0
+                    if let Some(offset_value) = *current_offset {
+                        if offset_value > 0 {
+                            *current_offset = Some(offset_value - 1);
+                            skip_limit = true;
+                        }
+                    }
+
+                    if let Some(limit_value) = *current_limit {
+                        if !skip_limit && limit_value > 0 {
+                            *current_limit = Some(limit_value - 1);
+                        }
                     }
                 }
             }

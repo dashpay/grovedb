@@ -237,10 +237,14 @@ impl ProofVerifier {
                             }
                         }
                         _ => {
-                            // MerkProof type signifies there are more subtrees to explore
-                            // reaching here under a merk proof means proof for required
-                            // subtree(s) were not provided
-                            return Err(Error::InvalidProof("Missing proof for subtree"));
+                            // TODO: update the limit and offset values at this point
+                            // encountered a non tree element, we can't apply a subquery to it
+                            // add it to the result set.
+                            self.result_set.push(ProvedKeyValue {
+                                key,
+                                value: value_bytes,
+                                proof: value_hash,
+                            });
                         }
                     }
                 }
