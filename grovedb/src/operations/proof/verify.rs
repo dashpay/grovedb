@@ -135,24 +135,53 @@ impl ProofVerifier {
                             let mut expected_combined_child_hash = value_hash;
                             let mut current_value_bytes = value_bytes;
 
-                            // What is the equivalent for an empty tree
-                            if expected_root_key.is_none() {
-                                // child node is empty, move on to next
-                                continue;
-                            }
-
                             if self.limit == Some(0) {
                                 // we are done verifying the subqueries
                                 break;
                             }
 
                             let (subquery_path, subquery_value) =
-                                Element::subquery_paths_for_sized_query(
+                                Element::subquery_paths_and_value_for_sized_query(
                                     &query.query,
                                     key.as_slice(),
                                 );
 
+                            dbg!("checking the subquery value and path");
+                            dbg!(&subquery_value);
+                            dbg!(&subquery_path);
                             if subquery_value.is_none() && subquery_path.is_none() {
+                                // add this element to the result set
+                                // TODO: extract limit offset  update logic to a function
+                                let mut skip_limit = false;
+                                if let Some(offset_value) = self.offset {
+                                    if offset_value > 0 {
+                                        self.offset = Some(offset_value - 1);
+                                        skip_limit = true;
+                                    }
+                                }
+
+                                if let Some(limit_value) = self.limit {
+                                    if !skip_limit && limit_value > 0 {
+                                        self.limit = Some(limit_value - 1)
+                                    }
+                                }
+
+                                if !skip_limit {
+                                    // only insert to the result set if the offset value is not
+                                    // greater than 0
+                                    self.result_set.push(ProvedKeyValue {
+                                        key,
+                                        value: current_value_bytes,
+                                        proof: value_hash,
+                                    });
+                                }
+
+                                continue;
+                            }
+
+                            // What is the equivalent for an empty tree
+                            if expected_root_key.is_none() {
+                                // child node is empty, move on to next
                                 continue;
                             }
 

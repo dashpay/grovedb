@@ -1647,6 +1647,9 @@ fn test_mixed_level_proofs_with_tree() {
     db.insert([TEST_LEAF], b"key2", Element::empty_tree(), None, None)
         .unwrap()
         .expect("successful subtree insert");
+    db.insert([TEST_LEAF], b"key3", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
 
     db.insert(
         [TEST_LEAF, b"key1"],
@@ -1675,6 +1678,15 @@ fn test_mixed_level_proofs_with_tree() {
     )
     .unwrap()
     .expect("successful item insert");
+    db.insert(
+        [TEST_LEAF, b"key2"],
+        b"k1",
+        Element::new_item(vec![5]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
 
     let mut query = Query::new();
     query.insert_all();
@@ -1695,16 +1707,18 @@ fn test_mixed_level_proofs_with_tree() {
         .unwrap()
         .expect("expected successful get_path_query");
 
-    assert_eq!(elements.len(), 4);
+    assert_eq!(elements.len(), 5);
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
-    assert_eq!(result_set.len(), 4);
-    // compare_result_sets(&elements, &result_set);
+    assert_eq!(result_set.len(), 5);
 
     // TODO: verify that the result set is exactly the same
+    // compare_result_sets(&elements, &result_set);
 
     // TODO: test with subquery paths
     // TODO: test with limit and offset
+    // TODO: add test for when the tree is empty
+    // TODO: add test for subquery paths not none but empty
 }
