@@ -1562,11 +1562,9 @@ fn test_mixed_level_proofs() {
     assert_eq!(result_set.len(), 5);
     compare_result_sets(&elements, &result_set);
 
-
     // TODO: Fix noticed bug when limit and offset are both set to Some(0)
 
-    let path_query = PathQuery::new(path.clone(), SizedQuery::new(
-        query.clone(), Some(1), None));
+    let path_query = PathQuery::new(path.clone(), SizedQuery::new(query.clone(), Some(1), None));
     let (elements, _) = db
         .query_item_value(&path_query, true, None)
         .unwrap()
@@ -1574,6 +1572,60 @@ fn test_mixed_level_proofs() {
 
     assert_eq!(elements.len(), 1);
     assert_eq!(elements, vec![vec![2]]);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 1);
+    compare_result_sets(&elements, &result_set);
+
+    let path_query = PathQuery::new(
+        path.clone(),
+        SizedQuery::new(query.clone(), Some(3), Some(0)),
+    );
+    let (elements, _) = db
+        .query_item_value(&path_query, true, None)
+        .unwrap()
+        .expect("successful get_path_query");
+
+    assert_eq!(elements.len(), 3);
+    assert_eq!(elements, vec![vec![2], vec![3], vec![4]]);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 3);
+    compare_result_sets(&elements, &result_set);
+
+    let path_query = PathQuery::new(
+        path.clone(),
+        SizedQuery::new(query.clone(), Some(4), Some(0)),
+    );
+    let (elements, _) = db
+        .query_item_value(&path_query, true, None)
+        .unwrap()
+        .expect("successful get_path_query");
+
+    assert_eq!(elements.len(), 4);
+    assert_eq!(elements, vec![vec![2], vec![3], vec![4], vec![1]]);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 4);
+    compare_result_sets(&elements, &result_set);
+
+    let path_query = PathQuery::new(
+        path.clone(),
+        SizedQuery::new(query.clone(), Some(10), Some(4)),
+    );
+    let (elements, _) = db
+        .query_item_value(&path_query, true, None)
+        .unwrap()
+        .expect("successful get_path_query");
+
+    assert_eq!(elements.len(), 1);
+    assert_eq!(elements, vec![vec![1]]);
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
