@@ -5,6 +5,7 @@ use rand::Rng;
 #[cfg(feature = "full")]
 use tempfile::TempDir;
 
+use crate::query_result_type::QueryResultType;
 #[cfg(feature = "full")]
 use crate::{
     batch::GroveDbOp,
@@ -1634,4 +1635,76 @@ fn test_mixed_level_proofs() {
     compare_result_sets(&elements, &result_set);
 
     // TODO: test return of tree in mixed element query
+}
+
+#[cfg(feature = "full")]
+#[test]
+fn test_mixed_level_proofs_with_tree() {
+    let db = make_test_grovedb();
+    db.insert([TEST_LEAF], b"key1", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert([TEST_LEAF], b"key2", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"k1",
+        Element::new_item(vec![2]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"k2",
+        Element::new_item(vec![3]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
+    db.insert(
+        [TEST_LEAF, b"key1"],
+        b"k3",
+        Element::new_item(vec![4]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful item insert");
+
+    let mut query = Query::new();
+    query.insert_all();
+    let mut subquery = Query::new();
+    subquery.insert_all();
+    query.add_conditional_subquery(QueryItem::Key(b"key1".to_vec()), None, Some(subquery));
+
+    let path = vec![TEST_LEAF.to_vec()];
+    let path_query = PathQuery::new_unsized(path, query.clone());
+
+    let (elements, _) = db
+        .query_raw(
+            &path_query,
+            true,
+            QueryResultType::QueryPathKeyElementTrioResultType,
+            None,
+        )
+        .unwrap()
+        .expect("expected successful get_path_query");
+
+    assert_eq!(elements.len(), 4);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 4);
+    // compare_result_sets(&elements, &result_set);
+
+    // TODO: verify that the result set is exactly the same
+
+    // TODO: test with subquery paths
+    // TODO: test with limit and offset
 }
