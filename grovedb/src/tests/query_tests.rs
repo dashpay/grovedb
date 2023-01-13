@@ -1485,9 +1485,15 @@ fn test_mixed_level_proofs() {
     db.insert([TEST_LEAF], b"key3", Element::empty_tree(), None, None)
         .unwrap()
         .expect("successful subtree insert");
-    db.insert([TEST_LEAF], b"key4", Element::new_reference(ReferencePathType::SiblingReference(b"key2".to_vec())), None, None)
-        .unwrap()
-        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF],
+        b"key4",
+        Element::new_reference(ReferencePathType::SiblingReference(b"key2".to_vec())),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
 
     db.insert(
         [TEST_LEAF, b"key1"],
@@ -1523,7 +1529,9 @@ fn test_mixed_level_proofs() {
     subquery.insert_all();
     query.set_subquery(subquery);
 
-    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+    let path = vec![TEST_LEAF.to_vec()];
+
+    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
     let (elements, _) = db
         .query_item_value(&path_query, true, None)
         .unwrap()
@@ -1538,5 +1546,40 @@ fn test_mixed_level_proofs() {
     assert_eq!(result_set.len(), 5);
     compare_result_sets(&elements, &result_set);
 
-    // TODO: Test with limits
+    // Test mixed element proofs with limit and offset
+    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+    let (elements, _) = db
+        .query_item_value(&path_query, true, None)
+        .unwrap()
+        .expect("successful get_path_query");
+
+    assert_eq!(elements.len(), 5);
+    assert_eq!(elements, vec![vec![2], vec![3], vec![4], vec![1], vec![1]]);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 5);
+    compare_result_sets(&elements, &result_set);
+
+
+    // TODO: Fix noticed bug when limit and offset are both set to Some(0)
+
+    let path_query = PathQuery::new(path.clone(), SizedQuery::new(
+        query.clone(), Some(1), None));
+    let (elements, _) = db
+        .query_item_value(&path_query, true, None)
+        .unwrap()
+        .expect("successful get_path_query");
+
+    assert_eq!(elements.len(), 1);
+    assert_eq!(elements, vec![vec![2]]);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 1);
+    compare_result_sets(&elements, &result_set);
+
+    // TODO: test return of tree in mixed element query
 }

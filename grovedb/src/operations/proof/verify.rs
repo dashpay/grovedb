@@ -237,6 +237,10 @@ impl ProofVerifier {
                             }
                         }
                         _ => {
+                            if self.limit == Some(0) {
+                                break;
+                            }
+
                             // TODO: update the limit and offset values at this point
                             // encountered a non tree element, we can't apply a subquery to it
                             // add it to the result set.
@@ -245,6 +249,20 @@ impl ProofVerifier {
                                 value: value_bytes,
                                 proof: value_hash,
                             });
+
+                            let mut skip_limit = false;
+                            if let Some(offset_value) = self.offset {
+                                if offset_value > 0 {
+                                    self.offset = Some(offset_value - 1);
+                                    skip_limit = true;
+                                }
+                            }
+
+                            if let Some(limit_value) = self.limit {
+                                if !skip_limit && limit_value > 0 {
+                                    self.limit = Some(limit_value - 1)
+                                }
+                            }
                         }
                     }
                 }
