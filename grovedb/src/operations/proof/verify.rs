@@ -36,12 +36,12 @@ use merk::{
     CryptoHash,
 };
 
+use crate::operations::proof::util::reduce_limit_and_offset_by;
 #[cfg(any(feature = "full", feature = "verify"))]
 use crate::{
     operations::proof::util::{ProofReader, ProofType, ProofType::AbsentPath, EMPTY_TREE_HASH},
     Element, Error, GroveDb, PathQuery,
 };
-use crate::operations::proof::util::reduce_limit_and_offset_by;
 
 #[cfg(any(feature = "full", feature = "verify"))]
 type ProvedKeyValues = Vec<ProvedKeyValue>;
@@ -184,7 +184,11 @@ impl ProofVerifier {
 
                             if subquery_value.is_none() && subquery_path.is_none() {
                                 // add this element to the result set
-                                let skip_limit = reduce_limit_and_offset_by(&mut self.limit, &mut self.offset, 1);
+                                let skip_limit = reduce_limit_and_offset_by(
+                                    &mut self.limit,
+                                    &mut self.offset,
+                                    1,
+                                );
 
                                 if !skip_limit {
                                     // only insert to the result set if the offset value is not
@@ -292,7 +296,8 @@ impl ProofVerifier {
                                 break;
                             }
 
-                            let skip_limit = reduce_limit_and_offset_by(&mut self.limit, &mut self.offset, 1);
+                            let skip_limit =
+                                reduce_limit_and_offset_by(&mut self.limit, &mut self.offset, 1);
 
                             if !skip_limit {
                                 // only insert to the result set if the offset value is not greater

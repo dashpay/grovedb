@@ -46,7 +46,9 @@ use storage::{rocksdb_storage::PrefixedRocksDbStorageContext, StorageContext};
 use crate::element::helpers::raw_decode;
 #[cfg(feature = "full")]
 use crate::{
-    operations::proof::util::{write_to_vec, ProofType, EMPTY_TREE_HASH, reduce_limit_and_offset_by},
+    operations::proof::util::{
+        reduce_limit_and_offset_by, write_to_vec, ProofType, EMPTY_TREE_HASH,
+    },
     reference_path::path_from_reference_path_type,
     Element, Error, GroveDb, PathQuery, Query,
 };
@@ -147,7 +149,6 @@ impl GroveDb {
 
         Ok(proof_result).wrap_with_cost(cost)
     }
-
 
     /// Perform a pre-order traversal of the tree based on the provided
     /// subqueries
