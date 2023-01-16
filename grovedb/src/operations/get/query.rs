@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Query operations
+
 use costs::cost_return_on_error_default;
 #[cfg(feature = "full")]
 use costs::{
@@ -16,6 +46,7 @@ use crate::{
 
 #[cfg(feature = "full")]
 impl GroveDb {
+    /// Multiple path queries
     pub fn query_encoded_many(
         &self,
         path_queries: &[&PathQuery],
@@ -69,6 +100,7 @@ impl GroveDb {
         results_wrapped.wrap_with_cost(cost)
     }
 
+    /// Raw query for multiple path queries
     pub fn query_many_raw(
         &self,
         path_queries: &[&PathQuery],
@@ -87,6 +119,7 @@ where {
         Ok(result).wrap_with_cost(cost)
     }
 
+    /// Get proved path query
     pub fn get_proved_path_query(
         &self,
         path_query: &PathQuery,
@@ -140,6 +173,7 @@ where {
         }
     }
 
+    /// Returns given path query results
     pub fn query(
         &self,
         path_query: &PathQuery,
@@ -234,6 +268,7 @@ where {
         Ok((results, skipped)).wrap_with_cost(cost)
     }
 
+    /// Query sum items given path query
     pub fn query_sums(
         &self,
         path_query: &PathQuery,
@@ -301,6 +336,7 @@ where {
         Ok((results, skipped)).wrap_with_cost(cost)
     }
 
+    /// Returns result elements and number of elements skipped given path query
     pub fn query_raw(
         &self,
         path_query: &PathQuery,
@@ -311,7 +347,8 @@ where {
         Element::get_raw_path_query(&self.db, path_query, allow_cache, result_type, transaction)
     }
 
-    /// If max_results is exceeded we return an error
+    /// Splits the result set of a path query by query path.
+    /// If max_results is exceeded we return an error.
     pub fn query_keys_optional(
         &self,
         path_query: &PathQuery,

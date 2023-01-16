@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Proofs encoding
+
 #[cfg(any(feature = "full", feature = "verify"))]
 use std::io::{Read, Write};
 
@@ -372,6 +402,7 @@ impl Op {
     }
 
     #[cfg(any(feature = "full", feature = "verify"))]
+    /// Decode
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         Decode::decode(bytes).map_err(|e| match e {
             EdError::UnexpectedByte(byte) => Error::ProofCreationError(format!(
@@ -385,6 +416,7 @@ impl Op {
 }
 
 #[cfg(feature = "full")]
+/// Encode into
 pub fn encode_into<'a, T: Iterator<Item = &'a Op>>(ops: T, output: &mut Vec<u8>) {
     for op in ops {
         op.encode_into(output).unwrap();
@@ -392,6 +424,7 @@ pub fn encode_into<'a, T: Iterator<Item = &'a Op>>(ops: T, output: &mut Vec<u8>)
 }
 
 #[cfg(any(feature = "full", feature = "verify"))]
+/// Decoder
 pub struct Decoder<'a> {
     offset: usize,
     bytes: &'a [u8],
@@ -399,6 +432,7 @@ pub struct Decoder<'a> {
 
 #[cfg(any(feature = "full", feature = "verify"))]
 impl<'a> Decoder<'a> {
+    /// New decoder
     pub const fn new(proof_bytes: &'a [u8]) -> Self {
         Decoder {
             offset: 0,

@@ -1,3 +1,33 @@
+// MIT LICENSE
+//
+// Copyright (c) 2021 Dash Core Group
+//
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+//! Merk tree key-values
+
 #[cfg(feature = "full")]
 use std::io::{Read, Write};
 
@@ -77,7 +107,7 @@ impl KV {
         })
     }
 
-    /// Creates a new 'KV' with a given key, value and supplied_value_hash
+    /// Creates a new `KV` with a given key, value and supplied_value_hash
     /// Combines the supplied_value_hash + hash(value) as the KV value_hash
     #[inline]
     pub fn new_with_combined_value_hash(
@@ -103,6 +133,7 @@ impl KV {
             .add_cost(cost)
     }
 
+    /// Creates a new `KV` with layered value hash
     pub fn new_with_layered_value_hash(
         key: Vec<u8>,
         value: Vec<u8>,
