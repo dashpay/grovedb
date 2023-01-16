@@ -1735,7 +1735,154 @@ fn test_mixed_level_proofs_with_tree() {
     // TODO: verify that the result set is exactly the same
     // compare_result_sets(&elements, &result_set);
 
-    // TODO: test with subquery paths
-    // TODO: add test for subquery paths not none but empty
     // TODO: test at larger depths
+}
+
+#[test]
+fn test_mixed_level_proofs_with_subquery_paths() {
+    let db = make_test_grovedb();
+    db.insert([TEST_LEAF], b"a", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert([TEST_LEAF], b"b", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert([TEST_LEAF], b"c", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+
+    db.insert([TEST_LEAF, b"a"], b"d", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"a"],
+        b"e",
+        Element::new_item(vec![2]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"a"],
+        b"f",
+        Element::new_item(vec![3]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+
+    db.insert(
+        [TEST_LEAF, b"a", b"d"],
+        b"d",
+        Element::new_item(vec![6]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+
+    db.insert(
+        [TEST_LEAF, b"b"],
+        b"g",
+        Element::new_item(vec![4]),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert([TEST_LEAF, b"b"], b"d", Element::empty_tree(), None, None)
+        .unwrap()
+        .expect("successful subtree insert");
+
+    db.insert(
+        [TEST_LEAF, b"b", b"d"],
+        b"i",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"b", b"d"],
+        b"j",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+    db.insert(
+        [TEST_LEAF, b"b", b"d"],
+        b"k",
+        Element::empty_tree(),
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("successful subtree insert");
+
+    // if you don't have an item at the subquery path translation, you shouldn't be
+    // added to the result set.
+    let mut query = Query::new();
+    query.insert_all();
+    query.set_subquery_path(vec![b"d".to_vec()]);
+
+    let path = vec![TEST_LEAF.to_vec()];
+
+    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+
+    // TODO: proofs seems to be more expressive than query_raw now
+    // let (elements, _) = db
+    // .query_raw(
+    // &path_query,
+    // true,
+    // QueryResultType::QueryPathKeyElementTrioResultType,
+    // None,
+    // )
+    // .unwrap()
+    // .expect("expected successful get_path_query");
+    //
+    // assert_eq!(elements.len(), 2);
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 2);
+
+    // apply path translation then query
+    let mut query = Query::new();
+    query.insert_all();
+    let mut subquery = Query::new();
+    subquery.insert_all();
+    query.set_subquery_path(vec![b"d".to_vec()]);
+    query.set_subquery(subquery);
+
+    let path = vec![TEST_LEAF.to_vec()];
+
+    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 4);
+
+    // apply empty path translation
+    let mut query = Query::new();
+    query.insert_all();
+    let mut subquery = Query::new();
+    subquery.insert_all();
+    query.set_subquery_path(vec![]);
+    query.set_subquery(subquery);
+
+    let path = vec![TEST_LEAF.to_vec()];
+
+    let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+
+    let proof = db.prove_query(&path_query).unwrap().unwrap();
+    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    assert_eq!(result_set.len(), 5);
 }
