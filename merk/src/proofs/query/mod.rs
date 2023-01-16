@@ -1676,7 +1676,6 @@ pub fn execute_proof(
                 // proof contains abridged data so we cannot verify absence of
                 // remaining query items
                 _ => {
-                    dbg!(&last_push);
                     return Err(Error::InvalidProofError(
                         "Proof is missing data for query a".to_string(),
                     ))

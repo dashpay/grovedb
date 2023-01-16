@@ -171,9 +171,6 @@ impl KV {
         let actual_value_hash = value_hash(value.as_slice()).unwrap_add_cost(&mut cost);
         let combined_value_hash =
             combine_hash(&actual_value_hash, &reference_value_hash).unwrap_add_cost(&mut cost);
-        // dbg!("combined_hash for propagation",std::str::from_utf8(value.as_slice()),
-        // hex::encode(actual_value_hash),hex::encode(combined_value_hash),
-        // hex::encode(reference_value_hash));
         self.value = value;
         self.value_hash = combined_value_hash;
         self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);

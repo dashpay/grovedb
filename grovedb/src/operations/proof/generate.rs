@@ -129,6 +129,9 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
+        // TODO: refactor
+        let mut to_add_to_result_set: i16 = 0;
+
         let reached_limit = query.query.limit.is_some() && query.query.limit.unwrap() == 0;
         if reached_limit {
             return Ok(()).wrap_with_cost(cost);
@@ -148,38 +151,39 @@ impl GroveDb {
         while let Some((key, value_bytes)) = kv_iterator.next_kv().unwrap_add_cost(&mut cost) {
             // TODO: can probably use loop tags to break out of outer instead of this
             let mut encountered_absence = false;
-            // TODO: investigate, we are finding the subquery path before we confirm it's a
-            // tree  this will skip items that have no subquery when one of
-            // their siblings have  test this.
-            let (mut subquery_path, subquery_value) =
-                Element::subquery_paths_and_value_for_sized_query(&query.query, &key);
-
-            if subquery_value.is_none() && subquery_path.is_none() {
-                // this element should be added to the result set
-                // hence we have to update the limit and offset value
-                // TODO: refactor as function
-                let mut skip_limit = false;
-
-                // TODO: should probably break if the limit hits 0
-                if let Some(offset_value) = *current_offset {
-                    if offset_value > 0 {
-                        *current_offset = Some(offset_value - 1);
-                        skip_limit = true;
-                    }
-                }
-
-                if let Some(limit_value) = *current_limit {
-                    if !skip_limit && limit_value > 0 {
-                        *current_limit = Some(limit_value - 1);
-                    }
-                }
-
-                continue;
-            }
 
             let element = cost_return_on_error_no_add!(&cost, raw_decode(&value_bytes));
             match element {
                 Element::Tree(root_key, _) | Element::SumTree(root_key, ..) => {
+                    // TODO: investigate, we are finding the subquery path before we confirm it's a
+                    //  tree  this will skip items that have no subquery when one of
+                    //  their siblings have  test this.
+                    let (mut subquery_path, subquery_value) =
+                        Element::subquery_paths_and_value_for_sized_query(&query.query, &key);
+
+                    if subquery_value.is_none() && subquery_path.is_none() {
+                        // this element should be added to the result set
+                        // hence we have to update the limit and offset value
+                        // TODO: refactor as function
+                        let mut skip_limit = false;
+
+                        // TODO: should probably break if the limit hits 0
+                        if let Some(offset_value) = *current_offset {
+                            if offset_value > 0 {
+                                *current_offset = Some(offset_value - 1);
+                                skip_limit = true;
+                            }
+                        }
+
+                        if let Some(limit_value) = *current_limit {
+                            if !skip_limit && limit_value > 0 {
+                                *current_limit = Some(limit_value - 1);
+                            }
+                        }
+
+                        continue;
+                    }
+
                     if root_key.is_none() {
                         continue;
                     }
@@ -304,6 +308,7 @@ impl GroveDb {
                     let new_path_owned = new_path.iter().map(|a| a.to_vec()).collect();
 
                     // TODO: does this change??
+                    // why is this query unsized?? or does it not matter
                     let new_path_query = PathQuery::new_unsized(new_path_owned, query.unwrap());
 
                     if self
@@ -330,22 +335,29 @@ impl GroveDb {
                     }
                 }
                 _ => {
+                    // we don't want to do this if the we end up generating a sized merk proof
+                    // as that will count this twice
+                    // we cannot know when we are going to generate a sized merk proof
+                    // we need to somehow keep track of this information, in a discardable manner
+
                     // TODO: refactor as a function
-                    let mut skip_limit = false;
+                    // let mut skip_limit = false;
+                    //
+                    // // TODO: should probably break if the limit hits 0
+                    // if let Some(offset_value) = *discardable_offset{
+                    //     if offset_value > 0 {
+                    //         *discardable_offset= Some(offset_value - 1);
+                    //         skip_limit = true;
+                    //     }
+                    // }
+                    //
+                    // if let Some(limit_value) = *discardable_limit{
+                    //     if !skip_limit && limit_value > 0 {
+                    //         *discardable_limit= Some(limit_value - 1);
+                    //     }
+                    // }
 
-                    // TODO: should probably break if the limit hits 0
-                    if let Some(offset_value) = *current_offset {
-                        if offset_value > 0 {
-                            *current_offset = Some(offset_value - 1);
-                            skip_limit = true;
-                        }
-                    }
-
-                    if let Some(limit_value) = *current_limit {
-                        if !skip_limit && limit_value > 0 {
-                            *current_limit = Some(limit_value - 1);
-                        }
-                    }
+                    to_add_to_result_set += 1;
                 }
             }
         }
@@ -368,6 +380,25 @@ impl GroveDb {
             // update limit and offset values
             *current_limit = limit_offset.0;
             *current_offset = limit_offset.1;
+        } else {
+            // TODO: refactor
+            for _ in 0..to_add_to_result_set {
+                let mut skip_limit = false;
+
+                // TODO: should probably break if the limit hits 0
+                if let Some(offset_value) = *current_offset {
+                    if offset_value > 0 {
+                        *current_offset = Some(offset_value - 1);
+                        skip_limit = true;
+                    }
+                }
+
+                if let Some(limit_value) = *current_limit {
+                    if !skip_limit && limit_value > 0 {
+                        *current_limit = Some(limit_value - 1);
+                    }
+                }
+            }
         }
 
         Ok(()).wrap_with_cost(cost)

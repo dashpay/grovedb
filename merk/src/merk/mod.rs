@@ -968,7 +968,6 @@ where
     where
         K: AsRef<[u8]>,
     {
-        // dbg!("committing");
         let mut cost = OperationCost::default();
         let options = options.unwrap_or_default();
         let mut batch = self.storage.new_batch();
@@ -1658,14 +1657,6 @@ mod test {
             .unwrap()
             .unwrap();
         drop(merk);
-
-        // let merk =
-        // Merk::open_base(storage.get_storage_context(empty()).unwrap())
-        //     .unwrap()
-        //     .expect("cannot open merk");
-        // let m = merk.get(&9_u64.to_be_bytes());
-        // let merk.get(&8_u64.to_be_bytes());
-        // dbg!(m);
     }
 
     #[test]

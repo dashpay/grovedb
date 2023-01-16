@@ -576,9 +576,6 @@ impl ProofVerifier {
             offset = self.offset;
         }
 
-        dbg!(&limit);
-        dbg!(&offset);
-        dbg!(&query);
         let (hash, result) = merk::execute_proof(proof, query, limit, offset, left_to_right)
             .unwrap()
             .map_err(|e| {

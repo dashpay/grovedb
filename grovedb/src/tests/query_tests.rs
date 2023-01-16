@@ -1696,31 +1696,30 @@ fn test_mixed_level_proofs_with_tree() {
     query.add_conditional_subquery(QueryItem::Key(b"key1".to_vec()), None, Some(subquery));
 
     let path = vec![TEST_LEAF.to_vec()];
-    /*
-    let path_query = PathQuery::new_unsized(path, query.clone());
 
-    let (elements, _) = db
-        .query_raw(
-            &path_query,
-            true,
-            QueryResultType::QueryPathKeyElementTrioResultType,
-            None,
-        )
-        .unwrap()
-        .expect("expected successful get_path_query");
-
-    assert_eq!(elements.len(), 5);
-
-    let proof = db.prove_query(&path_query).unwrap().unwrap();
-    let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
-    assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
-    assert_eq!(result_set.len(), 5);
-    */
+    // let path_query = PathQuery::new_unsized(path.clone(), query.clone());
+    //
+    // let (elements, _) = db
+    //     .query_raw(
+    //         &path_query,
+    //         true,
+    //         QueryResultType::QueryPathKeyElementTrioResultType,
+    //         None,
+    //     )
+    //     .unwrap()
+    //     .expect("expected successful get_path_query");
+    //
+    // assert_eq!(elements.len(), 5);
+    //
+    // let proof = db.prove_query(&path_query).unwrap().unwrap();
+    // let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
+    // assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
+    // assert_eq!(result_set.len(), 5);
 
     // TODO: verify that the result set is exactly the same
     // compare_result_sets(&elements, &result_set);
 
-    let path_query = PathQuery::new(path, SizedQuery::new(query.clone(), Some(1), None));
+    let path_query = PathQuery::new(path.clone(), SizedQuery::new(query.clone(), Some(1), None));
 
     let (elements, _) = db
         .query_raw(
@@ -1732,13 +1731,12 @@ fn test_mixed_level_proofs_with_tree() {
         .unwrap()
         .expect("expected successful get_path_query");
 
-    // assert_eq!(elements.len(), 5);
+    assert_eq!(elements.len(), 1);
 
     let proof = db.prove_query(&path_query).unwrap().unwrap();
     let (hash, result_set) = GroveDb::verify_query(&proof, &path_query).unwrap();
     assert_eq!(hash, db.root_hash(None).unwrap().unwrap());
-    assert_eq!(result_set.len(), 0);
-
+    assert_eq!(result_set.len(), 1);
     // TODO: verify that the result set is exactly the same
     // compare_result_sets(&elements, &result_set);
 

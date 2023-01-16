@@ -1699,6 +1699,7 @@ fn test_path_query_proofs_with_conditional_subquery() {
     let keys = [
         b"deeper_node_1".to_vec(),
         b"deeper_node_2".to_vec(),
+        b"deeper_node_3".to_vec(),
         b"key10".to_vec(),
         b"key11".to_vec(),
     ];
