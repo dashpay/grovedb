@@ -147,7 +147,7 @@ pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
     dest.write_all(value).expect("TODO what if it fails?");
 }
 
-#[cfg(feature = "full")]
+#[cfg(any(feature = "full", feature = "verify"))]
 pub fn reduce_limit_and_offset_by(
     limit: &mut Option<u16>,
     offset: &mut Option<u16>,
