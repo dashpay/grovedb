@@ -70,7 +70,6 @@ impl GroveDb {
     pub fn prove_query(&self, query: &PathQuery) -> CostResult<Vec<u8>, Error> {
         let mut cost = OperationCost::default();
 
-        // TODO: should it be possible to generate proofs for tree items (currently yes)
         let mut proof_result: Vec<u8> = vec![];
         let mut limit: Option<u16> = query.query.limit;
         let mut offset: Option<u16> = query.query.offset;
@@ -162,7 +161,7 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let mut to_add_to_result_set: i16 = 0;
+        let mut to_add_to_result_set: u16 = 0;
 
         let reached_limit = query.query.limit.is_some() && query.query.limit.unwrap() == 0;
         if reached_limit {
@@ -192,7 +191,7 @@ impl GroveDb {
                     if subquery_value.is_none() && subquery_path.is_none() {
                         // this element should be added to the result set
                         // hence we have to update the limit and offset value
-                        reduce_limit_and_offset_by(current_limit, current_offset);
+                        reduce_limit_and_offset_by(current_limit, current_offset, 1);
                         continue;
                     }
 
@@ -312,15 +311,12 @@ impl GroveDb {
                         key_as_query.insert_key(last_key);
                         query = Some(key_as_query);
                     } else {
-                        // TODO: might potentially change
                         return Err(Error::CorruptedCodeExecution("subquery_path must exist"))
                             .wrap_with_cost(cost);
                     }
 
                     let new_path_owned = new_path.iter().map(|a| a.to_vec()).collect();
 
-                    // TODO: does this change??
-                    // why is this query unsized?? or does it not matter
                     let new_path_query = PathQuery::new_unsized(new_path_owned, query.unwrap());
 
                     if self
@@ -347,28 +343,6 @@ impl GroveDb {
                     }
                 }
                 _ => {
-                    // we don't want to do this if the we end up generating a sized merk proof
-                    // as that will count this twice
-                    // we cannot know when we are going to generate a sized merk proof
-                    // we need to somehow keep track of this information, in a discardable manner
-
-                    // TODO: refactor as a function
-                    // let mut skip_limit = false;
-                    //
-                    // // TODO: should probably break if the limit hits 0
-                    // if let Some(offset_value) = *discardable_offset{
-                    //     if offset_value > 0 {
-                    //         *discardable_offset= Some(offset_value - 1);
-                    //         skip_limit = true;
-                    //     }
-                    // }
-                    //
-                    // if let Some(limit_value) = *discardable_limit{
-                    //     if !skip_limit && limit_value > 0 {
-                    //         *discardable_limit= Some(limit_value - 1);
-                    //     }
-                    // }
-
                     to_add_to_result_set += 1;
                 }
             }
@@ -393,10 +367,7 @@ impl GroveDb {
             *current_limit = limit_offset.0;
             *current_offset = limit_offset.1;
         } else {
-            // TODO: refactor
-            for _ in 0..to_add_to_result_set {
-                reduce_limit_and_offset_by(current_limit, current_offset);
-            }
+            reduce_limit_and_offset_by(current_limit, current_offset, to_add_to_result_set);
         }
 
         Ok(()).wrap_with_cost(cost)
@@ -453,8 +424,6 @@ impl GroveDb {
     {
         let mut cost = OperationCost::default();
 
-        // TODO: How do you handle mixed tree types?
-        // TODO implement costs
         let mut proof_result = subtree
             .prove_without_encoding(query.clone(), limit_offset.0, limit_offset.1)
             .unwrap()

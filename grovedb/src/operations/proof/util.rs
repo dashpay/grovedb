@@ -149,20 +149,34 @@ pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) {
 
 #[cfg(feature = "full")]
 // TODO: add n
-pub fn reduce_limit_and_offset_by(limit: &mut Option<u16>, offset: &mut Option<u16>) -> bool {
+pub fn reduce_limit_and_offset_by(limit: &mut Option<u16>, offset: &mut Option<u16>, n: u16) -> bool {
+    // if we take n, we want to first try to subtract all from the offset
+    // if offset is greater, just just subtract
+    // if offset is less then we set offset to 0 and update n
     let mut skip_limit = false;
+    let mut n = n;
 
     // TODO: should probably break if the limit hits 0
     if let Some(offset_value) = *offset{
         if offset_value > 0 {
-            *offset= Some(offset_value - 1);
+            if offset_value >= n {
+                *offset = Some(offset_value - n);
+                n = 0;
+            } else {
+                *offset = Some(0);
+                n = n - offset_value;
+            }
             skip_limit = true;
         }
     }
 
     if let Some(limit_value) = *limit{
         if !skip_limit && limit_value > 0 {
-            *limit = Some(limit_value - 1);
+            if limit_value >= n {
+                *limit = Some(limit_value - n);
+            } else {
+                *limit = Some(0);
+            }
         }
     }
 
