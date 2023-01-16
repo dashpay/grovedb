@@ -163,7 +163,7 @@ pub fn reduce_limit_and_offset_by(
                 n = 0;
             } else {
                 *offset = Some(0);
-                n = n - offset_value;
+                n -= offset_value;
             }
             skip_limit = true;
         }
